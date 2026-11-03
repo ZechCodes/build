@@ -85,6 +85,7 @@ import { bridgeCapabilities } from "./changeEvents.js";
 import { watchUiState } from "./localUiState.js";
 import { registerSyncRead, syncPaneShown } from "./syncVisibleScopes.js";
 import { App } from "../appState.js";
+import { commitPatchParams, createCommitDiffTarget, filteredCommitPatchKey } from "./commitDiffTarget.js";
 const projectSourceWatchScope = (scope) => scope.project_id && scope.source_id && scope.source_path
   ? { kind: "project_source", project_id: scope.project_id, source_id: scope.source_id, source_path: scope.source_path } : undefined;
 const alwaysActive = () => true;
@@ -572,6 +573,7 @@ export function mountGitPane(
     navigate = null,
     viewingContext = null,
     requestedCommit = null,
+    requestedDiff,
     onCommitSelection = null,
   } = {},
 ) {
@@ -635,6 +637,13 @@ export function mountGitPane(
   // so a patch once read is the patch: this is the `patch` records, a patch
   // too big for one joined back from the pages it is kept in (#95).
   const patches = new Map();
+  const diffTarget = createCommitDiffTarget(requestedCommit, requestedDiff);
+  const filteredKey = (hash) => filteredCommitPatchKey(hash, diffTarget.pathFor(hash));
+  const heldPatchKey = (hash) => patches.has(hash) && !headersOnly.has(hash) ? hash : filteredKey(hash);
+  const patchOf = (hash) => patches.get(heldPatchKey(hash));
+  const readableShowSource = (key) => !key.startsWith("[") || bridgeCapabilities(cacheScope?.deviceId)?.git?.showPaths === true;
+  const showKey = (hash) => diffTarget.pathFor(hash) && bridgeCapabilities(cacheScope?.deviceId)?.git?.showPaths
+    ? filteredKey(hash) : hash;
   // The hashes among those whose payload is the file headers rather than the
   // diff. A `patch` record written by an older client under a cap held what
   // `git.show` answers past it: which files moved without saying how — enough
@@ -642,7 +651,7 @@ export function mountGitPane(
   // what asks for the patch itself.
   const headersOnly = new Set();
   /** Whether what is held for a commit is the commit's own diff. */
-  const patchHeld = (hash) => patches.has(hash) && !headersOnly.has(hash);
+  const patchHeld = (hash) => patches.has(heldPatchKey(hash)) && !headersOnly.has(heldPatchKey(hash));
   // The uncommitted changeset's bodies: git.status names the files and what each
   // one holds, and each file's diff is fetched, cached and answered on its own.
   const fileDiffs = createFileDiffs({
@@ -979,7 +988,7 @@ export function mountGitPane(
       });
       return;
     }
-    const detail = patchHeld(selected) ? patches.get(selected) : null;
+    const detail = patchHeld(selected) ? patchOf(selected) : null;
     if (!detail) {
       renderedViews = [];
       detailHost.innerHTML = '<div class="empty cdetail-loading">loading…</div>';
@@ -990,9 +999,11 @@ export function mountGitPane(
     // parsed by each file's own text, so a page landing re-reads only the
     // file it grew.
     renderedViews = parsedDiffs.views(detail.patch, {
-      revision: detail.paged ? null : detail.hash || selected,
+      revision: detail.paged ? null : heldPatchKey(selected),
       defaultEditedAt: Number(detail.time) * 1000,
     });
+    diffTarget.prepare(selected, renderedViews, folds, viewport, noiseExpanded);
+    if (diffTarget.needsMore(selected, renderedViews, detail.pages)) void readCommitPage(selected);
     paintChangeset(detailHost, {
       bar: commitHeaderHtml(detail),
       views: renderedViews,
@@ -1023,6 +1034,7 @@ export function mountGitPane(
     });
     viewport.attach(detailHost.closest(".cdetail-host") || detailHost);
     if (commentLayer) commentLayer.attach(detailHost);
+    diffTarget.paint(selected, detailHost);
   };
 
   /** Keep the open files' bodies current against the shape the pane holds, and
@@ -1467,6 +1479,7 @@ export function mountGitPane(
   const selectRail = (sel) => {
     if (selected === sel) return;
     selected = sel;
+    diffTarget.select(sel);
     requestedCommit = null;
     missingCommit = false;
     onCommitSelection?.(sel === "review" || sel === "uncommitted" ? null : sel);
@@ -1492,17 +1505,17 @@ export function mountGitPane(
     if (showReads.has(hash)) return;
     showReads.add(hash);
     try {
-      await readShow(hash);
+      await readShow(hash, showKey(hash));
     } finally {
       showReads.delete(hash);
     }
   };
-  const readShow = async (hash) => {
-    const address = cacheAddress(PATCH_RECORD_KIND, hash);
-    const before = await cacheRecord(PATCH_RECORD_KIND, hash);
+  const readShow = async (hash, key) => {
+    const address = cacheAddress(PATCH_RECORD_KIND, key);
+    const before = await cacheRecord(PATCH_RECORD_KIND, key);
     let show;
     try {
-      show = await callRpc("git.show", { ...scope, hash });
+      show = await callRpc("git.show", { ...scope, ...commitPatchParams(key) });
     } catch (e) {
       if (disposed) return;
       actionError(e);
@@ -1514,12 +1527,12 @@ export function mountGitPane(
     }
     if (!address) {
       // Cacheless mounts exist only in low-level fixtures: nothing to write.
-      patches.set(show.hash, show);
-      headersOnly.delete(show.hash);
+      patches.set(key, show);
+      headersOnly.delete(key);
       if (!disposed && selected === hash) render();
       return;
     }
-    const first = keptWhole(show) ? null : await firstCommitPage(hash);
+    const first = keptWhole(show) ? null : await firstCommitPage(key);
     if (await recordStill(address, before)) await storeShow(address, show, first);
     await rereadRecords();
   };
@@ -1532,8 +1545,8 @@ export function mountGitPane(
    *  not — the same commit renders another patch once attributes or diff
    *  settings change — so only pages of that one patch are ever joined. */
   const firstCommitPage = async (hash) => {
-    if (!fileDiffs.canPage()) return null;
-    const answer = await callRpc("git.show", { ...scope, hash, range: { offset: 0, bytes: BODY_PAGE_BYTES } }).catch(() => null);
+    if (!fileDiffs.canPage() || !readableShowSource(hash)) return null;
+    const answer = await callRpc("git.show", { ...scope, ...commitPatchParams(hash), range: { offset: 0, bytes: BODY_PAGE_BYTES } }).catch(() => null);
     const page = answer?.range ? pageFromAnswer(answer, "patch") : null;
     return page?.of && pageFollows(page, 0, page.of) ? page : null;
   };
@@ -1563,15 +1576,21 @@ export function mountGitPane(
    *  sent beside `max_bytes`, which the bridge refuses. A page of another
    *  patch than the one held says the commit renders differently now: it is
    *  read again from the top. Answers whether the held pages moved on. */
+  const usableCommitPage = (page) => !disposed && Boolean(page?.of);
   const readNextCommitPage = async (hash) => {
-    const held = patches.get(hash);
-    const address = cacheAddress(PATCH_RECORD_KIND, hash);
+    const key = heldPatchKey(hash);
+    const held = patches.get(key);
+    const address = cacheAddress(PATCH_RECORD_KIND, key);
     if (!commitReadsOn(address, held)) return false;
+    if (!readableShowSource(key)) {
+      await fetchShow(hash);
+      return false;
+    }
     const { of } = held;
     const from = held.pages.end;
-    const answer = await callRpc("git.show", { ...scope, hash, range: { offset: from, bytes: BODY_PAGE_BYTES } });
+    const answer = await callRpc("git.show", { ...scope, ...commitPatchParams(key), range: { offset: from, bytes: BODY_PAGE_BYTES } });
     const page = answer?.range ? pageFromAnswer(answer, "patch") : null;
-    if (disposed || !page?.of) return false;
+    if (!usableCommitPage(page)) return false;
     if (page.of !== of) {
       await fetchShow(hash);
       return false;
@@ -1610,12 +1629,12 @@ export function mountGitPane(
       return out.reading;
     }
     const read = { again: false };
-    const of = patches.get(hash)?.of;
+    const of = patchOf(hash)?.of;
     read.reading = readNextCommitPage(hash)
       .catch(() => false)
       .then((moved) => {
         commitPageReads.delete(hash);
-        const onward = moved || patches.get(hash)?.of !== of;
+        const onward = moved || patchOf(hash)?.of !== of;
         if (onward && read.again && !disposed) void readCommitPage(hash);
         return moved;
       });
@@ -2090,10 +2109,11 @@ export function mountGitPane(
   const forgetGonePatches = (present) => {
     for (const hash of [...patches.keys()]) {
       if (present.has(hash)) continue;
+      const wasSelected = hash === heldPatchKey(selected);
       patches.delete(hash);
       headersOnly.delete(hash);
       commitPageJoins.delete(hash);
-      if (hash === selected) void fetchShow(hash);
+      if (wasSelected) void fetchShow(selected);
     }
   };
 

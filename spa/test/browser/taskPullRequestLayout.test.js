@@ -25,8 +25,18 @@ async function activate(page, selector, hasTouch) {
   }
 }
 
-async function mountPullRequest(page, basePath, { holdReads = true } = {}) {
-  await mountLayout(page, '<div id="shell"><div id="view"><header id="toolbar">Build · PR review</header><div id="view-body"><main id="root" class="surface"><div id="tabbody" class="flush"><div id="task-header"></div><div id="review"></div></div></main></div></div></div>', {
+async function openMore(page, hasTouch) {
+  if (await page.locator("details[data-review-more]").evaluate((details) => details.open)) return;
+  await activate(page, "details[data-review-more] > summary", hasTouch);
+}
+
+async function closeMore(page, hasTouch) {
+  if (!(await page.locator("details[data-review-more]").evaluate((details) => details.open))) return;
+  await activate(page, "details[data-review-more] > summary", hasTouch);
+}
+
+async function mountPullRequest(page, basePath, { holdReads = true, hasTouch = false } = {}) {
+  await mountLayout(page, '<div id="shell"><div id="view"><header id="toolbar">Build · PR review</header><div id="view-body"><main id="root" class="surface"><div id="tabbody" class="flush"><div id="task-header"></div><div id="review"></div><div id="review-comments"></div></div></main></div></div></div>', {
     basePath,
     styles: `@import url("${basePath}src/styles/tasks.css"); #shell{height:100vh;box-sizing:border-box} #view-body,#root,#tabbody{min-width:0} #task-header{padding:var(--pane-top) var(--pane-gutter) 0} #review{width:100%;box-sizing:border-box;padding:1rem}`,
   });
@@ -43,9 +53,11 @@ async function mountPullRequest(page, basePath, { holdReads = true } = {}) {
     drafts: "src/core/taskReviewDrafts.js",
     ui: "src/core/localUiStore.js",
     taskRender: "src/core/trackerTaskRender.js",
+    tasks: "src/core/trackerCache.js",
+    timeline: "src/core/trackerTimeline.js",
   }, basePath);
   await page.evaluate(async ({ answer, holdReads }) => {
-    const { review, support, cache, local, taskRender } = window.__layoutModules;
+    const { review, support, cache, local, taskRender, tasks, timeline } = window.__layoutModules;
     document.querySelector("#task-header").innerHTML = taskRender.taskHeadHtml(answer.task);
     const scope = { deviceId: "pr-layout-device", projectId: "pr-layout-project", taskId: "task-1" };
     const saved = structuredClone(answer.review);
@@ -87,15 +99,25 @@ async function mountPullRequest(page, basePath, { holdReads = true } = {}) {
     } });
     await local.writeCached(workspaceAddress, [workspace]);
     await cache.writeReviewReply(scope, { ...answer, review: saved, sync }, 1);
+    const anchoredComment = { type: "comment", id: "reviewed-line", author: { kind: "user" },
+      created_at: snapshot.created_at, body: "Check this reviewed line.",
+      anchor: { snapshot_id: snapshot.id, directory_id: "dir-api", path: "changed.txt", side: "new", line: 1 } };
+    await tasks.writeTaskRecord(scope.deviceId, scope.projectId, scope.taskId, { task: answer.task, timeline: [anchoredComment] });
+    document.querySelector("#review-comments").innerHTML = taskRender.timelineHtml(timeline.timelineRows([anchoredComment]), {
+      ...scope, identities: answer.task.identities || {}, reviewSnapshots: saved.snapshots,
+    });
     const mountOptions = {
       ...scope, callRpc, task: () => answer.task, workspaces: () => [workspace],
+      markReviewRoute: ({ review }) => { mountOptions.reviewRoute = review; },
     };
     const mounted = review.mountTaskReviewPage(document.querySelector("#review"), mountOptions);
+    document.querySelector('[data-review-reply="reviewed-line"]').onclick = () => void mounted.reply(anchoredComment);
     window.__pullRequestLayout = { mounted, mountOptions, scope, calls, rpcState, workspaceAddress, workspace };
     await mounted.ready;
   }, { answer: opened.result, holdReads });
   await page.waitForSelector('[data-review-pr-status]');
   await page.waitForSelector('[data-review-path="changed.txt"]');
+  await openMore(page, hasTouch);
 }
 
 async function cachePartialMerge(page) {
@@ -223,7 +245,7 @@ for (const { label, width, hasTouch } of viewports) {
     await withLayoutPage(async ({ page, basePath }) => {
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await mountPullRequest(page, basePath);
+      await mountPullRequest(page, basePath, { hasTouch });
       expect(await page.locator(".task-page-title").count()).toBe(1);
       expect(await page.locator(".task-page-title").textContent()).toBe(opened.result.task.title);
       expect(await page.locator('[data-review-pr-status]').textContent()).toContain("Open");
@@ -241,14 +263,16 @@ for (const { label, width, hasTouch } of viewports) {
       await page.locator(".task-page-head").scrollIntoViewIfNeeded();
       await captureLayout(page, `task-pr-open-${label}.png`);
 
-      await activate(page, '[data-review-path="changed.txt"] [data-review-expand]', hasTouch);
-      await page.waitForSelector('[data-review-comment][data-side="new"][data-line="1"]');
+      await closeMore(page, hasTouch);
+      const expand = '[data-review-path="changed.txt"] [data-review-expand]';
+      if (await page.locator(expand).getAttribute("aria-expanded") === "false") await activate(page, expand, hasTouch);
+      await page.waitForSelector('[data-review-path="changed.txt"] tr[data-side="new"][data-new-line="1"]');
       const fileName = await page.locator('[data-review-path="changed.txt"] [data-review-expand]').boundingBox();
       expect(fileName.height).toBeLessThanOrEqual(48);
-      await activate(page, '[data-review-comment][data-side="new"][data-line="1"]', hasTouch);
-      const feedback = page.locator("#task-review-feedback-body");
+      await activate(page, '[data-review-reply="reviewed-line"]', hasTouch);
+      const feedback = page.locator("[data-review-inline-composer] textarea");
       await feedback.fill("Keep this feedback attached to the snapshot I reviewed.");
-      await page.locator('[data-review-opinion]').selectOption("request_changes");
+      await page.waitForFunction(() => document.querySelector("[data-review-draft]")?.textContent.includes("Keep this feedback attached to the snapshot I reviewed."));
       await feedback.focus();
       await feedback.evaluate((field) => {
         field.setSelectionRange(10, 18);
@@ -257,11 +281,14 @@ for (const { label, width, hasTouch } of viewports) {
       await publishNewerSnapshot(page);
       await page.waitForSelector('[data-review-newer-snapshot]');
       expect(await page.locator('[data-review-newer-snapshot]').textContent()).toBe(
-        "A newer snapshot arrived while you were reviewing. Review the latest snapshot before merging.",
+        "Revision 2 is ready",
       );
       expect(await page.locator('[data-review-snapshot]').inputValue()).toBe("snapshot-1");
-      expect(await page.locator('[data-review-target]').textContent()).toContain("changed.txt · new line 1");
-      expect(await page.locator('[data-review-opinion]').inputValue()).toBe("request_changes");
+      expect(await page.locator("[data-review-inline-composer] label").textContent()).toContain("changed.txt · new line 1");
+      expect(await page.locator("[data-review-draft]").textContent()).toContain("changed.txt:1");
+      expect(await page.locator("[data-review-draft-revision]").textContent()).toContain("earlier revision 1");
+      expect(await page.locator('[data-review-verdict="request_changes"]').isDisabled()).toBe(true);
+      expect(await page.locator('[data-review-verdict="approve"]').isDisabled()).toBe(true);
       expect(await feedback.evaluate((field) => ({
         retained: field === window.__historicalFeedback, focused: document.activeElement === field,
         start: field.selectionStart, end: field.selectionEnd, body: field.value,
@@ -272,7 +299,8 @@ for (const { label, width, hasTouch } of viewports) {
       await page.locator(".task-page-head").scrollIntoViewIfNeeded();
       await captureLayout(page, `task-pr-newer-snapshot-${label}.png`);
 
-      const closeSummary = page.locator("details").filter({ has: page.locator('[data-review-close]') }).locator(":scope > summary");
+      await openMore(page, hasTouch);
+      const closeSummary = page.locator("[data-review-close-sheet] > summary");
       if (hasTouch) await closeSummary.tap();
       else { await closeSummary.focus(); await closeSummary.press("Enter"); }
       const closeDescription = page.locator('[data-review-close-description]');
@@ -333,7 +361,7 @@ for (const { label, width, hasTouch } of viewports) {
     await withLayoutPage(async ({ page, basePath }) => {
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await mountPullRequest(page, basePath, { holdReads: false });
+      await mountPullRequest(page, basePath, { holdReads: false, hasTouch });
       await cachePartialMerge(page);
       const result = page.locator('[data-pr-merge-result="merge-review-1"]');
       const retry = '[data-pr-merge-retry="merge-review-1"]';
@@ -392,13 +420,13 @@ for (const { label, width, hasTouch } of viewports) {
     await withLayoutPage(async ({ page, basePath }) => {
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await mountPullRequest(page, basePath);
+      await mountPullRequest(page, basePath, { hasTouch });
       const fixture = await cacheHistoricalPublication(page);
       await page.waitForSelector('[data-review-snapshot] option[value="snapshot-2"]', { state: "attached" });
       await page.locator('[data-review-snapshot]').selectOption("snapshot-2");
       await page.waitForFunction(() => document.querySelector('[data-pr-merge-submit]')?.disabled === false);
       await activate(page, '[data-pr-merge-sheet] > summary', hasTouch);
-      expect(await page.locator('[data-pr-merge-submit]').textContent()).toBe("Merge PR");
+      expect(await page.locator('[data-pr-merge-submit]').textContent()).toBe("Merge review");
       expect(await page.locator('[data-pr-merge-branch="dir-api"]').inputValue()).toBe("release/snapshot-two-api");
       expect(await page.locator('[data-pr-merge-push="dir-ui"]').isChecked()).toBe(false);
       expect(await page.locator('[data-pr-merge-source="dir-api"]').textContent()).toContain(fixture.heads["dir-api"]);
@@ -421,7 +449,7 @@ for (const { label, width, hasTouch } of viewports) {
       delete historicalRequest.task_id;
       expect(saved.historical).toMatchObject({ submitted: historicalRequest, submittedRequestId: "merge-review-1" });
       expect(await page.locator('[data-review-snapshot]').inputValue()).toBe("snapshot-2");
-      expect(await page.locator('[data-pr-merge-submit]').textContent()).toBe("Merge PR");
+      expect(await page.locator('[data-pr-merge-submit]').textContent()).toBe("Merge review");
       expect(await page.locator('[data-pr-merge-result="merge-review-1"]').textContent()).toContain("push origin/release/historical-api: succeeded");
 
       const duplicate = await page.evaluate(async () => {
@@ -446,9 +474,10 @@ for (const { label, width, hasTouch } of viewports) {
       });
       await page.waitForFunction(() => document.querySelector('[data-pr-merge-submit]')?.disabled === false);
       expect(await page.locator('[data-review-snapshot]').inputValue()).toBe("snapshot-2");
-      expect(await page.locator('[data-pr-merge-submit]').textContent()).toBe("Merge PR");
+      expect(await page.locator('[data-pr-merge-submit]').textContent()).toBe("Merge review");
       expect(await page.evaluate(() => window.__pullRequestLayout.calls.filter(({ method }) => method === "tasks.review.merge").length)).toBe(1);
       expect((await readMergeDrafts(page)).current).toEqual(fixture.currentDraft);
+      await openMore(page, hasTouch);
       await activate(page, '[data-pr-merge-sheet] > summary', hasTouch);
       expect(await page.locator('[data-pr-merge-push="dir-api"]').isChecked()).toBe(true);
       expect(await page.locator('[data-pr-merge-branch="dir-api"]').inputValue()).toBe("release/snapshot-two-api");

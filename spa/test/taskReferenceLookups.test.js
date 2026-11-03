@@ -315,3 +315,22 @@ it("does not hash oversized DOM comment IDs or tokenize oversized class attribut
     expect(lookupCalls()).toHaveLength(0);
   } finally { hashes.mockRestore(); classTokens.mockRestore(); }
 });
+
+it("admits review-file references in the same fixed four-point budget without a full catalogue", async () => {
+  runtime = await import("../src/core/taskReferenceLookups.js");
+  const body = "[[#42:r3:all:src/a.js#old-L7]] #43 [[#44:r1:all:dir:src/b.js]] #45 #46";
+  const follower = mounted(body);
+  await follower.update("adopted-content");
+  expect(lookupCalls().map(([, params]) => params.number)).toEqual([42, 43, 44, 45]);
+  expect(await tracker.readTasksRecord(scope.deviceId, scope.projectId)).toBeNull();
+  await cache.writeCached({ deviceId: scope.deviceId, entityId: scope.projectId, kind: "task-review", sub: "task-42" },
+    { review: { snapshots: [{ number: 3, directories: [{ id: "review-dir" }] }] } });
+  const resolve = () => index.referenceResolver({ place: scope }).review(42, 3, undefined, "src/a.js");
+  await vi.waitFor(() => expect(resolve()).toMatchObject({ taskId: "task-42", directoryId: "review-dir" }));
+  await follower.update("same-content");
+  expect(lookupCalls()).toHaveLength(4);
+  live.context.rpc.mockImplementation(async (_method, params) => result(params.number, params.number !== 42));
+  await follower.refresh();
+  await vi.waitFor(() => expect(resolve()).toBeNull());
+  expect(lookupCalls().map(([, params]) => params.number)).toEqual([42, 43, 44, 45, 42, 43, 44, 45]);
+});

@@ -18,3 +18,20 @@
   .task-review-file-head [data-review-expand] { flex-basis: 100%; }
   .task-review-file-head button { min-height: 36px; }
 }
+.task-review-changes-layout { display: grid; grid-template-columns: minmax(120px, 24%) minmax(0, 1fr); align-items: start; }
+.task-review-changed-tree { position: sticky; top: 0; display: flex; flex-direction: column; min-width: 0; max-height: 65vh; overflow: auto; padding: 4px; border-right: 1px solid var(--line); }
+.task-review-changed-tree button { display: flex; align-items: center; gap: 6px; text-align: left; padding: 8px 5px; cursor: pointer; border-radius: 4px; }
+.task-review-changed-tree button[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); }
+.task-review-changed-tree span { min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: 11px; }
+.task-review-changed-tree small { margin-left: auto; white-space: nowrap; color: var(--ink2); }
+.task-review-stack { min-width: 0; }
+@media (max-width: 640px) {
+  .task-review-changes-layout { display: block; }
+  .task-review-changed-tree { position: static; max-height: 160px; border-right: 0; border-bottom: 1px solid var(--line); }
+}
+.task-review-changed-tree [role="group"] { padding-left: 9px; }
+.task-review-changed-tree [role="group"] button { width: 100%; }
+.task-review-changed-tree [data-review-tree-directory] { padding: 7px 4px 3px; font-size: 11px; color: var(--ink2); font-family: var(--mono); }
+.task-review-diff-scroll td.code { padding-inline-start: 8px; }
+.task-review-changed-tree button { background: transparent; color: var(--ink); border: 0; }
+.task-review-changed-tree button:hover { background: var(--hover); }

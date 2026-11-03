@@ -101,10 +101,10 @@ class DiscoveryQualification:
         await self.complete("reused_challenge_second_use", reused, proof)
 
 
-def load_fixture(path):
+def load_fixture(path, scratch=SCRATCH):
     fixture = json.loads(path.read_text())
     run_dir = Path(fixture["runDir"]).resolve(strict=True)
-    if not run_dir.is_relative_to(SCRATCH.resolve()) or not run_dir.name.startswith("run-"):
+    if not run_dir.is_relative_to(scratch.resolve()) or not run_dir.name.startswith("run-"):
         raise ValueError("Discovery qualification may alter TTL only in a disposable task run directory")
     for name in ["hostedOrigin", "bridgeOrigin"]:
         parsed = urlsplit(fixture[name])
@@ -136,10 +136,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture", type=Path, default=os.environ.get("BUILD_HTTP_QUALIFICATION_FIXTURE"))
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument("--scratch-task", type=int, choices=[976, 977], default=976)
     args = parser.parse_args()
     if args.fixture is None:
         parser.error("--fixture or BUILD_HTTP_QUALIFICATION_FIXTURE is required")
-    fixture, run_dir = load_fixture(Path(args.fixture))
+    scratch = Path("/home/zech/Projects/.agent-scratch") / str(args.scratch_task)
+    fixture, run_dir = load_fixture(Path(args.fixture), scratch)
     sys.path.insert(0, str(args.repo.resolve() / "skriftapp"))
     os.chdir(run_dir)
     os.environ.update(SKRIFT_ENV="dev", HOME=str(run_dir / "home"), TMPDIR=str(run_dir / "tmp"))

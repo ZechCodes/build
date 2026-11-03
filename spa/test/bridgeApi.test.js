@@ -102,7 +102,7 @@ describe("adapter selection", () => {
       // whether this bridge carries the one it is about to name, because every
       // kind in one subscribe shares that call's fate.
       changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"], projectSources: false },
-      git: { projectSources: false },
+      git: { projectSources: false, showPaths: false },
       term: { projectSources: false },
       fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
       requests: { priority: true },
@@ -110,7 +110,7 @@ describe("adapter selection", () => {
       errors: { codes: true },
       diffs: { perFile: true },
       bodies: { pages: false, mediaRawPages: false },
-      reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
+      reviews: { commits: false, commit: false, since: false, anchorCommit: false, get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
       tasks: { attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, listSummaries: false, filterChoices: false, counts: false, lookup: false, listWatched: false, listAttention: false, listLinkedWorkspace: false, listTracked: false, listReviewMode: false, listOrder: false, listReadiness: false, listExcludeAssignee: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
       compaction: { harnessThresholds: false },
@@ -535,4 +535,12 @@ it("keeps terminal source scopes disabled without a compatible named greeting", 
   ]) {
     expect(v1.capabilitiesOf(greeting).term.projectSources).toBe(false);
   }
+});
+
+
+it("negotiates commit path filtering independently of project source support", () => {
+  const current = v1.capabilitiesOf({ api_version: "3.28.0", capabilities: ["git.showPaths"] });
+  expect(current.git.showPaths).toBe(true);
+  expect(current.git.projectSources).toBe(false);
+  expect(v1.capabilitiesOf({ api_version: "3.28.0", capabilities: ["git.projectSources"] }).git.showPaths).toBe(false);
 });

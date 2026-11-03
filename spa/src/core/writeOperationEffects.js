@@ -8,7 +8,7 @@ import { provisionalThreadItem } from "./thread.js";
 const paramsOf = (record) => record.request?.params || record.params || {};
 const methodOf = (record) => record.request?.method || record.method;
 const resourceFields = ["task_id", "comment_id", "workspace_id", "agent_id", "conversation_id", "thread_id", "message_id"];
-const commentFields = ["author", "attachments", "refs", "mentions_user", "reply_to", "author_context"];
+const commentFields = ["author", "attachments", "refs", "mentions_user", "reply_to", "author_context", "anchor", "opinion"];
 const fieldsOf = (source, fields) => Object.fromEntries(fields.filter((key) => source?.[key] !== undefined).map((key) => [key, source[key]]));
 const wireEffects = (frame) => Array.isArray(frame.result?.overlay) ? frame.result.overlay : [];
 const localTimestamp = (record) => new Date(record.createdAt ?? Date.now()).toISOString();

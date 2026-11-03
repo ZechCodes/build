@@ -33,6 +33,7 @@ it("keeps explicit snapshot-mode reviews editable on a PR-capable device", () =>
   mount({ mutate: vi.fn() }, { review: { ...review, mode: "snapshot" },
     support: { snapshot: true, complete: true, pullRequests: true, open: true } });
   expect(document.querySelector('[data-review-save]')).not.toBeNull();
+  expect(document.querySelector('[data-review-update]').textContent).toBe("Save revision");
   expect(document.querySelector('[data-review-complete]')).not.toBeNull();
   expect(document.querySelector('[data-review-read-only]')).toBeNull();
 });

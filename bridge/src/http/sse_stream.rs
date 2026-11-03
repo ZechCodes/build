@@ -16,6 +16,20 @@ type Check = Arc<dyn Fn() -> bool + Send + Sync>;
 type Deadline = Arc<dyn Fn() -> Instant + Send + Sync>;
 type Close = Arc<dyn Fn() + Send + Sync>;
 
+pub struct StreamTiming {
+    pub heartbeat: std::time::Duration,
+    pub authority_recheck: std::time::Duration,
+}
+
+impl Default for StreamTiming {
+    fn default() -> Self {
+        Self {
+            heartbeat: super::sse::HEARTBEAT_INTERVAL,
+            authority_recheck: super::listener::AUTHORITY_RECHECK,
+        }
+    }
+}
+
 pub fn application_body(
     sender: SseSender,
     receiver: SseReceiver,
@@ -23,10 +37,16 @@ pub fn application_body(
     check: Check,
     deadline: Deadline,
     close: Close,
-    heartbeat_every: std::time::Duration,
+    timing: StreamTiming,
 ) -> Body {
+    let heartbeat_every = timing.heartbeat;
     let mut heartbeat = tokio::time::interval_at(Instant::now() + heartbeat_every, heartbeat_every);
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut recheck = tokio::time::interval_at(
+        Instant::now() + timing.authority_recheck,
+        timing.authority_recheck,
+    );
+    recheck.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let state = StreamState {
         sender,
         receiver,
@@ -35,6 +55,7 @@ pub fn application_body(
         deadline,
         close,
         heartbeat,
+        recheck,
         finished: false,
     };
     Body::from_stream(stream::unfold(state, |mut state| async move {
@@ -50,6 +71,7 @@ struct StreamState {
     deadline: Deadline,
     close: Close,
     heartbeat: Interval,
+    recheck: Interval,
     finished: bool,
 }
 
@@ -77,6 +99,7 @@ impl StreamState {
                     return Some(Ok(Bytes::from_owner(StreamBytes {lease,_reservation:self.reservation.clone()})));
                 }
                 _ = self.heartbeat.tick() => { let _ = self.sender.try_send(SseEvent::heartbeat()); }
+                _ = self.recheck.tick() => {}
                 _ = tokio::time::sleep_until((self.deadline)()) => {}
             }
         }

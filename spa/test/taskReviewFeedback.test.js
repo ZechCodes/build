@@ -4,13 +4,12 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { mountTaskReviewFeedback, openTaskReviewer } from "../src/core/taskReviewFeedback.js";
 import { timelineRows } from "../src/core/trackerTimeline.js";
 import { timelineHtml } from "../src/core/trackerTaskRender.js";
-import { writeTaskRecord } from "../src/core/trackerCache.js";
+
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
 const anchor = { snapshot_id: "snap-1", directory_id: "dir:1", path: "a<&.js", side: "new", line: 12 };
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const until = async (ready) => {
   for (let attempt = 0; attempt < 40 && !ready(); attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -25,88 +24,19 @@ const mount = (host, callRpc = vi.fn(async () => ({})), over = {}) => mountTaskR
 beforeEach(() => { document.body.innerHTML = ""; });
 
 describe("task review feedback", () => {
-  it("restores a reply label with its cached parent author and excerpt, and follows cache changes", async () => {
-    const taskId = "reply-label";
-    const parent = { type: "comment", id: "tc-parent", author: { kind: "agent", agent_id: "agent-one" },
-      body: "**Check** `the patch`", created_at: "2026-10-07T10:00:00Z" };
-    const task = { id: taskId, identities: { "agent-one": { name: "Ada" } } };
-    await writeTaskRecord("device", "project", taskId, { task, timeline: [parent] });
-    const host = document.createElement("div");
-    document.body.append(host);
-    const callRpc = vi.fn();
-    const feedback = mount(host, callRpc, { taskId });
-    feedback.comment(null, parent.id);
-    await until(() => host.querySelector('[data-review-target]').textContent.includes("Replying to Ada"));
-    expect(host.querySelector('[data-review-target]').textContent).toContain("Check the patch");
-    expect(host.querySelector('[data-review-target]').textContent).not.toContain(parent.id);
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    feedback.dispose();
-    const restored = mount(host, callRpc, { taskId });
-    await until(() => host.querySelector('[data-review-target]').textContent.includes("Replying to Ada"));
-    await writeTaskRecord("device", "project", taskId, { task, timeline: [{ ...parent, body: "New excerpt" }] });
-    await until(() => host.querySelector('[data-review-target]').textContent.includes("New excerpt"));
-    await writeTaskRecord("device", "project", taskId, { task, timeline: [] });
-    await until(() => host.querySelector('[data-review-target]').textContent === "Replying to a comment");
-    expect(callRpc).not.toHaveBeenCalled();
-    restored.dispose();
-  });
-
-  it("sends an anchored opinion and reply through the task comment verb", async () => {
-    const host = document.createElement("div");
-    document.body.append(host);
-    const callRpc = vi.fn(async () => ({}));
-    const feedback = mount(host, callRpc);
-    feedback.comment(anchor, "tc-1");
-    host.querySelector("textarea").value = "Please adjust this";
-    host.querySelector("textarea").dispatchEvent(new Event("input"));
-    host.querySelector("select").value = "request_changes";
-    host.querySelector("select").dispatchEvent(new Event("change"));
-    host.querySelector("form").dispatchEvent(new Event("submit", { cancelable: true }));
-    await until(() => callRpc.mock.calls.length === 1);
-    expect(callRpc).toHaveBeenCalledWith("tasks.comment", {
-      task_id: "task", body: "Please adjust this", anchor, reply_to: "tc-1",
-      opinion: { snapshot_id: "snap-1", verdict: "request_changes" },
-    });
-    await until(() => host.querySelector("textarea").value === "");
-    feedback.dispose();
-  });
-
-  it("keeps a newer edit when a sent comment resolves, and restores it after remount", async () => {
-    const host = document.createElement("div");
-    document.body.append(host);
-    let finish;
-    const callRpc = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
-    const feedback = mount(host, callRpc);
-    await flush();
-    const field = host.querySelector("textarea");
-    field.value = "sent";
-    field.dispatchEvent(new Event("input"));
-    host.querySelector("form").dispatchEvent(new Event("submit", { cancelable: true }));
-    await until(() => callRpc.mock.calls.length === 1);
-    field.value = "new thought";
-    field.dispatchEvent(new Event("input"));
-    finish({});
-    await flush();
-    expect(field.value).toBe("new thought");
-    feedback.dispose();
-    const next = mount(host);
-    await until(() => host.querySelector("textarea").value === "new thought");
-    next.dispose();
-  });
-
   it("renders old anchor metadata and a reply action after a review is replaced", () => {
     const rows = timelineRows([{ type: "comment", id: "tc-2", body: "old", author: { kind: "user" },
       anchor, opinion: { snapshot_id: "snap-1", verdict: "approve" }, reply_to: "tc-1" }]);
     const html = timelineHtml(rows, { reviewSnapshots: [{ id: "snap-1", number: 2 }] });
-    expect(html).toContain("Snapshot 2");
-    expect(html).not.toContain("Snapshot snap-1");
+    expect(html).toContain("Revision 2");
+    expect(html).not.toContain("Revision snap-1");
     expect(html).toContain("Approved");
     expect(html).toContain("data-review-anchor=");
     expect(html).toContain("data-review-reply=\"tc-2\"");
     expect(html).toContain("a&lt;&amp;.js");
     const withoutMetadata = timelineHtml(rows, { reviewSnapshots: [{ id: "new-snapshot", number: 3 }] });
-    expect(withoutMetadata).toContain("Earlier snapshot");
-    expect(withoutMetadata).not.toContain("Snapshot snap-1");
+    expect(withoutMetadata).toContain("Earlier revision");
+    expect(withoutMetadata).not.toContain("Revision snap-1");
   });
 
   it("opens the ordinary assignee picker with the snapshot in its note", async () => {
@@ -116,47 +46,134 @@ describe("task review feedback", () => {
       feed: { items: [], workspaces: [] }, projectKey: "device|project",
       callRpc: vi.fn(),
     });
-    expect(document.querySelector("#task-assign-note").value).toContain("snapshot 2 of task #7");
+    expect(document.querySelector("#task-assign-note").value).toContain("revision 2 of task #7");
     await picker.close();
   });
 
-  it("keeps the caret when typing in the middle of a draft", () => {
+  it("collects inline comments in a tray, edits, jumps and removes them", async () => {
     const host = document.createElement("div");
-    document.body.append(host);
-    const feedback = mount(host);
-    const field = host.querySelector("textarea");
-    field.value = "ab";
-    field.setSelectionRange(1, 1);
+    const verdictHost = document.createElement("div");
+    const inline = document.createElement("div");
+    document.body.append(host, verdictHost, inline);
+    const onJump = vi.fn();
+    const feedback = mount(host, vi.fn(), { taskId: "tray", verdictHost, onJump, placeComposer: (form) => { inline.append(form); return true; } });
+    await feedback.ready;
+    await feedback.comment(anchor);
+    const form = inline.querySelector('[data-review-inline-composer]');
+    expect(form).not.toBeNull();
+    const field = form.querySelector("textarea");
+    field.value = "Review this line";
     field.dispatchEvent(new Event("input"));
-    expect(field.selectionStart).toBe(1);
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await until(() => host.querySelectorAll('[data-review-draft]').length === 1);
+    expect(host.textContent).toContain("Review this line");
+    host.querySelector('[data-review-draft-jump]').click();
+    expect(onJump).toHaveBeenCalledWith(anchor, "changes");
+    host.querySelector('[data-review-draft-edit]').click();
+    await until(() => inline.querySelector('textarea')?.value === "Review this line");
+    const edit = inline.querySelector('textarea');
+    edit.value = "Edited"; edit.dispatchEvent(new Event("input"));
+    await until(() => host.textContent.includes("Edited"));
+    host.querySelector('[data-review-draft-remove]').click();
+    await until(() => host.querySelectorAll('[data-review-draft]').length === 0);
     feedback.dispose();
   });
 
-  it("does not clear another mount's draft when the first comment succeeds", async () => {
-    const firstHost = document.createElement("div");
-    const secondHost = document.createElement("div");
-    document.body.append(firstHost, secondHost);
-    let finish;
-    const callRpc = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
-    const options = { taskId: "two-mounts" };
-    const first = mount(firstHost, callRpc, options);
-    const second = mount(secondHost, vi.fn(), options);
-    await flush();
-    const firstField = firstHost.querySelector("textarea");
-    firstField.value = "sent";
-    firstField.dispatchEvent(new Event("input"));
-    firstHost.querySelector("form").dispatchEvent(new Event("submit", { cancelable: true }));
-    await until(() => callRpc.mock.calls.length === 1);
-    const secondField = secondHost.querySelector("textarea");
-    secondField.value = "another tab's draft";
-    secondField.dispatchEvent(new Event("input"));
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    finish({});
-    await flush();
+  it("restores pending comments after remount and keeps historical verdicts disabled", async () => {
+    const host = document.createElement('div');
+    const bar = document.createElement('div');
+    const inline = document.createElement('div');
+    document.body.append(host, bar, inline);
+    const options = { taskId: "reload", verdictHost: bar, latestSnapshotId: () => "newer", placeComposer: (form) => { inline.append(form); return true; } };
+    const first = mount(host, vi.fn(), options);
+    await first.ready;
+    await first.comment(anchor);
+    const field = inline.querySelector('textarea');
+    field.value = 'Retained'; field.dispatchEvent(new Event('input'));
+    await until(() => host.textContent.includes('Retained'));
     first.dispose();
-    second.dispose();
-    const remount = mount(secondHost, vi.fn(), options);
-    await until(() => secondHost.querySelector("textarea").value === "another tab's draft");
-    remount.dispose();
+    const next = mount(host, vi.fn(), options);
+    await next.ready;
+    expect(host.textContent).toContain('Retained');
+    expect(host.textContent).toContain('earlier revision');
+    expect([...bar.querySelectorAll('[data-review-verdict]')].every((button) => button.disabled)).toBe(true);
+    expect(bar.querySelectorAll('[data-review-verdict]').length).toBe(2);
+    expect(host.querySelector('select')).toBeNull();
+    next.dispose();
+  });
+
+  it("holds a refused batch in the tray and restores drafts for correction", async () => {
+    const host = document.createElement('div'); const bar = document.createElement('div'); const inline = document.createElement('div');
+    document.body.append(host, bar, inline);
+    const rows = new Map(); let change;
+    const service = { subscribe: (fn) => { change = fn; return () => {}; }, readOperations: () => [...rows.values()],
+      enqueueBatch: vi.fn(async (inputs) => { inputs.forEach((row) => rows.set(row.operationId, { ...row, state: 'queued', acknowledged: false })); return inputs.map((row) => row.operationId); }),
+      cancelUnsentBatch: vi.fn(async () => {}) };
+    const feedback = mount(host, vi.fn(), { taskId: 'refused', writeOperations: service, verdictHost: bar, placeComposer: (form) => { inline.append(form); return true; } });
+    await feedback.ready; await feedback.comment(anchor);
+    const field = inline.querySelector('textarea'); field.value = 'Fix this'; field.dispatchEvent(new Event('input'));
+    await until(() => host.querySelectorAll('[data-review-draft]').length === 1);
+    inline.querySelector('form').dispatchEvent(new Event('submit', { cancelable: true }));
+    host.querySelector('[data-review-comment-batch]').click();
+    await until(() => rows.size === 1);
+    const row = [...rows.values()][0];
+    rows.set(row.operationId, { ...row, acknowledged: true, state: 'failed', effect: 'unapplied', error: { message: 'That line is unavailable' } }); change();
+    await until(() => host.textContent.includes('That line is unavailable'));
+    expect(host.querySelector('[data-review-draft-edit]').disabled).toBe(true);
+    host.querySelector('[data-review-recover]').click();
+    await until(() => !host.querySelector('[data-review-draft-edit]').disabled);
+    host.querySelector('[data-review-draft-remove]').click();
+    await until(() => host.querySelectorAll('[data-review-draft]').length === 0);
+    feedback.dispose();
+  });
+
+  it("offers retry when durable enqueue fails without discarding the saved review", async () => {
+    const host = document.createElement('div'); const bar = document.createElement('div'); const inline = document.createElement('div');
+    document.body.append(host, bar, inline);
+    const enqueueBatch = vi.fn().mockRejectedValueOnce(new Error('Local storage is full')).mockResolvedValue([]);
+    const service = { subscribe: () => () => {}, readOperations: () => [], enqueueBatch };
+    const feedback = mount(host, vi.fn(), { taskId: 'enqueue-error', writeOperations: service, verdictHost: bar, placeComposer: (form) => { inline.append(form); return true; } });
+    await feedback.ready; await feedback.comment(anchor);
+    const field = inline.querySelector('textarea'); field.value = 'Keep this draft'; field.dispatchEvent(new Event('input'));
+    await until(() => host.querySelectorAll('[data-review-draft]').length === 1);
+    inline.querySelector('form').dispatchEvent(new Event('submit', { cancelable: true }));
+    host.querySelector('[data-review-comment-batch]').click();
+    await until(() => host.textContent.includes('Local storage is full'));
+    expect(host.querySelector('[data-review-retry]').hidden).toBe(false);
+    expect(host.querySelector('[data-review-recover]').hidden).toBe(true);
+    host.querySelector('[data-review-retry]').click();
+    await until(() => enqueueBatch.mock.calls.length === 2);
+    expect(enqueueBatch.mock.calls[1][0]).toEqual(enqueueBatch.mock.calls[0][0]);
+    expect(host.textContent).toContain('Keep this draft');
+    feedback.dispose();
+  });
+
+  it("posts a summary-only Comment without a verdict", async () => {
+    const host = document.createElement('div'); document.body.append(host);
+    const callRpc = vi.fn(async () => ({})); const feedback = mount(host, callRpc, { taskId: 'summary-only' });
+    await feedback.ready;
+    const field = host.querySelector('[data-review-summary]');
+    field.value = 'A general review note'; field.dispatchEvent(new Event('input'));
+    await until(() => !host.querySelector('[data-review-comment-batch]').disabled);
+    host.querySelector('[data-review-comment-batch]').click();
+    await until(() => callRpc.mock.calls.length === 1);
+    expect(callRpc.mock.calls[0][1]).toEqual({ task_id: 'summary-only', body: 'A general review note' });
+    feedback.dispose();
+  });
+
+  it.each(['approve', 'request_changes'])("confirms %s with what happens next and submits pending comments", async (verdict) => {
+    const host = document.createElement('div');
+    const bar = document.createElement('div');
+    document.body.append(host, bar);
+    const callRpc = vi.fn(async () => ({}));
+    const feedback = mount(host, callRpc, { taskId: verdict, verdictHost: bar });
+    await feedback.ready;
+    bar.querySelector(`[data-review-verdict="${verdict}"]`).click();
+    await until(() => Boolean(document.querySelector('#confirm-scrim')));
+    expect(document.querySelector('#confirm-scrim').textContent).toContain('The author is told and continues');
+    document.querySelector('[data-confirm-ok]').click();
+    await until(() => callRpc.mock.calls.length === 1);
+    expect(callRpc.mock.calls[0][1]).toMatchObject({ opinion: { snapshot_id: 'snap-1', verdict } });
+    feedback.dispose();
   });
 });

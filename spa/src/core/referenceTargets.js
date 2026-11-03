@@ -19,6 +19,7 @@
 import { workspaceDisplayName } from "./workspaceModel.js";
 import { workspaceAgents, assignableAgents } from "./trackerAssignee.js";
 import { deviceKey } from "./deviceKey.js";
+import { resolveReviewFileReference } from "./reviewFileReference.js";
 
 /** The id a project's own agent is minted under — it stands in no workspace,
  *  so it is reached on the project's own page (core/markdownLinks.js). */
@@ -100,15 +101,15 @@ function projectAgentsOf(feed) {
 const projectRostersOf = (feed) => new Map((feed?.projects || []).filter((project) => project.projectRoster)
   .map((project) => [project.projectKey, project.projectRoster]));
 
-const taskSources = ({ tasks = {}, taskLookups = {}, taskRowReads = {} }) => ({ tasks, taskLookups, taskRowReads });
+const taskSources = ({ tasks = {}, taskLookups = {}, taskRowReads = {} }) => ({ tasks: tasks || {}, taskLookups, taskRowReads });
 
-export function referenceTables({ feed = null, ...taskOptions } = {}) {
+export function referenceTables({ feed = null, reviews = {}, ...taskOptions } = {}) {
   const workspaces = (feed?.workspaces || []).filter((workspace) => workspace.projectKey).map(workspaceEntry);
   const projects = (feed?.projects || []).filter((project) => project.projectKey).map((project) => ({
     ...placeOfKey(project.projectKey), projectKey: project.projectKey, name: String(project.name || project.id || ""),
   }));
   return { workspaces, projects, agents: agentsOf(feed, workspaces), projectAgents: projectAgentsOf(feed), projectRosters: projectRostersOf(feed),
-    ...taskSources(taskOptions), held: Boolean(feed) };
+    ...taskSources(taskOptions), reviews, held: Boolean(feed) };
 }
 
 /** The one row a reader meant, out of those that answer to what they wrote:
@@ -210,6 +211,19 @@ function taskTarget(tables, here, number) {
 const taskPlace = (here, found) => found?.id
   ? { deviceId: here.deviceId, projectId: here.projectId, taskId: found.id, title: found.title || "" } : undefined;
 
+// Keep the raw reference in the URL until the saved revision can settle its
+// directory boundary. The page uses this same mapping when metadata arrives.
+function reviewTarget(tables, here, number, revision, directoryId, path = "") {
+  const task = taskTarget(tables, here, number);
+  if (!task) return task;
+  const review = tables.reviews[here.projectKey]?.[task.taskId];
+  const fileRef = directoryId ? `${directoryId}:${path}` : path;
+  const resolved = resolveReviewFileReference(review, { revision, fileRef });
+  const place = resolved.pending || resolved.missing ? { fileRef }
+    : { directoryId: resolved.selection.directoryId, path: resolved.selection.path };
+  return { ...task, ...place };
+}
+
 /**
  * The resolver core/markdownLinks.js asks, over the tables above, for a reader
  * standing at `place` (`{ deviceId, projectId }`, or nothing).
@@ -225,6 +239,7 @@ export function resolverFor(tables, { place = null, identities = {} } = {}) {
   const heldOrUnknown = (answer) => (tables.held ? answer : undefined);
   return {
     task: (number) => taskTarget(tables, here, number),
+    review: (number, revision, directoryId, path) => reviewTarget(tables, here, number, revision, directoryId, path),
     workspace: (said) => heldOrUnknown(workspaceAt(tables, String(said || "").trim(), here?.projectKey)),
     project: (said) => heldOrUnknown(nearest(answering(tables.projects, String(said || "").trim(), "projectId"), here?.projectKey)),
     agent(id) {

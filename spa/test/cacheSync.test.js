@@ -919,6 +919,21 @@ describe("the two bodies that never ride a push", () => {
     expect((await read("run-1", "patch", "h1")).value.patch).toBe("diff --git");
   });
 
+  it("retains filtered patches while their commit is unpushed and drops them with that commit", async () => {
+    const sub = JSON.stringify(["h1", "src/a:one.js"]);
+    const head = { deviceId: "dev-1", entityId: "run-1", kind: "patch", sub };
+    const pages = await import("../src/core/bodyPages.js");
+    await pages.writeBodyPages(head, pages.textPagesOf("diff --git a/x b/x\n+one\n", { of: "h1", bytes: 8 }));
+    await cache.writeCached(head, { hash: "h1", paged: true });
+    script["git.log"] = () => ahead(["h1"]);
+    await boot([branchItem()]);
+    expect((await read("run-1", "patch", sub))?.value.hash).toBe("h1");
+    script["git.log"] = () => ({ ...ahead([]), reset: true });
+    await sync.syncDevice("dev-1");
+    expect(await read("run-1", "patch", sub)).toBeUndefined();
+    expect((await pages.readBodyPages(head, "h1")).pages).toEqual([]);
+  });
+
   it("lets go of the patch of a commit that is no longer unpushed", async () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "gone" }, { hash: "gone" });
     await boot([branchItem()]);

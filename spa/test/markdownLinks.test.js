@@ -7,6 +7,7 @@
 import { describe, it, expect } from "vitest";
 
 import { expandReferences, plainReferences } from "../src/core/markdownLinks.js";
+import { referenceTables, resolverFor } from "../src/core/referenceTargets.js";
 import { hashFromRoute } from "../src/core/router.js";
 
 const WHERE = { deviceId: "dev-1", projectId: "p-1" };
@@ -217,5 +218,54 @@ describe("a reference in plain text", () => {
 
   it("leaves the text alone without a resolver", () => {
     expect(plainReferences("#42", null)).toBe("#42");
+  });
+});
+
+
+describe("links into a file diff", () => {
+  it("writes workspace commit file hrefs with old and new line targets", () => {
+    for (const [anchor, side] of [["L42", "new"], ["old-L9", "old"]]) {
+      const html = expandReferences(`[[fixes/skrift-core:commit:abcd:src/a.js#${anchor}]]`, links);
+      expect(href(html)).toBe(`#/device/dev-1/project/p-1/workspace/ws-2/directory/source-2/changes?commit=abcd&path=src%2Fa.js&side=${side}&line=${side === "old" ? 9 : 42}`);
+      expect(text(html)).toContain("src/a.js");
+    }
+  });
+
+  it("escapes a decoded review directory and keeps path percent characters literal", () => {
+    const reviewLinks = { ...links, review: (number, revision, directoryId) => ({ ...WHERE, taskId: "task-969", directoryId: decodeURIComponent(directoryId) }) };
+    const html = expandReferences("[[#969:r3:all:api%3Aserver:src/a%20b.js#L42]]", reviewLinks);
+    expect(href(html)).toContain("/all/api%3Aserver/src/a%2520b.js?side=new&line=42");
+  });
+
+  it("links known tasks while review metadata and the directory split remain uncached", () => {
+    const cached = resolverFor(referenceTables({ tasks: { "dev-1/p-1": [{ id: "task-969", number: 969 }] } }), { place: WHERE });
+    for (const fileRef of ["src/a.js", "workspace-uuid:root:src/a.js"]) {
+      const html = expandReferences(`[[#969:r3:all:${fileRef}#old-L42]]`, cached);
+      expect(href(html)).toBe(hashFromRoute({ ...WHERE, name: "trackerTask", taskId: "task-969", review: {
+        revision: 3, mode: "all", fileRef, side: "old", line: 42,
+      } }));
+      expect(href(html)).toContain("fileRef=");
+    }
+  });
+
+  it("renders an ordinary workspace:source directory id from saved metadata", () => {
+    const cached = resolverFor(referenceTables({
+      tasks: { "dev-1/p-1": [{ id: "task-969", number: 969 }] },
+      reviews: { "dev-1/p-1": { "task-969": { snapshots: [{ number: 3, directories: [{ id: "workspace-uuid:root" }] }] } } },
+    }), { place: WHERE });
+    const html = expandReferences("[[#969:r3:since:workspace-uuid:root:src/a:b.js#L42]]", cached);
+    expect(href(html)).toBe(hashFromRoute({ ...WHERE, name: "trackerTask", taskId: "task-969", review: {
+      revision: 3, mode: "since", directoryId: "workspace-uuid:root", path: "src/a:b.js", side: "new", line: 42,
+    } }));
+    expect(text(html)).toBe("#969 r3 · src/a:b.js:42");
+  });
+
+  it("writes review hrefs through the review route builder", () => {
+    const reviewLinks = { ...links, review: () => ({ ...WHERE, taskId: "task-969", directoryId: "dir-1" }) };
+    const html = expandReferences("[[#969:r3:commit/abcd:dir-1:src/a b.js#old-L42]]", reviewLinks);
+    expect(href(html)).toBe(hashFromRoute({ ...WHERE, name: "trackerTask", taskId: "task-969", review: {
+      revision: 3, mode: "commit", commit: "abcd", directoryId: "dir-1", path: "src/a b.js", side: "old", line: 42,
+    } }));
+    expect(html.match(/<a /g)).toHaveLength(1);
   });
 });

@@ -56,10 +56,16 @@ pub struct BufferReservation {
 struct FamilyStream {
     families: Arc<Mutex<HashMap<String, usize>>>,
     family: String,
+    #[cfg(test)]
+    drop_started: Option<std::sync::mpsc::Sender<()>>,
 }
 
 impl Drop for FamilyStream {
     fn drop(&mut self) {
+        #[cfg(test)]
+        if let Some(started) = self.drop_started.take() {
+            let _ = started.send(());
+        }
         let mut families = self.families.lock().unwrap();
         if let Some(count) = families.get_mut(&self.family) {
             *count -= 1;
@@ -129,6 +135,8 @@ impl BufferBudget {
             _family: Some(FamilyStream {
                 families: self.family_streams.clone(),
                 family: family.to_owned(),
+                #[cfg(test)]
+                drop_started: None,
             }),
         })
     }
@@ -151,4 +159,30 @@ fn acquire(
         .clone()
         .try_acquire_many_owned(count)
         .map_err(|_| QuotaExceeded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pass: even if family cleanup is blocked by another admission, a stream
+    /// cannot advertise returned pool bytes while its family count is stale.
+    /// The rendezvous makes the field drop order deterministic, without sleeps.
+    #[test]
+    fn buffer_reservation_releases_family_before_returning_pool_permits() {
+        let budget = BufferBudget::default();
+        let mut reservation = budget.reserve_stream("family").unwrap();
+        let held = budget.streams_available();
+        let (started, entered) = std::sync::mpsc::channel();
+        reservation._family.as_mut().unwrap().drop_started = Some(started);
+        let families = budget.family_streams.lock().unwrap();
+        let worker = std::thread::spawn(move || drop(reservation));
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        let pool_still_held = budget.streams_available() == held;
+        drop(families);
+        worker.join().unwrap();
+        assert!(pool_still_held, "pool bytes returned before family cleanup");
+        assert_eq!(budget.streams_available(), STREAM_BUFFER_BYTES);
+        assert!(budget.family_streams.lock().unwrap().is_empty());
+    }
 }

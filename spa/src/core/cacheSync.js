@@ -1,3 +1,4 @@
+import { commitPatchParams } from "./commitDiffTarget.js";
 // The cache's sync layer: the one reader of the wire.
 //
 // Every surface paints from the cache and subscribes to it. Nothing above this
@@ -1465,7 +1466,7 @@ async function warmPatch(context, entityId, scope, hash, priority) {
  *  kept in pages (#95) goes with them, as does its warming size marker. */
 async function dropStalePatches(context, entityId, held, wanted, kind = PATCH_RECORD_KIND) {
   if (!context.active()) return;
-  const stale = held.filter((hash) => !wanted.has(hash)).map((hash) => addressOf(context, entityId, kind, hash));
+  const stale = held.filter((hash) => !wanted.has(commitPatchParams(hash).hash)).map((hash) => addressOf(context, entityId, kind, hash));
   if (!stale.length) return;
   if (kind === PATCH_RECORD_KIND) for (const head of stale) await dropBodyPages(head);
   await deleteCached(stale);

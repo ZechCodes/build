@@ -16,12 +16,12 @@ use serde_json::{json, Value};
 
 use crate::renamed_ids::current_id;
 
-/// The one sentence every body a person reads ends with (#229): how to link a
+/// The shared note every body a person reads ends with (#229): how to link a
 /// Build thing in it. The shapes are spa/src/core/markdownRefs.js's; the
 /// full note with an example of each is templates/notes/link_markup.md.
 macro_rules! reference_shapes_note {
     () => {
-        " Link Build things by reference: `#42`, `#42/c/<comment-id>`, `@agent:<agent-id>`, `@workspace:<name or id>`, `@project:<name or id>`, `[[<workspace>:<path>#L10]]`, `[[<workspace>:commit:<sha>]]`."
+        " Link Build things by reference: `#42`, `#42/c/<comment-id>`, `@agent:<agent-id>`, `@workspace:<name or id>`, `@project:<name or id>`, `[[<workspace>:<path>#L10]]`, `[[<workspace>:commit:<sha>]]`, `[[<workspace>:commit:<sha>:<path>#L42]]` for a file’s diff in a workspace commit, `[[#<task>:r<N>:<range>:<dir>:<path>#L42]]` for a review diff. In diff links the anchor is optional: `#L42` names a new-side line, `#old-L42` an old-side line. Review ranges are `all`, `since`, or `commit/<sha>`; omit `<dir>:` only when the review has one directory. Copy `<dir>` from `get_review` or `read_review` exactly as given, including any `:`; an encoded token (`:` as `%3A`, `%` as `%25`) also works. When the path contains `:`, include `<dir>` explicitly."
     };
 }
 #[cfg(test)]
@@ -3458,7 +3458,7 @@ mod tests {
         }
     }
 
-    /// The shapes named once, so the sentence cannot drift from what
+    /// The shapes named once, so the note cannot drift from what
     /// spa/src/core/markdownRefs.js parses.
     #[test]
     fn the_reference_shapes_note_names_every_shape() {
@@ -3470,6 +3470,11 @@ mod tests {
             "`@project:<name or id>`",
             "`[[<workspace>:<path>#L10]]`",
             "`[[<workspace>:commit:<sha>]]`",
+            "`[[<workspace>:commit:<sha>:<path>#L42]]`",
+            "`[[#<task>:r<N>:<range>:<dir>:<path>#L42]]`",
+            "`#old-L42`",
+            "`%3A`",
+            "`%25`",
         ] {
             assert!(REFERENCE_SHAPES_NOTE.contains(shape), "{shape}");
         }

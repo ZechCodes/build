@@ -21,7 +21,7 @@
 // what makes opening a task from the Tasks tab leave the strip alone.
 
 import { $ } from "../dom.js";
-import { App, go } from "../app.js";
+import { App, go, markRoute } from "../app.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { routeProjectKey } from "../core/deviceKey.js";
 import { surfaceContext } from "../core/surfaceContext.js";
@@ -67,12 +67,14 @@ export async function renderTrackerTask() {
     projectKey: routeProjectKey(route),
     taskId: route.taskId,
     commentId: route.commentId || null,
+    reviewRoute: route.review || null,
     callRpc: context.rpc,
     writeOperations: context.writeOperations,
     catalog: () => context.modelCatalog(),
     refreshCatalog: () => context.refreshModelCatalog(),
     feed: () => feed,
     navigate: go,
+    markReviewRoute: markRoute,
   });
   const rail = mountProjectRail($("#dir-rail"), {
     route,

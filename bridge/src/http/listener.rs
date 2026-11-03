@@ -24,7 +24,7 @@ use tokio_rustls::TlsAcceptor;
 use super::{limits, sse::STALLED_WRITE_TIMEOUT};
 use crate::execution::session::Opening;
 
-const AUTHORITY_RECHECK: std::time::Duration = std::time::Duration::from_millis(25);
+pub const AUTHORITY_RECHECK: std::time::Duration = std::time::Duration::from_millis(25);
 
 #[derive(Clone, Copy)]
 pub struct PeerAddress(pub IpAddr);
@@ -97,13 +97,17 @@ impl OutputAuthority {
         Box::pin(tokio::time::sleep(STALLED_WRITE_TIMEOUT))
     }
 
-    /// How often a stream on this connection sends a heartbeat.
-    pub(crate) fn heartbeat_interval(&self) -> std::time::Duration {
+    /// Healthy output cadence and independent idle-authority wakeups.
+    pub(crate) fn stream_timing(&self) -> super::sse_stream::StreamTiming {
         #[cfg(test)]
         if !self.rechecks_by_clock() {
-            return std::time::Duration::from_secs(365 * 24 * 60 * 60);
+            let manual = std::time::Duration::from_secs(365 * 24 * 60 * 60);
+            return super::sse_stream::StreamTiming {
+                heartbeat: manual,
+                authority_recheck: manual,
+            };
         }
-        super::sse::HEARTBEAT_INTERVAL
+        super::sse_stream::StreamTiming::default()
     }
 
     fn rechecks_by_clock(&self) -> bool {

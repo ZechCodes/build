@@ -7,6 +7,7 @@
 //   #/project/<projectId>/workspaces            — the project: its named children
 //   #/project/<projectId>/tasks[?view=board]    — an alias for the tracker
 //   #/project/<projectId>/tasks/<taskId>[/c/<commentId>]
+//   #/project/<projectId>/tasks/<taskId>/review/r<N>/<all|since|commit/<sha>>[/<directory>/<path>]
 //   #/project/<projectId>/workspace/<id>[/directory/<sourceId>]/<tab>[?commit=<sha>]
 //   #/project/<projectId>/branch/<name>/<tab>   — tab is changes | files
 //   #/project/<projectId>/plan/<planId>[/stage/<stageId>]
@@ -29,6 +30,7 @@
 // Pure mapping both ways; the app shell owns the hashchange listener.
 
 import { currentId } from "./renamedIds.js";
+import { parseReviewRoute, reviewRoutePath, reviewRouteQuery } from "./taskReviewSelection.js";
 
 const BRANCH_TABS = new Set(["changes", "files"]);
 const ACCOUNT_PAGES = new Set(["settings", "devices", "archive"]);
@@ -158,6 +160,7 @@ const trackerRoute = (projectId, taskId, tail) =>
       projectId,
       taskId: currentId(taskId),
       ...(tail[0] === "c" && tail[1] ? { commentId: currentId(tail[1]) } : null),
+      ...parseReviewRoute(tail),
     }
     : projectPage(projectId);
 
@@ -283,6 +286,7 @@ function tasksView(query, route) {
 /// which way the Tasks tab is laid out. A surface that reads none gets null,
 /// and its route is left exactly as the path made it.
 function placeInSurface(route, query) {
+  if (route.name === "trackerTask" && route.review) return { review: { ...route.review, ...reviewRouteQuery(query) } };
   const place = FILE_TAB_SURFACES.has(route.name) && route.tab === "files" ? tabPlace(query) : null;
   const commit = commitPlace(route, query);
   const agent = AGENT_SURFACES.has(route.name) ? railAgent(query) : null;
@@ -302,8 +306,21 @@ function projectSourcePlace(route, query) {
 function commitPlace(route, query) {
   if (!["workspace", "project"].includes(route.name) || route.tab !== "changes" || !query) return null;
   const commit = new URLSearchParams(query).get("commit");
-  return commit ? { commit } : null;
+  return commit ? { commit, ...commitDiffPlace(query) } : null;
 }
+
+function commitDiffPlace(query) {
+  const params = new URLSearchParams(query);
+  const path = params.get("path");
+  const { side, line } = reviewRouteQuery(query);
+  return path ? { path, ...(side ? { side } : {}), ...(line ? { line } : {}) } : {};
+}
+
+const commitPlacePairs = (route) => route.commit
+  ? [["commit", route.commit], ["path", route.path || ""],
+    ["side", route.path && ["old", "new"].includes(route.side) ? route.side : ""],
+    ["line", route.path && Number.isSafeInteger(route.line) && route.line > 0 ? String(route.line) : ""]]
+  : [];
 
 const PUSH_OPEN_PARAM = "from";
 const PUSH_OPEN_VALUE = "push";
@@ -459,7 +476,7 @@ const projectTabPath = (route) => ([WORKSPACES_TAB, ...BRANCH_TABS].includes(rou
 
 function projectPlacePairs(route) {
   if (!BRANCH_TABS.has(route.tab)) return [];
-  const place = route.tab === "changes" ? [["commit", route.commit || ""]] : tabPlacePairs(route, route.tab);
+  const place = route.tab === "changes" ? commitPlacePairs(route) : tabPlacePairs(route, route.tab);
   return [["source", route.sourceId || ""], ...place];
 }
 
@@ -469,6 +486,11 @@ function projectPlacePairs(route) {
 function projectPrefix(route) {
   const project = `project/${encode(route.projectId)}`;
   return route.deviceId ? `#/device/${encode(route.deviceId)}/${project}` : `#/${project}`;
+}
+
+function trackerTaskTail(route) {
+  if (route.review) return reviewRoutePath(route.review);
+  return route.commentId ? `/c/${encode(route.commentId)}` : "";
 }
 
 // The surfaces that are about one machine's checkout, and so cannot be opened
@@ -504,7 +526,7 @@ const HASH_WRITERS = Object.freeze({
   // between.
   trackerTask: (route) =>
     route.projectId && route.taskId
-      ? `${projectPrefix(route)}/${TASKS_TAB}/${encode(route.taskId)}${route.commentId ? `/c/${encode(route.commentId)}` : ""}`
+      ? `${projectPrefix(route)}/${TASKS_TAB}/${encode(route.taskId)}${trackerTaskTail(route)}`
       : null,
   workspace: (route) => {
     if (!route.projectId || !route.workspaceId) return null;
@@ -515,7 +537,7 @@ const HASH_WRITERS = Object.freeze({
     // it opens on — the same two things the project's own Tasks tab writes.
     const opened = tasks && route.taskId ? `/${encode(route.taskId)}` : "";
     const place = tasks ? tasksViewPairs(route, TASKS_TAB)
-      : tab === "changes" ? [["commit", route.commit || ""]] : tabPlacePairs(route, tab);
+      : tab === "changes" ? commitPlacePairs(route) : tabPlacePairs(route, tab);
     const query = hashQuery([...place, ...railAgentPairs(route)]);
     return `${projectPrefix(route)}/workspace/${encode(route.workspaceId)}${source}/${tab}${opened}${query}`;
   },

@@ -49,6 +49,47 @@ describe("shared destination route links", () => {
 });
 import { conversationRoute, routeFromHash, hashFromRoute, takePushOpenMark, withDeviceOrResolve } from "../src/core/router.js";
 
+describe("saved review routes", () => {
+  const route = { name: "trackerTask", deviceId: "d", projectId: "p", taskId: "task-7" };
+  const commit = "a".repeat(40);
+
+  it.each(["all", "since", "commit"])("round-trips the %s comparison with an encoded directory and path", (mode) => {
+    const selected = { ...route, review: { revision: 3, mode, ...(mode === "commit" ? { commit } : {}),
+      directoryId: "source / 🦊", path: "src/a b?#.js", side: "old", line: 42 } };
+    const hash = hashFromRoute(selected);
+    expect(hash).toContain(`/review/r3/${mode}${mode === "commit" ? `/${commit}` : ""}/source%20%2F%20%F0%9F%A6%8A/src/a%20b%3F%23.js?side=old&line=42`);
+    expect(routeFromHash(hash)).toEqual(selected);
+  });
+
+  it.each(["files", "comments"])("keeps the %s phone tab in its URL", (view) => {
+    const selected = { ...route, review: { revision: 1, mode: "all", directoryId: "dir", view } };
+    expect(routeFromHash(hashFromRoute(selected))).toEqual(selected);
+  });
+
+  it("recognizes a bare revision route, and keeps comment links separate", () => {
+    expect(routeFromHash("#/device/d/project/p/tasks/task-7/review/r2/all")).toEqual({
+      ...route, review: { revision: 2, mode: "all" },
+    });
+    expect(routeFromHash("#/device/d/project/p/tasks/task-7/c/tc-9")).toEqual({ ...route, commentId: "tc-9" });
+  });
+
+  it("parks device-less review links without losing their selection", () => {
+    const selected = { ...route, review: { revision: 2, mode: "all", directoryId: "dir", path: "lib/a.js", line: 4, side: "new" } };
+    delete selected.deviceId;
+    const parsed = routeFromHash(hashFromRoute(selected));
+    expect(parsed).toEqual({ name: "resolve", kind: "project", projectId: "p", route: selected });
+  });
+
+  it("ignores invalid comparisons and line targets", () => {
+    expect(routeFromHash("#/device/d/project/p/tasks/task-7/review/r0/all/dir")).toEqual(route);
+    expect(routeFromHash("#/device/d/project/p/tasks/task-7/review/r1/missing/dir")).toEqual(route);
+    expect(routeFromHash("#/device/d/project/p/tasks/task-7/review/r1/commit")).toEqual(route);
+    expect(routeFromHash("#/device/d/project/p/tasks/task-7/review/r1/all/dir/a.js?line=-5&side=other&view=board")).toEqual({
+      ...route, review: { revision: 1, mode: "all", directoryId: "dir", path: "a.js" },
+    });
+  });
+});
+
 // A work URL that names no device names no machine: every device mints a
 // `proj-1`, so `#/project/proj-1/branch/main` parks on a resolve route carrying
 // the route it meant, and the app looks the project up across the account. The
@@ -863,5 +904,22 @@ describe("the notification-open mark", () => {
     expect(route).not.toHaveProperty("from");
     expect(route).not.toHaveProperty("fromPush");
     expect(hashFromRoute(route)).toBe("#/device/d/project/p/workspace/w/changes?agent=a");
+  });
+});
+
+
+describe("commit file diff routes", () => {
+  it.each(["workspace", "project"])("round trips %s path and old-side line", (name) => {
+    const route = { name, deviceId: "d", projectId: "p", ...(name === "workspace" ? { workspaceId: "w" } : {}),
+      tab: "changes", commit: "deadbeef", path: "src/a b?#:test.js", side: "old", line: 42 };
+    const hash = hashFromRoute(route);
+    expect(hash).toContain("commit=deadbeef&path=src%2Fa+b%3F%23%3Atest.js&side=old&line=42");
+    expect(routeFromHash(hash)).toEqual(route);
+  });
+
+  it("ignores diff targets without a commit and invalid line selections", () => {
+    const base = "#/device/d/project/p/workspace/w/changes";
+    expect(routeFromHash(`${base}?path=a.js&side=old&line=42`)).toEqual({ name: "workspace", deviceId: "d", projectId: "p", workspaceId: "w", tab: "changes" });
+    expect(routeFromHash(`${base}?commit=abcd&path=a.js&side=wrong&line=-1`)).toEqual({ name: "workspace", deviceId: "d", projectId: "p", workspaceId: "w", tab: "changes", commit: "abcd", path: "a.js" });
   });
 });

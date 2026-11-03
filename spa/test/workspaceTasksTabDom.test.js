@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, event, task as wireTask } from "./trackerWireFixture.js";
+import reviewFixture from "../../fixtures/api/v1/tasks.review.get.json";
 const task = (over = {}) => wireTask({ project_id: "proj-1", ...over });
 
 let watchers = [];
@@ -129,6 +130,27 @@ beforeEach(async () => {
 afterEach(() => {
   tab?.dispose?.();
   tab = null;
+});
+
+it("leaves the workspace through navigation when a review acquires its dedicated URL", async () => {
+  const scope = { deviceId: "dev-1", projectId: "proj-1", taskId: "i1" };
+  const { writeReviewRecord } = await import("../src/core/taskReviewCache.js");
+  const { rememberReviewSupport } = await import("../src/core/taskReviewSupport.js");
+  await trackerCache.writeTaskRecord(scope.deviceId, scope.projectId, scope.taskId, {
+    task: held(HERE, { id: "i1", review_summary: { status: "open" } }), timeline: [],
+  });
+  await writeReviewRecord(scope, { ...reviewFixture.result.review, task_id: scope.taskId }, 1);
+  await rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true } });
+  call = vi.fn(() => new Promise(() => {}));
+  const original = "#/device/dev-1/project/proj-1/workspace/ws-1/tasks/i1";
+  history.replaceState(null, "", original);
+  mountTab({ route: { taskId: "i1" } });
+  await vi.waitFor(() => expect(navigated).toContainEqual(expect.objectContaining({
+    name: "trackerTask", ...scope, review: expect.objectContaining({ revision: 1, mode: "all", directoryId: "dir-api" }),
+  })));
+  // The host asks its ordinary navigator to leave; it never rewrites a task
+  // URL over a workspace that remains on screen.
+  expect(location.hash).toBe(original);
 });
 
 describe("the list", () => {

@@ -81,8 +81,8 @@ export const taskAttachmentsHtml = (attachments) =>
 const whenHtml = (row) => (row.at ? `<span class="task-when" title="${esc(row.at)}">${esc(ageText(row.at))}</span>` : "");
 
 const reviewVerdictHtml = (opinion) => ({
-  approve: "<span>Approved</span>",
-  request_changes: "<span>Requested changes</span>",
+  approve: '<span class="task-review-verdict" data-verdict="approve">Approved</span>',
+  request_changes: '<span class="task-review-verdict" data-verdict="request_changes">Requested changes</span>',
 })[opinion?.verdict] || "";
 const reviewAnchorHtml = (anchor) => anchor
   ? `<button class="btn" type="button" data-review-anchor="${esc(JSON.stringify(anchor))}">` +
@@ -90,7 +90,7 @@ const reviewAnchorHtml = (anchor) => anchor
 const snapshotLabel = (snapshotId, snapshots) => {
   if (!snapshotId) return "";
   const snapshot = (snapshots || []).find((saved) => saved.id === snapshotId);
-  return snapshot?.number ? `Snapshot ${esc(snapshot.number)}` : "Earlier snapshot";
+  return snapshot?.number ? `Revision ${esc(snapshot.number)}` : "Earlier revision";
 };
 const reviewMetadataHtml = (row, context) => {
   const snapshotId = row.opinion?.snapshot_id || row.anchor?.snapshot_id;
@@ -107,7 +107,7 @@ const reviewMetadataHtml = (row, context) => {
 const commentHtml = (row, context) => `<li class="task-entry task-comment${row.mentionsUser ? " task-comment-mentioned" : ""}" id="comment-${esc(row.key)}" data-comment-id="${esc(row.key)}">
     ${taskAvatarHtml(row.actor, context)}
     <div class="task-comment-card">
-      <div class="task-entry-head"><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}${row.anchor || row.opinion || row.replyTo ? `<button class="task-comment-reply" type="button" data-review-reply="${esc(row.key)}" aria-label="Reply" title="Reply">${ICON_REPLY}</button>` : ""}</div>
+      <div class="task-entry-head"><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}${!context.readOnlyReview && (row.anchor || row.opinion || row.replyTo) ? `<button class="task-comment-reply" type="button" data-review-reply="${esc(row.key)}" aria-label="Reply" title="Reply">${ICON_REPLY}</button>` : ""}</div>
       ${reviewMetadataHtml(row, context)}
       ${commentReplyHtml(row, context)}
       <div class="task-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ taskMarkdownHtml(row.body, context, false, taskMarkdownScope(context, "comment", row.key))}</div>
@@ -308,7 +308,31 @@ export const TASK_PAGE_FRAME = '<div class="task-page"><div class="task-page-mai
  * all updated in place by the page, so the textarea is one node per mount and
  * nothing stands up a new one under the reader (#153).
  */
+export const isReviewTask = (task, context = {}) => Boolean(task?.review_summary || context.review);
+export const taskPageFrame = (review) => review
+  ? '<div class="task-page review-task-template"><div class="task-page-main"></div><aside class="task-rail" aria-label="About this task"></aside></div>' : TASK_PAGE_FRAME;
+export const REVIEW_COMMENTS_FRAME = '<aside class="task-review-comments" aria-label="Review comments"><h2>Comments</h2><div data-review-feedback-host></div><ul class="task-timeline"></ul><div data-review-task-composer></div></aside>';
+
+function reviewPageParts(task, context) {
+  const timeline = timelineParts(context.rows, context);
+  return {
+    main: [
+      { name: "review", html: '<section data-task-review></section>', key: "review" },
+      { name: "body", html: `<details class="task-review-description"><summary>Description</summary>${taskBodyHtml(task, context)}${taskAttachmentsHtml(task.attachments)}</details>` },
+      { name: "timeline", key: "review-comments", html: REVIEW_COMMENTS_FRAME },
+    ],
+    rail: [
+      { name: "rail", html: taskRailDetailsHtml(task, context) },
+      { name: "waiting", html: waitingOnRegion, key: "waiting" },
+      { name: "state", html: stateControlHtml(task, context.busy) },
+    ],
+    comments: [{ name: "composer", html: composerHtml(context.draft, context.sending, context.hasFiles), key: "composer" }],
+    timeline: timeline.rows,
+  };
+}
+
 export function taskPageParts(task, context) {
+  if (isReviewTask(task, context)) return reviewPageParts(task, context);
   const timeline = timelineParts(context.rows, context);
   return {
     main: [
@@ -334,6 +358,11 @@ export function taskPageParts(task, context) {
 
 /** The whole page, as one string. */
 export function taskPageHtml(task, context) {
+  if (isReviewTask(task, context)) {
+    const parts = reviewPageParts(task, context);
+    const main = parts.main.map((part) => part.name === "timeline" ? part.html.replace("</ul>", `${parts.timeline.map((row) => row.html).join("")}</ul>`).replace('<div data-review-task-composer></div>', `<div data-review-task-composer>${parts.comments[0].html}</div>`) : part.html).join("");
+    return `<div class="task-page review-task-template"><div class="task-page-main">${main}</div>${taskRailHtml(task, context)}</div>`;
+  }
   return `<div class="task-page">
     <div class="task-page-main">
       ${taskHeadHtml(task, context)}

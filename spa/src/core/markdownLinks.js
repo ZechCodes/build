@@ -70,6 +70,11 @@ function directoryOfPath(found, path) {
   return directory ? { found: { ...found, sourceId: directory.sourceId }, path: path.slice(seam + 1) } : { found, path };
 }
 
+const reviewFilePlace = (found, reference) => found.fileRef ? { fileRef: found.fileRef }
+  : { directoryId: found.directoryId, path: found.path ?? unesc(reference.path) };
+const diffAnchor = (reference) => reference.line ? { side: reference.side, line: reference.line } : {};
+const diffLabel = (path, reference) => `${path}${reference.line ? `:${reference.side === "old" ? "old:" : ""}${reference.line}` : ""}`;
+
 const noWorkspace = (reference) => `Not found: no workspace called “${unesc(reference.workspace)}” is on record here.`;
 
 /**
@@ -136,6 +141,31 @@ const KINDS = {
       };
     },
     missing: noWorkspace,
+  },
+
+  commitFile: {
+    find: (reference, links) => links.workspace?.(unesc(reference.workspace)),
+    link(found, reference) {
+      const place = directoryOfPath(found, unesc(reference.path));
+      return {
+        route: workspacePlace(place.found, { commit: reference.sha, path: place.path, ...diffAnchor(reference) }),
+        label: `${codeLabel(diffLabel(place.path, reference))} · ${codeLabel(reference.sha.slice(0, SHORT_SHA))}`,
+        description: `Diff of ${place.path} in commit ${reference.sha} in ${found.name || unesc(reference.workspace)}`,
+      };
+    },
+    missing: noWorkspace,
+  },
+
+  reviewFile: {
+    find: (reference, links) => links.review?.(reference.number, reference.revision, reference.directoryId && unesc(reference.directoryId), unesc(reference.path)),
+    link: (found, reference) => ({
+      route: { name: "trackerTask", deviceId: found.deviceId, projectId: found.projectId, taskId: found.taskId,
+        review: { revision: reference.revision, mode: reference.mode, commit: reference.commit,
+          ...reviewFilePlace(found, reference), ...diffAnchor(reference) } },
+      label: `#${reference.number} r${reference.revision} · ${codeLabel(diffLabel(found.path ?? unesc(reference.path), reference))}`,
+      description: `Diff of ${found.path ?? unesc(reference.path)} in task #${reference.number} revision ${reference.revision}`,
+    }),
+    missing: (reference) => `Not found: task #${reference.number} revision ${reference.revision} needs a directory recorded in this review.`,
   },
 
   commit: {

@@ -92,6 +92,7 @@ export function createDiffViewport({
   const requested = new Set();
   const initialLoads = new Set();
   const windows = new Map();
+  const reveals = new Map();
   let scroller = null;
   let observer = null;
   let frame = 0;
@@ -274,6 +275,8 @@ export function createDiffViewport({
     detachScroller();
     visible.clear();
     windows.clear();
+    for (const [key, window] of reveals) windows.set(key, window);
+    reveals.clear();
     scroller = nextScroller;
     attachScroller();
   };
@@ -313,6 +316,13 @@ export function createDiffViewport({
       if (scroller || initialLoads.size >= 3) return false;
       initialLoads.add(normalized);
       return true;
+    },
+    reveal(key, rowIndex) {
+      const scrollTop = Math.max(0, rowIndex - 4) * DIFF_ROW_HEIGHT;
+      const window = { start: rowWindowStart(scrollTop, rowWindowSize), scrollTop };
+      requested.add(String(key));
+      windows.set(String(key), window);
+      if (!scroller) reveals.set(String(key), window);
     },
     request(key) {
       requested.add(String(key));

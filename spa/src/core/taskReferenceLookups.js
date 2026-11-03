@@ -18,7 +18,7 @@ const MAX_TEXT_BYTES = 16_384;
 const MAX_PART_CHARS = 4096;
 const encoder = new TextEncoder();
 const protectedTags = new Set(["CODE", "PRE", "A"]);
-const taskNumbersIn = (text) => referencesIn(text).filter((reference) => reference.kind === "task"
+const taskNumbersIn = (text) => referencesIn(text).filter((reference) => (reference.kind === "task" || reference.kind === "reviewFile")
   && Number.isSafeInteger(reference.number) && reference.number > 0).map((reference) => reference.number);
 
 function* contentParts(content) {

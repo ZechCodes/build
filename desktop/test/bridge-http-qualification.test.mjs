@@ -3,6 +3,9 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createBridgeHttp } from "../src/bridge-http.mjs";
+import { createDesktopHttpEndpoint } from "../../spa/src/core/httpDesktopEndpoint.js";
+import { openHttpSession } from "../../spa/src/core/httpSession.js";
+import { createHttpRoutes } from "../../spa/src/core/httpRoutes.js";
 
 const fixturePath = process.env.BUILD_HTTP_QUALIFICATION_FIXTURE;
 const qualification = { skip: !fixturePath, timeout: 75_000 };
@@ -26,9 +29,10 @@ async function eventually(predicate, description, timeout = 35_000) {
   }
   assert.fail(`Timed out waiting for ${description}`);
 }
-function harness(t, fixture, { badProof = false } = {}) {
+function harness(t, fixture, { badProof = false, autoAck = true } = {}) {
   const trace = [];
   const output = [];
+  const listeners = new Set();
   const owner = { id: randomUUID() };
   let heartbeat = false;
   let bridge;
@@ -75,11 +79,24 @@ function harness(t, fixture, { badProof = false } = {}) {
     send: (recipient, event) => {
       assert.equal(recipient, owner);
       output.push(event);
-      if (event.event !== "reset_required") bridge.ack(owner, event.stream, event.sequence);
+      for (const listener of listeners) listener(event);
+      if (autoAck && event.event !== "reset_required") bridge.ack(owner, event.stream, event.sequence);
     },
   });
   t.after(() => bridge.clear());
-  return { bridge, owner, output, trace, heartbeat: () => heartbeat };
+  return { bridge, owner, output, trace, listeners, heartbeat: () => heartbeat };
+}
+
+// The actual SPA desktop endpoint consumes the native module's IPC envelopes.
+// Only Electron's process hop is local here; every network response is real.
+function nativeEndpoint(h, identity) {
+  const invoke = (name) => async (...args) => {
+    try { return { ok: true, value: await h.bridge[name](h.owner, ...args) }; }
+    catch (error) { return { ok: false, error: { code: error.code, uncertain: error.uncertain } }; }
+  };
+  const api = Object.fromEntries(["open", "subscribe", "request", "cancel", "ack", "unsubscribe", "close"].map((name) => [name, invoke(name)]));
+  api.onEvent = (listener) => { h.listeners.add(listener); return () => h.listeners.delete(listener); };
+  return createDesktopHttpEndpoint({ api, identity });
 }
 // The fixture is seeded by scripts/bridge-http-qualification/run.py using a disposable
 // local Skrift account, paired identity and cargo-built loopback bridge.
@@ -127,4 +144,55 @@ test("desktop refuses a tampered real discovery proof with a plain error before 
   });
   assert.ok(h.trace.some((request) => request.path.endsWith("/complete") && request.status >= 400));
   assert.equal(h.trace.some((request) => request.path.startsWith("/v1/")), false);
+});
+
+test("desktop refuses a genuinely revoked credential with account-verification guidance", qualification, async (t) => {
+  const fixture = await loadFixture();
+  const h = harness(t, fixture);
+  const identity = await h.bridge.discover(h.owner, fixture.bridgeOrigin);
+  const revoked = await globalThis.fetch(`${fixture.hostedOrigin}/api/devices/${fixture.deviceId}/http-credentials/${identity.familyId}`, {
+    method: "DELETE", headers: { Authorization: `Bearer ${fixture.accessToken}` },
+  });
+  assert.equal(revoked.status, 204);
+  const endpoint = nativeEndpoint(h, identity);
+  t.after(() => endpoint.close());
+  await assert.rejects(endpoint.open("^3.0.0"), (error) => {
+    assert.equal(error.code, "unauthorized");
+    assert.match(error.message, /authorization was refused.*Verify this device again/);
+    return true;
+  });
+  assert.ok(h.trace.some((entry) => entry.path === "/v1/sessions" && entry.status === 401));
+  assert.equal(h.output.some((entry) => entry.event === "hello"), false);
+  t.diagnostic("real issuer family DELETE=204 → real bridge POST /v1/sessions=401 → plain desktop authorization refusal");
+});
+
+test("desktop ninth family stream is refused by the real bridge and ends in a plain client error", qualification, async (t) => {
+  const fixture = await loadFixture();
+  const h = harness(t, fixture, { autoAck: false });
+  const first = await h.bridge.discover(h.owner, fixture.bridgeOrigin);
+  const { handle: _handle, ...hint } = first;
+  for (let index = 0; index < 8; index++) {
+    const identity = index ? await h.bridge.resume(h.owner, hint) : first;
+    await h.bridge.open(h.owner, identity.handle, "^3.0.0");
+    const subscription = await h.bridge.subscribe(h.owner, identity.handle, { kind: "application" }, { requestId: randomUUID() });
+    await eventually(() => h.output.some((entry) => entry.stream === subscription.stream && entry.event === "hello"), "one of the eight real admitted streams");
+    const hello = h.output.find((entry) => entry.stream === subscription.stream && entry.event === "hello");
+    h.bridge.ack(h.owner, hello.stream, hello.sequence);
+  }
+  const ninth = await h.bridge.resume(h.owner, hint);
+  const endpoint = nativeEndpoint(h, ninth);
+  t.after(() => endpoint.close());
+  let message;
+  await assert.rejects(openHttpSession({ endpoint, routes: createHttpRoutes(fixture.manifest) }), (error) => {
+    assert.equal(typeof error.code, "string");
+    assert.ok(["scope_ended", "stream_reset", "protocol", "busy"].includes(error.code), error.code);
+    assert.match(error.message, /bridge|HTTPS/i);
+    assert.doesNotMatch(error.message, /[{}]|undefined|invalid_stream/);
+    message = error.message;
+    return true;
+  });
+  assert.equal(h.trace.filter((entry) => entry.path.endsWith("/events") && entry.status === 200).length, 8);
+  assert.equal(h.trace.filter((entry) => entry.path.endsWith("/events") && entry.status === 429).length, 1);
+  assert.equal(h.output.filter((entry) => entry.event === "hello").length, 8);
+  t.diagnostic(JSON.stringify({ refusal: "ninth family stream", status: 429, message }));
 });

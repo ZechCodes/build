@@ -52,6 +52,16 @@ describe("typed durable write effects", () => {
     expect((await cache.readCanonicalCached(address)).value).toEqual(canonical);
   });
 
+  it("keeps review anchors and opinions in accepted and confirmed comments", async () => {
+    const anchor = { snapshot_id: "snap", directory_id: "dir", path: "src/a.js", line: 2, side: "new" };
+    const opinion = { snapshot_id: "snap", verdict: "request_changes" };
+    const record = operation("tasks.comment", { task_id: ack.result.task_id });
+    const frame = { ...ack, result: { ...ack.result, overlay: [{ ...ack.result.overlay[0], anchor, opinion }] } };
+    expect((await effects.normalizeAckEffects(frame, record)).overlay[0].value).toMatchObject({ anchor, opinion });
+    const confirmed = { ...success, result: { ...success.result, comment: { ...success.result.comment, anchor, opinion } } };
+    expect((await effects.normalizeAckEffects(confirmed, record)).overlay[0].value).toMatchObject({ anchor, opinion });
+  });
+
   it("resolves task projects from request parameters and held task addresses", async () => {
     const noOwners = { ...ack, write: { ...ack.write, owners: [] } };
     const params = { task_id: ack.result.task_id, project_id: "explicit" };

@@ -155,7 +155,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       kinds: subscriptions && Array.isArray(kinds) ? kinds.filter((kind) => typeof kind === "string") : [],
       projectSources: names.has("changes.projectSources"),
     },
-    git: { projectSources: names.has("git.projectSources") },
+    git: { projectSources: names.has("git.projectSources"), showPaths: names.has("git.showPaths") },
     term: { projectSources: names.has("term.projectSources") },
     fs: {
       projectSources: names.has("fs.projectSources"),
@@ -172,6 +172,10 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     reviews: {
       ...Object.fromEntries(Object.entries(REVIEW_METHODS).map(([verb, method]) => [verb, names.has(method)])),
       comments: names.has("tasks.reviewComments"),
+      commits: names.has("tasks.review.commits"),
+      commit: names.has("tasks.review.commit"),
+      since: names.has("tasks.review.since"),
+      anchorCommit: names.has("tasks.review.anchorCommit"),
       pullRequests: names.has("tasks.review.pullRequests"),
     },
     tasks: {

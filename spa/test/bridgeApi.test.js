@@ -110,7 +110,7 @@ describe("adapter selection", () => {
       errors: { codes: true },
       diffs: { perFile: true },
       bodies: { pages: false, mediaRawPages: false },
-      reviews: { reject: false, author: false, verdictDelivery: false, retryDelivery: false, commits: false, commit: false, since: false, anchorCommit: false, forTask: false, taskChoices: false, linkedTaskChoices: false, get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
+      reviews: { snapshotRetired: false, reject: false, author: false, verdictDelivery: false, retryDelivery: false, commits: false, commit: false, since: false, anchorCommit: false, forTask: false, taskChoices: false, linkedTaskChoices: false, get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
       tasks: { attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, listSummaries: false, filterChoices: false, counts: false, lookup: false, listWatched: false, listAttention: false, listLinkedWorkspace: false, listTracked: false, listReviewMode: false, listOrder: false, listReadiness: false, listExcludeAssignee: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
       compaction: { harnessThresholds: false },
@@ -543,4 +543,11 @@ it("negotiates commit path filtering independently of project source support", (
   expect(current.git.showPaths).toBe(true);
   expect(current.git.projectSources).toBe(false);
   expect(v1.capabilitiesOf({ api_version: "3.28.0", capabilities: ["git.projectSources"] }).git.showPaths).toBe(false);
+});
+
+it("enables snapshot retirement only by the named capability", () => {
+  const caps = (capabilities) => v1.capabilitiesOf({ api_version: "3.31.0", capabilities }).reviews;
+  expect(caps(["tasks.review.snapshotRetired"]).snapshotRetired).toBe(true);
+  expect(caps(["tasks.review.snapshot"]).snapshotRetired).toBe(false);
+  expect(caps([]).snapshotRetired).toBe(false);
 });

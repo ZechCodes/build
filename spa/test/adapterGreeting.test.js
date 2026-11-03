@@ -18,7 +18,7 @@ const NONE = {
   errors: { codes: false },
   diffs: { perFile: false },
   bodies: { pages: false, mediaRawPages: false },
-  reviews: { reject: false, author: false, verdictDelivery: false, retryDelivery: false, get: false, snapshot: false, diff: false, commits: false, commit: false, since: false, anchorCommit: false, complete: false, act: false, comments: false,
+  reviews: { snapshotRetired: false, reject: false, author: false, verdictDelivery: false, retryDelivery: false, get: false, snapshot: false, diff: false, commits: false, commit: false, since: false, anchorCommit: false, complete: false, act: false, comments: false,
       forTask: false, taskChoices: false, linkedTaskChoices: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
   tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
@@ -88,7 +88,7 @@ describe("the adapter a greeting selects", () => {
       errors: { codes: true },
       diffs: { perFile: false },
       bodies: { pages: false, mediaRawPages: false },
-  reviews: { reject: false, author: false, verdictDelivery: false, retryDelivery: false, get: false, snapshot: false, diff: false, commits: false, commit: false, since: false, anchorCommit: false, complete: false, act: false, comments: false,
+  reviews: { snapshotRetired: false, reject: false, author: false, verdictDelivery: false, retryDelivery: false, get: false, snapshot: false, diff: false, commits: false, commit: false, since: false, anchorCommit: false, complete: false, act: false, comments: false,
       forTask: false, taskChoices: false, linkedTaskChoices: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
       // A greeting that names no task feature carries none of them.

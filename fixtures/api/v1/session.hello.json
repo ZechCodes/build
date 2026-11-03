@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.30.0",
+    "api_version": "3.31.0",
     "ack_confirm_methods": [],
     "capabilities": [
       "agent.add",
@@ -190,6 +190,7 @@
       "tasks.review.retryDelivery",
       "tasks.review.since",
       "tasks.review.snapshot",
+      "tasks.review.snapshotRetired",
       "tasks.review.update",
       "tasks.review.verdictDelivery",
       "tasks.reviewComments",

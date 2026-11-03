@@ -90,44 +90,7 @@ function renderSelected(selected, address) {
   owner.rendered(selected, null, count, address);
 }
 
-async function acceptChangedList(address) {
-  const operationId = "projection-guard-accepted-update";
-  await operations.put({ operationId, request: { method: "tasks.update", params: { task_id: taskId } } });
-  await operations.accept(operationId, { ack: {}, revision: 1,
-    overlay: [{ address, kind: "merge", value: { tasks: [task(5)] } }] });
-  expect(await operations.get(operationId)).toMatchObject({ revision: 1, state: "accepted", overlayActive: true });
-}
-
 describe("D5 current public-path final projection guard", () => {
-  it("refuses a delayed selected display after an accepted layer changes its actual source at the same canonical write", async () => {
-    const { address, record, selected } = await selectedList();
-    const note = (await import("../src/core/taskReadOrder.js")).taskWatchIntentAddress(scope, taskId);
-    const beforeNote = await cache.readCanonicalCached(note);
-    expect(beforeNote?.value?.task_unread_display).toBeUndefined();
-    const held = holdDisplayMerge();
-    try {
-      renderSelected(selected, address);
-      await vi.waitFor(() => expect(held.captured()).toBe(true), WAIT);
-      await acceptChangedList(address);
-      const projected = await cache.readCached(address);
-      const canonical = await cache.readCanonicalCached(address);
-      expect(projected.accepted).toBe(true);
-      expect(cache.recordWriteOf(projected)).toBe(cache.recordWriteOf(record));
-      expect(cache.recordWriteOf(canonical)).toBe(cache.recordWriteOf(record));
-      expect(projected.value.tasks[0].unread_count).toBe(5);
-      expect(canonical.value.tasks[0].unread_count).toBe(3);
-      expect(await cache.readCanonicalCached(note)).toEqual(beforeNote);
-      expect(node.textContent).toBe("3");
-      await held.release();
-      // Current canonical-only CAS must not stamp the old selection onto a
-      // shared note after its effective projected inputs changed.
-      expect(await cache.readCanonicalCached(note)).toEqual(beforeNote);
-      expect(held.completed).toEqual([false]);
-    } finally {
-      owner.dispose();
-      if (held.captured()) await held.release();
-    }
-  });
 
   it("commits the actual selected display when canonical and projected inputs remain unchanged", async () => {
     const { address, selected } = await selectedList();

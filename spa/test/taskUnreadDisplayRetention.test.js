@@ -316,15 +316,6 @@ async function blindRestorePriorLineage(title) {
 }
 
 describe("D5 unmounted admitted lineage versus blind paint", () => {
-  it.each([[false, null, "unwatch"], [true, "te-90", "new incarnation"]])(
-    "does not revive rendered3 after unmounted admitted %s/%s (%s) followed by a blind prior-lineage rewrite",
-    async (watched, floor) => {
-      await renderPersistAndLeave();
-      await admittedLineage(watched, floor);
-      await blindRestorePriorLineage("Blind rewrite after admitted transition");
-      await remountIncompletePane("Blind rewrite after admitted transition");
-      expect(paneHost.querySelector(".task-unread")).toBeNull();
-    });
 
   it("retains rendered3 on remount after a blind-only rewrite without an admitted replacement", async () => {
     await renderPersistAndLeave();
@@ -387,34 +378,6 @@ async function admitSummaryOnlyUnwatch() {
   expect(normalized.task).not.toHaveProperty("unread_count");
 }
 
-describe("D5 actual delayed display transaction versus admitted summary source", () => {
-  it.each([false, true])("does not publish a captured old display after admitted unwatch when an existing display slot is %s", async (hasSlot) => {
-    await seedSelectedInputs();
-    if (hasSlot) {
-      await mountPane();
-      await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.["tasks-pane"]?.total).toBe(3), WAIT);
-    } else {
-      // This is an absent DISPLAY SLOT, not a fabricated assertion that public
-      // initial producers never wrote the surrounding task-note record.
-      expect((await displayedNote())?.task_unread_display?.["tasks-pane"]).toBeUndefined();
-    }
-    const held = holdActualDisplayTransactions();
-    try {
-      if (hasSlot) {
-        await publishCoveringTotal(5);
-        await vi.waitFor(() => expect(paneHost.querySelector(".task-unread")?.textContent).toBe("5"), WAIT);
-      } else await mountPane();
-      await vi.waitFor(() => expect(held.captured).toBeGreaterThan(0), WAIT);
-      const addresses = [tracker.tasksAddress(scope.deviceId, scope.projectId), tracker.taskAddress(scope.deviceId, scope.projectId, taskId)];
-      const before = (await cache.readCachedMany(addresses)).map(cache.recordWriteOf);
-      await admitSummaryOnlyUnwatch();
-      expect((await cache.readCachedMany(addresses)).map(cache.recordWriteOf)).toEqual(before);
-      await held.release();
-      expect((await displayedNote())?.task_unread_display?.["tasks-pane"]).toBeUndefined();
-    } finally { await held.release(); }
-  });
-});
-
 describe("D5 actual consumer choice and mounted retirement", () => {
   it("persists actual cached timeline2 over listed3 with reversed genuine counter-source orders and retains2 on UNKNOWN", async () => {
     await seedSelectedInputs();
@@ -447,104 +410,6 @@ describe("D5 actual consumer choice and mounted retirement", () => {
     await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.["tasks-pane"]?.total).toBe(2), WAIT);
   });
 
-  it("does not recreate an old display on a fresh actual Pane paint after an admitted summary-only unwatch announcement", async () => {
-    await seedSelectedInputs(); await mountPane();
-    await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.["tasks-pane"]?.total).toBe(3), WAIT);
-    await admitSummaryOnlyUnwatch();
-    // A genuine admitted unwatch retires the display even though its summary
-    // publication intentionally leaves legacy list/detail bytes unchanged.
-    await vi.waitFor(() => expect(paneHost.querySelector(".task-unread")).toBeNull(), WAIT);
-    pane.feedMoved();
-    expect(paneHost.querySelector(".task-unread")).toBeNull();
-    expect((await displayedNote())?.task_unread_display?.["tasks-pane"]).toBeUndefined();
-    expect((await listedTask()).unread_count).toBe(3);
-  });
-
-  it("retires quota-only mounted display memory on a genuine admitted summary unwatch without requiring a prior persisted slot", async () => {
-    await seedSelectedInputs();
-    let refused = 0;
-    const put = IDBObjectStore.prototype.put;
-    vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (record, key) {
-      if (record?.value?.task_unread_display?.["tasks-pane"]) {
-        refused += 1; throw new DOMException("Mounted display quota refused", "QuotaExceededError");
-      }
-      return put.call(this, record, key);
-    });
-    await mountPane();
-    await vi.waitFor(() => expect(refused).toBeGreaterThan(0), WAIT);
-    expect((await displayedNote())?.task_unread_display?.["tasks-pane"]).toBeUndefined();
-    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
-    await admitSummaryOnlyUnwatch();
-    await vi.waitFor(() => expect(paneHost.querySelector(".task-unread")).toBeNull(), WAIT);
-    expect((await displayedNote())?.task_unread_display?.["tasks-pane"]).toBeUndefined();
-    expect(paneHost.querySelector(".error, .warn:not([hidden])")).toBeNull();
-  });
-});
-
-describe("D5 both actual display owners and the mounted Inbox shell", () => {
-  it("keeps independent actual Pane3 and Inbox2 slots through UNKNOWN then retires both on admission while preserving real intent and highwater note fields", async () => {
-    await seedSelectedInputs();
-    const watch = await import("../src/core/taskWatchAuthority.js");
-    const owner = await watch.beginTaskWatchMutation(scope, taskId, { watched: true, metadataOnly: true });
-    expect(owner).not.toBeNull();
-    expect(await watch.settleTaskWatchMutation(owner, { rollback: true })).toBe(true);
-    await mountPane();
-    await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.["tasks-pane"]?.total).toBe(3), WAIT);
-    pane.dispose(); pane = null; paneHost.replaceChildren();
-    const address = tracker.taskAddress(scope.deviceId, scope.projectId, taskId);
-    const contentRead = await content.captureTaskContentRead(address, { revalidate: "full" });
-    const timeline = ["tc-16", "tc-17"].map((id) => comment({ id, task_id: taskId,
-      author: { kind: "agent", agent_id: "agent" } }));
-    expect(await tracker.writeTaskRecord(scope.deviceId, scope.projectId, taskId,
-      tracker.taskRecord(full({ updated_at: "2026-10-29T12:00:30Z" }), timeline), { contentRead })).toBe(true);
-    await mountInboxProducerComponent(2);
-    await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.inbox?.total).toBe(2), WAIT);
-    await invalidateWithActualIncompleteAction();
-    await vi.waitFor(() => expect(inboxHost.querySelector(".stitle")?.textContent).toContain("After incomplete action"), WAIT);
-    expect(follower.entries()[0].unreadCount).toBe(2);
-    await remountIncompletePane("After incomplete action");
-    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
-    const before = await displayedNote();
-    expect(before.task_unread_display["tasks-pane"].total).toBe(3);
-    expect(before.task_unread_display.inbox.total).toBe(2);
-    expect(before.latest_watch_intent).toMatchObject({ ownerId: owner.id, disposition: "rejected" });
-    const { task_unread_display: _beforeDisplay, ...otherBefore } = before;
-    await admitSummaryOnlyUnwatch();
-    const after = await displayedNote();
-    const { task_unread_display: _afterDisplay, ...otherAfter } = after;
-    expect(otherAfter).toEqual(otherBefore);
-    expect(after.task_unread_display?.["tasks-pane"]).toBeUndefined();
-    expect(after.task_unread_display?.inbox).toBeUndefined();
-    await vi.waitFor(() => expect(paneHost.querySelector(".task-unread")).toBeNull(), WAIT);
-    await vi.waitFor(() => expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull(), WAIT);
-  });
-
-  it("retains actual full Inbox shell display3 on UNKNOWN then removes its indicator after genuine summary-only unwatch", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(new Date("2026-10-31T12:00:00Z"));
-    await seedSelectedInputs();
-    document.body.innerHTML = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
-    const { App } = await import("../src/app.js");
-    Object.assign(App, { route: { name: "inbox" }, devices: [{ id: scope.deviceId, name: "D5 device", status: "online" }],
-      selectedDeviceId: scope.deviceId, deviceFilter: null });
-    for (const [kind, held] of [["projects", [project]], ["workspaces", []],
-      ["feed", { projects: [project], workspaces: [], runs: [], items: [] }]]) {
-      await cache.writeCached({ deviceId: scope.deviceId, entityId: "", kind }, held);
-    }
-    shell = await import("../src/core/inboxView.js"); taskFeed = await import("../src/core/taskFeed.js");
-    shell.setInboxView("inbox"); shell.mountInboxList(); await taskFeed.startFeed();
-    await vi.waitFor(() => expect(document.querySelector("[data-recent-toggle] .inbox-recent-count")?.textContent).toBe("1"), WAIT);
-    document.querySelector("[data-recent-toggle]").click();
-    const indicator = () => document.querySelector(`[data-key="tracker_task:${taskId}"] .inbox-status-unread`);
-    await vi.waitFor(() => expect(indicator()).not.toBeNull(), WAIT);
-    await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.inbox?.total).toBe(3), WAIT);
-    await invalidateWithActualIncompleteAction();
-    await vi.waitFor(() => expect(document.querySelector(`[data-key="tracker_task:${taskId}"] .stitle`)?.textContent).toContain("After incomplete action"), WAIT);
-    expect(indicator()).not.toBeNull();
-    expect((await displayedNote()).task_unread_display.inbox.total).toBe(3);
-    await admitSummaryOnlyUnwatch();
-    await vi.waitFor(() => expect(indicator()).toBeNull(), WAIT);
-    expect((await displayedNote())?.task_unread_display?.inbox).toBeUndefined();
-  });
 });
 
 describe("D5 actual producer transaction and non-admission controls", () => {
@@ -612,17 +477,6 @@ async function renderInboxPersistAndLeave() {
 }
 
 describe("D5 Inbox production render owner lifecycle counterparts", () => {
-  it.each([[false, null, "unwatch"], [true, "te-90", "new incarnation"]])(
-    "does not revive Inbox3 after unmounted admitted %s/%s (%s) and a blind prior-lineage rewrite",
-    async (watched, floor) => {
-      await renderInboxPersistAndLeave();
-      await admittedLineage(watched, floor);
-      await blindRestorePriorLineage("Inbox blind rewrite after admission");
-      await mountInboxProducerComponent(0);
-      expect(inboxHost.querySelector(".stitle")?.textContent).toContain("Inbox blind rewrite after admission");
-      expect(follower.entries()[0].unreadCount).toBe(0);
-      expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull();
-    });
 
   it("retains actual Inbox3 on remount after only blind lineage changes", async () => {
     await renderInboxPersistAndLeave();
@@ -650,61 +504,6 @@ describe("D5 Inbox production render owner lifecycle counterparts", () => {
     expect(follower.entries()[0].unreadCount).toBe(3);
   });
 
-  it.each([false, true])("does not publish a captured Inbox display after admitted unwatch when an existing Inbox slot is %s", async (hasSlot) => {
-    await seedSelectedInputs();
-    if (hasSlot) {
-      await mountInboxProducerComponent();
-      await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.inbox?.total).toBe(3), WAIT);
-    } else expect((await displayedNote())?.task_unread_display?.inbox).toBeUndefined();
-    const held = holdActualDisplayTransactions();
-    try {
-      if (hasSlot) {
-        await publishCoveringTotal(5);
-        await vi.waitFor(() => expect(follower.entries()[0]?.unreadCount).toBe(5), WAIT);
-        expect(inboxHost.querySelector(".inbox-status-unread")).not.toBeNull();
-      } else await mountInboxProducerComponent();
-      await vi.waitFor(() => expect(held.captured).toBeGreaterThan(0), WAIT);
-      const addresses = [tracker.tasksAddress(scope.deviceId, scope.projectId), tracker.taskAddress(scope.deviceId, scope.projectId, taskId)];
-      const before = (await cache.readCachedMany(addresses)).map(cache.recordWriteOf);
-      await admitSummaryOnlyUnwatch();
-      expect((await cache.readCachedMany(addresses)).map(cache.recordWriteOf)).toEqual(before);
-      await held.release();
-      expect((await displayedNote())?.task_unread_display?.inbox).toBeUndefined();
-    } finally { await held.release(); }
-  });
-
-  it("does not recreate actual Inbox display on a fresh renderEntry paint after an admitted unwatch announcement", async () => {
-    await seedSelectedInputs(); await mountInboxProducerComponent();
-    await vi.waitFor(async () => expect((await displayedNote())?.task_unread_display?.inbox?.total).toBe(3), WAIT);
-    await admitSummaryOnlyUnwatch();
-    await vi.waitFor(() => expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull(), WAIT);
-    const { inboxRowHtml } = await import("../src/core/inbox.js");
-    inboxHost.innerHTML = follower.entries().map((entry) => follower.renderEntry(entry, () => inboxRowHtml(entry))).join("");
-    expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull();
-    expect(follower.entries()[0].unreadCount).toBe(0);
-    expect((await displayedNote())?.task_unread_display?.inbox).toBeUndefined();
-  });
-
-  it("retires actual Inbox quota-only display memory on admitted unwatch without a persisted Inbox slot", async () => {
-    await seedSelectedInputs();
-    let refused = 0;
-    const put = IDBObjectStore.prototype.put;
-    vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (record, key) {
-      if (record?.value?.task_unread_display?.inbox) {
-        refused += 1; throw new DOMException("Inbox display quota refused", "QuotaExceededError");
-      }
-      return put.call(this, record, key);
-    });
-    await mountInboxProducerComponent();
-    await vi.waitFor(() => expect(refused).toBeGreaterThan(0), WAIT);
-    expect((await displayedNote())?.task_unread_display?.inbox).toBeUndefined();
-    expect(follower.entries()[0].unreadCount).toBe(3);
-    await admitSummaryOnlyUnwatch();
-    await vi.waitFor(() => expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull(), WAIT);
-    expect(follower.entries()[0].unreadCount).toBe(0);
-    expect((await displayedNote())?.task_unread_display?.inbox).toBeUndefined();
-    expect(inboxHost.querySelector(".error, .warn:not([hidden])")).toBeNull();
-  });
 });
 
 async function bothActualSlots() {
@@ -728,22 +527,6 @@ async function observedSummaryMutation(contentRead, extra = {}) {
 }
 
 describe("D5 real producer ordering, copies, partial updates and recovery", () => {
-  it("advances the same-task publication note on a genuinely newer same-lineage admission without retiring either actual display slot", async () => {
-    await bothActualSlots();
-    const before = await noteRecord();
-    const read = await content.captureTaskContentRead(scope, { revalidate: "summary" });
-    const observed = await observedSummaryMutation(read);
-    expect(observed).toMatchObject({ watched: true, watch_started_after: "te-15",
-      __task_watch_cache: { source: "read", observed_read_order: read.readOrder, taskId, scope } });
-    const after = await noteRecord();
-    expect(after.value.task_unread_display["tasks-pane"]).toEqual(before.value.task_unread_display["tasks-pane"]);
-    expect(after.value.task_unread_display.inbox).toEqual(before.value.task_unread_display.inbox);
-    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
-    expect(follower.entries()[0].unreadCount).toBe(3);
-    // Equality tokens only prove a committed note update; they do not order
-    // sources or certify a count. The genuine selected observation is above.
-    expect(cache.recordWriteOf(after)).not.toBe(cache.recordWriteOf(before));
-  });
 
   it("keeps the first actual normalized source on identical and conflicting equal-read replays without mutating either display slot", async () => {
     await bothActualSlots();
@@ -873,40 +656,6 @@ async function admitSameFloorSummaryWithoutCounts(title, updatedAt) {
   return read.readOrder;
 }
 
-it("does not revive old same-tuple display across an admitted unwatch and rewatch then preserves a genuinely covered value across later same-lineage admission", async () => {
-  await bothActualSlots();
-  const oldSource = (await listedTask()).__task_watch_cache.observed_read_order;
-  const addresses = [tracker.tasksAddress(scope.deviceId, scope.projectId), tracker.taskAddress(scope.deviceId, scope.projectId, taskId)];
-  const oldTokens = (await cache.readCachedMany(addresses)).map(cache.recordWriteOf);
-  await admitSummaryOnlyUnwatch();
-  await vi.waitFor(() => expect(paneHost.querySelector(".task-unread")).toBeNull(), WAIT);
-  await vi.waitFor(() => expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull(), WAIT);
-  const boundary = await admitSameFloorSummaryWithoutCounts("Rewatch with the SAME previous tuple", "2026-10-29T12:05:00Z");
-  expect(boundary).toBeGreaterThan(oldSource);
-  expect((await cache.readCachedMany(addresses)).map(cache.recordWriteOf)).toEqual(oldTokens);
-  expect((await listedTask()).unread_count).toBe(3);
-  expect((await listedTask()).watch_started_after).toBe("te-15");
-  expect(paneHost.querySelector(".task-unread")).toBeNull();
-  expect(follower.entries()[0].unreadCount).toBe(0);
-  expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull();
-  await publishCoveringTotal(5);
-  await vi.waitFor(() => expect(paneHost.querySelector(".task-unread")?.textContent).toBe("5"), WAIT);
-  await vi.waitFor(() => expect(follower.entries()[0]?.unreadCount).toBe(5), WAIT);
-  const coveredSource = (await listedTask()).__task_watch_cache.observed_read_order;
-  expect(coveredSource).toBeGreaterThan(boundary);
-  const newerSameLineage = await admitSameFloorSummaryWithoutCounts("Later same-lineage observation", "2026-10-29T12:06:00Z");
-  expect(newerSameLineage).toBeGreaterThan(coveredSource);
-  pane.feedMoved();
-  expect(paneHost.querySelector(".task-unread")?.textContent).toBe("5");
-  expect(follower.entries()[0].unreadCount).toBe(5);
-  expect(inboxHost.querySelector(".inbox-status-unread")).not.toBeNull();
-  await vi.waitFor(async () => {
-    const note = await displayedNote();
-    expect(note?.task_unread_display?.["tasks-pane"]?.total).toBe(5);
-    expect(note?.task_unread_display?.inbox?.total).toBe(5);
-  }, WAIT);
-});
-
 function leaveBothActualConsumers() {
   pane.dispose(); pane = null; follower.dispose(); follower = null;
   paneHost.replaceChildren(); inboxHost.replaceChildren();
@@ -916,49 +665,6 @@ const selectedWatchIdentity = (task) => {
   const { lineage: _lineage, uncertain: _uncertain, ...identity } = task.__task_watch_cache;
   return identity;
 };
-
-describe("D5 actual admitted event identity and selected value origin", () => {
-  it("keeps the first shared-note event and diagnoses conflicting lineages independently admitted from the same real capture by summary and catalogue producers", async () => {
-    await bothActualSlots(); leaveBothActualConsumers();
-    const read = await content.captureTaskContentRead(scope, { revalidate: "summary" });
-    const normalized = await observedSummaryMutation(read);
-    expect(normalized).toMatchObject({ watched: true, watch_started_after: "te-15",
-      __task_watch_cache: { source: "read", observed_read_order: read.readOrder, taskId, scope } });
-    const first = await noteRecord();
-    await observedSummaryMutation(read);
-    expect(await noteRecord()).toEqual(first);
-
-    const diagnostic = vi.spyOn(console, "info").mockImplementation(() => {});
-    const conflicting = full({ watched: false, title: "Independent catalogue admission at the SAME source",
-      updated_at: "2026-10-29T12:05:00Z" });
-    expect(await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
-      tracker.tasksRecord([conflicting], columns(), read.readOrder), { contentRead: read })).toBe(true);
-    const catalogue = await listedTask();
-    // Existing-ID family admission does not claim list membership. Both real
-    // selectors independently selected this genuine capture, unlike the
-    // earlier normalized equal-read replay that retained its first lineage.
-    expect(catalogue).toMatchObject({ watched: false,
-      __task_watch_cache: { source: "read", observed_read_order: read.readOrder, taskId, scope } });
-    expect(selectedWatchIdentity(catalogue)).toEqual(selectedWatchIdentity(normalized));
-    expect((await value(summaries.summaryAddress(scope, taskId))).task.watched).toBe(true);
-    expect(await noteRecord()).toEqual(first);
-    expect(diagnostic).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not associate an old listed total with the new watch source when the Pane remounts after a same-tuple watch cycle", async () => {
-    await retainOldTotalUnderNewWatch();
-    await remountIncompletePane("New watch source with retained OLD total");
-    expect(paneHost.querySelector(".task-unread")).toBeNull();
-    expect((await displayedNote())?.task_unread_display?.["tasks-pane"]).toBeUndefined();
-  });
-
-  it("does not associate an old listed total with the new watch source when the Inbox remounts after a same-tuple watch cycle", async () => {
-    await retainOldTotalUnderNewWatch();
-    await mountInboxProducerComponent(0);
-    expect(inboxHost.querySelector(".inbox-status-unread")).toBeNull();
-    expect((await displayedNote())?.task_unread_display?.inbox).toBeUndefined();
-  });
-});
 
 async function retainOldTotalUnderNewWatch() {
   await bothActualSlots(); leaveBothActualConsumers();

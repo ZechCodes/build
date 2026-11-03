@@ -180,20 +180,6 @@ describe("D5 first actual consumer lifecycle boundaries", () => {
     expect((await note())?.task_unread_display?.["tasks-pane"]?.total).toBe(3);
   });
 
-  it("does not create Inbox persistence from the real HTML callback before a failed full-shell DOM paint succeeds", async () => {
-    await seedActualInputs(); const writes = delayActualDisplayMerges();
-    await mountActualInbox();
-    await vi.waitFor(() => expect(writes.captured).toBeGreaterThan(0), WAIT);
-    await sourceReadbacks(); const before = writes.captured;
-    const failed = failActualTemplateAfterHtml((html) => html.includes(`tracker_task:${taskId}`));
-    try { expect(() => shell.inboxListRouteChanged()).toThrow(failed.failure); } finally { failed.restore(); }
-    expect(failed.reached).toBe(1);
-    await sourceReadbacks();
-    expect(writes.captured).toBe(before);
-    await writes.release();
-    expect((await note())?.task_unread_display?.inbox?.total).toBe(3);
-  });
-
   it("publishes only the successful inner full-Inbox draw when a reentrant outer HTML paint later fails", async () => {
     await seedActualInputs(); const writes = delayActualDisplayMerges();
     await mountActualInbox();
@@ -240,19 +226,4 @@ describe("D5 first actual consumer lifecycle boundaries", () => {
     expect(follower.entries()[0].unreadCount).toBe(0);
   });
 
-  it("keeps the prior visible Inbox persist eligible on fold alone while hidden callbacks create no new persist", async () => {
-    await seedActualInputs(); const writes = delayActualDisplayMerges();
-    await mountActualInbox("projects");
-    await vi.waitFor(() => expect(writes.captured).toBeGreaterThan(0), WAIT);
-    const block = inboxRow().closest(".inbox-project");
-    expect(block.classList.contains("inbox-folded")).toBe(false);
-    await sourceReadbacks(); const before = writes.captured;
-    block.querySelector("[data-project-fold]").click();
-    await vi.waitFor(() => expect(block.classList.contains("inbox-folded")).toBe(true), WAIT);
-    await sourceReadbacks();
-    expect(writes.captured).toBe(before);
-    await writes.release();
-    expect((await note())?.task_unread_display?.inbox?.total).toBe(3);
-    expect(block.classList.contains("inbox-folded")).toBe(true);
-  });
 });

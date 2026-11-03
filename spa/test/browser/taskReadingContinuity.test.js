@@ -12,12 +12,16 @@ const styles = (basePath) => `@import url("${basePath}src/styles/tasks.css");
   @import url("${basePath}src/styles/surfaces.css");
   html,body{height:100%;margin:0} body{display:block} #tabbody{height:100%}`;
 
-function longRecord() {
+function longRecord(review = true) {
   const task = structuredClone(answer.result.task);
   task.watched = true;
   task.read_through = "tc-reading35";
-  task.review_summary = { status: "open", version: 1 };
+  if (review) task.review_summary = { status: "open", version: 1 };
+  else delete task.review_summary;
   const paragraph = "The reader is halfway through this detailed comment, following a long explanation of the change and its consequences. ".repeat(9);
+  // A resolved named reference is wider than its bare #411 text. Its own
+  // paragraph avoids legitimate wrapping in the narrower Comments column;
+  // reference updates still exercise the same row, body and reading anchor.
   return { task, timeline: Array.from({ length: 36 }, (_, index) => ({
     type: "comment", id: `tc-reading${String(index).padStart(2, "0")}`, author: task.assignee,
     body: index % 3 ? `Short comment ${index}.` : `#411\n\nComment ${index}.\n\n${Array.from({ length: 8 }, () => paragraph).join("\n\n")}`,
@@ -28,7 +32,7 @@ function longRecord() {
   })) };
 }
 
-async function mountReadingPage(page, basePath, commentId = null, omitTarget = false) {
+async function mountReadingPage(page, basePath, commentId = null, omitTarget = false, { review: savedReview = true } = {}) {
   await mountLayout(page, SHELL, { basePath, styles: styles(basePath) });
   await loadBrowserModules(page, {
     cache: "src/core/trackerCache.js", taskPage: "src/core/trackerTaskPage.js",
@@ -37,7 +41,7 @@ async function mountReadingPage(page, basePath, commentId = null, omitTarget = f
     local: "src/core/localCache.js", support: "src/core/taskReviewSupport.js",
     reviewFiles: "src/core/taskReviewFiles.js", pages: "src/core/bodyPages.js",
   }, basePath);
-  await page.evaluate(async ({ record, commentId, omitTarget }) => {
+  await page.evaluate(async ({ record, commentId, omitTarget, savedReview }) => {
     const { cache, taskPage, references, review, support } = window.__layoutModules;
     const errors = [];
     window.addEventListener("error", (event) => errors.push(event.message));
@@ -49,10 +53,9 @@ async function mountReadingPage(page, basePath, commentId = null, omitTarget = f
       projectKey: `${scope.deviceId}/${scope.projectId}`, name: "Build" }], workspaces: [], items: [] };
     await cache.writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [record.task], columns: [] });
     await cache.writeTaskRecord(scope.deviceId, scope.projectId, scope.taskId, record);
-    // Review continuity begins in the review template. Creating the first
-    // review is a deliberate template transition, not a metadata-only paint.
+    // Already-review and first-review arrival cases share this real mount.
     await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true } });
-    await review.writeReviewRecord(scope, { task_id: scope.taskId, workspace_id: "ws-reading", state: "open", version: 1,
+    if (savedReview) await review.writeReviewRecord(scope, { task_id: scope.taskId, workspace_id: "ws-reading", state: "open", version: 1,
       snapshots: [{ id: "snapshot-other", number: 6, created_at: "2026-10-07T12:00:00Z", author: record.task.assignee, directories: [] }],
       actions: [], destinations: [], completion: null,
     }, 1);
@@ -69,7 +72,7 @@ async function mountReadingPage(page, basePath, commentId = null, omitTarget = f
     host.scrollTo = (...args) => { scrollCalls.push(args[0]); scrollTo(...args); };
     const mounted = taskPage.mountTaskPage(host, {
       ...scope, projectKey: `${scope.deviceId}/${scope.projectId}`, commentId, feed: () => feed,
-      reviewRoute: { revision: 6, mode: "all", view: "comments" },
+      reviewRoute: savedReview ? { revision: 6, mode: "all", view: "comments" } : null,
       callRpc: (method) => {
         if (method === "tasks.attachment") return Promise.resolve(attachment);
         if (method === "tasks.review.snapshot") return new Promise((resolve, reject) => { window.__reading.rejectSnapshot = reject; });
@@ -78,25 +81,14 @@ async function mountReadingPage(page, basePath, commentId = null, omitTarget = f
       catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }), navigate: () => {},
     });
     window.__reading = { record, fullRecord, scope, mounted, stopIndex, errors, scrollCalls };
-    // The review root uses display:contents, and phone Comments hides the
-    // centre pane. Measure cloned child contents offscreen to prove each
-    // cache arrival changed its intrinsic footprint without moving originals.
-    window.__reading.reviewFootprint = () => {
-      const wrapper = document.createElement("div");
-      wrapper.className = "task-review";
-      const width = host.querySelector(".task-review-centre").getBoundingClientRect().width || host.clientWidth;
-      wrapper.style.cssText = `position:fixed;left:-100000px;top:0;visibility:hidden;display:block;width:${width}px`;
-      host.querySelectorAll("[data-review-content], [data-review-controls], [data-review-git-actions], [data-review-feedback-host]").forEach((node) => {
-        const child = node.cloneNode(true);
-        child.style.display = "block";
-        wrapper.append(child);
-      });
-      document.body.append(wrapper);
-      const height = wrapper.getBoundingClientRect().height;
-      wrapper.remove();
-      return height;
+    // These are the real mounted boxes. Hidden phone panes must contribute
+    // zero geometry; visible desktop cache arrivals must change real content.
+    window.__reading.reviewGeometry = () => {
+      const height = (selector) => host.querySelector(selector)?.getBoundingClientRect().height || 0;
+      return { content: height("[data-review-content]"), header: height(".task-review-header"),
+        feedback: height("[data-review-target]"), failure: height("[data-review-action-error]") };
     };
-  }, { record: longRecord(), commentId, omitTarget });
+  }, { record: longRecord(savedReview), commentId, omitTarget, savedReview });
   await page.waitForFunction(() => {
     const images = [...document.querySelectorAll("#task-pane img.thread-attachment-image")];
     return document.querySelectorAll("#task-pane .task-comment").length >= 35 &&
@@ -144,7 +136,7 @@ async function parkReader(page, fraction = 0.5, attachment = false) {
       return box.top <= host.getBoundingClientRect().top + 1 && box.bottom > host.getBoundingClientRect().top + 1;
     });
     window.__reading.saved.topRow = topRow;
-    window.__reading.saved.reviewHeight = window.__reading.reviewFootprint();
+    window.__reading.saved.reviewGeometry = window.__reading.reviewGeometry();
     window.__reading.saved.rowTop = row.getBoundingClientRect().top;
     return host.scrollTop;
   }, { id: READING_ROW, attachment });
@@ -167,19 +159,29 @@ async function measure(page, before, label) {
       anchor: saved.content.tagName.toLowerCase(),
       contentTopDelta: saved.content.getBoundingClientRect().top - saved.contentTop,
       sameContent: saved.content.isConnected && row.contains(saved.content),
-      reviewHeightDelta: window.__reading.reviewFootprint() - saved.reviewHeight,
+      reviewGeometry: window.__reading.reviewGeometry(), previousReviewGeometry: saved.reviewGeometry,
+      phoneComments: innerWidth <= 640 && host.querySelector(".review-task-template")?.dataset.reviewView === "comments",
       scrolls: window.__reading.scrolls, contentScrolls: window.__reading.contentScrolls };
   }, { id: READING_ROW, before });
   console.log(`${label}: ${JSON.stringify(result)}`);
   expect.soft(Math.abs(result.contentTopDelta), `${label}: visible content moved`).toBeLessThanOrEqual(1);
   expect.soft(result.contentScrolls.every((delta) => Math.abs(delta) <= 1), `${label}: transient content jump`).toBe(true);
   expect.soft(result.sameContent, `${label}: reading content replaced`).toBe(true);
-  if (/delayed-(listing|patch|blob|tree|page-first|page-next|failure)$|feedback-draft$|controls-failure$/.test(label)) {
-    expect.soft(Math.abs(result.reviewHeightDelta), `${label}: cache arrival must change review height`).toBeGreaterThan(1);
+  if (/delayed-(listing|patch|blob|tree|page-first|page-next|failure)$/.test(label)) {
+    if (result.phoneComments) {
+      expect.soft(result.previousReviewGeometry.content, `${label}: hidden pane previously contributed geometry`).toBe(0);
+      expect.soft(result.reviewGeometry.content, `${label}: hidden pane now contributes geometry`).toBe(0);
+    } else {
+      expect.soft(result.previousReviewGeometry.content, `${label}: previous real content box was visible`).toBeGreaterThan(0);
+      expect.soft(result.reviewGeometry.content, `${label}: updated real content box is visible`).toBeGreaterThan(0);
+      expect.soft(Math.abs(result.reviewGeometry.content - result.previousReviewGeometry.content), `${label}: visible cache arrival must change real review content height`).toBeGreaterThan(1);
+    }
   }
+  if (label.endsWith("feedback-draft")) expect.soft(result.reviewGeometry.feedback - result.previousReviewGeometry.feedback, `${label}: real feedback target grew`).toBeGreaterThan(1);
+  if (label.endsWith("controls-failure")) expect.soft(result.reviewGeometry.failure - result.previousReviewGeometry.failure, `${label}: real control error grew`).toBeGreaterThan(1);
   if (!label.includes("metadata-")) expect.soft(Math.abs(result.rootTopDelta), `${label}: row geometry moved`).toBeLessThanOrEqual(1);
   if (label.endsWith("review-label")) {
-    expect.soft(Math.abs(result.reviewHeightDelta), `${label}: review panel footprint changed`).toBeLessThanOrEqual(1);
+    expect.soft(Math.abs(result.reviewGeometry.header - result.previousReviewGeometry.header), `${label}: review header footprint changed`).toBeLessThanOrEqual(1);
   }
   expect.soft(result.sameTopRow, `${label}: comment under viewport top changed`).toBe(true);
   expect.soft(result.sameRow, `${label}: reading row replaced`).toBe(true);
@@ -230,6 +232,50 @@ async function updateMetadata(page, action) {
     }
   }, action);
 }
+
+for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900]]) {
+  it(`keeps the ${label} reader and existing comment nodes when the first review arrives`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountReadingPage(page, basePath, null, false, { review: false });
+      expect(await page.locator(".review-task-template").count()).toBe(0);
+      const before = await parkReader(page);
+      const bodyWidth = await page.locator(`#${READING_ROW} .task-comment-body`).evaluate((node) => node.getBoundingClientRect().width);
+      await updateMetadata(page, "review");
+      await page.locator(".review-task-template").waitFor({ state: "attached" });
+      await measure(page, before, `${label}/first-review`);
+      expect(await page.locator(`#${READING_ROW} .task-comment-body`).evaluate((node) => node.getBoundingClientRect().width)).toBe(bodyWidth);
+      if (width <= 640) expect(await page.locator(".review-task-template").getAttribute("data-review-view")).toBe("comments");
+      expect(await page.locator(".review-task-template").getAttribute("class")).toContain("task-review-reading");
+      await page.locator('button[data-review-view="changes"]').click();
+      expect(await page.locator(".review-task-template").getAttribute("class")).not.toContain("task-review-reading");
+      expect(await page.locator(".review-task-template").getAttribute("data-review-view")).toBe("changes");
+      expect(await page.locator('button[data-review-view="changes"]').getAttribute("aria-pressed")).toBe("true");
+      expect(await page.locator('button[data-review-view="changes"]').isVisible()).toBe(true);
+      expect(await page.evaluate(() => window.__reading.errors)).toEqual([]);
+      await page.evaluate(() => { window.__reading.mounted.dispose(); window.__reading.stopIndex(); });
+    }, { width, height, plugins: [deviceShim] });
+  }, 45_000);
+}
+
+it("keeps an untouched ordinary task at exact scroll zero through late header growth without scrollTo", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountReadingPage(page, basePath, null, false, { review: false });
+    const before = await page.locator(".task-page-head").evaluate((node) => node.getBoundingClientRect().height);
+    expect(await page.locator("#task-pane").evaluate((host) => host.scrollTop)).toBe(0);
+    expect(await page.evaluate(() => window.__reading.scrollCalls)).toEqual([]);
+    await page.evaluate(async () => {
+      const { record, scope } = window.__reading;
+      record.task.title += ` ${"Late task header metadata expands the title across several lines. ".repeat(20)}`;
+      await window.__layoutModules.cache.writeTaskRecord(scope.deviceId, scope.projectId, scope.taskId, record);
+    });
+    await page.waitForFunction((before) => document.querySelector(".task-page-head").getBoundingClientRect().height > before + 1, before);
+    await settle(page);
+    expect(await page.locator("#task-pane").evaluate((host) => host.scrollTop)).toBe(0);
+    expect(await page.evaluate(() => window.__reading.scrollCalls)).toEqual([]);
+    expect(await page.evaluate(() => window.__reading.errors)).toEqual([]);
+    await page.evaluate(() => { window.__reading.mounted.dispose(); window.__reading.stopIndex(); });
+  }, { plugins: [deviceShim] });
+}, 30_000);
 
 for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900]]) {
   it(`keeps the ${label} reader inside a long comment through cache and metadata changes`, async () => {
@@ -436,6 +482,30 @@ async function writeDelayedReview(page, action) {
     if (action === "tabs-restored") document.querySelector('[data-tab-path="notes.txt"]').click();
   }, action);
 }
+
+it("measures real phone Changes growth and zero contribution from the same pane on Comments", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountReadingPage(page, basePath);
+    await mountDelayedReview(page);
+    await page.locator('[data-review-view="changes"]').evaluate((button) => button.click());
+    const before = await page.locator("[data-review-content]").evaluate((node) => {
+      window.__reading.visiblePane = node;
+      return node.getBoundingClientRect().height;
+    });
+    await writeDelayedReview(page, "listing");
+    await page.waitForFunction(() => document.querySelectorAll("[data-review-path]").length === 30);
+    const after = await page.locator("[data-review-content]").evaluate((node) => node.getBoundingClientRect().height);
+    expect(after).toBeGreaterThan(before + 1);
+    await page.locator('[data-review-view="comments"]').evaluate((button) => button.click());
+    expect(await page.locator("[data-review-content]").evaluate((node) => node.getBoundingClientRect().height)).toBe(0);
+    await writeDelayedReview(page, "patch");
+    await page.locator('[data-review-path="file0.js"] tr[data-new-line="40"]').waitFor({ state: "attached" });
+    expect(await page.locator("[data-review-content]").evaluate((node) => node.getBoundingClientRect().height)).toBe(0);
+    expect(await page.locator("[data-review-content]").evaluate((node) => node === window.__reading.visiblePane)).toBe(true);
+    expect(await page.evaluate(() => window.__reading.errors)).toEqual([]);
+    await page.evaluate(() => { window.__reading.mounted.dispose(); window.__reading.stopIndex(); });
+  }, { width: 390, height: 844, plugins: [deviceShim] });
+}, 45_000);
 
 for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900]]) {
   it(`keeps visible ${label} task text still through delayed saved-review child cache paints`, async () => {

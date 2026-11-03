@@ -207,3 +207,20 @@ test("typed RPC domain errors survive HTTP mapping while auth errors stay native
     { code: "unauthorized" },
   );
 });
+
+for (const status of [401, 403, 429, 503]) {
+  test(`HTTP ${status} retains only numeric status metadata and its existing error code`, async () => {
+    const code = status === 401 ? "unauthorized" : "http_error";
+    await assert.rejects(jsonRequest(
+      async () => json({ error: "fixture-secret-must-not-escape" }, { status }),
+      "https://bridge.test",
+    ), (error) => {
+      assert.equal(error.code, code);
+      assert.equal(error.status, status);
+      assert.equal(error.message, `Bridge HTTP ${code.replaceAll("_", " ")}.`);
+      assert.deepEqual(Object.keys(error).sort(), ["code", "status"]);
+      assert.equal(String(error).includes("fixture-secret-must-not-escape"), false);
+      return true;
+    });
+  });
+}

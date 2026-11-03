@@ -23,6 +23,7 @@ const invalidOrigin = () => Object.assign(new Error("Enter an HTTPS origin with 
 
 export function httpFailure(code, uncertain = false) {
   const messages = {
+    discovery_failed: "Build could not verify this HTTPS address. Check the address and try again.",
     network: "Could not reach the HTTPS bridge. Check its certificate trust, network access, CORS and browser local-network permission.",
     authentication: "Bridge authorization expired or was refused. Verify this device with your account again.",
     protocol: "The bridge returned an invalid HTTP response.",

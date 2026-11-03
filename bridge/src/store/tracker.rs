@@ -478,10 +478,12 @@ pub(super) fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), St
     super::waiting_on::note_task_write(tx, task)?;
     super::delivery_intents::note_task_write(tx, task)?;
     let record = serde_json::to_string(task).expect("a task always serializes");
-    let before: Option<(String, String)> = tx
-        .prepare_cached("SELECT state,status FROM tracker_tasks WHERE id=?1")?
-        .query_row([&task.id], |row| Ok((row.get(0)?, row.get(1)?)))
-        .optional()?;
+    let before: Option<Task> = tx
+        .prepare_cached("SELECT record FROM tracker_tasks WHERE id=?1")?
+        .query_row([&task.id], |row| row.get::<_, String>(0))
+        .optional()?
+        .map(|raw| decode(&raw, "tracker_tasks", &task.id))
+        .transpose()?;
     let fields = rusqlite::params![
         task.id,
         task.project_path,
@@ -502,18 +504,39 @@ pub(super) fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), St
         tx.prepare_cached(INSERT_TASK)?.execute(fields)?;
     }
     if updated != 0 || before.is_none() {
-        super::sync::touch_task(tx, &task.id, true)?;
+        super::sync::touch_task(
+            tx,
+            &task.id,
+            sync_visible_task_changed(before.as_ref(), task),
+        )?;
         super::task_summaries::task_written(tx, task)?;
         let after = (task.state.as_str(), task.status.as_str());
         if before
             .as_ref()
-            .map(|(state, status)| (state.as_str(), status.as_str()))
+            .map(|task| (task.state.as_str(), task.status.as_str()))
             != Some(after)
         {
             super::task_summaries::task_dependents_refresh(tx, &task.id)?;
         }
     }
     Ok(())
+}
+
+/// Availability is a process-lifetime observation retained for legacy task
+/// readers. It must not force a durable sync invalidation by itself.
+fn sync_visible_task_changed(before: Option<&Task>, after: &Task) -> bool {
+    let Some(before) = before else {
+        return true;
+    };
+    let mut before = before.clone();
+    let mut after = after.clone();
+    for identity in before.identities.values_mut() {
+        identity.available = false;
+    }
+    for identity in after.identities.values_mut() {
+        identity.available = false;
+    }
+    before != after
 }
 
 /// Append what was said and what happened. Both are inserts that ignore a

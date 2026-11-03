@@ -79,5 +79,19 @@ fn projection(conn: &Connection, id: &str) -> Result<Option<(String, Value)>, St
         FROM tracker_task_summaries s LEFT JOIN tracker_task_query_sources q ON q.task_id=s.task_id WHERE s.task_id=?1")?
         .query_row([id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
     // Preserve opaque predicate bytes independently from lossy display fields.
-    Ok(raw.map(|(project, row, target, source)| (project, json!([row, target, source]))))
+    raw.map(|(project, row, target, source)| {
+        let mut row: Value = serde_json::from_str(&row).map_err(|source| StoreError::Corrupt {
+            path: std::path::PathBuf::from(format!("tracker_task_summaries/{id}")),
+            source,
+        })?;
+        if let Some(identities) = row.get_mut("identities").and_then(Value::as_object_mut) {
+            for identity in identities.values_mut() {
+                if let Some(identity) = identity.as_object_mut() {
+                    identity.remove("available");
+                }
+            }
+        }
+        Ok((project, json!([row, target, source])))
+    })
+    .transpose()
 }

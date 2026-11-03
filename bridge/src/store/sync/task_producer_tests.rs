@@ -55,6 +55,40 @@ fn canonical_create_edit_and_unchanged_save_publish_once_per_commit() {
 }
 
 #[test]
+fn ephemeral_identity_availability_does_not_publish_a_task_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut task = create(&store);
+    task.identities.insert(
+        "synthetic-agent".into(),
+        crate::tracker::TaskAgentIdentity {
+            agent_id: "synthetic-agent".into(),
+            name: Some("Synthetic".into()),
+            project_role: None,
+            ordinal: Some(1),
+            workspace_id: Some("synthetic-workspace".into()),
+            workspace_name: Some("Synthetic workspace".into()),
+            provider: Some("codex".into()),
+            available: true,
+        },
+    );
+    store.backfill_tracker_task(&task).unwrap();
+    let durable = events(&store).len();
+
+    task.identities
+        .get_mut("synthetic-agent")
+        .unwrap()
+        .available = false;
+    store.backfill_tracker_task(&task).unwrap();
+
+    assert_eq!(
+        events(&store).len(),
+        durable,
+        "process-lifetime availability must not enter the journal"
+    );
+}
+
+#[test]
 fn multiple_activity_appends_in_one_transaction_have_one_revision() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();

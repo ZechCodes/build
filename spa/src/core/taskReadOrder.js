@@ -65,8 +65,9 @@ function sharedContentAllocation(count, store, domain, watch) {
   return contentAllocationValues(readOrder, store, domain, watch);
 }
 
+// A new local control has no unresolved watch intent to make covering reads uncertain.
 export const initialTaskWatchControl = () => ({ generation: randomToken(), pendingGeneration: randomToken(),
-  watchRetirementEpoch: randomToken(), blindRetirementEpoch: randomToken(), pendingCount: 0, uncertain: true });
+  watchRetirementEpoch: randomToken(), blindRetirementEpoch: randomToken(), pendingCount: 0, uncertain: false });
 
 function contentAllocationValues(readOrder, store, domain, control) {
   const generation = store?.value?.generation || randomToken();

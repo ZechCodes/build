@@ -99,7 +99,7 @@ export function mountTaskReviewPage(host, options) {
   }
 
   function paintHead(saved) {
-    setHtml(node("head"), reviewHeadHtml(review(), saved, support, { task: options.task?.(), scope, sinceCount: reviewSinceCount(record, reviewBaseline(review(), rows), directory()), dedicated: options.dedicated === true }));
+    setHtml(node("head"), reviewHeadHtml(review(), saved, support, { task: options.task?.(), scope, sinceCount: reviewSinceCount(record, reviewBaseline(review(), rows), directory()) }));
     const select = host.querySelector('[data-review-snapshot]');
     if (select) select.onchange = () => {
       const target = review().snapshots.find((row) => row.id === select.value);

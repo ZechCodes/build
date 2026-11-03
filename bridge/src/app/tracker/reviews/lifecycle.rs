@@ -205,10 +205,13 @@ impl AppState {
         params.validate()?;
         let (project_id, task, review) = self.pull_request(&params.task_id)?;
         version(&review, params.expected_version)?;
-        if review.pull_request.as_ref().expect("PR checked").status != PullRequestStatus::Closed {
+        if !matches!(
+            review.pull_request.as_ref().expect("PR checked").status,
+            PullRequestStatus::Closed | PullRequestStatus::Rejected
+        ) {
             return Err(errors::encode(
                 "conflict",
-                "Only Closed unmerged PRs can reopen",
+                "Only Closed or Rejected unmerged PRs can reopen",
                 json!({
                     "task_id":params.task_id,"recovery":"Open a new PR after merge."
                 }),

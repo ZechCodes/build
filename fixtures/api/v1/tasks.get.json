@@ -770,6 +770,303 @@
         },
         "timeline": []
       }
+    },
+    {
+      "params": {
+        "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+      },
+      "result": {
+        "task": {
+          "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+          "project_id": "proj-1",
+          "number": 12,
+          "title": "Kanban drag does not persist",
+          "body": "Dragging a card to In review puts it back on the next paint.",
+          "state": "open",
+          "status": "in_progress",
+          "labels": [
+            "bug",
+            "ui"
+          ],
+          "priority": "high",
+          "assignee": {
+            "kind": "agent",
+            "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          },
+          "links": {
+            "workspace_ids": [
+              "ws-3f2a91c4"
+            ],
+            "branches": [
+              "build/tasks-board"
+            ],
+            "commits": [
+              "c8381faa9b1d4e6f2a0c7b5e3d8f1a2c4b6d8e0f"
+            ],
+            "conversation_ids": [
+              "run-5d90b1e7"
+            ],
+            "parent_task_id": null
+          },
+          "trackers": [
+            "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          ],
+          "identities": {
+            "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E": {
+              "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E",
+              "name": "Fix drag",
+              "ordinal": 1,
+              "workspace_id": "ws-3f2a91c4",
+              "workspace_name": "spa-flaky-tests",
+              "provider": "codex_app_server",
+              "available": true
+            }
+          },
+          "attachments": [],
+          "created_by": {
+            "kind": "user"
+          },
+          "created_at": "2026-09-19T09:00:00Z",
+          "updated_at": "2026-09-19T10:12:00Z",
+          "closed_at": null,
+          "watched": true,
+          "unread_count": 1,
+          "session_started_ms": 1789808400000,
+          "last_activity_ms": 1789812720000,
+          "linked_reviews": [
+            {
+              "task_id": "task-review-13",
+              "number": 13,
+              "workspace_id": "ws-3f2a91c4",
+              "version": 1,
+              "status": "open",
+              "latest_published_snapshot_id": "snapshot-1",
+              "parent_task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+            }
+          ]
+        },
+        "timeline": [
+          {
+            "type": "comment",
+            "id": "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F",
+            "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "author": {
+              "kind": "build"
+            },
+            "body": "Revision 2 is ready; read since from revision 1.",
+            "mentions_user": true,
+            "refs": [
+              {
+                "kind": "file",
+                "path": "spa/src/views/board.js",
+                "line_start": 88,
+                "line_end": 94
+              }
+            ],
+            "attachments": [],
+            "created_at": "2026-09-19T10:11:00Z",
+            "review_notice": "revision_ready"
+          }
+        ]
+      }
+    },
+    {
+      "params": {
+        "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+      },
+      "result": {
+        "task": {
+          "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+          "project_id": "proj-1",
+          "number": 12,
+          "title": "Kanban drag does not persist",
+          "body": "Dragging a card to In review puts it back on the next paint.",
+          "state": "open",
+          "status": "in_progress",
+          "labels": [
+            "bug",
+            "ui"
+          ],
+          "priority": "high",
+          "assignee": {
+            "kind": "agent",
+            "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          },
+          "links": {
+            "workspace_ids": [
+              "ws-3f2a91c4"
+            ],
+            "branches": [
+              "build/tasks-board"
+            ],
+            "commits": [
+              "c8381faa9b1d4e6f2a0c7b5e3d8f1a2c4b6d8e0f"
+            ],
+            "conversation_ids": [
+              "run-5d90b1e7"
+            ],
+            "parent_task_id": null
+          },
+          "trackers": [
+            "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          ],
+          "identities": {
+            "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E": {
+              "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E",
+              "name": "Fix drag",
+              "ordinal": 1,
+              "workspace_id": "ws-3f2a91c4",
+              "workspace_name": "spa-flaky-tests",
+              "provider": "codex_app_server",
+              "available": true
+            }
+          },
+          "attachments": [],
+          "created_by": {
+            "kind": "user"
+          },
+          "created_at": "2026-09-19T09:00:00Z",
+          "updated_at": "2026-09-19T10:12:00Z",
+          "closed_at": null,
+          "watched": true,
+          "unread_count": 1,
+          "session_started_ms": 1789808400000,
+          "last_activity_ms": 1789812720000,
+          "linked_reviews": [
+            {
+              "task_id": "task-review-13",
+              "number": 13,
+              "workspace_id": "ws-3f2a91c4",
+              "version": 1,
+              "status": "open",
+              "latest_published_snapshot_id": "snapshot-1",
+              "parent_task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+            }
+          ]
+        },
+        "timeline": [
+          {
+            "type": "comment",
+            "id": "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F",
+            "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "author": {
+              "kind": "build"
+            },
+            "body": "Nobody received the verdict. No author or workspace agent is available.",
+            "mentions_user": true,
+            "refs": [
+              {
+                "kind": "file",
+                "path": "spa/src/views/board.js",
+                "line_start": 88,
+                "line_end": 94
+              }
+            ],
+            "attachments": [],
+            "created_at": "2026-09-19T10:11:00Z",
+            "review_notice": "verdict_undelivered"
+          }
+        ]
+      }
+    },
+    {
+      "params": {
+        "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+      },
+      "result": {
+        "task": {
+          "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+          "project_id": "proj-1",
+          "number": 12,
+          "title": "Kanban drag does not persist",
+          "body": "Dragging a card to In review puts it back on the next paint.",
+          "state": "open",
+          "status": "in_progress",
+          "labels": [
+            "bug",
+            "ui"
+          ],
+          "priority": "high",
+          "assignee": {
+            "kind": "agent",
+            "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          },
+          "links": {
+            "workspace_ids": [
+              "ws-3f2a91c4"
+            ],
+            "branches": [
+              "build/tasks-board"
+            ],
+            "commits": [
+              "c8381faa9b1d4e6f2a0c7b5e3d8f1a2c4b6d8e0f"
+            ],
+            "conversation_ids": [
+              "run-5d90b1e7"
+            ],
+            "parent_task_id": null
+          },
+          "trackers": [
+            "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          ],
+          "identities": {
+            "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E": {
+              "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E",
+              "name": "Fix drag",
+              "ordinal": 1,
+              "workspace_id": "ws-3f2a91c4",
+              "workspace_name": "spa-flaky-tests",
+              "provider": "codex_app_server",
+              "available": true
+            }
+          },
+          "attachments": [],
+          "created_by": {
+            "kind": "user"
+          },
+          "created_at": "2026-09-19T09:00:00Z",
+          "updated_at": "2026-09-19T10:12:00Z",
+          "closed_at": null,
+          "watched": true,
+          "unread_count": 1,
+          "session_started_ms": 1789808400000,
+          "last_activity_ms": 1789812720000,
+          "linked_reviews": [
+            {
+              "task_id": "task-review-13",
+              "number": 13,
+              "workspace_id": "ws-3f2a91c4",
+              "version": 1,
+              "status": "open",
+              "latest_published_snapshot_id": "snapshot-1",
+              "parent_task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+            }
+          ]
+        },
+        "timeline": [
+          {
+            "type": "comment",
+            "id": "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F",
+            "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "author": {
+              "kind": "build"
+            },
+            "body": "Revision 3 couldn't be sent to @reviewer: reviewer unavailable",
+            "mentions_user": true,
+            "refs": [
+              {
+                "kind": "file",
+                "path": "spa/src/views/board.js",
+                "line_start": 88,
+                "line_end": 94
+              }
+            ],
+            "attachments": [],
+            "created_at": "2026-09-19T10:11:00Z",
+            "review_notice": "revision_undelivered"
+          }
+        ]
+      }
     }
   ],
   "pull_requests": {
@@ -803,5 +1100,17 @@
     "since": "3.29.0",
     "capability": "tasks.review.forTask",
     "note": "Detail reads include at most the newest 20 child PR reviews, ordered by task number descending; linked_reviews_truncated is true when more remain. Both fields are absent when empty."
+  },
+  "review_notices": {
+    "since": "3.30.0",
+    "capability": "tasks.review.verdictDelivery",
+    "field": "review_notice",
+    "values": [
+      "revision_ready",
+      "verdict_undelivered",
+      "revision_undelivered"
+    ],
+    "write_authority": "bridge_only",
+    "attention": "Only marked Build mentions raise service attention, including on Done. Ordinary Build mentions remain ignored."
   }
 }

@@ -19,8 +19,8 @@ impl Store {
             let mut header = pull_requests::require_pull_request(tx, task_id)?;
             check_version(&header, expected_version)?;
             let metadata = header.pull_request.as_ref().expect("PR metadata checked");
-            if metadata.status != PullRequestStatus::Closed {
-                return Err(invalid("only Closed unmerged PRs can reopen"));
+            if !matches!(metadata.status, PullRequestStatus::Closed | PullRequestStatus::Rejected) {
+                return Err(invalid("only Closed or Rejected unmerged PRs can reopen"));
             }
             pull_requests::validate_received_snapshot(metadata, &pull_requests::load_bindings(tx, task_id)?, bindings, &snapshot)?;
             if snapshot.id.is_empty() || snapshot_exists(tx, &snapshot.id)? {
@@ -284,6 +284,7 @@ fn apply_opinions(
     header: Option<ReviewHeader>,
     now: &str,
 ) -> Result<Vec<TaskEvent>, StoreError> {
+    validate_rejects(task, comments, header.as_ref())?;
     let Some(mut header) = header.filter(|header| header.mode == ReviewMode::PullRequest) else {
         return Ok(vec![]);
     };
@@ -293,17 +294,32 @@ fn apply_opinions(
         .as_deref()
         .ok_or_else(|| invalid("PR has no published snapshot"))?;
     let current = new_current_opinions(tx, &task.id, snapshot_id, comments)?;
-    if !current {
+    let reassigned = require_task(tx, &task.id)?.assignee != task.assignee;
+    if !current && !reassigned {
         return Ok(vec![]);
     }
     if !metadata.status.is_active() {
-        return Err(invalid("current opinions require an active PR"));
+        return if current {
+            Err(invalid("current opinions require an active PR"))
+        } else {
+            Ok(vec![])
+        };
     }
     append_activity(tx, comments, &[])?;
-    let status = crate::reviews::lifecycle::opinion_status(
-        snapshot_id,
-        &load_opinions(tx, &task.id, snapshot_id)?,
-    );
+    crate::store::reviews::verdict_delivery::enqueue_verdict_deliveries(tx, task, comments)?;
+    let opinions = load_opinions(tx, &task.id, snapshot_id)?;
+    let status =
+        crate::reviews::lifecycle::opinion_status(snapshot_id, &opinions, task.assignee.as_ref());
+    if reassigned && status != metadata.status {
+        enqueue_reassignment_verdict(tx, task, &opinions, status)?;
+    }
+    if !current && status == metadata.status {
+        return Ok(vec![]);
+    }
+    if status == PullRequestStatus::Rejected {
+        return reject_review(tx, task, comments, snapshot_id, now);
+    }
+    let status_changed = status != metadata.status;
     header.version += 1;
     header
         .pull_request
@@ -311,14 +327,116 @@ fn apply_opinions(
         .expect("PR metadata checked")
         .status = status;
     write_header(tx, &header)?;
+    if !status_changed {
+        return Ok(vec![]);
+    }
     Ok(move_column(
         task,
         status,
-        &comments.last().expect("current opinion exists").author,
+        comments
+            .last()
+            .map(|comment| &comment.author)
+            .unwrap_or(&Actor::Build),
         now,
     )
     .into_iter()
     .collect())
+}
+
+fn enqueue_reassignment_verdict(
+    tx: &Transaction,
+    task: &Task,
+    opinions: &[TaskComment],
+    status: PullRequestStatus,
+) -> Result<(), StoreError> {
+    let verdict = match status {
+        PullRequestStatus::Approved => crate::tracker::ReviewVerdict::Approve,
+        PullRequestStatus::ChangesRequested => crate::tracker::ReviewVerdict::RequestChanges,
+        _ => return Ok(()),
+    };
+    let mut seen = Vec::new();
+    for comment in opinions.iter().rev() {
+        if !crate::reviews::lifecycle::is_deciding_reviewer(&comment.author, task.assignee.as_ref())
+            || seen.contains(&comment.author)
+        {
+            continue;
+        }
+        seen.push(comment.author.clone());
+        if comment
+            .opinion
+            .as_ref()
+            .is_some_and(|opinion| opinion.verdict == verdict)
+        {
+            return crate::store::reviews::verdict_delivery::enqueue_verdict_deliveries(
+                tx,
+                task,
+                std::slice::from_ref(comment),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_rejects(
+    task: &Task,
+    comments: &[TaskComment],
+    header: Option<&ReviewHeader>,
+) -> Result<(), StoreError> {
+    for comment in comments.iter().filter(|comment| {
+        comment
+            .opinion
+            .as_ref()
+            .is_some_and(|opinion| opinion.verdict == crate::tracker::ReviewVerdict::Reject)
+    }) {
+        if header.is_none_or(|header| header.mode != ReviewMode::PullRequest)
+            || !crate::reviews::lifecycle::is_deciding_reviewer(
+                &comment.author,
+                task.assignee.as_ref(),
+            )
+        {
+            return Err(invalid(
+                "only the assigned reviewer or user may reject a PR",
+            ));
+        }
+        if comment.body.trim().is_empty() {
+            return Err(invalid("reject requires a nonempty reason"));
+        }
+    }
+    Ok(())
+}
+
+fn reject_review(
+    tx: &Transaction,
+    task: &mut Task,
+    comments: &[TaskComment],
+    snapshot_id: &str,
+    now: &str,
+) -> Result<Vec<TaskEvent>, StoreError> {
+    let rejection = comments
+        .iter()
+        .rev()
+        .find(|comment| {
+            comment.opinion.as_ref().is_some_and(|opinion| {
+                opinion.verdict == crate::tracker::ReviewVerdict::Reject
+                    && opinion.snapshot_id == snapshot_id
+            })
+        })
+        .ok_or_else(|| invalid("rejection requires a new deciding verdict comment"))?;
+    let (_, events) = complete_review_in_tx(
+        tx,
+        CompletionWrite {
+            task,
+            comments: &[],
+            events: &[],
+            actor: &rejection.author,
+            expected_version: None,
+            description: rejection.body.trim(),
+            now,
+            terminal_status: Some(PullRequestStatus::Rejected),
+        },
+    )?;
+    *task = require_task(tx, &task.id)?;
+    Ok(events)
 }
 
 fn new_current_opinions(
@@ -399,9 +517,11 @@ pub(crate) fn transition_in_tx(
 ) -> Result<(Review, Vec<TaskEvent>), StoreError> {
     if !matches!(
         status,
-        PullRequestStatus::Merged | PullRequestStatus::Closed
+        PullRequestStatus::Merged | PullRequestStatus::Closed | PullRequestStatus::Rejected
     ) {
-        return Err(invalid("terminal transition requires Merged or Closed"));
+        return Err(invalid(
+            "terminal transition requires Merged, Closed or Rejected",
+        ));
     }
     pull_requests::require_pull_request(tx, task_id)?;
     let task = require_task(tx, task_id)?;

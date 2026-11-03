@@ -457,11 +457,17 @@ impl AppState {
                 .map(crate::tracker::TimelineEntry::Event)
                 .collect::<Vec<_>>(),
         );
-        if self
+        if let Some((observation, additional)) = self
             .tracker_store()?
-            .settle_delivery_intent(&intent.id, intent.generation, &write.task, &activity)
+            .settle_delivery_intent_observed(&intent.id, intent.generation, &write.task, &activity)
             .stored()?
         {
+            write.task = observation.current.task.clone();
+            write.events.retain(|event| {
+                event.kind != crate::tracker::TaskEventKind::Moved
+                    || event.payload["to"].as_str() == Some(write.task.status.as_str())
+            });
+            write.events.extend(additional);
             self.capture_task_completion_authority(
                 entity,
                 agent,
@@ -472,7 +478,7 @@ impl AppState {
             // The brief already reached this recipient. Other trackers still
             // get ordinary assignment news and the assigner gets its own line.
             write.task.trackers.retain(|tracker| tracker != agent);
-            self.publish_task_write(&project, &write);
+            self.publish_observed_task_write(&project, &write, &observation);
         }
         Ok(())
     }

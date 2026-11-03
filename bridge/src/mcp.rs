@@ -530,6 +530,9 @@ pub enum BridgeAction {
     TrackerRefreshReview {
         params: crate::api::v1::reviews::ReviewVersionParams,
     },
+    TrackerRetryReviewDelivery {
+        params: crate::api::v1::reviews::ReviewRetryDeliveryParams,
+    },
 }
 
 /// The choices an `ask_user` call offered beside its question. Absent reads as
@@ -614,6 +617,7 @@ impl BridgeAction {
             BridgeAction::TrackerCloseReview { .. } => "close_review",
             BridgeAction::TrackerReopenReview { .. } => "reopen_review",
             BridgeAction::TrackerRefreshReview { .. } => "refresh_review",
+            BridgeAction::TrackerRetryReviewDelivery { .. } => "retry_review_delivery",
         }
     }
 
@@ -693,7 +697,8 @@ impl BridgeAction {
             | BridgeAction::TrackerMergeReview { .. }
             | BridgeAction::TrackerCloseReview { .. }
             | BridgeAction::TrackerReopenReview { .. }
-            | BridgeAction::TrackerRefreshReview { .. } => {
+            | BridgeAction::TrackerRefreshReview { .. }
+            | BridgeAction::TrackerRetryReviewDelivery { .. } => {
                 &[McpSurface::Coding, McpSurface::Project]
             }
         }
@@ -1202,8 +1207,8 @@ impl DoneServer {
                             "commit": {"type": "string", "description": "Full commit OID in this saved directory revision’s base..head range."}
                         }, "required": ["snapshot_id", "directory_id", "path", "side", "line"]},
                         "reply_to": {"type": "string", "description": "Comment ID on this task to reply to."},
-                        "opinion": {"type": "object", "description": "Opinion on one saved snapshot; any reviewer may give one.", "properties": {
-                            "snapshot_id": {"type": "string"}, "verdict": {"type": "string", "enum": ["approve", "request_changes"]}
+                        "opinion": {"type": "object", "description": "Opinion on one saved snapshot. The assigned reviewer and user decide; other agents are advisory. Only a deciding reviewer may reject, with a nonempty body explaining why.", "properties": {
+                            "snapshot_id": {"type": "string"}, "verdict": {"type": "string", "enum": ["approve", "request_changes", "reject"]}
                         }, "required": ["snapshot_id", "verdict"]},
                         "track": track,
                         "attachments": attachments,
@@ -3402,7 +3407,7 @@ mod tests {
     /// The task tracker and review inventory shared between the two
     /// working surfaces — and for the same reason: both agents are bound to a
     /// project, and a project has one board.
-    const TASK_TOOLS: [&str; 26] = [
+    const TASK_TOOLS: [&str; 27] = [
         "list_tasks",
         "get_task",
         "read_comment",
@@ -3427,6 +3432,7 @@ mod tests {
         "merge_review",
         "close_review",
         "reopen_review",
+        "retry_review_delivery",
         "refresh_review",
         "update_review_base",
     ];

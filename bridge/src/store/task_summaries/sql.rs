@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS tracker_task_summary_facts (
     task_id TEXT NOT NULL, id TEXT NOT NULL, ulid TEXT NOT NULL,
     at TEXT NOT NULL, ts INTEGER, unread INTEGER NOT NULL,
     activity INTEGER NOT NULL, meaningful INTEGER NOT NULL DEFAULT 0, watched INTEGER NOT NULL, done_move INTEGER NOT NULL,
-    agent_comment INTEGER NOT NULL, mentions INTEGER NOT NULL,
+    agent_comment INTEGER NOT NULL, mentions INTEGER NOT NULL, service_mention INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(task_id,id)
 );
 CREATE INDEX IF NOT EXISTS tracker_summary_unread ON tracker_task_summary_facts(task_id,ulid) WHERE unread=1;
@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS tracker_task_summary_context (
     read_ulid TEXT, watch_ulid TEXT, session_start INTEGER, session_last INTEGER,
     input_done_at TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL,
     unread_count INTEGER NOT NULL DEFAULT 0, unread_agent_comments INTEGER NOT NULL DEFAULT 0,
-    unread_mentions INTEGER NOT NULL DEFAULT 0, session_started_ms INTEGER, last_activity_ms INTEGER, done_at TEXT,
+    unread_mentions INTEGER NOT NULL DEFAULT 0, unread_service_mentions INTEGER NOT NULL DEFAULT 0, session_started_ms INTEGER, last_activity_ms INTEGER, done_at TEXT,
     CHECK(length(CAST(read_ulid AS BLOB))<=128), CHECK(length(CAST(watch_ulid AS BLOB))<=128),
     CHECK(length(CAST(input_done_at AS BLOB))<=64),CHECK(length(CAST(status AS BLOB))<=128),
     CHECK(length(CAST(created_at AS BLOB))<=64),CHECK(length(CAST(done_at AS BLOB))<=64)
@@ -85,10 +85,14 @@ pub(super) fn fact_rows(table: &str) -> String {
             "json_extract(record,'$.kind')='moved' AND json_extract(record,'$.payload.to')='done'",
         )
     };
-    let (agent_comment, mentions) = if table == "tracker_comments" {
-        ("json_extract(record,'$.author.kind')='agent'", "json_extract(record,'$.author.kind')='agent' AND (json_extract(record,'$.mentions_user')=1 OR json_extract(record,'$.notifies_user')=1)")
+    let (agent_comment, mentions, service_mention) = if table == "tracker_comments" {
+        (
+            "json_extract(record,'$.author.kind')='agent'",
+            "(json_extract(record,'$.author.kind')='agent' AND (json_extract(record,'$.mentions_user')=1 OR json_extract(record,'$.notifies_user')=1)) OR (json_extract(record,'$.author.kind')='build' AND json_extract(record,'$.review_notice') IN ('revision_ready','verdict_undelivered','revision_undelivered') AND json_extract(record,'$.mentions_user')=1)",
+            "json_extract(record,'$.author.kind')='build' AND json_extract(record,'$.review_notice') IN ('revision_ready','verdict_undelivered','revision_undelivered') AND json_extract(record,'$.mentions_user')=1",
+        )
     } else {
-        ("0", "json_extract(record,'$.kind')='created' AND json_extract(record,'$.actor.kind')='agent' AND json_extract(record,'$.mentions_user')=1")
+        ("0", "json_extract(record,'$.kind')='created' AND json_extract(record,'$.actor.kind')='agent' AND json_extract(record,'$.mentions_user')=1", "0")
     };
     let meaningful = if table == "tracker_comments" {
         "1".to_string()
@@ -97,7 +101,7 @@ pub(super) fn fact_rows(table: &str) -> String {
     };
     format!("SELECT rowid source_rowid,task_id,id,{suffix} ulid,
             {at} at,{timestamp} ts,
-            COALESCE(({unread}),0) unread,COALESCE(({activity}),0) activity,COALESCE(({meaningful}),0) meaningful,COALESCE(({watched}),0) watched,COALESCE(({done_move}),0) done_move,COALESCE(({agent_comment}),0) agent_comment,COALESCE(({mentions}),0) mentions
+            COALESCE(({unread}),0) unread,COALESCE(({activity}),0) activity,COALESCE(({meaningful}),0) meaningful,COALESCE(({watched}),0) watched,COALESCE(({done_move}),0) done_move,COALESCE(({agent_comment}),0) agent_comment,COALESCE(({mentions}),0) mentions,COALESCE(({service_mention}),0) service_mention
         FROM {table}",timestamp=timestamp_millis(at),suffix=opaque_suffix("id"))
 }
 
@@ -202,7 +206,7 @@ fn enrich_patch() -> &'static str {
 }
 
 const FACT_COLUMNS: &str =
-    "task_id,id,ulid,at,ts,unread,activity,meaningful,watched,done_move,agent_comment,mentions";
+    "task_id,id,ulid,at,ts,unread,activity,meaningful,watched,done_move,agent_comment,mentions,service_mention";
 
 fn fact_insert(table: &str, predicate: &str) -> String {
     format!("INSERT INTO tracker_task_summary_facts({FACT_COLUMNS}) SELECT {FACT_COLUMNS} FROM ({}) WHERE {}", fact_rows(table),predicate.replace("rowid","source_rowid"))
@@ -220,6 +224,7 @@ pub(super) fn insert_facts(table: &str, predicate: &str) -> String {
         "done_move",
         "agent_comment",
         "mentions",
+        "service_mention",
     ];
     let set = fields
         .iter()

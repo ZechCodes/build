@@ -8,7 +8,7 @@ pub(super) fn retained(review: &Review) -> Result<bool, String> {
     };
     match metadata.status {
         PullRequestStatus::Merged => Ok(false),
-        PullRequestStatus::Closed => retained_workspace(review),
+        PullRequestStatus::Closed | PullRequestStatus::Rejected => retained_workspace(review),
         _ => Ok(true),
     }
 }

@@ -16,7 +16,10 @@ mod opening_observations;
 mod pull_requests;
 #[path = "reviews/pull_requests/reopen_version.rs"]
 mod reopen_version;
+mod revision_dispatch;
 mod summaries;
+mod verdict_delivery;
+mod verdict_loop;
 mod wire_actions;
 
 fn review_call(state: &mut AppState, method: &str, params: Value) -> Value {

@@ -122,11 +122,15 @@ impl AppState {
             admitted: None,
             error: None,
         };
-        let intent = self
+        let (intent, observation, additional) = self
             .tracker_store()?
-            .accept_delivery_intent(&write.task, &write.events, intent)
+            .accept_delivery_intent_observed(&write.task, &write.events, intent)
             .stored()?;
-        self.note_tasks_changed(project, &intent.task_id);
+        write.task = observation.current.task.clone();
+        // The resolved dispatch publishes assignment notices when it settles.
+        // Publish only review lifecycle changes produced by this acceptance.
+        write.events = additional;
+        self.publish_observed_task_write(project, &write, &observation);
         if intent.state == "waiting" {
             return self.task_delivery_answer(&intent);
         }

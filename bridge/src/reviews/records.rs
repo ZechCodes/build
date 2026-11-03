@@ -54,6 +54,9 @@ pub struct Review {
     pub pull_request: Option<PullRequestMetadata>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<ReviewBranchBinding>,
+    /// Durable author handoffs, newest last. Delivery is independent of review status.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verdict_deliveries: Vec<crate::store::ReviewVerdictDeliverySummary>,
 }
 
 impl Review {
@@ -204,6 +207,7 @@ mod tests {
             (PullRequestStatus::Approved, "approved", true),
             (PullRequestStatus::Merged, "merged", false),
             (PullRequestStatus::Closed, "closed", false),
+            (PullRequestStatus::Rejected, "rejected", false),
         ] {
             assert_eq!(status.is_active(), active);
             assert_eq!(serde_json::to_value(status).unwrap(), json!(name));

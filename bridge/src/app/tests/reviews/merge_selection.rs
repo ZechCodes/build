@@ -1,4 +1,4 @@
-use super::wire_actions::{merge_params, open};
+use super::wire_actions::{approve, merge_params, open};
 use super::*;
 use crate::reviews::actions::{ActionSource, ActionStatus, StepKind, StepStatus};
 use crate::reviews::merge::MergeJob;
@@ -58,7 +58,8 @@ fn publication_retry(identical_vector: bool, another_pending_plan: Option<StepSt
         "dirty target\n",
     )
     .unwrap();
-    let pr = open(&mut state, &workspace_id);
+    let mut pr = open(&mut state, &workspace_id);
+    approve(&mut state, &mut pr);
     let mut params = merge_params(&pr);
     params["sources"][0]["push"] = json!({"remote":"publish","branch":"main"});
     let (owner, agent) = project_agent(&mut state, &project);
@@ -215,6 +216,7 @@ fn admit_legacy_plan(state: &AppState, original: &Value, request_id: &str) -> Va
             .to_string();
     }
     let job = MergeJob {
+        caller: crate::tracker::Actor::User,
         project_path: saved.project_path,
         request_id: request_id.into(),
         request,

@@ -282,3 +282,44 @@ fn terminal_reconcile_observes_later_pushes_and_unavailable_receivers_without_re
     assert_eq!(observations[0].health, ReviewSyncHealth::Unavailable);
     assert!(observations[0].error.is_some());
 }
+
+#[test]
+fn rejected_review_reopens_with_original_workspace_and_new_revision() {
+    let f = Fixture::new();
+    let review = f.review();
+    let snapshot_id = review.snapshots.last().unwrap().id.clone();
+    let mut comment = crate::tracker::TaskComment {
+        review_notice: None,
+        id: crate::tracker::new_comment_id(),
+        task_id: f.task_id().into(),
+        author: Actor::User,
+        body: "Stop this approach".into(),
+        anchor: None,
+        reply_to: None,
+        opinion: None,
+        mentions_user: false,
+        notifies_user: false,
+        refs: vec![],
+        attachments: vec![],
+        created_at: crate::store::now_rfc3339(),
+        author_context: None,
+    };
+    comment.opinion = Some(Box::new(crate::tracker::ReviewOpinion {
+        snapshot_id,
+        verdict: crate::tracker::ReviewVerdict::Reject,
+    }));
+    let rejected = f
+        .store
+        .record_review_opinion(f.task_id(), review.version, &comment)
+        .unwrap();
+    assert_eq!(
+        rejected.pull_request.unwrap().status,
+        PullRequestStatus::Rejected
+    );
+    let reopened = reopen(&f.store, &request(&f), &Hooks).unwrap();
+    assert_eq!(
+        reopened.pull_request.unwrap().status,
+        PullRequestStatus::Open
+    );
+    assert_eq!(reopened.snapshots.len(), review.snapshots.len() + 1);
+}

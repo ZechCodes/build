@@ -110,6 +110,19 @@ impl AppState {
                 .validate_review_for_task(&project_path, params.for_task_id.as_deref())
                 .map_err(errors::opening_selection)?;
         }
+        // A lost-response retry keeps the author captured on its first opening.
+        let author = match &existing {
+            Some(opening) => opening.request.author.clone(),
+            None => actor.agent_id().map(str::to_owned).or_else(|| {
+                self.workspace_conversation_owner(&workspace)
+                    .and_then(|owner| {
+                        self.entity_agents(&owner)
+                            .ok()?
+                            .primary()
+                            .map(|agent| agent.id.clone())
+                    })
+            }),
+        };
         let (directories, base_branches) = selections(&workspace, &params)?;
         let watch = matches!(actor, Actor::User)
             || self.watch_agent_filed_tasks
@@ -144,6 +157,7 @@ impl AppState {
                 request_id: params.request_id,
                 receiver_root: self.state_root.join("review-receivers"),
                 request: ReviewOpeningRequest {
+                    author,
                     for_task_id: params.for_task_id,
                     workspace_id: params.workspace_id,
                     title: params.title,

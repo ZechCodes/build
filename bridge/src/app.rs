@@ -466,6 +466,8 @@ pub struct AppState {
     /// queued it has answered. The queue's in-flight counters let the idle
     /// sweep distinguish an agent on its way from one that never arrived.
     delivery_queue: self::runtime::delivery::queue::DeliveryQueue,
+    /// Volatile fairness cursor for polling accepted verdict operations.
+    review_verdict_poll_after: i64,
     /// Whether a task an AGENT files goes into the user's inbox without
     /// being asked for (spec: Tasks → Watching).
     ///
@@ -757,6 +759,7 @@ impl AppState {
             uploads: HashMap::new(),
             session_registry: SessionRegistry::new(),
             delivery_queue: Default::default(),
+            review_verdict_poll_after: 0,
             watch_agent_filed_tasks: false,
             compact_above_tokens: crate::agent::DEFAULT_COMPACT_ABOVE_TOKENS,
             compaction_policies: config::CompactionPolicies::default(),

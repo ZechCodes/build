@@ -1,4 +1,4 @@
-use super::wire_actions::{merge_params, open};
+use super::wire_actions::{approve, merge_params, open};
 use super::*;
 
 fn successful_merges(review: &Value, directory_id: &Value) -> usize {
@@ -26,7 +26,8 @@ fn browser_retries_an_agent_owned_legacy_merge_publication_without_reintegrating
     std::fs::write(directory.path.join("handoff.txt"), "reviewed work\n").unwrap();
     git_in(&directory.path, &["add", "handoff.txt"]);
     git_in(&directory.path, &["commit", "-m", "agent merge handoff"]);
-    let pr = open(&mut state, &workspace_id);
+    let mut pr = open(&mut state, &workspace_id);
+    approve(&mut state, &mut pr);
     let mut params = merge_params(&pr);
     params["sources"][0]["push"] = json!({"remote":"publish","branch":"main"});
     let (owner, agent) = project_agent(&mut state, &project);
@@ -240,7 +241,8 @@ fn browser_publishes_an_agent_partial_merge_after_a_newer_active_snapshot() {
         git_in(&directory.path, &["add", "reviewed.txt"]);
         git_in(&directory.path, &["commit", "-m", "historical recovery"]);
     }
-    let pr = open(&mut state, &workspace_id);
+    let mut pr = open(&mut state, &workspace_id);
+    approve(&mut state, &mut pr);
     let mut params = merge_params(&pr);
     params["sources"][0]["push"] = json!({"remote":"publish","branch":"main"});
     std::fs::write(

@@ -52,7 +52,9 @@
         "conversation_ids": [],
         "parent_task_id": "task-work-1"
       },
-      "trackers": [],
+      "trackers": [
+        "agent-author-1"
+      ],
       "identities": {},
       "attachments": [],
       "created_by": {
@@ -168,7 +170,8 @@
             "kind": "excluded",
             "reason": "Excluded when opening this review."
           }
-        ]
+        ],
+        "author": "agent-author-1"
       },
       "bindings": [
         {
@@ -541,5 +544,12 @@
     "since": "3.29.0",
     "capability": "tasks.review.forTask",
     "note": "for_task_id must name an open non-review task in this project. Opening publishes its parent link atomically and retains it across retries."
+  },
+  "author": {
+    "since": "3.30.0",
+    "capability": "tasks.review.author",
+    "mcp": "calling_agent",
+    "rpc": "opening_workspace_bound_agent_or_none",
+    "publication": "author_tracks_review"
   }
 }

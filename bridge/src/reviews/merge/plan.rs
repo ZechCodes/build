@@ -2,6 +2,22 @@ use super::*;
 use crate::reviews::actions::{MergeSelection, PushSelection, ReviewActParams, SourceSelection};
 use std::collections::BTreeMap;
 
+/// Admission and every retry require approval for an agent. User RPC merges
+/// retain their existing active-review contract.
+pub(super) fn validate_actor(review: &Review, actor: &crate::tracker::Actor) -> Result<(), String> {
+    if matches!(actor, crate::tracker::Actor::Agent { .. })
+        && review
+            .pull_request
+            .as_ref()
+            .is_none_or(|metadata| metadata.status != PullRequestStatus::Approved)
+    {
+        return Err(
+            "conflict: agent merge_review requires the current PR status to be Approved".into(),
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn actions(
     review: &Review,
     intent: &ReviewMergeIntent,

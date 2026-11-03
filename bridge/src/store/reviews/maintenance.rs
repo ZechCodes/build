@@ -38,6 +38,7 @@ impl ReceiverMaintenanceReader {
                 snapshots: Vec::new(),
                 actions: Vec::new(),
                 destinations: Vec::new(),
+                verdict_deliveries: Vec::new(),
             })
         })
         .collect()

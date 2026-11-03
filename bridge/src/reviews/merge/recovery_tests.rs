@@ -13,6 +13,7 @@ fn merge_crash_child() {
     let store = Store::new(root.join("db")).unwrap();
     let review = load(&store, &request.task_id).unwrap();
     let job = MergeJob {
+        caller: crate::tracker::Actor::User,
         project_path,
         request_id: "merge-1".into(),
         request,

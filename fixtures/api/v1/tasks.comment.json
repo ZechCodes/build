@@ -210,5 +210,28 @@
     "capability": "tasks.review.anchorCommit",
     "field": "anchor.commit",
     "validation": "Optional full commit OID must belong to the anchored snapshot directory base..head."
+  },
+  "verdict_loop": {
+    "since": "3.30.0",
+    "capability": "tasks.review.reject",
+    "reject": {
+      "body_required": true,
+      "deciding_reviewers": [
+        "user",
+        "assignee"
+      ],
+      "terminal_status": "rejected",
+      "task_status": "done",
+      "workspace_retained": true,
+      "params": {
+        "task_id": "task-1",
+        "body": "This direction is no longer needed.",
+        "opinion": {
+          "snapshot_id": "snapshot-1",
+          "verdict": "reject"
+        }
+      }
+    },
+    "advisory": "Other agents may approve or request changes; their opinions do not decide status."
   }
 }

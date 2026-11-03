@@ -1,4 +1,4 @@
-use super::wire_actions::{merge_params, open};
+use super::wire_actions::{approve, merge_params, open};
 use super::*;
 
 fn count_merges(review: &Value) -> usize {
@@ -95,7 +95,8 @@ fn merge_plan_identity_canonicalizes_source_order_and_retains_actor_handoffs() {
         git_in(&directory.path, &["add", "reviewed.txt"]);
         git_in(&directory.path, &["commit", "-m", "identity fixture"]);
     }
-    let pr = open(&mut state, &workspace_id);
+    let mut pr = open(&mut state, &workspace_id);
+    approve(&mut state, &mut pr);
     assert_eq!(pr["review"]["bindings"].as_array().unwrap().len(), 2);
     let mut params = merge_params(&pr);
     for directory in &directories {

@@ -140,3 +140,10 @@ impl ReviewVersionParams {
         identifier(&self.task_id)
     }
 }
+
+impl ReviewRetryDeliveryParams {
+    pub fn validate(&self) -> Result<(), String> {
+        identifier(&self.task_id)?;
+        identifier(&self.comment_id)
+    }
+}

@@ -296,6 +296,7 @@ impl AppState {
         let metadata = comments::CommentMetadata::from_params(self, &task.id, params)?;
         let now = crate::store::now_rfc3339();
         let comment = TaskComment {
+            review_notice: None,
             id: crate::tracker::new_comment_id(),
             task_id: task.id.clone(),
             author: Actor::User,

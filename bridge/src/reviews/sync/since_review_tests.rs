@@ -12,6 +12,7 @@ fn review_latest(fixture: &Fixture, author: Actor, at: &str) -> String {
         .unwrap()
         .unwrap();
     let comment = TaskComment {
+        review_notice: None,
         id: crate::tracker::new_comment_id(),
         task_id: task.id.clone(),
         author,

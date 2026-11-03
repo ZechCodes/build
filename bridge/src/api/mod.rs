@@ -67,8 +67,9 @@ use std::collections::BTreeSet;
 /// 3.26.0 adds bounded task summaries and project filter choices (#890).
 /// 3.27.0 adds bounded task aggregates, point lookup and exact memberships (#900).
 /// 3.28.0 adds commit and since-revision review reads, Git show paths and commit anchors (#968).
+/// 3.30.0 adds author, deciding reject and durable verdict delivery (#972).
 /// 3.29.0 adds durable work-task links when requesting a workspace review (#971).
-pub const API_VERSION: &str = "3.29.0";
+pub const API_VERSION: &str = "3.30.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -134,6 +135,9 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "tasks.review.anchorCommit", // Since 3.28.0: range-validated commit comment anchors (#968).
     "tasks.reviewComments", // Since 3.7.0: anchor, reply_to and opinion on task comments.
     "tasks.review.forTask", // Since 3.29.0: optional work-task parent on workspace review requests (#971).
+    "tasks.review.reject", // Since 3.30.0: deciding rejection ends a review without merging (#972).
+    "tasks.review.author", // Since 3.30.0: the agent responsible for acting on verdicts (#972).
+    "tasks.review.verdictDelivery", // Since 3.30.0: durable verdict batches and explicit retry (#972).
     "tasks.review.pullRequests", // Since 3.15.0: PR lifecycle, summaries and sync observations (#405).
     "tasks.context",
     "tasks.createdUserMentions", // Since 1.27.0: mentions_user on an agent's created event.

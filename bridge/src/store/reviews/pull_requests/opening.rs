@@ -143,6 +143,12 @@ impl Store {
                         .expect("branch ref validated"),
                 );
             }
+            if let Some(author) = &opening.request.author {
+                opening
+                    .task
+                    .track(author)
+                    .map_err(|error| invalid(&error))?;
+            }
             write_tracker_task(tx, &opening.task)?;
             let header = ReviewHeader {
                 task_id: opening.task.id.clone(),
@@ -152,6 +158,7 @@ impl Store {
                 completion: None,
                 mode: ReviewMode::PullRequest,
                 pull_request: Some(PullRequestMetadata {
+                    author: opening.request.author.clone(),
                     status: PullRequestStatus::Open,
                     creator: opening.request.creator.clone(),
                     originating_workspace_id: opening.request.workspace_id.clone(),

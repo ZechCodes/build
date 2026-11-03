@@ -88,6 +88,11 @@ mod reviews;
 pub use retention::{
     ConversationRetentionReport, RetentionBatch, RetentionBoundary, RetentionPolicy,
 };
+pub use reviews::verdict_delivery::{
+    ReviewVerdictBatchAnchor, ReviewVerdictBatchComment, ReviewVerdictDelivery,
+    ReviewVerdictDeliveryState, ReviewVerdictDeliverySummary, ReviewVerdictRetryContext,
+};
+pub(crate) use reviews::{RevisionDispatch, RevisionFailureNotice};
 mod schema;
 mod source_sync;
 mod task_observation;
@@ -278,7 +283,9 @@ pub enum StoreError {
 /// 17 adds explicit assignment delivery intents and coordinator notice receipts.
 /// 18 adds the durable mutation journal, reservations and confirmation outbox.
 /// 19 adds durable conversation retention boundaries.
-pub const SCHEMA_VERSION: i64 = 20;
+/// 20 adds transactional task summary projections.
+/// 21 adds durable review verdict and revision delivery journals.
+pub const SCHEMA_VERSION: i64 = 21;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.

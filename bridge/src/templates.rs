@@ -144,6 +144,26 @@ pub(crate) const MESSAGE_TASK_COMMENT_ON_YOURS: &str =
 /// Any other change to a watched task: `{change}` is what happened.
 pub(crate) const MESSAGE_TASK_CHANGED: &str = template!("messages/task_changed.md");
 
+/// New revision hand-off to the deciding reviewer, with its previous baseline.
+pub(crate) const MESSAGE_REVIEW_REVISION_READY: &str =
+    template!("messages/review_revision_ready.md");
+/// A recipient without a known delivered baseline must read the whole revision.
+pub(crate) const MESSAGE_REVIEW_REVISION_FULL: &str = template!("messages/review_revision_full.md");
+/// A terminal revision hand-off failure asks the user to restore its reviewer.
+pub(crate) const MESSAGE_REVIEW_REVISION_UNDELIVERED: &str =
+    template!("messages/review_revision_undelivered.md");
+/// Visible reminder for a user-assigned review after publication.
+pub(crate) const MESSAGE_REVIEW_REVISION_USER: &str = template!("messages/review_revision_user.md");
+
+/// Author verdict handoff: task, revision, verdict, anchors and immutable payload.
+pub(crate) const MESSAGE_REVIEW_VERDICT: &str = template!("messages/review_verdict.md");
+/// Reference-only superseded retry, with the current status and revision.
+pub(crate) const MESSAGE_REVIEW_VERDICT_SUPERSEDED: &str =
+    template!("messages/review_verdict_superseded.md");
+/// User fallback when no author or workspace agent can receive a verdict.
+pub(crate) const MESSAGE_REVIEW_VERDICT_UNRECEIVED: &str =
+    template!("messages/review_verdict_unreceived.md");
+
 /// What an agent hears when Build restarted and brought its session back.
 pub(crate) const MESSAGE_RESTART: &str = template!("messages/restart.md");
 

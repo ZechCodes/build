@@ -11,6 +11,23 @@ pub(super) fn open(state: &mut AppState, workspace_id: &str) -> Value {
     )
 }
 
+pub(super) fn approve(state: &mut AppState, pr: &mut Value) {
+    review_call(
+        state,
+        "tasks.comment",
+        json!({
+            "task_id":pr["task"]["id"], "body":"Approved for agent integration",
+            "opinion":{"snapshot_id":pr["review"]["snapshots"].as_array().unwrap().last().unwrap()["id"],"verdict":"approve"}
+        }),
+    );
+    let current = review_call(
+        state,
+        "tasks.review.get",
+        json!({"task_id":pr["task"]["id"]}),
+    );
+    pr["review"] = current["review"].clone();
+}
+
 pub(super) fn merge_params(pr: &Value) -> Value {
     let sources = pr["review"]["bindings"]
         .as_array()

@@ -9,8 +9,25 @@ impl Store {
         &self,
         task: &Task,
         events: &[TaskEvent],
-        mut intent: DeliveryIntent,
+        intent: DeliveryIntent,
     ) -> Result<DeliveryIntent, StoreError> {
+        self.accept_delivery_intent_observed(task, events, intent)
+            .map(|(intent, _, _)| intent)
+    }
+
+    pub(crate) fn accept_delivery_intent_observed(
+        &self,
+        task: &Task,
+        events: &[TaskEvent],
+        mut intent: DeliveryIntent,
+    ) -> Result<
+        (
+            DeliveryIntent,
+            crate::store::TrackerTaskPublication,
+            Vec<TaskEvent>,
+        ),
+        StoreError,
+    > {
         self.in_waiting_on_transaction(|tx| {
             if task.is_finished() || intent.task_id != task.id || intent.project_path != task.project_path {
                 return Err(invalid("delivery requires its open unfinished project task"));
@@ -23,8 +40,9 @@ impl Store {
                 return Err(invalid("a new assignment requires a new delivery identity"));
             }
             lifecycle::cancel_task(tx, &task.id)?;
-            tracker::write_tracker_task(tx, task)?;
-            tracker::append_activity(tx, &[], events)?;
+            let (task, additional) = crate::store::reviews::lifecycle::save_activity_in_tx(
+                tx, task, &[], events, &intent.actor, None, &task.updated_at,
+            )?;
             intent.generation = generation as u64;
             if intent.id.is_empty() { intent.id = format!("td-{}", uuid::Uuid::new_v4().simple()); }
             if intent.operation_id.is_empty() { intent.operation_id = format!("op-{}", uuid::Uuid::new_v4()); }
@@ -37,7 +55,8 @@ impl Store {
                 let event = TaskEvent::new(&task.id, intent.actor.clone(), TaskEventKind::DispatchDeferred, json!({"delivery_id":intent.id,"generation":intent.generation,"target":intent.target}), &task.updated_at);
                 tracker::append_activity(tx, &[], &[event])?;
             }
-            Ok(intent)
+            let observation = crate::store::ReadTransaction::new(tx).tracker_task_publication(task, &[])?;
+            Ok((intent, observation, additional))
         })
     }
 
@@ -151,15 +170,26 @@ impl Store {
         task: &Task,
         events: &[TaskEvent],
     ) -> Result<bool, StoreError> {
+        self.settle_delivery_intent_observed(id, generation, task, events)
+            .map(|settled| settled.is_some())
+    }
+
+    pub(crate) fn settle_delivery_intent_observed(
+        &self,
+        id: &str,
+        generation: u64,
+        task: &Task,
+        events: &[TaskEvent],
+    ) -> Result<Option<(crate::store::TrackerTaskPublication, Vec<TaskEvent>)>, StoreError> {
         self.in_waiting_on_transaction(|tx| {
             let Some(mut intent) = load(tx, id)? else {
-                return Ok(false);
+                return Ok(None);
             };
             if intent.generation != generation || !authority(tx, &intent)? {
-                return Ok(false);
+                return Ok(None);
             }
             if intent.state == "delivered" {
-                return Ok(false);
+                return Ok(None);
             }
             if task.id != intent.task_id
                 || task.project_path != intent.project_path
@@ -173,16 +203,25 @@ impl Store {
             if !is_ready(tx, &intent)? {
                 saved.status = super::task(tx, &intent)?.expect("authority checked").status;
             }
-            tracker::write_tracker_task(tx, &saved)?;
             let settled_events: Vec<_> = events
                 .iter()
                 .filter(|event| event.kind != TaskEventKind::Moved || saved.status == task.status)
                 .cloned()
                 .collect();
-            tracker::append_activity(tx, &[], &settled_events)?;
+            let (saved, additional) = crate::store::reviews::lifecycle::save_activity_in_tx(
+                tx,
+                &saved,
+                &[],
+                &settled_events,
+                &intent.actor,
+                None,
+                &task.updated_at,
+            )?;
             intent.state = "delivered".into();
             write(tx, &intent)?;
-            Ok(true)
+            let observation =
+                crate::store::ReadTransaction::new(tx).tracker_task_publication(saved, &[])?;
+            Ok(Some((observation, additional)))
         })
     }
 }

@@ -1014,6 +1014,8 @@ pub struct TaskSummaryView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unread_mentions: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread_service_mentions: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_started_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_activity_ms: Option<i64>,
@@ -1049,6 +1051,8 @@ pub struct TaskAnswer {
 /// One comment on one task.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TaskCommentView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_notice: Option<crate::tracker::ReviewNoticeKind>,
     pub id: String,
     pub task_id: String,
     pub author: Value,

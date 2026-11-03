@@ -11,6 +11,7 @@ mod merge;
 pub(super) use merge::publication_pending;
 mod linked;
 mod opening;
+pub(super) mod revision_dispatch;
 mod sync;
 mod tracking;
 pub(super) use sync::validate_received_snapshot;

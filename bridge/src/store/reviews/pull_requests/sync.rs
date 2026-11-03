@@ -253,6 +253,10 @@ fn save_received(
             snapshot_id: snapshot.id.clone(),
         });
     }
+    let previous_snapshot_id = metadata
+        .latest_published_snapshot_id
+        .clone()
+        .ok_or_else(|| invalid("received revision needs a previous snapshot"))?;
     snapshot.number = next_snapshot_number(tx, task_id)?;
     header.version += 1;
     header.state = ReviewState::Open;
@@ -274,6 +278,7 @@ fn save_received(
         tx.execute("UPDATE review_branch_bindings SET record = ?3 WHERE task_id = ?1 AND directory_id = ?2", params![task_id, binding.directory_id, serde_json::to_string(binding).expect("binding serializes")])?;
     }
     move_received_task(tx, task_id, &snapshot.author)?;
+    super::revision_dispatch::enqueue(tx, task_id, &snapshot, &previous_snapshot_id)?;
     Ok(load_sync_state(tx, task_id)?.expect("received snapshot was written"))
 }
 
@@ -355,6 +360,7 @@ fn load_sync_state(conn: &Connection, task_id: &str) -> Result<Option<Review>, S
         bindings: load_bindings(conn, task_id)?,
         actions: Vec::new(),
         destinations: Vec::new(),
+        verdict_deliveries: super::super::verdict_delivery::load_deliveries(conn, task_id)?,
     }))
 }
 
@@ -437,6 +443,12 @@ fn validate_received_directory(
 fn move_received_task(tx: &Transaction, task_id: &str, actor: &Actor) -> Result<(), StoreError> {
     let mut task = require_task(tx, task_id)?;
     if task.status == IN_REVIEW_STATUS {
+        return Ok(());
+    }
+    // Publication is allowed while the reviewer hand-off is held on a task
+    // prerequisite. Keep its existing column until ordinary dispatch resumes.
+    let blocked: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM tracker_task_dependencies d JOIN tracker_tasks p ON p.id=d.waiting_on_task_id WHERE d.task_id=?1 AND p.project_key=?2 AND p.state='open' AND p.status<>'done')", params![task_id,task.project_path], |row|row.get(0))?;
+    if blocked {
         return Ok(());
     }
     let now = now_rfc3339();

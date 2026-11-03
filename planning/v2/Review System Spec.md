@@ -30,6 +30,62 @@ When there is no child review, linked workspaces offer “Request a review from
 workspace snapshot dialog are removed. Mark complete and legacy reads remain
 until the snapshot retirement slice; the older creation UI plan below is historical.
 
+## Verdict loop (#972)
+
+The author is an optional agent ID saved when the review opens: MCP uses the
+calling agent; user openings use the workspace's bound agent. Publishing also
+tracks that author. Legacy reviews resolve the current workspace agent for
+verdict delivery.
+
+The review task's assignee and the user are deciding reviewers. Only their
+latest verdicts on the current revision determine status; other agents' opinions
+are advisory. Changes requested takes precedence over Approved. A deciding
+reviewer may Reject with a nonempty reason. Rejected is terminal and moves the
+task to Done while retaining the workspace; it can reopen like Closed.
+Approval is handed to the author, who chooses the next action and comments on
+what happened. Agents can call `merge_review` only while Approved; the user's
+RPC merge retains its existing behavior. Reassigning the reviewer recomputes
+status. A changed status journals the new assignee’s existing verdict and original
+batch once; unchanged status sends nothing. Verdict identity prevents repeat
+delivery when a reviewer is assigned again.
+
+Deciding verdicts atomically journal delivery with their comments. Each immutable
+batch contains the reviewer's anchored comments since their last verdict on that
+revision and ends with the verdict comment. Messages identify the task, revision,
+verdict and every comment anchor (path, line, side and optional commit). Request
+changes asks the author to fix each comment, commit and `push_review`, replying
+where they disagree. Approval asks them to take the work forward and report the
+action; rejection asks them to stop without merging and gives the reason.
+
+A bridge service drains pending delivery without a browser. Pending messages
+survive restart, stopped authors and usage limits. A missing author falls back
+to the workspace's current agent; if none exists, a task comment mentions the
+user because nobody received the verdict. Failed delivery is explicit and
+retryable with `tasks.review.retryDelivery` / `retry_review_delivery`. Review
+reads carry the latest 100 delivery summaries with state and comment anchors;
+comment bodies remain in the timeline and durable journal. First acceptance is
+ordered independently of mutable timestamps. Polling accepted pending deliveries
+rotates without write churn. A superseded failed-verdict retry retains its batch
+but reports current status as context only, without stale action instructions. New
+revisions send an agent reviewer back to `since` from the previous revision or
+return a user reviewer to Needs you. Superseded pending revision handoffs
+settle without waking an agent reviewer; it receives the latest active revision
+from its last accepted message baseline; waiting/cancelled assignment intents
+never count. Blocked publication retains the task column. An unknown baseline
+requests the full revision.
+Transient dispatch failures allow seven attempts with 30/60/120/240/480/600-second
+backoff delays and no writes on skipped polls. Permanent
+or exhausted failures settle as Failed and post exactly one reserved-identity
+`revision_undelivered` Build mention for the user.
+
+Build reminders carry `review_notice: "revision_ready"` or
+`"verdict_undelivered"` or `"revision_undelivered"`. Only those marked Build mentions enter Needs you;
+ordinary Build-authored mentions retain their existing ignored behavior.
+
+Wire 3.30.0 announces `tasks.review.author`, `tasks.review.reject` and
+`tasks.review.verdictDelivery` independently. SPA controls and delivery surfaces
+follow in #973.
+
 ## Published PR contracts (#405)
 
 Wire **3.15.0** publishes the PR services landed in #401–#404. This section

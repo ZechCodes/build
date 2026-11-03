@@ -36,6 +36,7 @@ fn review_open_publishes_once_and_preserves_creator_and_push_contract() {
     assert_eq!(first["task"]["watched"], true);
     assert_eq!(first["reviewer_dispatch"]["state"], "not_requested");
     assert_eq!(first["review"]["snapshots"][0]["author"]["kind"], "user");
+    assert!(first["review"]["pull_request"]["author"].is_null());
     let instruction = &first["push_instructions"][0];
     assert!(instruction["remote"]
         .as_str()
@@ -135,11 +136,18 @@ fn opening_with_agent_creator_preserves_actor_and_device_watch_policy() {
     let workspace_id = workspace(&mut state, &project, "agent creator");
     let (_, agent) = project_agent(&mut state, &project);
     state.watch_agent_filed_tasks = true;
-    let actor = Actor::Agent { agent_id: agent };
+    let actor = Actor::Agent {
+        agent_id: agent.clone(),
+    };
     let opened = open_direct(&mut state, params(&workspace_id), actor.clone());
     assert_eq!(opened["task"]["created_by"], json!(actor));
     assert_eq!(opened["review"]["snapshots"][0]["author"], json!(actor));
     assert_eq!(opened["task"]["watched"], true);
+    assert_eq!(opened["review"]["pull_request"]["author"], agent);
+    assert!(opened["task"]["trackers"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(agent)));
 }
 
 #[test]
@@ -204,7 +212,10 @@ fn reset_creator_before_reviewer_delivery(shared_hooks: bool) {
         .unwrap();
     assert_eq!(opened["opening_state"], "published");
     assert_eq!(opened["task"]["status"], "in_review");
-    assert!(opened["task"]["trackers"].as_array().unwrap().is_empty());
+    // Reset changes the creator's thread generation, not its durable author
+    // identity or tracking. The rejected reviewer hand-off adds no reviewer.
+    assert_eq!(opened["task"]["trackers"], json!([creator]));
+    assert_eq!(opened["review"]["pull_request"]["author"], creator);
     assert_eq!(opened["review"]["snapshots"].as_array().unwrap().len(), 1);
     assert_eq!(opened["reviewer_dispatch"]["state"], "failed", "{opened}");
     assert!(opened["reviewer_dispatch"]["error"]
@@ -459,4 +470,114 @@ fn work_task_refusals_have_structured_details_before_scheduling_git_work() {
     assert_eq!(error.details().unwrap()["reason"], "for_task_scope");
     assert!(error.details().unwrap()["recovery"].as_str().is_some());
     assert!(state.deferred_work.is_none());
+}
+
+#[test]
+fn rpc_opening_records_workspace_agent_and_tracks_author_at_publication() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repository, mut state, project) = tracked(home.path());
+    let workspace_id = workspace(&mut state, &project, "workspace author");
+    let owner = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let agent = state.handle(req("agent.add", json!({"entity_id": owner})))["result"]["agent"]
+        ["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let opened = open_direct(&mut state, params(&workspace_id), Actor::User);
+    assert_eq!(opened["review"]["pull_request"]["author"], agent);
+    assert_eq!(opened["task"]["trackers"], json!([agent]));
+    let saved = state
+        .store
+        .as_ref()
+        .unwrap()
+        .load_tracker_task(opened["task"]["id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.trackers, vec![agent]);
+}
+
+#[test]
+fn author_tracks_from_publication_even_when_user_auto_watch_is_disabled() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repository, mut state, project) = tracked(home.path());
+    let workspace_id = workspace(&mut state, &project, "author tracker");
+    let (_, agent) = project_agent(&mut state, &project);
+    state.watch_agent_filed_tasks = false;
+    let opened = open_direct(
+        &mut state,
+        params(&workspace_id),
+        Actor::Agent {
+            agent_id: agent.clone(),
+        },
+    );
+    assert!(!opened["task"]["watched"].as_bool().unwrap_or(false));
+    assert!(
+        !state
+            .store
+            .as_ref()
+            .unwrap()
+            .load_tracker_task(opened["task"]["id"].as_str().unwrap())
+            .unwrap()
+            .unwrap()
+            .watched
+    );
+    assert_eq!(opened["task"]["trackers"], json!([agent]));
+    assert_eq!(opened["review"]["pull_request"]["author"], agent);
+}
+
+#[test]
+fn project_agent_reviewers_decide_after_opening_and_generic_assignment() {
+    for opening_reviewer in [true, false] {
+        let home = tempfile::tempdir().unwrap();
+        let (_repository, mut state, project) = tracked(home.path());
+        let workspace_id = workspace(&mut state, &project, "coordinator-reviewer");
+        let (owner, agent) = project_agent(&mut state, &project);
+        let mut asked = params(&workspace_id);
+        asked.reviewer = Some(if opening_reviewer {
+            ReviewReviewer::ProjectAgent
+        } else {
+            ReviewReviewer::User
+        });
+        let opened = open_direct(&mut state, asked, Actor::User);
+        let task_id = opened["task"]["id"].as_str().unwrap();
+        let task = if opening_reviewer {
+            opened["task"].clone()
+        } else {
+            review_call(
+                &mut state,
+                "tasks.assign",
+                json!({"task_id":task_id,"assignee":{"kind":"project_agent"}}),
+            )["task"]
+                .clone()
+        };
+        assert_eq!(
+            task["assignee"],
+            json!({"kind":"agent","agent_id":agent}),
+            "{task}"
+        );
+        for (verdict, expected) in [("approve", "approved"), ("reject", "rejected")] {
+            let frame = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+                "name":"comment_task","arguments":{"task_id":task_id,"body":"Deciding coordinator reason",
+                    "opinion":{"snapshot_id":opened["review"]["snapshots"][0]["id"],"verdict":verdict}}
+            }});
+            let action = crate::mcp::DoneServer::new(&agent)
+                .handle_message(&frame.to_string())
+                .action
+                .unwrap();
+            state.agent_action(&owner, &agent, action).unwrap();
+            let current = review_call(&mut state, "tasks.review.get", json!({"task_id":task_id}));
+            assert_eq!(
+                current["review"]["pull_request"]["status"], expected,
+                "{current}"
+            );
+        }
+        let task = review_call(&mut state, "tasks.get", json!({"task_id":task_id}));
+        assert_eq!(task["task"]["status"], "done");
+    }
 }

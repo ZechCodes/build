@@ -26,6 +26,7 @@ impl AppState {
         task.updated_at = now.clone();
         let mut write = TaskWrite::by(Actor::Build, task);
         write.comments.push(TaskComment {
+            review_notice: None,
             id,
             task_id: write.task.id.clone(),
             author: Actor::Build,

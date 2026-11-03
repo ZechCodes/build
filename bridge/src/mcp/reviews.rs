@@ -404,6 +404,10 @@ mod tests {
             "update_review_base",
             r#"{"task_id":"task-1","expected_version":1,"bases":[{"directory_id":"dir-1","branch":"dev"}]}"#,
         ),
+        (
+            "retry_review_delivery",
+            r#"{"task_id":"task-1","comment_id":"comment-1"}"#,
+        ),
     ];
 
     fn call(surface: super::super::McpSurface, name: &str, args: Value) -> Handled {
@@ -589,6 +593,8 @@ mod tests {
             (4, "/task_id", json!("")),
             (5, "/expected_version", json!(1.5)),
             (6, "/bases/0/branch", json!("main~1")),
+            (7, "/task_id", json!("")),
+            (7, "/comment_id", json!("x".repeat(201))),
         ] {
             let (name, raw) = PR_CALLS[index];
             let mut args: Value = serde_json::from_str(raw).unwrap();

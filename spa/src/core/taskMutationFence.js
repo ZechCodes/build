@@ -7,7 +7,7 @@ const taskWrites = new Set([
   "tasks.waiting_on.add", "tasks.waiting_on.remove", "tasks.watch",
   "tasks.review.act", "tasks.review.close", "tasks.review.complete", "tasks.review.merge",
   "tasks.review.open", "tasks.review.push", "tasks.review.refresh", "tasks.review.reopen",
-  "tasks.review.snapshot", "tasks.review.update",
+  "tasks.review.retryDelivery", "tasks.review.snapshot", "tasks.review.update",
   // Task Inbox actions use generic entity verbs. Their IDs have no guaranteed
   // prefix, so conservatively fence these device-wide. Project deletion owns
   // task deletion; there is no tasks.delete/dismiss/tracking wire method.

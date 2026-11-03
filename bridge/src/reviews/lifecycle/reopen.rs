@@ -90,12 +90,16 @@ fn publish(
 
 fn validate_review(review: &Review, request: &ReopenRequest) -> Result<(), String> {
     if review.mode != ReviewMode::PullRequest
-        || review
-            .pull_request
-            .as_ref()
-            .is_none_or(|pr| pr.status != PullRequestStatus::Closed)
+        || review.pull_request.as_ref().is_none_or(|pr| {
+            !matches!(
+                pr.status,
+                PullRequestStatus::Closed | PullRequestStatus::Rejected
+            )
+        })
     {
-        return Err("only Closed unmerged PRs can reopen; open a new PR after merge".into());
+        return Err(
+            "only Closed or Rejected unmerged PRs can reopen; open a new PR after merge".into(),
+        );
     }
     if review.version != request.expected_version {
         return Err(format!(

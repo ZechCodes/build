@@ -89,7 +89,7 @@ impl AppState {
             .sort_by(|left, right| left.directory_id.cmp(&right.directory_id));
         let (project_id, task, review) = self.pull_request(&params.task_id)?;
         let store = self.tracker_store()?.clone();
-        let (request_id, request, refresh) = resolve_plan(&store, &review, &params, actor)?;
+        let (request_id, request, refresh) = resolve_plan(&store, &review, &params, actor.clone())?;
         let sources = self.review_action_sources(&project_id, &review);
         let work = MergeWork {
             observation: ReviewInvalidation::new(self, &review, &task),
@@ -97,6 +97,7 @@ impl AppState {
             project_id,
             workspace_id: review.workspace_id.clone(),
             job: MergeJob {
+                caller: actor,
                 project_path: task.project_path,
                 request_id,
                 request,

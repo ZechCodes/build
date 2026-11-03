@@ -14,6 +14,8 @@ use crate::store::Store;
 use progress::{publication_settled, pushed, successful_merge};
 
 pub struct MergeJob {
+    /// Authenticated current caller; a retry's saved request actor may differ.
+    pub caller: crate::tracker::Actor,
     pub project_path: String,
     pub request_id: String,
     pub request: ReviewMergeRequest,
@@ -65,6 +67,7 @@ fn merge_prepared_observed(
         return Ok(review);
     }
     let review = load(store, &job.request.task_id)?;
+    plan::validate_actor(&review, &job.caller)?;
     let _lease = fence::lease(&review)?;
     let existing = store
         .load_review_merge_intent(&job.project_path, &job.request_id)
@@ -81,6 +84,7 @@ fn merge_prepared_observed(
         notify();
     }
     let review = load(store, &job.request.task_id)?;
+    plan::validate_actor(&review, &job.caller)?;
     plan::validate_sources(&review, job)?;
     let mut intent = match existing {
         Some(intent) => intent,
@@ -208,9 +212,11 @@ fn historical_snapshot(review: &Review, intent: &ReviewMergeIntent) -> bool {
 fn publication_only(review: &Review, intent: &ReviewMergeIntent) -> bool {
     historical_snapshot(review, intent)
         || review.pull_request.as_ref().is_some_and(|metadata| {
-            metadata.status == PullRequestStatus::Closed
-                || (metadata.status == PullRequestStatus::Merged
-                    && intent.execution_version != Some(review.version))
+            matches!(
+                metadata.status,
+                PullRequestStatus::Closed | PullRequestStatus::Rejected
+            ) || (metadata.status == PullRequestStatus::Merged
+                && intent.execution_version != Some(review.version))
         })
 }
 

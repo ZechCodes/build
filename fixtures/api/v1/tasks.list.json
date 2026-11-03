@@ -581,7 +581,8 @@
             "read_through": "tc-01K5ZQ9A1B2C3D4E5F6G7H8J9K",
             "unread_agent_comments": 1,
             "unread_mentions": 1,
-            "attachment_count": 0
+            "attachment_count": 0,
+            "unread_service_mentions": 0
           }
         ],
         "identities": {
@@ -1565,5 +1566,14 @@
       "watch_start_fallback": "Absent/null watch_started_after uses latest watched-fact fallback; present empty watch_started_after bypasses fallback and compares as an empty floor.",
       "read_and_dismiss": "Canonical read/dismiss None remains absent; Some(empty string) remains present empty, following canonical comparison behavior."
     }
+  },
+  "review_service_attention": {
+    "since": "3.30.0",
+    "capability": "tasks.review.verdictDelivery",
+    "summary_field": "unread_service_mentions",
+    "user_assignment_suppressed_for_review_status": [
+      "changes_requested",
+      "approved"
+    ]
   }
 }

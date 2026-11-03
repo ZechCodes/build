@@ -1,5 +1,6 @@
 use super::*;
 use crate::store::now_rfc3339;
+use crate::tracker::Actor;
 use std::collections::BTreeSet;
 
 impl Store {
@@ -120,6 +121,13 @@ fn validate_merge(
     let header = require_pull_request(tx, &request.task_id)?;
     check_version(&header, request.expected_version)?;
     let metadata = header.pull_request.expect("PR metadata checked");
+    if matches!(request.actor, Actor::Agent { .. })
+        && metadata.status != PullRequestStatus::Approved
+    {
+        return Err(invalid(
+            "agent merge_review requires the current PR status to be Approved",
+        ));
+    }
     if !metadata.status.is_active()
         || metadata.latest_published_snapshot_id.as_deref() != Some(&request.snapshot_id)
     {

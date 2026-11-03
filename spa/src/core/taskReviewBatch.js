@@ -17,17 +17,22 @@ export function reviewBatchAnchorLink(taskNumber, snapshotNumber, anchor) {
   return `[[#${taskNumber}:r${snapshotNumber}:${mode}:${anchor.directory_id}:${anchor.path}#${side}L${anchor.line}]]`;
 }
 
-export function reviewBatchVerdictBody(summary, drafts, taskNumber, snapshotNumber) {
-  const anchors = drafts.filter((draft) => draft.anchor).map(({ anchor }) =>
-    `- ${reviewBatchAnchorLink(taskNumber, snapshotNumber, anchor)}`);
-  return [summary.trim(), anchors.join("\n")].filter(Boolean).join("\n\n");
+export function reviewBatchVerdictBody(summary, drafts, taskNumber, snapshotNumber, priorAnchors = []) {
+  const anchors = uniqueBatchAnchors([...priorAnchors, ...drafts.flatMap((draft) => draft.anchor ? [draft.anchor] : [])]);
+  const links = anchors.map((anchor) => `- ${reviewBatchAnchorLink(taskNumber, snapshotNumber, anchor)}`);
+  return [summary.trim(), links.join("\n")].filter(Boolean).join("\n\n");
 }
 
-function submissionOperations(options, drafts, summary, verdict, uuid) {
+function uniqueBatchAnchors(anchors) {
+  const identity = (anchor) => JSON.stringify([anchor.snapshot_id, anchor.directory_id, anchor.path, anchor.side, anchor.line, anchor.commit || ""]);
+  return [...new Map(anchors.map((anchor) => [identity(anchor), anchor])).values()];
+}
+
+function submissionOperations(options, drafts, summary, verdict, uuid, priorAnchors) {
   const { taskId, taskNumber, snapshot } = options;
   const params = drafts.map((draft) => paramsFor(taskId, draft));
   if (verdict) params.push({ task_id: taskId,
-    body: reviewBatchVerdictBody(summary, drafts, taskNumber, snapshot.number) || (verdict === "approve" ? "Approved." : "Changes requested."),
+    body: reviewBatchVerdictBody(summary, drafts, taskNumber, snapshot.number, priorAnchors) || (verdict === "approve" ? "Approved." : "Changes requested."),
     opinion: { snapshot_id: snapshot.id, verdict } });
   else if (summary.trim()) params.push({ task_id: taskId, body: summary.trim() });
   let previous = null;
@@ -111,9 +116,10 @@ export function createTaskReviewBatch(options) {
     await change((state) => {
       if (state.submission) return state;
       const drafts = state.drafts.filter(nonempty);
-      const operations = submissionOperations(options, drafts, state.summary, verdict, uuid);
+      const priorAnchors = verdict ? (options.priorAnchors?.() || []).filter((anchor) => anchor.snapshot_id === snapshot.id) : [];
+      const operations = submissionOperations(options, drafts, state.summary, verdict, uuid, priorAnchors);
       if (!operations.length) return state;
-      return { ...state, submission: { id: uuid(), drafts, summary: state.summary, verdict, operations, acknowledged: [] } };
+      return { ...state, submission: { id: uuid(), drafts, priorAnchors, summary: state.summary, verdict, operations, acknowledged: [] } };
     });
     return value.submission;
   }

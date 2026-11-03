@@ -51,6 +51,25 @@ describe("review batch drafts", () => {
     model.dispose();
   });
 
+  it("includes earlier Comment anchors in a later verdict without reposting their comments", async () => {
+    const postedAnchors = [];
+    const callRpc = vi.fn(async () => ({}));
+    const model = create({ taskId: "comment-then-verdict", callRpc, priorAnchors: () => postedAnchors });
+    await model.ready;
+    await model.add({ body: "First round note", anchor });
+    await model.submit();
+    postedAnchors.push(anchor, { ...anchor });
+    await model.submit("request_changes");
+    expect(callRpc).toHaveBeenCalledTimes(2);
+    expect(callRpc.mock.calls[0][1]).toMatchObject({ body: "First round note", anchor });
+    const verdict = callRpc.mock.calls[1][1];
+    expect(verdict.anchor).toBeUndefined();
+    expect(verdict.opinion.verdict).toBe("request_changes");
+    expect(verdict.body.match(/#L3/g)).toHaveLength(1);
+    expect(verdict.body).toContain("[[#970:r2:all:dir:one:src/a.js#L3]]");
+    model.dispose();
+  });
+
   it("resumes the same prepared operation IDs after a crash before atomic enqueue", async () => {
     const enqueueBatch = vi.fn().mockRejectedValueOnce(new Error("Disk unavailable")).mockResolvedValue([]);
     const service = { enqueueBatch, readOperations: () => [], subscribe: () => () => {} };

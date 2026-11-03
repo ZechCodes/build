@@ -3,6 +3,7 @@ use super::invalid;
 use crate::store::StoreError;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 const DEFINITION: &str = "sync-journal-1";
@@ -12,7 +13,6 @@ CREATE TABLE IF NOT EXISTS sync_state (
  floor INTEGER NOT NULL DEFAULT 0, baseline INTEGER NOT NULL DEFAULT 0,
  total_bytes INTEGER NOT NULL DEFAULT 0, cumulative_bytes INTEGER NOT NULL DEFAULT 0,
  last_at_ms INTEGER NOT NULL DEFAULT 0);
-INSERT OR IGNORE INTO sync_state(id) VALUES(1);
 CREATE TABLE IF NOT EXISTS sync_journal (
  seq INTEGER PRIMARY KEY AUTOINCREMENT,at_ms INTEGER NOT NULL,
  entity_kind TEXT NOT NULL,entity_key TEXT NOT NULL,operation TEXT NOT NULL,
@@ -50,36 +50,118 @@ pub(in crate::store) fn initialize(
 ) -> Result<(), StoreError> {
     let binding = file_binding(path)?;
     let tx = conn.transaction()?;
-    let incarnation = meta(&tx, "sync_incarnation")?;
+    let pristine = validate_startup(&tx)?;
     let definition = meta(&tx, "sync_schema")?;
     let previous_binding = meta(&tx, "sync_file_binding")?;
-    let existing: i64 = tx.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name IN ('sync_state','sync_journal','sync_stream_state','sync_routes','sync_revisions')",[],|r|r.get(0))?;
-    if incarnation.is_some() && existing != 5 {
-        return Err(invalid(
-            "sync storage is incomplete; restore an intact backup",
-        ));
-    }
-    let rotate = incarnation.is_some()
+    let rotate = !pristine
         && (restored
             || definition.as_deref() != Some(DEFINITION)
             || previous_binding.as_deref() != Some(&binding));
     tx.execute_batch(TABLES)?;
-    if incarnation.is_none() || rotate {
-        put(&tx, "sync_incarnation", &uuid::Uuid::new_v4().to_string())?;
-        // Existing retained rows are physically reclaimed by ordinary GC.
-        // No new cursor can acknowledge history from before this rebuild.
-        tx.execute("UPDATE sync_state SET baseline=head,floor=head", [])?;
-    }
-    if meta(&tx, "sync_cursor_key")?.is_none() {
+    if pristine {
+        tx.execute("INSERT INTO sync_state(id) VALUES(1)", [])?;
         put(
             &tx,
             "sync_cursor_key",
             &URL_SAFE_NO_PAD.encode(dryoc::rng::randombytes_buf(32)),
         )?;
     }
+    if pristine || rotate {
+        put(&tx, "sync_incarnation", &uuid::Uuid::new_v4().to_string())?;
+        // Existing retained rows are physically reclaimed by ordinary GC.
+        // No new cursor can acknowledge history from before this rebuild.
+        tx.execute("UPDATE sync_state SET baseline=head,floor=head", [])?;
+    }
     put(&tx, "sync_schema", DEFINITION)?;
     put(&tx, "sync_file_binding", &binding)?;
     tx.commit()?;
+    Ok(())
+}
+
+/// Read-only preflight, also run before Store startup can migrate other rows.
+/// True means an entirely pristine pre-sync database, never a partial install.
+pub(in crate::store) fn validate_startup(conn: &Connection) -> Result<bool, StoreError> {
+    inspect(conn).map_err(|_| incomplete())
+}
+
+fn incomplete() -> StoreError {
+    invalid("sync storage is incomplete; restore an intact backup")
+}
+
+fn inspect(conn: &Connection) -> Result<bool, StoreError> {
+    let tables = conn.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name GLOB 'sync_*' ORDER BY name")?
+        .query_map([],|r|r.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
+    let has_meta: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='meta')",
+        [],
+        |r| r.get(0),
+    )?;
+    let metadata: BTreeMap<String, String> = if has_meta {
+        conn.prepare("SELECT key,value FROM meta WHERE key GLOB 'sync_*' ORDER BY key")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?
+    } else {
+        BTreeMap::new()
+    };
+    if tables.is_empty() && metadata.is_empty() {
+        return Ok(true);
+    }
+    if tables
+        != [
+            "sync_journal",
+            "sync_revisions",
+            "sync_routes",
+            "sync_state",
+            "sync_stream_state",
+        ]
+        || metadata.len() != 4
+    {
+        return Err(incomplete());
+    }
+    for name in [
+        "sync_incarnation",
+        "sync_cursor_key",
+        "sync_schema",
+        "sync_file_binding",
+    ] {
+        if metadata.get(name).is_none_or(|value| value.is_empty()) {
+            return Err(incomplete());
+        }
+    }
+    let (incarnation, _) = identity(conn)?;
+    if uuid::Uuid::parse_str(&incarnation)
+        .ok()
+        .map(|id| id.to_string())
+        .as_deref()
+        != Some(incarnation.as_str())
+    {
+        return Err(incomplete());
+    }
+    validate_state(conn)?;
+    Ok(false)
+}
+
+fn validate_state(conn: &Connection) -> Result<(), StoreError> {
+    let rows: i64 = conn.query_row("SELECT COUNT(*) FROM sync_state", [], |r| r.get(0))?;
+    if rows != 1 {
+        return Err(incomplete());
+    }
+    let (head,floor,baseline,bytes,cumulative,last_at):(i64,i64,i64,i64,i64,i64) = conn.query_row("SELECT head,floor,baseline,total_bytes,cumulative_bytes,last_at_ms FROM sync_state WHERE id=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
+    let journal: i64 =
+        conn.query_row("SELECT COALESCE(MAX(seq),0) FROM sync_journal", [], |r| {
+            r.get(0)
+        })?;
+    if floor < 0
+        || floor > head
+        || baseline < 0
+        || baseline > head
+        || bytes < 0
+        || cumulative < 0
+        || last_at < 0
+        || head < journal
+    {
+        return Err(incomplete());
+    }
     Ok(())
 }
 

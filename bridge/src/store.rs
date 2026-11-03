@@ -379,6 +379,9 @@ impl Store {
                 });
             }
         }
+        // Refuse partial sync state before any migration, repair, pragma or
+        // metadata update can modify the database we were asked to inspect.
+        sync::validate_startup(&conn)?;
         // WAL is what makes an append cheap: the reader keeps reading while the
         // writer commits, and a commit appends to the log instead of rewriting
         // the page it touched. `synchronous = NORMAL` under WAL fsyncs at

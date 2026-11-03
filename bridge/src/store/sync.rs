@@ -14,7 +14,7 @@ pub use reads::{Head, HeadResult, SyncReadConnection};
 pub use retention::{
     GcProgress, GC_ROWS, MAX_JOURNAL_AGE_MS, MAX_JOURNAL_BYTES, MAX_JOURNAL_ENTRIES,
 };
-pub(super) use schema::initialize;
+pub(super) use schema::{initialize, validate_startup};
 
 use super::StoreError;
 use serde::{Deserialize, Serialize};
@@ -199,5 +199,7 @@ pub(super) fn now_ms() -> i64 {
         .min(i64::MAX as u128) as i64
 }
 
+#[cfg(test)]
+mod startup_tests;
 #[cfg(test)]
 mod tests;

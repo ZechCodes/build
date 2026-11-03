@@ -1985,9 +1985,11 @@ commit rail; `trackerTaskPage.js` places the existing task timeline beside it.
 Desktop has commits, Changes/Files and comments in three columns. At widths up
 to 640px, Changes, Files and Comments become tabs and the header opens the
 commit rail as a sheet. Existing lifecycle, merge and reclaim controls remain
-under More. The existing comment/reply composer and saved-revision feedback
-controls remain available; the pending tray and redesigned verdict bar belong
-to the next slice. Task description and body remain accessible in the header's
+under More. Clicking a Changes or Files line opens an inline comment composer;
+inline threads offer Reply. The Comments column starts with the pending tray,
+whose drafts can be edited, removed or opened at their original line. The
+header offers Request changes and Approve, pinned to the phone's bottom edge;
+the Comments tab carries the pending count. Task description and body remain accessible in the header's
 Description disclosure.
 
 `router.js` and `taskReviewSelection.js` address the reading place as
@@ -2024,6 +2026,42 @@ template, retaining rows, text and loaded attachments. It keeps Comments
 visible at the existing reading width until the reader explicitly selects a
 review view, revision or commit. That temporary width is bounded by the
 viewport; a cold review still opens with the usual responsive columns or tabs.
+
+**Review comment batches (#970).** A batch is the reviewer's anchored task
+comments on one saved revision, posted since their previous verdict on that
+revision, ending with a verdict comment. Plain Comment submissions post notes
+without ending the batch. Request changes and Approve first submit pending
+notes, then one `tasks.comment` with `opinion: {snapshot_id, verdict}`. Its body
+contains the optional summary followed by deduplicated links to the batch's
+anchors, including earlier plain Comment submissions. Links use #961's
+`[[#<task>:r<N>:all:<directory>:<path>#L<line>]]` form; commit anchors use
+`commit/<sha>` in place of `all`, and old-side anchors use `#old-L<line>`.
+Both verdicts share a confirmation stating "The author is told and continues";
+the actual agent continuation belongs to the later bridge slice.
+
+`taskReviewBatch.js` stores drafts and a prepared submission in the durable
+local UI store, keyed by device, project, task and `snapshot_id`. Revision
+changes never retarget them. A newly published revision leaves the reading
+selection pinned, labels older drafts and disables older-revision verdicts.
+Since comparisons accept comments on the current-head side. Under the
+`since_baseline=base` fallback both sides are commentable; otherwise a plain
+sentence links previous-head readers to the prior revision at the same path.
+The anchor wire shape has no since-baseline identity.
+
+`writeOperations.enqueueBatch` is an opt-in outbox path: it atomically persists
+all comment intents with stable operation UUIDs and predecessor dependencies
+before transport, including while offline. It adopts the first authoritative
+journal before an unsent intent's first transport attempt. Each successor is
+sent only after its predecessor is durably acknowledged; bridge dependencies
+also fence execution. Existing `submit` callers retain their behavior. Reload
+and lost acknowledgements reconcile these same IDs through status, so an
+already accepted comment is never posted as a new operation. Drafts remain in
+the tray until terminal success, preserving recovery after an accepted write
+later fails. A failed predecessor holds unsent descendants; Edit pending
+comments cancels only never-attempted descendants and restores failed/unsent
+notes for correction, retaining successful-prefix and uncertain-outcome evidence.
+An outbox enqueue refusal keeps the prepared batch and offers Retry saved review
+with the same operation IDs; it never discards an ambiguously persisted intent.
 
 PR-style opening is a service in `bridge/src/reviews/opening.rs`, exposed by
 wire 3.15.0's typed RPC and MCP adapters (#405). `api/v1/reviews.rs` owns the
@@ -3783,6 +3821,53 @@ the entry rather than depending on a files push, which can omit ignored paths.
 from that queue in a collapsible card inside the preview pane. Account reset
 and device retirement cancel and clear the queue; a reload restores only recent
 metadata, never file bytes or live upload sessions.
+
+### References and diff links
+
+`markdownRefs.js` parses Build references; `markdownLinks.js` resolves them
+through the account-wide cached reference index and uses `hashFromRoute` for
+all destinations. Unresolved references remain readable text. Existing task
+(`#42`, `#42/c/<id>`), file (`[[<workspace>:<path>#L10]]`) and whole-commit
+(`[[<workspace>:commit:<sha>]]`) forms retain their meaning.
+
+`[[<workspace>:commit:<sha>:<path>#L42]]` opens Changes with
+`?commit=<sha>&path=<path>&side=new&line=42`. `#old-L42` selects the old side;
+without an anchor it selects the file. SHA prefixes keep the existing 4–40 hex
+rule. Directory-qualified workspace names retain their usual source resolution.
+The Changes pane uses `git.show` with `paths` only when `git.showPaths` is
+advertised, otherwise it reads the whole commit. Filtered patch records have
+separate cache identities so they cannot replace a whole-commit patch. Cached
+patches paint and reveal their file and line before any live refresh settles.
+
+`[[#<task>:r<N>:<range>:<dir>:<path>#L42]]` opens a saved review comparison.
+`<range>` is `all`, `since`, or `commit/<sha>`; `<dir>` is the saved directory
+id, copied exactly from `get_review`/`read_review`. Review links always pass their selection through `reviewRoutePath` via the
+router. An omitted directory (`[[#969:r3:all:src/file.js]]`) resolves only when
+that revision has one directory. Without cached revision metadata the link
+retains its raw file reference in `?fileRef=…`; opening the review resolves it
+when the record arrives and canonicalizes to the normal directory/path URL. An
+unknown directory opens that revision’s All changes view with a short file-not-found
+notice. The reference index observes saved review metadata changes; known tasks
+retain clickable review references before that metadata arrives.
+Abbreviated review commit SHAs resolve against the selected revision and
+directory's cached commit list before reading a diff or selecting a patch cache
+key. A unique match from a complete list becomes the full OID in the canonical
+URL through `markRoute`; the message text remains unchanged. Missing metadata
+or a partial commit list keeps resolution pending. Ambiguous or missing matches
+open All changes with a notice.
+Both side anchors work in review links. References to the mounted task review
+select and reveal in place through `markRoute`, keeping the task page mounted.
+
+The review prefix `#<digits>:r<N>:<range>` is reserved inside brackets; a
+workspace whose name collides uses its id. The resolver prefers the longest cached directory id
+prefix, because saved directory ids normally contain colons themselves. A single
+remaining field is an omitted-directory path; otherwise the first field is the
+directory token and remaining colons stay in the path. A directory token may
+percent-encode delimiters; paths remain literal. A review path containing a colon
+therefore names its directory explicitly. Commit-file paths keep colons after the SHA delimiter.
+The bridge has no wiki-reference parser; its shared MCP descriptions, link
+markup note and conversation protocol document these shapes. Explicit agent
+mention extraction and typed thread references retain their existing scope.
 
 ### Render from cache
 

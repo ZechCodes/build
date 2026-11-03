@@ -32,6 +32,31 @@ describe("durable write operations", () => {
     expect(await restored.get("op-a")).toMatchObject(intent());
   });
 
+  it("persists a batch atomically and rolls back every new intent on conflict", async () => {
+    await operations.put(intent("existing"));
+    await expect(operations.putMany([intent("new"), intent("existing", { request: { method: "tasks.comment", params: { body: "changed" } } })])).rejects.toThrow("operation_conflict");
+    expect(await operations.get("new")).toBeUndefined();
+    await operations.putMany([intent("first"), intent("second", { after: ["first"] })]);
+    expect((await operations.list()).map(row => row.operationId)).toEqual(["existing", "first", "second"]);
+  });
+
+  it("preserves attempted and accepted state when another tab puts the same stale batch", async () => {
+    const prepared = [intent("first"), intent("second", { after: ["first"] })];
+    await operations.putMany(prepared);
+    await operations.update("first", row => ({ ...row, transportAttempted: true, journalIncarnation: "journal-first" }));
+    const otherTab = factory(scope);
+    await Promise.all([
+      operations.accept("first", { revision: 1, ack: { result: { saved: true } }, acceptedEpoch: "epoch-first" }),
+      otherTab.putMany(prepared),
+    ]);
+    expect(await operations.get("first")).toMatchObject({
+      state: "accepted", acknowledged: true, revision: 1, transportAttempted: true,
+      journalIncarnation: "journal-first", acceptedEpoch: "epoch-first", ack: { result: { saved: true } },
+    });
+    await otherTab.putMany(prepared);
+    expect(await operations.get("first")).toMatchObject({ state: "accepted", acknowledged: true, revision: 1, transportAttempted: true });
+  });
+
   it("isolates account, device and principal namespaces", async () => {
     await operations.put(intent());
     for (const changed of [{ accountId: "other" }, { deviceId: "other" }, { principalId: "other" }]) {

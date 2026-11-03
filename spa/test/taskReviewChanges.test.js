@@ -455,3 +455,46 @@ describe("anchored paths missing from a comparison", () => {
     } finally { pane.dispose(); }
   });
 });
+
+
+describe('Since line composition', () => {
+  it.each([['previous_head', false], ['base', true]])('allows old-side composition only under %s baseline', async (baseline, oldAllowed) => {
+    const host = document.createElement('div'); document.body.append(host);
+    const onComment = vi.fn();
+    const pane = mountTaskReviewChanges(host, { deviceId: 'dev', projectId: 'project', taskId: 'task', snapshot, directory,
+      comparison: { mode: 'since', from_snapshot_id: 'prior' }, priorRevision: 1, onComment, path: 'src/a.js',
+      callRpc: async (_method, params) => ({ ...list, since_baseline: baseline, ...(params.paths ? { patch } : {}) }) });
+    await waitForPatch(host);
+    expect(Boolean(host.querySelector('[data-review-comment][data-side="old"]'))).toBe(oldAllowed);
+    host.querySelector('[data-review-comment][data-side="new"]').click();
+    expect(onComment).toHaveBeenCalledWith({ snapshot_id: snapshot.id, directory_id: directory.id, path: 'src/a.js', side: 'new', line: 1 });
+    if (oldAllowed) {
+      host.querySelector('[data-review-comment][data-side="old"]').click();
+      expect(onComment.mock.calls.at(-1)[0].side).toBe('old');
+    } else {
+      const hint = host.querySelector('[data-review-since-hint]');
+      expect(hint.textContent).toContain('To comment on previous-head lines');
+      expect(hint.querySelector('a').getAttribute('href')).toContain('/review/r1/all/repo-a/src/a.js');
+      expect(host.querySelector('button[disabled][data-side="old"]')).toBeNull();
+    }
+    pane.dispose();
+  });
+});
+
+
+it("does not place an active composer under another commit or directory's matching line", async () => {
+  const commit = 'a'.repeat(40);
+  const anchor = { snapshot_id: snapshot.id, directory_id: directory.id, path: 'src/a.js', side: 'new', line: 1, commit };
+  const contexts = [{ directory, comparison: { mode: 'commit', commit: 'b'.repeat(40) } },
+    { directory: { id: 'other-directory' }, comparison: { mode: 'commit', commit } }];
+  for (const context of contexts) {
+    const host = document.createElement('div'); document.body.append(host);
+    const pane = mountTaskReviewChanges(host, { deviceId: 'dev', projectId: 'project', taskId: 'task', snapshot,
+      path: 'src/a.js', ...context, callRpc: async (_method, params) => params.paths ? { ...list, patch } : list });
+    await waitForPatch(host);
+    const composer = document.createElement('tr'); composer.innerHTML = '<td><textarea>Original context</textarea></td>';
+    expect(pane.placeComposer(composer, anchor)).toBe(false);
+    expect(host.contains(composer)).toBe(false);
+    pane.dispose(); host.remove();
+  }
+});

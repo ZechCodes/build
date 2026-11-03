@@ -7,6 +7,7 @@ function memoryCache() {
     rows, activateProjection() {}, deactivateProjection() {}, subscribe: () => () => {},
     list: async () => [...rows.values()], get: async id => rows.get(id),
     put: vi.fn(async row => { rows.set(row.operationId, structuredClone(row)); return row; }),
+    putMany: vi.fn(async batch => { for (const row of batch) rows.set(row.operationId, structuredClone(row)); }),
     update: async (id, update, options={}) => { if(options.accept && !options.accept()) return rows.get(id); const row = update(rows.get(id)); if (row) rows.set(id, row); return rows.get(id); },
     accept: async (id, fields) => { const row = rows.get(id); Object.assign(row, fields, {acknowledged:true,state:'accepted'}); return row; },
     confirm: async (id, fields) => { const row = rows.get(id); Object.assign(row, fields, {acknowledged:true,state:fields.confirmation.state}); return row; },
@@ -25,7 +26,7 @@ function setup(call, extra={}) {
   const service = createWriteOperationService({cache,randomUUID:()=> 'op-A',setTimeout:()=> 1,clearTimeout:()=>{},random:()=>.5,...extra});
   return {cache,session,service,bind:()=>service.bind({session,greeting})};
 }
-const flush = async () => { for (let n=0;n<20;n++) await Promise.resolve(); };
+const flush = async () => { for (let n=0;n<40;n++) await Promise.resolve(); };
 
 describe('durable write operation service', () => {
   it('persists exact normalized intent before transport and resolves only on durable ack', async () => {
@@ -496,4 +497,113 @@ it('reconciles every known summary variant across bounded status pages',async()=
   expect(subscriptions).toHaveLength(1);
   expect(subscriptions[0][1].operation_ids).toEqual(['accepted','executing']);
   await service.close();
+});
+
+
+describe("offline review batches", () => {
+  const batch = [
+    { operationId: "note", method: "tasks.comment", params: { task_id: "T", body: "Fix this" }, after: [] },
+    { operationId: "verdict", method: "tasks.comment", params: { task_id: "T", body: "Request changes", opinion: { snapshot_id: "S", verdict: "request_changes" } }, after: ["note"] },
+  ];
+
+  it("queues the whole batch offline, adopts one journal and replays each ID once after reload", async () => {
+    const { service, cache, session } = setup(async (method, params) => {
+      if (method === "writes.status") return { operations: params.operation_ids.map(operation_id => cache.rows.get(operation_id)?.acknowledged ? { operation_id, state: "accepted", ack: ack(operation_id).write, result: ack(operation_id).result } : { operation_id, state: "not_found" }) };
+      if (method === "writes.subscribe") return { operations: [] };
+      return ack(method === "tasks.comment" && params.opinion ? "verdict" : "note");
+    });
+    await expect(service.enqueueBatch(batch)).resolves.toEqual(["note", "verdict"]);
+    expect(cache.putMany).toHaveBeenCalledTimes(1);
+    expect(cache.rows.get("note")).toMatchObject({ journalIncarnation: null, state: "queued" });
+    expect(session.callRaw).not.toHaveBeenCalled();
+    await service.close();
+    const restored = createWriteOperationService({ cache, randomUUID: () => "tab-restored", setTimeout: () => 1, clearTimeout: () => {} });
+    await restored.bind({ session, greeting });
+    await flush();
+    await restored.reconcile();
+    await flush();
+    expect(session.callRaw.mock.calls.filter(([method]) => method === "tasks.comment")).toHaveLength(2);
+    expect(cache.rows.get("note").journalIncarnation).toBe("journal-A");
+    expect(cache.rows.get("verdict").after).toEqual(["note"]);
+    await restored.enqueueBatch(batch);
+    await restored.reconcile();
+    expect(session.callRaw.mock.calls.filter(([method]) => method === "tasks.comment")).toHaveLength(2);
+    await restored.close();
+  });
+
+  it("holds verdict transport until predecessor acknowledgement, including after reconnect", async () => {
+    let noteAck;
+    const { service, cache, session, bind } = setup(async (method, params) => {
+      if (method.startsWith("writes.")) return { operations: params.operation_ids.map(operation_id => cache.rows.get(operation_id)?.acknowledged ? { operation_id, state: "accepted", ack: ack(operation_id).write, result: ack(operation_id).result } : { operation_id, state: "not_found" }) };
+      if (!params.opinion) return new Promise(resolve => { noteAck = resolve; });
+      return ack("verdict");
+    });
+    await service.enqueueBatch(batch);
+    const binding = bind();
+    await flush();
+    expect(session.callRaw.mock.calls.filter(([method]) => method === "tasks.comment")).toHaveLength(1);
+    noteAck(ack("note"));
+    await binding;
+    await flush();
+    await service.reconcile();
+    await flush();
+    expect(session.callRaw.mock.calls.filter(([method]) => method === "tasks.comment")).toHaveLength(2);
+    expect(cache.rows.get("verdict").acknowledged).toBe(true);
+    await service.close();
+  });
+
+  it("holds descendants of a refused comment and cancels only never-attempted descendants", async () => {
+    const refused = Object.assign(new Error("Anchor unavailable"), { retryable: false, error_code: "invalid_anchor" });
+    const { service, cache, session, bind } = setup(async (method, params) => {
+      if (method.startsWith("writes.")) return { operations: params.operation_ids.map(operation_id => cache.rows.get(operation_id)?.acknowledged ? { operation_id, state: "accepted", ack: ack(operation_id).write, result: ack(operation_id).result } : { operation_id, state: "not_found" }) };
+      throw refused;
+    });
+    await service.enqueueBatch(batch);
+    await bind();
+    await flush();
+    await service.reconcile();
+    expect(session.callRaw.mock.calls.filter(([method]) => method === "tasks.comment")).toHaveLength(1);
+    expect(cache.rows.get("note").state).toBe("failed");
+    await service.cancelUnsentBatch(["verdict"]);
+    expect(cache.rows.get("verdict")).toMatchObject({ state: "failed", effect: "unapplied", dismissed: true });
+    await expect(service.cancelUnsentBatch(["note"])).rejects.toThrow("already attempted");
+    await service.close();
+  });
+
+  it("uses status after a crash between transport and ack and sends only the held verdict", async () => {
+    const { service, cache, session, bind } = setup(async (method, params) => {
+      if (method === "writes.status") return { operations: params.operation_ids.map(operation_id => operation_id === "note"
+        ? { operation_id, state: "accepted", ack: ack("note").write, result: ack("note").result }
+        : { operation_id, state: "not_found" }) };
+      if (method === "writes.subscribe") return { operations: [] };
+      return ack("verdict");
+    });
+    await service.enqueueBatch(batch);
+    await cache.update("note", row => ({ ...row, journalIncarnation: "journal-A", transportAttempted: true }));
+    await bind();
+    const transports = session.callRaw.mock.calls.filter(([method]) => method === "tasks.comment");
+    expect(transports).toHaveLength(1);
+    expect(transports[0][2].write.operation_id).toBe("verdict");
+    expect(cache.rows.get("note").acknowledged).toBe(true);
+    await service.close();
+  });
+
+  it("never transports descendants of an expired failed predecessor", async () => {
+    const { service, cache, session, bind } = setup(async (method, params) => ({ operations: params.operation_ids.map(operation_id => ({ operation_id, state: "not_found" })) }));
+    await service.enqueueBatch(batch);
+    await cache.update("note", row => ({ ...row, state: "result_expired", acknowledged: true, outcome: "failed", effect: "unapplied", journalIncarnation: "journal-A", transportAttempted: true }));
+    await bind();
+    expect(session.callRaw.mock.calls.filter(([method]) => method === "tasks.comment")).toHaveLength(0);
+    await service.close();
+  });
+
+  it("never sends a partially persisted batch and keeps unsupported offline verbs refused", async () => {
+    const { service, cache, session, bind } = setup(async () => ({ operations: [] }));
+    await expect(service.enqueueBatch([{ method: "tasks.update", params: {} }])).rejects.toMatchObject({ error_code: "write_unsupported" });
+    await bind();
+    cache.putMany.mockRejectedValueOnce(new Error("disk full"));
+    await expect(service.enqueueBatch(batch)).rejects.toThrow("disk full");
+    expect(session.callRaw.mock.calls.filter(([method]) => method === "tasks.comment")).toEqual([]);
+    await service.close();
+  });
 });

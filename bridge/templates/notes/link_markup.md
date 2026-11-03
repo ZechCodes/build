@@ -9,7 +9,18 @@ Write a reference and the reader gets a link, labelled with what it names. One o
 | `@project:<name or id>` | a project |
 | `[[<workspace>:path/to/file.rs]]` | a file in that workspace; add `#L10` for a line (`#L10-L20` opens at 10) |
 | `[[<workspace>:commit:<sha>]]` | a commit in that workspace's Changes view; short or full SHA |
+| `[[<workspace>:commit:<sha>:<path>#L42]]` | one file’s diff in a workspace commit, at new-side line 42 |
+| `[[#<task>:r<N>:<range>:<dir>:<path>#L42]]` | one file’s diff in review revision N, at new-side line 42 |
 | `[[<workspace>/<directory>:path/to/file.rs]]` | a file in one source directory of a multi-source workspace; `commit:` takes the same prefix |
+
+Diff anchors are optional. Use `#L42` for a new-side line or `#old-L42` for
+an old-side line. Review `<range>` is `all`, `since`, or `commit/<sha>`;
+Copy `<dir>` from `get_review` or `read_review` exactly as given, including
+any `:`. The longest matching directory id wins; an encoded token (`:` as
+`%3A`, `%` as `%25`) also works. With one review directory, omit it:
+`[[#969:r3:all:src/main.rs#old-L42]]`. Workspace commit links stay in Changes;
+review links name the saved revision explicitly. When the path contains `:`,
+include `<dir>` explicitly.
 
 A workspace or project is named by its title or its id. Use the id when the
 title has spaces or a colon. Workspaces, agents and projects of other projects

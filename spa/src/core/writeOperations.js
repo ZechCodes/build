@@ -92,6 +92,66 @@ export function createWriteOperationService(options) {
     worker.dispatch(leaseActive => send(row, held, leaseActive));
     return waitLocally(result, input);
   }
+  /** Persist a complete ordered batch without waiting for wire acceptance.
+   * Review comments may be queued before a greeting: their first authoritative
+   * opening supplies the journal once, before any transport attempt. */
+  async function enqueueBatch(inputs) {
+    await ready;
+    const rows = await cache.list();
+    const batch = [];
+    for (const input of inputs) {
+      const row = await queuedBatchRow(input, [...rows, ...batch]);
+      batch.push(row);
+    }
+    const fresh = batch.filter((row) => !rows.some((held) => held.operationId === row.operationId));
+    if (fresh.length) await cache.putMany(fresh);
+    await refreshSnapshot();
+    if (binding && current(binding)) void worker.reconcile();
+    return batch.map((row) => row.operationId);
+  }
+
+  async function queuedBatchRow(input, rows) {
+    const request = copyIntent(input.request || { method: input.method, params: input.params || {} });
+    const operationId = input.operationId || randomUUID();
+    const previous = rows.find((row) => row.operationId === operationId);
+    if (previous) {
+      verifyRetryAfter(previous, input);
+      if (JSON.stringify(previous.request) !== JSON.stringify(request)) throw writeRefusal("This operation ID already belongs to another intent", "operation_conflict");
+      return previous;
+    }
+    if (!canQueue(request.method)) throw writeRefusal("This bridge does not support durable acceptance for this action");
+    const after = batchDependencies(input, request, operationId, rows);
+    const row = copyIntent({ accountId: options.accountId, deviceId: options.deviceId, principalId: options.principalId,
+      operationId, request, method: request.method, after, owner: input.owner, draft: input.draft,
+      overlay: input.overlay || [], reservedIds: input.reservedIds || [], acceptedEpoch: null,
+      journalIncarnation: null, awaitPredecessorAck: true, revision: 0, state: "queued", acknowledged: false, overlayActive: true, createdAt: now() });
+    await installIntentEffects(row);
+    return row;
+  }
+
+  function batchDependencies(input, request, operationId, rows) {
+    const after = writeDependencies({ ...input, params: request.params }, rows);
+    if (after?.includes(operationId)) throw writeRefusal("A write cannot depend on itself", "invalid_dependency");
+    return after;
+  }
+
+  function canQueue(method) {
+    if (stopped) return false;
+    if (binding && current(binding)) return supports(method);
+    return method === "tasks.comment";
+  }
+
+  async function adoptQueuedJournal(row, held) {
+    if (row.journalIncarnation !== null || row.acknowledged || row.state !== "queued") return row;
+    if (!supports(row.request.method)) {
+      await cache.update(row.operationId, (value) => ({ ...value, state: "failed", effect: "unapplied", overlayActive: false,
+        error: { code: "write_unsupported", message: "This bridge cannot send the pending review comments. Update it, then try again." } }), { accept: () => current(held) });
+      return null;
+    }
+    return cache.update(row.operationId, (value) => value?.journalIncarnation === null
+      ? { ...value, journalIncarnation: held.greeting.journal_incarnation } : null, { accept: () => current(held) });
+  }
+
   function waitLocally(result, input) {
     const signal = input.signal || input.options?.signal;
     if (!signal) return result;
@@ -142,9 +202,10 @@ export function createWriteOperationService(options) {
     return promise;
   }
   async function send(row, held, leaseActive = () => true) {
-    if (!current(held) || !supports(row.request.method) || sending.get(row.operationId) === held) return;
+    if (!eligibleToSend(row, held)) return;
     sending.set(row.operationId, held);
     try {
+      if (row.awaitPredecessorAck && !await prepareBatchSend(row, held)) return;
       const frame = await raw(held, row.request.method, row.request.params, { write: { operation_id: row.operationId, after: row.after }, assertCurrent: () => assertLease(leaseActive) });
       if (current(held)) await handleFrame(frame, held);
     } catch (error) {
@@ -154,6 +215,34 @@ export function createWriteOperationService(options) {
       worker.wake();
     }
   }
+  function eligibleToSend(row, held) {
+    return current(held) && supports(row.request.method) && sending.get(row.operationId) !== held;
+  }
+  async function predecessorsAccepted(row) {
+    for (const id of row.after || []) {
+      const predecessor = await cache.get(id);
+      if (!predecessor?.acknowledged || ["failed", "result_expired"].includes(predecessor.state) || predecessor.unresolved) return false;
+    }
+    return true;
+  }
+  async function prepareBatchSend(row, held) {
+    if (!await predecessorsAccepted(row)) return false;
+    const saved = await cache.update(row.operationId, (value) => {
+      if (!value || terminalWrite(value) || value.unresolved || value.acknowledged) return null;
+      return { ...value, transportAttempted: true };
+    }, { accept: () => current(held) });
+    return Boolean(saved?.transportAttempted && !terminalWrite(saved) && !saved.unresolved && !saved.acknowledged);
+  }
+
+  async function cancelUnsentBatch(ids) {
+    for (const id of ids) await cache.update(id, (row) => {
+      if (!row?.awaitPredecessorAck || row.transportAttempted || row.acknowledged) throw new Error("This write was already attempted; its result must be checked");
+      return { ...row, state: "failed", effect: "unapplied", overlayActive: false, dismissed: true,
+        error: { code: "batch_cancelled", message: "Removed from the pending review batch" } };
+    });
+    await refreshSnapshot();
+  }
+
   function definitiveRefusal(error) {
     const local = ["scope_ended", "local_wait_ended"].includes(error.error_code);
     return !local && error.retryable === false && !error.uncertain;
@@ -382,18 +471,25 @@ export function createWriteOperationService(options) {
     for (const entry of refreshes.values()) startRefresh(entry);
     const rows = all.filter(row => needsWriteStatus(row) || checks.has(row.operationId));
     checks.clear();
-    const compatible = [];
-    for (const row of rows) {
-      if (!held.greeting.capabilities?.includes("bridge.epoch")) await quarantine(row, "bridge_incapable", held);
-      else if (row.journalIncarnation !== held.greeting.journal_incarnation) await quarantine(row, "journal_changed", held);
-      else compatible.push(row);
-    }
+    const compatible = await compatibleRows(rows, held);
     const retries = new Set();
     for (let at = 0; at < compatible.length && current(held) && leaseActive(); at += WRITE_STATUS_LIMIT) await statusBatch(compatible.slice(at, at + WRITE_STATUS_LIMIT), held, leaseActive, retries);
     await replaceSubscription(held, leaseActive, retries);
     await dispatchRetries(retries, held);
     await refreshSnapshot();
   }
+  async function compatibleRows(rows, held) {
+    const compatible = [];
+    for (const candidate of rows) {
+      const row = candidate.journalIncarnation === null ? await adoptQueuedJournal(candidate, held) : candidate;
+      if (!row) continue;
+      if (!held.greeting.capabilities?.includes("bridge.epoch")) await quarantine(row, "bridge_incapable", held);
+      else if (row.journalIncarnation !== held.greeting.journal_incarnation) await quarantine(row, "journal_changed", held);
+      else compatible.push(row);
+    }
+    return compatible;
+  }
+
   function rebindRefreshes(held) {
     for (const [id, entry] of refreshes) {
       if (entry.row.journalIncarnation !== held.greeting.journal_incarnation) refreshes.delete(id);
@@ -410,7 +506,7 @@ export function createWriteOperationService(options) {
     await worker.reconcile();
   }
   return {
-    submit, bind, handleFrame, supports,
+    submit, enqueueBatch, cancelUnsentBatch, bind, handleFrame, supports,
     reconcile: () => worker.reconcile(),
     async checkAgain(id) {
       if (id) {

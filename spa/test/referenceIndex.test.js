@@ -128,3 +128,37 @@ describe("the index every surface asks", () => {
     stop();
   });
 });
+
+
+describe("review reference directory resolution", () => {
+  const reviews = { "dev-1/proj-1": { "task-42": { snapshots: [
+    { number: 1, directories: [{ id: "dir-1" }] },
+    { number: 2, directories: [{ id: "dir-1" }, { id: "dir-2" }] },
+  ] } } };
+  it("resolves an omitted directory only for the named revision's single directory", () => {
+    const resolve = at(here, { feed, tasks, reviews });
+    expect(resolve.review(42, 1, undefined, "src/a.js")).toMatchObject({ taskId: "task-42", directoryId: "dir-1" });
+    expect(resolve.review(42, 2, undefined, "src/a.js")).toMatchObject({ taskId: "task-42", fileRef: "src/a.js" });
+    expect(resolve.review(42, 3, undefined, "src/a.js")).toMatchObject({ taskId: "task-42", fileRef: "src/a.js" });
+    expect(at().review(42, 1, undefined, "src/a.js")).toMatchObject({ taskId: "task-42", fileRef: "src/a.js" });
+  });
+  it("resolves the longest cached directory id, including ordinary colon-containing ids", () => {
+    const metadata = { "dev-1/proj-1": { "task-42": { snapshots: [{ number: 3, directories: [
+      { id: "workspace-uuid" }, { id: "workspace-uuid:root" }, { id: "api%3Aserver" }, { id: "api:server" },
+    ] }] } } };
+    const resolve = at(here, { feed, tasks, reviews: metadata });
+    expect(resolve.review(42, 3, "workspace-uuid", "root:src/a:b.js")).toMatchObject({ directoryId: "workspace-uuid:root", path: "src/a:b.js" });
+    expect(resolve.review(42, 3, "api%3Aserver", "src/a.js")).toMatchObject({ directoryId: "api%3Aserver", path: "src/a.js" });
+    expect(resolve.review(42, 3, "api%253Aserver", "src/a.js")).toMatchObject({ directoryId: "api%3Aserver", path: "src/a.js" });
+  });
+  it("defers an explicit directory split until review metadata is cached", () => {
+    expect(at().review(42, 3, "dir-2", "src/a.js")).toMatchObject({ taskId: "task-42", fileRef: "dir-2:src/a.js" });
+  });
+  it("notifies surfaces when a cached review directory changes", () => {
+    holdReferenceSources({ feed, tasks, reviews });
+    const before = referenceIndexVersion();
+    holdReferenceSources({ feed, tasks, reviews: { "dev-1/proj-1": { "task-42": { snapshots: [{ number: 1, directories: [{ id: "dir-2" }] }] } } } });
+    expect(referenceIndexVersion()).toBe(before + 1);
+    expect(referenceResolver({ place: here }).review(42, 1, undefined, "src/a.js")?.directoryId).toBe("dir-2");
+  });
+});

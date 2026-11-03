@@ -999,6 +999,7 @@ main#root.surface { max-width:none;
 /* The code table scrolls horizontally inside .dscroll while the .file border
    clips the corners. overflow:clip preserves the outer vertical scroller as
    the sticky header's scroll container. */
+.file tr.diff-link-anchor { outline:2px solid var(--accent); outline-offset:-2px; background:var(--accent-soft); }
 .file .dscroll { overflow-x:auto; overflow-y:hidden; }
 .file table { min-width:100%; }
 .file td.code { white-space:pre; }

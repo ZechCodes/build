@@ -270,9 +270,9 @@ for (const { label, width, hasTouch } of viewports) {
       const fileName = await page.locator('[data-review-path="changed.txt"] [data-review-expand]').boundingBox();
       expect(fileName.height).toBeLessThanOrEqual(48);
       await activate(page, '[data-review-reply="reviewed-line"]', hasTouch);
-      const feedback = page.locator("#task-review-feedback-body");
+      const feedback = page.locator("[data-review-inline-composer] textarea");
       await feedback.fill("Keep this feedback attached to the snapshot I reviewed.");
-      await page.locator('[data-review-opinion]').selectOption("request_changes");
+      await page.waitForFunction(() => document.querySelector("[data-review-draft]")?.textContent.includes("Keep this feedback attached to the snapshot I reviewed."));
       await feedback.focus();
       await feedback.evaluate((field) => {
         field.setSelectionRange(10, 18);
@@ -284,8 +284,11 @@ for (const { label, width, hasTouch } of viewports) {
         "Revision 2 is ready",
       );
       expect(await page.locator('[data-review-snapshot]').inputValue()).toBe("snapshot-1");
-      expect(await page.locator('[data-review-target]').textContent()).toContain("changed.txt · new line 1");
-      expect(await page.locator('[data-review-opinion]').inputValue()).toBe("request_changes");
+      expect(await page.locator("[data-review-inline-composer] label").textContent()).toContain("changed.txt · new line 1");
+      expect(await page.locator("[data-review-draft]").textContent()).toContain("changed.txt:1");
+      expect(await page.locator("[data-review-draft-revision]").textContent()).toContain("earlier revision 1");
+      expect(await page.locator('[data-review-verdict="request_changes"]').isDisabled()).toBe(true);
+      expect(await page.locator('[data-review-verdict="approve"]').isDisabled()).toBe(true);
       expect(await feedback.evaluate((field) => ({
         retained: field === window.__historicalFeedback, focused: document.activeElement === field,
         start: field.selectionStart, end: field.selectionEnd, body: field.value,

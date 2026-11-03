@@ -906,3 +906,20 @@ describe("the notification-open mark", () => {
     expect(hashFromRoute(route)).toBe("#/device/d/project/p/workspace/w/changes?agent=a");
   });
 });
+
+
+describe("commit file diff routes", () => {
+  it.each(["workspace", "project"])("round trips %s path and old-side line", (name) => {
+    const route = { name, deviceId: "d", projectId: "p", ...(name === "workspace" ? { workspaceId: "w" } : {}),
+      tab: "changes", commit: "deadbeef", path: "src/a b?#:test.js", side: "old", line: 42 };
+    const hash = hashFromRoute(route);
+    expect(hash).toContain("commit=deadbeef&path=src%2Fa+b%3F%23%3Atest.js&side=old&line=42");
+    expect(routeFromHash(hash)).toEqual(route);
+  });
+
+  it("ignores diff targets without a commit and invalid line selections", () => {
+    const base = "#/device/d/project/p/workspace/w/changes";
+    expect(routeFromHash(`${base}?path=a.js&side=old&line=42`)).toEqual({ name: "workspace", deviceId: "d", projectId: "p", workspaceId: "w", tab: "changes" });
+    expect(routeFromHash(`${base}?commit=abcd&path=a.js&side=wrong&line=-1`)).toEqual({ name: "workspace", deviceId: "d", projectId: "p", workspaceId: "w", tab: "changes", commit: "abcd", path: "a.js" });
+  });
+});

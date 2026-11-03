@@ -29,7 +29,8 @@ export function reviewRouteQuery(query) {
   const line = Number(params.get("line"));
   const side = params.get("side");
   const view = params.get("view");
-  return { ...(validSide(side) ? { side } : {}), ...(positiveInteger(line) ? { line } : {}),
+  const fileRef = params.get("fileRef");
+  return { ...(fileRef ? { fileRef } : {}), ...(validSide(side) ? { side } : {}), ...(positiveInteger(line) ? { line } : {}),
     ...(VIEWS.has(view) && view !== "changes" ? { view } : {}) };
 }
 
@@ -40,12 +41,16 @@ export function reviewRoutePath(selection) {
   const comparison = review.mode === "commit" ? `commit/${encodeURIComponent(review.commit)}` : review.mode;
   const directory = review.directoryId ? `/${encodeURIComponent(review.directoryId)}` : "";
   const path = directory && review.path ? `/${review.path.split("/").map(encodeURIComponent).join("/")}` : "";
-  const params = new URLSearchParams();
-  if (review.side) params.set("side", review.side);
-  if (review.line) params.set("line", String(review.line));
-  if (review.view) params.set("view", review.view);
-  const query = String(params);
+  const query = reviewPlaceQuery(review);
   return `/review/r${review.revision}/${comparison}${directory}${path}${query ? `?${query}` : ""}`;
+}
+
+function reviewPlaceQuery(review) {
+  const params = new URLSearchParams();
+  for (const key of ["fileRef", "side", "line", "view"]) {
+    if (review[key]) params.set(key, String(review[key]));
+  }
+  return String(params);
 }
 
 const snapshotOf = (review, selection) => review?.snapshots?.find((row) => row.number === Number(selection?.revision))
@@ -86,7 +91,7 @@ export function routeReviewSelection(selection) {
 
 function routePlace(selection) {
   const { path, side, line } = normalizedPlace(selection);
-  return { ...(path ? { path } : {}), ...(side ? { side } : {}), ...(line ? { line } : {}),
+  return { ...(selection.fileRef ? { fileRef: selection.fileRef } : {}), ...(path ? { path } : {}), ...(side ? { side } : {}), ...(line ? { line } : {}),
     ...(VIEWS.has(selection.view) && selection.view !== "changes" ? { view: selection.view } : {}) };
 }
 

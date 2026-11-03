@@ -134,3 +134,52 @@ describe("what is not a reference", () => {
     }
   });
 });
+
+
+describe("file diffs as references", () => {
+  it("reads a commit file and anchors on either side", () => {
+    expect(referencesIn("[[ws:commit:abcd:src/a:b.js#L42]]")[0]).toMatchObject({
+      kind: "commitFile", workspace: "ws", sha: "abcd", path: "src/a:b.js", side: "new", line: 42,
+    });
+    expect(referencesIn("[[ws:commit:abcd:src/a.js#old-L9]]")[0]).toMatchObject({
+      kind: "commitFile", sha: "abcd", path: "src/a.js", side: "old", line: 9,
+    });
+    expect(referencesIn("[[ws:commit:abcd:src/a.js]]")[0]).toMatchObject({ kind: "commitFile", path: "src/a.js" });
+  });
+
+  it("reads a review range, revision, directory, path and line as one reference", () => {
+    for (const mode of ["all", "since", "commit/abcd"]) {
+      const found = referencesIn(`[[#969:r3:${mode}:dir-1:src/a:b.js#old-L42]]`);
+      expect(found).toHaveLength(1);
+      expect(found[0]).toMatchObject({ kind: "reviewFile", number: 969, revision: 3,
+        mode: mode.split("/")[0], directoryId: "dir-1", path: "src/a:b.js", side: "old", line: 42,
+        ...(mode.startsWith("commit/") ? { commit: "abcd" } : {}),
+      });
+    }
+  });
+
+  it("preserves directory tokens and path percent characters for cached resolution", () => {
+    expect(referencesIn("[[#969:r3:all:api%3Aserver:src/a%20b.js#L42]]")[0]).toMatchObject({
+      kind: "reviewFile", directoryId: "api%3Aserver", path: "src/a%20b.js", side: "new", line: 42,
+    });
+    expect(referencesIn("[[#969:r3:all:api%25server:a.js]]")[0].directoryId).toBe("api%25server");
+    expect(referencesIn("[[#969:r3:all:api%broken:a.js]]")[0].directoryId).toBe("api%broken");
+  });
+
+  it("leaves the directory for the single-directory resolver when omitted", () => {
+    const found = referencesIn("[[#969:r3:all:src/a.js#L42]]");
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ kind: "reviewFile", number: 969, revision: 3, mode: "all", path: "src/a.js", side: "new", line: 42 });
+    expect(found[0]).not.toHaveProperty("directoryId");
+  });
+
+  it("preserves legacy forms and a #number workspace outside the reserved review prefix", () => {
+    expect(referencesIn("[[#969:src/a.js#L10]] #42 #42/c/tc-1 [[ws:commit:abcd]] [[ws:a.js#L10]]")
+      .map(({kind, workspace, number, commentId, sha, path, line}) => ({kind, workspace, number, commentId, sha, path, line})))
+      .toEqual([
+        {kind: "file", workspace: "#969", path: "src/a.js", line: 10},
+        {kind: "task", number: 42}, {kind: "task", number: 42, commentId: "tc-1"},
+        {kind: "commit", workspace: "ws", sha: "abcd"}, {kind: "file", workspace: "ws", path: "a.js", line: 10},
+      ]);
+  });
+});

@@ -178,6 +178,18 @@ describe("task review Files", () => {
     expect(await view.reveal(anchor)).toBe(true);
   });
 
+  it("comments directly from each Files line with the saved head anchor", async () => {
+    const onComment = vi.fn();
+    const callRpc = vi.fn(async (_method, params) => params.mode === 'blob'
+      ? textFile(params.path, 'first\nsecond') : { path: '', entries: [] });
+    const { host, view } = mount(git, callRpc, { onComment });
+    await view.open('source.txt');
+    await painted(() => host.querySelector('[data-review-file-comment="2"]'));
+    host.querySelector('[data-review-file-comment="2"]').click();
+    expect(onComment).toHaveBeenCalledWith({ snapshot_id: snapshot.id, directory_id: git.id, path: 'source.txt', side: 'new', line: 2 });
+    expect(host.querySelector('[data-review-line-input]')).toBeNull();
+  });
+
   it("shows range and saved-head commit comments in Files without claiming earlier commit lines", async () => {
     const anchor = { snapshot_id: snapshot.id, directory_id: git.id, path: "a.txt", side: "new", line: 1 };
     const comments = [

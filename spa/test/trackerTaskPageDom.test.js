@@ -202,9 +202,9 @@ describe("comment header reply", () => {
     call = vi.fn(async (method) => method === "tasks.review.get" ? { review } : answer);
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", answer);
     await mount({}, { waitForPaint: false });
-    await painted(() => host.querySelector('.review-task-template #comment-tc-icon') && host.querySelector('[data-review-feedback]'), host);
+    await painted(() => host.querySelector('.review-task-template #comment-tc-icon') && host.querySelector('[data-review-pending]'), host);
     expect(host.querySelector('[data-review-reply]')).not.toBeNull();
-    expect(host.querySelector('[data-review-feedback]')).not.toBeNull();
+    expect(host.querySelector('[data-review-pending]')).not.toBeNull();
     expect(host.querySelector('[data-task-composer]')).not.toBeNull();
     expect(listed('tasks.comment')).toHaveLength(0);
   });

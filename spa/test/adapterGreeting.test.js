@@ -79,7 +79,7 @@ describe("the adapter a greeting selects", () => {
       // The kinds ride through as the greeting states them, so a caller can ask
       // whether this bridge carries the one it is about to subscribe to.
       changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"], projectSources: false },
-      git: { projectSources: false },
+      git: { projectSources: false, showPaths: false },
       term: { projectSources: false },
       fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
       requests: { priority: true },

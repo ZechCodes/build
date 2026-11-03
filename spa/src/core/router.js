@@ -306,8 +306,21 @@ function projectSourcePlace(route, query) {
 function commitPlace(route, query) {
   if (!["workspace", "project"].includes(route.name) || route.tab !== "changes" || !query) return null;
   const commit = new URLSearchParams(query).get("commit");
-  return commit ? { commit } : null;
+  return commit ? { commit, ...commitDiffPlace(query) } : null;
 }
+
+function commitDiffPlace(query) {
+  const params = new URLSearchParams(query);
+  const path = params.get("path");
+  const { side, line } = reviewRouteQuery(query);
+  return path ? { path, ...(side ? { side } : {}), ...(line ? { line } : {}) } : {};
+}
+
+const commitPlacePairs = (route) => route.commit
+  ? [["commit", route.commit], ["path", route.path || ""],
+    ["side", route.path && ["old", "new"].includes(route.side) ? route.side : ""],
+    ["line", route.path && Number.isSafeInteger(route.line) && route.line > 0 ? String(route.line) : ""]]
+  : [];
 
 const PUSH_OPEN_PARAM = "from";
 const PUSH_OPEN_VALUE = "push";
@@ -463,7 +476,7 @@ const projectTabPath = (route) => ([WORKSPACES_TAB, ...BRANCH_TABS].includes(rou
 
 function projectPlacePairs(route) {
   if (!BRANCH_TABS.has(route.tab)) return [];
-  const place = route.tab === "changes" ? [["commit", route.commit || ""]] : tabPlacePairs(route, route.tab);
+  const place = route.tab === "changes" ? commitPlacePairs(route) : tabPlacePairs(route, route.tab);
   return [["source", route.sourceId || ""], ...place];
 }
 
@@ -524,7 +537,7 @@ const HASH_WRITERS = Object.freeze({
     // it opens on — the same two things the project's own Tasks tab writes.
     const opened = tasks && route.taskId ? `/${encode(route.taskId)}` : "";
     const place = tasks ? tasksViewPairs(route, TASKS_TAB)
-      : tab === "changes" ? [["commit", route.commit || ""]] : tabPlacePairs(route, tab);
+      : tab === "changes" ? commitPlacePairs(route) : tabPlacePairs(route, tab);
     const query = hashQuery([...place, ...railAgentPairs(route)]);
     return `${projectPrefix(route)}/workspace/${encode(route.workspaceId)}${source}/${tab}${opened}${query}`;
   },

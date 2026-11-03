@@ -480,6 +480,11 @@ fn conversation_prompt_teaches_every_reference_shape() {
         "`@project:<name or id>`",
         "`[[<workspace>:<path>#L10]]`",
         "`[[<workspace>:commit:<sha>]]`",
+        "`[[<workspace>:commit:<sha>:<path>#L42]]`",
+        "`[[#<task>:r<N>:<range>:<dir>:<path>#L42]]`",
+        "`#old-L42`",
+        "`%3A`",
+        "`%25`",
         "`[[<workspace>/<directory>:<path>]]`",
     ] {
         assert!(bullet.contains(shape), "{shape}: {bullet}");

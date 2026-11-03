@@ -5,13 +5,14 @@ import { parseDiff } from "./diff.js";
 import { diffRowsHtml } from "./diffRender.js";
 import { createChangesetBodies } from "./changesetBodies.js";
 import { esc } from "./text.js";
+import { hashFromRoute } from "./router.js";
 import { readCached, subscribeCache, writeCached } from "./localCache.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { langForPath } from "./highlight.js";
 import { isDotenvPath } from "./secrets.js";
 import { reviewDiffAddress, reviewDiffParams } from "./taskReviewReads.js";
 import { reviewMutationRpc } from "./taskReviewSupport.js";
-import { inlineReviewRowsHtml } from "./taskReviewInline.js";
+import { inlineReviewRowsHtml, placeReviewComposer, reviewComposerMatches, reviewReplyAt } from "./taskReviewInline.js";
 
 const FILE_LIMIT = 1_000;
 const MAX_REVEAL_PAGES = 32;
@@ -46,13 +47,25 @@ function updateInlineThreads(host, context) {
   });
 }
 
+function oldLineAction(row, context) {
+  if (!row.o) return "";
+  if (!oldAnchorMatches(context)) return String(row.o);
+  return `<button type="button" data-review-comment data-side="old" data-line="${row.o}" aria-label="Comment on old line ${row.o}">${row.o}</button>`;
+}
+function sinceHint(context) {
+  if (oldAnchorMatches(context)) return "";
+  const href = hashFromRoute({ name: "trackerTask", deviceId: context.deviceId, projectId: context.projectId, taskId: context.taskId,
+    review: { revision: context.priorRevision, mode: "all", directoryId: context.directoryId, path: context.path } });
+  return `<p class="task-review-note" data-review-since-hint>To comment on previous-head lines, <a class="md-ref" href="${esc(href)}">open the prior revision at this path</a>.</p>`;
+}
+
 function lineActions(file, commentable, context) {
   return file.rows.map((row) => {
     const html = diffRowsHtml([row], langForPath(file.path), { maskDotenv: isDotenvPath(file.path) });
     if (row.t === "hunk") return html;
     const threads = inlineThreads(row, context);
     if (!commentable) return html + threads;
-    const old = row.o > 0 ? `<button type="button" data-review-comment data-side="old" data-line="${row.o}" aria-label="Comment on old line ${row.o}">${row.o}</button>` : "";
+    const old = oldLineAction(row, context);
     const newer = row.n > 0 ? `<button type="button" data-review-comment data-side="new" data-line="${row.n}" aria-label="Comment on new line ${row.n}">${row.n}</button>` : "";
     return html.replace(/<td class="ln">[^<]*<\/td><td class="ln">[^<]*<\/td>/, `<td class="ln">${old}</td><td class="ln">${newer}</td>`) + threads;
   }).join("");
@@ -63,7 +76,7 @@ function fileBodyHtml(file, body, commentable, context) {
   if (!parsed) return `<p class="task-review-note">${body.read_error ? esc(body.read_error) : body.loading ? "Loading patch…" : "No text diff for this file."}</p>`;
   const rows = lineActions(parsed, commentable, { ...context, path: file.path });
   const failure = body.read_error ? `<p class="task-review-error" role="alert">${esc(body.read_error)}</p>` : "";
-  return `<div class="task-review-diff-scroll"><table><tbody>${rows}</tbody></table></div>${failure}`;
+  return `${commentable ? sinceHint({ ...context, path: file.path }) : ""}<div class="task-review-diff-scroll"><table><tbody>${rows}</tbody></table></div>${failure}`;
 }
 
 function fileHeaderHtml(file, body, viewed) {
@@ -209,14 +222,14 @@ async function seekAnchorPages(host, target, bodies, current) {
 }
 
 /** Mount one saved source's Changes tab. refresh() retries the listing. */
-export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snapshot, directory, callRpc, onOpenFile, onComment, anchor = null, comparison = {}, path = "", onSelectPath = null, onUnreadableCommit = null, comments = [], identities, autoOpen = false, keepReadingPlace = (paint) => paint() }) {
+export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snapshot, directory, callRpc, onOpenFile, onComment, onReply, onPaint, onBeforePaint, priorRevision, anchor = null, comparison = {}, path = "", onSelectPath = null, onUnreadableCommit = null, comments = [], identities, autoOpen = false, keepReadingPlace = (paint) => paint() }) {
   const scope = { deviceId, projectId, taskId, snapshot, directory };
   const params = reviewDiffParams(scope, comparison);
   const rpc = reviewMutationRpc(deviceId, callRpc);
   const listAddress = reviewDiffAddress(scope, comparison);
   const patchAddress = (path) => reviewDiffAddress(scope, comparison, path);
   const ui = uiAddress({ deviceId, entityId: projectId, view: "task-review-changes", kind: "review", sub: JSON.stringify([taskId, directory.id]) });
-  const state = { list: null, error: "", viewed: new Map(), open: new Set(), loading: new Set(), anchor: null, anchorScrolled: false, selected: path, context: { comments, deviceId, projectId, identities, snapshotId: snapshot.id, directoryId: directory.id, commit: comparison.commit, comparisonMode: comparison.mode } };
+  const state = { list: null, error: "", viewed: new Map(), open: new Set(), loading: new Set(), anchor: null, anchorScrolled: false, selected: path, context: { comments, deviceId, projectId, taskId, priorRevision, identities, snapshotId: snapshot.id, directoryId: directory.id, commit: comparison.commit, comparisonMode: comparison.mode, replyable: Boolean(onReply) } };
   let initialSelection = true;
   let alive = true;
   let generation = 0;
@@ -239,8 +252,10 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     if (!alive) return;
     keepReadingPlace(() => {
       const focus = focusedControl(host);
+      onBeforePaint?.();
       host.innerHTML = changesHtml(state, Boolean(onComment), (path) => ({ ...bodies.bodyOf(path), loading: state.loading.has(path) }));
       restoreFocusedControl(host, focus);
+      onPaint?.();
     });
     const row = state.anchor && anchoredRow(host, state.anchor);
     if (!row) return;
@@ -392,6 +407,7 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     ["[data-review-more]", (path) => void bodies.more(path)],
   ];
   const onClick = (event) => {
+    if (reviewReplyAt(event, state.context.comments, onReply, (row) => ({ snapshot_id: snapshot.id, directory_id: directory.id, path: state.selected, side: row?.dataset.side || "new", line: Number(row?.dataset.newLine), ...(comparison.commit ? { commit: comparison.commit } : {}) }))) return;
     const treePath = event.target.closest("[data-review-tree-path]");
     if (treePath && host.contains(treePath)) { void selectPath(treePath.dataset.reviewTreePath, true); return; }
     const row = event.target.closest("[data-review-path]");
@@ -430,11 +446,16 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
   return {
     refresh,
     reveal,
+    placeComposer: (row, anchor) => reviewComposerMatches(anchor, state.context) && placeReviewComposer(host, row, anchor),
     selectPath: (name) => selectPath(name),
     updateComments(rows) {
       if (!alive) return;
       state.context.comments = rows;
-      keepReadingPlace(() => updateInlineThreads(host, state.context));
+      keepReadingPlace(() => {
+        onBeforePaint?.();
+        updateInlineThreads(host, state.context);
+        onPaint?.();
+      });
     },
     dispose() {
       alive = false;

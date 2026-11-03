@@ -67,10 +67,10 @@
           "task_id": "task-review-13",
           "number": 13,
           "workspace_id": "ws-3f2a91c4",
-          "for_task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
           "version": 1,
           "status": "open",
-          "latest_published_snapshot_id": "snapshot-1"
+          "latest_published_snapshot_id": "snapshot-1",
+          "parent_task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
         }
       ]
     },

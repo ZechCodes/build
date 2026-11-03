@@ -48,12 +48,12 @@ fn opening_work_task_link_is_atomic_and_survives_retry_and_restart() {
     );
     assert_eq!(
         serde_json::to_value(store.load_review_summary(&review.task_id).unwrap()).unwrap()
-            ["for_task_id"],
+            ["parent_task_id"],
         work.id
     );
     assert_eq!(
         serde_json::to_value(store.load_workspace_review_summary("ws-1").unwrap()).unwrap()
-            ["for_task_id"],
+            ["parent_task_id"],
         work.id
     );
     let mut finished = work.clone();

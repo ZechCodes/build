@@ -53,14 +53,14 @@ impl Store {
                  ORDER BY tracker_tasks.created_at DESC, tracker_tasks.number DESC LIMIT 1))",
             [workspace_id], |row| row.get(0),
         )?;
-        task_id
-            .map(|id| load_header(&conn, &id))
-            .transpose()
-            .map(|header| header.flatten().and_then(header_summary))
+        match task_id {
+            Some(id) => load_summary(&conn, &id),
+            None => Ok(None),
+        }
     }
 }
 
-fn header_summary(header: ReviewHeader) -> Option<ReviewSummary> {
+fn header_summary(header: ReviewHeader, parent_task_id: Option<String>) -> Option<ReviewSummary> {
     if header.mode != ReviewMode::PullRequest {
         return None;
     }
@@ -70,9 +70,25 @@ fn header_summary(header: ReviewHeader) -> Option<ReviewSummary> {
         version: header.version,
         status: metadata.status,
         latest_published_snapshot_id: metadata.latest_published_snapshot_id,
-        for_task_id: metadata.for_task_id,
+        parent_task_id,
         number: None,
     })
+}
+
+fn load_summary(conn: &Connection, task_id: &str) -> Result<Option<ReviewSummary>, StoreError> {
+    let Some(header) = load_header(conn, task_id)? else {
+        return Ok(None);
+    };
+    let parent_task_id: Option<String> = conn
+        .query_row(
+            "SELECT CASE WHEN json_valid(record) THEN json_extract(record, '$.links.parent_task_id') END
+             FROM tracker_tasks WHERE id = ?1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(header_summary(header, parent_task_id))
 }
 
 pub(super) fn load_bindings(
@@ -192,6 +208,6 @@ pub(super) fn require_pull_request(
 
 impl ReadTransaction<'_> {
     pub fn load_review_summary(&self, task_id: &str) -> Result<Option<ReviewSummary>, StoreError> {
-        Ok(load_header(self.connection(), task_id)?.and_then(header_summary))
+        load_summary(self.connection(), task_id)
     }
 }

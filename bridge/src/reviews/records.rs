@@ -67,7 +67,7 @@ impl Review {
             version: self.version,
             status: metadata.status,
             latest_published_snapshot_id: metadata.latest_published_snapshot_id.clone(),
-            for_task_id: metadata.for_task_id.clone(),
+            parent_task_id: None,
             number: None,
         })
     }
@@ -168,7 +168,7 @@ mod tests {
                 version: 4,
                 status: PullRequestStatus::ChangesRequested,
                 latest_published_snapshot_id: Some("snapshot-1".into()),
-                for_task_id: None,
+                parent_task_id: None,
                 number: None,
             })
         );

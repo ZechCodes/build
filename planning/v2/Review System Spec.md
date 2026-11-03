@@ -13,13 +13,17 @@ an eligible task linked to the workspace. It is gated independently by
 `tasks.review.open` / `open_review` accept `for_task_id`. The journal retains the
 selection and publication validates that the target is still open, in the same
 project and not itself a review, before atomically publishing the review task
-with `parent_task_id` set to that target. A retry preserves the original link.
-The review task's summary and workspace `active_review` expose `for_task_id`.
+with `parent_task_id` set to that target. The original request remains in the
+opening journal for retries. The current task's `links.parent_task_id` is the
+relationship's source of truth, and review summaries and workspace `active_review`
+expose its derived current `parent_task_id`. Reparenting invalidates old and new
+parents; it does not change the journaled opening request.
 Existing user and agent reviewer assignment and durable agent dispatch remain.
 
 Task detail carries the newest 20 `linked_reviews` with an explicit truncation
 flag; child review changes invalidate its parent's detail for fresh status.
-Ordinary work tasks render child review links from cache as “Review #N · <status>”,
+Ordinary work tasks render child review links only from their own cached detail
+projection as “Review #N · <status>”,
 gated by `tasks.review.forTask` so older bridges keep their ordinary task UI.
 When there is no child review, linked workspaces offer “Request a review from
 @workspace” leading to Changes. Task-side create/update snapshot forms and the

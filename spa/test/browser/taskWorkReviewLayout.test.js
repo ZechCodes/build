@@ -22,7 +22,7 @@ for (const [label, width] of [["desktop", 1440], ["390px", 390]]) {
         });
       }, { columns: columns(), work: task({ id: "work-971", number: 971, title: "Make review requests easy to find",
         body: "Request a review from the workspace, then follow the linked review here.", status: "in_progress",
-        linked_reviews: [{ task_id: "review-980", number: 980, for_task_id: "work-971", status: "changes_requested", version: 2 }],
+        linked_reviews: [{ task_id: "review-980", number: 980, parent_task_id: "work-971", status: "changes_requested", version: 2 }],
       }) });
       await page.locator('[data-work-task-review]').waitFor();
       expect(await page.locator('[data-work-task-review]').textContent()).toBe("Review #980 · Changes requested");

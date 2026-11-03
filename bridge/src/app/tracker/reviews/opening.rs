@@ -37,6 +37,7 @@ struct OpeningJob {
 #[derive(Default)]
 struct OpeningInvalidation {
     task_id: Option<String>,
+    parent_task_id: Option<String>,
     review: Option<WorkspaceReviewObservation>,
 }
 
@@ -254,7 +255,7 @@ impl DeferredGitWork for OpeningJob {
         app.note_board_changed();
         if let Some(task_id) = observed.task_id {
             app.note_tasks_changed(&self.project_id, &task_id);
-            if let Some(parent) = &self.request.request.for_task_id {
+            if let Some(parent) = &observed.parent_task_id {
                 app.changes
                     .note_tasks(&self.project_id, std::slice::from_ref(parent));
             }
@@ -282,6 +283,14 @@ impl OpeningJob {
                     .flatten()
                     .map(|opening| opening.task.id)
             });
+        observed.parent_task_id = observed
+            .task_id
+            .as_deref()
+            .map(|task_id| self.store.load_tracker_task(task_id))
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .flatten()
+            .and_then(|task| task.links.parent_task_id);
         #[cfg(test)]
         if let Some(gate) = &self.observation_gate {
             gate.arrive();

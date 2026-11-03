@@ -42,7 +42,7 @@ impl ReadTransaction<'_> {
         for row in rows {
             let (id, number, raw) = row?;
             let header: ReviewHeader = decode(&raw, "reviews", &id)?;
-            if let Some(mut summary) = header_summary(header) {
+            if let Some(mut summary) = header_summary(header, Some(parent.to_owned())) {
                 summary.number = Some(
                     u64::try_from(number)
                         .map_err(|_| invalid("linked review has a negative task number"))?,

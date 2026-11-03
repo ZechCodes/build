@@ -168,8 +168,7 @@
             "kind": "excluded",
             "reason": "Excluded when opening this review."
           }
-        ],
-        "for_task_id": "task-work-1"
+        ]
       },
       "bindings": [
         {

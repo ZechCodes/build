@@ -64,7 +64,7 @@ fn linked_review_detail_projection_is_bounded_newest_first_and_project_scoped() 
     );
     assert!(summaries
         .iter()
-        .all(|summary| summary.for_task_id.as_deref() == Some(work.id.as_str())));
+        .all(|summary| summary.parent_task_id.as_deref() == Some(work.id.as_str())));
     assert_eq!(
         store
             .load_linked_review_summaries("/other", &work.id)
@@ -114,4 +114,43 @@ fn linked_review_projection_keeps_terminal_reviews_and_detects_exact_limit() {
     assert_eq!(after.len(), 20);
     assert_eq!(after[0].status, PullRequestStatus::Closed);
     assert_eq!(after[0].task_id, review.task_id);
+}
+
+#[test]
+fn review_summary_parent_links_follow_the_current_task_after_relinking() {
+    let home = tempfile::tempdir().unwrap();
+    let store = Store::new(home.path()).unwrap();
+    let original = store
+        .create_tracker_task(Task::drafted("/repo", "Original", Actor::User, NOW), &[])
+        .unwrap();
+    let replacement = store
+        .create_tracker_task(Task::drafted("/repo", "Replacement", Actor::User, NOW), &[])
+        .unwrap();
+    let review = publish_linked(&store, &original, 0);
+    let mut task = store.load_tracker_task(&review.task_id).unwrap().unwrap();
+    task.links.parent_task_id = Some(replacement.id.clone());
+    store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+    let summary = store.load_review_summary(&review.task_id).unwrap().unwrap();
+    assert_eq!(
+        summary.parent_task_id.as_deref(),
+        Some(replacement.id.as_str())
+    );
+    let workspace = store
+        .load_workspace_review_summary("workspace-0")
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspace.parent_task_id, summary.parent_task_id);
+    assert!(store
+        .load_linked_review_summaries("/repo", &original.id)
+        .unwrap()
+        .0
+        .is_empty());
+    assert_eq!(
+        store
+            .load_linked_review_summaries("/repo", &replacement.id)
+            .unwrap()
+            .0[0]
+            .parent_task_id,
+        Some(replacement.id)
+    );
 }

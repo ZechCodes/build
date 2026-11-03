@@ -2145,16 +2145,16 @@ fn review_open_work_task_link_has_an_independent_capability() {
     let opened: v1::reviews::ReviewOpenResult =
         serde_json::from_value(fixture["result"].clone()).unwrap();
     let encoded = serde_json::to_value(opened).unwrap();
-    assert_eq!(
-        encoded["review"]["pull_request"]["for_task_id"],
-        "task-work-1"
-    );
+    assert!(encoded["review"]["pull_request"]
+        .get("for_task_id")
+        .is_none());
+    assert_eq!(encoded["task"]["links"]["parent_task_id"], "task-work-1");
     let workspace = read_json(&fixtures_root().join("v1/workspace.get.json"));
     let detail: v1::workspace::WorkspaceDetail =
-        serde_json::from_value(workspace["result"].clone()).unwrap();
+        serde_json::from_value(workspace["examples"][0]["result"].clone()).unwrap();
     let encoded = serde_json::to_value(detail).unwrap();
     assert_eq!(
-        encoded["active_review"]["for_task_id"],
+        encoded["active_review"]["parent_task_id"],
         "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
     );
 }
@@ -2166,7 +2166,7 @@ fn work_task_detail_fixture_preserves_bounded_child_review_links() {
     let encoded = serde_json::to_value(detail).unwrap();
     assert_eq!(encoded["task"]["linked_reviews"][0]["number"], 13);
     assert_eq!(
-        encoded["task"]["linked_reviews"][0]["for_task_id"],
+        encoded["task"]["linked_reviews"][0]["parent_task_id"],
         encoded["task"]["id"]
     );
     assert!(encoded["task"].get("linked_reviews_truncated").is_none());

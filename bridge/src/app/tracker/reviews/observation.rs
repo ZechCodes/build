@@ -5,19 +5,20 @@ use std::cell::RefCell;
 
 pub(super) struct ReviewInvalidation {
     workspace: String,
-    for_task_id: Option<String>,
+    parent_task_id: Option<String>,
     reader: WorkspaceReviewReader,
     observed: RefCell<Option<WorkspaceReviewObservation>>,
 }
 
 impl ReviewInvalidation {
-    pub(super) fn new(app: &AppState, review: &crate::reviews::records::Review) -> Self {
+    pub(super) fn new(
+        app: &AppState,
+        review: &crate::reviews::records::Review,
+        task: &crate::tracker::Task,
+    ) -> Self {
         Self {
             workspace: review.workspace_id.clone(),
-            for_task_id: review
-                .pull_request
-                .as_ref()
-                .and_then(|metadata| metadata.for_task_id.clone()),
+            parent_task_id: task.links.parent_task_id.clone(),
             reader: app.workspace_review_reader(),
             observed: RefCell::default(),
         }
@@ -37,7 +38,7 @@ impl ReviewInvalidation {
     }
 
     pub(super) fn invalidate_parent(&self, changes: &crate::changes::ChangeBus, project: &str) {
-        if let Some(parent) = &self.for_task_id {
+        if let Some(parent) = &self.parent_task_id {
             changes.note_tasks(project, std::slice::from_ref(parent));
         }
     }

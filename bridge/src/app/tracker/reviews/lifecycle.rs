@@ -167,7 +167,7 @@ impl AppState {
     ) {
         let parent = observed
             .as_ref()
-            .and_then(|observation| observation.for_task_id(task))
+            .and_then(|observation| observation.parent_task_id(task))
             .map(str::to_owned);
         if let Some(observed) = observed {
             self.install_workspace_review_observation(workspace, observed);
@@ -203,7 +203,7 @@ impl AppState {
         actor: Actor,
     ) -> Result<Value, String> {
         params.validate()?;
-        let (project_id, _, review) = self.pull_request(&params.task_id)?;
+        let (project_id, task, review) = self.pull_request(&params.task_id)?;
         version(&review, params.expected_version)?;
         if review.pull_request.as_ref().expect("PR checked").status != PullRequestStatus::Closed {
             return Err(errors::encode(
@@ -238,7 +238,7 @@ impl AppState {
                 .collect(),
         };
         self.defer_review_sync(SyncJob {
-            observation: ReviewInvalidation::new(self, &review),
+            observation: ReviewInvalidation::new(self, &review, &task),
             store: self.tracker_store()?.clone(),
             project_id,
             workspace_id: review.workspace_id,
@@ -256,10 +256,10 @@ impl AppState {
         actor: Actor,
     ) -> Result<Value, String> {
         params.validate()?;
-        let (project_id, _, review) = self.pull_request(&params.task_id)?;
+        let (project_id, task, review) = self.pull_request(&params.task_id)?;
         version(&review, params.expected_version)?;
         self.defer_review_sync(SyncJob {
-            observation: ReviewInvalidation::new(self, &review),
+            observation: ReviewInvalidation::new(self, &review, &task),
             store: self.tracker_store()?.clone(),
             project_id,
             workspace_id: review.workspace_id,

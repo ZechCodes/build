@@ -92,7 +92,7 @@ impl AppState {
         let (request_id, request, refresh) = resolve_plan(&store, &review, &params, actor)?;
         let sources = self.review_action_sources(&project_id, &review);
         let work = MergeWork {
-            observation: ReviewInvalidation::new(self, &review),
+            observation: ReviewInvalidation::new(self, &review, &task),
             store,
             project_id,
             workspace_id: review.workspace_id.clone(),

@@ -2088,11 +2088,14 @@ remain available.
 a same-project, open task without a review. The opening journal retains it;
 publication rechecks the target and sets the new review task's `parent_task_id`
 in the same transaction as its first revision. Retrying the original request
-keeps that link. Review summaries and workspace `active_review` expose
-`for_task_id`. Task detail adds `linked_reviews`, the newest 20 child review
+keeps the reserved identity and original request. The current task's
+`links.parent_task_id` is the relationship's source of truth; the original
+`for_task_id` remains only in the opening request journal. Review summaries and
+workspace `active_review` expose the derived current `parent_task_id`. Reparenting
+invalidates both the old and new parents. Task detail adds `linked_reviews`, the newest 20 child review
 summaries, and an explicit truncation flag. Child review status changes invalidate
 the parent task detail so its cached projection refreshes. The ordinary task page
-uses those cached summaries for “Review #N · <status>” links, independently gated
+uses only its own cached detail projection for “Review #N · <status>” links, independently gated
 by `tasks.review.forTask`. Without a child review, a linked workspace instead
 offers “Request a review from @workspace”, leading to its Changes view.
 

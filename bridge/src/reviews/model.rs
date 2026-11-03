@@ -117,8 +117,6 @@ impl PullRequestStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PullRequestMetadata {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub for_task_id: Option<String>,
     pub status: PullRequestStatus,
     pub creator: Actor,
     pub originating_workspace_id: String,
@@ -147,7 +145,7 @@ pub enum ReviewMembershipKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub for_task_id: Option<String>,
+    pub parent_task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub number: Option<u64>,
     pub task_id: String,

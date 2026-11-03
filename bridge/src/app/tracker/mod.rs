@@ -96,12 +96,14 @@ pub(in crate::app) struct TaskWrite {
     pub(in crate::app) actor: Actor,
     expected_review_version: Option<u64>,
     content_changed: bool,
+    previous_parent_task_id: Option<String>,
 }
 
 impl TaskWrite {
     /// A write, and who is making it.
     fn by(actor: Actor, task: Task) -> TaskWrite {
         TaskWrite {
+            previous_parent_task_id: task.links.parent_task_id.clone(),
             task,
             comments: Vec::new(),
             events: Vec::new(),
@@ -454,7 +456,25 @@ impl AppState {
         write: &TaskWrite,
         publication: &crate::store::TrackerTaskPublication,
     ) {
+        let workspace_changed = publication
+            .current
+            .review
+            .as_ref()
+            .is_some_and(|summary| self.install_workspace_review_parent(summary));
         self.note_observed_tasks_changed(project, publication);
+        self.invalidate_task_parents(project, write);
+        if workspace_changed {
+            let workspace = &publication
+                .current
+                .review
+                .as_ref()
+                .expect("review observed")
+                .workspace_id;
+            self.changes
+                .note_kind(workspace, crate::changes::Kind::State);
+            self.changes
+                .note_board_lists(crate::changes::BoardLists::WORKSPACES);
+        }
         self.deliver_task_write(write);
     }
 
@@ -470,7 +490,7 @@ impl AppState {
             if let Some(parent) = observation
                 .review
                 .as_ref()
-                .and_then(|review| review.for_task_id.as_ref())
+                .and_then(|review| review.parent_task_id.as_ref())
             {
                 changed.push(parent.clone());
             }
@@ -491,11 +511,20 @@ impl AppState {
     /// reclaim when completion moved a linked task into Done.
     fn publish_task_write(&mut self, project_id: &str, write: &TaskWrite) {
         self.note_tasks_changed(project_id, &write.task.id);
-        if let Some(parent) = &write.task.links.parent_task_id {
-            self.changes
-                .note_tasks(project_id, std::slice::from_ref(parent));
-        }
+        self.invalidate_task_parents(project_id, write);
         self.deliver_task_write(write);
+    }
+
+    fn invalidate_task_parents(&self, project: &str, write: &TaskWrite) {
+        let parents = write
+            .previous_parent_task_id
+            .iter()
+            .chain(write.task.links.parent_task_id.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        if !parents.is_empty() {
+            self.changes.note_tasks(project, &parents);
+        }
     }
 
     fn deliver_task_write(&mut self, write: &TaskWrite) {

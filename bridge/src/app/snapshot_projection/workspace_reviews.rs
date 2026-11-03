@@ -10,12 +10,12 @@ pub(in crate::app) struct WorkspaceReviewObservation {
 }
 
 impl WorkspaceReviewObservation {
-    pub(in crate::app) fn for_task_id(&self, review_task: &str) -> Option<&str> {
+    pub(in crate::app) fn parent_task_id(&self, review_task: &str) -> Option<&str> {
         let summary = self.value.get("active_review")?;
         if summary.get("task_id")?.as_str()? != review_task {
             return None;
         }
-        summary.get("for_task_id")?.as_str()
+        summary.get("parent_task_id")?.as_str()
     }
 
     /// Allocate the observation generation after the service's durable write,
@@ -63,6 +63,43 @@ impl AppState {
             Ok(observed) => self.install_workspace_review_observation(id, observed),
             Err(error) => eprintln!("workspace review observation {id}: {error}"),
         }
+    }
+
+    /// A task-link write already carries its canonical parent. Update only
+    /// that field in the accepted workspace observation, without a SQL read.
+    pub(in crate::app) fn install_workspace_review_parent(
+        &mut self,
+        summary: &crate::reviews::records::ReviewSummary,
+    ) -> bool {
+        let Some(current) = self
+            .snapshot_observations
+            .workspace_reviews
+            .get(&summary.workspace_id)
+        else {
+            return false;
+        };
+        if current.value["active_review"]["task_id"] != summary.task_id
+            || current.value["active_review"]["parent_task_id"].as_str()
+                == summary.parent_task_id.as_deref()
+        {
+            return false;
+        }
+        let mut value = current.value.clone();
+        let active = value["active_review"]
+            .as_object_mut()
+            .expect("accepted review summary");
+        active.remove("parent_task_id");
+        if let Some(parent) = &summary.parent_task_id {
+            active.insert("parent_task_id".into(), json!(parent));
+        }
+        self.install_workspace_review_observation(
+            &summary.workspace_id,
+            WorkspaceReviewObservation {
+                version: self.read_view.next_version(),
+                value,
+            },
+        );
+        true
     }
 
     pub(in crate::app) fn snapshot_workspace_review(&self, id: &str, row: &mut Value) {

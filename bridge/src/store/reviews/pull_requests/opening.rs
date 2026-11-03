@@ -152,7 +152,6 @@ impl Store {
                 completion: None,
                 mode: ReviewMode::PullRequest,
                 pull_request: Some(PullRequestMetadata {
-                    for_task_id: opening.request.for_task_id.clone(),
                     status: PullRequestStatus::Open,
                     creator: opening.request.creator.clone(),
                     originating_workspace_id: opening.request.workspace_id.clone(),

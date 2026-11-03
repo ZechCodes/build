@@ -398,19 +398,27 @@ fn user_reviewer_is_assigned_without_agent_dispatch_and_keeps_the_work_task_link
     assert_eq!(linked["task"]["linked_reviews"][0]["status"], "open");
     assert_eq!(first["task"]["assignee"], json!({"kind":"user"}));
     assert_eq!(first["task"]["links"]["parent_task_id"], work["id"]);
-    assert_eq!(first["reviewer_dispatch"]["state"], "not_requested");
+    assert_eq!(first["reviewer_dispatch"]["state"], "delivered");
+    let operation = format!("review-open-{}", first["task"]["id"].as_str().unwrap());
+    assert!(state
+        .store
+        .as_ref()
+        .unwrap()
+        .operation(&operation)
+        .unwrap()
+        .is_none());
     let ws = review_call(
         &mut state,
         "workspace.get",
         json!({"workspace_id":workspace_id}),
     );
-    assert_eq!(ws["active_review"]["for_task_id"], work["id"]);
+    assert_eq!(ws["active_review"]["parent_task_id"], work["id"]);
     let task = review_call(
         &mut state,
         "tasks.get",
         json!({"task_id":first["task"]["id"]}),
     );
-    assert_eq!(task["task"]["review_summary"]["for_task_id"], work["id"]);
+    assert_eq!(task["task"]["review_summary"]["parent_task_id"], work["id"]);
 }
 
 #[test]

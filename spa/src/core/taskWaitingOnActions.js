@@ -23,7 +23,7 @@ export function createTaskWaitingOnActions({ deviceId, projectId, taskId, call }
     const createsWorkspace = assignment && params.assignee?.kind === "new_workspace";
     const seen = createsWorkspace && await readTaskWaitingOnEverSupported(deviceId);
     const contentRead = method === "tasks.waiting_on.blocks" ? undefined : await captureTaskContentRead(taskId ? taskAddress(deviceId, projectId, taskId) : { deviceId, projectId },
-      taskId ? { revalidate: "full", action: true } : {});
+      taskId ? { revalidate: "full" } : {});
     const issuedRead = contentRead?.readOrder;
     // The greeting may change during the cache read. Recheck its authority,
     // then validate and send without another asynchronous gap.

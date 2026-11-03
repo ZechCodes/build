@@ -110,7 +110,7 @@ const exactCompactReadTask = (task, through) => Boolean(task) && Object.keys(tas
  * leaves. Rendering disposal does not revoke account/device/session authority. */
 async function dispatchTaskAction(authority, method, params, readThrough) {
   if (method === "tasks.watch" || method === "tasks.unwatch") return dispatchTaskWatchAction(authority, method, params);
-  const contentRead = await captureTaskContentRead(taskAddress(authority.deviceId, authority.projectId, authority.taskId), { revalidate: "full", action: true });
+  const contentRead = await captureTaskContentRead(taskAddress(authority.deviceId, authority.projectId, authority.taskId), { revalidate: "full" });
   const issuedRead = contentRead.readOrder;
   if (!authority.accept()) throw new Error("This task's session changed before sending the action.");
   const answer = await authority.callRpc(method, params);

@@ -21,10 +21,9 @@ const scopeOf = (place) => ({ deviceId: place.deviceId, projectId: place.project
 const cacheOf = (task) => task?.[TASK_CONTENT_CACHE] || {};
 const validScope = (scope) => typeof scope.deviceId === "string" && typeof scope.projectId === "string";
 
-export async function captureTaskContentRead(place, { revalidate = false, action = false } = {}) {
+export async function captureTaskContentRead(place, { revalidate = false } = {}) {
   const { scope, address } = capturePlace(place, revalidate);
-  // An action owns its mutation; only background reads defer behind it.
-  const localMutation = action ? null : captureLocalTaskMutation(scope, address);
+  const localMutation = captureLocalTaskMutation(scope, address);
   const allocation = await nextTaskReadTicket(scope, { address });
   const readOrder = allocation?.readOrder ?? await nextTaskRead();
   const read = capturedRead(allocation, address, revalidate, readOrder);

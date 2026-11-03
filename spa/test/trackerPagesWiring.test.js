@@ -313,12 +313,21 @@ describe("a tracker synced from a bridge that pages", () => {
 
   it("does not put back a task a newer read took off the list while an older page was out", async () => {
     await boot(PAGING_GREETING);
-    await settle();
+    await vi.waitFor(async () => expect(numbers(await heldList())).toEqual(everyNumber), { timeout: 10_000 });
+    const pages = await import("../src/core/trackerPages.js");
+    const pullPages = pages.pullTaskPages;
+    let lastRead;
+    const pull = vi.spyOn(pages, "pullTaskPages").mockImplementation((options) => {
+      const done = pullPages(options);
+      if (options.params.state === "open") lastRead = done;
+      return done;
+    });
     // The Open list's second page is held: asked now, answered later.
     holdNext = (params) => params.state === "open" && params.cursor === cursorFor(151);
     await mountPane("list");
     await vi.waitFor(() => expect(held).not.toBeNull());
     const olderPane = pane;
+    const olderRead = lastRead;
 
     // #120 is closed and pushed. A second Tasks tab reads the Open list
     // after the push, and #120 is not on it.
@@ -327,23 +336,49 @@ describe("a tracker synced from a bridge that pages", () => {
       type: "changes",
       items: [{ entity_id: "p1", tasks: { task_ids: ["task-120"], truncated: false } }],
     }, "dev-1");
-    await mountPane("list");
-    await settle();
+    let releaseNewer;
+    let continuationAsked = false;
+    const continuation = new Promise((resolve) => { releaseNewer = resolve; });
+    const delay = vi.spyOn(ANSWERS, "tasks.list").mockImplementation((params) => {
+      const answer = tasksList(params);
+      if (params.state !== "open" || params.cursor !== cursorFor(151) || continuationAsked) return answer;
+      continuationAsked = true;
+      return continuation.then(() => answer);
+    });
     const openList = trackerCache.tasksQueryAddress("dev-1", "p1", { project_id: "p1", state: "open" });
     const openRows = async () => (await cache.readCached(openList))?.value?.tasks || [];
-    expect(numbers(await openRows())).toEqual(everyNumber.filter((number) => number !== 120));
+    try {
+      await mountPane("list");
+      await vi.waitFor(() => expect(continuationAsked).toBe(true), { timeout: 10_000 });
+      const newerRead = lastRead;
+      // No RPC is asked while the newer continuation is held. A quiet call
+      // count therefore says nothing about whether its page walk is done.
+      await settle();
+      expect(numbers(await openRows())).toEqual(everyNumber.slice(0, 100));
+      releaseNewer();
+      await expect(newerRead).resolves.toBe(true);
+      expect(numbers(await openRows())).toEqual(everyNumber.filter((number) => number !== 120));
 
-    // Now the older page lands. It must not bring #120 back as open.
-    const seen = [];
-    const stopWatching = cache.subscribeCache(openList, () => void openRows().then((rows) => seen.push(rows)));
-    held.release();
-    held = null;
-    await settle();
-    stopWatching();
-    olderPane.dispose();
+      // Now the older page lands. It must not bring #120 back as open.
+      const seen = [];
+      const observations = [];
+      const stopWatching = cache.subscribeCache(openList, () => {
+        observations.push(openRows().then((rows) => seen.push(rows)));
+      });
+      held.release();
+      held = null;
+      await olderRead;
+      stopWatching();
+      await Promise.all(observations);
 
-    expect(seen.some((rows) => rows.some((row) => row.number === 120))).toBe(false);
-    expect(numbers(await openRows())).toEqual(everyNumber.filter((number) => number !== 120));
+      expect(seen.some((rows) => rows.some((row) => row.number === 120))).toBe(false);
+      expect(numbers(await openRows())).toEqual(everyNumber.filter((number) => number !== 120));
+    } finally {
+      releaseNewer();
+      olderPane.dispose();
+      delay.mockRestore();
+      pull.mockRestore();
+    }
   });
 
   it("keeps a newer read's row over an older page's copy with the same updated_at", async () => {

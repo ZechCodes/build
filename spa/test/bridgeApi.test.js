@@ -102,7 +102,7 @@ describe("adapter selection", () => {
       // whether this bridge carries the one it is about to name, because every
       // kind in one subscribe shares that call's fate.
       changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"], projectSources: false },
-      git: { projectSources: false },
+      git: { projectSources: false, showPaths: false },
       term: { projectSources: false },
       fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
       requests: { priority: true },
@@ -511,4 +511,12 @@ it("keeps terminal source scopes disabled without a compatible named greeting", 
   ]) {
     expect(v1.capabilitiesOf(greeting).term.projectSources).toBe(false);
   }
+});
+
+
+it("negotiates commit path filtering independently of project source support", () => {
+  const current = v1.capabilitiesOf({ api_version: "3.28.0", capabilities: ["git.showPaths"] });
+  expect(current.git.showPaths).toBe(true);
+  expect(current.git.projectSources).toBe(false);
+  expect(v1.capabilitiesOf({ api_version: "3.28.0", capabilities: ["git.projectSources"] }).git.showPaths).toBe(false);
 });

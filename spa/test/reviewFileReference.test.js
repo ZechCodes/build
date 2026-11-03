@@ -5,6 +5,7 @@ const review = { snapshots: [{ number: 3, directories: [{ id: "workspace:root" }
 const reference = { revision: 3, mode: "commit", commit: "abcd", fileRef: "workspace:root:deep:src/a:b.js", side: "old", line: 42 };
 describe("deferred review file references", () => {
   it("keeps a shareable unresolved reference until the revision arrives", () => {
+    expect(resolveReviewFileReference({ snapshots: [] }, reference)).toEqual({ selection: reference, pending: true });
     expect(resolveReviewFileReference(null, reference)).toEqual({ selection: reference, pending: true });
     const route = { name: "trackerTask", deviceId: "d", projectId: "p", taskId: "t", review: reference };
     expect(routeFromHash(hashFromRoute(route))).toEqual(route);

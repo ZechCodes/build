@@ -19,6 +19,7 @@ export function resolveReviewFileReference(review, selection) {
   if (!selection.fileRef) return { selection };
   if (!review) return { selection, pending: true };
   const snapshot = review.snapshots?.find((row) => row.number === Number(selection.revision));
+  if (!snapshot) return { selection, pending: true };
   const place = filePlace(snapshot, selection.fileRef);
   const { fileRef: _fileRef, ...resolved } = selection;
   if (place && relativePath(place.path)) return { selection: { ...resolved, ...place } };

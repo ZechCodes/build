@@ -1314,6 +1314,11 @@ mod tests {
             "`[[<workspace>:path/to/file.rs]]`",
             "`#L10`",
             "`[[<workspace>:commit:<sha>]]`",
+            "`[[<workspace>:commit:<sha>:<path>#L42]]`",
+            "`[[#<task>:r<N>:<range>:<dir>:<path>#L42]]`",
+            "`#old-L42`",
+            "`%3A`",
+            "`%25`",
             "`[[<workspace>/<directory>:path/to/file.rs]]`",
         ] {
             assert!(text.contains(shape), "the note never shows {shape}: {text}");

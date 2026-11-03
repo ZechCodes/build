@@ -155,7 +155,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       kinds: subscriptions && Array.isArray(kinds) ? kinds.filter((kind) => typeof kind === "string") : [],
       projectSources: names.has("changes.projectSources"),
     },
-    git: { projectSources: names.has("git.projectSources") },
+    git: { projectSources: names.has("git.projectSources"), showPaths: names.has("git.showPaths") },
     term: { projectSources: names.has("term.projectSources") },
     fs: {
       projectSources: names.has("fs.projectSources"),

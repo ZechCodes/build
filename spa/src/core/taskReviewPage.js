@@ -56,7 +56,8 @@ export function mountTaskReviewPage(host, options) {
   const review = () => record?.review || null;
   const isPr = () => review()?.mode === "pull_request";
   const controlState = () => isPr() ? "" : review()?.state;
-  const snapshot = () => reviewSnapshot(review(), selection.snapshotId);
+  const snapshot = () => selection.fileRef
+    ? review()?.snapshots.find((row) => row.number === selection.revision) : reviewSnapshot(review(), selection.snapshotId);
   const directory = () => reviewDirectory(snapshot(), selection.directoryId);
   const workspaces = () => options.workspaces?.() || [];
   const taskIdentities = () => options.task?.()?.identities;
@@ -69,7 +70,7 @@ export function mountTaskReviewPage(host, options) {
     selectionGeneration++;
     const next = switchReviewSelection(selection, changes, transition);
     const resolved = resolveFileReference(next);
-    selection = selectionForReview(review(), resolved) || resolved;
+    selection = resolved.fileRef ? resolved : selectionForReview(review(), resolved) || resolved;
     if (!selection) return;
     paint();
     options.markReviewRoute?.({ name: "trackerTask", ...scope, review: routeReviewSelection(selection) });
@@ -259,7 +260,7 @@ export function mountTaskReviewPage(host, options) {
   function paintContent() {
     host.hidden = !support.get && !review();
     selection = resolveFileReference(selection);
-    selection = selectionForReview(review(), selection) || selection;
+    if (!selection.fileRef) selection = selectionForReview(review(), selection) || selection;
     normalizeComparison();
     const saved = snapshot();
     const dir = directory();
@@ -281,7 +282,7 @@ export function mountTaskReviewPage(host, options) {
   }
 
   function normalizeComparison() {
-    if (!selection.revision || selection.mode === "all") return;
+    if (!selection.revision || selection.mode === "all" || selection.fileRef) return;
     const allowed = selection.mode === "commit" ? support.commit : support.since && baseline();
     if (allowed) return;
     notice = "This comparison is unavailable for this revision. Showing all changes.";
@@ -310,7 +311,7 @@ export function mountTaskReviewPage(host, options) {
   }
 
   function canonicalizeRoute() {
-    if (canonicalized || !selection.revision || !review()) return;
+    if (canonicalized || !selection.revision || !review() || selection.fileRef) return;
     canonicalized = true;
     const target = routeReviewSelection(selection);
     if (JSON.stringify(target) === JSON.stringify(routeReviewSelection(options.reviewRoute))) return;

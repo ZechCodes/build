@@ -41,13 +41,16 @@ export function reviewRoutePath(selection) {
   const comparison = review.mode === "commit" ? `commit/${encodeURIComponent(review.commit)}` : review.mode;
   const directory = review.directoryId ? `/${encodeURIComponent(review.directoryId)}` : "";
   const path = directory && review.path ? `/${review.path.split("/").map(encodeURIComponent).join("/")}` : "";
-  const params = new URLSearchParams();
-  if (review.fileRef) params.set("fileRef", review.fileRef);
-  if (review.side) params.set("side", review.side);
-  if (review.line) params.set("line", String(review.line));
-  if (review.view) params.set("view", review.view);
-  const query = String(params);
+  const query = reviewPlaceQuery(review);
   return `/review/r${review.revision}/${comparison}${directory}${path}${query ? `?${query}` : ""}`;
+}
+
+function reviewPlaceQuery(review) {
+  const params = new URLSearchParams();
+  for (const key of ["fileRef", "side", "line", "view"]) {
+    if (review[key]) params.set(key, String(review[key]));
+  }
+  return String(params);
 }
 
 const snapshotOf = (review, selection) => review?.snapshots?.find((row) => row.number === Number(selection?.revision))

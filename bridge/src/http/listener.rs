@@ -261,6 +261,48 @@ impl OutputTicket {
     }
 }
 
+/// Retry resource pressure and per-connection failures without terminating the
+/// daemon. The enclosing select keeps shutdown and connection reaping live
+/// during this backoff; fatal listener errors still reach daemon supervision.
+async fn accept_with_retry<T, F, A>(mut accept: F) -> io::Result<T>
+where
+    F: FnMut() -> A,
+    A: Future<Output = io::Result<T>>,
+{
+    loop {
+        match accept().await {
+            Err(error) if transient_accept_error(&error) => {
+                eprintln!("bridge HTTPS accept: {error}; retrying in 75ms");
+                tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+            }
+            result => return result,
+        }
+    }
+}
+
+fn transient_accept_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::Interrupted
+            | io::ErrorKind::WouldBlock
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::TimedOut
+    ) || matches!(
+        error.raw_os_error(),
+        Some(
+            libc::EMFILE
+                | libc::ENFILE
+                | libc::ENOBUFS
+                | libc::ENOMEM
+                | libc::EPROTO
+                | libc::ENETDOWN
+                | libc::ENETUNREACH
+                | libc::EHOSTUNREACH
+        )
+    )
+}
+
 pub async fn serve(
     listener: TcpListener,
     tls: Arc<rustls::ServerConfig>,
@@ -271,13 +313,18 @@ pub async fn serve(
     let (stop, stopped) = watch::channel(false);
     let acceptor = TlsAcceptor::from(tls);
     let mut connections = JoinSet::new();
+    // Retain the retry future across completed connections so reaping cannot
+    // cancel the backoff and turn resource exhaustion into a busy loop.
+    let next_connection = || accept_with_retry(|| listener.accept());
+    let mut accepting = Box::pin(next_connection());
     let result = loop {
         if *shutdown.borrow() {
             break Ok(());
         }
         tokio::select! {
             _ = shutdown.changed() => break Ok(()),
-            accepted = listener.accept() => {
+            accepted = &mut accepting => {
+                accepting.set(next_connection());
                 let (socket, peer) = match accepted { Ok(value) => value, Err(error) => break Err(error) };
                 let Ok(permit) = sockets.clone().try_acquire_owned() else { continue; };
                 let service = router.clone();
@@ -292,6 +339,7 @@ pub async fn serve(
         }
     };
     // Stop accepting and fence each HTTP socket before bounded teardown.
+    drop(accepting);
     drop(listener);
     let _ = stop.send(true);
     if timeout(limits::SOCKET_TEARDOWN_TIMEOUT, async {
@@ -560,5 +608,50 @@ mod tests {
             retired.elapsed()
         );
         assert!(!authority.has_pending_write());
+    }
+}
+
+#[cfg(test)]
+mod accept_tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn transient_accept_errors_back_off_then_accept_again() {
+        for code in [
+            libc::EMFILE,
+            libc::ENFILE,
+            libc::ENOBUFS,
+            libc::ENOMEM,
+            libc::ECONNABORTED,
+            libc::EINTR,
+        ] {
+            let mut calls = 0;
+            let started = tokio::time::Instant::now();
+            let result = accept_with_retry(|| {
+                calls += 1;
+                std::future::ready(if calls == 1 {
+                    Err(io::Error::from_raw_os_error(code))
+                } else {
+                    Ok(42)
+                })
+            })
+            .await
+            .unwrap();
+            assert_eq!(result, 42);
+            assert_eq!(calls, 2);
+            assert!(started.elapsed() >= std::time::Duration::from_millis(75));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fatal_accept_errors_propagate_without_retry() {
+        let mut calls = 0;
+        let result: io::Result<()> = accept_with_retry(|| {
+            calls += 1;
+            std::future::ready(Err(io::Error::from_raw_os_error(libc::EBADF)))
+        })
+        .await;
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EBADF));
+        assert_eq!(calls, 1);
     }
 }

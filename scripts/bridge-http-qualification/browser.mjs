@@ -5,6 +5,7 @@ import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { refusalFixture, qualifyBrowserRefusals } from "./refusals.mjs";
 
 const root = process.cwd();
 const require = createRequire(resolve(root, "spa/package.json"));
@@ -66,6 +67,7 @@ await context.addInitScript(() => {
 let writer;
 let owner;
 let writerHandle;
+const arrangedRefusals = await refusalFixture(context, fixture);
 try {
   await page.goto(hostedOrigin + "/auth/dummy/login");
   await page.fill("#email", email);
@@ -128,6 +130,8 @@ try {
   assert.ok(evidence.heartbeats > 0, "real SSE heartbeat observed before renewal");
   await writeFile(resolve(output, "browser-evidence.json"), JSON.stringify({ ...evidence, refusal, errors }, null, 2));
   console.log("PASS explicit transport change closed the HTTP session and subscription");
+  const refusals = await qualifyBrowserRefusals(page, arrangedRefusals, bridgeOrigin, output);
+  await writeFile(resolve(output, "browser-refusals.json"), JSON.stringify(refusals, null, 2));
   assert.deepEqual(errors, [], "no uncaught browser errors");
 } catch (error) {
   await page.screenshot({ path: resolve(output, "spa-failure.png"), fullPage: true }).catch(() => {});
@@ -135,6 +139,7 @@ try {
   await writeFile(resolve(output, "browser-failure.txt"), `${error.stack}\n${text}\n${JSON.stringify(await page.evaluate(() => window.__qualification).catch(() => null), null, 2)}`);
   throw error;
 } finally {
+  await arrangedRefusals.close();
   if (writerHandle) await writer.close(owner, writerHandle);
   await browser.close();
 }

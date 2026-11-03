@@ -154,11 +154,12 @@ def main():
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--issuer-port", type=int, default=18476)
     parser.add_argument("--bridge-port", type=int, default=19476)
+    parser.add_argument("--scratch-task", type=int, choices=[976, 977], default=976)
     args = parser.parse_args()
     run_dir = args.run_dir.resolve()
-    scratch = Path("/home/zech/Projects/.agent-scratch/976").resolve()
+    scratch = (Path("/home/zech/Projects/.agent-scratch") / str(args.scratch_task)).resolve()
     if not run_dir.is_relative_to(scratch) or run_dir == scratch:
-        parser.error("--run-dir must be a disposable child of task 976 scratch")
+        parser.error("--run-dir must be a disposable child of the selected task scratch")
     if not all(1024 <= port <= 65535 for port in [args.issuer_port, args.bridge_port]):
         parser.error("ports must be unprivileged loopback ports")
     run_dir.mkdir(parents=True, exist_ok=True)

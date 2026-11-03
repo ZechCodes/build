@@ -184,7 +184,7 @@ impl HttpState {
                 .map(|(id, opening)| (id.clone(), opening.session.clone()))
                 .collect::<Vec<_>>()
         };
-        let mut removed = 0;
+        let mut removed = Vec::new();
         {
             let mut openings = self.openings.lock().unwrap();
             for (id, ended) in ended {
@@ -194,13 +194,18 @@ impl HttpState {
                 });
                 if exact_closed {
                     if let Some(opening) = openings.remove(&id) {
-                        opening.streams.close();
+                        removed.push(opening);
                     }
-                    removed += 1;
                 }
             }
         }
-        removed
+        let count = removed.len();
+        // Binding retirement can wake body cleanup, which may reap again.
+        // Never retain the openings registry lock across that handoff.
+        for opening in removed {
+            opening.streams.close();
+        }
+        count
     }
 
     fn retire_all(&self) -> usize {

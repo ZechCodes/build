@@ -3,11 +3,7 @@ import { cachedRecords, subscribeCache } from "./localCache.js";
 
 const REVIEW_PRESENCE_KINDS = new Set(["task-review", "tracker-summary", "tracker-task", "tracker-tasks", "tracker-tasks-query"]);
 
-function reviewWorkspaceIds(review) {
-  const ids = (review?.snapshots || []).map((snapshot) => snapshot.workspace_id).filter(Boolean);
-  if (review?.workspace_id) ids.push(review.workspace_id);
-  return ids;
-}
+const reviewWorkspaceIds = (review) => review?.workspace_id ? [review.workspace_id] : [];
 function taskWorkspaceIds(value) {
   const tasks = value?.task ? [value.task] : value?.tasks || [];
   return tasks.filter((task) => task.review_summary || task.legacy_review).flatMap((task) => task.links?.workspace_ids || []);
@@ -36,6 +32,6 @@ export function watchBranchReviewPresence({ deviceId, projectId, onChange }) {
 
 export function branchWorkspaceHasReview(feed, projectId, branch, presence) {
   return (feed?.workspaces || []).some((workspace) => workspace.project_id === projectId
-    && (workspace.active_review || presence.has(workspace.workspace_id || workspace.id))
+    && (workspace.legacy_review === true || workspace.active_review || presence.has(workspace.workspace_id || workspace.id))
     && workspace.directories?.some((directory) => directory.branch === branch));
 }

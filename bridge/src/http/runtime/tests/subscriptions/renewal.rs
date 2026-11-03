@@ -293,6 +293,10 @@ async fn a_renewal_after_expiry_leaves_the_stream_ended() {
 
     let (status, refused) = opening.renew().await;
 
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{refused}");
+    // Body cleanup now reaps the expired opening; the already-gone resource
+    // cannot be renewed even with freshly verified authority.
+    assert_eq!(status, StatusCode::NOT_FOUND, "{refused}");
+    assert_eq!(refused["error_code"], "not_found");
+    assert_eq!(opening.renew().await.0, StatusCode::NOT_FOUND);
     assert_eq!(opening.push().await, StatusCode::UNAUTHORIZED);
 }

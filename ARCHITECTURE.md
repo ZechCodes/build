@@ -2117,6 +2117,10 @@ reader in its existing capture section, loads review summaries alongside the
 off-lock project refresh, and installs them through the same generation fence
 in its existing apply section. Physical workspace refreshes do not query review
 SQL; startup warms review summaries before shared admission.
+Parent-only relinks have an independent observation generation and do not
+advance the status generation. A deferred status observation preserves a newer
+parent for the same review; a different review taking over the workspace never
+inherits that parent overlay.
 Once opening has published durably, an observation failure does not turn it
 into an error or skip settlement. Close likewise returns its captured completed
 review if the subsequent optional sync/merge-intent projection fails, and still

@@ -403,3 +403,92 @@ fn close_projection_failure_acknowledges_durable_completion_once() {
         (json!("closed"), json!("closed"))
     );
 }
+
+#[test]
+fn parent_relink_does_not_fence_out_a_prepared_newer_close_status() {
+    let (_home, _repository, shared, opened) = fixture();
+    let workspace_id = opened["review"]["workspace_id"].as_str().unwrap();
+    let task_id = opened["task"]["id"].as_str().unwrap();
+    let (project, first, second) = {
+        let mut app = shared.lock().unwrap();
+        let (project, _) = app.tracker_task(task_id).unwrap();
+        let first = filed(&mut app, &project, "Original work");
+        let second = filed(&mut app, &project, "Revised work");
+        app.link_task_as_user(&json!({"task_id":task_id,"parent_task_id":first["id"]}))
+            .unwrap();
+        (project, first, second)
+    };
+    let (gate, waiting) = OffLockGate::new();
+    shared.lock().unwrap().off_lock_review_observation_loaded = Some(gate);
+    let request = params("tasks.review.close", &opened);
+    let job = defer(&shared, "tasks.review.close", &request).unwrap();
+    let worker = std::thread::spawn(move || job.run());
+    waiting.wait_for_arrival();
+    // SQL committed Closed and captured the newer complete observation, but
+    // the workspace still paints the accepted Open observation at this point.
+    {
+        let mut app = shared.lock().unwrap();
+        assert_eq!(
+            app.read_view
+                .load()
+                .get("workspace.get", workspace_id)
+                .unwrap()["active_review"]["status"],
+            "open"
+        );
+        app.link_task_as_user(&json!({"task_id":task_id,"parent_task_id":second["id"]}))
+            .unwrap();
+    }
+    waiting.release();
+    let done = worker.join().unwrap();
+    let mut app = shared.lock().unwrap();
+    app.apply_deferred("tasks.review.close", &request, done)
+        .unwrap();
+    let view = app.read_view.load();
+    let summary = &view.get("workspace.get", workspace_id).unwrap()["active_review"];
+    assert_eq!(
+        summary["status"], "closed",
+        "parent-only publication fenced out a newer lifecycle status"
+    );
+    assert_eq!(summary["version"], 2);
+    assert_eq!(summary["parent_task_id"], second["id"]);
+    let old = review_call(&mut app, "tasks.get", json!({"task_id":first["id"]}));
+    assert!(old["task"].get("linked_reviews").is_none());
+    let new = review_call(&mut app, "tasks.get", json!({"task_id":second["id"]}));
+    assert_eq!(new["task"]["linked_reviews"][0]["status"], "closed");
+    assert_eq!(new["task"]["project_id"], project);
+}
+
+#[test]
+fn parent_overlay_for_an_old_review_does_not_replace_a_prepared_new_owner() {
+    let (_home, _repository, shared, opened) = fixture();
+    let workspace_id = opened["review"]["workspace_id"].as_str().unwrap();
+    let old_task = opened["task"]["id"].as_str().unwrap();
+    let parent = {
+        let mut app = shared.lock().unwrap();
+        let (project, _) = app.tracker_task(old_task).unwrap();
+        let parent = filed(&mut app, &project, "Original review scope");
+        let request = params("tasks.review.close", &opened);
+        review_call(&mut app, "tasks.review.close", request);
+        parent
+    };
+    let request = json!({"workspace_id":workspace_id, "request_id":"prepared-replacement", "title":"New owner", "description":"Replacement review"});
+    let done = defer(&shared, "tasks.review.open", &request).unwrap().run();
+    {
+        let mut app = shared.lock().unwrap();
+        app.link_task_as_user(&json!({"task_id":old_task,"parent_task_id":parent["id"]}))
+            .unwrap();
+    }
+    let mut app = shared.lock().unwrap();
+    let replacement = app
+        .apply_deferred("tasks.review.open", &request, done)
+        .unwrap();
+    let view = app.read_view.load();
+    let summary = &view.get("workspace.get", workspace_id).unwrap()["active_review"];
+    assert_eq!(summary["task_id"], replacement["task"]["id"]);
+    assert_ne!(summary["task_id"], old_task);
+    assert!(
+        summary.get("parent_task_id").is_none(),
+        "new owner inherited an older review's parent"
+    );
+    assert_eq!(summary["status"], "open");
+}

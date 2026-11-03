@@ -440,11 +440,11 @@ impl Store {
         }
         tracker::initialize_list_key(&conn)?;
         let summaries_initialized = task_summaries::initialize(&mut conn)?;
+        sync::initialize(&mut conn, &dir.join(DB_FILE), restored)?;
         maintenance::configure_incremental_vacuum(&conn)?;
         if summaries_initialized {
             task_summaries::mark_complete(&mut conn)?;
         }
-        sync::initialize(&mut conn, &dir.join(DB_FILE), restored)?;
         let writer = StoreWriter::new(conn);
         // Recover ambiguous claims without executing any command at startup.
         writer.recover_mutations()?;

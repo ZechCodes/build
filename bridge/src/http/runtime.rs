@@ -33,6 +33,7 @@ use crate::execution::{
     ExecutionService, Invocation, RequestMetadata,
 };
 
+mod discovery;
 mod renewal;
 mod subscriptions;
 
@@ -117,6 +118,7 @@ struct HttpState {
     openings: Arc<Mutex<HashMap<String, MountedOpening>>>,
     accepting: Arc<AtomicBool>,
     buffers: Arc<super::limits::BufferBudget>,
+    discovery: Option<Arc<discovery::Discovery>>,
     #[cfg(test)]
     output_observer: Arc<Mutex<Option<OutputObserver>>>,
     #[cfg(test)]
@@ -228,12 +230,15 @@ pub fn mount(execution: Arc<ExecutionService>, verifier: HttpAuthVerifier) -> Ht
 }
 
 impl HttpRuntime {
-    pub fn with_discovery(self, _signer: Arc<super::discovery::DeviceProofSigner>) -> Self {
+    /// Attach the same configured signer used for endpoint registration.
+    pub fn with_discovery(mut self, signer: Arc<super::discovery::DeviceProofSigner>) -> Self {
+        self.state.discovery = Some(Arc::new(discovery::Discovery::new(signer)));
         self
     }
 
     pub fn router(&self) -> Router {
         let router = Router::new()
+            .route("/.well-known/build-bridge", post(discovery::discover))
             .route("/v1/sessions", post(open_session))
             .route(
                 "/v1/sessions/{session_id}",
@@ -278,6 +283,7 @@ fn runtime_with(execution: Arc<ExecutionService>, verifier: Arc<dyn GrantVerifie
             openings: Arc::new(Mutex::new(HashMap::new())),
             accepting: Arc::new(AtomicBool::new(true)),
             buffers: Arc::new(super::limits::BufferBudget::default()),
+            discovery: None,
             #[cfg(test)]
             output_observer: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -991,6 +997,7 @@ fn refusal(status: StatusCode, code: &'static str) -> Response {
             "error": code,
             "error_code": code,
             "retryable": retryable,
+            "request_id": uuid::Uuid::new_v4().to_string(),
         })),
     )
         .into_response()
@@ -998,8 +1005,8 @@ fn refusal(status: StatusCode, code: &'static str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    mod subscriptions;
     mod discovery;
+    mod subscriptions;
 
     use super::*;
     use crate::{execution::FrameHandler, timing::FrameClock};

@@ -53,6 +53,13 @@ impl ReadPool {
     }
 }
 impl SyncReadConnection {
+    /// Run one bounded, typed recovery read while retaining SyncRecovery quota.
+    pub fn read<T>(
+        &mut self,
+        work: impl FnOnce(&ReadTransaction<'_>) -> T,
+    ) -> Result<T, crate::store::StoreError> {
+        self.connection.read(work)
+    }
     pub fn head(
         &mut self,
         scope: &Scope,

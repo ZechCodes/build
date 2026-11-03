@@ -3,9 +3,12 @@
 //! Producers collect bounded summary-visible facts in PublicationBatch and
 //! publish on their canonical transaction. This module never consumes ChangeBus.
 
+mod continuations;
 mod cursor;
+pub use continuations::Continuation;
 mod journal;
 mod reads;
+mod recovery_reads;
 mod retention;
 mod schema;
 mod task_publication;
@@ -177,6 +180,10 @@ pub enum ResyncReason {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
+    #[error("invalid sync request: {0}")]
+    InvalidRequest(String),
+    #[error("sync data unavailable: {0}")]
+    Unavailable(String),
     #[error("malformed sync cursor")]
     MalformedCursor,
     #[error("sync cursor belongs to a different scope")]
@@ -193,7 +200,7 @@ fn invalid(message: &str) -> StoreError {
     StoreError::SyncInvalid(message.into())
 }
 
-pub(super) fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

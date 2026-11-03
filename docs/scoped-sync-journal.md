@@ -1,10 +1,11 @@
 # Scoped sync journal
 
-This is the bridge foundation for #892. C1 installs storage, transactional
+This is the bridge implementation for #892. C1 installs storage, transactional
 publication, cursor validation, a ReadPool head reader and bounded retention
-maintenance. It does **not** advertise a scope capability, register a public
-sync RPC, or claim producer coverage. C2/C3 connect the audited producers;
-C4 registers the wire methods, fixtures and POST query resources. Existing
+maintenance. C2 connects task producers and pure task recovery reads. These
+internal interfaces do **not** advertise a scope capability or register a public
+sync RPC. C3 connects device producers; C4 registers the wire methods, fixtures
+and POST query resources. Existing
 read/write replies, subscriptions and pushes keep their existing behavior.
 
 The approved plan and rulings are on #892. No SPA consumer or #925 retained
@@ -12,8 +13,9 @@ task-selection service is implemented here.
 
 ## Publication
 
-`StoreWriter::sync_transaction` owns one `PublicationBatch` for the canonical
-SQL transaction. Producers stage final bounded summary-visible values. The
+Every `StoreWriter` transaction owns one `PublicationBatch` for the canonical
+SQL transaction. `sync_transaction` also permits explicit staging. Producers
+stage final bounded summary-visible values. The
 batch replaces repeated values for the same entity and publishes once after
 the source/derived writes succeed, before the same SQLite commit. The caller
 receives no success if publication or commit fails. The low-level store hook
@@ -24,6 +26,24 @@ The persisted fingerprint compares the final visible value, deletion state and
 stream membership with the last publication. An unchanged save appends nothing.
 Reparenting routes a change to both old and new project streams. Deletes retain
 their entity identity, revision and former routing through the retained interval.
+The current task API rejects project/number changes; sync preserves that rule.
+
+Task producer hooks collect a deduplicated TEMP set on the sole writer
+connection. The set, its initial comparison baselines, all derived projection
+writes, the journal append and its cleanup share the source transaction. The
+set rolls back on failure. It is not the durable non-SQL dirty path. Canonical
+task edits, inserted activity and committed review headers force one task
+invalidation even if a bounded card did not change. Metadata-only hooks compare
+final bounded display and lossless predicate inputs; private delivery checkpoints
+and unchanged saves publish nothing. Startup backfills precede writer/read-pool
+admission and do not consume the transaction-local producer set.
+
+The producer guard inventories literal and formatted SQL writers using the Rust
+syntax tree, including referenced statement constants. New canonical writers or
+dynamic table writers require classification. It also pins the publication
+owners' calls through the shared projection hooks and writer finalizer. Store
+producer tests exercise the semantic and rollback boundaries; the inventory
+alone does not prove atomicity.
 
 Only committed summary-visible fields participate. Partial/streaming item
 updates and ephemeral runtime facts must never enter a batch. Agent `working`,
@@ -68,14 +88,54 @@ retains deletion tombstones by revision. With no intervening write, the same
 bound run returns the same records. No retained replay-result service is planned.
 The C4 wire fixtures must pin these rules for #893.
 
+## Task snapshots and recovery
+
+`TaskSyncScope` is constructed from captured server authority and the shared
+#890 `TaskSelections`/`QuerySelections`. The digest includes canonical project
+identity/key, normalized selection sets, exact opaque actor bytes, order and
+query predicates. Page size is independent of scope identity. Task scopes bind
+the stable task id. The adapter supplies the captured project directory and
+the process epoch; these reads have no application reference.
+
+Every data operation runs in one `SyncRecovery` read transaction. A project
+snapshot captures W with its first page and uses signed live keysets on later
+pages. It scans at most 128 candidates per page, including sparse predicates.
+An empty page can have a next page. Changing order keys can produce repeats or
+move rows between pages; replay after W supplies their current state. Persist
+the snapshot cursor only after replacing the complete scope. Task snapshots
+contain one bounded header and the newest 50 timeline entries, with an explicit
+`has_more` flag; detail/history APIs remain responsible for older content.
+
+All task summaries reuse `TaskSummaryView` and the maintained query projection.
+The separate `selection.pending_present` comes from canonical SQL facts, never
+the displayed deferred target kind. Leading-NUL display loss, absent/null/empty
+targets and exact actor ids remain distinct. Identity names/directories belong
+to independently synchronized device records; task rows contain actor ids and
+do not import live identity overlays.
+
+A changes run captures fixed H, fetches at most 501 routed events to enforce
+the 500-event budget and returns batches of at most 100. Each continuation binds
+the original cursor, H, applied position, event count and accumulated encoded
+response bytes. The 1 MiB budget includes every returned envelope, including
+continuation tokens. Fixed-width accounting avoids a self-referential token
+length. Every page rechecks retained history; losing an in-flight interval
+requests a reset without issuing a success cursor.
+
+The event sequence and operation describe the durable event. The row, membership
+and revision describe current state and can be newer than H. A filter exit
+returns `member:false` with its current row. A missing/deleted entity returns a
+null row and its current tombstone revision, even when replaying an older upsert
+event. Apply current state only at a revision at least as new as the cached
+revision; keep entity and scope-membership tombstones so redelivery cannot
+resurrect older data. No replay-result state is retained between requests.
+
 ## Retention
 
 The named production limits are seven days, 100,000 entries and 64 MiB of
 accounted journal metadata. Each metadata entry accounts for encoded identity,
 operation and routing plus fixed envelope overhead. SQLite page/index/free-page
 space is separate from that payload counter and remains owned by the existing
-storage maintenance/vacuum service. Catch-up event and encoded-response budgets
-belong to C2.
+storage maintenance/vacuum service.
 
 Logical expiry is independent of physical cleanup. Monotonic timestamps and
 byte prefixes permit indexed boundary seeks, and sequence arithmetic supplies
@@ -119,8 +179,7 @@ publication owners are outside this guarantee.
 
 ## Remaining phases
 
-C2 connects task/summary/review/dependency/read/watch producers and implements
-bounded task snapshots and fixed-head replay. C3 adds versioned device records,
+C3 adds versioned device records,
 five-minute leases (16/store, four/opening) and pre-change dirty/reconciliation
 boundaries. Lease admission alone uses one short off-lock writer transaction;
 all pages use ReadPool. Failed marker persistence fails the action plainly;

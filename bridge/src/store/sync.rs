@@ -7,13 +7,19 @@ mod continuations;
 mod cursor;
 pub use continuations::Continuation;
 mod device;
+pub(in crate::store) use device::stage as stage_device;
 pub use device::{DeviceLease, DEVICE_LEASES_PER_OPENING, DEVICE_LEASE_TTL_MS};
+mod device_producers;
+pub(in crate::store) use device_producers::{
+    touch_agent as touch_device_agent, touch_owner as touch_device_owner,
+};
 mod journal;
 mod reads;
 mod recovery_reads;
 mod retention;
 mod schema;
 mod task_publication;
+pub(super) use device_producers::collect as collect_device;
 pub(super) use task_publication::{collect as collect_tasks, touch as touch_task};
 
 pub use journal::PublicationBatch;
@@ -215,6 +221,8 @@ pub(crate) fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod cursor_tests;
+#[cfg(test)]
+mod device_producer_tests;
 #[cfg(test)]
 mod device_tests;
 #[cfg(test)]

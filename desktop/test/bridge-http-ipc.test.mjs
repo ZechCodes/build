@@ -183,3 +183,19 @@ test("IPC preserves the plain discovery refusal and prevents renderer issuer ove
     message: "Build could not verify this HTTPS address. Check the address and try again.",
   } });
 });
+
+for (const status of [429, 503]) {
+  test(`IPC keeps discovery completion ${status} as a service failure`, async (t) => {
+    const h = harness(t, async (url) => {
+      if (url.endsWith("/challenges")) return new Response(JSON.stringify({
+        issuer: "https://getbuild.ing", challenge_id: "challenge", nonce: "n".repeat(32),
+        expires_at: Math.floor(Date.now() / 1000) + 60,
+      }));
+      if (url.endsWith("/.well-known/build-bridge")) return new Response(JSON.stringify({ proof: "signed-proof" }));
+      return new Response(null, { status });
+    });
+    assert.deepEqual(await h.invoke("discover", ["https://bridge.test"]), {
+      ok: false, error: { code: "http_error", message: "Bridge HTTP http error." },
+    });
+  });
+}

@@ -9,8 +9,11 @@ export function transportError(code) {
     code,
   });
 }
-const refuse = (code) => {
-  throw transportError(code);
+const refuse = (code, status) => {
+  const error = transportError(code);
+  if (Number.isInteger(status) && status >= 100 && status <= 599)
+    error.status = status;
+  throw error;
 };
 
 function originInput(value) {
@@ -146,11 +149,11 @@ function domainError(value) {
 async function jsonResponse(response, options, signal) {
   if (response.status === 401) {
     void response.body?.cancel();
-    refuse("unauthorized");
+    refuse("unauthorized", response.status);
   }
   if (!response.ok && !options.apiEnvelope) {
     void response.body?.cancel();
-    refuse("http_error");
+    refuse("http_error", response.status);
   }
   if (response.status === 204) return null;
   const value = await boundedJson(
@@ -158,7 +161,7 @@ async function jsonResponse(response, options, signal) {
     options.maxBytes ?? MAX_JSON_BYTES,
     signal,
   );
-  if (!response.ok && !domainError(value)) refuse("http_error");
+  if (!response.ok && !domainError(value)) refuse("http_error", response.status);
   return value;
 }
 

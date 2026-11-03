@@ -216,7 +216,11 @@ export function createBridgeHttp({
       { challenge_id: challenge.challenge_id, proof: proof.proof },
       binding,
     ).catch((error) => {
-      if (["http_error", "unauthorized"].includes(error.code)) fail("discovery_failed");
+      if (
+        error.code === "unauthorized" ||
+        (error.code === "http_error" && [401, 403].includes(error.status))
+      )
+        fail("discovery_failed");
       throw error;
     });
     return adopt(binding, verifiedMint(result, { origin }, hostedOrigin));

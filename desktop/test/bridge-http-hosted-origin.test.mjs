@@ -68,26 +68,30 @@ for (const hostedOrigin of ["http://localhost:18476", "https://localhost:18476/p
   });
 }
 
-for (const status of [401, 403]) {
-test(`rejected discovery proof (${status}) gives the desktop a plain address-verification error`, async (t) => {
-  const owner = {};
-  const bridge = createBridgeHttp({
-    hostedOrigin: localIssuer,
-    getAuth: () => ({ generation: 1, accessToken: "fixture-hosted-token" }),
-    isOwnerCurrent: () => true, send: () => {}, manifest: { version: 1, operations: [] },
-    fetch: async (url) => {
-      if (url.endsWith("/challenges")) return json({
-        issuer: localIssuer, challenge_id: "challenge", nonce: "n".repeat(32),
-        expires_at: Math.floor(Date.now() / 1000) + 60,
-      });
-      if (url.endsWith("/.well-known/build-bridge")) return json({ proof: "tampered-proof" });
-      return new Response(null, { status });
-    },
+for (const status of [401, 403, 429, 503]) {
+  test(`discovery completion ${status} distinguishes proof refusal from hosted service failure`, async (t) => {
+    const owner = {};
+    const bridge = createBridgeHttp({
+      hostedOrigin: localIssuer,
+      getAuth: () => ({ generation: 1, accessToken: "fixture-hosted-token" }),
+      isOwnerCurrent: () => true, send: () => {}, manifest: { version: 1, operations: [] },
+      fetch: async (url) => {
+        if (url.endsWith("/challenges")) return json({
+          issuer: localIssuer, challenge_id: "challenge", nonce: "n".repeat(32),
+          expires_at: Math.floor(Date.now() / 1000) + 60,
+        });
+        if (url.endsWith("/.well-known/build-bridge")) return json({ proof: "tampered-proof" });
+        return new Response(null, { status });
+      },
+    });
+    t.after(() => bridge.clear());
+    const refusedProof = status === 401 || status === 403;
+    await assert.rejects(bridge.discover(owner, bridgeOrigin), refusedProof ? {
+      code: "discovery_failed",
+      message: "Build could not verify this HTTPS address. Check the address and try again.",
+    } : {
+      code: "http_error", status,
+      message: "Bridge HTTP http error.",
+    });
   });
-  t.after(() => bridge.clear());
-  await assert.rejects(bridge.discover(owner, bridgeOrigin), {
-    code: "discovery_failed",
-    message: "Build could not verify this HTTPS address. Check the address and try again.",
-  });
-});
 }

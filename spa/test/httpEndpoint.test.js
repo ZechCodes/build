@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canonicalBridgeOrigin } from "../src/core/httpEndpoint.js";
+import { canonicalBridgeOrigin, httpFailure } from "../src/core/httpEndpoint.js";
 
 describe("bridge endpoint authority", () => {
   it.each([
@@ -22,4 +22,8 @@ describe("bridge endpoint authority", () => {
   ])("rejects ambiguous or non-origin address %s", (input) => {
     expect(() => canonicalBridgeOrigin(input)).toThrow();
   });
+});
+
+it("shows a plain discovery-proof refusal from the desktop client", () => {
+  expect(httpFailure("discovery_failed").message).toBe("Build could not verify this HTTPS address. Check the address and try again.");
 });

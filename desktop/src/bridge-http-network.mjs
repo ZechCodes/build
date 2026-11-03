@@ -2,12 +2,18 @@ import { createParser } from "eventsource-parser";
 
 export const MAX_JSON_BYTES = 1024 * 1024;
 export function transportError(code) {
-  return Object.assign(new Error(`Bridge HTTP ${code.replaceAll("_", " ")}.`), {
+  const message = code === "discovery_failed"
+    ? "Build could not verify this HTTPS address. Check the address and try again."
+    : `Bridge HTTP ${code.replaceAll("_", " ")}.`;
+  return Object.assign(new Error(message), {
     code,
   });
 }
-const refuse = (code) => {
-  throw transportError(code);
+const refuse = (code, status) => {
+  const error = transportError(code);
+  if (Number.isInteger(status) && status >= 100 && status <= 599)
+    error.status = status;
+  throw error;
 };
 
 function originInput(value) {
@@ -143,11 +149,11 @@ function domainError(value) {
 async function jsonResponse(response, options, signal) {
   if (response.status === 401) {
     void response.body?.cancel();
-    refuse("unauthorized");
+    refuse("unauthorized", response.status);
   }
   if (!response.ok && !options.apiEnvelope) {
     void response.body?.cancel();
-    refuse("http_error");
+    refuse("http_error", response.status);
   }
   if (response.status === 204) return null;
   const value = await boundedJson(
@@ -155,7 +161,7 @@ async function jsonResponse(response, options, signal) {
     options.maxBytes ?? MAX_JSON_BYTES,
     signal,
   );
-  if (!response.ok && !domainError(value)) refuse("http_error");
+  if (!response.ok && !domainError(value)) refuse("http_error", response.status);
   return value;
 }
 

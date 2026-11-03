@@ -26,7 +26,9 @@ export function createBridgeHttp({
   isOwnerCurrent,
   send,
   manifest,
+  hostedOrigin = HOSTED_ORIGIN,
 }) {
+  hostedOrigin = canonicalOrigin(hostedOrigin);
   const handles = new Map();
   const pending = new Map();
 
@@ -105,7 +107,7 @@ export function createBridgeHttp({
   }
   const hosted = (path, body, binding, method = "POST") =>
     tracked(binding, (signal) =>
-      jsonRequest(fetch, `${HOSTED_ORIGIN}${path}`, {
+      jsonRequest(fetch, `${hostedOrigin}${path}`, {
         method,
         body,
         signal,
@@ -191,7 +193,7 @@ export function createBridgeHttp({
     );
     identifier(challenge.challenge_id, "invalid_response");
     if (
-      challenge.issuer !== HOSTED_ORIGIN ||
+      challenge.issuer !== hostedOrigin ||
       typeof challenge.nonce !== "string" ||
       challenge.nonce.length < 32 ||
       challenge.nonce.length > 128 ||
@@ -213,8 +215,15 @@ export function createBridgeHttp({
       "/api/bridge-discovery/complete",
       { challenge_id: challenge.challenge_id, proof: proof.proof },
       binding,
-    );
-    return adopt(binding, verifiedMint(result, { origin }));
+    ).catch((error) => {
+      if (
+        error.code === "unauthorized" ||
+        (error.code === "http_error" && [401, 403].includes(error.status))
+      )
+        fail("discovery_failed");
+      throw error;
+    });
+    return adopt(binding, verifiedMint(result, { origin }, hostedOrigin));
   }
   async function resume(owner, hint) {
     exact(hint, ["deviceId", "origin", "endpointEpoch", "familyId"]);
@@ -231,7 +240,7 @@ export function createBridgeHttp({
       { family_id: hint.familyId, endpoint_epoch: hint.endpointEpoch },
       binding,
     );
-    return adopt(binding, verifiedMint(result, expected));
+    return adopt(binding, verifiedMint(result, expected, hostedOrigin));
   }
   function installOpening(handle, opening, start, previous) {
     compatibleTransport(manifest, opening.transport);
@@ -304,7 +313,7 @@ export function createBridgeHttp({
           "scope",
         ].map((key) => [key, mint[key]]),
       );
-      handle.mint = verifiedMint(updated, expected);
+      handle.mint = verifiedMint(updated, expected, hostedOrigin);
       handle.tokenDeadline =
         performance.now() + handle.mint.expires_at * 1000 - Date.now();
       clearTimeout(handle.expiry);
@@ -383,7 +392,7 @@ export function createBridgeHttp({
       trackedFamilies.map(({ device, family }) =>
         jsonRequest(
           fetch,
-          `${HOSTED_ORIGIN}/api/devices/${segment(device)}/http-credentials/${segment(family)}`,
+          `${hostedOrigin}/api/devices/${segment(device)}/http-credentials/${segment(family)}`,
           {
             method: "DELETE",
             headers: { Authorization: `Bearer ${accessToken}` },

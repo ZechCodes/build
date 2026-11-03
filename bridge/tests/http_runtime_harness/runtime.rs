@@ -1,4 +1,6 @@
-// Independent runtime modules compile before the shared-execution wiring handoff.
+// Path-imported production modules expose more API than these tests exercise.
+// Allow dead code only on copies that contain unused production entry points.
+#[allow(dead_code)]
 #[path = "../../src/http/sse.rs"]
 mod sse;
 
@@ -96,6 +98,7 @@ fn sse_encoding_never_emits_cursor_and_rejects_oversized_or_unclassified_event()
     assert_eq!(SseEvent::heartbeat().as_str(), ": keepalive\n\n");
 }
 
+#[allow(dead_code)]
 #[path = "../../src/http/settings.rs"]
 mod settings;
 
@@ -180,6 +183,7 @@ fn native_tls_requires_matching_key_and_owner_only_permissions() {
     assert!(tls::load(&cert_path, &key_path).is_err());
 }
 
+#[allow(dead_code)]
 #[path = "../../src/http/stream_slot.rs"]
 mod stream_slot;
 
@@ -254,6 +258,7 @@ fn deleted_stream_tombstone_requires_exact_predecessor() {
     );
 }
 
+#[allow(dead_code)]
 #[path = "../../src/http/limits.rs"]
 mod limits;
 
@@ -339,6 +344,7 @@ async fn native_listener_serves_tls_and_shuts_down_all_connections() {
         .is_err());
 }
 
+#[allow(dead_code)]
 #[path = "../../src/http/body.rs"]
 mod body;
 
@@ -413,6 +419,7 @@ fn json_output_is_serialized_once_with_explicit_cap_and_reservation_lifetime() {
     assert_eq!(budget.available(), limits::TOTAL_BUFFER_BYTES);
 }
 
+#[allow(dead_code)]
 #[path = "../../src/http/endpoint_state.rs"]
 mod endpoint_state;
 

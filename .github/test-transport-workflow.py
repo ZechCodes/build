@@ -1,4 +1,4 @@
-"""Transport CI contracts; run with Python's standard library, without CI dispatch.
+"""Transport and bridge harness CI contracts; run with Python's standard library, without CI dispatch.
 
 This deliberately recognizes only the workflow's current job/step layout. YAML
 syntax belongs to actionlint and the separate YAML check; these tests exercise
@@ -139,6 +139,42 @@ class TransportWorkflow(unittest.TestCase):
         self.assertRegex(block, r"cargo test(?: --locked)? --test transport_vectors(?:\s|$)")
         self.assertRegex(block, r"cargo test(?: --locked)? --test interop_python(?:\s|$)")
         self.assertIn("--frozen", block)
+
+    def test_http_runtime_harness_is_gated_and_runs_its_own_package(self):
+        block = self.job("bridge-http-runtime")
+        self.assertEqual(needs(block), ["changes"])
+        expression = job_condition(block)
+        for owed in ("true", "false"):
+            with self.subTest(owed=owed):
+                context = {"needs": {"changes": {"outputs": {"bridge": owed}}}}
+                self.assertEqual(evaluate_condition(expression, context), owed == "true")
+        self.assertNotIn("continue-on-error", block)
+        self.assertNotIn("\n    defaults:", block, "manifest paths are relative to the repository root")
+        manifest = "bridge/tests/http_runtime_harness/Cargo.toml"
+        for command in (
+            f"cargo test --locked --manifest-path {manifest}",
+            f"cargo fmt --check --manifest-path {manifest}",
+            f"cargo clippy --locked --manifest-path {manifest} --all-targets -- -D warnings",
+        ):
+            self.assertRegex(block, rf"run: nice -n 10 {re.escape(command)}(?:\n|$)")
+
+    def test_http_runtime_harness_blocks_production_when_bridge_is_owed(self):
+        harness = "bridge-http-runtime"
+        self.assertIn(harness, needs(self.job("validation")))
+        for name in ("build-app", "build-relay"):
+            block = self.job(name)
+            self.assertIn(harness, needs(block))
+            expression = job_condition(block)
+            for result in ("success", "failure", "cancelled", "skipped"):
+                with self.subTest(job=name, result=result):
+                    context = self.image_context(block, "false", "skipped")
+                    context["needs"]["changes"]["outputs"]["bridge"] = "true"
+                    context["needs"][harness]["result"] = result
+                    self.assertEqual(evaluate_condition(expression, context), result == "success")
+        block = self.job("build-app")
+        context = self.image_context(block, "false", "skipped")
+        context["needs"][harness]["result"] = "skipped"
+        self.assertTrue(evaluate_condition(job_condition(block), context))
 
     def test_existing_bridge_interop_remains(self):
         block = self.job("interop")

@@ -254,3 +254,60 @@ describe("snapshot Changes", () => {
     otherDirectory.pane.dispose();
   });
 });
+
+describe("selected review comparisons", () => {
+  const commit = "a".repeat(40);
+  it("keeps the commit selection on listing and paged patch reads, with a cache-backed file tree", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const onSelectPath = vi.fn();
+    const callRpc = vi.fn(async (_method, params) => params.paths ? { ...list, patch } : list);
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory, callRpc,
+      comparison: { mode: "commit", commit }, path: "src/a.js", onSelectPath });
+    await waitForPatch(host);
+    expect(host.querySelector('[aria-label="Changed files"] [data-review-tree-path]')).not.toBeNull();
+    expect(host.querySelector('[data-review-tree-path]').getAttribute("aria-level")).toBe("2");
+    expect(host.querySelector('[data-review-tree-directory]').textContent).toBe("src");
+    expect(callRpc.mock.calls.every(([, params]) => params.mode === "commit" && params.commit === commit)).toBe(true);
+    host.querySelector("[data-review-tree-path]").click();
+    expect(onSelectPath).toHaveBeenCalledWith("src/a.js");
+    const address = { deviceId: "dev", entityId: "project", kind: "task-review-commit-patch", sub: JSON.stringify(["task", "snap-1", "repo-a", commit, "src/a.js", "old..new"]) };
+    expect((await readCached(address)).value.patch).toContain("+new");
+    pane.dispose();
+  });
+
+  it("reads since changes from the last reviewed revision and explains rewritten baselines", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const callRpc = vi.fn(async () => ({ ...list, rewritten: true, since_baseline: "base" }));
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory, callRpc,
+      comparison: { mode: "since", from_snapshot_id: "prior" } });
+    await waitForFile(host);
+    expect(callRpc).toHaveBeenCalledWith("tasks.review.diff", expect.objectContaining({ mode: "since", from_snapshot_id: "prior" }));
+    expect(host.textContent).toContain("History changed");
+    expect(host.textContent).toContain("whole revision");
+    pane.dispose();
+  });
+
+  it("draws existing line comments read-only under their exact commit line", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const comments = [{ id: "comment", body: "Please rename this", anchor: { snapshot_id: snapshot.id, directory_id: directory.id, path: "src/a.js", side: "new", line: 1, commit } }];
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory,
+      callRpc: async (_method, params) => params.paths ? { ...list, patch } : list, comparison: { mode: "commit", commit }, path: "src/a.js", comments });
+    await vi.waitFor(() => expect(host.textContent).toContain("Please rename this"));
+    expect(host.querySelector("[data-review-comment]")).toBeNull();
+    pane.dispose();
+  });
+
+  it("reports an unreadable selected commit for whole-range anchor fallback", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const onUnreadableCommit = vi.fn();
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory,
+      comparison: { mode: "commit", commit }, onUnreadableCommit,
+      callRpc: async () => { throw Object.assign(new Error("Commit is outside range"), { code: "invalid_params", details: { reason: "commit_outside_range" } }); } });
+    await vi.waitFor(() => expect(onUnreadableCommit).toHaveBeenCalled());
+    pane.dispose();
+  });
+});

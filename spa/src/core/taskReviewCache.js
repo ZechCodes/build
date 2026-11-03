@@ -9,6 +9,7 @@ import { mergeReviewObservations } from "./taskReviewObservations.js";
 import { clearedWorkspaceReviewTask } from "./sessionListCache.js";
 import { commandRefusalMessage } from "./commandRefusal.js";
 import { trailingRead } from "./trailingRead.js";
+import { refreshCachedReviewReads } from "./taskReviewReads.js";
 
 export const REVIEW_KIND = "task-review";
 export const reviewAddress = ({ deviceId, projectId, taskId }) => ({
@@ -114,6 +115,7 @@ export async function refreshCachedReviews({ deviceId, projectId, callRpc, activ
     if (!active()) return;
     if (taskIds && !taskIds.includes(taskId)) continue;
     await createTaskReviewRepository({ deviceId, projectId, taskId, callRpc, active }).refresh();
+    await refreshCachedReviewReads({ deviceId, projectId, taskId, callRpc, support, active });
   }
 }
 

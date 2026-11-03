@@ -23,6 +23,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: () => null }));
 
 const scope = { deviceId: "reviews-cache", projectId: "proj-1", taskId: "task-1" };
 const support = { get: true, snapshot: true, diff: true, complete: true, act: true, comments: true,
+  commits: false, commit: false, since: false, anchorCommit: false,
   pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false };
 const review = fixture.result.review;
 const pullRequest = fixture.examples[1].result;

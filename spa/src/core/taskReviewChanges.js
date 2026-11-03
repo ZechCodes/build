@@ -9,29 +9,37 @@ import { readCached, subscribeCache, writeCached } from "./localCache.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { langForPath } from "./highlight.js";
 import { isDotenvPath } from "./secrets.js";
+import { reviewDiffAddress, reviewDiffParams } from "./taskReviewReads.js";
+import { reviewMutationRpc } from "./taskReviewSupport.js";
+import { inlineReviewRowsHtml } from "./taskReviewInline.js";
 
 const FILE_LIMIT = 1_000;
 const MAX_REVEAL_PAGES = 32;
-const addressOf = (deviceId, projectId, kind, sub) => ({ deviceId, entityId: projectId, kind, sub: JSON.stringify(sub) });
-const baseParams = (taskId, snapshot, directory) => ({ task_id: taskId, snapshot_id: snapshot.id, directory_id: directory.id, mode: "changes" });
-const listSub = (taskId, snapshot, directory) => [taskId, snapshot.id, directory.id];
-const patchSub = (taskId, snapshot, directory, path) => [...listSub(taskId, snapshot, directory), path, "old..new"];
 const displayError = (error) => String(error?.message || error || "Source unavailable");
 
-function lineActions(file) {
+function inlineThreads(row, context) {
+  const { comments, ...scope } = context;
+  const old = row.o > 0 ? inlineReviewRowsHtml(comments, { ...scope, side: "old", line: row.o }) : "";
+  const newer = row.n > 0 ? inlineReviewRowsHtml(comments, { ...scope, side: "new", line: row.n }) : "";
+  return old + newer;
+}
+
+function lineActions(file, commentable, context) {
   return file.rows.map((row) => {
     const html = diffRowsHtml([row], langForPath(file.path), { maskDotenv: isDotenvPath(file.path) });
     if (row.t === "hunk") return html;
+    const threads = inlineThreads(row, context);
+    if (!commentable) return html + threads;
     const old = row.o > 0 ? `<button type="button" data-review-comment data-side="old" data-line="${row.o}" aria-label="Comment on old line ${row.o}">${row.o}</button>` : "";
     const newer = row.n > 0 ? `<button type="button" data-review-comment data-side="new" data-line="${row.n}" aria-label="Comment on new line ${row.n}">${row.n}</button>` : "";
-    return html.replace(/<td class="ln">[^<]*<\/td><td class="ln">[^<]*<\/td>/, `<td class="ln">${old}</td><td class="ln">${newer}</td>`);
+    return html.replace(/<td class="ln">[^<]*<\/td><td class="ln">[^<]*<\/td>/, `<td class="ln">${old}</td><td class="ln">${newer}</td>`) + threads;
   }).join("");
 }
 
-function fileBodyHtml(file, body, commentable) {
+function fileBodyHtml(file, body, commentable, context) {
   const parsed = parseDiff(body.patch || "").find((entry) => entry.path === file.path);
   if (!parsed) return `<p class="task-review-note">${body.read_error ? esc(body.read_error) : body.loading ? "Loading patch…" : "No text diff for this file."}</p>`;
-  const rows = commentable ? lineActions(parsed) : diffRowsHtml(parsed.rows, langForPath(file.path), { maskDotenv: isDotenvPath(file.path) });
+  const rows = lineActions(parsed, commentable, { ...context, path: file.path });
   const failure = body.read_error ? `<p class="task-review-error" role="alert">${esc(body.read_error)}</p>` : "";
   return `<div class="task-review-diff-scroll"><table><tbody>${rows}</tbody></table></div>${failure}`;
 }
@@ -45,11 +53,11 @@ function fileHeaderHtml(file, body, viewed) {
   return `<div class="task-review-file-head"><button type="button" data-review-expand aria-expanded="${Boolean(body?.open)}">${path}</button><span>${status}</span>${count}${mark}<button type="button" data-open-file="${path}" aria-label="Open ${path} in Files">Open in Files</button></div>`;
 }
 
-function fileHtml(file, body, viewed, commentable) {
+function fileHtml(file, body, viewed, commentable, context) {
   const path = esc(file.path);
   const header = fileHeaderHtml(file, body, viewed);
   if (!body?.open) return `<section class="task-review-file" data-review-path="${path}">${header}</section>`;
-  const table = fileBodyHtml(file, body, commentable);
+  const table = fileBodyHtml(file, body, commentable, context);
   const more = body.pages && !body.pages.complete
     ? `<button type="button" data-review-more>Load more lines (${body.pages.end} of ${body.pages.total} bytes)</button>` : "";
   return `<section class="task-review-file" data-review-path="${path}">${header}${table}${more}</section>`;
@@ -72,14 +80,59 @@ function changesHtml(state, commentable, bodyOf) {
   const error = state.error ? `<p class="task-review-error" role="alert">${esc(state.error)}</p>` : "";
   const empty = emptyMessage(state.list, files);
   const rows = files.map((file) => fileWithMarkHtml(file, state, commentable, bodyOf)).join("");
-  return `<div class="task-review-changes">${error}${limit}${empty}${rows}</div>`;
+  const history = historyNotice(state.list);
+  return `<div class="task-review-changes">${error}${history}${limit}${empty}<div class="task-review-changes-layout">${changedTreeHtml(files, state.selected)}<div class="task-review-stack">${rows}</div></div></div>`;
 }
 
 function fileWithMarkHtml(file, state, commentable, bodyOf) {
   const body = bodyOf(file.path);
   const contentKey = file.content_key ?? body?.content_key;
   const viewed = Boolean(contentKey) && state.viewed.get(file.path) === contentKey;
-  return fileHtml({ ...file, content_key: contentKey }, { ...body, open: state.open.has(file.path) }, viewed, commentable);
+  return fileHtml({ ...file, content_key: contentKey }, { ...body, open: state.open.has(file.path) }, viewed, commentable, state.context);
+}
+
+
+function changedTreeNodes(files) {
+  const root = new Map();
+  for (const file of files) {
+    let children = root;
+    const parts = file.path.split("/");
+    for (let index = 0; index < parts.length; index++) {
+      const name = parts[index];
+      if (!children.has(name)) children.set(name, { name, children: new Map() });
+      const node = children.get(name);
+      if (index === parts.length - 1) node.file = file;
+      children = node.children;
+    }
+  }
+  return root;
+}
+
+function changedTreeNodeHtml(node, selected, depth) {
+  const label = esc(node.name);
+  if (node.file) {
+    const file = node.file;
+    return `<button type="button" role="treeitem" aria-level="${depth}" data-review-tree-path="${esc(file.path)}" aria-selected="${file.path === selected}" title="${esc(file.path)}"><span>${label}</span><small>+${Number(file.additions || 0)} −${Number(file.deletions || 0)}</small></button>`;
+  }
+  const rows = [...node.children.values()].map((child) => changedTreeNodeHtml(child, selected, depth + 1)).join("");
+  return `<div role="treeitem" aria-level="${depth}" aria-expanded="true" data-review-tree-directory>${label}</div><div role="group">${rows}</div>`;
+}
+
+function changedTreeHtml(files, selected) {
+  if (!files.length) return "";
+  const rows = [...changedTreeNodes(files).values()].map((node) => changedTreeNodeHtml(node, selected, 1)).join("");
+  return `<nav class="task-review-changed-tree" role="tree" aria-label="Changed files">${rows}</nav>`;
+}
+
+function historyNotice(list) {
+  if (!list?.rewritten) return "";
+  const comparison = list.since_baseline === "base" ? "Showing the whole revision because the previous head is unavailable." : "Comparing the previous reviewed head with this revision.";
+  return `<p class="task-review-limit" role="status">History changed. ${comparison}</p>`;
+}
+
+function unreadableCommit(error) {
+  return ["commit_outside_range", "commit_unavailable", "source_unavailable"].includes(error?.details?.reason)
+    || error?.code === "unavailable" || error?.error_code === "unavailable";
 }
 
 function emptyMessage(list, files) {
@@ -133,11 +186,15 @@ async function seekAnchorPages(host, target, bodies) {
 }
 
 /** Mount one saved source's Changes tab. refresh() retries the listing. */
-export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snapshot, directory, callRpc, onOpenFile, onComment, anchor = null, keepReadingPlace = (paint) => paint() }) {
-  const listAddress = addressOf(deviceId, projectId, "task-review-changes", listSub(taskId, snapshot, directory));
-  const patchAddress = (path) => addressOf(deviceId, projectId, "task-review-patch", patchSub(taskId, snapshot, directory, path));
+export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snapshot, directory, callRpc, onOpenFile, onComment, anchor = null, comparison = {}, path = "", onSelectPath = null, onUnreadableCommit = null, comments = [], autoOpen = false, keepReadingPlace = (paint) => paint() }) {
+  const scope = { deviceId, projectId, taskId, snapshot, directory };
+  const params = reviewDiffParams(scope, comparison);
+  const rpc = reviewMutationRpc(deviceId, callRpc);
+  const listAddress = reviewDiffAddress(scope, comparison);
+  const patchAddress = (path) => reviewDiffAddress(scope, comparison, path);
   const ui = uiAddress({ deviceId, entityId: projectId, view: "task-review-changes", kind: "review", sub: JSON.stringify([taskId, directory.id]) });
-  const state = { list: null, error: "", viewed: new Map(), open: new Set(), loading: new Set(), anchor: null, anchorScrolled: false };
+  const state = { list: null, error: "", viewed: new Map(), open: new Set(), loading: new Set(), anchor: null, anchorScrolled: false, selected: path, context: { comments, snapshotId: snapshot.id, directoryId: directory.id, commit: comparison.commit } };
+  let initialSelection = true;
   let alive = true;
   let generation = 0;
   const pendingPatches = new Map();
@@ -145,7 +202,7 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
   const bodies = createChangesetBodies({
     addressOf: patchAddress,
     fetchFiles: async (paths, { range } = {}) => {
-      const answer = await callRpc("tasks.review.diff", { ...baseParams(taskId, snapshot, directory), paths, ...(range ? { range } : {}) });
+      const answer = await rpc("tasks.review.diff", { ...params, paths, ...(range ? { range } : {}) });
       if (!alive) throw new Error("Review changed while reading a patch");
       return answer;
     },
@@ -173,6 +230,7 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     state.list = record?.value || null;
     state.error = record?.value?.read_error || "";
     paint();
+    if (state.list?.files && initialSelection) await openInitialPath();
   };
   const clearPatchError = async (address) => {
     const latest = (await readCached(address))?.value;
@@ -186,7 +244,7 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     const cached = (await readCached(address))?.value;
     if (!cached?.read_error || !currentRead(readGeneration)) return;
     try {
-      const answer = await callRpc("tasks.review.diff", { ...baseParams(taskId, snapshot, directory), paths: [path], patch: false });
+      const answer = await rpc("tasks.review.diff", { ...params, paths: [path], patch: false });
       if (!currentRead(readGeneration) || !answer.files?.some((file) => file.path === path)) return;
       await clearPatchError(address);
     } catch { /* The cached patch error remains visible until validation succeeds. */ }
@@ -194,20 +252,23 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
   const validateOpenPatchErrors = async (readGeneration) => {
     for (const path of state.open) await validatePatchError(path, readGeneration);
   };
+  const listFailure = async (error, readGeneration) => {
+    if (!currentRead(readGeneration)) return;
+    if (comparison.mode === "commit" && unreadableCommit(error)) onUnreadableCommit?.(error);
+    const cached = (await readCached(listAddress))?.value || {};
+    await writeCached(listAddress, { ...cached, read_error: displayError(error) });
+    await readList();
+  };
   const refresh = async () => {
     const readGeneration = ++generation;
     try {
-      const answer = await callRpc("tasks.review.diff", { ...baseParams(taskId, snapshot, directory), patch: false });
+      const answer = await rpc("tasks.review.diff", { ...params, patch: false });
       if (!alive || readGeneration !== generation) return;
       await writeCached(listAddress, answer);
       await readList();
       await validateOpenPatchErrors(readGeneration);
     } catch (error) {
-      if (alive && readGeneration === generation) {
-        const cached = (await readCached(listAddress))?.value || {};
-        await writeCached(listAddress, { ...cached, read_error: displayError(error) });
-        await readList();
-      }
+      await listFailure(error, readGeneration);
     }
   };
 
@@ -248,7 +309,28 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     persistViewed();
     paint();
   };
+  const selectPath = async (name, notify = false) => {
+    state.selected = name;
+    if (notify) onSelectPath?.(name);
+    if (!name) return;
+    state.open.add(name);
+    paint();
+    await fetchPatch(name);
+    const section = [...host.querySelectorAll("[data-review-path]")].find((row) => row.dataset.reviewPath === name);
+    section?.scrollIntoView?.({ block: "nearest" });
+  };
+  const openInitialPath = async () => {
+    initialSelection = false;
+    if (path && !listedPath(state.list, path)) {
+      if (comparison.mode === "commit") { onSelectPath?.(""); state.selected = ""; }
+      return;
+    }
+    const selected = path || (autoOpen ? state.list.files[0]?.path : "");
+    if (selected) await selectPath(selected);
+  };
   const toggleOpen = (path) => {
+    state.selected = path;
+    onSelectPath?.(path);
     if (state.open.has(path)) state.open.delete(path);
     else {
       state.open.add(path);
@@ -260,7 +342,7 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     const control = target.closest("[data-review-comment]");
     if (!control || !onComment) return false;
     const line = Number(control.dataset.line);
-    if (line > 0) onComment({ snapshot_id: snapshot.id, directory_id: directory.id, path, side: control.dataset.side, line });
+    if (line > 0) onComment({ snapshot_id: snapshot.id, directory_id: directory.id, path, side: control.dataset.side, line, ...(comparison.commit ? { commit: comparison.commit } : {}) });
     return true;
   };
   const actionHandlers = [
@@ -270,6 +352,8 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     ["[data-review-more]", (path) => void bodies.more(path)],
   ];
   const onClick = (event) => {
+    const treePath = event.target.closest("[data-review-tree-path]");
+    if (treePath && host.contains(treePath)) { void selectPath(treePath.dataset.reviewTreePath, true); return; }
     const row = event.target.closest("[data-review-path]");
     if (!row || !host.contains(row)) return;
     const path = row.dataset.reviewPath;
@@ -300,6 +384,7 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
   return {
     refresh,
     reveal,
+    selectPath: (name) => selectPath(name),
     dispose() {
       alive = false;
       generation += 1;

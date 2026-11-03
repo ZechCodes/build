@@ -1,0 +1,9 @@
+.task-review-diff-scroll .task-review-inline > td, .task-review-files .task-review-inline > td { padding: .6rem 1rem; background: var(--bg); white-space: normal; }
+.task-review-inline-thread { max-width: 54rem; border-left: 2px solid var(--accent); padding-left: .8rem; }
+.task-review-inline-comment { padding: .45rem 0; color: var(--ink); font: .85rem/1.5 var(--sans); overflow-wrap: anywhere; }
+.task-review-inline-comment + .task-review-inline-comment { border-top: 1px solid var(--line); }
+.task-review-inline-comment header { display: flex; align-items: center; gap: .65rem; color: var(--ink2); }
+.task-review-inline-comment header strong { color: var(--ink); }
+.task-review-inline-comment time { font-size: .75rem; }
+.task-review-inline-comment .markdown > :first-child { margin-top: .3rem; }
+.task-review-inline-comment .markdown > :last-child { margin-bottom: 0; }

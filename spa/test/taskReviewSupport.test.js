@@ -14,7 +14,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({
 const fixture = (verb) => JSON.parse(readFileSync(new URL(`../../fixtures/api/v1/tasks.review.${verb}.json`, import.meta.url), "utf8"));
 const prVerbs = ["open", "push", "update", "merge", "close", "reopen", "refresh"];
 const legacyVerbs = ["get", "snapshot", "diff", "complete", "act"];
-const allSupport = Object.fromEntries([...legacyVerbs, "comments", "pullRequests", ...prVerbs].map((verb) => [verb, true]));
+const allSupport = Object.fromEntries([...legacyVerbs, "comments", "pullRequests", "commits", "commit", "since", "anchorCommit", ...prVerbs].map((verb) => [verb, true]));
 const prReview = { mode: "pull_request", pull_request: { status: "open" } };
 const context = (support = allSupport) => ({
   adapter: { capabilities: { reviews: support } },

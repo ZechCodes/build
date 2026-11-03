@@ -8,6 +8,7 @@ const verbsByMethod = new Map(Object.entries(REVIEW_METHODS).map(([verb, method]
 
 export const NO_REVIEW_SUPPORT = Object.freeze({
   get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
+  commits: false, commit: false, since: false, anchorCommit: false,
   pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false,
 });
 export const reviewSupportAddress = (deviceId) => ({ deviceId, entityId: "", kind: "task-review-support" });
@@ -40,6 +41,11 @@ export function canReviewOperation(support, verb, review = null) {
   return Object.hasOwn(REVIEW_METHODS, verb) && reviewSupportFor(review, support)[verb] === true;
 }
 
+export function canReviewRead(support, params = {}) {
+  const feature = new Set(["commits", "commit", "since"]).has(params.mode) ? params.mode : "diff";
+  return support?.diff === true && support?.[feature] === true;
+}
+
 const unsupportedOperation = () => new ApiError("unknown_method", "Update this device's bridge to use this review operation.");
 
 /** A cache-backed surface may hold an older greeting. Recheck the session's
@@ -51,7 +57,9 @@ export function reviewRpc(context, callRpc = (...asked) => context.rpc(...asked)
     if (!verb) throw unsupportedOperation();
     const { whenGreeted } = await import("./deviceContexts.js");
     const request = await whenGreeted(context, () => {
-      if (!canReviewOperation(context?.adapter?.capabilities?.reviews, verb)) throw unsupportedOperation();
+      const support = context?.adapter?.capabilities?.reviews;
+      if (!canReviewOperation(support, verb)) throw unsupportedOperation();
+      if (verb === "diff" && !canReviewRead(support, asked[1])) throw unsupportedOperation();
       return callRpc(...asked);
     });
     if (!request) throw new Error("This machine is unavailable.");

@@ -15,7 +15,8 @@ import { readCached, recordWriteOf, subscribeCache, writeCached } from "./localC
 import { watchChanges } from "./changeEvents.js";
 import { esc } from "./text.js";
 import { decodeBase64Text, mediaPreviewHtml, previewModeFor, sourcePreviewHtml } from "./filePreview.js";
-import { isDotenvPath, renderDotenvSourceHtml } from "./secrets.js";
+import { isDotenvPath, maskDotenvLine, SPOILER_DOTS } from "./secrets.js";
+import { paintInlineReviewRows } from "./taskReviewInline.js";
 
 const treeKind = (live) => live ? "task-review-live-tree" : "task-review-tree";
 const fileKind = (live) => live ? "task-review-live-file" : "task-review-file";
@@ -24,6 +25,11 @@ const avModes = new Set(["audio", "video"]);
 const readError = (error) => error?.message || "Source unavailable";
 const safePath = (path) => typeof path === "string" && path.length > 0 && !path.startsWith("/")
   && path.split("/").every((part) => part && part !== "." && part !== "..");
+const maskedSource = (text) => text.split("\n").map((line) => {
+  const masked = maskDotenvLine(line);
+  return masked.masked ? `${masked.prefix}${SPOILER_DOTS}${masked.suffix}` : line;
+}).join("\n");
+const sourceHtml = (path, text) => sourcePreviewHtml(path, isDotenvPath(path) ? maskedSource(text) : text);
 
 /** The saved directory and snapshot own every address, including live reads. */
 export const taskReviewFileAddress = ({ deviceId, projectId, taskId, snapshot, directory }, kind, path = "") => ({
@@ -48,21 +54,22 @@ const previewBodyHtml = (path, file, mode) => {
   if (mode === "html") return `<iframe class="fhtml" sandbox="" src="data:text/html;base64,${file.content_b64}"></iframe>`;
   const text = decodeBase64Text(file.content_b64);
   if (mode === "markdown") return `<div class="plan">${markdownHtml(text)}</div>`;
-  const source = isDotenvPath(path) ? renderDotenvSourceHtml(text).html : sourcePreviewHtml(path, text);
+  const source = sourceHtml(path, text);
   return source + (file.truncated ? '<div class="ftrunc">truncated</div>' : "");
 };
 
-const previewHtml = (path, file, commentable) => {
+const previewHtml = (path, file, commentable, showSource) => {
   const lineAction = commentable ? `<label>Line <input data-review-line-input type="number" min="1" value="1" ${fieldTraits("identifier")} aria-label="Line to comment on"></label><button type="button" data-review-comment-line>Comment</button>` : "";
   const head = `<div class="trf-file-head"><span class="mono">${esc(path)}</span><span>${Number(file.size) || 0} bytes</span>${lineAction}</div>`;
   if (file.paged) return head + '<div class="trf-paged"></div>';
-  return head + previewBodyHtml(path, file, previewModeFor(file.mime, file.truncated));
+  const mode = showSource ? "source" : previewModeFor(file.mime, file.truncated);
+  return head + previewBodyHtml(path, file, mode);
 };
 
-const pagedPainter = (path, file) => {
-  const mode = previewModeFor(file.mime, file.truncated);
+const pagedPainter = (path, file, showSource) => {
+  const mode = showSource ? "source" : previewModeFor(file.mime, file.truncated);
   if (isDotenvPath(path)) return wholeBytesPainter((host, body) => {
-    host.innerHTML = renderDotenvSourceHtml(decodeBase64Text(body)).html;
+    host.innerHTML = sourceHtml(path, decodeBase64Text(body));
   });
   if (imageModes.has(mode) || avModes.has(mode)) {
     return wholeBytesPainter((host, pages) => {
@@ -80,7 +87,12 @@ const pagedPainter = (path, file) => {
  * Mount a saved review directory's Files view. The returned open(path) accepts
  * a path from Changes; refresh() retries the currently shown tree and file.
  */
-export function mountTaskReviewFiles(host, { deviceId, projectId, taskId, workspaceId, snapshot, directory, callRpc, path = "", onComment = null, keepReadingPlace = (paint) => paint() }) {
+export function mountTaskReviewFiles(host, options) {
+  let { comments } = { comments: [], ...options };
+  const { deviceId, projectId, taskId, workspaceId, snapshot, directory, callRpc, path, onComment,
+    anchor, onSelectPath, identities, keepReadingPlace } = {
+    path: "", onComment: null, anchor: null, onSelectPath: null, identities: {}, keepReadingPlace: (paint) => paint(), ...options,
+  };
   const live = !directory.is_git;
   const identity = { deviceId, projectId, taskId, snapshot, directory };
   const address = (kind, name) => taskReviewFileAddress(identity, kind, name);
@@ -90,6 +102,9 @@ export function mountTaskReviewFiles(host, { deviceId, projectId, taskId, worksp
   let fileSerial = 0;
   let unwatchFile = null;
   let paged = null;
+  let selectedAnchor = anchor;
+  let anchorScrolled = false;
+  let anchorSeeking = false;
 
   host.classList.add("task-review-files");
   host.innerHTML = `<div class="trf-labels">${live ? '<span>Not a Git repository</span><span>Live files — not saved with this review</span>' : '<span>Files at saved commit</span>'}</div><div class="trf-status" role="status"></div><div class="trf-layout"><div class="trf-tree" role="tree" aria-label="Review files"></div><div class="trf-right"><div class="trf-tabs"></div><div class="trf-preview"></div></div></div>`;
@@ -132,13 +147,53 @@ export function mountTaskReviewFiles(host, { deviceId, projectId, taskId, worksp
     return pageFromAnswer(await readFile(name, { offset, bytes, ...(raw ? { raw: true } : {}) }), "content_b64");
   };
 
+  const anchoredRow = () => {
+    if (!selectedAnchor || selectedAnchor.path !== selected || selectedAnchor.side !== "new") return null;
+    return [...preview.querySelectorAll("tr[data-new-line]")]
+      .find((row) => Number(row.dataset.newLine) === Number(selectedAnchor.line)) || null;
+  };
+  const paintAnchor = () => {
+    preview.querySelectorAll(".task-review-anchor").forEach((row) => row.classList.remove("task-review-anchor"));
+    const row = anchoredRow();
+    if (!row) return false;
+    row.classList.add("task-review-anchor");
+    if (!anchorScrolled) row.scrollIntoView?.({ block: "center" });
+    anchorScrolled = true;
+    return true;
+  };
+  const seekAnchor = async () => {
+    if (anchorSeeking || !selectedAnchor || selectedAnchor.path !== selected) return;
+    anchorSeeking = true;
+    try {
+      for (let page = 0; page < 32 && paged; page++) {
+        if (disposed || paintAnchor()) break;
+        if (!(await paged.more())) break;
+      }
+    } finally { anchorSeeking = false; }
+  };
+  const paintLineMetadata = () => {
+    wireCommentLines(preview);
+    paintInlineReviewRows(preview, comments, {
+      snapshotId: snapshot.id, directoryId: directory.id, path: selected, deviceId, projectId, identities,
+      allowedCommits: ["", directory.head],
+    });
+    if (!paintAnchor()) void seekAnchor();
+  };
+  const showSourceFor = (name, file) => {
+    if (!["markdown", "html", "svg"].includes(previewModeFor(file.mime, file.truncated))) return false;
+    if (selectedAnchor?.path === name) return true;
+    return comments.some((row) => row.anchor?.snapshot_id === snapshot.id
+      && row.anchor?.directory_id === directory.id && row.anchor?.path === name);
+  };
+
   const paintFile = (name, file) => keepReadingPlace(() => {
     if (disposed || selected !== name) return;
     paged?.dispose();
     paged = null;
     preview.querySelectorAll("img, audio, video").forEach(releaseMediaSource);
-    preview.innerHTML = previewHtml(name, file, Boolean(onComment));
-    wireCommentLines(preview);
+    const showSource = showSourceFor(name, file);
+    preview.innerHTML = previewHtml(name, file, Boolean(onComment), showSource);
+    paintLineMetadata();
     if (!file.paged) {
       const media = preview.querySelector("img.trf-media, audio.fmedia, video.fmedia");
       if (media) attachMediaSource(media, [file.content_b64], file.mime);
@@ -149,8 +204,8 @@ export function mountTaskReviewFiles(host, { deviceId, projectId, taskId, worksp
       head: address(fileKind(live), name), file,
       readPage: pageReader(name, file.mime),
       restart: () => void refreshFile(name),
-      painter: pagedPainter(name, file),
-      onPaint: () => wireCommentLines(preview), keepReadingPlace,
+      painter: pagedPainter(name, file, showSource),
+      onPaint: paintLineMetadata, keepReadingPlace,
     });
   });
 
@@ -198,6 +253,7 @@ export function mountTaskReviewFiles(host, { deviceId, projectId, taskId, worksp
 
   const showFile = (name) => keepReadingPlace(() => {
     selected = name;
+    onSelectPath?.(name || "");
     const serial = ++fileSerial;
     void paintFailure();
     unwatchFile?.();
@@ -228,7 +284,7 @@ export function mountTaskReviewFiles(host, { deviceId, projectId, taskId, worksp
     onOpen: (name) => void tabs.open(name),
   });
   const tabs = mountFileTabs(host.querySelector(".trf-tabs"), {
-    stateAddress: address("ui-task-review-files", "tabs"),
+    stateAddress: null,
     dirtyPaths: () => new Set(), confirmClose: async () => true, onClose: () => {}, onShow: showFile,
     initial: safePath(path) ? path : null, keepReadingPlace,
   });
@@ -263,7 +319,24 @@ export function mountTaskReviewFiles(host, { deviceId, projectId, taskId, worksp
     },
   }) : null;
 
+  const reveal = async (target) => {
+    if (!safePath(target?.path) || disposed) return false;
+    selectedAnchor = target;
+    anchorScrolled = false;
+    await tabs.open(target.path);
+    await paintHeldFile(target.path, fileSerial);
+    if (paintAnchor()) return true;
+    await seekAnchor();
+    return paintAnchor();
+  };
+  if (anchor?.path) void reveal(anchor);
+
   return {
+    reveal,
+    updateComments(next) {
+      comments = next || [];
+      if (selected) void paintHeldFile(selected, fileSerial);
+    },
     async open(name) {
       if (!safePath(name) || disposed) return;
       await tree.reveal(name);

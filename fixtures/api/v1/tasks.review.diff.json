@@ -159,6 +159,172 @@
         "truncated": false,
         "files_truncated": false
       }
+    },
+    {
+      "params": {
+        "task_id": "task-1",
+        "snapshot_id": "snapshot-1",
+        "directory_id": "dir-api",
+        "mode": "commits",
+        "limit": 1
+      },
+      "result": {
+        "commits": [
+          {
+            "oid": "2222222222222222222222222222222222222222",
+            "parents": [
+              "1111111111111111111111111111111111111111"
+            ],
+            "subject": "Add saved text",
+            "author_name": "Dev",
+            "time": 1789012345,
+            "insertions": 1,
+            "deletions": 0,
+            "files_changed": 1
+          }
+        ],
+        "commits_truncated": true,
+        "next_cursor": "opaque-commit-page"
+      }
+    },
+    {
+      "params": {
+        "task_id": "task-1",
+        "snapshot_id": "snapshot-1",
+        "directory_id": "dir-api",
+        "mode": "commit",
+        "commit": "2222222222222222222222222222222222222222",
+        "paths": [
+          "new.txt"
+        ]
+      },
+      "result": {
+        "stat": {
+          "files_changed": 1,
+          "insertions": 1,
+          "deletions": 0
+        },
+        "files": [
+          {
+            "path": "new.txt",
+            "status": "Added",
+            "additions": 1,
+            "deletions": 0,
+            "content_key": "new-text"
+          }
+        ],
+        "patch": "+saved text\n",
+        "diff_key": "1111111111111111111111111111111111111111:2222222222222222222222222222222222222222",
+        "truncated": false,
+        "files_truncated": false
+      }
+    },
+    {
+      "params": {
+        "task_id": "task-1",
+        "snapshot_id": "snapshot-1",
+        "directory_id": "dir-api",
+        "mode": "since",
+        "from_snapshot_id": "snapshot-0",
+        "patch": false
+      },
+      "result": {
+        "stat": {
+          "files_changed": 1,
+          "insertions": 1,
+          "deletions": 0
+        },
+        "files": [
+          {
+            "path": "new.txt",
+            "status": "Added",
+            "additions": 1,
+            "deletions": 0,
+            "content_key": "new-text"
+          }
+        ],
+        "diff_key": "1111111111111111111111111111111111111111:2222222222222222222222222222222222222222",
+        "truncated": false,
+        "files_truncated": false,
+        "since_baseline": "previous_head"
+      }
+    },
+    {
+      "params": {
+        "task_id": "task-1",
+        "snapshot_id": "snapshot-1",
+        "directory_id": "dir-api",
+        "mode": "since",
+        "from_snapshot_id": "snapshot-before-rewrite",
+        "patch": false
+      },
+      "result": {
+        "stat": {
+          "files_changed": 1,
+          "insertions": 1,
+          "deletions": 0
+        },
+        "files": [
+          {
+            "path": "new.txt",
+            "status": "Added",
+            "additions": 1,
+            "deletions": 0,
+            "content_key": "new-text"
+          }
+        ],
+        "diff_key": "1111111111111111111111111111111111111111:2222222222222222222222222222222222222222",
+        "truncated": false,
+        "files_truncated": false,
+        "rewritten": true,
+        "since_baseline": "previous_head"
+      }
+    },
+    {
+      "params": {
+        "task_id": "task-1",
+        "snapshot_id": "snapshot-1",
+        "directory_id": "dir-api",
+        "mode": "since",
+        "from_snapshot_id": "snapshot-unreadable",
+        "patch": false
+      },
+      "result": {
+        "stat": {
+          "files_changed": 1,
+          "insertions": 1,
+          "deletions": 0
+        },
+        "files": [
+          {
+            "path": "new.txt",
+            "status": "Added",
+            "additions": 1,
+            "deletions": 0,
+            "content_key": "new-text"
+          }
+        ],
+        "diff_key": "1111111111111111111111111111111111111111:2222222222222222222222222222222222222222",
+        "truncated": false,
+        "files_truncated": false,
+        "rewritten": true,
+        "since_baseline": "base"
+      }
     }
-  ]
+  ],
+  "commit_reads": {
+    "since": "3.28.0",
+    "capabilities": [
+      "tasks.review.commits",
+      "tasks.review.commit",
+      "tasks.review.since"
+    ],
+    "default_commit_limit": 100,
+    "max_commit_limit": 200,
+    "max_files": 1000,
+    "cursor": "Opaque and bound to the directory, base and head.",
+    "commit_selection": "A full OID in the selected revision base..head; outside-range selections return invalid_params with structured details.",
+    "unreadable_prior_head": "since returns the current revision recorded base..head diff with rewritten:true and since_baseline:base when the earlier head cannot be read.",
+    "max_display_field_bytes": 512
+  }
 }

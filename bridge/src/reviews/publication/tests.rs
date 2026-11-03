@@ -293,6 +293,10 @@ fn snapshot_uses_merge_base_and_survives_removing_the_source() {
         paths: vec![],
         range: None,
         patch: true,
+        commit: None,
+        from_snapshot_id: None,
+        limit: None,
+        cursor: None,
     };
     let crate::reviews::read::ReviewReadResult::Blob(blob) =
         crate::reviews::read::read(&snapshot.directories[0], &request).unwrap()

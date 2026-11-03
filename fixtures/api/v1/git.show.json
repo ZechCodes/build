@@ -111,5 +111,13 @@
       "moved": "conflict",
       "plain_folder": "invalid_params"
     }
+  },
+  "paths_filter": {
+    "since": "3.28.0",
+    "capability": "git.showPaths",
+    "params": [
+      "paths"
+    ],
+    "behavior": "Literal repository-relative paths filter the diff before counts, rendering and paging."
   }
 }

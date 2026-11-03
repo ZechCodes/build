@@ -442,6 +442,10 @@ mod tests {
                 paths: Vec::new(),
                 range: None,
                 patch: true,
+                commit: None,
+                from_snapshot_id: None,
+                limit: None,
+                cursor: None,
             },
         )
         .unwrap();
@@ -726,6 +730,10 @@ mod tests {
                 paths: Vec::new(),
                 range: None,
                 patch: true,
+                commit: None,
+                from_snapshot_id: None,
+                limit: None,
+                cursor: None,
             },
         )
         .unwrap();
@@ -779,6 +787,10 @@ mod tests {
                 paths: Vec::new(),
                 range: None,
                 patch: true,
+                commit: None,
+                from_snapshot_id: None,
+                limit: None,
+                cursor: None,
             },
         )
         .unwrap();

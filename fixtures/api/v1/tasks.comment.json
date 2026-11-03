@@ -204,5 +204,11 @@
       },
       "since": "3.7.0"
     }
-  ]
+  ],
+  "anchor_commit": {
+    "since": "3.28.0",
+    "capability": "tasks.review.anchorCommit",
+    "field": "anchor.commit",
+    "validation": "Optional full commit OID must belong to the anchored snapshot directory base..head."
+  }
 }

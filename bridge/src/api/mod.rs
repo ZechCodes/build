@@ -66,7 +66,8 @@ use std::collections::BTreeSet;
 /// 3.25.0 adds generation-scoped conversation history retention floors (#836).
 /// 3.26.0 adds bounded task summaries and project filter choices (#890).
 /// 3.27.0 adds bounded task aggregates, point lookup and exact memberships (#900).
-pub const API_VERSION: &str = "3.27.0";
+/// 3.28.0 adds commit and since-revision review reads, Git show paths and commit anchors (#968).
+pub const API_VERSION: &str = "3.28.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -115,6 +116,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "fs.mediaRawPages", // Since 1.30.0: exact binary ranges for Blob media reads, through 64 MiB.
     "fs.projectSourcePath", // Since 3.17.0: source_path refuses a moved project source (#360).
     "fs.projectSources", // Since 3.9.0: project_id + source_id on fs.tree/read/write (#359).
+    "git.showPaths",    // Since 3.28.0: paths filter applied before rendering and paging (#968).
     "git.projectSources", // Since 3.21.0: project_id + source_id + source_path on the git.* verbs (#529).
     "term.projectSources", // Since 3.21.0: exact source selectors on term.create/list/attach/close (#531).
     "tasks.agentIdentities",
@@ -125,6 +127,10 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "tasks.bodyPrecondition", // Since 3.10.0: expected_body_hash on tasks.update (#347).
     "tasks.commentUserMentions",
     "tasks.commentUserNotifies",
+    "tasks.review.commits", // Since 3.28.0: bounded revision commit pages (#968).
+    "tasks.review.commit",  // Since 3.28.0: one revision commit's first-parent diff (#968).
+    "tasks.review.since",   // Since 3.28.0: tree diff from an earlier revision (#968).
+    "tasks.review.anchorCommit", // Since 3.28.0: range-validated commit comment anchors (#968).
     "tasks.reviewComments", // Since 3.7.0: anchor, reply_to and opinion on task comments.
     "tasks.review.pullRequests", // Since 3.15.0: PR lifecycle, summaries and sync observations (#405).
     "tasks.context",

@@ -790,7 +790,10 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.27.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.28.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  3.28.0 adds independently negotiated revision commit lists, single-commit
+  diffs, diffs since a previous revision, path filters on `git.show` and commit
+  anchors on review comments (#968).
   3.27.0 adds independently negotiated task counts, number lookup, exact
   watched/attention/workspace/tracker/review predicates and indexed ordering.
   Summary pages carry a transactional projection basis; changed-basis cursors
@@ -1935,6 +1938,36 @@ provenance and have durable outbox receipts. This storage slice grants no
 assignment delivery authority; durable assignments are the following #561
 slice. #562 verifies the graph, dispatch and read contract and announces
 `tasks.waitingOn` in the still-unreleased wire 3.21.0.
+
+Saved review reads use `tasks.review.diff` (MCP `read_review`) with a snapshot
+and directory identity. The UI calls snapshots revisions. In addition to
+`changes`, `tree` and `blob`, wire 3.28.0 adds independently negotiated
+`tasks.review.commits`, `tasks.review.commit` and `tasks.review.since`.
+`commits` lists `base..head` in topological order, newest first, with author,
+time, parent OIDs and first-parent change counts. Subject and author name are
+display fields capped at 512 UTF-8 bytes each, matching `git.log`. Pages default
+to 100 commits and cap at 200; `commits_truncated` and an opaque `next_cursor` expose the
+remaining rows. The cursor binds the saved directory, base and head.
+
+`commit` requires a full OID in that revision's `base..head` and compares it
+with its first parent (or the empty tree for a root). `since` names an earlier
+`from_snapshot_id` in the same review and compares that directory's saved head
+with the selected revision's head and reports `since_baseline: "previous_head"`.
+Rewritten history sets `rewritten: true`. If the prior head is unreadable, its
+unavailable tree cannot be reconstructed: the read falls back to the current
+revision's recorded `base..head` diff, sets `rewritten: true` and reports
+`since_baseline: "base"` so the comparison remains explicit.
+Both reuse the `changes` response: counts, up to 1,000 file rows with
+`files_truncated`, a `diff_key`, optional patch and byte-range paging. `paths`
+filters before rendering and paging. Reads open the recorded common Git
+directory, which is the retained receiver for PR reviews, so deleting the
+original workspace does not remove review history.
+
+`git.showPaths` independently advertises the same optional `paths` filter on
+workspace `git.show`. `tasks.review.anchorCommit` advertises an optional
+`commit` OID on comment anchors; it must belong to the anchored snapshot and
+directory's `base..head`. Older anchors without the field retain their range
+meaning. Invalid commit selections return structured review errors.
 
 PR-style opening is a service in `bridge/src/reviews/opening.rs`, exposed by
 wire 3.15.0's typed RPC and MCP adapters (#405). `api/v1/reviews.rs` owns the

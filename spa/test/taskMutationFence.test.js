@@ -82,9 +82,10 @@ it("matches the bridge's supported task write methods and excludes every task re
   for (const method of new Set(methods)) expect(fence.isTaskMutationMethod(method)).toBe(writes.includes(`"${method}"`));
   for (const method of ["entity.seen", "entity.dismiss", "entity.mute", "project.delete"]) expect(fence.isTaskMutationMethod(method)).toBe(true);
   for (const method of ["tasks.delete", "tasks.track", "tasks.dismiss", "tasks.unknown", "board.list", "thread.post"]) expect(fence.isTaskMutationMethod(method)).toBe(false);
+  for (const method of ["sync.head", "sync.snapshot", "sync.changes"]) expect(fence.isTaskMutationMethod(method)).toBe(false);
 });
 
-it.each(["tasks.list", "tasks.lookup", "tasks.counts", "tasks.get", "tasks.filterChoices", "tasks.waiting_on.blocks", "tasks.review.get", "tasks.review.diff"])(
+it.each(["tasks.list", "tasks.lookup", "tasks.counts", "tasks.get", "tasks.filterChoices", "tasks.waiting_on.blocks", "tasks.review.get", "tasks.review.diff", "sync.head", "sync.snapshot", "sync.changes"])(
   "does not change epoch or result semantics for read %s", async (method) => {
     const before = fence.taskMutationEpoch(deviceId), pending = deferred();
     expect(call(method, () => pending.promise)).toBe(pending.promise);

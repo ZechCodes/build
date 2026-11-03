@@ -6,7 +6,7 @@ use crate::store::{
         Entity, Head, HeadResult, ResyncReason, Scope, Stream, SyncError, MAX_RECOVERY_BYTES,
         MAX_RECOVERY_EVENTS,
     },
-    ReadTransaction,
+    ReadTransaction, TaskSummaryCandidate,
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -85,6 +85,28 @@ impl TaskSyncScope {
         &self.scope
     }
 
+    pub fn head(
+        &self,
+        read: &ReadTransaction<'_>,
+        cursor: Option<&str>,
+        epoch: &str,
+        now: i64,
+    ) -> Result<Value, SyncError> {
+        let head = match self.checked_head(read, cursor, epoch, now)? {
+            Ok(head) => head,
+            Err(reset) => return Ok(reset),
+        };
+        self.ensure_supported(read)?;
+        Ok(json!({
+            "status":"ok",
+            "scope":self.definition,
+            "incarnation":head.incarnation,
+            "head":head.head,
+            "retention_floor":head.retention_floor,
+            "bridge_epoch":head.bridge_epoch,
+        }))
+    }
+
     fn ensure_supported(&self, read: &ReadTransaction<'_>) -> Result<(), SyncError> {
         if self.task.is_some() {
             return Ok(());
@@ -117,31 +139,48 @@ impl TaskSyncScope {
         Ok(project == self.project
             && self.selected.matches_row(row, canonical_pending)
             && self.query.matches_row(row)
-            && read.task_query_matches(
-                row["id"]
-                    .as_str()
-                    .ok_or_else(|| SyncError::Unavailable("missing task id".into()))?,
-                &self.query.filter,
-            )?)
+            && (!self.query.needs_index_match()
+                || read.task_query_matches(
+                    row["id"]
+                        .as_str()
+                        .ok_or_else(|| SyncError::Unavailable("missing task id".into()))?,
+                    &self.query.filter,
+                )?))
     }
     fn record(&self, read: &ReadTransaction<'_>, id: &str) -> Result<Value, SyncError> {
-        let revision = read.sync_revision(&Entity::new("task", id))?;
         let kind = if self.task.is_some() {
             "task_head"
         } else {
             "task"
         };
-        let Some((project, mut candidate, pending)) = read.sync_task_summary(id)? else {
+        let Some((project, candidate, pending, revision)) = read.sync_task_summary(id)? else {
+            let revision = read.sync_revision(&Entity::new("task", id))?;
             return Ok(json!({"kind":kind,"key":id,"revision":revision,"row":null,"member":false}));
         };
-        let project_id = self.project_ids.get(&project).ok_or_else(|| {
+        self.record_candidate(read, id, &project, candidate, pending, revision)
+    }
+    fn record_candidate(
+        &self,
+        read: &ReadTransaction<'_>,
+        id: &str,
+        project: &str,
+        mut candidate: TaskSummaryCandidate,
+        pending: bool,
+        revision: crate::store::sync::Sequence,
+    ) -> Result<Value, SyncError> {
+        let kind = if self.task.is_some() {
+            "task_head"
+        } else {
+            "task"
+        };
+        let project_id = self.project_ids.get(project).ok_or_else(|| {
             SyncError::Unavailable("project authority context changed; retry sync".into())
         })?;
         candidate.row["project_id"] = json!(project_id);
         if self.query.order == crate::store::TaskQueryOrder::Anchor {
             candidate.row["order_anchor_ms"] = json!(read.sync_task_anchor_ms(id)?);
         }
-        let member = self.task.is_some() || self.member(read, &project, &candidate.row, pending)?;
+        let member = self.task.is_some() || self.member(read, project, &candidate.row, pending)?;
         let dto: crate::api::v1::tasks::TaskSummaryView = serde_json::from_value(candidate.row)
             .map_err(|e| SyncError::Unavailable(format!("invalid task summary: {e}")))?;
         let summary =

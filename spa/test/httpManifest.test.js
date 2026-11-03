@@ -7,11 +7,11 @@ import { createHttpRoutes } from "../src/core/httpRoutes.js";
 describe("reviewed REST manifest consumption", () => {
   it("pins the coordinator-released bytes and exact operation IDs", () => {
     const bytes = readFileSync(new URL("../../fixtures/api/http/resource-manifest.json", import.meta.url));
-    expect(createHash("sha256").update(bytes).digest("hex")).toBe("ce03a5dc8638a51db53af50bc4ae6823382708ce50f6352c8d6dd5f11deeccdf");
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe("4069a7f03574f870c2de796d1a6486dc24edc01c86974b7460053fee1c6da996");
     expect(createHttpRoutes(manifest).operationIds()).toEqual(manifest.transport.operation_ids);
     expect(createHttpRoutes(manifest).operationIds()).toContain("tasks_review_retryDelivery");
     // Retirement removes agent tools; RPC routes stay for old clients' coded refusals.
-    expect(manifest.operations).toHaveLength(150);
+    expect(manifest.operations).toHaveLength(153);
     for (const operation of ["tasks_review_snapshot", "tasks_review_act", "tasks_review_complete"]) {
       expect(createHttpRoutes(manifest).operationIds()).toContain(operation);
     }

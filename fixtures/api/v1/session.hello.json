@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.31.0",
+    "api_version": "3.32.0",
     "ack_confirm_methods": [],
     "capabilities": [
       "agent.add",
@@ -130,6 +130,11 @@
       "settings.workspaceLifecycle",
       "sources.syncBase",
       "sources.syncBasePath",
+      "sync.changes",
+      "sync.head",
+      "sync.projectTasks",
+      "sync.snapshot",
+      "sync.task",
       "task.doc",
       "task.get",
       "task.stage_diff",

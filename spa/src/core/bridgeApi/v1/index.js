@@ -169,6 +169,11 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     errors: { codes: names.has("errors.codes") },
     diffs: { perFile: names.has("diffs.perFile") },
     bodies: { pages: names.has("bodies.pages"), mediaRawPages: names.has("fs.mediaRawPages") },
+    sync: {
+      projectTasks: names.has("sync.projectTasks"),
+      task: names.has("sync.task"),
+      device: names.has("sync.device"),
+    },
     reviews: {
       snapshotRetired: names.has("tasks.review.snapshotRetired"),
       ...Object.fromEntries(Object.entries(REVIEW_METHODS).map(([verb, method]) => [verb, names.has(method)])),

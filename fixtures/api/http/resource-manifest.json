@@ -99,6 +99,9 @@
       "session_hello",
       "settings_get",
       "settings_set",
+      "sync_changes",
+      "sync_head",
+      "sync_snapshot",
       "task_doc",
       "task_get",
       "task_stage_diff",
@@ -1761,6 +1764,60 @@
         "source": "bridge/src/api/v1/board.rs",
         "params": "SettingsSetParams",
         "result": "SettingsResult"
+      }
+    },
+    {
+      "method": "sync.changes",
+      "operationId": "sync_changes",
+      "verb": "POST",
+      "path": "/v1/sync/change-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/sync.rs",
+        "params": "ChangesParams",
+        "result": "ChangesResult"
+      }
+    },
+    {
+      "method": "sync.head",
+      "operationId": "sync_head",
+      "verb": "POST",
+      "path": "/v1/sync/head-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/sync.rs",
+        "params": "HeadParams",
+        "result": "HeadResult"
+      }
+    },
+    {
+      "method": "sync.snapshot",
+      "operationId": "sync_snapshot",
+      "verb": "POST",
+      "path": "/v1/sync/snapshot-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/sync.rs",
+        "params": "SnapshotParams",
+        "result": "SnapshotResult"
       }
     },
     {

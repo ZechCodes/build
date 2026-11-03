@@ -5,6 +5,7 @@ use super::{
 use crate::store::{ReadTransaction, TaskSummaryCandidate};
 use rusqlite::{params, OptionalExtension};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 pub enum CursorSequence {
     Current(Sequence),
@@ -65,8 +66,19 @@ impl ReadTransaction<'_> {
     pub fn sync_task_summary(
         &self,
         id: &str,
-    ) -> Result<Option<(String, TaskSummaryCandidate, bool)>, SyncError> {
-        let point:Option<(String,i64,bool)>=self.connection().query_row("SELECT s.project_key,s.number,q.pending_present FROM tracker_task_summaries s JOIN tracker_task_query_sources q ON q.task_id=s.task_id WHERE s.task_id=?1",[id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+    ) -> Result<Option<(String, TaskSummaryCandidate, bool, Sequence)>, SyncError> {
+        let point: Option<(String, i64, bool, i64)> = self
+            .connection()
+            .query_row(
+                "SELECT s.project_key,s.number,q.pending_present,MAX(COALESCE(r.seq,0),st.baseline)
+             FROM tracker_task_summaries s
+             JOIN tracker_task_query_sources q ON q.task_id=s.task_id
+             LEFT JOIN sync_revisions r ON r.entity_kind='task' AND r.entity_key=s.task_id
+             JOIN sync_state st ON st.id=1 WHERE s.task_id=?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
         if point.is_none() {
             let exists: bool = self.connection().query_row(
                 "SELECT EXISTS(SELECT 1 FROM tracker_tasks WHERE id=?1)",
@@ -80,15 +92,46 @@ impl ReadTransaction<'_> {
             }
         }
         point
-            .map(|(project, number, pending)| {
+            .map(|(project, number, pending, revision)| {
                 let candidate = self
                     .task_summary_by_number(&project, number as u64)?
                     .ok_or_else(|| {
                         SyncError::Unavailable("task projection is incomplete".into())
                     })?;
-                Ok((project, candidate, pending))
+                Ok((project, candidate, pending, Sequence::new(revision)?))
             })
             .transpose()
+    }
+    pub fn sync_task_metadata(
+        &self,
+        ids: &[String],
+    ) -> Result<BTreeMap<String, (bool, Sequence)>, SyncError> {
+        if ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let placeholders = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT q.task_id,q.pending_present,MAX(COALESCE(r.seq,0),st.baseline)
+             FROM tracker_task_query_sources q
+             LEFT JOIN sync_revisions r ON r.entity_kind='task' AND r.entity_key=q.task_id
+             JOIN sync_state st ON st.id=1 WHERE q.task_id IN ({placeholders})"
+        );
+        let rows = self
+            .connection()
+            .prepare(&sql)?
+            .query_map(rusqlite::params_from_iter(ids), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(id, pending, revision)| Ok((id, (pending, Sequence::new(revision)?))))
+            .collect()
     }
     pub fn sync_task_anchor_ms(&self, id: &str) -> Result<Option<i64>, SyncError> {
         let anchor: i64 = self.connection().query_row(

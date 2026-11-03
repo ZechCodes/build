@@ -70,7 +70,8 @@ use std::collections::BTreeSet;
 /// 3.29.0 adds durable work-task links when requesting a workspace review (#971).
 /// 3.30.0 adds author, deciding reject and durable verdict delivery (#972).
 /// 3.31.0 retires snapshot writes and adds the compact legacy-review marker (#974).
-pub const API_VERSION: &str = "3.31.0";
+/// 3.32.0 adds bounded durable recovery for project task lists and opened tasks (#892).
+pub const API_VERSION: &str = "3.32.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -99,7 +100,9 @@ pub const QA_METHODS: &[&str] = &["stream.events", "stream.start", "stream.state
 /// Cross-verb wire features whose availability cannot be expressed by a
 /// single method name. The SPA consumes a subset as shape and behavior gates.
 pub const FEATURE_CAPABILITIES: &[&str] = &[
-    "thread.retention", // Since 3.25.0: inclusive generation-scoped history floors (#836).
+    "sync.projectTasks", // Since 3.32.0: durable filtered project task recovery (#892).
+    "sync.task",         // Since 3.32.0: durable opened-task head recovery (#892).
+    "thread.retention",  // Since 3.25.0: inclusive generation-scoped history floors (#836).
     "bridge.epoch", // Since 3.24.0: authenticated process epochs and journal incarnation (#739).
     "unread.watchScoped", // Since 3.19.0: watched-only unread after the persisted watch baseline (#474).
     "agents.createdBy",   // Since 3.1.0: created_by on an agent's digest (#216).

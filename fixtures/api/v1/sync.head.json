@@ -1,0 +1,46 @@
+{
+  "method": "sync.head",
+  "since": "3.32.0",
+  "params": {
+    "scope": {
+      "kind": "project_tasks",
+      "project_id": "proj-1",
+      "filters": {
+        "states": ["open"],
+        "watched": true
+      },
+      "order": "number"
+    },
+    "cursor": "signed-applied-cursor"
+  },
+  "result": {
+    "status": "ok",
+    "scope": {
+      "kind": "project_tasks",
+      "project_id": "proj-1",
+      "filters": {
+        "states": ["open"],
+        "watched": true
+      },
+      "order": "number"
+    },
+    "incarnation": "sync-incarnation-1",
+    "head": "42",
+    "retention_floor": "7",
+    "bridge_epoch": "bridge-epoch-1"
+  },
+  "errors": ["invalid_params", "not_found", "unavailable", "internal"],
+  "examples": [
+    {
+      "params": {"scope": {"kind": "task", "task_id": "task-1"}},
+      "result": {
+        "status": "resync_required",
+        "scope": {"kind": "task", "task_id": "task-1"},
+        "incarnation": "sync-incarnation-2",
+        "head": "0",
+        "bridge_epoch": "bridge-epoch-2",
+        "reason": "incarnation_changed"
+      }
+    }
+  ]
+}

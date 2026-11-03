@@ -857,3 +857,148 @@ async fn anchor_order_preserves_the_890_order_field_on_pages_and_changes() {
         assert_eq!(row["order_anchor_ms"], 1767225600000_i64);
     }
 }
+
+#[tokio::test]
+async fn large_recovery_reads_finish_under_100ms_while_the_app_lock_is_held() {
+    use rusqlite::params;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("repo")).unwrap();
+    let context = crate::harness::HarnessContext::resolved(
+        dir.path().join("mcp.sock"),
+        dir.path().to_path_buf(),
+    )
+    .unwrap();
+    let app = crate::app::AppState::new_configured(
+        dir.path().join("repo"),
+        dir.path().join("worktrees"),
+        "main",
+        true,
+        context,
+    )
+    .with_task_store(dir.path().join("store"))
+    .unwrap();
+    let store = app.store.as_ref().unwrap().clone();
+    let seed = create(&store, "scale seed");
+    let project = "/synthetic-project";
+    let now = crate::store::sync::now_ms();
+    {
+        let mut connection = store.writer_for_test();
+        let tx = connection.transaction().unwrap();
+        let record: String = tx
+            .query_row(
+                "SELECT record FROM tracker_task_summaries WHERE task_id=?1",
+                [&seed.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        tx.execute(
+            "WITH RECURSIVE n(x) AS (SELECT 2 UNION ALL SELECT x+1 FROM n WHERE x<10000)
+             INSERT INTO tracker_task_summaries(task_id,project_key,number,record,assignment_target,identities,context)
+             SELECT printf('scale-%05d',x),?1,x,
+                    json_set(?2,'$.id',printf('scale-%05d',x),'$.number',x,'$.title',printf('scale task %d',x)),
+                    NULL,'{}','{}' FROM n",
+            params![project, record],
+        )
+        .unwrap();
+        tx.execute(
+            "WITH RECURSIVE n(x) AS (SELECT 2 UNION ALL SELECT x+1 FROM n WHERE x<10000)
+             INSERT INTO tracker_task_query_sources(task_id,creator_kind,status,status_truncated,labels_json,unfinished,in_review,status_done,invalid_markers,pending_present,pending_held)
+             SELECT printf('scale-%05d',x),'user','backlog',0,'[]',1,0,0,0,0,0 FROM n",
+            [],
+        )
+        .unwrap();
+        tx.execute(
+            "WITH RECURSIVE n(x) AS (SELECT 2 UNION ALL SELECT x+1 FROM n WHERE x<10000)
+             INSERT INTO tracker_task_query_facts(task_id,project_key,number,updated_ms,anchor_ms,priority_rank,done_ms,unfinished,watched,attention_asked,attention_legacy,blocked,held,undelivered,review_mode,assignee_agent_id,unread_total,contribution_agent,assignee_kind)
+             SELECT printf('scale-%05d',x),?1,x,?2,?2,0,NULL,1,0,0,0,0,0,0,NULL,NULL,0,NULL,NULL FROM n",
+            params![project, now],
+        )
+        .unwrap();
+
+        tx.execute("DELETE FROM sync_routes", []).unwrap();
+        tx.execute("DELETE FROM sync_revisions", []).unwrap();
+        tx.execute("DELETE FROM sync_stream_state", []).unwrap();
+        tx.execute("DELETE FROM sync_journal", []).unwrap();
+        tx.execute(
+            "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000)
+             INSERT INTO sync_journal(seq,at_ms,entity_kind,entity_key,operation,record_bytes,cumulative_bytes)
+             SELECT x,?1,'task','scale-10000','upsert',1,x FROM n",
+            [now],
+        )
+        .unwrap();
+        tx.execute(
+            "WITH RECURSIVE n(x) AS (SELECT 99901 UNION ALL SELECT x+1 FROM n WHERE x<100000)
+             INSERT INTO sync_routes(stream_kind,stream_key,seq)
+             SELECT 'project_tasks',?1,x FROM n",
+            [project],
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO sync_stream_state(stream_kind,stream_key,head,floor) VALUES('project_tasks',?1,100000,0)",
+            [project],
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO sync_revisions(entity_kind,entity_key,seq,deleted,fingerprint,streams)
+             VALUES('task','scale-10000',100000,0,'scale','[]')",
+            [],
+        )
+        .unwrap();
+        tx.execute(
+            "UPDATE sync_state SET head=100000,floor=0,baseline=0,total_bytes=100000,cumulative_bytes=100000,last_at_ms=?1 WHERE id=1",
+            [now],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    let scope = TaskSyncScope::project("synthetic-project", project, &json!({})).unwrap();
+    let mut read = store.read_pool().acquire_sync().await;
+    let cursor = read
+        .read(|tx| {
+            tx.sync_cursor(
+                scope.scope(),
+                crate::store::sync::Sequence::new(99_900).unwrap(),
+            )
+        })
+        .unwrap()
+        .unwrap();
+
+    let app = Arc::new(Mutex::new(app));
+    let (locked, waiting) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let held = Arc::clone(&app);
+    let holder = std::thread::spawn(move || {
+        let _guard = held.lock().unwrap();
+        locked.send(()).unwrap();
+        released.recv_timeout(Duration::from_secs(10)).unwrap();
+    });
+    waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let mut measured = |name: &str, work: &mut dyn FnMut(&mut SyncReadConnection) -> Value| {
+        let started = Instant::now();
+        let answer = work(&mut read);
+        let elapsed = started.elapsed();
+        assert_eq!(answer["status"], "ok", "{name}: {answer}");
+        assert!(
+            elapsed <= Duration::from_millis(100),
+            "{name} took {elapsed:?} on 100k journal rows and 10k tasks"
+        );
+        eprintln!("sync_large_read {name} elapsed_us={}", elapsed.as_micros());
+    };
+    measured("head", &mut |read| {
+        read.read(|tx| scope.head(tx, Some(&cursor), "scale-epoch", now))
+            .unwrap()
+            .unwrap()
+    });
+    measured("snapshot", &mut |read| snapshot(read, &scope, None, 100));
+    measured("changes", &mut |read| {
+        changes(read, &scope, &cursor, None, 100)
+    });
+
+    release.send(()).unwrap();
+    holder.join().unwrap();
+}

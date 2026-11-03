@@ -313,6 +313,15 @@ impl Queue {
         self.changed.notify_waiters();
         work
     }
+
+    fn next_method(&self) -> Option<String> {
+        let mut waiting = self.waiting.lock().unwrap();
+        waiting.prune();
+        let opening = *waiting.ready.front()?;
+        waiting.openings.get(&opening)?.front()?.frame.payload["method"]
+            .as_str()
+            .map(str::to_owned)
+    }
 }
 
 impl Waiting {
@@ -523,10 +532,14 @@ async fn coordinate_sql(queue: Arc<Queue>, handler: FrameHandler) {
         let Some(permit) = while_live(&queue, None, executors.acquire()).await else {
             continue;
         };
+        let Some(peeked_method) = queue.next_method() else {
+            continue;
+        };
+        let peeked_sync = peeked_method.starts_with("sync.");
         #[cfg(test)]
         let checkout_started = std::time::Instant::now();
-        let connection = match &pool {
-            Some(pool) => match connection_while_waiting(&queue, pool).await {
+        let mut connection = match &pool {
+            Some(pool) => match connection_while_waiting(&queue, pool, peeked_sync).await {
                 Some(connection) => Some(connection),
                 None => continue,
             },
@@ -535,6 +548,19 @@ async fn coordinate_sql(queue: Arc<Queue>, handler: FrameHandler) {
         #[cfg(test)]
         let checkout = checkout_started.elapsed();
         let Some(work) = queue.take() else { continue };
+        // A cancelled front request can reveal a different family after the
+        // connection was checked out. Never let that race bypass recovery's
+        // class quota; an extra recovery permit on an ordinary read is safe.
+        let work_is_sync = work.job.frame.payload["method"]
+            .as_str()
+            .is_some_and(|method| method.starts_with("sync."));
+        if work_is_sync && !peeked_sync {
+            drop(connection.take());
+            connection = match &pool {
+                Some(pool) => Some(pool.acquire_sync_connection().await),
+                None => None,
+            };
+        }
         #[cfg(test)]
         let work = work.with_measurement(checkout);
         let handler = handler.clone();
@@ -569,8 +595,18 @@ async fn while_live<T>(
     }
 }
 
-async fn connection_while_waiting(queue: &Queue, pool: &ReadPool) -> Option<ReadConnection> {
-    let acquiring = pool.acquire();
+async fn connection_while_waiting(
+    queue: &Queue,
+    pool: &ReadPool,
+    sync: bool,
+) -> Option<ReadConnection> {
+    let acquiring = async {
+        if sync {
+            pool.acquire_sync_connection().await
+        } else {
+            pool.acquire().await
+        }
+    };
     tokio::pin!(acquiring);
     loop {
         let changed = queue.changed.notified();

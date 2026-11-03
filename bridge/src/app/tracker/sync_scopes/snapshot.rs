@@ -119,6 +119,21 @@ impl TaskSyncScope {
             after,
             (4 * limit + 1).min(128),
         )?;
+        let ids = candidates
+            .iter()
+            .map(|(candidate, _)| {
+                candidate.row["id"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| SyncError::Unavailable("missing task id".into()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut metadata = read.sync_task_metadata(&ids)?;
+        if metadata.len() != ids.len() {
+            return Err(SyncError::Unavailable(
+                "task projection is incomplete".into(),
+            ));
+        }
         let mut rows = Vec::new();
         let mut last = after;
         let mut bytes = 0;
@@ -128,8 +143,13 @@ impl TaskSyncScope {
             }
             let id = candidate.row["id"]
                 .as_str()
+                .map(str::to_owned)
                 .ok_or_else(|| SyncError::Unavailable("missing task id".into()))?;
-            let mut record = self.record(read, id)?;
+            let (pending, revision) = metadata
+                .remove(&id)
+                .ok_or_else(|| SyncError::Unavailable("task projection is incomplete".into()))?;
+            let mut record =
+                self.record_candidate(read, &id, &self.project, candidate, pending, revision)?;
             if record["member"] == true {
                 record.as_object_mut().expect("record").remove("member");
                 let size = encoded_size(&record)?;

@@ -53,6 +53,60 @@ impl AppState {
 }
 
 impl TaskReadContext {
+    pub(in crate::app) fn sync_scope(
+        &self,
+        source: &impl TaskReadSource,
+        asked: &crate::api::v1::sync::Scope,
+    ) -> Result<(super::sync_scopes::TaskSyncScope, TaskReadFence), String> {
+        let project_ids = self
+            .project_paths
+            .iter()
+            .map(|(id, path)| (path.clone(), id.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        match asked {
+            crate::api::v1::sync::Scope::ProjectTasks {
+                project_id,
+                filters,
+                order,
+            } => {
+                let project_path = self
+                    .project_paths
+                    .get(project_id)
+                    .cloned()
+                    .ok_or_else(|| format!("unknown project_id: {project_id}"))?;
+                let mut query = serde_json::to_value(filters.clone().unwrap_or_default())
+                    .map_err(|error| error.to_string())?;
+                if let Some(order) = order {
+                    query["order"] = serde_json::to_value(order).map_err(|e| e.to_string())?;
+                }
+                let scope =
+                    super::sync_scopes::TaskSyncScope::project(project_id, &project_path, &query)?
+                        .with_project_ids(project_ids);
+                Ok((
+                    scope,
+                    TaskReadFence {
+                        project_id: project_id.clone(),
+                        project_path,
+                    },
+                ))
+            }
+            crate::api::v1::sync::Scope::Task { task_id } => {
+                let (project_id, task) = self.tracker_task(source, task_id)?;
+                let project_path = task.project_path.clone();
+                let scope =
+                    super::sync_scopes::TaskSyncScope::task(task_id, &project_id, &project_path)
+                        .with_project_ids(project_ids);
+                Ok((
+                    scope,
+                    TaskReadFence {
+                        project_id,
+                        project_path,
+                    },
+                ))
+            }
+        }
+    }
+
     pub(in crate::app) fn set_user_session(&mut self, session: UserSession) {
         self.user_session = session;
     }

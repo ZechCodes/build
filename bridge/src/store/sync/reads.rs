@@ -1,9 +1,8 @@
 //! ReadPool-only head/cursor reads. The execution adapter supplies its epoch.
 use super::{cursor, retention, schema, ResyncReason, Scope, Sequence, SyncError};
-use crate::store::{ReadClass, ReadConnection, ReadPool, ReadTransaction};
+use crate::store::{ReadConnection, ReadPool, ReadTransaction};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use tokio::sync::OwnedSemaphorePermit;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Head {
@@ -41,14 +40,11 @@ impl Head {
 /// Class quota stays with the reader through cancellation and blocking work.
 pub struct SyncReadConnection {
     connection: ReadConnection,
-    _class: OwnedSemaphorePermit,
 }
 impl ReadPool {
     pub async fn acquire_sync(&self) -> SyncReadConnection {
-        let class = self.acquire_class(ReadClass::SyncRecovery).await;
         SyncReadConnection {
-            connection: self.acquire().await,
-            _class: class,
+            connection: self.acquire_sync_connection().await,
         }
     }
 }

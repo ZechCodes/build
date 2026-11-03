@@ -55,6 +55,11 @@ async fn cross_transport_rtc_admission_is_bounded_without_starving_rest() {
     flush(output).await;
     assert_eq!(f.runtime.state.buffers.available(), TOTAL_BUFFER_BYTES);
     f.intake.close_carrier(&f.rtc[0].carrier);
+    assert_eq!(
+        f.intake.retained_admitters(),
+        0,
+        "the closed wire retains no admission task owner"
+    );
     assert!(running.iter().all(|context| !context.session_is_open()));
     drop(running);
     gate.release();

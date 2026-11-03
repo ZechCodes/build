@@ -159,6 +159,7 @@ def main():
     parser.add_argument("--issuer-port", type=int, default=18476)
     parser.add_argument("--bridge-port", type=int, default=19476)
     parser.add_argument("--scratch-task", type=int, choices=[976, 977], default=976)
+    parser.add_argument("--client-group", choices=["all", "discovery", "browser", "desktop"], default="all")
     args = parser.parse_args()
     SCRATCH = scratch_for(args.scratch_task)
     if not all(1024 <= port <= 65535 for port in [args.issuer_port, args.bridge_port]):
@@ -191,12 +192,24 @@ def main():
         wait_ready(bridge, fixture["bridgeOrigin"] + "/.well-known/build-bridge", run_dir / "ca.pem", run_dir / "bridge.log")
         client_env = {**env, "BUILD_HTTP_QUALIFICATION_FIXTURE": str(fixture_path),
             "NODE_EXTRA_CA_CERTS": str(run_dir / "ca.pem"), "SCREENSHOT_DIR": str(run_dir / "screenshots")}
-        run_logged([sys.executable, script_dir / "discovery.py", "--repo", repo, "--scratch-task", args.scratch_task],
-            env=client_env, cwd=repo, log=run_dir / "discovery.log")
-        run_logged(["node", script_dir / "browser.mjs"], env=client_env, cwd=repo, log=run_dir / "browser.log")
-        run_logged(["node", "--test", repo / "desktop/test/bridge-http-qualification.test.mjs"],
-            env=client_env, cwd=repo, log=run_dir / "desktop.log")
-    print(f"Both client lifecycles passed; evidence: {run_dir}", flush=True)
+        groups = [
+            ("discovery", [sys.executable, script_dir / "discovery.py", "--repo", repo, "--scratch-task", args.scratch_task]),
+            ("browser", ["node", script_dir / "browser.mjs"]),
+            ("desktop", ["node", "--test", repo / "desktop/test/bridge-http-qualification.test.mjs"]),
+        ]
+        selected = [group for group in groups if args.client_group in ("all", group[0])]
+        for index, (name, client_command) in enumerate(selected):
+            if index:
+                # Functional client groups must not consume one another's
+                # production public-discovery quota (10/source/60s). Keep the
+                # issuer/state, retire this owned process, then mount afresh.
+                stop_process(bridge)
+                log = run_dir / f"bridge-{name}.log"
+                bridge = launch(stack, command, env=bridge_env, cwd=run_dir, log=log)
+                wait_ready(bridge, fixture["bridgeOrigin"] + "/.well-known/build-bridge", run_dir / "ca.pem", log)
+            run_logged(client_command, env=client_env, cwd=repo, log=run_dir / f"{name}.log")
+    names = ", ".join(name for name, _ in selected)
+    print(f"Qualification groups passed: {names}; evidence: {run_dir}", flush=True)
 
 
 if __name__ == "__main__":

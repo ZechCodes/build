@@ -22,13 +22,14 @@ Each test states its pass criterion in its doc comment:
 | Idle revocation | An already waiting stream must end within the same 25 ms without another event or heartbeat |
 | Composed drain | HTTP shutdown plus RTC carrier close refuses old/new HTTP openings and old carrier traffic, joins every stream task within 5 s, fences in-flight output and returns both pools |
 
-The idle-revocation assertion intentionally retains the task's 25 ms requirement.
-It currently exposes a production gap: the body notices revocation at its 15 s
-heartbeat unless another event wakes it. The mounted runtime's one-second reaper
-can close it sooner, but does not establish a 25 ms guarantee. The 25 ms socket
-authority timer applies to pending writes. No threshold is enlarged to turn
-this test green. The scripted authority invalidation measures **local fences**,
-not hosted revocation propagation latency; carrier closure is supplied explicitly.
+The idle-revocation assertion intentionally retains the task's 25 ms requirement
+and runs the mounted production reaper. Its one-second interval cannot establish
+a 25 ms cleanup guarantee. An initial body-only probe observed the separate 15 s
+heartbeat wake; the final acceptance probe includes mounted session cleanup and
+all 32 streams. The 25 ms socket authority timer applies to pending writes. No
+threshold is enlarged to turn this test green. The scripted authority
+invalidation measures **local fences**, not hosted revocation propagation
+latency; carrier closure is supplied explicitly.
 
 Use these environment settings for every Rust command:
 
@@ -75,3 +76,10 @@ represented locally. They check the real issuer DELETE/bridge 401, eight real
 SSE hellos followed by a ninth-stream 429, and the consumer's plain error.
 This does not qualify Electron window ownership or sandbox policy. Existing
 unit tests cover those boundaries.
+
+Functional discovery, browser and desktop groups each get a fresh owned runtime
+process, preserving the disposable issuer/database but avoiding carryover of
+the public signing limit (10 requests per source per 60 s). The production rate
+limit is unchanged. `--client-group discovery|browser|desktop` isolates one
+group while debugging. Simultaneous transport load is proved separately by the
+Rust probes; no client-functional claim depends on resetting a quota mid-case.

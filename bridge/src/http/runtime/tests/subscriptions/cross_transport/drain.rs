@@ -29,6 +29,7 @@ async fn cross_transport_update_drain_fences_openings_and_joins_streams() {
     let started = Instant::now();
     assert_eq!(f.runtime.shutdown(), POOL_STREAMS);
     f.close_rtc();
+    assert_eq!(f.intake.retained_admitters(), 0);
     for client in &f.rtc {
         assert!(
             client.send(&f.intake, 2).await.is_err(),

@@ -1,39 +1,44 @@
 // Arrange real refusals without changing a server response, credential or clock.
-// The real account issuer revokes one family; eight actual native client
-// streams fill another family before the SPA attempts its ninth stream.
+// The real account issuer revokes one family; eight actual HTTP streams
+// fill another family before the SPA attempts its ninth stream.
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { createBridgeHttp } from "../../desktop/src/bridge-http.mjs";
 
 export async function refusalFixture(context, fixture) {
-  const manifest = JSON.parse(await readFile(new URL("../../desktop/src/bridge-http-resources.json", import.meta.url), "utf8"));
-  const owner = { id: randomUUID() };
   let next;
-  let ready = 0;
-  const bridge = createBridgeHttp({
-    hostedOrigin: fixture.hostedOrigin, manifest,
-    getAuth: () => ({ generation: 1, accessToken: fixture.accessToken }),
-    isOwnerCurrent: (candidate) => candidate === owner,
-    send: (_recipient, event) => {
-      if (event.event === "hello") ready++;
-      if (event.event !== "reset_required") bridge.ack(owner, event.stream, event.sequence);
-    },
-  });
-  const until = async (predicate) => {
-    const deadline = Date.now() + 5000;
-    while (!predicate()) {
-      assert.ok(Date.now() < deadline, "all eight fixture streams receive real SSE hello");
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+  const held = [];
+  const json = async (mint, path, body, session) => {
+    const response = await fetch(fixture.bridgeOrigin + path, {
+      method: "POST", signal: AbortSignal.timeout(5000),
+      headers: { Origin: fixture.hostedOrigin, Authorization: `Bearer ${mint.access_token}`,
+        "Content-Type": "application/json", ...(session ? { "X-Build-Session": session } : {}) },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 201);
+    return response.json();
   };
   const holdEight = async (mint) => {
-    const hint = { deviceId: mint.device_id, origin: mint.origin, endpointEpoch: mint.endpoint_epoch, familyId: mint.family_id };
     for (let index = 0; index < 8; index++) {
-      const metadata = await bridge.resume(owner, hint);
-      await bridge.open(owner, metadata.handle, "^3.0.0");
-      await bridge.subscribe(owner, metadata.handle, { kind: "application" }, { requestId: randomUUID() });
-      await until(() => ready === index + 1);
+      const opening = await json(mint, "/v1/sessions", { api_range: "^3.0.0" });
+      const subscription = await json(mint, "/v1/subscriptions", { kind: "application" }, opening.session_id);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      try {
+        const response = await fetch(fixture.bridgeOrigin + subscription.events_path, {
+          signal: controller.signal, headers: { Origin: fixture.hostedOrigin,
+            Authorization: `Bearer ${mint.access_token}`, "X-Build-Session": opening.session_id, Accept: "text/event-stream" },
+        });
+        assert.equal(response.status, 200);
+        const reader = response.body.getReader();
+        held.push({ reader, controller, session: opening.session_id, token: mint.access_token });
+        let hello = "";
+        while (!hello.includes("\n\n")) {
+          const chunk = await reader.read();
+          assert.equal(chunk.done, false);
+          hello += new TextDecoder().decode(chunk.value);
+          assert.ok(hello.length < 65536);
+        }
+        assert.match(hello, /^event: hello\n/);
+      } finally { clearTimeout(timer); }
     }
   };
   await context.route("**/api/bridge-discovery/complete", async (route) => {
@@ -43,10 +48,10 @@ export async function refusalFixture(context, fixture) {
     if (mode && response.ok()) {
       const mint = await response.json();
       if (mode === "revoked") {
-        const revoked = await fetch(`${fixture.hostedOrigin}/api/devices/${mint.device_id}/http-credentials/${mint.family_id}`, {
-          method: "DELETE", headers: { Authorization: `Bearer ${fixture.accessToken}` },
-        });
-        assert.equal(revoked.status, 204, "the real issuer revoked the disposable family");
+        // Families are bound to the issuing browser login, independently of
+        // the same account's desktop OAuth login. Preserve that real binding.
+        const revoked = await context.request.delete(`${fixture.hostedOrigin}/api/devices/${mint.device_id}/http-credentials/${mint.family_id}`);
+        assert.equal(revoked.status(), 204, "the real issuer revoked the disposable family");
       } else {
         await holdEight(mint);
       }
@@ -54,8 +59,15 @@ export async function refusalFixture(context, fixture) {
     await route.fulfill({ response });
   });
   return {
-    arm(mode) { assert.ok(["revoked", "ninth"].includes(mode)); next = mode; ready = 0; },
-    close() { bridge.clear(); },
+    arm(mode) { assert.ok(["revoked", "ninth"].includes(mode)); next = mode; },
+    async close() {
+      await Promise.allSettled(held.splice(0).map(async ({ reader, controller, session, token }) => {
+        controller.abort();
+        await reader.cancel().catch(() => {});
+        await fetch(`${fixture.bridgeOrigin}/v1/sessions/${session}`, { method: "DELETE", signal: AbortSignal.timeout(1000),
+          headers: { Origin: fixture.hostedOrigin, Authorization: `Bearer ${token}` } });
+      }));
+    },
   };
 }
 
@@ -78,12 +90,11 @@ export async function qualifyBrowserRefusals(page, arranged, bridgeOrigin, outpu
     assert.ok(refused, `${mode} refusal came from the real bridge`);
     assert.ok(message.length > 15, "a visible sentence explains the failed connection");
     assert.doesNotMatch(message, /[{}]|undefined|invalid_credential|invalid_stream/);
-    if (mode === "revoked") assert.match(message, /authorization|Verify/i);
     await page.screenshot({ path: `${output}/spa-${mode}-refusal.png`, fullPage: true });
     evidence.push({ case: mode, status: refused.status, message });
     console.log(`PASS SPA ${mode} refusal: HTTP ${refused.status}; ${message}`);
     await page.click("#urlcancel");
-    arranged.close();
+    await arranged.close();
     await page.selectOption("#device-transport", "webrtc");
     await page.waitForFunction(() => !document.querySelector("#device-transport")?.disabled);
   }

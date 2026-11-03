@@ -758,6 +758,12 @@ impl FrameIntake {
         self.execution.clone()
     }
 
+    /// Exact per-carrier admission owners retained after drain, for leak proofs.
+    #[cfg(test)]
+    pub(crate) fn retained_admitters(&self) -> usize {
+        self.admitters.lock().unwrap().len()
+    }
+
     /// The ledger this intake's sessions are written to — the peer transport
     /// writes its `carrying` events to the same one.
     pub fn ledger(&self) -> Arc<dyn TransportLedger> {

@@ -139,7 +139,7 @@ try {
   await writeFile(resolve(output, "browser-failure.txt"), `${error.stack}\n${text}\n${JSON.stringify(await page.evaluate(() => window.__qualification).catch(() => null), null, 2)}`);
   throw error;
 } finally {
-  arrangedRefusals.close();
+  await arrangedRefusals.close();
   if (writerHandle) await writer.close(owner, writerHandle);
   await browser.close();
 }

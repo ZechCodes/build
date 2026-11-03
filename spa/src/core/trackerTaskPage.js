@@ -101,7 +101,10 @@ function matchingTaskAction(task, authority) {
   }
 }
 
-const compactReadAnswer = (through, answer) => through !== undefined && !Object.hasOwn(answer || {}, "task");
+const compactReadAnswer = (through, answer) => through !== undefined
+  && (!Object.hasOwn(answer || {}, "task") || exactCompactReadTask(answer.task, through));
+const exactCompactReadTask = (task, through) => Boolean(task) && Object.keys(task).length === 1
+  && task.read_through === through;
 
 /** Acknowledged effects belong to their captured owner even after the page
  * leaves. Rendering disposal does not revoke account/device/session authority. */

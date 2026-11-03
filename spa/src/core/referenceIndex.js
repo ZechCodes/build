@@ -25,6 +25,8 @@ const listeners = new Set();
 function signatureOf(held) {
   return JSON.stringify([
     held.held,
+    Object.entries(held.reviews).map(([key, reviews]) => [key, Object.entries(reviews).map(([id, review]) =>
+      [id, review?.snapshots?.map((snapshot) => [snapshot.number, snapshot.directories?.map((directory) => directory.id)])])]),
     held.workspaces.map((row) => [row.projectKey, row.workspaceId, row.name, row.directories]),
     held.projects.map((row) => [row.projectKey, row.name]),
     [...held.agents].map(([id, agent]) => [id, agent.workspace?.workspaceId, agent.name]),

@@ -50,13 +50,13 @@ const invalidateCheckout = (scope, cacheScope) => {
 
 /** The git surface of one directory: its ref picker at the head of the commit
  *  rail, and the pane mounted again whenever a checkout moves the ref. */
-export function mountChanges(body, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection, requestedCommit, onCommitSelection }) {
+export function mountChanges(body, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection, requestedCommit, requestedDiff, onCommitSelection }) {
   body.innerHTML = `<div class="workspace-gitpane"></div>`;
   const refbar = document.createElement("div");
   refbar.className = "workspace-refbar";
   const gitHost = body.querySelector(".workspace-gitpane");
   let gitPane = mountGitPane(gitHost, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection,
-    requestedCommit, onCommitSelection });
+    requestedCommit, requestedDiff, onCommitSelection });
   let disposed = false;
   let visible = true;
   const attachRefbar = () => {

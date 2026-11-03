@@ -282,8 +282,10 @@ function mountFilesPane(body, { canonical, workspace, callRpc, cacheScope }) {
 
 /** The URL names the commit the standing directory's surface has selected. */
 const markCommit = (commit) => {
-  const { commit: _commit, ...route } = App.route;
-  markRoute(commit ? { ...route, commit } : route);
+  const { commit: _commit, path: _path, side: _side, line: _line, ...route } = App.route;
+  const place = commit && App.route.commit && commit.toLowerCase().startsWith(App.route.commit.toLowerCase())
+    ? { path: App.route.path, side: App.route.side, line: App.route.line } : {};
+  markRoute(commit ? { ...route, commit, ...place } : route);
 };
 
 /** Changes over every directory of the workspace, a tab each (#174). A tab
@@ -310,6 +312,8 @@ function mountChangesPane(body, { canonical, workspace, callRpc, cacheScope, age
       navigate: { openFile: ({ path, line }) => go({ ...App.route, sourceId, tab: "files", file: path, line }) },
       viewingContext,
       requestedCommit: commits.get(sourceId) || null,
+      requestedDiff: sourceId === canonical.sourceId && canonical.path
+        ? { path: canonical.path, side: canonical.side, line: canonical.line } : null,
       onCommitSelection: (commit) => {
         commits.set(sourceId, commit);
         if (App.route.sourceId === sourceId) markCommit(commit);
@@ -469,7 +473,7 @@ function canonicalRoute(route, workspace) {
 /** A directory tab moved Changes onto another directory within the surface: the
  *  URL names it, and its offer is hung. */
 function standOnDirectory(state, sourceId, commit) {
-  const { commit: _commit, ...route } = App.route;
+  const { commit: _commit, path: _path, side: _side, line: _line, ...route } = App.route;
   state.route = { ...route, sourceId, tab: "changes", ...(commit && { commit }) };
   state.sourceId = sourceId;
   markRoute(state.route);

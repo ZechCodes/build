@@ -71,3 +71,19 @@ describe("the reference index's feed", () => {
     expect(index.referenceResolver({ place }).workspace("tasks-spa")).toBeUndefined();
   });
 });
+
+
+it("resolves omitted review directories from cached metadata, including later writes", async () => {
+  await cache.writeCached(tracker.tasksAddress("dev-1", "proj-1"), { tasks: [{ id: "task-1", number: 1 }] });
+  const address = { deviceId: "dev-1", entityId: "proj-1", kind: "task-review", sub: "task-1" };
+  await cache.writeCached(address, { review: { snapshots: [{ number: 3, directories: [{ id: "dir-1" }] }] } });
+  const source = feedSource();
+  stop = feedIndex({ subscribeFeed: source.subscribeFeed });
+  source.deliver(feed);
+  await vi.waitFor(() => expect(index.referenceResolver({ place }).review(1, 3, undefined, "src/a.js")?.directoryId).toBe("dir-1"));
+  const { expandReferences } = await import("../src/core/markdownLinks.js");
+  const html = expandReferences("[[#1:r3:all:src/a.js#old-L42]]", index.referenceResolver({ place }));
+  expect(html).toContain('href="#/device/dev-1/project/proj-1/tasks/task-1/review/r3/all/dir-1/src/a.js?side=old&amp;line=42"');
+  await cache.writeCached(address, { review: { snapshots: [{ number: 3, directories: [{ id: "dir-2" }] }] } });
+  await vi.waitFor(() => expect(index.referenceResolver({ place }).review(1, 3, undefined, "src/a.js")?.directoryId).toBe("dir-2"));
+});

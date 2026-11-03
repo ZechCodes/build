@@ -14,6 +14,8 @@ import { mountTaskReviewFeedback, openTaskReviewer } from "./taskReviewFeedback.
 import { wireDirectoryTabs } from "./workspaceDirectoryTabs.js";
 import { readTaskRecord, taskAddress } from "./trackerCache.js";
 import { timelineRows } from "./trackerTimeline.js";
+import { resolveReviewFileReference } from "./reviewFileReference.js";
+import { installReviewLinkNavigation } from "./reviewLinkNavigation.js";
 import { refreshFeed } from "./taskFeed.js";
 
 const FRAME = `<header class="task-review-header"><div data-review-head></div><details class="task-review-more" data-review-more><summary>More</summary><div class="task-review-more-body"><div data-review-controls></div><div data-review-git-actions></div><div data-review-task-details></div></div></details></header><aside class="task-review-navigation" aria-label="Review commits"><button type="button" class="task-review-sheet-close btn" data-review-commits-close>Close commits</button><div data-review-directories></div><nav data-review-rail></nav></aside><section class="task-review-centre"><div class="task-review-views" role="group" aria-label="Directory view"><button class="btn" type="button" data-review-view="changes">Changes</button><button class="btn" type="button" data-review-view="files">Files</button><button class="btn task-review-comments-tab" type="button" data-review-view="comments">Comments</button></div><p data-review-newer-snapshot class="warn" role="status" hidden></p><p data-review-error class="warn" role="status" hidden></p><div data-review-content></div></section><div data-review-feedback-host class="task-review-standalone-feedback"></div>`;
@@ -65,7 +67,9 @@ export function mountTaskReviewPage(host, options) {
   function choose(changes, transition = {}) {
     if (disposed) return;
     selectionGeneration++;
-    selection = selectionForReview(review(), switchReviewSelection(selection, changes, transition));
+    const next = switchReviewSelection(selection, changes, transition);
+    const resolved = resolveFileReference(next);
+    selection = selectionForReview(review(), resolved) || resolved;
     if (!selection) return;
     paint();
     options.markReviewRoute?.({ name: "trackerTask", ...scope, review: routeReviewSelection(selection) });
@@ -246,8 +250,15 @@ export function mountTaskReviewPage(host, options) {
     else paintContent();
   }
 
+  function resolveFileReference(target) {
+    const result = resolveReviewFileReference(review(), target);
+    if (result.missing) notice = "File not found in this revision. Showing all changes.";
+    return result.selection;
+  }
+
   function paintContent() {
     host.hidden = !support.get && !review();
+    selection = resolveFileReference(selection);
     selection = selectionForReview(review(), selection) || selection;
     normalizeComparison();
     const saved = snapshot();
@@ -299,7 +310,7 @@ export function mountTaskReviewPage(host, options) {
   }
 
   function canonicalizeRoute() {
-    if (canonicalized || !selection.revision) return;
+    if (canonicalized || !selection.revision || !review()) return;
     canonicalized = true;
     const target = routeReviewSelection(selection);
     if (JSON.stringify(target) === JSON.stringify(routeReviewSelection(options.reviewRoute))) return;
@@ -319,6 +330,10 @@ export function mountTaskReviewPage(host, options) {
   host.querySelector('[data-review-commits-close]').onclick = () => setSheet(false);
   const onKey = (event) => { if (event.key === "Escape") setSheet(false); };
   host.addEventListener("keydown", onKey);
+  const stopReviewLinks = installReviewLinkNavigation(scope, (target) => {
+    notice = "";
+    choose({ snapshotId: null, path: "", side: null, line: null, commit: null, view: "changes", ...target });
+  });
   const ready = readForPaint().then(async () => {
     await Promise.all([controls?.ready, gitActions?.ready, commitsReader?.ready, feedback?.ready]);
     void repository.refresh();
@@ -358,6 +373,7 @@ export function mountTaskReviewPage(host, options) {
       feedback?.dispose();
       unwatchRecord(); unwatchSupport(); unwatchTask();
       host.removeEventListener("keydown", onKey);
+      stopReviewLinks();
       pane?.dispose(); controls?.dispose(); gitActions?.dispose(); commitsReader?.dispose(); picker?.close();
     },
   };

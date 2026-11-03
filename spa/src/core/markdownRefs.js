@@ -89,11 +89,35 @@ function filePlace(rest) {
 
 /** What one bracketed reference names: a commit when it says so, else a file. */
 function bracketed(workspace, rest) {
-  const commit = /^commit:([0-9a-fA-F]{4,40})$/.exec(rest);
-  if (commit) return { kind: "commit", workspace, sha: commit[1] };
+  const review = /^#(\d+)$/.exec(workspace) && reviewPlace(rest);
+  if (review) return { kind: "reviewFile", number: Number(workspace.slice(1)), ...review };
+  const commit = /^commit:([0-9a-fA-F]{4,40})(?::(.+))?$/.exec(rest);
+  if (commit) return commit[2]
+    ? { kind: "commitFile", workspace, sha: commit[1], ...diffPlace(commit[2]) }
+    : { kind: "commit", workspace, sha: commit[1] };
   if (rest.startsWith("commit:")) return null;
   const place = filePlace(rest);
   return place ? { kind: "file", workspace, ...place } : null;
+}
+
+/** Diff anchors preserve the side: #L is the file as it is now. */
+function diffPlace(text) {
+  const anchor = /#(old-)?L([1-9]\d*)$/.exec(text);
+  if (!anchor || !Number.isSafeInteger(Number(anchor[2]))) return { path: text };
+  return { path: text.slice(0, anchor.index), side: anchor[1] ? "old" : "new", line: Number(anchor[2]) };
+}
+
+/** The first colon tentatively separates directory and path; the resolver
+ * uses cached directory IDs to recognize any colons within the directory. */
+function reviewPlace(rest) {
+  const match = /^r([1-9]\d*):(all|since|commit\/[0-9a-fA-F]{4,40}):(.+)$/.exec(rest);
+  if (!match || !Number.isSafeInteger(Number(match[1]))) return null;
+  const [mode, commit] = match[2].split("/");
+  const seam = match[3].indexOf(":");
+  const directory = seam < 0 ? {} : { directoryId: match[3].slice(0, seam) };
+  const path = seam < 0 ? match[3] : match[3].slice(seam + 1);
+  if (!path || directory.directoryId === "") return null;
+  return { revision: Number(match[1]), mode, ...(commit ? { commit } : {}), ...directory, ...diffPlace(path) };
 }
 
 /** Every match of one form, as `{ start, end, fields }`.
@@ -115,6 +139,17 @@ function matchesOf(text, pattern, read, { boundary = true } = {}) {
   return found;
 }
 
+/** Sorted matches can skip bracket interiors in a single pass, including
+ * malformed bracketed links; their task-shaped text never becomes a child link. */
+function outsideBrackets(references, spans) {
+  let index = 0;
+  return references.filter((reference) => {
+    while (index < spans.length && spans[index].end <= reference.start) index += 1;
+    const span = spans[index];
+    return !span || reference.start < span.start || reference.end > span.end;
+  });
+}
+
 /**
  * Every reference in `text`, in the order it was written.
  *
@@ -125,9 +160,10 @@ function matchesOf(text, pattern, read, { boundary = true } = {}) {
  */
 export function referencesIn(text) {
   const source = text || "";
+  const bracketedSpans = matchesOf(source, BRACKETED, () => ({}), { boundary: false });
   const found = [
-    ...matchesOf(source, TASK, (match) => ({ kind: "task", number: Number(match[2]), ...(match[3] ? { commentId: match[3] } : null) })),
-    ...matchesOf(source, NAMED, (match) => NAMED_FIELDS[match[2]](match[3])),
+    ...outsideBrackets(matchesOf(source, TASK, (match) => ({ kind: "task", number: Number(match[2]), ...(match[3] ? { commentId: match[3] } : null) })), bracketedSpans),
+    ...outsideBrackets(matchesOf(source, NAMED, (match) => NAMED_FIELDS[match[2]](match[3])), bracketedSpans),
     ...matchesOf(source, BRACKETED, (match) => bracketed(match[1].trim(), match[2].trim()), { boundary: false }),
   ].sort((one, other) => one.start - other.start);
   return found.map((reference) => ({ ...reference, raw: source.slice(reference.start, reference.end) }));

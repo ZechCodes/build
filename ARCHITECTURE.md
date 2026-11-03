@@ -3777,6 +3777,47 @@ from that queue in a collapsible card inside the preview pane. Account reset
 and device retirement cancel and clear the queue; a reload restores only recent
 metadata, never file bytes or live upload sessions.
 
+### References and diff links
+
+`markdownRefs.js` parses Build references; `markdownLinks.js` resolves them
+through the account-wide cached reference index and uses `hashFromRoute` for
+all destinations. Unresolved references remain readable text. Existing task
+(`#42`, `#42/c/<id>`), file (`[[<workspace>:<path>#L10]]`) and whole-commit
+(`[[<workspace>:commit:<sha>]]`) forms retain their meaning.
+
+`[[<workspace>:commit:<sha>:<path>#L42]]` opens Changes with
+`?commit=<sha>&path=<path>&side=new&line=42`. `#old-L42` selects the old side;
+without an anchor it selects the file. SHA prefixes keep the existing 4–40 hex
+rule. Directory-qualified workspace names retain their usual source resolution.
+The Changes pane uses `git.show` with `paths` only when `git.showPaths` is
+advertised, otherwise it reads the whole commit. Filtered patch records have
+separate cache identities so they cannot replace a whole-commit patch. Cached
+patches paint and reveal their file and line before any live refresh settles.
+
+`[[#<task>:r<N>:<range>:<dir>:<path>#L42]]` opens a saved review comparison.
+`<range>` is `all`, `since`, or `commit/<sha>`; `<dir>` is the saved directory
+id, copied exactly from `get_review`/`read_review`. Review links always pass their selection through `reviewRoutePath` via the
+router. An omitted directory (`[[#969:r3:all:src/file.js]]`) resolves only when
+that revision has one directory. Without cached revision metadata the link
+retains its raw file reference in `?fileRef=…`; opening the review resolves it
+when the record arrives and canonicalizes to the normal directory/path URL. An
+unknown directory opens that revision’s All changes view with a short file-not-found
+notice. The reference index observes saved review metadata changes; known tasks
+retain clickable review references before that metadata arrives.
+Both side anchors work in review links. References to the mounted task review
+select and reveal in place through `markRoute`, keeping the task page mounted.
+
+The review prefix `#<digits>:r<N>:<range>` is reserved inside brackets; a
+workspace whose name collides uses its id. The resolver prefers the longest cached directory id
+prefix, because saved directory ids normally contain colons themselves. A single
+remaining field is an omitted-directory path; otherwise the first field is the
+directory token and remaining colons stay in the path. A directory token may
+percent-encode delimiters; paths remain literal. A review path containing a colon
+therefore names its directory explicitly. Commit-file paths keep colons after the SHA delimiter.
+The bridge has no wiki-reference parser; its shared MCP descriptions, link
+markup note and conversation protocol document these shapes. Explicit agent
+mention extraction and typed thread references retain their existing scope.
+
 ### Render from cache
 
 **The rule.** All new SPA code follows it:

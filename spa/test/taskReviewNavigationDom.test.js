@@ -2,9 +2,9 @@
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App, markRoute } from "../src/app.js";
-import { readCached, wipeCache, writeCached } from "../src/core/localCache.js";
+import { deleteCached, readCached, wipeCache, writeCached } from "../src/core/localCache.js";
 import { wipeUiRecords } from "../src/core/localUiStore.js";
-import { writeReviewRecord } from "../src/core/taskReviewCache.js";
+import { reviewAddress, writeReviewRecord } from "../src/core/taskReviewCache.js";
 import { reviewCommitsAddress, reviewDiffAddress } from "../src/core/taskReviewReads.js";
 import { taskReviewFileAddress } from "../src/core/taskReviewFiles.js";
 import { rememberReviewSupport } from "../src/core/taskReviewSupport.js";
@@ -113,4 +113,52 @@ it("selects cached Files paths in place without replacing the pane or refreshing
   expect(location.hash).toBe(hashFromRoute(App.route));
   expect(callRpc).not.toHaveBeenCalled();
   expect((await readCached(taskReviewFileAddress(identity, "task-review-file", paths[1])))?.value.file).toBeTruthy();
+});
+
+
+it("follows a rendered reference to this review in place while RPC remains unanswered", async () => {
+  const { callRpc, navigate, markReviewRoute } = await mount({ revision: 1, mode: "all", directoryId: directory.id, path: paths[0] });
+  const header = host.querySelector(".task-review-header");
+  const link = document.createElement("a");
+  link.className = "md-ref";
+  link.href = hashFromRoute({ ...route, review: { revision: 1, mode: "commit", commit, directoryId: directory.id,
+    path: paths[1], side: "new", line: 1 } });
+  document.body.append(link);
+  const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+  link.dispatchEvent(event);
+  expect(event.defaultPrevented).toBe(true);
+  await vi.waitFor(() => expect(markReviewRoute).toHaveBeenCalledWith(expect.objectContaining({
+    review: expect.objectContaining({ mode: "commit", commit, path: paths[1], side: "new", line: 1 }),
+  })));
+  await painted(() => host.querySelector("tr.task-review-anchor"));
+  expect(host.querySelector(".task-review-header")).toBe(header);
+  expect(navigate).not.toHaveBeenCalled();
+  expect(callRpc).not.toHaveBeenCalled();
+  link.remove();
+});
+
+
+it("resolves an uncached reference when the saved revision arrives and canonicalizes its route", async () => {
+  await deleteCached([reviewAddress(scope)]);
+  const fileRef = `${directory.id}:${paths[1]}`;
+  const reviewRoute = { revision: 1, mode: "commit", commit, fileRef, side: "new", line: 1 };
+  App.route = { ...route, review: reviewRoute };
+  history.replaceState(null, "", hashFromRoute(App.route));
+  const markReviewRoute = vi.fn(markRoute);
+  page = mountTaskReviewPage(host, { ...scope, callRpc: () => new Promise(() => {}), markReviewRoute, reviewRoute });
+  await page.ready;
+  expect(location.hash).toContain("fileRef=");
+  await writeReviewRecord(scope, saved, 1);
+  await painted(() => host.querySelector("tr.task-review-anchor"));
+  expect(host.querySelector("tr.task-review-anchor").getAttribute("data-new-line")).toBe("1");
+  expect(App.route.review).toMatchObject({ directoryId: directory.id, path: paths[1], mode: "commit", commit });
+  expect(location.hash).not.toContain("fileRef=");
+});
+
+it("opens All changes with a short notice when a linked directory is unknown", async () => {
+  await mount({ revision: 1, mode: "commit", commit, fileRef: "missing:src/name:part.js", side: "old", line: 42 });
+  expect(host.querySelector("[data-review-error]").textContent).toBe("File not found in this revision. Showing all changes.");
+  expect(App.route.review).toMatchObject({ revision: 1, mode: "all" });
+  expect(App.route.review.fileRef).toBeUndefined();
+  expect(App.route.review.path).toBeUndefined();
 });

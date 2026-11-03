@@ -81,7 +81,7 @@ pub(in crate::store) fn initialize(
 /// Read-only preflight, also run before Store startup can migrate other rows.
 /// True means an entirely pristine pre-sync database, never a partial install.
 pub(in crate::store) fn validate_startup(conn: &Connection) -> Result<bool, StoreError> {
-    inspect(conn).map_err(|_| incomplete())
+    inspect(conn)
 }
 
 fn incomplete() -> StoreError {

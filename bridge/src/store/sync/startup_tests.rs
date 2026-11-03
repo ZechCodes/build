@@ -140,3 +140,24 @@ fn f1_pristine_upgrade_preserves_existing_data() {
         1
     );
 }
+#[test]
+fn f4_sqlite_busy_is_not_reported_as_structural_corruption() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("synthetic-busy.db");
+    let blocker = Connection::open(&path).unwrap();
+    blocker
+        .execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT); BEGIN EXCLUSIVE;")
+        .unwrap();
+    let reader = Connection::open(&path).unwrap();
+    reader.busy_timeout(std::time::Duration::ZERO).unwrap();
+    let error = super::schema::validate_startup(&reader).unwrap_err();
+    assert!(
+        !matches!(error, StoreError::SyncInvalid(_)),
+        "transient failure was misreported: {error}"
+    );
+    assert!(
+        matches!(error, StoreError::Db(_)),
+        "preserve the original SQLite error: {error}"
+    );
+    blocker.execute_batch("ROLLBACK").unwrap();
+}

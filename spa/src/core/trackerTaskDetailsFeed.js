@@ -246,13 +246,14 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
   }
 
   function bindWatchControl() {
+    if (typeof callRpc !== "function") return;
     const next = controlLifetime();
     if (disposed || controlOwner && sameControlLifetime(controlOwner, next)) return;
     stopControl(); controlSerial += 1; lastControlHint = null; controlOwner = next;
     stopControl = subscribeCache(taskWatchControlAddress({ deviceId, projectId }), () => void readWatchControl(next));
   }
   bindWatchControl();
-  const stopControlLifetime = onDeviceStateChanged(bindWatchControl);
+  const stopControlLifetime = typeof callRpc === "function" ? onDeviceStateChanged(bindWatchControl) : () => {};
 
   async function scan() {
     if (disposed) return;

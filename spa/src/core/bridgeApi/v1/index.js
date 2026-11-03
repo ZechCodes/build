@@ -172,6 +172,10 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     reviews: {
       ...Object.fromEntries(Object.entries(REVIEW_METHODS).map(([verb, method]) => [verb, names.has(method)])),
       comments: names.has("tasks.reviewComments"),
+      commits: names.has("tasks.review.commits"),
+      commit: names.has("tasks.review.commit"),
+      since: names.has("tasks.review.since"),
+      anchorCommit: names.has("tasks.review.anchorCommit"),
       pullRequests: names.has("tasks.review.pullRequests"),
     },
     tasks: {

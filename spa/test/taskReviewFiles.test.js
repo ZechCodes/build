@@ -129,9 +129,11 @@ describe("task review Files", () => {
     await vi.waitFor(() => expect(host.querySelector(".trf-preview")?.textContent).toContain("first line"));
     expect(callRpc.mock.calls.some(([, params]) => params.range?.offset === 0)).toBe(true);
     view.dispose();
-    const remount = mount(git, vi.fn(async () => { throw new Error("offline"); }), { path: "large.txt" });
+    const offline = vi.fn(async () => { throw new Error("offline"); });
+    const remount = mount(git, offline, { path: "large.txt" });
     await vi.waitFor(() => expect(remount.host.querySelector(".trf-preview")?.textContent).toContain("first line"));
-    await vi.waitFor(() => expect(remount.host.querySelector(".trf-status")?.textContent).toContain("offline"));
+    await tick();
+    expect(offline).not.toHaveBeenCalled();
   });
 
   it("shows an empty committed tree when a saved Git head has no commits", async () => {
@@ -158,6 +160,110 @@ describe("task review Files", () => {
     host.querySelector('[data-review-file-comment="2"]').click();
     expect(onComment).toHaveBeenCalledWith({ snapshot_id: "snap-1", directory_id: "dir-1", path: "readme.txt", side: "new", line: 2 });
     expect(host.querySelector('[data-review-file-comment="2"]').getAttribute("aria-label")).toContain("line 2");
+  });
+
+  it("paints inline comments and an anchor from cached bytes without waiting for a connection", async () => {
+    await writeCached(address(git, ""), { path: "", entries: [{ name: "readme.txt", kind: "file" }] });
+    await cacheFileBody({ ...address(git, "readme.txt", "task-review-file"), path: address(git, "readme.txt").sub,
+      file: textFile("readme.txt", "first\nsecond\n") });
+    const anchor = { snapshot_id: "snap-1", directory_id: git.id, path: "readme.txt", side: "new", line: 2 };
+    const comments = [{ id: "inline", type: "comment", author: { kind: "user" }, anchor, body: "Keep **this line**." }];
+    const callRpc = vi.fn(() => new Promise(() => {}));
+    const { host, view } = mount(git, callRpc, { path: "readme.txt", comments, anchor });
+    await vi.waitFor(() => expect(host.querySelector('[data-review-inline-comment="inline"]')).toBeTruthy());
+    const line = host.querySelector('tr[data-new-line="2"]');
+    expect(line.classList.contains("task-review-anchor")).toBe(true);
+    expect(line.nextElementSibling.textContent).toContain("Keep this line.");
+    expect(host.querySelector("[data-review-comment-line], [data-review-file-comment]")).toBeNull();
+    expect(await view.reveal(anchor)).toBe(true);
+  });
+
+  it("shows range and saved-head commit comments in Files without claiming earlier commit lines", async () => {
+    const anchor = { snapshot_id: snapshot.id, directory_id: git.id, path: "a.txt", side: "new", line: 1 };
+    const comments = [
+      { id: "range", anchor, body: "Range comment." },
+      { id: "head", anchor: { ...anchor, commit: git.head }, body: "Head comment." },
+      { id: "earlier", anchor: { ...anchor, commit: "earlier" }, body: "Earlier comment." },
+    ];
+    const callRpc = vi.fn(async (_method, params) => params.mode === "tree"
+      ? { path: "", entries: [{ name: "a.txt", kind: "file" }] } : textFile(params.path, "line\n"));
+    const { host, view } = mount(git, callRpc, { comments });
+    await view.open("a.txt");
+    await vi.waitFor(() => expect(host.querySelector('[data-review-inline-comment="range"]')).toBeTruthy());
+    expect(host.querySelector('[data-review-inline-comment="head"]')).toBeTruthy();
+    expect(host.querySelector('[data-review-inline-comment="earlier"]')).toBeNull();
+  });
+
+  it("reports tree and tab path selections for linkable URL state", async () => {
+    const onSelectPath = vi.fn();
+    const callRpc = vi.fn(async (_method, params) => params.mode === "tree"
+      ? { path: "", entries: [{ name: "a.txt", kind: "file" }, { name: "b.txt", kind: "file" }] }
+      : textFile(params.path, params.path));
+    const { host, view } = mount(git, callRpc, { onSelectPath });
+    await view.open("a.txt");
+    await view.open("b.txt");
+    await vi.waitFor(() => expect(onSelectPath).toHaveBeenLastCalledWith("b.txt"));
+    host.querySelector('[data-tab-path="a.txt"]').click();
+    await vi.waitFor(() => expect(onSelectPath).toHaveBeenLastCalledWith("a.txt"));
+    view.dispose();
+    const next = mount(git, callRpc, { onSelectPath });
+    await tick();
+    expect(next.host.querySelector(".trf-preview").textContent).not.toContain("a.txt");
+  });
+
+  it("uses optional defaults when a caller explicitly passes undefined", async () => {
+    const callRpc = vi.fn(async (_method, params) => params.mode === "tree"
+      ? { path: "", entries: [{ name: "README.md", kind: "file" }] }
+      : { ...textFile(params.path, "# Saved markdown\n"), mime: "text/markdown" });
+    const { host, view } = mount(git, callRpc, {
+      keepReadingPlace: undefined, comments: undefined, path: undefined, anchor: undefined,
+    });
+    await view.open("README.md");
+    await vi.waitFor(() => expect(host.querySelector(".trf-preview").textContent).toContain("Saved markdown"));
+  });
+
+  it("keeps dotenv secrets masked while drawing their line comments", async () => {
+    const anchor = { snapshot_id: "snap-1", directory_id: git.id, path: ".env", side: "new", line: 2 };
+    const callRpc = vi.fn(async (_method, params) => params.mode === "tree"
+      ? { path: "", entries: [{ name: ".env", kind: "file" }] }
+      : textFile(params.path, "HOST=localhost\nPASSWORD=keep-private\n"));
+    const { host, view } = mount(git, callRpc, { comments: [{ id: "secret", anchor, body: "Rotate this." }] });
+    await view.open(".env");
+    await vi.waitFor(() => expect(host.querySelector('[data-review-inline-comment="secret"]')).toBeTruthy());
+    expect(host.querySelector(".trf-preview").innerHTML).not.toContain("keep-private");
+    expect(host.querySelector(".trf-preview").textContent).toContain("●●●●●●●●●●");
+    expect(host.querySelector('[data-new-line="2"]').nextElementSibling.textContent).toContain("Rotate this.");
+  });
+
+  it("uses source lines for anchored markdown so its comment opens beneath its line", async () => {
+    const anchor = { snapshot_id: "snap-1", directory_id: git.id, path: "README.md", side: "new", line: 2 };
+    const callRpc = vi.fn(async (_method, params) => params.mode === "tree"
+      ? { path: "", entries: [{ name: "README.md", kind: "file" }] }
+      : { ...textFile(params.path, "# Heading\nParagraph\n"), mime: "text/markdown" });
+    const { host } = mount(git, callRpc, { path: "README.md", anchor,
+      comments: [{ id: "markdown", anchor, body: "Use a concrete example." }] });
+    await vi.waitFor(() => expect(host.querySelector('[data-review-inline-comment="markdown"]')).toBeTruthy());
+    expect(host.querySelector('tr[data-new-line="2"]').classList.contains("task-review-anchor")).toBe(true);
+    expect(host.querySelector(".trf-preview h1")).toBeNull();
+  });
+
+  it("loads cached paged source through the target line when an anchor opens", async () => {
+    const { writeBodyPages, bytePagesOf } = await import("../src/core/bodyPages.js");
+    const fileHead = address(git, "large.txt", "task-review-file");
+    const body = "one\ntwo\nthree\nfour\n";
+    await writeCached(fileHead, { file: { path: "large.txt", mime: "text/plain", size: body.length, paged: true, of: "version" } });
+    const pages = bytePagesOf(btoa(body), { of: "version", bytes: 8 });
+    await writeBodyPages(fileHead, [pages[0]]);
+    const anchor = { snapshot_id: snapshot.id, directory_id: git.id, path: "large.txt", side: "new", line: 4 };
+    const callRpc = vi.fn(async (_method, params) => {
+      if (params.mode === "tree") return { path: "", entries: [{ name: "large.txt", kind: "file" }] };
+      if (!params.range) return new Promise(() => {});
+      const page = pages.find((part) => part.offset === params.range.offset);
+      return { ...textFile(params.path, atob(page.body)), range: { offset: page.offset, end: page.end, total: page.total, version: "version" } };
+    });
+    const { host } = mount(git, callRpc, { path: "large.txt", anchor, comments: [{ id: "last", anchor, body: "Last line." }] });
+    await vi.waitFor(() => expect(host.querySelector('[data-new-line="4"]')?.classList.contains("task-review-anchor")).toBe(true));
+    expect(host.querySelector('[data-new-line="4"]').nextElementSibling.textContent).toContain("Last line.");
   });
 
   it("keeps a file failure visible when the tree refresh succeeds", async () => {

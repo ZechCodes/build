@@ -29,7 +29,7 @@ function controlsHtml(review, snapshot, support) {
       <form data-review-save><label>Workspace<select data-review-workspace></select></label>
       <div data-review-bases>${(snapshot?.directories || []).filter((directory) => directory.is_git).map(baseField).join("")}</div>
       <p class="sub">Save committed work from every directory. A different workspace replaces this review's history.</p>
-      <button class="btn primary" data-review-update type="submit">Save snapshot</button></form></details>` : ""}
+      <button class="btn primary" data-review-update type="submit">Save revision</button></form></details>` : ""}
     ${support.complete && review?.state === "open" ? `<details><summary>Mark complete</summary><form data-review-complete>
       <label>What was done?<textarea data-review-description rows="2" ${fieldTraits("prose")} placeholder="For example: merged API to dev; pushed web" required></textarea></label>
       <button class="btn primary" type="submit">Mark complete</button></form></details>` : ""}

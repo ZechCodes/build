@@ -79,7 +79,7 @@ export function mountTaskReviewFeedback(host, {
     const opinionTarget = form.querySelector('[data-review-opinion-target]');
     const historical = latestSnapshotId() && latestSnapshotId() !== snapshotId;
     opinionTarget.hidden = !historical;
-    opinionTarget.textContent = historical ? "Opinions on this earlier snapshot do not change the current review status." : "";
+    opinionTarget.textContent = historical ? "Opinions on this earlier revision do not change the current review status." : "";
     button.disabled = sending || !hasBody(draft);
     button.textContent = sending ? "sending…" : "Comment";
   });
@@ -160,6 +160,6 @@ export function openTaskReviewer({ task, snapshot, feed, projectKey, deviceId, p
     catalog: typeof catalog === "function" ? catalog() : catalog,
     callRpc,
     onAssigned,
-    note: `Review snapshot ${number} of task #${task.number ?? task.id}.`,
+    note: `Review revision ${number} of task #${task.number ?? task.id}.`,
   });
 }

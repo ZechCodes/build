@@ -23,6 +23,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: () => null }));
 
 const scope = { deviceId: "reviews-cache", projectId: "proj-1", taskId: "task-1" };
 const support = { get: true, snapshot: true, diff: true, complete: true, act: true, comments: true,
+  commits: false, commit: false, since: false, anchorCommit: false,
   pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false };
 const review = fixture.result.review;
 const pullRequest = fixture.examples[1].result;
@@ -321,4 +322,16 @@ it.each([
   await replaceSessionList(workspaceListAddress, "workspaces", [{ id: workspaceScope.workspaceId, project_id: scope.projectId }]);
   await writeReviewReply(scope, reply, 10);
   expect(await readWorkspaceReview(workspaceScope)).toMatchObject(reply);
+});
+
+it("scans comparison cache kinds once for the whole project reconnect", async () => {
+  await rememberReviewSupport(scope.deviceId, { reviews: { ...support, commits: true, commit: true, since: true } });
+  await writeReviewRecord(scope, review, 1);
+  await writeReviewRecord({ ...scope, taskId: "task-2" }, review, 1);
+  const scan = vi.spyOn(cache, "cachedRecords");
+  const callRpc = vi.fn(async () => ({ review }));
+  await refreshCachedReviews({ ...scope, callRpc });
+  const comparisonKinds = ["task-review-commits", "task-review-changes", "task-review-commit-changes", "task-review-since-changes"];
+  expect(scan.mock.calls.filter(([address]) => comparisonKinds.includes(address.kind))).toHaveLength(4);
+  scan.mockRestore();
 });

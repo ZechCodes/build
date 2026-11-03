@@ -104,6 +104,10 @@ export function mountWorkspaceTasksTab(body, { route, context, feed, selection, 
       ...shared,
       taskId: route.taskId,
       onTaskRead: sayWhichTask,
+      // A review's canonical address belongs to its dedicated task page.
+      // Leave this workspace through navigation instead of marking that task
+      // URL over a workspace whose rail and task tab are still mounted.
+      markReviewRoute: navigate,
     });
   }
 

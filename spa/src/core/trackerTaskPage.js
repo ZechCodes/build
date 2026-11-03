@@ -41,7 +41,9 @@ import {
   canComment,
   COMMENT_INPUT_ID,
   commentSendLabel,
-  TASK_PAGE_FRAME,
+  taskPageFrame,
+  REVIEW_COMMENTS_FRAME,
+  isReviewTask,
   taskMissingHtml,
   taskPageParts,
 } from "./trackerTaskRender.js";
@@ -105,6 +107,7 @@ export function mountTaskPage(host, options) {
     task: null,
     rows: [],
     reviewSnapshots: [],
+    review: null,
     columns: [],
     draft: "",
     draftOperationId: null,
@@ -261,12 +264,15 @@ export function mountTaskPage(host, options) {
    *  agent's state does, a draft write comes back through the cache on every
    *  pause in typing, and a part stood up again under the reader takes their
    *  caret, and the height of every picture in it, with it (#153). */
-  const held = { main: new Map(), rail: new Map(), timeline: new Map() };
+  const held = { main: new Map(), rail: new Map(), timeline: new Map(), comments: new Map() };
   /** Whether the host holds the task page's frame, or something else (the
    *  missing notice, or nothing yet). */
   let framed = false;
+  let reviewTemplate = false;
+  let continuingReviewComments = false;
   let unframed = null;
   let commentFocused = false;
+  let commentAnchorOpened = false;
   let openedAtTop = false;
 
   /** Where the reader is typing when a part is about to be redrawn: which
@@ -306,6 +312,7 @@ export function mountTaskPage(host, options) {
     projectName: projectName(state.feed(), state.projectKey),
     rows: state.rows,
     reviewSnapshots: state.reviewSnapshots,
+    review: state.review,
     unreadFrom,
     links: taskLinkRows(state.task, place(), state.feed()),
     watch: watch.state(),
@@ -332,13 +339,68 @@ export function mountTaskPage(host, options) {
   };
 
   const frame = () => {
-    if (framed) return;
+    const nextTemplate = isReviewTask(state.task, { review: state.review });
+    if (framed && nextTemplate === reviewTemplate) return;
+    reviewPage?.dispose();
+    reviewPage = null;
+    if (framed && nextTemplate) {
+      upgradeReviewFrame();
+      reviewTemplate = true;
+      return;
+    }
+    waitingEditor?.dispose();
+    waitingEditor = null;
+    reviewTemplate = nextTemplate;
     framed = true;
     unframed = null;
     Object.values(held).forEach((parts) => parts.clear());
-    host.innerHTML = TASK_PAGE_FRAME;
+    host.innerHTML = taskPageFrame(reviewTemplate);
     reads.mark();
   };
+
+  function upgradeReviewFrame() {
+    const page = host.querySelector(".task-page");
+    const main = host.querySelector(".task-page-main");
+    const width = main.getBoundingClientRect().width;
+    continuingReviewComments = host.scrollTop > 0;
+    migrateReviewComments(main);
+    page.classList.add("review-task-template");
+    if (continuingReviewComments) {
+      // A new review must not narrow prose that is already being read. Keep
+      // its measured reading width until an explicit review selection.
+      page.classList.add("task-review-reading");
+      page.style.setProperty("--task-review-reading-width", `${width}px`);
+      page.dataset.reviewView = "comments";
+    }
+    held.main.get("review")?.nodes.forEach((node) => node.remove());
+    held.main.delete("review");
+  }
+
+  function migrateReviewComments(main) {
+    const template = host.ownerDocument.createElement("template");
+    template.innerHTML = REVIEW_COMMENTS_FRAME;
+    const comments = template.content.firstElementChild;
+    const timeline = main.querySelector(".task-timeline");
+    const oldTimeline = held.main.get("timeline");
+    main.insertBefore(comments, oldTimeline?.nodes[0] || null);
+    const placeholder = comments.querySelector(".task-timeline");
+    if (timeline) moveReadingNode(comments, timeline, placeholder);
+    placeholder.remove();
+    if (!timeline) comments.insertBefore(placeholder, comments.querySelector("[data-review-task-composer]"));
+    oldTimeline?.nodes.filter((node) => node !== timeline).forEach((node) => node.remove());
+    held.main.set("timeline", { key: "review-comments", nodes: [comments] });
+    const composer = held.main.get("composer");
+    if (!composer) return;
+    const target = comments.querySelector("[data-review-task-composer]");
+    composer.nodes.forEach((node) => moveReadingNode(target, node));
+    held.comments.set("composer", composer);
+    held.main.delete("composer");
+  }
+
+  function moveReadingNode(container, node, before = null) {
+    if (typeof container.moveBefore === "function") container.moveBefore(node, before);
+    else container.insertBefore(node, before);
+  }
 
   const paint = () => {
     if (state.disposed) return;
@@ -353,7 +415,9 @@ export function mountTaskPage(host, options) {
   };
 
   function keepReadingPlace(repaint) {
-    if (!framed || composerOwnsPlace()) repaint();
+    // A late review header must not turn an untouched start-of-page into a
+    // timeline reading position by anchoring the first comment below it.
+    if (!framed || host.scrollTop === 0 || composerOwnsPlace()) repaint();
     else paintKeepingPlace(host, repaint, { opening: () => false, policy: readingPolicy });
   }
 
@@ -374,6 +438,7 @@ export function mountTaskPage(host, options) {
       stopHeadMeasurement = mountMeasuredHeight(host.querySelector(".task-page-head"), host, "--task-page-head-height");
     }
     patchParts(host.querySelector(".task-rail"), held.rail, parts.rail).forEach((name) => painted.add(name));
+    if (reviewTemplate) patchParts(host.querySelector('[data-review-task-composer]'), held.comments, parts.comments).forEach((name) => painted.add(name));
     if (patchTimeline(parts.timeline, painted.has("timeline"))) painted.add("timeline");
     wire(painted);
     syncCommentBox();
@@ -450,10 +515,20 @@ export function mountTaskPage(host, options) {
    *  row is not there yet. */
   function markRoutedComment() {
     if (!state.commentId) return;
+    openRoutedReviewAnchor();
     const found = focusTaskComment(host, state.commentId, { scroll: !commentFocused });
     if (found) commentFocused = true;
     else if (!commentFocused && !openedAtTop) host.scrollTop = 0;
     openedAtTop = true;
+  }
+
+  function openRoutedReviewAnchor() {
+    const row = state.rows.find((entry) => entry.key === state.commentId);
+    if (reviewTemplate && state.review && row?.anchor && !commentAnchorOpened && reviewPage) {
+      commentAnchorOpened = true;
+      const target = reviewPage;
+      void target.ready.then(() => target.openAnchor(row.anchor));
+    }
   }
 
   /** Take one cached `tasks.get` record: the task, its timeline, and the labels the
@@ -540,7 +615,8 @@ export function mountTaskPage(host, options) {
     const serial = ++reviewReadSerial;
     const cached = await readCached(savedReviewAddress);
     if (state.disposed || serial !== reviewReadSerial) return;
-    state.reviewSnapshots = cached?.value?.review?.snapshots || [];
+    state.review = cached?.value?.review || null;
+    state.reviewSnapshots = state.review?.snapshots || [];
     paint();
   };
   const reviewWatcher = subscribeCache(savedReviewAddress, () => void readReviewSnapshots());
@@ -920,10 +996,15 @@ export function mountTaskPage(host, options) {
   function wireReview() {
     reviewPage?.dispose();
     reviewPage = mountTaskReviewPage(host.querySelector('[data-task-review]'), {
-      ...options, task: () => state.task, workspaces: projectWorkspaces, onTaskChanged: refresh,
+      ...options, dedicated: reviewTemplate,
+      reviewRoute: continuingReviewComments ? { ...options.reviewRoute, view: "comments" } : options.reviewRoute,
+      feedbackHost: host.querySelector('[data-review-feedback-host]'), task: () => state.task, rows: () => state.rows, workspaces: projectWorkspaces, onTaskChanged: refresh,
       generationOf: () => deviceSession(state.deviceId),
       keepReadingPlace,
     });
+    if (reviewTemplate) {
+      host.querySelector('[data-review-task-details]')?.append(host.querySelector('.task-rail'));
+    }
   }
 
   function wireReviewComments() {

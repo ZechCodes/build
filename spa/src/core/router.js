@@ -7,6 +7,7 @@
 //   #/project/<projectId>/workspaces            — the project: its named children
 //   #/project/<projectId>/tasks[?view=board]    — an alias for the tracker
 //   #/project/<projectId>/tasks/<taskId>[/c/<commentId>]
+//   #/project/<projectId>/tasks/<taskId>/review/r<N>/<all|since|commit/<sha>>[/<directory>/<path>]
 //   #/project/<projectId>/workspace/<id>[/directory/<sourceId>]/<tab>[?commit=<sha>]
 //   #/project/<projectId>/branch/<name>/<tab>   — tab is changes | files
 //   #/project/<projectId>/plan/<planId>[/stage/<stageId>]
@@ -29,6 +30,7 @@
 // Pure mapping both ways; the app shell owns the hashchange listener.
 
 import { currentId } from "./renamedIds.js";
+import { parseReviewRoute, reviewRoutePath, reviewRouteQuery } from "./taskReviewSelection.js";
 
 const BRANCH_TABS = new Set(["changes", "files"]);
 const ACCOUNT_PAGES = new Set(["settings", "devices", "archive"]);
@@ -158,6 +160,7 @@ const trackerRoute = (projectId, taskId, tail) =>
       projectId,
       taskId: currentId(taskId),
       ...(tail[0] === "c" && tail[1] ? { commentId: currentId(tail[1]) } : null),
+      ...parseReviewRoute(tail),
     }
     : projectPage(projectId);
 
@@ -283,6 +286,7 @@ function tasksView(query, route) {
 /// which way the Tasks tab is laid out. A surface that reads none gets null,
 /// and its route is left exactly as the path made it.
 function placeInSurface(route, query) {
+  if (route.name === "trackerTask" && route.review) return { review: { ...route.review, ...reviewRouteQuery(query) } };
   const place = FILE_TAB_SURFACES.has(route.name) && route.tab === "files" ? tabPlace(query) : null;
   const commit = commitPlace(route, query);
   const agent = AGENT_SURFACES.has(route.name) ? railAgent(query) : null;
@@ -471,6 +475,11 @@ function projectPrefix(route) {
   return route.deviceId ? `#/device/${encode(route.deviceId)}/${project}` : `#/${project}`;
 }
 
+function trackerTaskTail(route) {
+  if (route.review) return reviewRoutePath(route.review);
+  return route.commentId ? `/c/${encode(route.commentId)}` : "";
+}
+
 // The surfaces that are about one machine's checkout, and so cannot be opened
 // until the route says which machine: every device mints a `proj-1`.
 const WORK_SURFACES = new Set(["branch", "task", "project", "trackerTask", "workspace"]);
@@ -504,7 +513,7 @@ const HASH_WRITERS = Object.freeze({
   // between.
   trackerTask: (route) =>
     route.projectId && route.taskId
-      ? `${projectPrefix(route)}/${TASKS_TAB}/${encode(route.taskId)}${route.commentId ? `/c/${encode(route.commentId)}` : ""}`
+      ? `${projectPrefix(route)}/${TASKS_TAB}/${encode(route.taskId)}${trackerTaskTail(route)}`
       : null,
   workspace: (route) => {
     if (!route.projectId || !route.workspaceId) return null;

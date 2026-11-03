@@ -29,7 +29,7 @@ it("gates lifecycle by the PR feature and exact verbs without offering legacy mu
   expect(host.querySelector('[data-review-close]')).toBeNull();
   expect(host.querySelector('[data-review-reopen]')).toBeNull();
   expect(host.querySelector('[data-review-repair]')).toBeNull();
-  expect(host.textContent).toContain('Read-only');
+  expect(host.textContent).toContain('Review: Open · Read-only');
   controls.dispose();
   await mount({ support: { ...support, close: false } });
   expect(host.querySelector('[data-review-close]')).toBeNull();

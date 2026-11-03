@@ -29,7 +29,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
   joinFeed: () => {},
 }));
 
-import { App } from "../src/app.js";
+import { App, markRoute } from "../src/app.js";
 import { renderTrackerTask } from "../src/views/trackerTaskView.js";
 import { adoptBridgeSelection, adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
 import { fakeSession } from "./deviceSessionFixture.js";
@@ -83,6 +83,7 @@ describe("the task route", () => {
     expect([given.projectId, given.deviceId, given.taskId, given.projectKey]).toEqual([
       "proj-1", "dev-1", "task-1", "dev-1/proj-1",
     ]);
+    expect(given.markReviewRoute).toBe(markRoute);
   });
 
   // The rail beside a task is the SHELL's (core/shell.js stands it on the

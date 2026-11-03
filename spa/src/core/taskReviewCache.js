@@ -9,12 +9,14 @@ import { mergeReviewObservations } from "./taskReviewObservations.js";
 import { clearedWorkspaceReviewTask } from "./sessionListCache.js";
 import { commandRefusalMessage } from "./commandRefusal.js";
 import { trailingRead } from "./trailingRead.js";
+import { refreshCachedReviewReads } from "./taskReviewReads.js";
 
 export const REVIEW_KIND = "task-review";
 export const reviewAddress = ({ deviceId, projectId, taskId }) => ({
   deviceId, entityId: projectId, kind: REVIEW_KIND, sub: taskId,
 });
 export const reviewFailure = (error) => commandRefusalMessage(error, "Update this device's bridge to use reviews.");
+const latestReviewSnapshot = (held) => held?.value?.review?.snapshots?.at(-1)?.id;
 const versionOf = (review) => review?.version || 0;
 const mayClear = (held, observedVersion, readOrder) => !held ||
   (versionOf(held.review) <= observedVersion && held.read_order <= readOrder);
@@ -110,11 +112,15 @@ export async function refreshCachedReviews({ deviceId, projectId, callRpc, activ
   if (!support.get) return;
   const held = await cachedSubKeys(deviceId, projectId, REVIEW_KIND);
   const discovered = support.pullRequests ? discoveredTaskIds : [];
-  for (const taskId of new Set([...held, ...discovered])) {
+  const selected = [...new Set([...held, ...discovered])].filter((taskId) => !taskIds || taskIds.includes(taskId));
+  const latestSnapshotIds = new Map();
+  for (const taskId of selected) {
     if (!active()) return;
-    if (taskIds && !taskIds.includes(taskId)) continue;
     await createTaskReviewRepository({ deviceId, projectId, taskId, callRpc, active }).refresh();
+    const saved = await readCached(reviewAddress({ deviceId, projectId, taskId }));
+    latestSnapshotIds.set(taskId, latestReviewSnapshot(saved));
   }
+  await refreshCachedReviewReads({ deviceId, projectId, taskIds: selected, latestSnapshotIds, callRpc, support, active });
 }
 
 async function workspaceReviewState({ deviceId, workspaceId, activeReview }) {

@@ -25,7 +25,7 @@ function lifecycleHtml(review, support) {
     ? '<button class="btn" type="button" data-review-reopen>Reopen review</button>' : "";
   const advanced = support.refresh ? '<details data-review-advanced><summary>Advanced</summary><button class="btn" type="button" data-review-repair>Refresh published review</button></details>' : "";
   const readOnly = !close && !reopen && !advanced && !support.merge
-    ? `<p class="sub" data-review-read-only role="status">Pull request: ${esc(statusLabel(review))} · Read-only</p>` : "";
+    ? `<p class="sub" data-review-read-only role="status">Review: ${esc(statusLabel(review))} · Read-only</p>` : "";
   return `<div class="task-review-actions">${close}${reopen}${advanced}${readOnly}
     <p class="warn" data-review-lifecycle-error role="alert" hidden></p></div>`;
 }

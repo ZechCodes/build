@@ -58,10 +58,16 @@ for (const { label, width } of [{ label: "mobile", width: 390 }, { label: "deskt
       expect(gitWidth.page, JSON.stringify(gitWidth)).toBeLessThanOrEqual(gitWidth.viewport + 1);
       await captureLayout(page, `task-review-files-${label}.png`);
 
+      if (width <= 640) await page.locator("[data-review-commits-open]").click();
       await page.locator('[data-directory="dir-notes"]').click();
+      if (width <= 640) await page.locator("[data-review-commits-close]").click();
       await page.waitForSelector('.trf-tree .frow[data-path="notes.md"]');
       expect(await page.locator(".task-review-facts").textContent()).toContain("Live files — not saved with this review");
       expect(await page.locator("#review").textContent()).toContain("Not a Git repository");
+      if (width <= 640) {
+        expect(await page.locator(".trf-labels").isVisible()).toBe(true);
+        expect(await page.locator(".trf-labels").textContent()).toContain("Live files — not saved with this review");
+      }
       const liveWidth = await page.evaluate(() => ({ viewport: innerWidth, page: document.documentElement.scrollWidth }));
       expect(liveWidth.page, JSON.stringify(liveWidth)).toBeLessThanOrEqual(liveWidth.viewport + 1);
       await captureLayout(page, `task-review-live-${label}.png`);
@@ -82,6 +88,7 @@ it("keeps Merge and Push choices within a mobile viewport", async () => {
       await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, snapshot: true, diff: true, complete: true, act: true } });
       await cache.writeReviewRecord(scope, { ...held, version: held.version + 1, destinations: [destination], actions: [] }, 2);
     });
+    await page.locator("details[data-review-more] > summary").click();
     await page.locator('[data-review-act-sheet] summary').click();
     await page.locator('[data-review-merge="dir-api"]').check();
     const size = await page.evaluate(() => ({ viewport: innerWidth, page: document.documentElement.scrollWidth }));

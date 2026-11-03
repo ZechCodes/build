@@ -138,7 +138,7 @@ it.each([false, true])("keeps a historical result retry in its own draft without
   panel.dispose();
   await mount(next, repository, undefined, laterSnapshot);
   expect(repository.mutate).toHaveBeenCalledTimes(1);
-  expect(document.querySelector("[data-pr-merge-submit]").textContent).toBe("Merge PR");
+  expect(document.querySelector("[data-pr-merge-submit]").textContent).toBe("Merge review");
   await submit();
   expect(repository.mutate.mock.calls[1]).toEqual(["merge", { expected_version: 8, snapshot_id: laterSnapshot.id,
     sources: ["api", "ui"].map((id) => ({ directory_id: id, expected_base_head: "4".repeat(40),
@@ -150,7 +150,7 @@ it("ignores a foreign submitted snapshot when restoring the selected snapshot's 
     submitted: params, preparedRequestId: "merge-1", submittedRequestId: "merge-1" });
   const repository = await mount(laterRecord(), { mutate: vi.fn() }, undefined, laterSnapshot);
   expect(repository.mutate).not.toHaveBeenCalled();
-  expect(document.querySelector("[data-pr-merge-submit]").textContent).toBe("Merge PR");
+  expect(document.querySelector("[data-pr-merge-submit]").textContent).toBe("Merge review");
   expect(field("push", "api").matches(":disabled")).toBe(false);
   expect(field("branch", "api").value).toBe("release/latest");
   await submit();

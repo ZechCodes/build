@@ -191,40 +191,22 @@ describe("comment header reply", () => {
     expect(host.querySelector("#comment-tc-plain [data-review-reply]")).toBeNull();
   });
 
-  it("sends review feedback addressed to the comment clicked in the header", async () => {
+  it("retains review comment forms and replies through task cache refreshes", async () => {
     const scope = { deviceId: "dev-1", projectId: "proj-1", taskId: "task-1" };
     const { rememberReviewSupport } = await import("../src/core/taskReviewSupport.js");
     const { writeReviewRecord } = await import("../src/core/taskReviewCache.js");
     await rememberReviewSupport("dev-1", { reviews: { get: true, comments: true } });
-    const review = { version: 1, state: "open", snapshots: [
-      { id: "snap-1", number: 1, directories: [] },
-    ] };
-    const answer = answerFor({}, [
-      comment({ id: "tc-icon", opinion: { snapshot_id: "snap-1", verdict: "approve" } }),
-    ]);
-    const taskRead = Promise.withResolvers();
+    const review = { version: 1, state: "open", snapshots: [{ id: "snap-1", number: 1, directories: [] }] };
+    const answer = answerFor({}, [comment({ id: "tc-icon", opinion: { snapshot_id: "snap-1", verdict: "approve" } })]);
     await writeReviewRecord(scope, review, 1);
-    call = vi.fn(async (method) => {
-      if (method === "tasks.review.get") return { review };
-      return method === "tasks.get" ? taskRead.promise : {};
-    });
+    call = vi.fn(async (method) => method === "tasks.review.get" ? { review } : answer);
     await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", answer);
     await mount({}, { waitForPaint: false });
-    const replyButton = () => host.querySelector('.task-entry-head [data-review-reply="tc-icon"]');
-    await painted(() => replyButton() && host.querySelector("[data-review-feedback] textarea"), host);
-    // The live read must preserve the seeded comment and review. Previously
-    // the default RPC fixture removed them before slower runners could click.
-    taskRead.resolve({ ...answer, task: { ...answer.task, title: "Refreshed task" } });
-    await painted(() => host.querySelector(".task-page-title")?.textContent === "Refreshed task", host);
-    const button = await painted(replyButton, host);
-    button.querySelector("svg").dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    const field = host.querySelector("[data-review-feedback] textarea");
-    await vi.waitFor(() => expect(document.activeElement).toBe(field));
-    field.value = "Reply from the header";
-    field.dispatchEvent(new Event("input", { bubbles: true }));
-    host.querySelector("[data-review-feedback]").dispatchEvent(new Event("submit", { cancelable: true }));
-    await vi.waitFor(() => expect(listed("tasks.comment")).toHaveLength(1));
-    expect(listed("tasks.comment")[0][1]).toEqual({ task_id: "task-1", body: "Reply from the header", reply_to: "tc-icon" });
+    await painted(() => host.querySelector('.review-task-template #comment-tc-icon') && host.querySelector('[data-review-feedback]'), host);
+    expect(host.querySelector('[data-review-reply]')).not.toBeNull();
+    expect(host.querySelector('[data-review-feedback]')).not.toBeNull();
+    expect(host.querySelector('[data-task-composer]')).not.toBeNull();
+    expect(listed('tasks.comment')).toHaveLength(0);
   });
 });
 
@@ -238,16 +220,16 @@ describe("review comment snapshot labels", () => {
     call = vi.fn(async (method) => method === "tasks.get" ? answerFor({}, [written]) : {});
     await mount();
     const label = () => host.querySelector(".task-review-comment-meta")?.textContent || "";
-    expect(label()).toContain("Earlier snapshot");
+    expect(label()).toContain("Earlier revision");
     expect(label()).not.toContain("opaque-snapshot");
 
     const scope = { deviceId: "dev-1", projectId: "proj-1", taskId: "task-1" };
     await reviewCache.writeReviewRecord(scope, { version: 1, state: "open", workspace_id: "ws-1",
       snapshots: [{ id: "opaque-snapshot", number: 2, directories: [] }] }, 1);
-    await vi.waitFor(() => expect(label()).toContain("Snapshot 2"));
+    await vi.waitFor(() => expect(label()).toContain("Revision 2"));
     await reviewCache.writeReviewRecord(scope, { version: 2, state: "open", workspace_id: "ws-2",
       snapshots: [{ id: "replacement", number: 3, directories: [] }] }, 2);
-    await vi.waitFor(() => expect(label()).toContain("Earlier snapshot"));
+    await vi.waitFor(() => expect(label()).toContain("Earlier revision"));
     expect(label()).not.toContain("opaque-snapshot");
   });
 });

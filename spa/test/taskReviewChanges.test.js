@@ -30,6 +30,8 @@ describe("snapshot Changes", () => {
     document.body.append(host);
     const callRpc = vi.fn().mockRejectedValue(new Error("Source unavailable"));
     const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory, callRpc });
+    await waitForFile(host);
+    await pane.refresh();
     await vi.waitFor(() => {
       expect(host.textContent).toContain("src/a.js");
       expect(host.textContent).toContain("Source unavailable");
@@ -252,5 +254,204 @@ describe("snapshot Changes", () => {
     const otherDirectory = await mountSnapshot("snap-4", "content-a", { id: "repo-b" });
     expect(otherDirectory.host.querySelector("[data-review-viewed]").getAttribute("aria-pressed")).toBe("false");
     otherDirectory.pane.dispose();
+  });
+});
+
+describe("selected review comparisons", () => {
+  const commit = "a".repeat(40);
+  it("keeps the commit selection on listing and paged patch reads, with a cache-backed file tree", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const onSelectPath = vi.fn();
+    const callRpc = vi.fn(async (_method, params) => params.paths ? { ...list, patch } : list);
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory, callRpc,
+      comparison: { mode: "commit", commit }, path: "src/a.js", onSelectPath });
+    await waitForPatch(host);
+    expect(host.querySelector('[aria-label="Changed files"] [data-review-tree-path]')).not.toBeNull();
+    expect(host.querySelector('[data-review-tree-path]').getAttribute("aria-level")).toBe("2");
+    expect(host.querySelector('[data-review-tree-directory]').textContent).toBe("src");
+    expect(callRpc.mock.calls.every(([, params]) => params.mode === "commit" && params.commit === commit)).toBe(true);
+    host.querySelector("[data-review-tree-path]").click();
+    expect(onSelectPath).toHaveBeenCalledWith("src/a.js");
+    const address = { deviceId: "dev", entityId: "project", kind: "task-review-commit-patch", sub: JSON.stringify(["task", "snap-1", "repo-a", commit, "src/a.js", "old..new"]) };
+    expect((await readCached(address)).value.patch).toContain("+new");
+    pane.dispose();
+  });
+
+  it("reads since changes from the last reviewed revision and explains rewritten baselines", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const callRpc = vi.fn(async () => ({ ...list, rewritten: true, since_baseline: "base" }));
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory, callRpc,
+      comparison: { mode: "since", from_snapshot_id: "prior" } });
+    await waitForFile(host);
+    expect(callRpc).toHaveBeenCalledWith("tasks.review.diff", expect.objectContaining({ mode: "since", from_snapshot_id: "prior" }));
+    expect(host.textContent).toContain("History changed");
+    expect(host.textContent).toContain("whole revision");
+    pane.dispose();
+  });
+
+  it("draws existing line comments read-only under their exact commit line", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const comments = [{ id: "comment", body: "Please rename this", anchor: { snapshot_id: snapshot.id, directory_id: directory.id, path: "src/a.js", side: "new", line: 1, commit } }];
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory,
+      callRpc: async (_method, params) => params.paths ? { ...list, patch } : list, comparison: { mode: "commit", commit }, path: "src/a.js", comments });
+    await vi.waitFor(() => expect(host.textContent).toContain("Please rename this"));
+    expect(host.querySelector("[data-review-comment]")).toBeNull();
+    pane.dispose();
+  });
+
+  it("reports an unreadable selected commit for whole-range anchor fallback", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const onUnreadableCommit = vi.fn();
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory,
+      comparison: { mode: "commit", commit }, onUnreadableCommit,
+      callRpc: async () => { throw Object.assign(new Error("Commit is outside range"), { code: "invalid_params", details: { reason: "commit_outside_range" } }); } });
+    await vi.waitFor(() => expect(onUnreadableCommit).toHaveBeenCalled());
+    pane.dispose();
+  });
+});
+
+describe("since comparison comment positions", () => {
+  it.each([
+    ["previous_head", false],
+    ["base", true],
+  ])("only reuses old-side range anchors when since baseline is %s", async (baseline, showOld) => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const anchor = { snapshot_id: snapshot.id, directory_id: directory.id, path: "src/a.js", line: 1 };
+    const comments = [
+      { id: "old-comment", body: "Old range position", anchor: { ...anchor, side: "old" } },
+      { id: "new-comment", body: "Current head position", anchor: { ...anchor, side: "new" } },
+    ];
+    const answer = { ...list, since_baseline: baseline };
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory,
+      comparison: { mode: "since", from_snapshot_id: "prior" }, path: "src/a.js", comments,
+      callRpc: async (_method, params) => params.paths ? { ...answer, patch } : answer });
+    await vi.waitFor(() => expect(host.textContent).toContain("Current head position"));
+    expect(host.textContent.includes("Old range position")).toBe(showOld);
+    pane.dispose();
+  });
+});
+
+describe("kept review diff panes", () => {
+  it("updates only inline threads while preserving open sections, source rows and scroll", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const callRpc = vi.fn(async (_method, params) => params.paths ? { ...list, patch } : list);
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory,
+      path: "src/a.js", callRpc });
+    await waitForPatch(host);
+    const section = host.querySelector("[data-review-path]");
+    const sourceRow = host.querySelector('tr[data-side="new"]');
+    const scroll = host.querySelector(".task-review-diff-scroll");
+    scroll.scrollTop = 37;
+    scroll.scrollLeft = 19;
+    const calls = callRpc.mock.calls.length;
+    const anchor = { snapshot_id: snapshot.id, directory_id: directory.id, path: "src/a.js", side: "new", line: 1 };
+    pane.updateComments([{ id: "kept-comment", body: "Fresh comment", anchor }]);
+    expect(host.textContent).toContain("Fresh comment");
+    expect(host.querySelector("[data-review-path]")).toBe(section);
+    expect(host.querySelector('tr[data-side="new"]')).toBe(sourceRow);
+    expect(scroll.scrollTop).toBe(37);
+    expect(scroll.scrollLeft).toBe(19);
+    expect(host.querySelector("[data-review-expand]").getAttribute("aria-expanded")).toBe("true");
+    expect(callRpc.mock.calls).toHaveLength(calls);
+    pane.updateComments([]);
+    expect(host.querySelector("[data-review-inline]")).toBeNull();
+    pane.dispose();
+  });
+
+  it("opens cached immutable comparisons and bodies without refreshing them", async () => {
+    const comparison = { mode: "commit", commit: "a".repeat(40) };
+    const { reviewDiffAddress } = await import("../src/core/taskReviewReads.js");
+    const scope = { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory };
+    await writeCached(reviewDiffAddress(scope, comparison), list);
+    await writeCached(reviewDiffAddress(scope, comparison, "src/a.js"), { patch, content_key: "v1" });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const callRpc = vi.fn();
+    const pane = mountTaskReviewChanges(host, { ...scope, comparison, path: "src/a.js", callRpc });
+    await waitForPatch(host);
+    await pane.selectPath("src/a.js");
+    expect(callRpc).not.toHaveBeenCalled();
+    pane.dispose();
+  });
+});
+
+describe("review selection races", () => {
+  const pathB = "src/b.js";
+  const patchB = patch.replaceAll("src/a.js", pathB);
+  const listing = { ...list, files: [...files, { ...files[0], path: pathB }] };
+  async function deferredPane() {
+    const host = document.createElement("div");
+    document.body.append(host);
+    let resolveA;
+    const delayedA = new Promise((resolve) => { resolveA = resolve; });
+    const callRpc = vi.fn(async (_method, params) => {
+      if (!params.paths) return listing;
+      return params.paths[0] === "src/a.js" ? delayedA : { ...listing, patch: patchB };
+    });
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory, callRpc });
+    await waitForFile(host);
+    return { host, pane, callRpc, resolveA: () => resolveA({ ...listing, patch }) };
+  }
+  function observeScroll() {
+    const paths = [];
+    const previous = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function () { paths.push(this.closest("[data-review-path]")?.dataset.reviewPath); };
+    return { paths, restore() { Element.prototype.scrollIntoView = previous; } };
+  }
+
+  it("lets only the latest selected file scroll after an earlier patch completes", async () => {
+    const { host, pane, callRpc, resolveA } = await deferredPane();
+    const scroll = observeScroll();
+    try {
+      const first = pane.selectPath("src/a.js");
+      await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("tasks.review.diff", expect.objectContaining({ paths: ["src/a.js"] })));
+      const second = pane.selectPath(pathB);
+      resolveA();
+      await Promise.all([first, second]);
+      expect(scroll.paths).toEqual([pathB]);
+      expect(host.querySelector('[data-review-tree-path="src/b.js"]').getAttribute("aria-selected")).toBe("true");
+    } finally { pane.dispose(); scroll.restore(); }
+  });
+
+  it("does not restore an old anchor after another file is selected", async () => {
+    const { host, pane, callRpc, resolveA } = await deferredPane();
+    const scroll = observeScroll();
+    try {
+      const first = pane.reveal({ path: "src/a.js", side: "new", line: 1 });
+      await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("tasks.review.diff", expect.objectContaining({ paths: ["src/a.js"] })));
+      const second = pane.selectPath(pathB);
+      resolveA();
+      const [revealed] = await Promise.all([first, second]);
+      expect(revealed).toBe(false);
+      expect(scroll.paths).toEqual([pathB]);
+      expect(host.querySelector("tr.task-review-anchor")).toBeNull();
+    } finally { pane.dispose(); scroll.restore(); }
+  });
+});
+
+describe("anchored paths missing from a comparison", () => {
+  it.each([
+    ["commit", true],
+    ["changes", false],
+  ])("clears a missing initial anchored path only for %s selection", async (mode, clearsPath) => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const onSelectPath = vi.fn();
+    const anchor = { path: "src/missing.js", side: "new", line: 7 };
+    const comparison = { mode, ...(mode === "commit" ? { commit: "a".repeat(40) } : {}) };
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory,
+      path: anchor.path, anchor, comparison, onSelectPath, callRpc: async () => list });
+    try {
+      await waitForFile(host);
+      expect(await pane.reveal(anchor)).toBe(false);
+      if (clearsPath) expect(onSelectPath).toHaveBeenCalledWith("");
+      else expect(onSelectPath).not.toHaveBeenCalled();
+    } finally { pane.dispose(); }
   });
 });

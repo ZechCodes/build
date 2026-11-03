@@ -1,41 +1,50 @@
 import "../styles/taskReview.css";
 import { readCached, subscribeCache } from "./localCache.js";
-import { uiAddress, watchUiState } from "./localUiState.js";
 import { reviewSupportAddress, readReviewSupport, reviewSupportFor, NO_REVIEW_SUPPORT } from "./taskReviewSupport.js";
 import { createTaskReviewRepository, reviewAddress } from "./taskReviewCache.js";
-import { reviewSnapshot, reviewDirectory, defaultReviewView, reviewHeadHtml, reviewDirectoryHtml } from "./taskReviewRender.js";
+import { createReviewCommitsReader, reviewCommitsAddress } from "./taskReviewReads.js";
+import { reviewSnapshot, reviewDirectory, reviewHeadHtml, reviewDirectoryHtml, reviewRailHtml, reviewBaseline, reviewComparisonBaseline, reviewSinceCount } from "./taskReviewRender.js";
+import { selectionForReview, routeReviewSelection, reviewAnchorSelection, switchReviewSelection } from "./taskReviewSelection.js";
 import { mountTaskReviewControls } from "./taskReviewControls.js";
 import { mountTaskReviewActions } from "./taskReviewActions.js";
 import { mountTaskReviewChanges } from "./taskReviewChanges.js";
 import { mountTaskReviewFiles } from "./taskReviewFiles.js";
+import { mountTaskReviewCreate } from "./taskReviewCreate.js";
 import { mountTaskReviewFeedback, openTaskReviewer } from "./taskReviewFeedback.js";
 import { wireDirectoryTabs } from "./workspaceDirectoryTabs.js";
+import { readTaskRecord, taskAddress } from "./trackerCache.js";
+import { timelineRows } from "./trackerTimeline.js";
 import { refreshFeed } from "./taskFeed.js";
 
-const FRAME = '<div data-review-head></div><p data-review-newer-snapshot class="warn" role="status" hidden></p><div data-review-controls></div><div data-review-git-actions></div><p data-review-error class="warn" role="status" hidden></p><div data-review-directories></div><div data-review-content></div><div data-review-feedback-host></div>';
+const FRAME = `<header class="task-review-header"><div data-review-head></div><details class="task-review-more" data-review-more><summary>More</summary><div class="task-review-more-body"><div data-review-controls></div><div data-review-git-actions></div><div data-review-task-details></div></div></details></header><aside class="task-review-navigation" aria-label="Review commits"><button type="button" class="task-review-sheet-close btn" data-review-commits-close>Close commits</button><div data-review-directories></div><nav data-review-rail></nav></aside><section class="task-review-centre"><div class="task-review-views" role="group" aria-label="Directory view"><button class="btn" type="button" data-review-view="changes">Changes</button><button class="btn" type="button" data-review-view="files">Files</button><button class="btn task-review-comments-tab" type="button" data-review-view="comments">Comments</button></div><p data-review-newer-snapshot class="warn" role="status" hidden></p><p data-review-error class="warn" role="status" hidden></p><div data-review-content></div></section><div data-review-feedback-host class="task-review-standalone-feedback"></div>`;
 const setHtml = (node, html) => { if (node.__reviewHtml !== html) { node.innerHTML = html; node.__reviewHtml = html; } };
-const visibleRecord = (record) => {
-  const { read_order, sync_read_orders, ...visible } = record || {};
-  return visible;
-};
 
-/** One task's saved review. All server records arrive through cache reads;
- * drafts and selection live separately and survive a metadata refresh. */
+/** Saved review content is drawn from cache; the URL owns the reading place. */
 export function mountTaskReviewPage(host, options) {
+  if (options.dedicated === false) return mountTaskReviewCreate(host, options);
   const { deviceId, projectId, taskId, callRpc } = options;
   const scope = { deviceId, projectId, taskId };
   const repository = createTaskReviewRepository({ ...scope, callRpc, generationOf: options.generationOf });
   let record = null;
   let support = NO_REVIEW_SUPPORT;
-  let selection = {};
+  let selection = options.reviewRoute || {};
+  // Phone Comments hides the current centre pane while keeping its reader mounted.
+  let contentView = options.reviewRoute?.view === "files" ? "files" : "changes";
+  let rows = [];
+  let commits = null;
+  let commitsReader = null;
+  let commitsKey = "";
   let disposed = false;
+  let selectionGeneration = 0;
+  let feedback = null;
+  let feedbackKey = "";
+  let canonicalized = Boolean(options.commentId);
   let readSerial = 0;
   let cachePaint = Promise.resolve();
   let notice = "";
   let pane = null;
   let paneKey = "";
-  let feedback = null;
-  let feedbackKey = "";
+  let panePlace = "";
   let controls = null;
   let controlsKey = "";
   let gitActions = null;
@@ -50,25 +59,55 @@ export function mountTaskReviewPage(host, options) {
   const snapshot = () => reviewSnapshot(review(), selection.snapshotId);
   const directory = () => reviewDirectory(snapshot(), selection.directoryId);
   const workspaces = () => options.workspaces?.() || [];
-  const state = watchUiState(uiAddress({ deviceId, entityId: projectId, view: "task-review", kind: "selection", sub: taskId }), (saved) => {
-    selection = saved || {};
+  const taskIdentities = () => options.task?.()?.identities;
+  const baseline = () => reviewComparisonBaseline(review(), rows, snapshot());
+  const identity = () => ({ ...scope, snapshot: snapshot(), directory: directory() });
+  const layout = () => host.closest(".review-task-template") || host;
+
+  function choose(changes, transition = {}) {
+    if (disposed) return;
+    selectionGeneration++;
+    selection = selectionForReview(review(), switchReviewSelection(selection, changes, transition));
+    if (!selection) return;
     paint();
-  });
-  const choose = (changes) => state.write({ ...selection, ...changes });
+    options.markReviewRoute?.({ name: "trackerTask", ...scope, review: routeReviewSelection(selection) });
+  }
+
+  function leaveReadingLayout() {
+    layout().classList.remove("task-review-reading");
+    layout().style.removeProperty("--task-review-reading-width");
+  }
+
+  function selectReview(changes) {
+    leaveReadingLayout();
+    choose(changes);
+  }
 
   function paintHead(saved) {
-    setHtml(node("head"), reviewHeadHtml(review(), saved, support));
+    setHtml(node("head"), reviewHeadHtml(review(), saved, support, { task: options.task?.(), scope, sinceCount: reviewSinceCount(record, reviewBaseline(review(), rows), directory()) }));
     const select = host.querySelector('[data-review-snapshot]');
-    if (select) select.onchange = () => void choose({ snapshotId: select.value, directoryId: null, view: null, path: "", anchor: null });
+    if (select) select.onchange = () => {
+      const target = review().snapshots.find((row) => row.id === select.value);
+      selectReview({ snapshotId: target.id, revision: target.number });
+    };
     const refresh = host.querySelector('[data-review-refresh]');
-    if (refresh) refresh.onclick = () => { void repository.refresh(); void pane?.refresh(); };
+    if (refresh) refresh.onclick = () => { void repository.refresh(); void pane?.refresh(); void commitsReader?.refresh(); };
     const assign = host.querySelector('[data-review-reviewer]');
     if (assign) assign.onclick = () => {
       picker = openTaskReviewer({ ...options, task: options.task?.(), snapshot: saved, onAssigned: options.onTaskChanged });
       void options.refreshCatalog?.().then((catalog) => picker?.setCatalog(catalog));
     };
+    const open = host.querySelector('[data-review-commits-open]');
+    if (open) open.onclick = () => setSheet(true);
   }
 
+  function setSheet(open) {
+    if (open) leaveReadingLayout();
+    host.classList.toggle("task-review-sheet-open", open);
+    host.querySelector('[data-review-commits-open]')?.setAttribute("aria-expanded", String(open));
+    if (open) host.querySelector('[data-review-range]')?.focus();
+    else host.querySelector('[data-review-commits-open]')?.focus();
+  }
   function paintControls(saved) {
     const key = JSON.stringify([saved?.id, support, controlState(), review()?.mode]);
     if (controlsKey === key) return controls?.update(review(), isPr() ? record : workspaces());
@@ -82,21 +121,9 @@ export function mountTaskReviewPage(host, options) {
         if (verb !== "snapshot") return;
         await repository.refresh();
         await hydrate();
-        await choose({ snapshotId: review()?.snapshots.at(-1)?.id, directoryId: null, view: null, path: "", anchor: null });
+        selectReview({ snapshotId: review()?.snapshots.at(-1)?.id, revision: review()?.snapshots.at(-1)?.number });
       },
     });
-  }
-
-  function paintFeedback(saved) {
-    const allowOpinion = !isPr() || support.pullRequests;
-    const key = support.comments && saved ? JSON.stringify([saved.id, allowOpinion]) : "";
-    if (key === feedbackKey) return feedback?.update();
-    feedbackKey = key;
-    feedback?.dispose();
-    feedback = null;
-    node("feedback-host").innerHTML = "";
-    if (key) feedback = mountTaskReviewFeedback(node("feedback-host"), { ...scope, snapshot: saved, callRpc, onSent: async () => { await repository.refresh(); await options.onTaskChanged?.(); }, keepReadingPlace: options.keepReadingPlace,
-      feed: options.feed, projectKey: options.projectKey, allowOpinion, latestSnapshotId: () => review()?.pull_request?.latest_published_snapshot_id });
   }
 
   function paintGitActions(saved) {
@@ -111,17 +138,66 @@ export function mountTaskReviewPage(host, options) {
     });
   }
 
-  function openFiles(path = "") {
-    return choose({ view: "files", path, anchor: null });
+
+  function paintFeedback(saved) {
+    const allowOpinion = !isPr() || support.pullRequests;
+    const key = support.comments && saved ? JSON.stringify([saved.id, allowOpinion]) : "";
+    if (key === feedbackKey) return feedback?.update();
+    feedbackKey = key;
+    feedback?.dispose();
+    feedback = null;
+    const target = options.feedbackHost || node("feedback-host");
+    target.innerHTML = "";
+    if (key) feedback = mountTaskReviewFeedback(target, {
+      ...scope, snapshot: saved, callRpc, allowOpinion, feed: options.feed, projectKey: options.projectKey,
+      keepReadingPlace: options.keepReadingPlace,
+      onSent: async () => { await repository.refresh(); await options.onTaskChanged?.(); },
+      latestSnapshotId: () => review()?.pull_request?.latest_published_snapshot_id,
+    });
   }
 
-  function paintDirectories(saved, dir, view) {
-    setHtml(node("directories"), saved ? reviewDirectoryHtml(saved, dir, view) : "");
+  function openFiles(path = "") { selectReview({ view: "files", path, side: null, line: null }); }
+
+  function paintDirectories(saved, dir) {
+    // Directory facts and source switching sit above the commit list.
+    const html = saved ? reviewDirectoryHtml(saved, dir, selection.view) : "";
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    template.content.querySelector(".task-review-views")?.remove();
+    if (saved?.directories.length < 2) template.content.querySelector(".workspace-dirtabs")?.remove();
+    setHtml(node("directories"), template.innerHTML);
     const row = node("directories").querySelector('[role="tablist"]');
-    if (row) wireDirectoryTabs(row, (id) => void choose({ directoryId: id, view: null, path: "", anchor: null }));
-    host.querySelectorAll('[data-review-view]').forEach((button) => {
-      button.onclick = () => void choose({ view: button.dataset.reviewView });
+    if (row) wireDirectoryTabs(row, (id) => selectReview({ directoryId: id, view: null, path: "", side: null, line: null }));
+  }
+
+  function paintRail() {
+    if (disposed) return;
+    setHtml(node("rail"), reviewRailHtml({ support, selection, commits, baseline: baseline() }));
+    node("rail").querySelectorAll('[data-review-range]').forEach((button) => {
+      button.onclick = () => { selectReview({ mode: button.dataset.reviewRange }); setSheet(false); };
     });
+    node("rail").querySelectorAll('[data-review-commit]').forEach((button) => {
+      button.onclick = () => { selectReview({ mode: "commit", commit: button.dataset.reviewCommit }); setSheet(false); };
+    });
+    const more = node("rail").querySelector('[data-review-more-commits]');
+    if (more) more.onclick = () => void commitsReader?.more();
+  }
+
+  function paintCommits(saved, dir) {
+    const key = saved && dir?.is_git && support.commits ? JSON.stringify([saved.id, dir.id]) : "";
+    if (key === commitsKey) return;
+    commitsReader?.dispose();
+    commitsReader = null;
+    commits = null;
+    commitsKey = key;
+    if (key) commitsReader = createReviewCommitsReader({ ...identity(), callRpc, generationOf: options.generationOf,
+      onChange: (value) => { commits = value; paintRail(); paintHead(snapshot()); } });
+  }
+
+  function comparison() {
+    if (selection.mode === "commit" && support.commit) return { mode: "commit", commit: selection.commit };
+    if (selection.mode === "since" && support.since && baseline()) return { mode: "since", from_snapshot_id: baseline().id };
+    return { mode: "changes" };
   }
 
   function mountPane(saved, dir, view) {
@@ -130,110 +206,173 @@ export function mountTaskReviewPage(host, options) {
     if (dir.status === "unavailable" && view === "changes") { content.textContent = "Source unavailable"; return; }
     if (view === "changes" && dir.status === "not_git") {
       content.innerHTML = '<p>Not a Git repository</p><button class="btn" data-review-open-files>Open Files</button>';
-      content.querySelector('button').onclick = () => void openFiles();
+      content.querySelector('button').onclick = () => openFiles();
       return;
     }
-    const params = {
-      ...scope, workspaceId: review().workspace_id, keepReadingPlace: options.keepReadingPlace, snapshot: saved, directory: dir, callRpc,
-      path: selection.path || "", anchor: selection.anchor,
-      onOpenFile: openFiles,
-      onComment: support.comments ? (anchor) => feedback?.comment(anchor) : null,
+    const params = { ...identity(), workspaceId: review().workspace_id, keepReadingPlace: options.keepReadingPlace, callRpc,
+      path: selection.path || "", anchor: selection.anchor, comparison: comparison(), comments: rows, identities: taskIdentities(), autoOpen: true,
+      onOpenFile: openFiles, onSelectPath: (path) => {
+        if (path !== selection.path) {
+          panePlace = JSON.stringify([path, null]);
+          choose({ path, side: null, line: null });
+        }
+      },
+      onUnreadableCommit: () => { notice = "This commit is unavailable. Showing all changes for this revision."; choose({ mode: "all" }); },
     };
     pane = view === "files" ? mountTaskReviewFiles(content, params) : mountTaskReviewChanges(content, params);
   }
 
   function paintPane(saved, dir, view) {
-    const key = JSON.stringify([saved?.id, dir?.id, view, support.diff, support.comments]);
-    if (key === paneKey) return;
-    paneKey = key;
-    pane?.dispose();
-    pane = null;
-    node("content").innerHTML = "";
-    mountPane(saved, dir, view);
+    const key = JSON.stringify([saved?.id, dir?.id, view, support.diff, comparison()]);
+    if (key !== paneKey) {
+      paneKey = key;
+      panePlace = "";
+      pane?.dispose();
+      pane = null;
+      node("content").innerHTML = "";
+      mountPane(saved, dir, view);
+      // Each pane restores the supplied path/anchor during its own cache read.
+      // Starting a second open here can outlive a subsequent tree selection.
+      panePlace = JSON.stringify([selection.path, selection.anchor]);
+      return;
+    }
+    pane?.updateComments?.(rows);
+    paintPanePlace(view);
+  }
+
+  function paintPanePlace(view) {
+    const place = JSON.stringify([selection.path, selection.anchor]);
+    if (place === panePlace) return;
+    panePlace = place;
+    if (selection.anchor) void pane?.reveal?.(selection.anchor);
+    else if (selection.path) void openSelectedPath(view);
+  }
+
+  function openSelectedPath(view) {
+    if (view === "files") return pane?.open?.(selection.path);
+    return pane?.selectPath?.(selection.path);
   }
 
   function paint() {
     if (disposed) return;
-    // A task embeds this pane above its timeline. Independent review cache
-    // reads must keep that task's reader still as the pane changes height.
     if (options.keepReadingPlace) options.keepReadingPlace(paintContent);
     else paintContent();
   }
 
   function paintContent() {
-    host.hidden = !support.get && !record?.review;
+    host.hidden = !support.get && !review();
+    selection = selectionForReview(review(), selection) || selection;
+    normalizeComparison();
     const saved = snapshot();
     const dir = directory();
-    if (saved) selection.snapshotId = saved.id;
-    if (dir) selection.directoryId = dir.id;
-    const view = selection.view || defaultReviewView(dir);
+    const view = selection.view || "changes";
+    if (view !== "comments") contentView = view;
+    layout().dataset.reviewView = view;
     paintHead(saved);
-    paintNewerSnapshot(saved);
     paintControls(saved);
     paintGitActions(saved);
     paintFeedback(saved);
-    paintDirectories(saved, dir, view);
-    paintPane(saved, dir, view);
+    paintDirectories(saved, dir);
+    paintCommits(saved, dir);
+    paintRail();
+    host.querySelectorAll('[data-review-view]').forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.reviewView === view));
+      button.onclick = () => selectReview({ view: button.dataset.reviewView });
+    });
+    paintPane(saved, dir, contentView);
+    paintNotices(saved);
+  }
+
+  function normalizeComparison() {
+    if (!selection.revision || selection.mode === "all") return;
+    const allowed = selection.mode === "commit" ? support.commit : support.since && baseline();
+    if (allowed) return;
+    notice = "This comparison is unavailable for this revision. Showing all changes.";
+    selection = switchReviewSelection(selection, { mode: "all" });
+  }
+
+  function paintNotices(saved) {
+    const newer = node("newer-snapshot");
+    const latest = review()?.snapshots.at(-1);
+    newer.hidden = !saved || saved.id === latest?.id;
+    newer.textContent = latest ? `Revision ${latest.number} is ready` : "";
     const error = node("error");
     error.textContent = notice || record?.error || "";
     error.hidden = !error.textContent;
   }
 
-  function paintNewerSnapshot(saved) {
-    const newer = node("newer-snapshot");
-    const latest = review()?.pull_request?.latest_published_snapshot_id;
-    const active = ["open", "approved", "changes_requested"].includes(review()?.pull_request?.status);
-    newer.hidden = !active || !latest || !saved || saved.id === latest;
-    const message = "A newer snapshot arrived while you were reviewing. Review the latest snapshot before merging.";
-    if (newer.textContent !== message) newer.textContent = message;
-  }
-
   async function hydrate() {
     const serial = ++readSerial;
-    const [cached, capabilities] = await Promise.all([readCached(reviewAddress(scope)), readReviewSupport(deviceId)]);
+    const [cached, capabilities, taskRecord] = await Promise.all([readCached(reviewAddress(scope)), readReviewSupport(deviceId), readTaskRecord(deviceId, projectId, taskId)]);
     if (disposed || serial !== readSerial) return;
-    const nextRecord = cached?.value || null;
-    const nextSupport = reviewSupportFor(nextRecord?.review, capabilities);
-    const changed = JSON.stringify([visibleRecord(record), support]) !== JSON.stringify([visibleRecord(nextRecord), nextSupport]);
-    record = nextRecord;
-    support = nextSupport;
-    if (changed) paint();
+    record = cached?.value || null;
+    support = reviewSupportFor(record?.review, capabilities);
+    rows = options.rows?.() || timelineRows(taskRecord?.timeline);
+    paint();
+    canonicalizeRoute();
+  }
+
+  function canonicalizeRoute() {
+    if (canonicalized || !selection.revision) return;
+    canonicalized = true;
+    const target = routeReviewSelection(selection);
+    if (JSON.stringify(target) === JSON.stringify(routeReviewSelection(options.reviewRoute))) return;
+    options.markReviewRoute?.({ name: "trackerTask", ...scope, review: target });
+  }
+  async function anchorSelection(anchor) {
+    const saved = review()?.snapshots.find((row) => row.id === anchor.snapshot_id);
+    const dir = saved?.directories.find((row) => row.id === anchor.directory_id);
+    if (!dir) return null;
+    const held = await readCached(reviewCommitsAddress({ ...scope, snapshot: saved, directory: dir }));
+    return reviewAnchorSelection(review(), anchor, { support, commits: held?.value });
   }
   const readForPaint = () => { cachePaint = hydrate(); return cachePaint; };
   const unwatchRecord = subscribeCache(reviewAddress(scope), () => void readForPaint());
+  const unwatchTask = subscribeCache(taskAddress(deviceId, projectId, taskId), () => void readForPaint());
   const unwatchSupport = subscribeCache(reviewSupportAddress(deviceId), () => { void readForPaint().then(() => repository.refresh()); });
-  const ready = Promise.all([readForPaint(), state.ready]).then(async () => {
-    paint();
-    await Promise.all([controls?.ready, feedback?.ready, gitActions?.ready]);
+  host.querySelector('[data-review-commits-close]').onclick = () => setSheet(false);
+  const onKey = (event) => { if (event.key === "Escape") setSheet(false); };
+  host.addEventListener("keydown", onKey);
+  const ready = readForPaint().then(async () => {
+    await Promise.all([controls?.ready, gitActions?.ready, commitsReader?.ready, feedback?.ready]);
     void repository.refresh();
   });
   return {
     ready,
     whenPainted: () => cachePaint,
     feedMoved: paint,
-    refresh() { void repository.refresh(); void pane?.refresh(); },
+    // Reconnect refreshes comparison failures/latest rails through the shared
+    // cache service. A task invalidation only needs fresh review metadata.
+    refresh() { void repository.refresh(); },
     async openAnchor(anchor) {
-      const saved = review()?.snapshots.find((row) => row.id === anchor.snapshot_id);
-      if (!saved?.directories.some((row) => row.id === anchor.directory_id)) {
+      if (disposed) return false;
+      const generation = ++selectionGeneration;
+      const target = await anchorSelection(anchor);
+      if (disposed || generation !== selectionGeneration) return false;
+      if (!target) {
         notice = "Original review context unavailable. The comment remains in the task timeline.";
         paint();
         return false;
       }
-      notice = `Original context: snapshot ${saved.number} · ${anchor.path} · ${anchor.side} line ${anchor.line}`;
-      await choose({ snapshotId: saved.id, directoryId: anchor.directory_id, view: "changes", path: anchor.path, anchor });
-      const revealed = await pane?.reveal?.(anchor);
-      if (revealed === false && anchor.side === "new") await openFiles(anchor.path);
-      host.scrollIntoView?.({ block: "start" });
+      notice = `Original context: Revision ${target.revision} · ${anchor.path} · ${anchor.side} line ${anchor.line}`;
+      selectReview(target);
+      await pane?.reveal?.(anchor);
       return true;
     },
     async reply(comment) {
+      const view = selection.view;
       const available = comment.anchor && await this.openAnchor(comment.anchor);
+      if (disposed) return;
+      if (view === "comments" && available) choose({ view });
       feedback?.comment(available ? comment.anchor : null, comment.id);
     },
     dispose() {
       disposed = true;
-      unwatchRecord(); unwatchSupport(); state.dispose();
-      pane?.dispose(); controls?.dispose(); gitActions?.dispose(); feedback?.dispose(); picker?.close();
+      selectionGeneration++;
+      feedback?.dispose();
+      unwatchRecord(); unwatchSupport(); unwatchTask();
+      host.removeEventListener("keydown", onKey);
+      pane?.dispose(); controls?.dispose(); gitActions?.dispose(); commitsReader?.dispose(); picker?.close();
     },
   };
 }

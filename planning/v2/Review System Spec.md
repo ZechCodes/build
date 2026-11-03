@@ -26,7 +26,8 @@ legacy mode too. Agents have no legacy capture, selected-action or completion
 tool. PR lifecycle tools remain available.
 
 Opening a review for a task with an open legacy review completes that old review
-with “Superseded by #N”, naming the new review task. The completion, parent link,
+with “Superseded by #N”, naming the new review task, and one ReviewCompleted
+event. The work task keeps its status, done_at and trackers. The completion, parent link,
 new task and first revision publish in one transaction. Retrying the original
 opening reuses its identity without duplicating either review or completion.
 
@@ -241,3 +242,9 @@ The original snapshot-mode rollout and selected Merge/Push UI are preserved in
 this document's Git history. They are retired product behavior. The workspace
 opening, verdict loop and snapshot-retirement sections above describe the
 current review flow.
+
+Cold workspace ownership: workspace get/list and feed rows expose optional
+`legacy_review: true` under `tasks.review.snapshotRetired` in wire 3.31.0. This
+comes from persisted review workspace ownership, including completed reviews
+whose tasks have no workspace link, so direct branch visits hide legacy
+Merge/Abandon controls before task or review metadata has been cached.

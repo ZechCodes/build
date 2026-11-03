@@ -2267,3 +2267,32 @@ fn snapshot_retirement_announces_legacy_summary_marker() {
     assert_eq!(result["tasks"][0]["legacy_review"], true);
     assert!(result["tasks"][0].get("review_summary").is_none());
 }
+
+#[test]
+fn workspace_legacy_review_markers_survive_typed_serialization() {
+    for method in ["workspace.get", "workspace.list"] {
+        let fixture = read_json(&fixtures_root().join(format!("v1/{method}.json")));
+        assert_eq!(fixture["legacy_reviews"]["since"], API_VERSION);
+        assert_eq!(
+            fixture["legacy_reviews"]["capability"],
+            "tasks.review.snapshotRetired"
+        );
+        let (_, handler) = v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap();
+        let result = &fixture["legacy_reviews"]["result"];
+        assert_eq!(
+            handler.round_trip_result(result).unwrap(),
+            *result,
+            "{method}"
+        );
+        let row = if method == "workspace.get" {
+            result
+        } else {
+            &result["workspaces"][0]
+        };
+        assert_eq!(row["legacy_review"], true);
+        assert!(row.get("active_review").is_none());
+    }
+}

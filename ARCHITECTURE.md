@@ -1947,7 +1947,11 @@ and are read-only, with an explicit close-out action rather than conversion.
 Wire 3.31.0 announces `tasks.review.snapshotRetired`. Compact task summaries carry
 optional `legacy_review: true`, so the SPA paints Legacy review chips from the
 summary even before review metadata is cached. PR summaries keep `review_summary`.
-The flag also identifies the snapshot retirement behavior described below.
+Workspace get/list and feed rows also carry optional `legacy_review: true`,
+derived from retained review ownership even when its task has no workspace link.
+A cold branch view uses that fact to hide old merge/abandon controls without
+waiting for a task or review record. The flag also identifies the snapshot
+retirement behavior described below.
 
 Task prerequisite storage (#560) lives in `store/waiting_on/`, separate from
 parent links. Schema 16 adds the normalized directed graph, readiness state,
@@ -2186,7 +2190,9 @@ a same-project, open work task, including one with a legacy snapshot review.
 The opening journal retains it; publication rechecks the target and sets the new
 review task's `parent_task_id` in the same transaction as its first revision.
 If that task has an open legacy review, the same transaction completes it with
-“Superseded by #N”, naming the newly published review task. Retrying the opening
+“Superseded by #N”, naming the newly published review task, and records one
+ReviewCompleted event. Supersession leaves the work task’s status, done_at and
+trackers unchanged; explicit Close legacy review retains its Done behavior. Retrying the opening
 uses the reserved identity and original request without duplicating completion
 or publication. The current task's
 `links.parent_task_id` is the relationship's source of truth; the original

@@ -1,4 +1,6 @@
 //! Deterministic cross-process interleavings at the actual persistence boundary.
+// The copied module also exposes production-only registration helpers.
+#[allow(dead_code)]
 #[path = "../../../src/http/endpoint_state.rs"]
 mod endpoint_state;
 

@@ -467,7 +467,10 @@ fn revision_commits_are_topological_and_page_without_duplicates() {
         [&third, &second]
     );
     assert!(page.commits_truncated);
-    assert_eq!(page.commits[0].parents, [second.clone()]);
+    assert_eq!(
+        page.commits[0].parents.as_slice(),
+        std::slice::from_ref(&second)
+    );
     assert_eq!(page.commits[0].subject, "third");
     assert!(!page.commits[0].author_name.is_empty());
     assert!(page.commits[0].time > 0);
@@ -682,8 +685,19 @@ fn commit_list_display_fields_are_bounded_at_utf8_boundaries() {
     let (_temp, repo) = init_repo();
     let mut directory = saved_directory(&repo);
     let oversized = "é".repeat(600);
-    git_in(&repo, &["config", "user.name", &oversized]);
-    directory.head = Some(commit_file(&repo, "large-subject.txt", &oversized));
+    std::fs::write(repo.join("large-subject.txt"), "large display fields\n").unwrap();
+    git_in(&repo, &["add", "large-subject.txt"]);
+    assert!(git_command(&repo, &["commit", "-m", &oversized])
+        .env("GIT_AUTHOR_NAME", &oversized)
+        .status()
+        .unwrap()
+        .success());
+    directory.head = git2::Repository::open(&repo)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .map(|oid| oid.to_string());
     let ReviewReadResult::Commits(page) =
         read(&directory, &request(ReviewReadMode::Commits, None)).unwrap()
     else {

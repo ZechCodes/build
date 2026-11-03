@@ -450,6 +450,8 @@ fn is_blob_media(mime: &str) -> bool {
 }
 
 mod commits;
+#[cfg(test)]
+pub(crate) use commits::install_commit_validation_gate;
 pub use commits::read_since;
 pub use commits::validate_commit;
 

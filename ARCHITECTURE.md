@@ -1967,10 +1967,16 @@ directory, which is the retained receiver for PR reviews, so deleting the
 original workspace does not remove review history.
 
 `git.showPaths` independently advertises the same optional `paths` filter on
-workspace `git.show`. `tasks.review.anchorCommit` advertises an optional
+workspace `git.show`. Filtering precedes rename detection, so selecting only a
+renamed file's new path can show it as an added file.
+`tasks.review.anchorCommit` advertises an optional
 `commit` OID on comment anchors; it must belong to the anchored snapshot and
 directory's `base..head`. Older anchors without the field retain their range
-meaning. Invalid commit selections return structured review errors.
+meaning. Invalid commit selections return structured review errors. Anchor
+writes resolve the saved directory under the app lock, validate the commit
+range off-lock, then recheck metadata and write against the current task. An
+opinion retains the review version captured before validation, so a newly
+published revision still refuses the stale opinion.
 
 PR-style opening is a service in `bridge/src/reviews/opening.rs`, exposed by
 wire 3.15.0's typed RPC and MCP adapters (#405). `api/v1/reviews.rs` owns the

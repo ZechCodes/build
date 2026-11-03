@@ -60,6 +60,8 @@ pub fn validate_commit(directory: &ReviewDirectory, commit: &str) -> Result<(), 
         .common_git_dir
         .as_deref()
         .ok_or("Source unavailable")?;
+    #[cfg(test)]
+    validation_gate::arrive(git_dir);
     let repo = Repository::open_bare(git_dir).map_err(unavailable)?;
     if exact_oid(commit).is_some_and(|oid| contains_commit(&repo, directory, oid)) {
         Ok(())
@@ -282,4 +284,29 @@ pub fn read_since(
         });
     }
     Ok(result)
+}
+
+#[cfg(test)]
+pub(crate) use validation_gate::install as install_commit_validation_gate;
+
+#[cfg(test)]
+mod validation_gate {
+    use crate::test_support::off_lock::OffLockGate;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::{LazyLock, Mutex};
+
+    static GATES: LazyLock<Mutex<HashMap<PathBuf, OffLockGate>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    pub(crate) fn install(git_dir: PathBuf, gate: OffLockGate) {
+        assert!(GATES.lock().unwrap().insert(git_dir, gate).is_none());
+    }
+
+    pub(super) fn arrive(git_dir: &Path) {
+        let gate = GATES.lock().unwrap().remove(git_dir);
+        if let Some(gate) = gate {
+            gate.arrive();
+        }
+    }
 }

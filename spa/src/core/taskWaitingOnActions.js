@@ -18,11 +18,12 @@ function requireSupport(capable, createsWorkspace, seen, requiresWaitingOn) {
 }
 
 export function createTaskWaitingOnActions({ deviceId, projectId, taskId, call }) {
+  const hasCacheScope = [deviceId, projectId].every((id) => typeof id === "string" && id.length > 0);
   async function send(method, params, options, stands) {
     const assignment = isOrdinaryAssignment(method, params);
     const createsWorkspace = assignment && params.assignee?.kind === "new_workspace";
     const seen = createsWorkspace && await readTaskWaitingOnEverSupported(deviceId);
-    const contentRead = method === "tasks.waiting_on.blocks" ? undefined : await captureTaskContentRead(taskId ? taskAddress(deviceId, projectId, taskId) : { deviceId, projectId },
+    const contentRead = !hasCacheScope || method === "tasks.waiting_on.blocks" ? undefined : await captureTaskContentRead(taskId ? taskAddress(deviceId, projectId, taskId) : { deviceId, projectId },
       taskId ? { revalidate: "full" } : {});
     const issuedRead = contentRead?.readOrder;
     // The greeting may change during the cache read. Recheck its authority,
@@ -35,7 +36,7 @@ export function createTaskWaitingOnActions({ deviceId, projectId, taskId, call }
 
   async function ask(method, params, options = {}) {
     const context = contextFor(deviceId);
-    const basis = method === "tasks.waiting_on.blocks"
+    const basis = hasCacheScope && method === "tasks.waiting_on.blocks"
       ? await captureTaskWaitingOnBlocksRead(deviceId, projectId, taskId) : {};
     // Established commands retain their before-greeting behavior for callers
     // with no session context. New graph contracts always need a greeting.
@@ -46,6 +47,9 @@ export function createTaskWaitingOnActions({ deviceId, projectId, taskId, call }
     if (!request) throw new Error("This machine is unavailable. Try again when it returns.");
     const { answer, issuedRead, contentRead } = await request.sent;
     if (!request.stands()) throw new Error("This machine's greeting changed while the request was running. Reload the task before trying again.");
+    // Standalone legacy controls return the acknowledgment to their caller;
+    // only a complete cache scope may allocate or publish local authority.
+    if (!hasCacheScope) return answer;
     const writeOptions = { ...basis, issuedRead, contentRead, accept: request.stands, cursor: options.cursor };
     if (method === "tasks.waiting_on.blocks") await cacheTaskWaitingOnBlocks(deviceId, projectId, taskId, answer, writeOptions);
     else await cacheTaskWaitingOnResponse(deviceId, projectId, answer, writeOptions);

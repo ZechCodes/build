@@ -105,3 +105,15 @@ it.each([null, undefined])("refuses unknown history (%s) and offers retry/refres
   await expect(actions.assign({ assignee: { kind: "new_workspace" } })).rejects.toThrow(/retry|refresh/i);
   expect(call).not.toHaveBeenCalled();
 });
+
+it("returns an unscoped legacy assignment without inventing a cache publication scope", async () => {
+  mocks.context = null;
+  mocks.capabilities = { tasks: {} };
+  const answer = { task: { id: "t", project_id: "p" }, dispatch: { agent_id: "a" } };
+  call.mockResolvedValueOnce(answer);
+  const unscoped = createTaskWaitingOnActions({ deviceId: "", taskId: "t", call });
+  await expect(unscoped.assign({ assignee: { kind: "agent", agent_id: "a" } })).resolves.toBe(answer);
+  expect(call).toHaveBeenCalledExactlyOnceWith("tasks.assign", { task_id: "t", assignee: { kind: "agent", agent_id: "a" } });
+  expect(mocks.cache).not.toHaveBeenCalled();
+  expect(mocks.blocks).not.toHaveBeenCalled();
+});

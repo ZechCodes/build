@@ -76,7 +76,8 @@ export function createTaskReviewBatch(options) {
     if (!submission) return { ...value, error: "" };
     const rows = operationRows();
     const bad = submission.operations.map((operation) => rows.find((row) => row.operationId === operation.operationId)).find(failure);
-    return { ...value, submission: { ...submission, status: bad ? "failed" : "queued" }, error: bad ? failureMessage(bad) : "" };
+    const error = bad ? failureMessage(bad) : submission.enqueueError || "";
+    return { ...value, submission: { ...submission, status: error ? "failed" : "queued" }, error };
   }
   async function hydrate() {
     const serial = ++readSerial;
@@ -87,7 +88,8 @@ export function createTaskReviewBatch(options) {
   }
   const ready = hydrate().then(async () => {
     if (!disposed && value.submission && writeOperations?.enqueueBatch) {
-      await writeOperations.enqueueBatch(value.submission.operations);
+      try { await enqueuePersisted(value.submission); }
+      catch { /* The retained enqueue error makes this submission retryable. */ }
     }
   });
   function change(update) {
@@ -138,9 +140,39 @@ export function createTaskReviewBatch(options) {
     const submission = await prepare(verdict);
     if (!submission) return [];
     if (!writeOperations?.enqueueBatch) return sendFallback(submission);
-    const ids = await writeOperations.enqueueBatch(submission.operations);
+    const ids = await enqueuePersisted(submission);
     await reconcile();
     return ids;
+  }
+  async function enqueuePersisted(submission) {
+    try {
+      const ids = await writeOperations.enqueueBatch(submission.operations);
+      await saveEnqueueError(submission.id, null);
+      return ids;
+    } catch (error) {
+      await saveEnqueueError(submission.id, String(error?.message || error));
+      throw error;
+    }
+  }
+  async function saveEnqueueError(id, enqueueError) {
+    await updateUiRecord(address, (held) => held?.submission?.id === id
+      ? { ...held, submission: { ...held.submission, enqueueError } } : held);
+    await hydrate();
+  }
+  async function retry() {
+    await ready;
+    await edits;
+    const submission = value.submission;
+    if (!submission) return [];
+    if (!writeOperations?.enqueueBatch) return sendFallback(submission);
+    const ids = await enqueuePersisted(submission);
+    await reconcile();
+    return ids;
+  }
+  function startSubmission(action) {
+    if (submitting) return submitting;
+    submitting = action().finally(() => { submitting = null; });
+    return submitting;
   }
   async function recover() {
     await edits;
@@ -174,10 +206,9 @@ export function createTaskReviewBatch(options) {
     flush: () => edits,
     submit(verdict = "") {
       if (!["", "approve", "request_changes"].includes(verdict)) return Promise.reject(new Error("Invalid review verdict"));
-      if (submitting) return submitting;
-      submitting = send(verdict).finally(() => { submitting = null; });
-      return submitting;
+      return startSubmission(() => send(verdict));
     },
+    retry: () => startSubmission(retry),
     recover,
     dispose() { disposed = true; unwatch(); stopOperations(); },
   };

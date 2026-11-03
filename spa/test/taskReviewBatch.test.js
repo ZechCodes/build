@@ -70,6 +70,43 @@ describe("review batch drafts", () => {
     model.dispose();
   });
 
+  it("shows an enqueue failure and retries the same IDs without clearing drafts or assuming they are absent", async () => {
+    const enqueueBatch = vi.fn().mockRejectedValueOnce(new Error("Disk unavailable")).mockResolvedValue([]);
+    const service = { enqueueBatch, readOperations: () => [], subscribe: () => () => {} };
+    const model = create({ taskId: "enqueue-retry", writeOperations: service });
+    await model.ready;
+    await model.add({ body: "Retain me", anchor });
+    await expect(model.submit("request_changes")).rejects.toThrow("Disk unavailable");
+    const captured = enqueueBatch.mock.calls[0][0];
+    expect(model.read().submission).toMatchObject({ status: "failed", enqueueError: "Disk unavailable" });
+    expect(model.read().error).toBe("Disk unavailable");
+    await expect(model.recover()).rejects.toThrow("result is still being checked");
+    expect(model.read().drafts[0].body).toBe("Retain me");
+    await model.retry();
+    expect(enqueueBatch.mock.calls[1][0]).toEqual(captured);
+    expect(model.read().submission).toMatchObject({ status: "queued", enqueueError: null });
+    expect(model.read().error).toBe("");
+    expect(model.read().drafts[0].body).toBe("Retain me");
+    model.dispose();
+  });
+
+  it("keeps the mount usable when resuming a saved submission cannot enqueue", async () => {
+    const enqueueBatch = vi.fn().mockRejectedValue(new Error("Update this bridge"));
+    const service = { enqueueBatch, readOperations: () => [], subscribe: () => () => {} };
+    const first = create({ taskId: "resume-enqueue-refusal", writeOperations: service });
+    await first.ready;
+    await first.add({ body: "Still here", anchor });
+    await expect(first.submit("approve")).rejects.toThrow("Update this bridge");
+    first.dispose();
+    const restored = create({ taskId: "resume-enqueue-refusal", writeOperations: service });
+    await expect(restored.ready).resolves.toBeUndefined();
+    expect(restored.read().submission.enqueueError).toBe("Update this bridge");
+    enqueueBatch.mockResolvedValue([]);
+    await restored.retry();
+    expect(restored.read().submission.status).toBe("queued");
+    restored.dispose();
+  });
+
   it("resumes the same prepared operation IDs after a crash before atomic enqueue", async () => {
     const enqueueBatch = vi.fn().mockRejectedValueOnce(new Error("Disk unavailable")).mockResolvedValue([]);
     const service = { enqueueBatch, readOperations: () => [], subscribe: () => () => {} };

@@ -117,7 +117,6 @@ pub(in crate::store) fn initialize(
     put(&tx, "sync_file_binding", &binding)?;
     tx.commit()?;
     super::task_publication::install(conn)?;
-    super::device_producers::install(conn)?;
     Ok(())
 }
 

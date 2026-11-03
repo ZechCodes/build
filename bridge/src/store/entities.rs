@@ -433,16 +433,6 @@ impl Store {
             // the live map; the same writer lock orders both operations.
             self.attention_map_epoch
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let previous = tx
-                .prepare("SELECT entity_id FROM attention")?
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            for id in previous {
-                super::sync::touch_device_owner(tx, &id)?;
-            }
-            for id in live {
-                super::sync::touch_device_owner(tx, id)?;
-            }
             tx.execute("DELETE FROM attention", [])?;
             let mut insert =
                 tx.prepare("INSERT INTO attention (entity_id, record) VALUES (?1, ?2)")?;
@@ -478,7 +468,6 @@ impl Store {
             .collect::<Result<_, _>>()?;
         drop(roster);
         for gone in existing.iter().filter(|id| !keep.contains(id.as_str())) {
-            super::sync::touch_device_agent(tx, gone)?;
             // Removing an agent removes its conversation, but cannot erase the
             // time it contributed to the still-live workspace/project session.
             // Copy and delete in this transaction so replay sees either both
@@ -516,7 +505,6 @@ impl Store {
         )?;
 
         for agent in agents {
-            super::sync::touch_device_agent(tx, &agent.id)?;
             // The agent row carries everything about the conversation EXCEPT
             // its items — sessions, revisions, the last completion report —
             // because those are small, bounded and always read whole.
@@ -791,7 +779,6 @@ impl Store {
                 .collect();
             drop(owned);
             for owner in std::iter::once(plan_id.to_string()).chain(runs) {
-                super::sync::touch_device_owner(tx, &owner)?;
                 remove_owner_identities(tx, &owner)?;
                 tx.execute(
                     "DELETE FROM inbox_retained_run_messages WHERE run_id = ?1",
@@ -896,7 +883,6 @@ impl Store {
     }
     pub fn delete_run(&self, run_id: &str) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
-            super::sync::touch_device_owner(tx, run_id)?;
             remove_owner_identities(tx, run_id)?;
             tx.execute(
                 "DELETE FROM inbox_retained_run_messages WHERE run_id = ?1",
@@ -921,7 +907,6 @@ impl Store {
         project_id: &str,
     ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
-            super::sync::touch_device_owner(tx, run_id)?;
             remove_owner_identities(tx, run_id)?;
             tx.execute(
                 "INSERT INTO inbox_retained_messages (project_id, ts_ms) \
@@ -973,7 +958,7 @@ impl Store {
         })
     }
     pub fn save_capture(&self, record: &crate::capture::Capture) -> Result<(), StoreError> {
-        self.writer().sync_transaction(|tx, batch| {
+        self.in_transaction(|tx| {
             tx.execute(
                 "INSERT INTO captures (id, record) VALUES (?1, ?2)
                  ON CONFLICT(id) DO UPDATE SET record = ?2",
@@ -982,24 +967,12 @@ impl Store {
                     serde_json::to_string(record).expect("a capture always serializes")
                 ],
             )?;
-            super::sync::stage_device(
-                tx,
-                batch,
-                super::sync::Entity::new("inbox_capture", &record.id),
-                Some(device_capture(record)),
-            )?;
             Ok(())
         })
     }
     pub fn delete_capture(&self, capture_id: &str) -> Result<(), StoreError> {
-        self.writer().sync_transaction(|tx, batch| {
+        self.in_transaction(|tx| {
             tx.execute("DELETE FROM captures WHERE id = ?1", [capture_id])?;
-            super::sync::stage_device(
-                tx,
-                batch,
-                super::sync::Entity::new("inbox_capture", capture_id),
-                None,
-            )?;
             Ok(())
         })
     }
@@ -1073,20 +1046,6 @@ impl Store {
         }
         std::fs::read_to_string(self.plan_docs_dir(plan_id).join(rel_path)).ok()
     }
-}
-
-fn device_capture(record: &crate::capture::Capture) -> serde_json::Value {
-    let title = record.text.chars().take(256).collect::<String>();
-    serde_json::json!({
-        "id":record.id,
-        "project_id":record.routing.as_ref().map(|routing| routing.project_id.as_str()),
-        "title":title,
-        "state":record.state,
-        "created_at":record.created_at,
-        "updated_at":record.created_at,
-        "needs_answer":record.awaiting_answer(),
-        "error":if matches!(record.state, crate::capture::CaptureState::Failed) {record.progress.as_deref()} else {None},
-    })
 }
 
 pub(super) fn primary_agent_id(

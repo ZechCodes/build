@@ -108,7 +108,7 @@ fn completion_keeps_pins_and_explicit_history_deletion_releases_them() {
     let before = pins(&repo);
     assert_eq!(before.len(), 2);
     store
-        .complete_review(
+        .finish_review(
             &request.task_id,
             saved.version,
             &Actor::User,

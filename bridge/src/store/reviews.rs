@@ -60,6 +60,19 @@ impl Store {
         load_review(&self.connection(), task_id)
     }
 
+    /// Retained legacy identity belongs to the saved review's workspace,
+    /// independently of optional work-task links or completion state.
+    pub fn workspace_has_legacy_review(&self, workspace_id: &str) -> Result<bool, StoreError> {
+        self.connection()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM reviews WHERE workspace_id=?1
+                AND COALESCE(json_extract(record,'$.mode'),'snapshot')='snapshot')",
+                [workspace_id],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::from)
+    }
+
     /// Append one already-captured snapshot. The caller minted its unique ID
     /// before pinning Git refs; this transaction alone assigns its display
     /// number and checks the version. A losing caller can clean only its refs.
@@ -128,20 +141,20 @@ impl Store {
     /// Finish the review and move its task to Done in one metadata commit.
     /// Task closure stays independent; the task remains open unless it was
     /// already explicitly closed.
-    pub fn complete_review(
+    pub fn finish_review(
         &self,
         task_id: &str,
         expected_version: u64,
         actor: &Actor,
         description: &str,
     ) -> Result<Review, StoreError> {
-        self.complete_review_with_events(task_id, expected_version, actor, description)
+        self.finish_review_with_events(task_id, expected_version, actor, description)
             .map(|(review, _)| review)
     }
 
     /// Return the activity written in the completion transaction so the app
     /// can deliver the same post-write notices as an ordinary task move.
-    pub fn complete_review_with_events(
+    pub fn finish_review_with_events(
         &self,
         task_id: &str,
         expected_version: u64,
@@ -150,13 +163,13 @@ impl Store {
     ) -> Result<(Review, Vec<TaskEvent>), StoreError> {
         let description = validate_description(description)?;
         self.in_waiting_on_transaction(|tx| {
-            complete_review_requested(tx, task_id, expected_version, actor, description)
+            finish_review_requested(tx, task_id, expected_version, actor, description)
         })
     }
 
     /// Capture the completed task and events in the completion transaction.
     /// A failed capture rolls back the review and its task activity together.
-    pub(crate) fn complete_review_with_task(
+    pub(crate) fn finish_review_with_task(
         &self,
         task_id: &str,
         expected_version: u64,
@@ -166,7 +179,7 @@ impl Store {
         let description = validate_description(description)?;
         self.in_waiting_on_transaction(|tx| {
             let (review, events) =
-                complete_review_requested(tx, task_id, expected_version, actor, description)?;
+                finish_review_requested(tx, task_id, expected_version, actor, description)?;
             let task = require_task(tx, task_id)?;
             Ok((review, task, events))
         })
@@ -175,7 +188,7 @@ impl Store {
     /// A task move to Done completes a review if it is open at the moment of
     /// the write. The check and all task activity share one transaction, so a
     /// snapshot reopening the review cannot slip between them.
-    pub fn complete_review_with_task_activity(
+    pub fn finish_review_with_task_activity(
         &self,
         task: &Task,
         comments: &[TaskComment],
@@ -185,7 +198,7 @@ impl Store {
     ) -> Result<Option<TaskEvent>, StoreError> {
         self.in_waiting_on_transaction(|tx| {
             if load_header(tx, &task.id)?.is_some_and(|review| review.state == ReviewState::Open) {
-                return complete_review_in_tx(
+                return finish_review_in_tx(
                     tx,
                     CompletionWrite {
                         task,
@@ -233,7 +246,7 @@ pub(super) fn load_reviews_of_project(
         .collect()
 }
 
-fn complete_review_requested(
+fn finish_review_requested(
     tx: &Transaction,
     task_id: &str,
     expected_version: u64,
@@ -242,7 +255,7 @@ fn complete_review_requested(
 ) -> Result<(Review, Vec<TaskEvent>), StoreError> {
     let task = require_task(tx, task_id)?;
     let now = now_rfc3339();
-    complete_review_in_tx(
+    finish_review_in_tx(
         tx,
         CompletionWrite {
             task: &task,
@@ -257,7 +270,7 @@ fn complete_review_requested(
     )
 }
 
-fn complete_review_in_tx(
+fn finish_review_in_tx(
     tx: &Transaction,
     write: CompletionWrite<'_>,
 ) -> Result<(Review, Vec<TaskEvent>), StoreError> {

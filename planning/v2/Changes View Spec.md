@@ -1,5 +1,26 @@
 # Changes View Spec
 
+## Review flow amendment — #974 (2026-11-03)
+
+The live workspace Changes tray is labelled **Notes to agent**. Its pending
+notes go to the agent and remain separate from anchored comments on a saved
+review revision. Request review opens the shared workspace form; View review
+opens its saved review once published. Reviewers read and decide verdicts on
+that review page rather than through the live Changes tray.
+
+Existing snapshot reviews are read-only. Their saved Changes and Files remain
+available with “Legacy review (read-only)”, a Request a review from @workspace
+action preset to the legacy task, and Close legacy review under More. No legacy
+Merge & Push panel, Mark complete form or verdict bar remains. Anchored review
+comments and the pending tray are read-only; ordinary plain task comments remain
+available. Opening the
+replacement review supersedes an open legacy review atomically.
+
+Run/worktree branch views hide the legacy Merge split button and merge/abandon
+controls when their workspace has a review, so review-backed work uses the review
+lifecycle. Runs with no review keep those controls for ordinary completion.
+
+
 ## Project source Changes — #522 implementation amendment (2026-10-13)
 
 Implemented by #529–#536 under the settled

@@ -125,7 +125,7 @@ fn aggregate_contributions_reassign_delete_and_rollback_atomically() {
 }
 
 #[test]
-fn snapshot_review_default_and_rebuild_keep_exact_counts() {
+fn legacy_review_default_and_rebuild_keep_exact_counts() {
     let dir = tempfile::tempdir().unwrap();
     let task_id = {
         let store = Store::new(dir.path()).unwrap();

@@ -70,6 +70,7 @@ export function createWorktreeReview({
   onGone = () => {},
   navigate = null,
   viewingContext = null,
+  hasReview,
 }) {
   // A mutating action (request changes / merge / abandon) is running: it is
   // about to adopt or remove this worktree, so the poll must not race it to a
@@ -211,7 +212,7 @@ export function createWorktreeReview({
     // rather than an instruction, so it belongs beside the file counts.
     statusHtml: () => (meta && !meta.adoptable ? `<span class="dim">${esc(unadoptableHint(meta))}</span>` : ""),
     renderIdleActions: (actions) => {
-      const adoptable = Boolean(meta && meta.adoptable);
+      const adoptable = Boolean(meta && meta.adoptable) && !hasReview?.();
       // This runs on every 1.6s poll, and rebuilding the bar would take the
       // merge menu the reviewer just opened — and the button a press is landing
       // on — with it. What the bar offers turns on one thing, so a tick that

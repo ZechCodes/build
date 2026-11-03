@@ -16,7 +16,7 @@ fn interrupted_capture_keeps_terminal_receiver_until_recovery_finishes() {
     drop(capture);
     fixture
         .store
-        .complete_review(fixture.task_id(), review.version, &Actor::User, "Closed")
+        .finish_review(fixture.task_id(), review.version, &Actor::User, "Closed")
         .unwrap();
     std::fs::remove_dir_all(&fixture.request.workspace.root).unwrap();
     let mut worker = Worker::new(fixture.store.clone(), fixture.request.receiver_root.clone());
@@ -78,7 +78,7 @@ fn pushed_review_survives_source_gc_then_closes_and_reclaims_its_receiver() {
 
     fixture
         .store
-        .complete_review(fixture.task_id(), review.version, &Actor::User, "Abandoned")
+        .finish_review(fixture.task_id(), review.version, &Actor::User, "Abandoned")
         .unwrap();
     let mut worker = Worker::new(fixture.store.clone(), fixture.request.receiver_root.clone());
     worker.turn_after_grace().unwrap();

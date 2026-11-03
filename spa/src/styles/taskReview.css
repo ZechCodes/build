@@ -20,8 +20,6 @@
 .task-review-actions input, .task-review-actions select, .task-review-actions textarea { width: 100%; min-width: 0; box-sizing: border-box; }
 .task-review-actions [data-review-bases] { display: grid; gap: 10px; }
 .task-review [data-review-git-actions] { margin-bottom: 16px; }
-.task-review [data-review-act-sheet] summary { cursor: pointer; color: var(--accent); padding: 8px 0; }
-.task-review [data-review-act] { display: grid; gap: 12px; padding: 12px 0; }
 .task-review-source { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
 .task-review-source legend { padding: 0 5px; font-weight: 600; }
 .task-review-source p { margin: 0; overflow-wrap: anywhere; }

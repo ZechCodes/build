@@ -170,6 +170,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     diffs: { perFile: names.has("diffs.perFile") },
     bodies: { pages: names.has("bodies.pages"), mediaRawPages: names.has("fs.mediaRawPages") },
     reviews: {
+      snapshotRetired: names.has("tasks.review.snapshotRetired"),
       ...Object.fromEntries(Object.entries(REVIEW_METHODS).map(([verb, method]) => [verb, names.has(method)])),
       reject: names.has("tasks.review.reject"),
       author: names.has("tasks.review.author"),

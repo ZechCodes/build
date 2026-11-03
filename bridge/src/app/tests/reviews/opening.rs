@@ -581,3 +581,47 @@ fn project_agent_reviewers_decide_after_opening_and_generic_assignment() {
         assert_eq!(task["task"]["status"], "done");
     }
 }
+
+#[test]
+fn workspace_review_rpc_supersedes_linked_legacy_review_and_preserves_read_history() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repository, mut state, project) = tracked(home.path());
+    let workspace_id = workspace(&mut state, &project, "legacy replacement");
+    let work = filed(&mut state, &project, "Legacy work review");
+    let legacy = legacy_review(
+        &mut state,
+        json!({"task_id":work["id"],"workspace_id":workspace_id,"expected_version":0}),
+    );
+    let mut requested = params(&workspace_id);
+    requested.for_task_id = Some(work["id"].as_str().unwrap().into());
+    let requested = serde_json::to_value(requested).unwrap();
+    let opened = review_call(&mut state, "tasks.review.open", requested.clone());
+    let retained = review_call(
+        &mut state,
+        "tasks.review.get",
+        json!({"task_id":work["id"]}),
+    );
+    assert_eq!(retained["review"]["state"], "completed");
+    assert_eq!(
+        retained["review"]["completion"]["description"],
+        format!("Superseded by #{}", opened["task"]["number"])
+    );
+    assert_eq!(
+        retained["review"]["snapshots"],
+        legacy["review"]["snapshots"]
+    );
+    let snapshot = &retained["review"]["snapshots"][0];
+    let bytes = review_call(
+        &mut state,
+        "tasks.review.diff",
+        json!({"task_id":work["id"],"snapshot_id":snapshot["id"],"directory_id":snapshot["directories"][0]["id"],"mode":"blob","path":"README.md"}),
+    );
+    assert_eq!(
+        bytes["content_b64"],
+        crate::encoding::b64encode(b"# project\n")
+    );
+    assert_eq!(
+        review_call(&mut state, "tasks.review.open", requested)["review"],
+        opened["review"]
+    );
+}

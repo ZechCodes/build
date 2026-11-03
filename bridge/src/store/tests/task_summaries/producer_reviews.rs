@@ -231,3 +231,41 @@ fn deciding_user_assignment_yields_to_author_until_the_next_revision() {
         assert_review_card(&store, &task.id);
     }
 }
+
+#[test]
+fn legacy_review_marker_survives_cold_reads_and_removes_stale_mode_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let task = store
+        .create_tracker_task(
+            crate::tracker::Task::drafted("/repo", "Legacy review", Actor::User, NOW),
+            &[],
+        )
+        .unwrap();
+    assert!(summary(&store, "/repo").get("legacy_review").is_none());
+    store
+        .save_review_snapshot(&task.id, "ws-legacy", 0, snapshot())
+        .unwrap();
+    let card = summary(&store, "/repo");
+    assert_eq!(card["legacy_review"], true);
+    assert!(card.get("review_summary").is_none());
+    drop(store);
+    let store = Store::new(dir.path()).unwrap();
+    assert_eq!(summary(&store, "/repo")["legacy_review"], true);
+    let conn = store.connection();
+    conn.execute("UPDATE reviews SET record=json_set(record,'$.mode','pull_request','$.pull_request',json(?1)) WHERE task_id=?2",
+        rusqlite::params![r#"{"originating_workspace_id":"ws-legacy","status":"open"}"#, task.id]).unwrap();
+    projection::metadata_refresh(&conn, &task.id).unwrap();
+    drop(conn);
+    let card = summary(&store, "/repo");
+    assert!(card.get("legacy_review").is_none());
+    assert_eq!(card["review_summary"]["status"], "open");
+    let conn = store.connection();
+    conn.execute("DELETE FROM reviews WHERE task_id=?1", [&task.id])
+        .unwrap();
+    projection::metadata_refresh(&conn, &task.id).unwrap();
+    drop(conn);
+    let card = summary(&store, "/repo");
+    assert!(card.get("legacy_review").is_none());
+    assert!(card.get("review_summary").is_none());
+}

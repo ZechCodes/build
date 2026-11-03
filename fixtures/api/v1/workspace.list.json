@@ -399,5 +399,243 @@
     "fields": [
       "active_review"
     ]
+  },
+  "legacy_reviews": {
+    "since": "3.31.0",
+    "capability": "tasks.review.snapshotRetired",
+    "description": "Retained legacy review ownership, including when its task has no workspace link.",
+    "result": {
+      "workspaces": [
+        {
+          "id": "ws-3f2a91c4",
+          "workspace_id": "ws-3f2a91c4",
+          "project_id": "proj-1",
+          "name": "wire-facade",
+          "root": "/home/ada/.build/workspaces/proj-1/wire-facade",
+          "status": "ready",
+          "created_by_agent": false,
+          "locked": false,
+          "directories": [
+            {
+              "id": "ws-3f2a91c4:source-1",
+              "source_id": "source-1",
+              "name": "bridge",
+              "path": "/home/ada/.build/workspaces/proj-1/wire-facade/bridge",
+              "is_git": true,
+              "branch": "build/wire-facade",
+              "isolation": "worktree",
+              "status": "ready",
+              "error": null
+            },
+            {
+              "id": "ws-3f2a91c4:source-2",
+              "source_id": "source-2",
+              "name": "assets",
+              "path": "/home/ada/.build/workspaces/proj-1/wire-facade/assets",
+              "is_git": false,
+              "branch": null,
+              "isolation": "rift",
+              "status": "ready",
+              "error": null
+            }
+          ],
+          "entity_id": "run-8c41d2f0",
+          "conversations": [
+            {
+              "conversation_id": "agent-2"
+            }
+          ],
+          "session_started_ms": 1789826400000,
+          "last_activity_ms": 1789826700000,
+          "lifecycle": {
+            "measured_at_ms": 1789916700000,
+            "last_activity_ms": 1789826700000,
+            "idle": true,
+            "reclaimable": false,
+            "holds": [
+              "unpushed",
+              "plain_directory"
+            ],
+            "tasks": [
+              {
+                "task_id": "task-01J8Z3Q6W8K4M2N5P7R9T1V3X5",
+                "number": 135,
+                "title": "Workspace lifecycle",
+                "status": "done",
+                "state": "open"
+              }
+            ],
+            "dirty_files": 0,
+            "unpushed_commits": 2,
+            "behind_commits": 0,
+            "size_bytes": 17179869184,
+            "size_measured_at_ms": 1789916700000,
+            "pruned_bytes": 0,
+            "pruned_at_ms": null,
+            "noticed_at_ms": 1789916700000
+          },
+          "compaction_thresholds": {},
+          "compaction": {
+            "inherited": {
+              "claude": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "claude_adk": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "codex": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "codex_app_server": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "pi": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              }
+            },
+            "effective": {
+              "claude": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "claude_adk": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "codex": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "codex_app_server": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "pi": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              }
+            }
+          },
+          "legacy_review": true
+        },
+        {
+          "id": "legacy-proj-1",
+          "workspace_id": "legacy-proj-1",
+          "project_id": "proj-1",
+          "name": "build",
+          "root": "/home/ada/code/build",
+          "status": "failed",
+          "created_by_agent": false,
+          "locked": false,
+          "directories": [
+            {
+              "id": "legacy-proj-1:source-1",
+              "source_id": "source-1",
+              "name": "build",
+              "path": "/home/ada/code/build",
+              "is_git": true,
+              "branch": null,
+              "isolation": null,
+              "status": "failed",
+              "error": "copy assets: Operation not supported (os error 95)"
+            }
+          ],
+          "entity_id": null,
+          "conversations": [],
+          "compaction_thresholds": {},
+          "compaction": {
+            "inherited": {
+              "claude": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "claude_adk": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "codex": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "codex_app_server": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "pi": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              }
+            },
+            "effective": {
+              "claude": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "claude_adk": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "codex": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "codex_app_server": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "pi": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
   }
 }

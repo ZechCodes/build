@@ -13,57 +13,11 @@ mod verdict_delivery;
 
 use super::{StoredAnswer, TaskWrite};
 use crate::api::v1::reviews::{ReviewCompleteParams, ReviewDiffParams, ReviewSnapshotParams};
-use crate::app::git::deferred::DeferredGitWork;
-use crate::app::{AppState, DeferredGit, DeferredWork};
-use crate::reviews::actions::{ActionRequest, ActionSource, ReviewActParams};
+use crate::app::{AppState, DeferredWork};
+use crate::reviews::actions::{ActionSource, ReviewActParams};
 use crate::reviews::records::Review;
-use crate::reviews::service::SnapshotRequest;
-use crate::store::Store;
 use crate::tracker::Actor;
 use serde_json::{json, Value};
-
-struct SnapshotJob {
-    store: Store,
-    project_id: String,
-    request: SnapshotRequest,
-}
-
-struct ActionJob {
-    store: Store,
-    project_id: String,
-    task_id: String,
-    request: ActionRequest,
-    changes: std::sync::Arc<crate::changes::ChangeBus>,
-}
-
-impl DeferredGitWork for ActionJob {
-    fn run(&self, _: &Value) -> Result<Value, String> {
-        let review = crate::reviews::actions::act(&self.store, &self.request, || {
-            self.changes
-                .note_tasks(&self.project_id, std::slice::from_ref(&self.task_id));
-        })?;
-        Ok(json!({ "review": review }))
-    }
-
-    fn invalidate(&self, app: &mut AppState) {
-        app.note_tasks_changed(&self.project_id, &self.task_id);
-    }
-
-    fn invalidates_on_error(&self) -> bool {
-        true
-    }
-}
-
-impl DeferredGitWork for SnapshotJob {
-    fn run(&self, _: &Value) -> Result<Value, String> {
-        let review = crate::reviews::service::snapshot(&self.store, &self.request)?;
-        Ok(json!({ "review": review }))
-    }
-
-    fn invalidate(&self, app: &mut AppState) {
-        app.note_tasks_changed(&self.project_id, &self.request.task_id);
-    }
-}
 
 impl AppState {
     pub(crate) fn review_snapshot(
@@ -71,7 +25,7 @@ impl AppState {
         params: ReviewSnapshotParams,
         author: Actor,
     ) -> Result<Value, String> {
-        let (project_id, _) = self.tracker_task(&params.task_id)?;
+        self.tracker_task(&params.task_id)?;
         if self
             .tracker_store()?
             .load_review(&params.task_id)
@@ -97,35 +51,9 @@ impl AppState {
                 author,
             );
         }
-        let workspace = self
-            .workspaces
-            .get(&params.workspace_id)
-            .filter(|workspace| workspace.project_id == project_id)
-            .ok_or_else(|| format!("unknown workspace_id: {}", params.workspace_id))?
-            .clone();
-        self.refuse_writers_while_reserved(&workspace.root)?;
-        for directory in &workspace.directories {
-            self.refuse_writers_while_reserved(&directory.path)?;
-        }
-        let job = SnapshotJob {
-            store: self.tracker_store()?.clone(),
-            project_id,
-            request: SnapshotRequest {
-                task_id: params.task_id,
-                workspace,
-                expected_version: params.expected_version,
-                base_overrides: params.base_overrides,
-                author,
-            },
-        };
-        self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
-            call: Box::new(job),
-            params: Value::Null,
-            invalidates: true,
-            #[cfg(test)]
-            gate: None,
-        })));
-        Ok(Value::Null)
+        Err(crate::api::v1::reviews::errors::snapshot_retired(
+            &params.task_id,
+        ))
     }
 
     pub(crate) fn review_get(&mut self, task_id: &str) -> Result<Value, String> {
@@ -148,35 +76,24 @@ impl AppState {
     pub(crate) fn review_act(
         &mut self,
         params: ReviewActParams,
-        actor: Actor,
+        _actor: Actor,
     ) -> Result<Value, String> {
-        let (project_id, _) = self.tracker_task(&params.task_id)?;
+        self.tracker_task(&params.task_id)?;
         let review = self
             .tracker_store()?
             .load_review(&params.task_id)
             .stored()?
             .ok_or_else(|| format!("unknown review for task_id: {}", params.task_id))?;
-        let sources = self.review_action_sources(&project_id, &review);
-        let task_id = params.task_id.clone();
-        let job = ActionJob {
-            store: self.tracker_store()?.clone(),
-            project_id,
-            task_id,
-            request: ActionRequest {
-                params,
-                actor,
-                sources,
-            },
-            changes: self.changes.clone(),
-        };
-        self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
-            call: Box::new(job),
-            params: Value::Null,
-            invalidates: true,
-            #[cfg(test)]
-            gate: None,
-        })));
-        Ok(Value::Null)
+        if review.mode == crate::reviews::model::ReviewMode::Snapshot {
+            return Err(crate::api::v1::reviews::errors::snapshot_retired(
+                &params.task_id,
+            ));
+        }
+        Err(crate::api::v1::reviews::errors::encode(
+            "invalid_params",
+            "PR actions must use the PR merge lifecycle service",
+            json!({"task_id":params.task_id,"replacement":"tasks.review.merge"}),
+        ))
     }
 
     fn review_action_sources(&self, project_id: &str, review: &Review) -> Vec<ActionSource> {
@@ -266,9 +183,21 @@ impl AppState {
         actor: Actor,
     ) -> Result<Value, String> {
         let (project_id, _) = self.tracker_task(&params.task_id)?;
+        if self
+            .tracker_store()?
+            .load_review(&params.task_id)
+            .stored()?
+            .is_some_and(|review| review.mode == crate::reviews::model::ReviewMode::PullRequest)
+        {
+            return Err(crate::api::v1::reviews::errors::encode(
+                "invalid_params",
+                "Close a pull request with tasks.review.close",
+                json!({"task_id":params.task_id,"replacement":"tasks.review.close"}),
+            ));
+        }
         let (review, events) = self
             .tracker_store()?
-            .complete_review_with_events(
+            .finish_review_with_events(
                 &params.task_id,
                 params.expected_version,
                 &actor,

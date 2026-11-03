@@ -1021,6 +1021,10 @@ pub struct TaskSummaryView {
     pub last_activity_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_summary: Option<TaskSummaryReviewView>,
+    /// Since 3.31.0 (`tasks.review.snapshotRetired`): a saved legacy review.
+    /// Omitted for ordinary tasks and pull-request reviews.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_review: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deferred_assignment: Option<DeferredAssignmentView>,
 }

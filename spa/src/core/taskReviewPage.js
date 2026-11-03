@@ -17,9 +17,11 @@ import { timelineRows } from "./trackerTimeline.js";
 import { resolveReviewFileReference } from "./reviewFileReference.js";
 import { hasReviewCommitPrefix, resolveReviewCommitReference } from "./reviewCommitReference.js";
 import { installReviewLinkNavigation } from "./reviewLinkNavigation.js";
+import { openWorkspaceReview } from "./workspaceReviewEntry.js";
+import { esc } from "./text.js";
 import { refreshFeed } from "./taskFeed.js";
 
-const FRAME = `<header class="task-review-header"><div data-review-head></div><div data-review-verdict-host></div><details class="task-review-more" data-review-more><summary>More</summary><div class="task-review-more-body"><div data-review-controls></div><div data-review-git-actions></div><div data-review-task-details></div></div></details></header><aside class="task-review-navigation" aria-label="Review commits"><button type="button" class="task-review-sheet-close btn" data-review-commits-close>Close commits</button><div data-review-directories></div><nav data-review-rail></nav></aside><section class="task-review-centre"><div class="task-review-views" role="group" aria-label="Directory view"><button class="btn" type="button" data-review-view="changes">Changes</button><button class="btn" type="button" data-review-view="files">Files</button><button class="btn task-review-comments-tab" type="button" data-review-view="comments">Comments <span data-review-pending-badge hidden></span></button></div><p data-review-newer-snapshot class="warn" role="status" hidden></p><p data-review-notice class="sub" role="status" hidden></p><p data-review-error class="warn" role="status" hidden></p><p data-review-comment-unavailable class="sub" hidden></p><div data-review-content></div></section><div data-review-feedback-host class="task-review-standalone-feedback"></div>`;
+const FRAME = `<header class="task-review-header"><div data-review-head></div><div data-review-legacy-notice></div><div data-review-verdict-host></div><details class="task-review-more" data-review-more><summary>More</summary><div class="task-review-more-body"><div data-review-controls></div><div data-review-git-actions></div><div data-review-task-details></div></div></details></header><aside class="task-review-navigation" aria-label="Review commits"><button type="button" class="task-review-sheet-close btn" data-review-commits-close>Close commits</button><div data-review-directories></div><nav data-review-rail></nav></aside><section class="task-review-centre"><div class="task-review-views" role="group" aria-label="Directory view"><button class="btn" type="button" data-review-view="changes">Changes</button><button class="btn" type="button" data-review-view="files">Files</button><button class="btn task-review-comments-tab" type="button" data-review-view="comments">Comments <span data-review-pending-badge hidden></span></button></div><p data-review-newer-snapshot class="warn" role="status" hidden></p><p data-review-notice class="sub" role="status" hidden></p><p data-review-error class="warn" role="status" hidden></p><p data-review-comment-unavailable class="sub" hidden></p><div data-review-content></div></section><div data-review-feedback-host class="task-review-standalone-feedback"></div>`;
 const setHtml = (node, html) => { if (node.__reviewHtml !== html) { node.innerHTML = html; node.__reviewHtml = html; } };
 
 function postedBatchAnchors(rows, snapshotId) {
@@ -100,7 +102,27 @@ export function mountTaskReviewPage(host, options) {
     choose(changes);
   }
 
+  function legacyWorkspaceId() {
+    const value = review();
+    return value?.workspace_id || snapshot()?.workspace_id || currentTask().links?.workspace_ids?.[0];
+  }
+  function paintLegacyNotice() {
+    const workspaceId = legacyWorkspaceId();
+    const workspace = workspaces().find((item) => (item.workspace_id || item.id) === workspaceId);
+    const request = workspaceId && support.open && support.forTask;
+    const action = request ? `<button class="btn" type="button" data-review-request-legacy>Request a review from @${esc(workspace?.name || "workspace")}</button>` : "";
+    const html = review() && !isPr() ? `<p data-review-legacy-read-only>Legacy review (read-only)</p>${action}` : "";
+    setHtml(node("legacy-notice"), html);
+    const button = node("legacy-notice").querySelector('[data-review-request-legacy]');
+    if (button) button.onclick = () => void requestLegacyReplacement(workspaceId);
+  }
+  async function requestLegacyReplacement(workspaceId) {
+    picker = await openWorkspaceReview({ deviceId, projectId, workspaceId, forTaskId: taskId, callRpc, navigate: options.navigate });
+    if (disposed) picker?.close();
+  }
+
   function paintHead(saved) {
+    paintLegacyNotice();
     setHtml(node("head"), reviewHeadHtml(review(), saved, support, { task: currentTask(), scope, sinceCount: reviewSinceCount(record, reviewBaseline(review(), rows), directory()) }));
     const select = host.querySelector('[data-review-snapshot]');
     if (select) select.onchange = () => {
@@ -171,9 +193,10 @@ export function mountTaskReviewPage(host, options) {
   }
 
 
+  const feedbackAvailable = (saved) => isPr() && support.comments && saved;
   function paintFeedback(saved) {
-    const allowOpinion = !isPr() || support.pullRequests;
-    const key = support.comments && saved ? JSON.stringify([saved.id, allowOpinion, isPr(), support, currentTask().assignee, reviewAuthorLabel(review(), currentTask(), support)]) : "";
+    const allowOpinion = support.pullRequests;
+    const key = feedbackAvailable(saved) ? JSON.stringify([saved.id, allowOpinion, isPr(), support, currentTask().assignee, reviewAuthorLabel(review(), currentTask(), support)]) : "";
     if (key === feedbackKey) return feedback?.update();
     feedbackKey = key;
     feedback?.dispose();
@@ -253,7 +276,7 @@ export function mountTaskReviewPage(host, options) {
     return { mode: "changes" };
   }
 
-  const canCompose = () => support.comments && (selection.view === "files" || selection.mode !== "commit" || support.anchorCommit);
+  const canCompose = () => isPr() && support.comments && (selection.view === "files" || selection.mode !== "commit" || support.anchorCommit);
   function commentCallbacks() {
     if (!canCompose()) return {};
     return {
@@ -403,7 +426,7 @@ export function mountTaskReviewPage(host, options) {
     paintCommitNotice();
     paintNewRevision(saved);
     const commentNotice = node("comment-unavailable");
-    commentNotice.hidden = canCompose() || !support.comments;
+    commentNotice.hidden = !isPr() || canCompose() || !support.comments;
     commentNotice.textContent = "Update this device’s bridge to comment on individual commits. You can still comment on All changes.";
     const error = node("error");
     error.textContent = notice || record?.error || "";

@@ -152,7 +152,8 @@ const changedBasisAuthority = (held, basis, source, next) => Boolean(held && hel
 const authorityDiffers = (before, after) => ["read_through", "dismissed_through"]
   .some((key) => compareTaskMarkers(before?.[key], after?.[key]) !== 0)
   || watchAuthorityDiffers(before, after)
-  || JSON.stringify(before?.review_summary ?? null) !== JSON.stringify(after?.review_summary ?? null);
+  || JSON.stringify(before?.review_summary ?? null) !== JSON.stringify(after?.review_summary ?? null)
+  || Boolean(before?.legacy_review) !== Boolean(after?.legacy_review);
 const watchAuthorityDiffers = (before, after) => after.watched !== false
   && compareTaskMarkers(counterFloor(before), counterFloor(after)) !== 0;
 

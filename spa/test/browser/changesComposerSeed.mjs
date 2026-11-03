@@ -1,9 +1,9 @@
 import { loadBrowserModules, mountLayout } from "./layoutHarness.mjs";
 
 export const COMPOSER_VARIANTS = [
-  { id: "comment", label: "Comment", offer: { commentable: true } },
+  { id: "comment", label: "Notes to agent", offer: { commentable: true } },
   { id: "commit", label: "Commit", offer: { uncommitted: true } },
-  { id: "split", label: "Comment or commit", offer: { commentable: true, uncommitted: true } },
+  { id: "split", label: "Notes to agent or commit", offer: { commentable: true, uncommitted: true } },
 ];
 export const THREE_LINES = "Keep the action quiet.\nThe field carries the review.\nReady for another look.";
 

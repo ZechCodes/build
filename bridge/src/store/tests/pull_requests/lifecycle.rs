@@ -151,7 +151,7 @@ fn opinion_on_closed_pr_is_rejected_without_writing_a_comment() {
     let store = Store::new(home.path()).unwrap();
     let review = publish(&store);
     store
-        .complete_review(&review.task_id, review.version, &Actor::User, "Finished")
+        .finish_review(&review.task_id, review.version, &Actor::User, "Finished")
         .unwrap();
     let task = store.load_tracker_task(&review.task_id).unwrap().unwrap();
     let before = store.load_tracker_timeline(&task.id).unwrap();

@@ -145,7 +145,7 @@ function pendingCommentRowsHtml(comments) {
 export function commentTrayHtml(comments) {
   const pending = comments || [];
   if (!pending.length) return "";
-  const count = `${pending.length} comment${pending.length === 1 ? "" : "s"} ready to send`;
+  const count = `Notes to agent · ${pending.length} note${pending.length === 1 ? "" : "s"} ready to send`;
   return `<div class="plan-feedback csfeedback"><div class="cslist">${pendingCommentRowsHtml(pending)}</div>
     <div class="cstrayfoot"><span class="hint">${count}</span><button class="btn mini cscancel">Clear</button></div></div>`;
 }

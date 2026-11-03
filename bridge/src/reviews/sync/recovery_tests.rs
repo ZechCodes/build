@@ -240,7 +240,7 @@ fn closed_review_with_dead_candidate_remains_discoverable_until_recovery() {
     crash(&f, "before-db");
     let abandoned = candidate(&f);
     f.store
-        .complete_review(
+        .finish_review(
             f.task_id(),
             1,
             &crate::tracker::Actor::User,
@@ -523,7 +523,7 @@ fn registry_written_before_receiver_journal_survives_death_and_closed_task_disco
         .is_some());
     assert!(!journal(&f).exists());
     f.store
-        .complete_review(f.task_id(), 1, &crate::tracker::Actor::User, "closed")
+        .finish_review(f.task_id(), 1, &crate::tracker::Actor::User, "closed")
         .unwrap();
     assert_eq!(
         f.store.list_active_review_sync_tasks(None, 64).unwrap(),

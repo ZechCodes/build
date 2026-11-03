@@ -75,7 +75,7 @@ async function mountReadingPage(page, basePath, commentId = null, omitTarget = f
       reviewRoute: savedReview ? { revision: 6, mode: "all", view: "comments" } : null,
       callRpc: (method) => {
         if (method === "tasks.attachment") return Promise.resolve(attachment);
-        if (method === "tasks.review.complete") return new Promise((resolve, reject) => { window.__reading.rejectComplete = reject; });
+        if (method === "tasks.review.close") return new Promise((resolve, reject) => { window.__reading.rejectClose = reject; });
         return new Promise(() => {});
       },
       catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }), navigate: () => {},
@@ -86,7 +86,7 @@ async function mountReadingPage(page, basePath, commentId = null, omitTarget = f
     window.__reading.reviewGeometry = () => {
       const height = (selector) => host.querySelector(selector)?.getBoundingClientRect().height || 0;
       return { content: height("[data-review-content]"), header: height(".task-review-header"),
-        feedback: height("[data-review-pending]"), failure: height("[data-review-action-error]") };
+        feedback: height("[data-review-pending]"), failure: height("[data-review-lifecycle-error]") };
     };
   }, { record: longRecord(savedReview), commentId, omitTarget, savedReview });
   await page.waitForFunction(() => {
@@ -138,6 +138,7 @@ async function parkReader(page, fraction = 0.5, attachment = false) {
     window.__reading.saved.topRow = topRow;
     window.__reading.saved.reviewGeometry = window.__reading.reviewGeometry();
     window.__reading.saved.rowTop = row.getBoundingClientRect().top;
+    window.__reading.saved.entryHeadHeight = row.querySelector(".task-entry-head").getBoundingClientRect().height;
     return host.scrollTop;
   }, { id: READING_ROW, attachment });
 }
@@ -156,6 +157,7 @@ async function measure(page, before, label) {
       sameRow: saved.row === row, sameBody: saved.body === row.querySelector(".task-comment-body"),
       sameImage: saved.image === row.querySelector("img"), sameTopRow: saved.topRow === topRow,
       rootTopDelta: row.getBoundingClientRect().top - saved.rowTop,
+      entryHeadHeight: row.querySelector(".task-entry-head").getBoundingClientRect().height, previousEntryHeadHeight: saved.entryHeadHeight,
       anchor: saved.content.tagName.toLowerCase(),
       contentTopDelta: saved.content.getBoundingClientRect().top - saved.contentTop,
       sameContent: saved.content.isConnected && row.contains(saved.content),
@@ -180,6 +182,9 @@ async function measure(page, before, label) {
   if (label.endsWith("feedback-draft")) expect.soft(result.reviewGeometry.feedback - result.previousReviewGeometry.feedback, `${label}: real pending tray grew`).toBeGreaterThan(1);
   if (label.endsWith("controls-failure")) expect.soft(result.reviewGeometry.failure - result.previousReviewGeometry.failure, `${label}: real control error grew`).toBeGreaterThan(1);
   if (!label.includes("metadata-")) expect.soft(Math.abs(result.rootTopDelta), `${label}: row geometry moved`).toBeLessThanOrEqual(1);
+  if (label.endsWith("first-review")) {
+    expect.soft(Math.abs(result.entryHeadHeight - result.previousEntryHeadHeight), `${label}: comment header footprint changed`).toBeLessThanOrEqual(1);
+  }
   if (label.endsWith("review-label")) {
     expect.soft(Math.abs(result.reviewGeometry.header - result.previousReviewGeometry.header), `${label}: review header footprint changed`).toBeLessThanOrEqual(1);
   }
@@ -240,9 +245,24 @@ for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900
       expect(await page.locator(".review-task-template").count()).toBe(0);
       const before = await parkReader(page);
       const bodyWidth = await page.locator(`#${READING_ROW} .task-comment-body`).evaluate((node) => node.getBoundingClientRect().width);
+      const ordinaryHeaders = await page.evaluate(() => ["comment-tc-reading17", "comment-tc-reading19"].map((id) => {
+        const head = document.querySelector(`#${id} .task-entry-head`);
+        return { id, height: head.getBoundingClientRect().height, cardHeight: head.closest(".task-comment-card").getBoundingClientRect().height, reply: Boolean(head.querySelector('[data-review-reply]')) };
+      }));
+      expect(ordinaryHeaders.every((head) => !head.reply)).toBe(true);
       await updateMetadata(page, "review");
       await page.locator(".review-task-template").waitFor({ state: "attached" });
       await measure(page, before, `${label}/first-review`);
+      const unchangedHeaders = await page.evaluate((headers) => headers.map((entry) => {
+        const head = document.querySelector(`#${entry.id} .task-entry-head`);
+        return { ...entry, after: head.getBoundingClientRect().height, afterCardHeight: head.closest(".task-comment-card").getBoundingClientRect().height, reserved: head.hasAttribute('data-review-reply-footprint') };
+      }), ordinaryHeaders);
+      console.log(`${label}/ordinary-never-reply-headers: ${JSON.stringify(unchangedHeaders)}`);
+      for (const head of unchangedHeaders) {
+        expect(head.after).toBe(head.height);
+        expect(head.afterCardHeight).toBe(head.cardHeight);
+        expect(head.reserved).toBe(false);
+      }
       expect(await page.locator(`#${READING_ROW} .task-comment-body`).evaluate((node) => node.getBoundingClientRect().width)).toBe(bodyWidth);
       if (width <= 640) expect(await page.locator(".review-task-template").getAttribute("data-review-view")).toBe("comments");
       expect(await page.locator(".review-task-template").getAttribute("class")).toContain("task-review-reading");
@@ -419,11 +439,18 @@ async function mountDelayedReview(page, capabilities = {}) {
       author: record.task.assignee, directories: [directory] };
     window.__reading.reviewIdentity = { ...scope, snapshot, directory };
     await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true, ...capabilities } });
-    await review.writeReviewRecord(scope, { task_id: scope.taskId, workspace_id: "ws-reading", state: "open", version: 4,
-      snapshots: [snapshot], actions: [], destinations: capabilities.act ? [{
-        snapshot_id: snapshot.id, directory_id: directory.id, source_path: directory.source_path,
-        branches: ["main", "dev"], remotes: [{ name: "origin", branches: ["main", "build/scroll"] }], live_head: directory.head,
-      }] : [], completion: null }, 4);
+    const saved = { task_id: scope.taskId, workspace_id: "ws-reading", state: "open", version: 4,
+      snapshots: [snapshot], actions: [], destinations: [], completion: null };
+    if (capabilities.pullRequests) {
+      saved.mode = "pull_request";
+      saved.pull_request = { status: "open", originating_workspace_id: "ws-reading", latest_published_snapshot_id: snapshot.id };
+      saved.bindings = [{ directory_id: directory.id, source_id: directory.source_id, source_repository: directory.source_path,
+        base_branch_ref: "refs/heads/main", remote_name: "build-review", last_received_head: directory.head }];
+      saved.destinations = [{ snapshot_id: snapshot.id, directory_id: directory.id, source_path: directory.source_path,
+        branches: ["main", "dev"], remotes: [{ name: "origin", branches: ["main", "build/scroll"] }], live_head: directory.head }];
+    }
+    await review.writeReviewReply(scope, { review: saved, sync: [{ directory_id: directory.id, health: "current",
+      received_head: directory.head, target_head: "1".repeat(40) }] }, 4);
   }, capabilities);
   await page.locator(".task-review-changes").waitFor({ state: "attached" });
   await settle(page);
@@ -637,12 +664,14 @@ for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900
   it(`keeps visible ${label} task history still through review draft painters and delayed control failure`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
       await mountReadingPage(page, basePath);
-      await mountDelayedReview(page, { act: true, comments: true, complete: true });
+      await mountDelayedReview(page, { pullRequests: true, merge: true, close: true, comments: true });
       await page.locator("[data-review-more]").evaluate((sheet) => { sheet.open = true; });
-      await page.locator("[data-review-act-sheet]").evaluate((sheet) => { sheet.open = true; });
-      await page.locator("[data-review-complete]").evaluate((form) => { form.closest("details").open = true; });
+      await page.locator("[data-pr-merge-sheet]").evaluate((sheet) => { sheet.open = true; });
+      await page.locator("[data-review-close-sheet]").evaluate((sheet) => { sheet.open = true; });
+      await page.locator('[data-pr-merge-push="dir-async"]').check();
+      await page.locator('[data-pr-merge-branch="dir-async"]').fill("build/scroll");
       await settle(page);
-      await page.locator('[data-review-push-branch="dir-async"]').evaluate((input) => {
+      await page.locator('[data-pr-merge-branch="dir-async"]').evaluate((input) => {
         input.focus({ preventScroll: true });
         input.setSelectionRange(2, 6);
       });
@@ -659,14 +688,14 @@ for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900
         const { ui, uiStore } = window.__layoutModules;
         const { scope } = window.__reading;
         await uiStore.writeUiRecord(ui.uiAddress({ deviceId: scope.deviceId, entityId: scope.projectId,
-          view: "task-review-actions", kind: "git-draft", sub: JSON.stringify([scope.taskId, "snapshot-async"]) }), {
-          selected: { "dir-async": { merge: true, push: true, mergeBranch: "main", remote: "origin", pushBranch: "build/restored" } }, intent: null,
+          view: "task-review-action", kind: "draft", sub: JSON.stringify([scope.taskId, "merge", "snapshot-async"]) }), {
+          selected: { "dir-async": { push: true, remote: "origin", branch: "build/restored" } }, submitted: null,
         });
       });
-      await page.waitForFunction(() => document.querySelector('[data-review-push-branch="dir-async"]').value === "build/restored");
+      await page.waitForFunction(() => document.querySelector('[data-pr-merge-branch="dir-async"]').value === "build/restored");
       await measure(page, before, `${label}/actions-draft`);
       expect.soft(await page.evaluate((before) => window.__reading.focusSamples.every((top) => top > before - 1000), before), "restored focus must never scroll back to the review form").toBe(true);
-      expect.soft(await page.locator('[data-review-push-branch="dir-async"]').evaluate((input) => [document.activeElement === input, input.selectionStart, input.selectionEnd])).toEqual([true, 2, 6]);
+      expect.soft(await page.locator('[data-pr-merge-branch="dir-async"]').evaluate((input) => [document.activeElement === input, input.selectionStart, input.selectionEnd])).toEqual([true, 2, 6]);
       await page.locator("#task-comment").evaluate((field) => field.focus({ preventScroll: true }));
       before = await parkReader(page);
       await page.evaluate(async () => {
@@ -683,12 +712,12 @@ for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900
       await measure(page, before, `${label}/feedback-draft`);
       expect(await page.evaluate(() => document.activeElement.id)).toBe("task-comment");
       before = await parkReader(page);
-      await page.locator("[data-review-description]").evaluate((field) => { field.value = "Merged to dev"; field.dispatchEvent(new Event("input")); });
-      await page.locator("[data-review-complete]").evaluate((form) => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
-      await page.waitForFunction(() => typeof window.__reading.rejectComplete === "function");
+      await page.locator("[data-review-close-description]").evaluate((field) => { field.value = "Close after review"; field.dispatchEvent(new Event("input")); });
+      await page.locator("[data-review-close]").evaluate((form) => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+      await page.waitForFunction(() => typeof window.__reading.rejectClose === "function");
       await settle(page);
-      await page.evaluate(() => window.__reading.rejectComplete(new Error("Delayed completion refusal. ".repeat(30))));
-      await page.waitForFunction(() => !document.querySelector("[data-review-action-error]").hidden);
+      await page.evaluate(() => window.__reading.rejectClose(new Error("Delayed close refusal. ".repeat(30))));
+      await page.waitForFunction(() => !document.querySelector("[data-review-lifecycle-error]").hidden);
       await measure(page, before, `${label}/controls-failure`);
       expect(await page.evaluate(() => document.activeElement.id)).toBe("task-comment");
       // Reply is intentional navigation: its focus happens after preserving

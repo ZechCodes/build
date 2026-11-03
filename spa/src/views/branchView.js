@@ -29,6 +29,7 @@ import { setToolbarVerb, clearToolbarVerb } from "../core/toolbar.js";
 import { dropShell, refineShell, shellSelection } from "../core/shell.js";
 import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
 import { renderFilesTab } from "./files.js";
+import { watchBranchReviewPresence, branchWorkspaceHasReview } from "../core/branchReviewPresence.js";
 import { createTaskReview } from "./taskReview.js";
 import { createWorktreeReview } from "./worktreeReview.js";
 import { branchStateIn, initialBranchState, projectGitState } from "./branchSeed.js";
@@ -290,6 +291,8 @@ export async function renderBranch() {
   /** The plug for the Changes rail's aggregate entry, made once per backing.
    *  A run reviews through its own diff and verbs; a bare worktree adopts on
    *  the first comment or action; a plain folder carries none. */
+  const reviewPresence = watchBranchReviewPresence({ deviceId, projectId, onChange: () => reviewPlug?.refreshActions() });
+  const hasWorkspaceReview = () => branchWorkspaceHasReview(deviceFeedNow(deviceId), projectId, branch, reviewPresence);
   const reviewFor = (scope) => {
     const key = reviewKeyOf(scope);
     if (!key) return null;
@@ -298,6 +301,7 @@ export async function renderBranch() {
       if (scope.run_id) {
         reviewPlug = createTaskReview({
           taskId: scope.run_id,
+          hasReview: hasWorkspaceReview,
           callRpc,
           navigate,
           getTask: () => (row ? row.run : null),
@@ -312,6 +316,7 @@ export async function renderBranch() {
         reviewPlug = createWorktreeReview({
           projectId: scope.project_id,
           worktreeId: scope.worktree_id,
+          hasReview: hasWorkspaceReview,
           callRpc,
           navigate,
           adopting: adopterFor(scope),
@@ -488,6 +493,7 @@ export async function renderBranch() {
     disposed = true;
     // The view stops hearing the cache rather than trusting the shell to clear
     // the slot it put it in.
+    reviewPresence.dispose();
     if (unwatch) unwatch();
     unwatch = null;
     const dirRail = $("#dir-rail");
@@ -529,6 +535,7 @@ export async function renderBranch() {
   let painted = deliverySignature(rowNow());
   unwatch = subscribeFeed(() => {
     if (disposed) return;
+    reviewPlug?.refreshActions();
     const answer = rowNow();
     const signature = deliverySignature(answer);
     if (signature === painted) return;

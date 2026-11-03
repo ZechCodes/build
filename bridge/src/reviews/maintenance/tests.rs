@@ -8,7 +8,7 @@ fn terminal_receiver_waits_one_hour_across_worker_turns() {
     let review = f.review();
     let receiver = review.bindings[0].receiving_repository.clone();
     f.store
-        .complete_review(f.task_id(), review.version, &Actor::User, "Closed")
+        .finish_review(f.task_id(), review.version, &Actor::User, "Closed")
         .unwrap();
     std::fs::remove_dir_all(&f.request.workspace.root).unwrap();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
@@ -50,7 +50,7 @@ fn closed_receiver_is_retained_until_original_workspace_is_removed() {
     let f = Fixture::new();
     let review = f.review();
     f.store
-        .complete_review(f.task_id(), review.version, &Actor::User, "Closed")
+        .finish_review(f.task_id(), review.version, &Actor::User, "Closed")
         .unwrap();
     let receiver = review.bindings[0].receiving_repository.clone();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
@@ -77,7 +77,7 @@ fn live_sync_lease_fences_terminal_receiver_cleanup() {
     let f = Fixture::new();
     let review = f.review();
     f.store
-        .complete_review(f.task_id(), review.version, &Actor::User, "Closed")
+        .finish_review(f.task_id(), review.version, &Actor::User, "Closed")
         .unwrap();
     std::fs::remove_dir_all(&f.request.workspace.root).unwrap();
     let held = crate::reviews::sync::reconcile::recovery::CaptureJournal::acquire(
@@ -138,7 +138,7 @@ fn terminal_cleanup_refuses_native_receiving_ref_lock() {
     let f = Fixture::new();
     let review = f.review();
     f.store
-        .complete_review(f.task_id(), review.version, &Actor::User, "Closed")
+        .finish_review(f.task_id(), review.version, &Actor::User, "Closed")
         .unwrap();
     std::fs::remove_dir_all(&f.request.workspace.root).unwrap();
     let binding = &review.bindings[0];
@@ -202,7 +202,7 @@ fn shared_receiver_releases_only_abandoned_reviews_refs_and_journals() {
     )
     .unwrap();
     f.store
-        .complete_review(f.task_id(), original.version, &Actor::User, "Closed")
+        .finish_review(f.task_id(), original.version, &Actor::User, "Closed")
         .unwrap();
     std::fs::remove_dir_all(&f.request.workspace.root).unwrap();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());
@@ -246,7 +246,7 @@ fn owned_orphans_are_deleted_but_foreign_repositories_and_refs_are_preserved() {
         .unwrap();
     let review = f.review();
     f.store
-        .complete_review(f.task_id(), review.version, &Actor::User, "Closed")
+        .finish_review(f.task_id(), review.version, &Actor::User, "Closed")
         .unwrap();
     std::fs::remove_dir_all(&f.request.workspace.root).unwrap();
     let mut worker = Worker::new(f.store.clone(), f.request.receiver_root.clone());

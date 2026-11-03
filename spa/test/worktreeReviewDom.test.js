@@ -31,7 +31,7 @@ function stubAdopting(calls) {
   };
 }
 
-function mountReview({ calls = [], adoptable = true } = {}) {
+function mountReview({ calls = [], adoptable = true, hasReview = () => false } = {}) {
   const callRpc = async (method, params) => {
     calls.push([method, params]);
     if (method === "worktree.diff")
@@ -43,6 +43,7 @@ function mountReview({ calls = [], adoptable = true } = {}) {
     worktreeId: "wt-1",
     callRpc,
     adopting: stubAdopting(calls),
+    hasReview,
   });
   const host = document.createElement("div");
   // The surface's git verbs live in the git toolbar it owns, not inside the
@@ -60,6 +61,13 @@ describe("the worktree review actionbar under a re-read", () => {
     document.body.innerHTML = "";
   });
   afterEach(() => vi.useRealTimers());
+
+  it("hides both merge and abandon for a workspace with a review", async () => {
+    const { review, toolbar } = mountReview({ hasReview: () => true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(toolbar.querySelector("button")).toBeNull();
+    review.unmount();
+  });
 
   it("leaves the open merge menu standing through a tick, and still runs its item", async () => {
     const { review, toolbar, calls } = mountReview();

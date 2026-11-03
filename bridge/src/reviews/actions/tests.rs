@@ -285,7 +285,7 @@ fn stale_click_runs_no_git_and_source_actions_have_no_review_state_gate() {
     assert!(fixture.review().actions.is_empty());
     let review = fixture
         .store
-        .complete_review(
+        .finish_review(
             &fixture.request.params.task_id,
             1,
             &Actor::User,

@@ -7,7 +7,7 @@ const snapshotMutations = new Set(["snapshot", "act", "complete"]);
 const verbsByMethod = new Map(Object.entries(REVIEW_METHODS).map(([verb, method]) => [method, verb]));
 
 export const NO_REVIEW_SUPPORT = Object.freeze({
-  reject: false, author: false, verdictDelivery: false, retryDelivery: false,
+  snapshotRetired: false, reject: false, author: false, verdictDelivery: false, retryDelivery: false,
   get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
   commits: false, commit: false, since: false, anchorCommit: false, forTask: false, taskChoices: false, linkedTaskChoices: false,
   pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false,

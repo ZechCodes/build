@@ -73,7 +73,7 @@ fn legacy_actions_refuse_closed_pr_with_current_version() {
     let review = fixture.review();
     fixture
         .store
-        .complete_review(fixture.task_id(), review.version, &Actor::User, "Closed")
+        .finish_review(fixture.task_id(), review.version, &Actor::User, "Closed")
         .unwrap();
     let request = request(&fixture, &review.snapshots.last().unwrap().id);
 

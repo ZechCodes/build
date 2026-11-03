@@ -1,6 +1,7 @@
 // A revision owns its local drafts; the durable write outbox owns submission.
 import { uiAddress } from "./localUiState.js";
 import { readUiRecord, subscribeUiRecords, updateUiRecord } from "./localUiStore.js";
+import { provenExpiredFailure } from "./writeOperationIntent.js";
 
 const empty = () => ({ drafts: [], summary: "", submission: null });
 const nonempty = (draft) => Boolean(draft.body?.trim());
@@ -46,9 +47,13 @@ function submissionOperations(options, drafts, summary, verdict, uuid, priorAnch
   });
 }
 
+function recoverablySettled(row) {
+  return successful(row) || (row.state === "failed" && row.effect === "unapplied") || provenExpiredFailure(row);
+}
+
 function recoverableFailure(bad, rows) {
   if (!bad || bad.unresolved || bad.effect !== "unapplied") return false;
-  return !rows.some((row) => row?.transportAttempted && !["succeeded", "failed"].includes(row.state));
+  return !rows.some((row) => row?.unresolved || (row?.transportAttempted && !recoverablySettled(row)));
 }
 
 function removeSent(state, submission, acknowledgedIds) {

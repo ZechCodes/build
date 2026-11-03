@@ -152,6 +152,57 @@ describe("review batch drafts", () => {
     restored.dispose();
   });
 
+  it.each([
+    { outcome: "failed", effect: "unapplied", unresolved: false, recovers: true },
+    { outcome: "failed", effect: "partial", unresolved: true, recovers: false },
+    { outcome: "failed", effect: "unknown", unresolved: true, recovers: false },
+    { outcome: "succeeded", effect: "applied", unresolved: true, recovers: false },
+  ])("recovers only proven failed/unapplied expired submissions: $outcome / $effect", async ({ outcome, effect, unresolved, recovers }) => {
+    const rows = new Map();
+    const service = {
+      subscribe: () => () => {}, readOperations: () => [...rows.values()],
+      enqueueBatch: async inputs => { for (const input of inputs) rows.set(input.operationId, { ...input, state: "queued", acknowledged: false }); },
+      cancelUnsentBatch: vi.fn(async ids => { for (const id of ids) rows.set(id, { ...rows.get(id), state: "failed", effect: "unapplied", dismissed: true }); }),
+    };
+    const model = create({ taskId: `expired-${outcome}-${effect}`, writeOperations: service });
+    await model.ready;
+    await model.add({ body: "Restore this comment only when unapplied", anchor });
+    await model.submit("approve");
+    const [note, verdict] = [...rows.keys()];
+    rows.set(note, { ...rows.get(note), state: "result_expired", acknowledged: true, transportAttempted: true, outcome, effect, unresolved });
+    if (recovers) {
+      await model.recover();
+      expect(model.read().submission).toBeNull();
+      expect(model.read().drafts[0].body).toBe("Restore this comment only when unapplied");
+      expect(service.cancelUnsentBatch).toHaveBeenCalledWith([verdict]);
+    } else {
+      await expect(model.recover()).rejects.toThrow("result is still being checked");
+      expect(model.read().submission).not.toBeNull();
+      expect(service.cancelUnsentBatch).not.toHaveBeenCalled();
+    }
+    model.dispose();
+  });
+
+  it("keeps the batch locked when a later attempted comment has an unresolved partial outcome", async () => {
+    const rows = new Map();
+    const service = {
+      subscribe: () => () => {}, readOperations: () => [...rows.values()],
+      enqueueBatch: async inputs => { for (const input of inputs) rows.set(input.operationId, { ...input, state: "queued", acknowledged: false }); },
+      cancelUnsentBatch: vi.fn(),
+    };
+    const model = create({ taskId: "mixed-partial-failure", writeOperations: service });
+    await model.ready;
+    await model.add({ body: "First failure", anchor });
+    await model.add({ body: "Ambiguous second outcome", anchor: { ...anchor, line: 8 } });
+    await model.submit("approve");
+    const [first, second] = [...rows.keys()];
+    rows.set(first, { ...rows.get(first), state: "failed", effect: "unapplied", acknowledged: true, transportAttempted: true });
+    rows.set(second, { ...rows.get(second), state: "failed", effect: "partial", unresolved: true, acknowledged: true, transportAttempted: true });
+    await expect(model.recover()).rejects.toThrow("result is still being checked");
+    expect(service.cancelUnsentBatch).not.toHaveBeenCalled();
+    model.dispose();
+  });
+
   it("retains an offline submission until acknowledgements, recovers failures and never resends the acknowledged prefix", async () => {
     let listener;
     const rows = new Map();

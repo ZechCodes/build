@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-const DEFINITION: &str = "sync-journal-1";
+const DEFINITION: &str = "sync-journal-2";
 const TABLES: &str = "
 CREATE TABLE IF NOT EXISTS sync_state (
  id INTEGER PRIMARY KEY CHECK(id=1), head INTEGER NOT NULL DEFAULT 0,
@@ -31,7 +31,48 @@ CREATE TABLE IF NOT EXISTS sync_revisions (
  deleted INTEGER NOT NULL,fingerprint TEXT NOT NULL,streams TEXT NOT NULL,
  PRIMARY KEY(entity_kind,entity_key)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS sync_deleted_revisions ON sync_revisions(seq) WHERE deleted=1;
+CREATE TABLE IF NOT EXISTS sync_projection_keys (
+ kind TEXT NOT NULL,key TEXT NOT NULL,first_seq INTEGER NOT NULL,
+ PRIMARY KEY(kind,key)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS sync_projection_keyset ON sync_projection_keys(first_seq,kind,key);
+CREATE TABLE IF NOT EXISTS sync_projection (
+ kind TEXT NOT NULL,key TEXT NOT NULL,from_seq INTEGER NOT NULL,deleted INTEGER NOT NULL,
+ record TEXT,record_bytes INTEGER NOT NULL,
+ PRIMARY KEY(kind,key)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS sync_projection_versions (
+ kind TEXT NOT NULL,key TEXT NOT NULL,from_seq INTEGER NOT NULL,to_seq INTEGER NOT NULL,
+ deleted INTEGER NOT NULL,record TEXT,record_bytes INTEGER NOT NULL,
+ PRIMARY KEY(kind,key,from_seq),CHECK(to_seq>from_seq)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS sync_projection_versions_gc ON sync_projection_versions(to_seq,kind,key,from_seq);
+CREATE TABLE IF NOT EXISTS sync_leases (
+ id TEXT PRIMARY KEY,scope_digest TEXT NOT NULL,opening TEXT NOT NULL,incarnation TEXT NOT NULL,
+ epoch TEXT NOT NULL,seq INTEGER NOT NULL,expires_at_ms INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS sync_leases_expiry ON sync_leases(expires_at_ms,id);
+CREATE INDEX IF NOT EXISTS sync_leases_seq ON sync_leases(seq);
+CREATE TABLE IF NOT EXISTS sync_dirty (
+ kind TEXT NOT NULL,key TEXT NOT NULL,generation INTEGER NOT NULL,marked_at_ms INTEGER NOT NULL,
+ PRIMARY KEY(kind,key)) WITHOUT ROWID;
 ";
+
+const V1_TABLES: [&str; 5] = [
+    "sync_journal",
+    "sync_revisions",
+    "sync_routes",
+    "sync_state",
+    "sync_stream_state",
+];
+const V2_TABLES: [&str; 10] = [
+    "sync_dirty",
+    "sync_journal",
+    "sync_leases",
+    "sync_projection",
+    "sync_projection_keys",
+    "sync_projection_versions",
+    "sync_revisions",
+    "sync_routes",
+    "sync_state",
+    "sync_stream_state",
+];
 
 fn meta(conn: &Connection, key: &str) -> Result<Option<String>, StoreError> {
     Ok(conn
@@ -107,16 +148,12 @@ fn inspect(conn: &Connection) -> Result<bool, StoreError> {
     if tables.is_empty() && metadata.is_empty() {
         return Ok(true);
     }
-    if tables
-        != [
-            "sync_journal",
-            "sync_revisions",
-            "sync_routes",
-            "sync_state",
-            "sync_stream_state",
-        ]
-        || metadata.len() != 4
-    {
+    let complete_v1 = tables == V1_TABLES
+        && metadata
+            .get("sync_schema")
+            .is_some_and(|schema| schema == "sync-journal-1");
+    let complete_v2 = tables == V2_TABLES;
+    if (!complete_v1 && !complete_v2) || metadata.len() != 4 {
         return Err(incomplete());
     }
     for name in [

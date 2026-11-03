@@ -6,6 +6,8 @@
 mod continuations;
 mod cursor;
 pub use continuations::Continuation;
+mod device;
+pub use device::{DeviceLease, DEVICE_LEASES_PER_OPENING, DEVICE_LEASE_TTL_MS};
 mod journal;
 mod reads;
 mod recovery_reads;
@@ -213,6 +215,8 @@ pub(crate) fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod cursor_tests;
+#[cfg(test)]
+mod device_tests;
 #[cfg(test)]
 mod startup_tests;
 #[cfg(test)]

@@ -375,6 +375,8 @@ jobs:
       - name: Install
         working-directory: spa
         run: npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
+      - name: HTTP resource coverage
+        run: nice -n 10 node --test scripts/http-resource-coverage.test.mjs
       # The complexity gate (CLAUDE.md "Complexity gates"). It runs BEFORE the
       # suite: a function past the cap is a review finding, and a two-second
       # answer beats waiting out 2,500 tests to hear it.

@@ -12,6 +12,8 @@ impl AppState {
         if self.workspace_reserved(&reserved.id) {
             return Err(crate::reclaim::BUSY.to_string());
         }
+        let secret_sources = self.workspace_secret_source_policy();
+        secret_sources.workspace(self.workspaces.get(&reserved.id).unwrap_or(reserved))?;
         let workspace = self.workspaces.claim_delivery_workspace(reserved)?;
         let sources = WorkspaceRegistry::retry_sources(&workspace);
         // Delivery reservations retain their saved source inputs across settings
@@ -35,6 +37,7 @@ impl AppState {
                 unpublished: false,
                 recover_existing: true,
                 sources,
+                secret_sources,
                 isolation: workspace.isolation,
                 base_syncs,
                 source_state: self.source_validation_handle(),

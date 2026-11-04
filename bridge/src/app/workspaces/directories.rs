@@ -56,6 +56,7 @@ struct AddWorkspaceDirectory {
     isolation: Isolation,
     captured_source: Option<crate::app::projects::ResolvedProjectSource>,
     source_state: Option<std::sync::Weak<std::sync::Mutex<AppState>>>,
+    secret_sources: super::secret_sources::SecretSourcePolicy,
 }
 
 impl DeferredGitWork for AddWorkspaceDirectory {
@@ -117,9 +118,12 @@ impl AddWorkspaceDirectory {
     }
 
     fn make(&self, directory: &WorkspaceDirectory) -> Result<MaterializedDirectory, String> {
+        self.secret_sources.path(&directory.path)?;
         match &self.seed {
             DirectorySeed::Local(source) => {
+                self.secret_sources.copying(source, &directory.path)?;
                 let start = self.pin_local_base(source)?;
+                self.secret_sources.copying(source, &directory.path)?;
                 let (branch, isolation) = materialize_source(
                     source,
                     &directory.path,
@@ -268,6 +272,8 @@ impl AppState {
         self.mark_device_lifecycle_dirty()?;
         let workspace = self.workspace_to_change(params)?;
         let seed = self.directory_seed(&workspace, params)?;
+        let secret_sources = self.workspace_secret_source_policy();
+        secret_sources.path(&workspace.root.join(&seed.source().mount))?;
         let captured_source = match &seed {
             DirectorySeed::Local(source)
                 if self
@@ -307,6 +313,7 @@ impl AppState {
                 seed,
                 captured_source,
                 source_state: self.source_validation_handle(),
+                secret_sources,
             }),
             params: params.clone(),
             invalidates: true,
@@ -453,6 +460,7 @@ impl AppState {
                         workspace.project_id
                     )
                 })?;
+            self.validate_secret_source(&source.path)?;
             let name = requested_name.unwrap_or(&source.name).to_string();
             return Ok(DirectorySeed::Local(WorkspaceSource {
                 mount: self.free_mount(workspace, &name),
@@ -470,6 +478,7 @@ impl AppState {
             .filter(|path| !path.is_empty())
         {
             let path = crate::app::projects::canonical_source_path(&expand_tilde(path))?;
+            self.validate_secret_source(&path)?;
             self.refuse_another_projects_source(&workspace.project_id, &path)?;
             let inferred = path
                 .file_name()

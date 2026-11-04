@@ -4278,11 +4278,16 @@ gate attachment display.
   relay named wake requests to that holder. Definitions
   use canonical filters and order; cursors never cross definitions. Current
   greetings independently gate `sync.projectTasks` and `sync.task`.
-  `scopedSyncRuntime.js` runs `scopedSyncEngine.js` only under an actual Web
-  Lock grant. The legacy timeout fallback cannot authorize journal writes;
-  browsers without Web Locks retain legacy task reads.
+  `scopedSyncRuntime.js` starts `scopedSyncEngine.js` after a Web Lock grant
+  or the bounded lock-wait timeout. A timeout worker remains safe beside a
+  resumed holder because cursor comparisons and publication share the same
+  transaction. Browsers without Web Locks retain legacy task reads.
   The engine stages snapshot pages before publication, then drains changes
   from the snapshot's opaque cursor through each fixed-head continuation.
+  Every continuation keeps that run's original request cursor; the latest
+  committed cursor supplies only the transaction's comparison baseline.
+  Historical event operations carry the current entity projection, so a null
+  current row is applied as a tombstone even on an older upsert event.
   `scopedTaskSyncCache.js` commits rows, query membership, invalidations and
   the cursor in one IndexedDB transaction, using task-content lifetime,
   mutation and row-revision fences. Cursor resets affect one scope. The seen
@@ -4293,10 +4298,16 @@ gate attachment display.
   cached entity revisions, then replay repairs post-watermark membership.
   New replica kinds use the existing records store and
   preserve cached content without a schema upgrade.
+  Continuous view registrations are named independently of sessions and lock
+  ownership. A fresh opening snapshots; a handover of the same registration
+  resumes its committed cursor.
   Pushes wake this reader; reconnect, foreground return and a thirty-second
   `sync.head` interval repair missed notifications. Connection passes capture
   finite open-scope recovery, while later pushes form separate trailing work.
-  Legacy task writers yield the tracked query/detail to the engine. Task
+  Legacy task writers yield only the exact tracked query/detail. A filtered
+  task query leaves the legacy whole-project replica current; an unfiltered
+  default-order scope owns that replica itself. Named recovery triggers also
+  refresh project columns without advancing the task rows' read order. Task
   heads contain summary and timeline data; an engine-owned detail reader
   supplies body fields through their own task-content authority. Inbox and
   directory recovery keep the ordered pass; no device scope is advertised.

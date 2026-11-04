@@ -19,7 +19,7 @@ function fixture(request, initial) {
     reset: vi.fn(async () => { cursor = undefined; return true; }),
   };
   const engine = createScopedSyncEngine({ request, storeFor: () => store, active: () => current, epoch: () => epoch });
-  engines.push(engine); engine.track(scope);
+  engines.push(engine); engine.track(scope, { resume: true });
   return { engine, store, cursor: () => cursor, retire: () => { current = false; }, epoch: (next) => { epoch = next; } };
 }
 beforeEach(() => vi.useFakeTimers());
@@ -54,10 +54,16 @@ it("restarts an expired multipage lease without publishing its abandoned rows", 
   expect(rpc.mock.calls[2][1]).not.toHaveProperty("page");
 });
 
-it("drains fixed-head continuations using the committed opaque cursor", async () => {
-  const rpc = vi.fn().mockResolvedValueOnce(changes({ cursor: "C1", continuation: "fixed" })).mockResolvedValueOnce(changes({ cursor: "C2" }));
-  const { engine } = fixture(rpc, { cursor: "C0" }); await engine.catchUp(scope);
-  expect(rpc.mock.calls[1][1]).toMatchObject({ cursor: "C1", continuation: "fixed" });
+it("drains fixed-head continuations with the original run cursor and separate committed CAS", async () => {
+  const rpc = vi.fn(async (_method, params) => {
+    // changes.rs::run_position binds every continuation to run.origin.
+    if (params.cursor !== "C0") throw Object.assign(new Error("MalformedCursor"), { code: "invalid_params" });
+    return params.continuation ? changes({ cursor: "C2" }) : changes({ cursor: "C1", continuation: "fixed" });
+  });
+  const { engine, store } = fixture(rpc, { cursor: "C0" });
+  expect(await engine.catchUp(scope)).toBe(true);
+  expect(rpc.mock.calls[1][1]).toMatchObject({ cursor: "C0", continuation: "fixed" });
+  expect(store.publish.mock.calls.map(([batch]) => batch.expectedCursor)).toEqual(["C0", "C1"]);
 });
 
 it("leaves a failed publication cursor available to re-read on the next trigger", async () => {

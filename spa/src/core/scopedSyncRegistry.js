@@ -50,8 +50,12 @@ export function createScopedSyncRegistry({ channel, now = Date.now } = {}) {
 
   return {
     register(registration) {
+      // Duplicate mounts belong to one continuous opening. A new opening
+      // after the final release must not inherit the previous cursor proof.
+      const key = scopeKey(registration);
+      const opening = selected().find((entry) => entry.key === key)?.registration || randomToken();
       const id = `${owner}:${++sequence}`;
-      local.set(id, { ...registration, opened: now(), ordinal: sequence, owner, id, key: scopeKey(registration) });
+      local.set(id, { ...registration, registration: opening, opened: now(), ordinal: sequence, owner, id, key });
       publish(); notify();
       return () => { local.delete(id); publish(); notify(); };
     },

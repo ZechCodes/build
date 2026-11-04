@@ -9,6 +9,13 @@ const pageParams = (page) => page ? { page } : {};
 const cursorParams = (held) => held?.cursor ? { cursor: held.cursor } : {};
 const caughtUp = (held, answer) => Boolean(held?.cursor && !held.snapshotRequired
   && held.incarnation === answer.incarnation && held.appliedHead === answer.head);
+const needsSnapshot = (entry, held) => entry.fresh || held?.snapshotRequired
+  || entry.registration !== undefined && held?.registration !== entry.registration;
+function publishedSnapshot(entry, first, committed) {
+  if (!committed) return null;
+  entry.fresh = false;
+  return { cursor: first.cursor };
+}
 
 export function createScopedSyncEngine({ request, storeFor, active = () => true, epoch = () => null }) {
   const scopes = new Map();
@@ -17,9 +24,11 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
   const timer = setInterval(() => { void checkHeads(); }, SYNC_HEAD_INTERVAL_MS);
   timer.unref?.();
 
-  function track(scope) {
+  function track(scope, { registration, resume = false } = {}) {
     const key = identity(scope);
-    if (!scopes.has(key)) scopes.set(key, { scope, store: storeFor(scope), running: null, trailing: null });
+    if (scopes.has(key)) return;
+    scopes.set(key, { scope, store: storeFor(scope), running: null, trailing: null, registration,
+      fresh: registration === undefined && !resume });
   }
   const stands = (entry) => current() && scopes.get(identity(entry.scope)) === entry;
 
@@ -57,19 +66,21 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
       page = answer.next_page;
     } while (page);
     if (!stands(entry)) return null;
-    const committed = await entry.store.publish({ response: first, records, capture, expectedCursor, snapshot: true });
-    return committed ? { cursor: first.cursor } : null;
+    const committed = await entry.store.publish({ response: first, records, capture, expectedCursor,
+      snapshot: true, registration: entry.registration });
+    return publishedSnapshot(entry, first, committed);
   }
 
-  async function changes(entry, cursor) {
-    let continuation;
+  async function changes(entry, origin) {
+    let cursor = origin, continuation;
     do {
       const capture = await entry.store.capture();
-      const answer = await read(entry, "sync.changes", { cursor, ...(continuation ? { continuation } : {}) });
+      const answer = await read(entry, "sync.changes", { cursor: origin, ...(continuation ? { continuation } : {}) });
       if (!answer) return false;
       if (answer.status === "resync_required") return { resync: answer, capture, cursor };
       if (answer.status !== "ok" || !stands(entry)) return false;
-      if (!await entry.store.publish({ response: answer, records: answer.changes, capture, expectedCursor: cursor })) return false;
+      if (!await entry.store.publish({ response: answer, records: answer.changes, capture,
+        expectedCursor: cursor, registration: entry.registration })) return false;
       if (answer.continuation && answer.cursor === cursor) return false;
       cursor = answer.cursor;
       continuation = answer.continuation;
@@ -88,7 +99,7 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
   }
 
   async function recoverOnce(entry, held) {
-    if (held?.cursor && !held.snapshotRequired) return changes(entry, held.cursor);
+    if (held?.cursor && !needsSnapshot(entry, held)) return changes(entry, held.cursor);
     const capture = await entry.store.capture();
     const cursor = held?.cursor ?? null;
     const result = await snapshot(entry, capture, cursor);
@@ -119,7 +130,7 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
       return recover(entry);
     }
     if (answer.status !== "ok") return false;
-    return caughtUp(held, answer) ? true : recover(entry);
+    return caughtUp(held, answer) && !needsSnapshot(entry, held) ? true : recover(entry);
   }
   const checkHeads = () => Promise.all([...scopes.values()].map((entry) => run(entry, () => check(entry))));
 

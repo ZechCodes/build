@@ -47,7 +47,7 @@ describe("scoped sync runtime ownership", () => {
     fake.lock = true;
     runtime.startScopedSyncRuntime({ ownsLock: () => fake.lock, request: vi.fn() });
     const engine = fake.engines[0];
-    expect(engine.track).toHaveBeenCalledWith(scope);
+    expect(engine.track).toHaveBeenCalledWith(scope, { registration: undefined });
     expect(engine.options.active()).toBe(true);
     await runtime.captureScopedSync("d1");
     expect(engine.catchUp).toHaveBeenCalledWith(scope);
@@ -165,5 +165,16 @@ it.each(["reconnect", "foreground", "task push"])("prepares project columns on %
   if (trigger === "foreground") await runtime.wakeScopedSync("d1");
   if (trigger === "task push") await runtime.wakeScopedSyncChanges("d1", [{ entity_id: "p1", tasks: { task_ids: ["task-2"] } }]);
   expect(fake.columns).toHaveBeenCalledWith(expect.objectContaining({ deviceId: "d1", projectId: "p1" }));
+  runtime.stopScopedSyncRuntime();
+});
+
+it("passes continuous opening identity to the engine and replaces a fresh registration", () => {
+  fake.lock = true; fake.scopes[0].registration = "opening-1";
+  runtime.startScopedSyncRuntime({ ownsLock: () => fake.lock, request: vi.fn() });
+  const engine = fake.engines[0];
+  expect(engine.track).toHaveBeenCalledWith(scope, { registration: "opening-1" });
+  fake.scopes = [{ ...fake.scopes[0], registration: "opening-2" }]; fake.scopeChanged();
+  expect(engine.untrack).toHaveBeenCalledWith(scope);
+  expect(engine.track).toHaveBeenLastCalledWith(scope, { registration: "opening-2" });
   runtime.stopScopedSyncRuntime();
 });

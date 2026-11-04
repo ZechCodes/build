@@ -19,6 +19,8 @@ const scopeDefinitions = {
       && Boolean(item.tasks?.truncated || item.tasks?.task_ids?.includes(entry.scope.task_id)) },
 };
 const supported = (caps, scope) => caps?.sync?.[scopeDefinitions[scope.kind]?.capability] === true;
+const registrationOf = (entry) => entry.registration || entry.id;
+const sameRegistration = (left, right) => Boolean(left && right && registrationOf(left) === registrationOf(right));
 let runtime = null;
 let subscriptions = [];
 
@@ -42,22 +44,27 @@ function createOwner(context, greeting) {
   const entries = new Map();
   const engine = createScopedSyncEngine({ active, epoch: () => greeting.epoch,
     request: (method, params) => owner.request(context.deviceId, method, params, params.scope),
-    storeFor: (scope) => scopeDefinitions[scope.kind].storeFor({ deviceId: context.deviceId, scope,
-      projectId: entries.get(JSON.stringify(scope))?.projectId,
-      queryParams: entries.get(JSON.stringify(scope))?.queryParams, bridgeIdentity: context.deviceId, active }),
+    storeFor: (scope) => scopeStore(context, entries, scope, active),
   });
   state = { context, session, cacheScope, greeting, engine, entries, active, bodies: new Map() };
   return state;
 }
 
+function scopeStore(context, entries, scope, active) {
+  const key = JSON.stringify(scope), entry = entries.get(key);
+  return scopeDefinitions[scope.kind].storeFor({ deviceId: context.deviceId, scope,
+    projectId: entry?.projectId, queryParams: entry?.queryParams, bridgeIdentity: context.deviceId,
+    active: () => active() && sameRegistration(entry, entries.get(key)) });
+}
+
 function reconcileEntries(held, entries) {
   const next = new Map(entries.map((entry) => [JSON.stringify(entry.scope), entry]));
-  for (const [key, entry] of held.entries) if (!next.has(key)) held.engine.untrack(entry.scope);
-  const added = entries.filter((entry) => !held.entries.has(JSON.stringify(entry.scope)));
+  for (const [key, entry] of held.entries) if (!sameRegistration(entry, next.get(key))) held.engine.untrack(entry.scope);
+  const added = entries.filter((entry) => !sameRegistration(held.entries.get(JSON.stringify(entry.scope)), entry));
   held.entries.clear();
   for (const [key, entry] of next) held.entries.set(key, entry);
   for (const entry of added) {
-    held.engine.track(entry.scope);
+    held.engine.track(entry.scope, { registration: registrationOf(entry) });
     void Promise.all([held.engine.catchUp(entry.scope), prepareScope(held, entry)]).catch(() => {});
   }
 }

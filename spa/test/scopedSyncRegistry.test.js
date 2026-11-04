@@ -83,3 +83,14 @@ it("renews a frozen follower's expired presence before delivering its foreground
   follower.wake("d", [taskSyncScope("resumed")]);
   expect(seen).toEqual([["resumed"]]);
 });
+
+
+it("keeps a continuous registration across duplicate mounts and renews it after last close", () => {
+  const scopes = registry(); const closeFirst = scopes.register(task("a"));
+  const registration = scopes.tracked("d")[0].registration;
+  expect(registration).toBeTruthy();
+  const closeSecond = scopes.register(task("a")); closeFirst();
+  expect(scopes.tracked("d")[0].registration).toBe(registration);
+  closeSecond(); scopes.register(task("a"));
+  expect(scopes.tracked("d")[0].registration).not.toBe(registration);
+});

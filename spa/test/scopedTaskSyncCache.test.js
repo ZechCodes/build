@@ -304,3 +304,35 @@ it("applies server pending-selection metadata when no local mutation is pending"
   expect((await raw(summaries.summaryAddress(place, "task-1"))).task.title).toBe("task-1");
   expect((await writer.readCursor()).cursor).toBe("opaque-cursor");
 });
+
+it("applies a historical upsert carrying the current tombstone before its later delete event page", async () => {
+  const writer = create();
+  // Snapshot records have no event sequence, operation, or membership field.
+  await publish(writer, [{ kind: "task", key: "task-1", revision: "40", row: task("task-1") }],
+    { snapshot: true, response: response("S40", { watermark: "40" }) });
+  const detail = { deviceId, entityId: projectId, kind: "tracker-task", sub: "task-1" };
+  const inactive = summaries.summaryQueryAddress(place, { states: ["closed"] });
+  const inactiveLegacy = legacy({ project_id: projectId, state: "closed" });
+  await cache.writeCached(detail, { task: task("task-1", { body: "cached body" }), timeline: ["cached timeline"] });
+  await cache.writeCached(inactive, { ids: ["task-1"] });
+  await cache.writeCached(inactiveLegacy, { tasks: [task("task-1")] });
+  // changes.rs stamps the historical operation onto record()'s current row.
+  // The entity was deleted at 43; the page currently replays its upsert at 41.
+  const historical = { seq: "41", kind: "task", key: "task-1", operation: "upsert", revision: "43", member: false, row: null };
+  expect(await publish(writer, [historical], { expectedCursor: "S40",
+    response: response("C41", { head: "43", continuation: "fixed-H43" }) })).toBe(true);
+  expect(await ids()).toEqual([]);
+  expect((await raw(inactive)).ids).toEqual([]);
+  expect((await raw(inactiveLegacy)).tasks).toEqual([]);
+  expect(await raw(summaries.summaryAddress(place, "task-1"))).toBeUndefined();
+  expect(await raw(detail)).toBeUndefined();
+  expect(await writer.readCursor()).toMatchObject({ cursor: "C41", appliedHead: "40" });
+  // A delayed older row cannot resurrect the entity before the delete page.
+  await publish(writer, [record("task-1", "42", { seq: "42", operation: "upsert" })],
+    { expectedCursor: "C41", response: response("C42", { head: "43", continuation: "fixed-H43-next" }) });
+  expect(await raw(summaries.summaryAddress(place, "task-1"))).toBeUndefined();
+  expect(await ids()).toEqual([]);
+  await publish(writer, [{ ...historical, seq: "43", operation: "delete" }],
+    { expectedCursor: "C42", response: response("C43", { head: "43" }) });
+  expect(await writer.readCursor()).toMatchObject({ cursor: "C43", appliedHead: "43" });
+});

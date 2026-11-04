@@ -25,7 +25,11 @@ export function matchingMembership(address, scope) {
 
 export const isMembership = (address) => listKinds.has(address.kind);
 export const rowTask = (record) => record.kind === "task_head" ? record.row?.task : record.row;
-const rowRemoved = (record) => record.operation === "delete";
+// Recovery replays historical operations with the entity's CURRENT row.
+// An earlier upsert can therefore carry today's tombstone before its delete
+// event is reached on a later page of the same fixed-head run.
+const rowRemoved = (record) => record.operation === "delete"
+  || record.row === null && record.member === false;
 const rowInvalidated = (record) => record.operation === "invalidate";
 
 export function currentRevision(held, record, incarnation) {

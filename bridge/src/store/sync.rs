@@ -9,6 +9,7 @@ pub use continuations::Continuation;
 mod device;
 pub(in crate::store) use device::stage as stage_device;
 pub use device::{DeviceLease, DEVICE_LEASES_PER_OPENING, DEVICE_LEASE_TTL_MS};
+mod device_334_cleanup;
 mod device_backfill;
 mod device_facts;
 mod device_families;

@@ -528,9 +528,16 @@ pub(super) fn ensure_scope_ready(
 }
 
 pub(super) fn ensure_ready(conn: &rusqlite::Connection) -> Result<(), SyncError> {
-    let dirty: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_dirty)", [], |row| {
-        row.get(0)
-    })?;
+    // Cleanup and bootstrap checkpoint independently. Keep the same device-
+    // local fence through both, including an interrupted startup/reopen.
+    let dirty: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_dirty)
+         OR EXISTS(SELECT 1 FROM meta WHERE key='device_334_cleanup_position')
+         OR COALESCE((SELECT json_extract(value,'$.done') FROM meta WHERE key='device_owner_facts_334_position'),0)<>1
+         OR COALESCE((SELECT json_extract(value,'$.phase') FROM meta WHERE key='device_sessions_334_position'),0)<>6",
+        [],
+        |row| row.get(0),
+    )?;
     if dirty {
         return Err(SyncError::Unavailable("sync_reconciling".into()));
     }

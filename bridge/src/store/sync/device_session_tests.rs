@@ -202,3 +202,134 @@ fn device_334_sessions_reset_recomputes_owner_and_project_from_remaining_history
     assert_eq!(project["session_started_ms"], at);
     assert_eq!(project["last_activity_ms"], at);
 }
+
+#[test]
+fn device_334_sessions_project_path_lookup_uses_an_indexed_seek() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let plan: String = store
+        .writer_for_test()
+        .query_row(
+            "EXPLAIN QUERY PLAN SELECT path FROM device_project_ids WHERE project_id=?1 LIMIT 1",
+            ["synthetic-project-334"],
+            |row| row.get(3),
+        )
+        .unwrap();
+    assert!(
+        plan.contains("SEARCH") && !plan.contains("SCAN"),
+        "hot project-session reverse lookup must seek: {plan}"
+    );
+}
+
+#[test]
+fn device_334_sessions_cleanup_is_bounded_and_resumes_before_exposing_facts() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let canonical = crate::session_summary::UserSession {
+        session_started_ms: Some(1),
+        last_activity_ms: Some(2),
+        previous_session_ended_ms: None,
+    };
+    store.save_user_session(&canonical).unwrap();
+    let original: String = store
+        .writer_for_test()
+        .query_row(
+            "SELECT value FROM meta WHERE key='device_backfill_position'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    {
+        let conn = store.writer_for_test();
+        for index in 0..257 {
+            conn.execute(
+                "INSERT INTO device_owner_pins VALUES(?1,NULL)",
+                [format!("obsolete-{index:03}")],
+            )
+            .unwrap();
+        }
+        for index in 0..256 {
+            conn.execute("INSERT INTO sync_projection(kind,key,from_seq,deleted,record,record_bytes) VALUES('owner_session',?1,0,1,NULL,0)",[format!("prefix-{index:03}")]).unwrap();
+        }
+        conn.execute(
+            "UPDATE meta SET value='sync-journal-2' WHERE key='sync_schema'",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch("CREATE TRIGGER stop_pin_cleanup AFTER DELETE ON device_owner_pins WHEN (SELECT COUNT(*) FROM device_owner_pins)<129 BEGIN SELECT RAISE(ABORT,'synthetic cleanup interruption'); END;").unwrap();
+    }
+    drop(store);
+    assert!(
+        Store::new(directory.path()).is_err(),
+        "an interrupted cleanup must not expose StoreWriter or ReadPool"
+    );
+    let conn = rusqlite::Connection::open(directory.path().join("build.db")).unwrap();
+    let remaining: i64 = conn
+        .query_row("SELECT COUNT(*) FROM device_owner_pins", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(remaining, 129, "only the first128-row chunk may commit");
+    let pending: String = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key='device_334_cleanup_position'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&pending).unwrap()["phase"], 0);
+    let flags:i64=conn.query_row("SELECT COUNT(*) FROM meta WHERE key IN ('device_owner_facts_334_position','device_sessions_334_position')",[],|row|row.get(0)).unwrap();
+    assert_eq!(
+        flags, 0,
+        "coverage flags must be invalidated before cleanup starts"
+    );
+    let saved: String = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key='device_backfill_position'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        saved, original,
+        "unrelated backfill coverage must remain intact"
+    );
+    conn.execute_batch("DROP TRIGGER stop_pin_cleanup; CREATE TRIGGER stop_projection_cleanup BEFORE UPDATE OF value ON meta WHEN NEW.key='device_334_cleanup_position' AND json_extract(NEW.value,'$.phase')=4 AND json_extract(NEW.value,'$.key')>'prefix-127' BEGIN SELECT RAISE(ABORT,'synthetic projection cleanup interruption'); END;").unwrap();
+    assert!(Store::new(directory.path()).is_err());
+    let pending: String = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key='device_334_cleanup_position'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let position: Value = serde_json::from_str(&pending).unwrap();
+    assert_eq!(position["phase"], 4);
+    assert_eq!(
+        position["key"], "prefix-127",
+        "deleted candidates must advance the bounded source cursor before filtering"
+    );
+    conn.execute_batch("DROP TRIGGER stop_projection_cleanup")
+        .unwrap();
+    drop(conn);
+    let reopened = Store::new(directory.path()).unwrap();
+    assert_eq!(reopened.load_user_session().unwrap(), Some(canonical));
+    let saved: String = reopened
+        .writer_for_test()
+        .query_row(
+            "SELECT value FROM meta WHERE key='device_backfill_position'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(saved, original);
+    let pending: i64 = reopened
+        .writer_for_test()
+        .query_row(
+            "SELECT COUNT(*) FROM meta WHERE key='device_334_cleanup_position'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 0);
+}

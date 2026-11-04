@@ -7,7 +7,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 pub(super) fn install(conn: &Connection) -> Result<(), StoreError> {
     conn.execute_batch("CREATE TABLE IF NOT EXISTS device_pooled_sessions(kind TEXT NOT NULL,key TEXT NOT NULL,session_started_ms INTEGER,last_activity_ms INTEGER,PRIMARY KEY(kind,key)) WITHOUT ROWID;
-        CREATE TABLE IF NOT EXISTS device_session_project_ids(path TEXT PRIMARY KEY,project_id TEXT NOT NULL) WITHOUT ROWID;")?;
+        CREATE TABLE IF NOT EXISTS device_session_project_ids(path TEXT PRIMARY KEY,project_id TEXT NOT NULL) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS device_project_ids_by_id ON device_project_ids(project_id,path);")?;
     super::device_session_backfill::install(conn)
 }
 

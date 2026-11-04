@@ -553,3 +553,55 @@ fn sync_incarnation_is_separate_and_survives_restart() {
         .unwrap();
     assert_eq!(incarnation.unwrap(), after);
 }
+
+#[test]
+fn device_334_definition_bump_resets_all_scope_cursors_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    use crate::app::TaskSyncScope;
+    let scopes = [
+        TaskSyncScope::device(),
+        TaskSyncScope::task("task-synthetic", "project-synthetic", "/synthetic"),
+        TaskSyncScope::project("project-synthetic", "/synthetic", &json!({})).unwrap(),
+    ];
+    let tokens: Vec<_> = scopes
+        .iter()
+        .map(|scope| cursor(&store, scope.scope(), Sequence::ZERO))
+        .collect();
+    store
+        .connection()
+        .execute(
+            "UPDATE meta SET value='sync-journal-2' WHERE key='sync_schema'",
+            [],
+        )
+        .unwrap();
+    drop(store);
+    let upgraded = Store::new(dir.path()).unwrap();
+    for (scope, token) in scopes.iter().zip(&tokens) {
+        assert!(
+            matches!(
+                head(&upgraded, scope.scope(), Some(token)),
+                HeadResult::ResyncRequired {
+                    reason: ResyncReason::IncarnationChanged,
+                    ..
+                }
+            ),
+            "definition3 must reject the previous incarnation"
+        );
+    }
+    let tokens: Vec<_> = scopes
+        .iter()
+        .map(|scope| cursor(&upgraded, scope.scope(), Sequence::ZERO))
+        .collect();
+    drop(upgraded);
+    let reopened = Store::new(dir.path()).unwrap();
+    for (scope, token) in scopes.iter().zip(&tokens) {
+        assert!(
+            matches!(
+                head(&reopened, scope.scope(), Some(token)),
+                HeadResult::Ready(_)
+            ),
+            "normal current-definition reopen must retain cursor validity"
+        );
+    }
+}

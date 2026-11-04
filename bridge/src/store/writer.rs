@@ -55,6 +55,7 @@ impl StoreWriter {
         let mut batch = super::sync::PublicationBatch::default();
         let result = work(&transaction, &mut batch)?;
         super::sync::collect_tasks(&transaction, &mut batch)?;
+        super::sync::collect_device(&transaction, &mut batch)?;
         batch.publish(&transaction, super::sync::now_ms())?;
         transaction.commit()?;
         Ok(result)

@@ -335,6 +335,31 @@ pub(super) fn apply_projection(
     Ok(())
 }
 
+/// Stage one optional device row without inventing a tombstone for an entity
+/// that has never been a member of the device projection.
+pub(in crate::store) fn stage(
+    tx: &Transaction<'_>,
+    batch: &mut super::PublicationBatch,
+    entity: Entity,
+    record: Option<Value>,
+) -> Result<(), StoreError> {
+    match record {
+        Some(record) => batch.upsert(entity, record, &[Stream::device()]),
+        None => {
+            let published: bool = tx
+                .prepare_cached(
+                    "SELECT EXISTS(SELECT 1 FROM sync_projection
+                     WHERE kind=?1 AND key=?2 AND deleted=0)",
+                )?
+                .query_row(params![entity.kind, entity.key], |row| row.get(0))?;
+            if published {
+                batch.remove(entity, &[Stream::device()]);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn device_scope() -> Scope {
     Scope::new(Stream::device(), json!({"kind":"device"}))
 }

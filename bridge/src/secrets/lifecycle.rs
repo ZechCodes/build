@@ -66,7 +66,9 @@ impl SecretService {
         Ok(service)
     }
 
-    pub(crate) fn state_root(&self) -> &Path { &self.inner.state_root }
+    pub(crate) fn state_root(&self) -> &Path {
+        &self.inner.state_root
+    }
 
     fn state(&self) -> MutexGuard<'_, ClockState> {
         self.inner
@@ -130,9 +132,6 @@ impl SecretService {
     pub fn attach(&self, ids: &[String], operation_id: &str) -> Result<Vec<SecretRecord>> {
         let mut state = self.state();
         let observation = state.observe(&self.inner.writer)?;
-        if observation.rollback {
-            return Err(SecretError::ClockRollback);
-        }
         let before: Vec<_> = ids
             .iter()
             .map(|id| self.inner.writer.secret_record(id))
@@ -142,11 +141,13 @@ impl SecretService {
             .flatten()
             .filter(|record| record.attached_at.is_none())
         {
-            if record.context.device_id != self.inner.device_id
-                || state.expired(record, &observation)
-            {
+            if record.context.device_id != self.inner.device_id {
                 return Err(SecretError::Unavailable);
             }
+            self.require_unexpired(record, &mut state, &observation)?;
+        }
+        if observation.rollback {
+            return Err(SecretError::ClockRollback);
         }
         let records = self
             .inner
@@ -177,13 +178,28 @@ impl SecretService {
         {
             return Err(SecretError::Unavailable);
         }
+        self.require_unexpired(&record, &mut state, &observation)?;
         if observation.rollback && record.context.ttl_seconds.is_some() {
             return Err(SecretError::ClockRollback);
         }
-        if state.expired(&record, &observation) {
+        self.inner.vault.read(&record.context)
+    }
+
+    fn require_unexpired(
+        &self,
+        record: &SecretRecord,
+        state: &mut ClockState,
+        observation: &Observation,
+    ) -> Result<()> {
+        if state.expired(record, observation) {
+            // Persist a monotonic expiry too: a restart while UTC is stalled
+            // must not reopen a value that this process already denied.
+            self.inner
+                .writer
+                .secrets_revoke(&record.context.id, observation.effective_now)?;
             return Err(SecretError::Unavailable);
         }
-        self.inner.vault.read(&record.context)
+        Ok(())
     }
 
     pub fn revoke(&self, id: &str) -> Result<SecretRecord> {

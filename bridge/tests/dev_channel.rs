@@ -212,8 +212,15 @@ fn assert_override_is_isolated(key: &str) {
                 let error = result.expect_err(key);
                 assert!(error.contains(key), "{error}");
                 assert!(error.contains("production state root"), "{error}");
+            } else if value == "~/.build"
+                && matches!(
+                    key,
+                    "BRIDGE_TASKS_DIR" | "BRIDGE_PROJECTS_DIR" | "BRIDGE_WORKTREES"
+                )
+            {
+                assert!(result.unwrap_err().contains("vault"));
             } else {
-                result.expect("production overrides keep their existing behavior");
+                result.expect("disjoint production overrides keep their existing behavior");
             }
         }
     }

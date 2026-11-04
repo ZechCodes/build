@@ -35,6 +35,7 @@ mod rpc;
 mod rtc;
 mod runs;
 mod runtime;
+mod secret_storage;
 mod session_summaries;
 mod snapshot_projection;
 mod streams;
@@ -343,6 +344,7 @@ pub struct AppState {
     /// Durable plan/run records under the bridge state dir, if persistence is
     /// enabled.
     store: Option<Store>,
+    secret_service: Option<crate::secrets::SecretService>,
     /// What the user said, before anything decided where it goes, keyed by
     /// capture id. Durable from the moment it is taken — the router runs after
     /// the write, never instead of it.
@@ -722,6 +724,7 @@ impl AppState {
             session_seen: HashMap::new(),
             user_session: Default::default(),
             store: None,
+            secret_service: None,
             captures: HashMap::new(),
             router_sessions: HashMap::new(),
             updates: None,

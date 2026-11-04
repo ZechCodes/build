@@ -1148,6 +1148,35 @@ also has a one-second shutdown timeout so a blocking batch waiting on the writer
 cannot keep the process alive indefinitely. A detached batch may finish during
 that grace period; its transactions remain atomic and cleanup remains resumable.
 
+#### Device secret vault foundation (#1001)
+
+`bridge/src/secrets/` owns device-local encrypted values separately from the
+history database. It is an unadvertised foundation: no secret RPC, capability,
+version change or runtime CLI is enabled. `SecretService` is constructed from
+`BridgeConfig.state_root`, the authenticated device ID and the existing store
+writer before the app is shared. Its startup/periodic sweeper captures no app
+mutex and performs disk/SQL work on the blocking pool.
+
+Schema 24 adds dedicated metadata and clock tables. Agent grants bind agent,
+canonical conversation and generation; reset/removal tombstones them in the
+existing domain transaction. Project grants bind the canonical project ID and
+survive their originating conversation; project deletion retires them. No
+value or sealed upload is a database field or journal payload. Future send
+integration must use `store::secrets::attach_in` inside the **same** transaction
+as message admission. The standalone service attach helper is not a wire send.
+
+The private `secrets/` directory contains a dedicated key and AES-256-GCM blobs.
+Build backups contain metadata only; migration excludes source vaults and
+refuses a target with a vault, including forced rollback backups. Configuration,
+restored project/workspace roots and dynamic source admission also refuse trees
+that overlap the vault; persisted updater jobs are checked before any store
+backup or rollback. Restored references can therefore be unavailable; this
+foundation refuses daemon startup if their vault key is absent, pending explicit
+recovery or retirement. See [device vault storage and
+lifetime](docs/device-secret-vault.md) for the file format, limits and clock
+policy. Release authority/audit and sealed upload validation belong to the
+subsequent slices and must precede any external exposure.
+
 #### Durable write foundation (#739)
 
 Schema 18 adds `mutation_commands`, per-owner ordering, dependency edges,

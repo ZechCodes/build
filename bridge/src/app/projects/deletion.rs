@@ -317,6 +317,16 @@ impl AppState {
         policies.forget_project(project_id);
         policies.forget_workspaces(&workspace_ids);
         policies.write_config(&mut config);
+        // Denial is durable before removing the external project config. A
+        // crash between these two stores must never leave live project grants.
+        if let Some(store) = &self.store {
+            store
+                .writer()
+                .secrets_retire_project(project_id)
+                .map_err(|error| {
+                    format!("retire project secrets: {error}; retry project deletion")
+                })?;
+        }
         self.persist_config(&config)?;
         if let Some(store) = &self.store {
             store

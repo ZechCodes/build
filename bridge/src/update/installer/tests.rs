@@ -941,3 +941,5 @@ fn a_replacement_refuses_a_development_build_rebuilt_since_it_started() {
     assert_eq!(fs::read(&job.installed_binary).unwrap(), original);
     assert!(!super::super::provenance::marker_path(&job.home).exists());
 }
+
+mod vault_paths;

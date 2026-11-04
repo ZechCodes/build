@@ -30,6 +30,10 @@ impl AppState {
         sources: Vec<ProjectSource>,
         created_checkouts: Vec<std::path::PathBuf>,
     ) -> Result<Value, String> {
+        self.validate_secret_source(&opened.path)?;
+        for source in &sources {
+            self.validate_secret_source(&source.path)?;
+        }
         if let Some(existing_name) = self
             .projects
             .find_by_canonical_path(&opened.path)
@@ -70,6 +74,9 @@ impl AppState {
         added: Vec<ProjectSource>,
         created_checkouts: Vec<std::path::PathBuf>,
     ) -> Result<Value, String> {
+        for source in &added {
+            self.validate_secret_source(&source.path)?;
+        }
         let Some(project) = self.projects.get(project_id) else {
             for path in created_checkouts {
                 self.run_off_lock(RemoveUnregisteredProject { path });
@@ -103,6 +110,7 @@ impl AppState {
         &mut self,
         opened: crate::lifecycle::OpenedRepository,
     ) -> Result<Value, String> {
+        self.validate_secret_source(&opened.path)?;
         if let Some(existing) = self.projects.find_by_canonical_path(&opened.path) {
             return Ok(self.project_json(existing));
         }

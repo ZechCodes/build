@@ -543,7 +543,9 @@ fn construct_app(runtime: &RuntimePaths, identity: &DeviceIdentity) -> Result<Ap
         .with_config(&runtime.config_path)
         .map_err(|error| format!("cannot load config: {error}"))?;
     app.with_task_store(&runtime.tasks_dir)
-        .map_err(|error| task_store_startup_error(&runtime.tasks_dir, &error))
+        .map_err(|error| task_store_startup_error(&runtime.tasks_dir, &error))?
+        .with_secret_vault(&config.state_root, &identity.device_id)
+        .map_err(|error| format!("cannot open device secret vault: {error}"))
 }
 
 fn register_environment_projects(mut app: AppState, config: &BridgeConfig) -> AppState {
@@ -702,6 +704,7 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
     // (task #131).
     let push = DedicatedRuntime::push().unwrap_or_else(|error| exit_startup(error));
     let storage_maintenance = app.spawn_storage_maintenance();
+    let secret_sweeper = app.spawn_secret_sweeper();
     let app = app
         .with_live_roster(live_roster.clone())
         .with_push_runtime(push.handle())
@@ -843,6 +846,9 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
     drop(review_sync);
     drop(retention);
     drop(receiver_maintenance);
+    if let Some(sweeper) = secret_sweeper {
+        sweeper.stop().await;
+    }
     reclaim_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     source_sync_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     // It writes from the live roster's newest lists and never waits on the app

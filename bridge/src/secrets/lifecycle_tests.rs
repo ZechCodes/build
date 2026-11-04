@@ -1,4 +1,5 @@
 use super::*;
+use crate::secrets::{GrantScope, StageContext, MAX_VALUE_BYTES, STAGED_LIFETIME_SECONDS};
 use crate::store::Store;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -269,4 +270,56 @@ async fn periodic_sweep_needs_no_app_lock_or_client() {
     .await
     .unwrap();
     handle.stop().await;
+}
+
+#[test]
+fn monotonic_expiry_is_durable_across_restart_with_frozen_utc() {
+    let (dir, store, clock, service) = fixture();
+    let record = stage(&service, Some(10));
+    attach(&service, &record);
+    clock.mono.store(10, Ordering::SeqCst);
+    assert!(service.read(&record.context.id).is_err());
+    drop(service);
+    clock.mono.store(0, Ordering::SeqCst);
+    let service =
+        SecretService::open_with_clock(dir.path(), "synthetic-device", store.writer(), clock)
+            .unwrap();
+    assert!(service.read(&record.context.id).is_err());
+}
+
+#[test]
+fn monotonic_stage_expiry_is_durable_across_restart_with_frozen_utc() {
+    let (dir, store, clock, service) = fixture();
+    let record = stage(&service, None);
+    clock
+        .mono
+        .store(STAGED_LIFETIME_SECONDS as u64, Ordering::SeqCst);
+    assert!(service
+        .attach(&[record.context.id.clone()], "synthetic-expired-stage")
+        .is_err());
+    drop(service);
+    clock.mono.store(0, Ordering::SeqCst);
+    let service =
+        SecretService::open_with_clock(dir.path(), "synthetic-device", store.writer(), clock)
+            .unwrap();
+    assert!(service
+        .attach(&[record.context.id.clone()], "synthetic-expired-stage")
+        .is_err());
+}
+
+#[test]
+fn monotonic_expiry_during_rollback_remains_retired_after_clock_recovery() {
+    let (dir, store, clock, service) = fixture();
+    let record = stage(&service, Some(10));
+    attach(&service, &record);
+    clock.wall.store(999, Ordering::SeqCst);
+    clock.mono.store(10, Ordering::SeqCst);
+    assert!(service.read(&record.context.id).is_err());
+    drop(service);
+    clock.mono.store(0, Ordering::SeqCst);
+    clock.wall.store(1000, Ordering::SeqCst);
+    let service =
+        SecretService::open_with_clock(dir.path(), "synthetic-device", store.writer(), clock)
+            .unwrap();
+    assert!(service.read(&record.context.id).is_err());
 }

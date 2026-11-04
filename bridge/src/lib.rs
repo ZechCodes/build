@@ -98,6 +98,7 @@ pub mod remote_url;
 pub mod renamed_ids;
 pub mod resume;
 pub mod retention;
+pub mod secrets;
 pub mod reviews;
 pub mod router;
 pub mod rtc;

@@ -404,6 +404,7 @@ dependencies = [
  "vt100",
  "webrtc",
  "wiremock",
+ "zeroize",
 ]
 
 [[package]]

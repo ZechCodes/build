@@ -94,6 +94,7 @@ pub use reviews::verdict_delivery::{
 };
 pub(crate) use reviews::{RevisionDispatch, RevisionFailureNotice};
 mod schema;
+pub mod secrets;
 mod source_sync;
 pub mod sync;
 mod task_observation;

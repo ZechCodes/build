@@ -16,6 +16,7 @@ const own = (value, key) => Object.hasOwn(value || {}, key);
 const nonempty = (value) => typeof value === "string" && value.length > 0;
 const lineage = (task) => ["watched", "watch_started_after"].map((key) =>
   [key, own(task, key), typeof task?.[key], task?.[key]]);
+const renderWatchSnapshot = (task) => [lineage(task), task?.__task_watch_intent, task?.[TASK_WATCH_CACHE]];
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 const input = (task, detail) => JSON.stringify([task, detail]);
 const detailAddress = (scope, id) => ({ deviceId: scope.deviceId, entityId: scope.projectId, kind: "tracker-task", sub: id });
@@ -112,7 +113,7 @@ function pruneTo(entries, tasks) {
 export function createTaskUnreadDisplayOwner({ scope, consumer, active = () => true, sessionOf = () => null, onChange = () => {} }) {
   if (!consumers.includes(consumer)) throw new TypeError("Unknown task unread display consumer");
   const states = new Map(), notes = new Map(), tasks = new Map(), pending = new Map();
-  let context = {}, disposed = false, serial = 0;
+  let context = {}, disposed = false, serial = 0, hydrating = false;
 
   const usable = () => !disposed && active();
   const previousOf = (task) => {
@@ -122,9 +123,11 @@ export function createTaskUnreadDisplayOwner({ scope, consumer, active = () => t
   };
   const preview = (task, detail) => taskUnreadDisplayCount(task, detail,
     { unknown: unknownTotal(task, detail, previousOf(task)), previous: previousOf(task)?.total });
+  const currentRender = (task) => Boolean(tasks.get(task.id))
+    && same(renderWatchSnapshot(tasks.get(task.id)), renderWatchSnapshot(task));
 
   function rendered(task, detail, total, listedAddress) {
-    if (!usable() || !scopedTask(scope, task)) return;
+    if (!usable() || hydrating || !scopedTask(scope, task) || !currentRender(task)) return;
     const previous = previousOf(task);
     if (endedAssociation(states.get(task.id), task, context, scope)) states.set(task.id, { retired: true });
     if (!canRecord(task, detail, total, previous) || total !== taskUnreadCount(task, detail)) return;
@@ -172,11 +175,26 @@ export function createTaskUnreadDisplayOwner({ scope, consumer, active = () => t
 
   async function updateTasks(next) {
     const read = ++serial;
+    hydrating = true;
     tasks.clear();
     for (const task of next || []) if (scopedTask(scope, task)) tasks.set(task.id, task);
     for (const entries of [states, notes, pending]) pruneTo(entries, tasks);
     const ids = [...tasks.keys()];
-    const records = await readCachedMany([...lifetimeAddresses(scope), ...ids.map((id) => taskWatchIntentAddress(scope, id))]);
+    try {
+      const records = await readCachedMany([...lifetimeAddresses(scope), ...ids.map((id) => taskWatchIntentAddress(scope, id))]);
+      acceptNotes(read, ids, records);
+    } catch (error) {
+      reportFailure(error);
+      throw error;
+    } finally {
+      if (read === serial) {
+        hydrating = false;
+        if (usable()) onChange();
+      }
+    }
+  }
+
+  function acceptNotes(read, ids, records) {
     if (!usable() || read !== serial) return;
     const nextContext = contextOf(records);
     if (validLifetime(context) && !same(lifetime(context), lifetime(nextContext))) states.clear();
@@ -198,12 +216,13 @@ export function createTaskUnreadDisplayOwner({ scope, consumer, active = () => t
   let refreshing = null;
   const unsubscribe = subscribeCache({ deviceId: scope.deviceId, entityId: scope.projectId, kind: TASK_READS_KIND }, () => {
     if (!usable() || refreshing) return;
-    refreshing = updateTasks([...tasks.values()]).then(() => { if (usable()) onChange(); })
-      .catch(reportFailure).finally(() => { refreshing = null; });
+    // updateTasks reports failures and notifies on settlement; this detached
+    // refresh only consumes its already-reported rejection.
+    refreshing = updateTasks([...tasks.values()]).catch(() => {}).finally(() => { refreshing = null; });
   });
 
-  return { preview, rendered, updateTasks,
-    dispose() { disposed = true; serial += 1; unsubscribe(); states.clear(); notes.clear(); tasks.clear(); pending.clear(); } };
+  return { preview, rendered, updateTasks, hydrating: () => hydrating,
+    dispose() { disposed = true; serial += 1; hydrating = false; unsubscribe(); states.clear(); notes.clear(); tasks.clear(); pending.clear(); } };
 }
 
 function persistedSlot(prepared, scope, writes) {

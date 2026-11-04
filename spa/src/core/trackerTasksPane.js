@@ -265,13 +265,9 @@ export function mountTasksPane(host, options) {
     scope: { deviceId: state.deviceId, projectId: state.projectId }, consumer: "tasks-pane",
     active: () => !state.disposed, sessionOf: () => deviceSession(state.deviceId), onChange: () => paint(),
   });
-  let unreadHydrationSerial = 0;
-  let unreadHydrationPending = false;
   async function hydrateUnreadTasks() {
-    const serial = ++unreadHydrationSerial;
-    unreadHydrationPending = true;
     try { await unreadDisplay.updateTasks(state.shown); }
-    finally { if (serial === unreadHydrationSerial) unreadHydrationPending = false; }
+    catch (error) { reportReadFailure(error); }
   }
   /** Each watched task's unread, as the bubble on its row, card or dashboard
    *  line says it (#104): off the cached timeline while it is current, and
@@ -338,7 +334,7 @@ export function mountTasksPane(host, options) {
     remoteChoices.paintContinuation();
     // Keep the previous task frame until its next rows' retained display
     // notes are ready. Independent metadata paints may finish first.
-    if (unreadHydrationPending) return;
+    if (unreadDisplay.hydrating()) return;
     const view = VIEWS[state.view] || VIEWS[LIST_VIEW];
     paintedUnread.clear();
     view.paint(chrome.body, view.entries(), paintContext(), view.wire);
@@ -358,7 +354,7 @@ export function mountTasksPane(host, options) {
     state.visibleCount = Number(saved.visibleCount) || TASK_PAGE_SIZE;
     if (priorView !== state.view) state.onViewChange?.(state.view);
     previewQuery();
-    void hydrateUnreadTasks().catch(reportReadFailure).finally(paint);
+    void hydrateUnreadTasks().finally(paint);
     paint();
     watchQuery();
     void refresh();

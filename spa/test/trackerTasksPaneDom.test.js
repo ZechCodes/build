@@ -241,6 +241,50 @@ it.each(["initial mount", "view change"])("reports unread display hydration fail
   }
 });
 
+it.each(["query", "whole list"])("continues after rejected display hydration from the %s subscription", async (source) => {
+  durable.owns = true;
+  call = vi.fn(() => new Promise(() => {}));
+  await mount();
+  durable.wake.mockClear();
+  expect(titles()).toEqual([]);
+  const failure = new Error("Subscribed unread display read failed");
+  const unhandled = [];
+  const noteUnhandled = (error) => { unhandled.push(error); };
+  process.on("unhandledRejection", noteUnhandled);
+  const read = cache.readCachedMany;
+  let waiting = false;
+  let rejectHeld;
+  const held = new Promise((_, reject) => { rejectHeld = reject; });
+  const spy = vi.spyOn(cache, "readCachedMany").mockImplementation((addresses) => {
+    if (!waiting && addresses.length === 4 && addresses[0].kind === "task-content-generation") {
+      waiting = true;
+      return held;
+    }
+    return read(addresses);
+  });
+  try {
+    const record = trackerCache.tasksRecord([task({ id: "subscribed-hydration", title: "Subscribed cached task", labels: ["hydrated-label"] })], columns(), 100);
+    if (source === "query") await trackerCache.writeTasksQueryRecord("dev-1", "proj-1",
+      { project_id: "proj-1", state: "open" }, record);
+    else await cache.writeCached(trackerCache.tasksAddress("dev-1", "proj-1"), record);
+    await vi.waitFor(() => expect(waiting).toBe(true));
+    await flush();
+    expect(titles()).toEqual([]);
+    rejectHeld(failure);
+    await flush();
+    expect(unhandled).toEqual([]);
+    expect(notifyError).toHaveBeenCalledWith("Could not read this project's tasks", failure.message);
+    expect(titles()).toEqual(["Subscribed cached task"]);
+    expect(durable.wake.mock.calls.some(([deviceId, accepts]) => deviceId === "dev-1"
+      && accepts({ kind: "task", task_id: "subscribed-hydration" }))).toBe(true);
+    await openMenu("label");
+    expect(menuLabels("label")).toContain("hydrated-label");
+  } finally {
+    spy.mockRestore();
+    process.off("unhandledRejection", noteUnhandled);
+  }
+});
+
 beforeEach(async () => {
   vi.resetModules();
   durable.owns = false; durable.wake.mockClear(); durable.release.mockClear(); durable.register.mockClear();

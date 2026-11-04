@@ -4275,9 +4275,10 @@ gate attachment display.
 - **Durable task scope recovery.** `scopedSyncRegistry.js` describes mounted
   project task queries and task details, sharing presence with the lock holder
   across tabs and limiting each device to sixteen active scopes. Importing
-  the registry starts no timer. Mounted registrations and active runtime
-  observers keep presence and remote-lease expiry running; the final release
-  or unsubscribe stops that interval. Followers relay named wake requests
+  the registry starts no timer or presence channel. Mounted registrations and
+  active runtime observers open the channel and keep presence and remote-lease
+  expiry running. The final release or unsubscribe stops that interval and
+  closes the owned channel; activation recreates it and requests peer presence. Followers relay named wake requests
   to the holder. Definitions
   use canonical filters and order; cursors never cross definitions. Current
   greetings independently gate `sync.projectTasks` and `sync.task`.
@@ -4323,8 +4324,11 @@ gate attachment display.
   Column painters use an independent metadata reader and subscription, without
   changing task catalogues; existing embedded list columns remain a fallback.
   Metadata chrome can update during retained-unread hydration, while task
-  frames wait for the current rows' display notes. A newer hydration replaces
-  an obsolete query's pending paint fence.
+  frames wait for the unread owner's latest read, including its note-change
+  refreshes. Settlement reports failures and notifies painters; pane cache
+  paths continue their details/catalogue publication after a handled failure.
+  The owner rejects recordings during hydration or from an obsolete watch
+  snapshot, so a consumer's older frame cannot restore retired display history.
   Legacy column helpers share that reader to avoid refetching cold metadata.
   Task
   heads contain summary and timeline data; an engine-owned detail reader

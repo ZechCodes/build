@@ -29,6 +29,7 @@ it("shares mounted scopes with the lock holder in another tab and releases them 
   const channel = () => { const c = { onmessage: null, postMessage(data) { channels.filter((other) => other !== c)
     .forEach((other) => other.onmessage?.({ data: structuredClone(data) })); }, close() {} }; channels.push(c); return c; };
   const first = registry({ channel: channel() }), second = registry({ channel: channel() });
+  first.subscribe(vi.fn());
   const stop = second.register(task("follower"));
   expect(first.tracked("d").map(({ scope }) => scope.task_id)).toEqual(["follower"]);
   stop(); expect(first.tracked("d")).toHaveLength(0);
@@ -38,7 +39,7 @@ it("answers a new holder's presence request and expires vanished tab registratio
   const channel = () => { const c = { onmessage: null, postMessage(data) { channels.filter((other) => other !== c)
     .forEach((other) => other.onmessage?.({ data: structuredClone(data) })); }, close() { channels.splice(channels.indexOf(c), 1); } }; channels.push(c); return c; };
   const first = registry({ channel: channel() }); first.register(task("existing"));
-  const second = registry({ channel: channel() }); expect(second.tracked("d")).toHaveLength(1);
+  const second = registry({ channel: channel() }); second.subscribe(vi.fn()); expect(second.tracked("d")).toHaveLength(1);
   // A crashed tab cannot announce release or refresh its lease.
   const owner = channels[0]; owner.postMessage = () => {};
   await vi.advanceTimersByTimeAsync(20_000); expect(second.tracked("d")).toHaveLength(0);
@@ -119,4 +120,46 @@ it("keeps remote lease expiry running for observers without a local mount", asyn
   expect(scopes.tracked("d")).toHaveLength(0);
   expect(changed).toHaveBeenCalledOnce();
   stop(); expect(vi.getTimerCount()).toBe(0);
+});
+
+it("opens channel factories only for active scopes or observers and closes them when idle", () => {
+  vi.useFakeTimers();
+  const channels = [], createChannel = vi.fn(() => {
+    const channel = { onmessage: null, postMessage: vi.fn(), close: vi.fn() };
+    channels.push(channel); return channel;
+  });
+  const scopes = registry({ createChannel });
+  expect(createChannel).not.toHaveBeenCalled();
+  const stop = scopes.subscribe(vi.fn());
+  expect(createChannel).toHaveBeenCalledOnce();
+  expect(channels[0].postMessage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "request" }));
+  stop(); expect(channels[0].close).toHaveBeenCalledOnce(); expect(channels[0].onmessage).toBeNull();
+  const release = scopes.register(task("reopened"));
+  expect(createChannel).toHaveBeenCalledTimes(2);
+  expect(channels[1].onmessage).toEqual(expect.any(Function));
+  release(); expect(channels[1].close).toHaveBeenCalledOnce();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("reopens a lazy holder channel and rediscovers remote presence before forwarding wakes", () => {
+  const channels = [];
+  const createChannel = () => {
+    const channel = { onmessage: null,
+      postMessage(data) { channels.filter((other) => other !== channel).forEach((other) => other.onmessage?.({ data: structuredClone(data) })); },
+      close() { channels.splice(channels.indexOf(channel), 1); } };
+    channels.push(channel); return channel;
+  };
+  const holder = registry({ createChannel }), follower = registry({ createChannel });
+  const wake = vi.fn(), stop = holder.subscribeWake(wake);
+  const release = follower.register(task("remote"));
+  expect(holder.tracked("d").map(({ scope }) => scope.task_id)).toEqual(["remote"]);
+  stop(); expect(channels).toHaveLength(1);
+  const releaseSecond = follower.register(task("while-holder-idle"));
+  const stopAgain = holder.subscribeWake(wake);
+  expect(holder.tracked("d").map(({ scope }) => scope.task_id)).toEqual(["remote", "while-holder-idle"]);
+  follower.wake("d", [taskSyncScope("remote")]);
+  expect(wake).toHaveBeenCalledExactlyOnceWith({ deviceId: "d", scopes: [taskSyncScope("remote")] });
+  release(); releaseSecond();
+  expect(holder.tracked("d")).toHaveLength(0);
+  stopAgain(); expect(channels).toHaveLength(0);
 });

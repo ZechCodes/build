@@ -13,9 +13,9 @@ export function projectSyncScope(projectId, filters = {}) {
 }
 const scopeKey = ({ deviceId, scope }) => JSON.stringify([deviceId, scope]);
 
-export function createScopedSyncRegistry({ channel, now = Date.now } = {}) {
+export function createScopedSyncRegistry({ channel: providedChannel, createChannel, now = Date.now } = {}) {
   const owner = randomToken(), local = new Map(), remote = new Map(), listeners = new Set(), wakeListeners = new Set();
-  let sequence = 0, signature = "", disposed = false, timer = null;
+  let sequence = 0, signature = "", disposed = false, timer = null, channel = null;
   const all = () => [...local.values(), ...[...remote.values()].flatMap((tab) => tab.scopes)];
   function selected() {
     for (const [id, tab] of remote) if (now() - tab.at >= PRESENCE_LEASE_MS) remote.delete(id);
@@ -43,24 +43,36 @@ export function createScopedSyncRegistry({ channel, now = Date.now } = {}) {
     const hint = { deviceId: data.deviceId, scopes: data.scopes.slice(0, MAX_TRACKED_SYNC_SCOPES) };
     wakeListeners.forEach((listener) => listener(hint));
   }
+  function openChannel() {
+    channel = createChannel ? createChannel() : providedChannel;
+    if (!channel) return;
+    channel.onmessage = receive;
+    channel.postMessage({ type: "request", owner });
+  }
+  function closeChannel() {
+    if (channel) {
+      channel.onmessage = null;
+      if (createChannel) channel.close();
+      channel = null;
+    }
+    remote.clear();
+  }
   // Mounts advertise their presence; active runtime observers also need to
   // expire remote leases even when this tab has no mounted scope of its own.
   // Merely importing the registry starts no recurring work.
   function updateTimer() {
     const needed = !disposed && (local.size || listeners.size || wakeListeners.size);
-    if (!needed) { clearInterval(timer); timer = null; return; }
+    if (!needed) { clearInterval(timer); timer = null; closeChannel(); return; }
     if (timer !== null) return;
     timer = setInterval(() => { publish(); notify(); }, PRESENCE_INTERVAL_MS);
     timer.unref?.();
-    channel?.postMessage({ type: "request", owner });
+    openChannel();
   }
   function observe(observers, listener) {
     if (disposed) return () => {};
     observers.add(listener); updateTimer();
     return () => { observers.delete(listener); updateTimer(); };
   }
-  if (channel) channel.onmessage = receive;
-  channel?.postMessage({ type: "request", owner });
 
   return {
     register(registration) {
@@ -73,7 +85,7 @@ export function createScopedSyncRegistry({ channel, now = Date.now } = {}) {
       local.set(id, { ...registration, registration: opening, opened: now(), ordinal: sequence, owner, id, key });
       updateTimer();
       publish(); notify();
-      return () => { local.delete(id); updateTimer(); publish(); notify(); };
+      return () => { local.delete(id); publish(); updateTimer(); notify(); };
     },
     tracked: (deviceId) => selected().filter((entry) => entry.deviceId === deviceId),
     subscribe: (listener) => observe(listeners, listener),
@@ -85,7 +97,7 @@ export function createScopedSyncRegistry({ channel, now = Date.now } = {}) {
     subscribeWake: (listener) => observe(wakeListeners, listener),
     dispose() {
       if (disposed) return;
-      local.clear(); publish(); disposed = true; updateTimer(); channel?.close(); listeners.clear(); wakeListeners.clear();
+      local.clear(); publish(); disposed = true; updateTimer(); providedChannel?.close(); listeners.clear(); wakeListeners.clear();
     },
   };
 }
@@ -101,7 +113,7 @@ function cappedScopes(registrations) {
   return [...devices.values()].flatMap((scopes) => [...scopes.values()].slice(-MAX_TRACKED_SYNC_SCOPES));
 }
 
-const shared = createScopedSyncRegistry({ channel: typeof window !== "undefined" && typeof BroadcastChannel !== "undefined"
+const shared = createScopedSyncRegistry({ createChannel: () => typeof window !== "undefined" && typeof BroadcastChannel !== "undefined"
   ? new BroadcastChannel("build-scoped-sync-presence") : undefined });
 export const registerScopedSync = (registration) => shared.register(registration);
 export const trackedSyncScopes = (deviceId) => shared.tracked(deviceId);

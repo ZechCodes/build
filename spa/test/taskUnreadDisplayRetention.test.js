@@ -317,6 +317,80 @@ async function blindRestorePriorLineage(title) {
 
 describe("D5 unmounted admitted lineage versus blind paint", () => {
 
+  it("does not resurrect a retired display when settlement republishes the previous consumer snapshot", async () => {
+    await renderPersistAndLeave();
+    const previous = await listedTask();
+    const { createTaskUnreadDisplayOwner } = await import("../src/core/taskUnreadDisplay.js");
+    let publishPrevious = false;
+    const owner = createTaskUnreadDisplayOwner({ scope, consumer: "tasks-pane", onChange: () => {
+      if (publishPrevious) owner.rendered(previous, null, 3, tracker.tasksAddress(scope.deviceId, scope.projectId));
+    } });
+    try {
+      await owner.updateTasks([previous]);
+      const unwatched = await admittedLineage(false, "te-15");
+      // followProject publishes its previous tasks synchronously from
+      // onChange, before its awaited updateTasks resumes and assigns next.
+      publishPrevious = true;
+      await owner.updateTasks([unwatched]);
+      publishPrevious = false;
+      const rewatched = await admittedLineage(true, "te-15");
+      await owner.updateTasks([rewatched]);
+      expect(owner.preview(rewatched, null)).toBe(0);
+    } finally {
+      owner.dispose();
+    }
+  });
+
+  it("keeps rows hidden when a note refresh supersedes a completed pane hydration", async () => {
+    await renderPersistAndLeave();
+    const blind = { ...await listedTask(), watch_started_after: "te-90" };
+    delete blind.unread_count;
+    expect(await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+      tracker.tasksRecord([blind], columns()))).toBe(true);
+    await blindRestorePriorLineage("Waiting for the latest owner hydration");
+    const read = cache.readCachedMany;
+    let releasePane, releaseRefresh;
+    const paneRead = new Promise((resolve) => { releasePane = resolve; });
+    const refreshRead = new Promise((resolve) => { releaseRefresh = resolve; });
+    let hydrations = 0;
+    vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+      const records = await read(addresses);
+      if (addresses.length === 4 && addresses[0].kind === "task-content-generation"
+        && addresses[3].sub === JSON.stringify(["tracker-task", taskId])) {
+        const hydration = ++hydrations;
+        if (hydration === 1) await paneRead;
+        if (hydration === 2) await refreshRead;
+      }
+      return records;
+    });
+    const { mountTasksPane } = await import("../src/core/trackerTasksPane.js");
+    pane = mountTasksPane(paneHost, { deviceId: scope.deviceId, projectId: scope.projectId,
+      projectKey: project.projectKey, projectName: project.name, defaultView: "list", callRpc: rpc,
+      catalog: () => ({ providers: [] }), feed: () => ({ items: [], workspaces: [] }) });
+    try {
+      await vi.waitFor(() => expect(hydrations).toBe(1), WAIT);
+      const { taskWatchIntentAddress } = await import("../src/core/taskReadOrder.js");
+      const noteAddress = taskWatchIntentAddress(scope, taskId);
+      await cache.writeCached(noteAddress, await value(noteAddress));
+      await vi.waitFor(() => expect(hydrations).toBe(2), WAIT);
+      releasePane();
+      const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+      await cache.writeCached(projectColumnsAddress(scope.deviceId, scope.projectId), {
+        columns: [{ id: "ready", name: "Latest owner pending" }], columns_read_order: Date.now(),
+      });
+      paneHost.querySelector('[data-filter-menu="status"] .fmenu-press').click();
+      await vi.waitFor(() => expect(paneHost.querySelector('[data-filter-menu="status"]').textContent)
+        .toContain("Latest owner pending"), WAIT);
+      expect(paneHost.querySelector(".task-title")).toBeNull();
+    } finally {
+      releasePane();
+      releaseRefresh();
+    }
+    await vi.waitFor(() => expect(paneHost.querySelector(".task-title")?.textContent)
+      .toBe("Waiting for the latest owner hydration"), WAIT);
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+  });
+
   it("waits for retained unread display hydration before a metadata repaint exposes remounted rows", async () => {
     await renderPersistAndLeave();
     const blind = { ...await listedTask(), watch_started_after: "te-90" };

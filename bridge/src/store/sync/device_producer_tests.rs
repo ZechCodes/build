@@ -247,12 +247,18 @@ fn committed_conversation_items_have_linear_or_better_journal_amplification() {
     );
 
     const COMMITTED: i64 = 32;
+    let started = std::time::Instant::now();
     for index in 0..COMMITTED {
         run.agents[0]
             .thread
             .post_user(format!("committed {index}"), None, AT);
         store.save_run(&run).unwrap();
     }
+    eprintln!(
+        "device committed writes={COMMITTED} elapsed_us={} mean_us={}",
+        started.elapsed().as_micros(),
+        started.elapsed().as_micros() / COMMITTED as u128
+    );
     let added: i64 = store
         .writer_for_test()
         .query_row("SELECT COUNT(*) FROM sync_journal", [], |row| {

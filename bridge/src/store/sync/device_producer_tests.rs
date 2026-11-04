@@ -748,10 +748,23 @@ fn device_followup_pending_only_receipts_refresh_all_canonical_aliases() {
         projection(&store, "inbox_conversation", &alias_id)["pending"],
         true
     );
+    let before: i64 = store
+        .writer_for_test()
+        .query_row("SELECT head FROM sync_state", [], |row| row.get(0))
+        .unwrap();
+    store.recover_operations().unwrap();
+    let after: i64 = store
+        .writer_for_test()
+        .query_row("SELECT head FROM sync_state", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        before, after,
+        "startup queued-to-uncertain remains pending and must stay quiet"
+    );
     store
         .transition_operation(
             &receipt.operation_id,
-            crate::operation::OperationStatus::Queued,
+            crate::operation::OperationStatus::Uncertain,
             crate::operation::OperationStatus::Delivered,
             None,
         )

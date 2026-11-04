@@ -196,7 +196,8 @@ const metadataUses = {
     ["writes.confirmed","{ type : [\"writes.confirmed\"] , operation_id :","c1701f080374ab4e940f9471b5b7ccc8ea63d20d8d6db08923dcabad029fd094"],
     ["writes.confirmed",". type === [\"writes.confirmed\"] ) await confirm","fc7814e39ce3ed405f1ea69157ed241114a19cae1bc1e82c992227434461e8e9"],
     ["writes.confirmed",". type !== [\"writes.confirmed\"] ) return false","a3baa2366329368c852eaeaeb88463572c57f72296698d2135dd910b7ec7ccb1"],
-    ["bridge.epoch","?. includes ( [\"bridge.epoch\"] ) ) await","36758934fd294f52ca61ce9c7c194e0f3dc0fe772c6914bc06c4cabbcb776717"],
+    // writeOperations.js compatibleRows: capability check before quarantining an incapable bridge.
+    ["bridge.epoch","?. includes ( [\"bridge.epoch\"] ) ) await","7c787332c8e6015f1f2ed010aadd1ebeb550f2a72eb52c8ef56a130374268a4a"],
   ],
   "push.js": [
     ["build.push.open","const PUSH_OPEN_MESSAGE = [\"build.push.open\"] ; const APP_PATH","775dbce78b514f4ccd8decfa36d864808fefb900917354d36bef33db28eaca43"],
@@ -219,6 +220,9 @@ const metadataUses = {
 // also preserve line-break/automatic-semicolon-insertion differences.
 // Split public digests into short display parts so secret scanners do not
 // mistake a file name containing "Key" plus a SHA-256 for a credential.
+// Each key pins the entire named spa/src file, including assignment edges.
+// taskReviewActions/Feedback now delegate to the inventoried taskReviewMerge/Batch
+// modules; neither delegating view has its own RPC/producer occurrence.
 const sourceFingerprintParts = {
   "app.js": ["e9b93f5b", "01a713dd", "1c1f8ef7", "00229053", "d2bf2d3a", "b372d574", "81aaff15", "71dc3f58"],
   "appState.js": ["d24d9edc", "6e4988f0", "8a5289ee", "6c449b3f", "91bdbe42", "7cd43ada", "7a9df6a4", "acd39971"],
@@ -227,7 +231,7 @@ const sourceFingerprintParts = {
   "core/adoption.js": ["350b90d5", "9e535f4b", "15adf2ef", "7eacd8c0", "fb946020", "b6130cb8", "ce729fed", "bb90597e"],
   "core/agentDefaults.js": ["f856d23d", "2c446c14", "c6e4d78e", "e11e737d", "75e1fbc1", "fa79564d", "2ef20a2b", "1cdbbcb0"],
   "core/agentModes.js": ["5764f59d", "200944fd", "e1fb485f", "a1b58c05", "633b7f0f", "f9b7cbcd", "4e62b9db", "31bcb3a8"],
-  "core/agentRail.js": ["5a8293a8", "160dddf5", "ff4ae6e8", "c7c4dee8", "63f484b6", "c8a205ca", "59b70a14", "1aa11a6a"],
+  "core/agentRail.js": ["d3d559b7", "f1a1ab8c", "2ef93a5a", "4d20faf8", "c62c3f8b", "3e5ee3da", "7ed6ace5", "652c5e22"],
   "core/agentRailContext.js": ["e175542d", "376171c6", "e04b61df", "847af2cf", "a3a2c56e", "8fbeb913", "9593b4cb", "50809f5c"],
   "core/agentRolesPanel.js": ["c05b7c96", "5849ec7f", "0d258bc2", "96a7795e", "2a4663f4", "57e78316", "de145b90", "699b4a91"],
   "core/agentSurfacesModel.js": ["546cf5aa", "3a478c63", "4a0f02f5", "4eafcae5", "53a5ffd3", "3ad4f563", "c075aa93", "dcbbef9d"],
@@ -237,10 +241,10 @@ const sourceFingerprintParts = {
   "core/bridgeEpoch.js": ["e04a0a11", "6535b020", "abcac20c", "972a554f", "8d51fbb9", "6ef07fd8", "16062ed0", "9cd4d213"],
   "core/bridgeUpdatePanel.js": ["f9b19cc7", "4abdfc5a", "d159194d", "49ee91ed", "d39ab2e7", "15a6a80f", "0cb51530", "623ca8e5"],
   "core/bridgeUpdates.js": ["279cb932", "0495aa46", "c347f93b", "10a492d5", "8d29b0a9", "e9309a9a", "91de7993", "e5f40ad3"],
-  "core/cacheSync.js": ["a8f7ffd7", "25d0a21d", "5160f9e1", "0166e608", "bd45be22", "59951a3c", "685429df", "2f71c39d"],
+  "core/cacheSync.js": ["ddf03f00", "201f9ba1", "18cd9f3b", "7d5ba158", "1f1b968f", "a601e4d6", "11d6efbc", "21a4cbc2"],
   "core/captureDecisionView.js": ["f9f42a7d", "d94162aa", "5aea82e5", "85e6bcb2", "73ffce61", "2ac99214", "8b78b55f", "30a7a61a"],
   "core/changeEvents.js": ["31e123e5", "fc5c2562", "3328faa8", "3edc1018", "0ded97a7", "dd6f3430", "0ba3c6fa", "e1685e73"],
-  "core/changesComments.js": ["f258a3f1", "5b42f974", "ba0af04f", "f955c0ff", "1cdd17d3", "353ce276", "c7dd49b6", "eb1c06be"],
+  "core/changesComments.js": ["7a5e0b06", "c47bf122", "ac5370b8", "debd8dc8", "388227b8", "f9ea1623", "d413134a", "635a2a7d"],
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],
   "core/chatChoiceController.js": ["d257b6c5", "f32d9067", "226af14c", "bd8ec71e", "718bf188", "1e994ef1", "66edcceb", "4499fa61"],
@@ -253,7 +257,7 @@ const sourceFingerprintParts = {
   "core/conversationDetail.js": ["a54ac9f8", "f54c61d4", "cea363a5", "b098964f", "16ecc016", "490b853d", "76d94602", "ad5a773a"],
   "core/createWork.js": ["42444ebc", "8ae4117e", "ba2cdde6", "7d740ba3", "1850d7a6", "a63c9fd2", "50784964", "18d57196"],
   "core/defaultHarness.js": ["b7ed5ad6", "9fdfdc35", "84dd803d", "3c0e95fd", "72904016", "4cb29938", "97723e94", "2ace812d"],
-  "core/deviceContexts.js": ["36c494bd", "9e3a9ada", "5feb60e8", "296573df", "9f3f36dc", "252afebd", "97642d91", "d82ec699"],
+  "core/deviceContexts.js": ["927a8988", "6be673d3", "849e51f7", "bba45c31", "ad3cdf8f", "22978e7c", "88cc8607", "d32fcc3c"],
   "core/diffSort.js": ["9ef743b8", "16f0a5ae", "1d9ec36a", "455f0e76", "c04a0902", "8deca6c7", "70acd150", "dbe96ac6"],
   "core/directoryRail.js": ["98080c38", "f2152285", "3e025868", "10652120", "d12c8ead", "cfa571c6", "6c3476c8", "b6b56ef2"],
   "core/fileDiffs.js": ["94424fd1", "118dcd8d", "6c511bb9", "642d4822", "e4ebd5c2", "ffd9b041", "41d478ef", "20b2347d"],
@@ -263,12 +267,12 @@ const sourceFingerprintParts = {
   "core/fileUploads.js": ["a1a4c2df", "5ef03503", "483e7b99", "099e04a0", "77c9e865", "a22a23dd", "a704cd79", "6678f239"],
   "core/fileUploadsModel.js": ["d11fdd79", "8bb9318c", "fbc2cff2", "29b16930", "9d73b3ee", "89d5d976", "7e2b756a", "69d40aac"],
   "core/githubRepos.js": ["4526fb16", "bfe42e0f", "57b963ea", "fe623873", "0fe9ccce", "521ecc83", "b9117e59", "af64462f"],
-  "core/gitPane.js": ["7a5a41a0", "6e603556", "4ba87c41", "f7a231e8", "65fe67f3", "1094f363", "5aacb839", "4e647b57"],
+  "core/gitPane.js": ["fc2dd61d", "87cf94b7", "b5af7045", "3a0ffc7e", "466f653d", "27e880df", "4205f73b", "dc369ea0"],
   "core/httpSession.js": ["d126ceab", "0dd1f2ad", "df3cd6a9", "0af4113e", "228a2843", "14eb6c04", "36b84eb3", "0c8342b1"],
   "core/inboxCaptures.js": ["48a7f5fb", "b2132a83", "5901fb31", "4fb0c5ae", "97005297", "2d0b9db6", "be2c3e6d", "1271b663"],
   "core/inboxDevices.js": ["f9a293e4", "dff4b2b4", "f5fc7940", "f5c1f48d", "a66a5718", "238826a6", "e3dc6b9f", "4060a79e"],
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
-  "core/inboxView.js": ["433300bb", "6f8e561b", "66b4fe10", "c55cbfe5", "670a7736", "ab4df347", "d6f4bba4", "3ae07401"],
+  "core/inboxView.js": ["14bb4bec", "80dab237", "c54f914a", "aa1e22fb", "7e38c2f9", "70a2abb0", "0d245427", "39d10d67"],
   "core/isolation.js": ["1b646651", "086eea7f", "b0a97d6f", "8993ed77", "7e6e246e", "4110fbc2", "7defb076", "77f79221"],
   "core/markdownFences.js": ["10057396", "68214f4d", "d193015e", "2552698e", "c48313df", "6df2e223", "7e3bc837", "2805a4bb"],
   "core/modelCatalog.js": ["c293ea11", "fff0969f", "7852c8cd", "0c252f82", "fe666159", "95919417", "25a661ec", "c93fd9b4"],
@@ -289,40 +293,52 @@ const sourceFingerprintParts = {
   "core/revisionBodies.js": ["60606411", "ec3a6f2c", "7c923581", "f22c39cd", "43dd8a04", "69ff5c40", "e4e490cb", "e3119193"],
   "core/rtcTerminalLink.js": ["9e8a6c70", "266666d9", "45b2f045", "4f29f5fc", "6293c562", "d2f0ed25", "15a05fd6", "a43dd438"],
   "core/scopedCompactionEditor.js": ["b5d366f5", "90a2be6a", "b5c01379", "ccad5198", "7298a4cf", "bdcbdc88", "2e022cd4", "847d6330"],
+  "core/scopedProjectColumns.js": ["050be4f1", "7bc93888", "92cfb0a6", "eec46373", "f5b4c3f8", "22bbd079", "a8a0081b", "cf9db94a"],
+  "core/scopedSyncDiagnostics.js": ["7dd4e0cf", "8e66ed24", "26fd1b4a", "14536a2a", "0a96f671", "dce00906", "ae5c3582", "266128ed"],
+  "core/scopedSyncEngine.js": ["401be0de", "7caff31b", "4be2a474", "defaf7a1", "ea9f3525", "901ecc1d", "c501c654", "b2486318"],
+  "core/scopedTaskBody.js": ["fbd220c8", "7cabb3dd", "a35b1c7d", "7cd87534", "580ab9d7", "2a59e4bf", "58203468", "541df08c"],
   "core/session.js": ["3d180500", "f13f38ec", "64d5d01d", "ec44e3c7", "ef80b3cc", "85470f82", "ad7080e1", "69c47137"],
-  "core/sessionRpc.js": ["9458e443", "32f194d1", "d057ac64", "091aa364", "786cd211", "a5e09f54", "6d245883", "f400e9ce"],
+  "core/sessionRpc.js": ["5d583ef2", "0faaf478", "09fbf975", "ab15af9f", "a78fd5f8", "fc4bab2e", "49d4ef64", "4e13ad2d"],
   "core/sessionSwitch.js": ["dc232a71", "5b006195", "d7910b8e", "8c59e611", "a36dd264", "8bbcfcc8", "0d8739f3", "371accc7"],
   "core/shell.js": ["c9e2a17e", "6ae389f1", "e7a60035", "dfc83868", "dc85c17d", "564daa9f", "9b3e097b", "391bcd33"],
-  "core/sqlReadCredits.js": ["ddef65b4", "d7bf12ba", "9baeed1e", "8a959cce", "c88c463a", "41a8d580", "ed1a657e", "93237265"],
-  "core/syncDiagnostics.js": ["1060f9ba", "b9d583f7", "93db302a", "9ecabc68", "08ff098a", "2119a4b8", "fdc89f9a", "74403b01"],
+  "core/sqlReadCredits.js": ["478e10b0", "a7cc8726", "f6afcc2e", "0fce6bea", "9e9f7103", "6526a077", "04fdc4d4", "253ca538"],
+  "core/syncDiagnostics.js": ["ddccfc9a", "6e78c4d6", "81b0c68b", "a596488e", "0d600340", "7a44fdc8", "f351eef6", "3781baa9"],
   "core/syncLists.js": ["e44aee99", "346eb027", "1e6486f1", "dac9a7ac", "9acdd7b8", "1c4a00f4", "ce196d01", "e22f5292"],
   "core/syncSuccessors.js": ["8f215712", "252114ce", "b5f282bf", "3b818ded", "2bfe5a52", "60ced14f", "965e228e", "9af31a83"],
-  "core/syncTaskPhases.js": ["8ded146d", "e8dd6899", "16ffd0a4", "4b38ca1f", "ab2b3400", "2c745f68", "c2096ffd", "c4845622"],
+  "core/syncTaskPhases.js": ["353855f1", "ca51bb89", "d04cfa45", "92401d65", "e3190e17", "ac3b45d3", "d81ce410", "8383dd12"],
+  "core/taskAggregateReads.js": ["145d7d37", "d5b65ef2", "fca15f4d", "c61a586c", "f62233a0", "b8b309eb", "4a69f9d4", "8575b030"],
   "core/taskAttachmentBodies.js": ["7acfa90a", "4413c7df", "89207db8", "07fa4c16", "b21cc95f", "dc3bf412", "eb0c14de", "671d3006"],
-  "core/taskChecklist.js": ["74b43260", "0b2d0ae0", "6ea4ea00", "c53db5e4", "8830cc22", "090c1067", "a4ffbd6f", "8ed3cae6"],
+  "core/taskChecklist.js": ["405a6444", "8132e330", "6ff6c056", "a1e71101", "3bdd9028", "a42eae55", "d6ebaf5b", "952f8a34"],
   "core/taskComposer.js": ["44233e6a", "d60f8251", "f724f7bc", "af16b319", "2c205f31", "5a10e50b", "b233a25f", "ed90f8ad"],
-  "core/taskReviewActions.js": ["9e0e7f81", "56f56199", "855d3846", "a7c38661", "bcc2d052", "33bc2469", "2299c4a5", "6c0bb485"],
-  "core/taskReviewCache.js": ["baa99891", "1615149d", "fa8810f0", "35d28a10", "be31a520", "41c6c154", "3bf6b31d", "44e4a700"],
-  "core/taskReviewChanges.js": ["5bda4fe8", "76062ca2", "b8b03a11", "54479aab", "60eb34c0", "04dfbdc7", "3bdbee0d", "454737ed"],
-  "core/taskReviewControls.js": ["b694c9e4", "19686ec0", "d0c8e7ef", "5ce23834", "57a0c5af", "bce0145c", "5c889031", "fb4f998c"],
-  "core/taskReviewFeedback.js": ["c66d3512", "596e5878", "97c8c00c", "ede58c71", "6893718a", "79654d45", "46c47189", "cb5124ab"],
-  "core/taskReviewFiles.js": ["f718c0f4", "0ddfa4b1", "bdff017a", "25f15f7b", "a50ef953", "dc2123d5", "d3acd7ae", "2f11fb2f"],
-  "core/taskReviewLifecycle.js": ["04b749fb", "1781936b", "6c4264ab", "b48cb304", "339a1a4e", "28617a6f", "cc24e0bf", "0f8ee6d3"],
-  "core/taskReviewMerge.js": ["805e7cd6", "c7f92701", "9b8b5f08", "6c8e985d", "a1de4e1b", "a60280e4", "aa424934", "6b83af9e"],
+  "core/taskCountReaderRuntime.js": ["dc823412", "765c408d", "09a4bd9d", "959b3450", "116e39aa", "fb67622c", "6afd9df6", "ce9e3eff"],
+  "core/taskFilterChoices.js": ["6e7fca24", "b96c853f", "5baa71d1", "9e8c17fc", "9a8ad6ff", "14e53667", "9d583cd0", "032ce3ee"],
+  "core/taskMutationFence.js": ["337add70", "27d99175", "73511f0e", "1c67586c", "5851aa53", "6e3587f4", "a60db8d3", "158620dc"],
+  "core/taskPaneSummaryReads.js": ["38940784", "0edcdfa7", "9b24a843", "58a0edf6", "142d6012", "742d2793", "d3f0c487", "d74a2d8e"],
+  "core/taskReferenceLookups.js": ["d96512cb", "87a770a1", "4a0ecbe7", "c26db1f1", "e7ad9481", "284534db", "db18cad9", "3cc292af"],
+  "core/taskReviewBatch.js": ["fc2f7cbe", "2ead7274", "41b47492", "2284e88a", "57cfa35f", "c5247a57", "2d78ccd0", "49e11c3e"],
+  "core/taskReviewCache.js": ["ceb08eef", "87f8a2f8", "383a8547", "f0519ccc", "0fffbced", "15431244", "3ab0be81", "5a335e47"],
+  "core/taskReviewChanges.js": ["b0e3e23b", "b0716f2d", "b4bd806c", "8ee1fb29", "04199fbe", "3f8f19dd", "56f4b1df", "946865bc"],
+  "core/taskReviewControls.js": ["0663873f", "45fd81a3", "c5c76f0d", "5fc39eff", "d5554bb3", "3a412be3", "3e866b7f", "fba967a3"],
+  "core/taskReviewFiles.js": ["72773864", "004d915d", "7ada5edd", "b7ba1898", "b266fa8f", "852b045c", "ce291e8b", "9999aeab"],
+  "core/taskReviewLifecycle.js": ["78fb3824", "b3ac9dfd", "66316264", "05b68766", "b9e58ec0", "bb6d661a", "fc072202", "b23e50f3"],
+  "core/taskReviewMerge.js": ["3f945ae3", "9fc65fae", "c32e2d92", "dbfd041d", "e5824be6", "f4f4f84c", "cb641669", "432efdb6"],
+  "core/taskReviewPage.js": ["54c670db", "1b5a28a6", "9cf7f74d", "6201af87", "fd884931", "7e7ca3cc", "da1884b0", "5c2af37e"],
+  "core/taskReviewReads.js": ["b8f024e8", "a779eb28", "3bb33ef2", "18fae770", "3dbbca9b", "151b90f9", "77b248ef", "05d307c0"],
   "core/taskReviewReclaim.js": ["39f9773b", "9fb74944", "f19e9d44", "8698c30d", "cbd907a0", "bde50825", "b8601ff9", "a2100184"],
-  "core/taskReviewSupport.js": ["31e90542", "4726fa94", "eaf3677f", "b9d8a437", "43a69e5a", "0c9de2c3", "967250ca", "3cbd5571"],
+  "core/taskReviewSupport.js": ["7662abfe", "2c9571c8", "e80a8333", "664118b2", "8979e6ea", "850fb345", "579648fd", "73103bee"],
+  "core/taskSummaryReader.js": ["a9ed4098", "48ff6f48", "9c6a8e42", "a99e8210", "e43a6187", "b3795253", "25a4a110", "65591e0c"],
   "core/taskView.js": ["547b447a", "1b089702", "8da986a0", "97cbffed", "86cd8be0", "dfabf680", "23671d54", "6ac7ef11"],
-  "core/taskWaitingOnActions.js": ["ba117c3f", "a3957024", "6f0346c2", "a4e5a300", "2b653386", "0e1ff268", "216a0f34", "9d20d4e0"],
+  "core/taskWaitingOnActions.js": ["576156a7", "454cbd39", "333d8645", "9f62ff9e", "00e96c90", "55eb5f60", "441927a5", "f6cf4597"],
   "core/taskWaitingOnPage.js": ["b5a78897", "c7cfc8dc", "8a1ad2e0", "c77cad0a", "874280e0", "1b394697", "37da2547", "7a1c3636"],
   "core/theme.js": ["5f821f5d", "933be0fa", "c04dd60c", "8ed91a2a", "4fd56dbb", "ab2c8e04", "e86ee7f5", "60d8e2a6"],
   "core/threadAttachmentPages.js": ["df0b246c", "a850af5a", "c612aeac", "414feaa5", "03db6170", "9511cd9c", "372279a6", "9c417822"],
   "core/threadSync.js": ["bf280ad8", "20d158b6", "aaa4f7b9", "695d3816", "1d0200e6", "cf6756bd", "bc0e1372", "2e452737"],
-  "core/trackerPages.js": ["debdb55b", "5a1ef8e5", "2a06dff6", "d3574ba7", "8f3f831a", "f2c007bd", "890d9252", "61c2cca2"],
-  "core/trackerTaskDetailsFeed.js": ["edcc314b", "9f6f934c", "0b4aecaf", "4f3078e6", "935dbad8", "f62ee991", "ca3a449b", "c1a251a0"],
-  "core/trackerTaskPage.js": ["32e943ef", "7fb5a52a", "f80a74bc", "8fa2dd7f", "34295e34", "fe32296f", "80195b8e", "a232861e"],
-  "core/trackerTasksPane.js": ["0f751713", "6f929d60", "e35b482a", "7b8485ef", "d6d8b1bf", "80c28293", "d1e9c8c2", "b0936a51"],
+  "core/trackerPages.js": ["2f749a25", "259d2e7b", "904e56ef", "15e91197", "da83450c", "c490c89c", "12b5ae68", "4b7a60e3"],
+  "core/trackerTaskDetailsFeed.js": ["d97f2036", "2c391b69", "4135a846", "ef224b64", "867b6192", "71cf0cdd", "bade0bbc", "1b811b4a"],
+  "core/trackerTaskPage.js": ["9bccd973", "20749db7", "6a3cf609", "92df8bdd", "b15b2ca1", "a2c62808", "10a184de", "47248684"],
+  "core/trackerTasksPane.js": ["80f5f62d", "fd719fe1", "535f6317", "215df125", "eeda25ec", "ddcbf174", "924f173f", "99ae4b57"],
   "core/userPresence.js": ["b4a43148", "8352b41e", "f38b7e72", "b03317b3", "ca411d39", "6e7fb659", "b308effa", "511a43aa"],
-  "core/watchedTaskFollower.js": ["d93f3cac", "1ab99e30", "84f8b0de", "47ad706c", "94ed9697", "7da95132", "064b155e", "6e2141c1"],
+  "core/watchedTaskFollower.js": ["d08812f3", "b1c71fd1", "c45cc354", "8e0d2495", "ad2f20de", "f54548b0", "89d31f41", "17aa347f"],
   "core/watchSetting.js": ["550f0da2", "883ae225", "24fd912e", "e669ffb0", "c1d76f0b", "3879059c", "c35a16c8", "8d6065c6"],
   "core/watchToggle.js": ["0c994a20", "9e96598d", "45a92ac1", "3e8a83f5", "95ceaa15", "a98a3720", "f3cad429", "79b9fc50"],
   "core/workspaceDefaults.js": ["26caf0ff", "77dcee98", "234785f1", "a7858438", "d1599850", "87f6f3f6", "90d71240", "2d106714"],
@@ -330,14 +346,15 @@ const sourceFingerprintParts = {
   "core/workspaceLifecycleSetting.js": ["15c495c8", "5c146e7c", "3e1d376b", "eefb5dbf", "356abf02", "b879315f", "815c5a8a", "123b1b54"],
   "core/workspaceLock.js": ["8464b243", "84658e25", "308e37b8", "ac31b13f", "f30ebad2", "fe08326f", "b831630e", "d650d6fd"],
   "core/workspaceRefPicker.js": ["8e52ee89", "75a29f02", "4ede31a8", "68cbfb6d", "dbc1c227", "0642e2a9", "a7dd1729", "4503b2bc"],
-  "core/workspaceReviewEntry.js": ["a0ab5d4b", "8a9fee72", "fdcf3056", "74d69b4e", "99c47dac", "dd855deb", "47ccee52", "b08e5374"],
-  "core/workspaceReviewForm.js": ["c41e75cf", "befbe180", "4b9e72d2", "cc6636ed", "8c235490", "7c2aa856", "b628408f", "38b87654"],
+  "core/workspaceReviewEntry.js": ["9428ee2e", "5f7ab106", "6eac8b55", "86f2a6ae", "fb41cac6", "ac81c42a", "5b315b4d", "08afd4a9"],
+  "core/workspaceReviewForm.js": ["c73939fb", "cb195111", "85819eed", "9716f89b", "6a8f72bb", "026af5b9", "6dc154e9", "e67e42b5"],
+  "core/workspaceReviewTasks.js": ["0ce927c3", "057199b7", "8c84154f", "aee738c5", "02391da6", "be84ac08", "d1190908", "5073f226"],
   "core/workspaceSizes.js": ["5906d4c2", "fda13846", "3542c664", "26018741", "0bf741e3", "1a10dc8e", "e5feb8ee", "9c08416d"],
-  "core/writeOperationCache.js": ["fdac6cd3", "be646fc9", "d9fa4918", "439191f9", "dcbeaab6", "32e1fe4b", "7b278b14", "6950b7ca"],
-  "core/writeOperationEffects.js": ["4a1cb360", "33b5176e", "32d67bb3", "1f829d71", "3af475c0", "650a9a6a", "3dba9062", "7bcc372b"],
+  "core/writeOperationCache.js": ["9da4e187", "2b41988a", "a54e493e", "ddeb5d8b", "40288fd9", "7b4b4a3c", "1f1a816f", "c8847f4b"],
+  "core/writeOperationEffects.js": ["d30332d1", "89b12c79", "150580d0", "aede7e2b", "d2e23499", "d6003a79", "f13412fe", "b895c728"],
   "core/writeOperationIntent.js": ["5476394a", "087dc5ce", "5c71e673", "8b977ba3", "e665bf53", "fa9529be", "78bf2c38", "48f27991"],
-  "core/writeOperationRefresh.js": ["0e8ca99a", "5f6ff7a5", "fa60f12a", "6c3443d1", "b4fa3618", "e6f6d5a6", "684b5edd", "3b61d3ad"],
-  "core/writeOperations.js": ["abcd72e0", "53f1ff90", "93ce533e", "7d43f3a9", "90ca7ee7", "651d200f", "2428a253", "ad7e13ce"],
+  "core/writeOperationRefresh.js": ["b5d241f8", "64bba629", "58a8bbab", "6673dafa", "0c5490bc", "2e70cbc9", "d0048bf4", "20e4c528"],
+  "core/writeOperations.js": ["481c19c9", "ae1ee5a1", "f4fd6d5d", "5b18407c", "247e31a0", "d6052460", "338b6ed7", "3cf163ac"],
   "push.js": ["c7a3eb27", "240e0a4d", "3e314aee", "369bea39", "25bf83e0", "f105e41a", "0e4ed716", "4e53028b"],
   "sheets/browser.js": ["e226c6fb", "9689c6bc", "39ba311b", "335481c7", "f444e696", "36c5c8b6", "013588ec", "bd2a4dbe"],
   "sheets/newRepo.js": ["e1addf8b", "abc706f6", "ca74fa24", "7e1f3208", "aae3d460", "37157135", "21e46d2f", "f187cdfa"],
@@ -348,16 +365,16 @@ const sourceFingerprintParts = {
   "terminal/manager.js": ["4027a8b0", "af931af9", "3d71d687", "c930e06b", "bd55b938", "ad0db4da", "e20dc150", "60ed795b"],
   "terminal/session.js": ["ce4e3036", "ac5b84b3", "ae7583e9", "2b940e62", "4dfe75b7", "d77a06e7", "dfda65ca", "8c8ede4e"],
   "views/archive.js": ["6f4a7962", "88f34292", "73eafead", "5dc6229b", "5b040b7a", "09baf137", "8cbbce83", "6c83d400"],
-  "views/branchView.js": ["7187e42f", "7568f9b3", "c1ee9568", "e2a84770", "c59fb311", "5ff935eb", "bd0092f7", "e3c1c23d"],
+  "views/branchView.js": ["bd60fcf4", "7c212e82", "4972bdd1", "5b4a3563", "54913179", "782e8a54", "ea8d0a73", "30816a7d"],
   "views/deviceProjects.js": ["e91b4c08", "ccb3430d", "4a15da85", "4d787a64", "3ab0ef2c", "ebe5c184", "86d32e0b", "aa25418a"],
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
   "views/files.js": ["06be3768", "e7119790", "efdf9d19", "1f24d56e", "0105300d", "78661f62", "dffa8c08", "d92269a8"],
   "views/projectChanges.js": ["e195b594", "3a7689fe", "14bfc899", "18ada18d", "ab36cd52", "ad96ba97", "a877c4da", "c9c3b78f"],
   "views/projectView.js": ["b790e1ad", "c92e3880", "d880307e", "45527ad4", "70eade31", "b21f74d0", "423e637a", "6999aa4e"],
-  "views/taskReview.js": ["747e03ed", "de82404a", "137767cd", "dd3635e8", "102a08af", "3bcec6b4", "f735cc20", "6a3744b6"],
+  "views/taskReview.js": ["7d540d05", "70beae35", "200434ea", "decae581", "f1b126d6", "9a38fe38", "642a621a", "2e34a257"],
   "views/taskView.js": ["483fdb16", "52a51dd3", "ea9f60d0", "c21f16a9", "090b27a4", "4839602c", "4653bfcc", "38959753"],
-  "views/workspaceView.js": ["58a33390", "85e012ab", "8250e1e9", "43c007ab", "79acfb68", "398b96a5", "0fbda7bf", "231e1be1"],
-  "views/worktreeReview.js": ["3b79626f", "78426186", "6a081af9", "aa906da1", "6abe6978", "6f965143", "b3db6cd3", "12da1a07"]
+  "views/workspaceView.js": ["a8297151", "b9889eea", "1ef6492b", "4242340b", "21deba98", "2afe3f42", "4f4be235", "4268410b"],
+  "views/worktreeReview.js": ["85ee8f63", "e33ae091", "1057ec2b", "8bd416bd", "d4b709ba", "71953ecd", "05807b6d", "ee80f4db"]
 };
 const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintParts)
   .map(([file, parts]) => [file, parts.join("")]));
@@ -396,8 +413,10 @@ const dynamicSites = {
   "core/bridgeUpdatePanel.js": [
     "callRpc ( method )"
   ],
+  // cacheSync.js:2465 readReviews forwards tasks.review.get/diff (in addition to the existing read adapters).
   "core/cacheSync.js": [
     "ask ( request . method )",
+    "callWhileActive ( method )",
     "callWhileActive ( method )",
     "callWhileActive ( method )",
     "callWhileActive ( method )",
@@ -522,8 +541,38 @@ const dynamicSites = {
     "producer \"tasks.\"",
     "producer \"thread.\""
   ],
+  // syncTaskPhases.js:61 asks refreshScopedProjectColumns to read tasks.columns.
+  "core/syncTaskPhases.js": [
+    "ask ( method )"
+  ],
+  // taskAggregateReads.js:121 dispatches contract.method: tasks.counts (:132) or tasks.lookup (:140).
+  "core/taskAggregateReads.js": [
+    "callRpc ( contract . method )"
+  ],
   "core/taskChecklist.js": [
     "producer `build.taskChecklist:${JSON.stringify([deviceId, projectId, taskId])}`"
+  ],
+  // taskCountReaderRuntime.js:31 forwards createTaskAggregateReader calls to tasks.counts.
+  "core/taskCountReaderRuntime.js": [
+    "context . rpc ( ... args )"
+  ],
+  // taskFilterChoices.js:133,143 call the local pagination helper; :106 sends tasks.filterChoices.
+  "core/taskFilterChoices.js": [
+    "ask ( next )",
+    "ask ( { ... next , cursor : held . next_cursor } )"
+  ],
+  // taskPaneSummaryReads.js:70,108 refresh/page the filter choices reader (tasks.filterChoices).
+  "core/taskPaneSummaryReads.js": [
+    "ask ( reader )",
+    "ask ( reader )"
+  ],
+  // taskReferenceLookups.js:164 forwards createTaskLookupReader calls to tasks.lookup.
+  "core/taskReferenceLookups.js": [
+    "context . rpc ( ... args )"
+  ],
+  // taskReviewBatch.js:155 sends operation.method, assigned tasks.comment at :42.
+  "core/taskReviewBatch.js": [
+    "callRpc ( operation . method )"
   ],
   "core/taskReviewCache.js": [
     "mutate ( verb )",
@@ -531,11 +580,17 @@ const dynamicSites = {
     "producer `tasks.review.${verb}`",
     "reviewMutationRpc ( scope . deviceId )"
   ],
-  "core/taskReviewControls.js": [
-    "repository . mutate ( verb )"
+  // taskReviewChanges.js:228 creates the adapter used for tasks.review.diff at :242,288,306.
+  "core/taskReviewChanges.js": [
+    "reviewMutationRpc ( deviceId )"
   ],
   "core/taskReviewLifecycle.js": [
     "repository . mutate ( verb )"
+  ],
+  // taskReviewReads.js:74,151 create adapters for tasks.review.diff at :102,140.
+  "core/taskReviewReads.js": [
+    "reviewMutationRpc ( deviceId )",
+    "reviewMutationRpc ( scope . deviceId )"
   ],
   "core/taskReviewSupport.js": [
     "callRpc ( ... asked )",
@@ -543,15 +598,23 @@ const dynamicSites = {
     "context . rpc ( ... asked )",
     "reviewRpc ( context )"
   ],
+  // taskSummaryReader.js:68,79 call the local pagination helper; :28 sends tasks.list.
+  "core/taskSummaryReader.js": [
+    "ask ( next )",
+    "ask ( { ... next , contentRead , cursor : held . next_cursor } )"
+  ],
   "core/taskWaitingOnActions.js": [
     "call ( method )"
   ],
   "core/trackerPages.js": [
     "ask ( asked )"
   ],
+  // trackerTaskPage.js:122 forwards task actions/read_through; :147 watches/unwatches; :920 updates tasks.
   "core/trackerTaskPage.js": [
+    "authority . callRpc ( method )",
+    "authority . callRpc ( method )",
+    "owner . callRpc ( method )",
     "state . callRpc ( ... args )",
-    "state . callRpc ( method )",
     "state . callRpc ( method )",
     "state . callRpc ( method )",
     "state . callRpc ( method )"

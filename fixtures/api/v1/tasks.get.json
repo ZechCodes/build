@@ -1067,6 +1067,419 @@
           }
         ]
       }
+    },
+    {
+      "params": {
+        "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+        "timeline_paged": true,
+        "limit": 50
+      },
+      "result": {
+        "task": {
+          "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+          "project_id": "proj-1",
+          "number": 12,
+          "title": "Kanban drag does not persist",
+          "body": "Dragging a card to In review puts it back on the next paint.",
+          "state": "open",
+          "status": "in_progress",
+          "labels": [
+            "bug",
+            "ui"
+          ],
+          "priority": "high",
+          "assignee": {
+            "kind": "agent",
+            "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          },
+          "links": {
+            "workspace_ids": [
+              "ws-3f2a91c4"
+            ],
+            "branches": [
+              "build/tasks-board"
+            ],
+            "commits": [
+              "c8381faa9b1d4e6f2a0c7b5e3d8f1a2c4b6d8e0f"
+            ],
+            "conversation_ids": [
+              "run-5d90b1e7"
+            ],
+            "parent_task_id": null
+          },
+          "trackers": [
+            "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          ],
+          "identities": {
+            "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E": {
+              "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E",
+              "name": "Fix drag",
+              "ordinal": 1,
+              "workspace_id": "ws-3f2a91c4",
+              "workspace_name": "spa-flaky-tests",
+              "provider": "codex_app_server",
+              "available": true
+            }
+          },
+          "attachments": [],
+          "created_by": {
+            "kind": "user"
+          },
+          "created_at": "2026-09-19T09:00:00Z",
+          "updated_at": "2026-09-19T10:12:00Z",
+          "closed_at": null,
+          "watched": true,
+          "unread_count": 120,
+          "session_started_ms": 1789808400000,
+          "last_activity_ms": 1789812720000,
+          "linked_reviews": [
+            {
+              "task_id": "task-review-13",
+              "number": 13,
+              "workspace_id": "ws-3f2a91c4",
+              "version": 1,
+              "status": "open",
+              "latest_published_snapshot_id": "snapshot-1",
+              "parent_task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+            }
+          ],
+          "last_reviewed_snapshot_id": null,
+          "unread_agent_comments": 110,
+          "unread_mentions": 4,
+          "unread_service_mentions": 1
+        },
+        "timeline": [
+          {
+            "type": "event",
+            "id": "te-01K5ZQ8M4T0J7WQ2R6X3YB9C4A",
+            "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "at": "2026-09-19T09:00:00Z",
+            "actor": {
+              "kind": "user"
+            },
+            "kind": "created",
+            "payload": {
+              "title": "Kanban drag does not persist"
+            }
+          },
+          {
+            "type": "event",
+            "id": "te-01K5ZQ8M4T0J7WQ2R6X3YB9C4B",
+            "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "at": "2026-09-19T10:10:00Z",
+            "actor": {
+              "kind": "user"
+            },
+            "kind": "moved",
+            "payload": {
+              "from": "backlog",
+              "to": "in_progress"
+            }
+          },
+          {
+            "type": "comment",
+            "id": "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F",
+            "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "author": {
+              "kind": "agent",
+              "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+            },
+            "body": "Reproduced: the drop handler writes before the column read settles.",
+            "mentions_user": true,
+            "refs": [
+              {
+                "kind": "file",
+                "path": "spa/src/views/board.js",
+                "line_start": 88,
+                "line_end": 94
+              }
+            ],
+            "attachments": [],
+            "created_at": "2026-09-19T10:11:00Z",
+            "author_context": {
+              "tokens": 190000,
+              "window": 1000000,
+              "compact_at": 200000,
+              "at": "2026-09-19T10:10:40Z"
+            }
+          },
+          {
+            "type": "event",
+            "id": "te-01K5ZQ8M4T0J7WQ2R6X3YB9C4G",
+            "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "at": "2026-09-19T11:00:00Z",
+            "actor": {
+              "kind": "user"
+            },
+            "kind": "branch_kept",
+            "payload": {
+              "source_id": "source-1",
+              "repository": "/home/ada/code/build",
+              "branch": "build/kanban-drag",
+              "outcome": "kept",
+              "reason": "Build cannot delete the branch build/kanban-drag: it has commits no remote has.",
+              "workspace_id": "ws-3f2a91c4",
+              "workspace_name": "kanban-drag",
+              "reclaimed": true
+            }
+          }
+        ],
+        "has_more": true,
+        "next_cursor": "synthetic-authenticated-older-page",
+        "timeline_incarnation": "synthetic-task-history-incarnation",
+        "timeline_read_through": "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F"
+      }
+    },
+    {
+      "params": {
+        "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+        "timeline_paged": true,
+        "before": "synthetic-authenticated-older-page",
+        "limit": 50
+      },
+      "result": {
+        "task": {
+          "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+          "project_id": "proj-1",
+          "number": 12,
+          "title": "Kanban drag does not persist",
+          "body": "Dragging a card to In review puts it back on the next paint.",
+          "state": "open",
+          "status": "in_progress",
+          "labels": [
+            "bug",
+            "ui"
+          ],
+          "priority": "high",
+          "assignee": {
+            "kind": "agent",
+            "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          },
+          "links": {
+            "workspace_ids": [
+              "ws-3f2a91c4"
+            ],
+            "branches": [
+              "build/tasks-board"
+            ],
+            "commits": [
+              "c8381faa9b1d4e6f2a0c7b5e3d8f1a2c4b6d8e0f"
+            ],
+            "conversation_ids": [
+              "run-5d90b1e7"
+            ],
+            "parent_task_id": null
+          },
+          "trackers": [
+            "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          ],
+          "identities": {
+            "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E": {
+              "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E",
+              "name": "Fix drag",
+              "ordinal": 1,
+              "workspace_id": "ws-3f2a91c4",
+              "workspace_name": "spa-flaky-tests",
+              "provider": "codex_app_server",
+              "available": true
+            }
+          },
+          "attachments": [],
+          "created_by": {
+            "kind": "user"
+          },
+          "created_at": "2026-09-19T09:00:00Z",
+          "updated_at": "2026-09-19T10:12:00Z",
+          "closed_at": null,
+          "watched": true,
+          "unread_count": 120,
+          "session_started_ms": 1789808400000,
+          "last_activity_ms": 1789812720000,
+          "linked_reviews": [
+            {
+              "task_id": "task-review-13",
+              "number": 13,
+              "workspace_id": "ws-3f2a91c4",
+              "version": 1,
+              "status": "open",
+              "latest_published_snapshot_id": "snapshot-1",
+              "parent_task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+            }
+          ],
+          "last_reviewed_snapshot_id": null,
+          "unread_agent_comments": 110,
+          "unread_mentions": 4,
+          "unread_service_mentions": 1
+        },
+        "timeline": [],
+        "has_more": false,
+        "next_cursor": null,
+        "timeline_incarnation": "synthetic-task-history-incarnation",
+        "timeline_read_through": "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F"
+      }
+    },
+    {
+      "params": {
+        "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+        "timeline_paged": true,
+        "timeline_anchor": "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F",
+        "limit": 50
+      },
+      "result": {
+        "task": {
+          "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+          "project_id": "proj-1",
+          "number": 12,
+          "title": "Kanban drag does not persist",
+          "body": "Dragging a card to In review puts it back on the next paint.",
+          "state": "open",
+          "status": "in_progress",
+          "labels": [
+            "bug",
+            "ui"
+          ],
+          "priority": "high",
+          "assignee": {
+            "kind": "agent",
+            "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          },
+          "links": {
+            "workspace_ids": [
+              "ws-3f2a91c4"
+            ],
+            "branches": [
+              "build/tasks-board"
+            ],
+            "commits": [
+              "c8381faa9b1d4e6f2a0c7b5e3d8f1a2c4b6d8e0f"
+            ],
+            "conversation_ids": [
+              "run-5d90b1e7"
+            ],
+            "parent_task_id": null
+          },
+          "trackers": [
+            "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+          ],
+          "identities": {
+            "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E": {
+              "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E",
+              "name": "Fix drag",
+              "ordinal": 1,
+              "workspace_id": "ws-3f2a91c4",
+              "workspace_name": "spa-flaky-tests",
+              "provider": "codex_app_server",
+              "available": true
+            }
+          },
+          "attachments": [],
+          "created_by": {
+            "kind": "user"
+          },
+          "created_at": "2026-09-19T09:00:00Z",
+          "updated_at": "2026-09-19T10:12:00Z",
+          "closed_at": null,
+          "watched": true,
+          "unread_count": 120,
+          "session_started_ms": 1789808400000,
+          "last_activity_ms": 1789812720000,
+          "linked_reviews": [
+            {
+              "task_id": "task-review-13",
+              "number": 13,
+              "workspace_id": "ws-3f2a91c4",
+              "version": 1,
+              "status": "open",
+              "latest_published_snapshot_id": "snapshot-1",
+              "parent_task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+            }
+          ],
+          "last_reviewed_snapshot_id": null,
+          "unread_agent_comments": 110,
+          "unread_mentions": 4,
+          "unread_service_mentions": 1
+        },
+        "timeline": [
+          {
+            "type": "event",
+            "id": "te-01K5ZQ8M4T0J7WQ2R6X3YB9C4A",
+            "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "at": "2026-09-19T09:00:00Z",
+            "actor": {
+              "kind": "user"
+            },
+            "kind": "created",
+            "payload": {
+              "title": "Kanban drag does not persist"
+            }
+          },
+          {
+            "type": "event",
+            "id": "te-01K5ZQ8M4T0J7WQ2R6X3YB9C4B",
+            "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "at": "2026-09-19T10:10:00Z",
+            "actor": {
+              "kind": "user"
+            },
+            "kind": "moved",
+            "payload": {
+              "from": "backlog",
+              "to": "in_progress"
+            }
+          },
+          {
+            "type": "comment",
+            "id": "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F",
+            "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "author": {
+              "kind": "agent",
+              "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+            },
+            "body": "Reproduced: the drop handler writes before the column read settles.",
+            "mentions_user": true,
+            "refs": [
+              {
+                "kind": "file",
+                "path": "spa/src/views/board.js",
+                "line_start": 88,
+                "line_end": 94
+              }
+            ],
+            "attachments": [],
+            "created_at": "2026-09-19T10:11:00Z",
+            "author_context": {
+              "tokens": 190000,
+              "window": 1000000,
+              "compact_at": 200000,
+              "at": "2026-09-19T10:10:40Z"
+            }
+          },
+          {
+            "type": "event",
+            "id": "te-01K5ZQ8M4T0J7WQ2R6X3YB9C4G",
+            "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "at": "2026-09-19T11:00:00Z",
+            "actor": {
+              "kind": "user"
+            },
+            "kind": "branch_kept",
+            "payload": {
+              "source_id": "source-1",
+              "repository": "/home/ada/code/build",
+              "branch": "build/kanban-drag",
+              "outcome": "kept",
+              "reason": "Build cannot delete the branch build/kanban-drag: it has commits no remote has.",
+              "workspace_id": "ws-3f2a91c4",
+              "workspace_name": "kanban-drag",
+              "reclaimed": true
+            }
+          }
+        ],
+        "has_more": true,
+        "next_cursor": "synthetic-authenticated-older-page",
+        "timeline_incarnation": "synthetic-task-history-incarnation",
+        "timeline_read_through": "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F"
+      }
     }
   ],
   "pull_requests": {
@@ -1112,5 +1525,17 @@
     ],
     "write_authority": "bridge_only",
     "attention": "Only marked Build mentions raise service attention, including on Done. Ordinary Build mentions remain ignored."
+  },
+  "timeline_paging": {
+    "since": "3.35.0",
+    "capability": "tasks.timelinePaged",
+    "note": "Explicit timeline_paged:true only. Newest 50 by default; limit 1..100; before is an authenticated task/store-incarnation keyset cursor. timeline_anchor resolves one entry without draining pages. Timeline rows are ascending; has_more and next_cursor cover the older boundary. Cursor, anchor and first-page reads share timeline_incarnation and an all-history unread-relevant timeline_read_through watermark. Cached views retain canonical summary unread counts and last_reviewed_snapshot_id even outside the page. Ordinary task_id-only requests retain the full legacy response exactly. Necessary oversized rows/records are refused explicitly; a later oversized row is reached through continuation.",
+    "cursor_refusal": {
+      "code": "invalid_params",
+      "details": {
+        "reason": "task_timeline_cursor_invalid"
+      },
+      "recovery": "Read the first page without before and publish its cache result; the cursor fence has no user-facing error. Other read/data failures remain visible."
+    }
   }
 }

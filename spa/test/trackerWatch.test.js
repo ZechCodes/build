@@ -29,6 +29,13 @@ describe("what the record says about watching", () => {
 });
 
 describe("how far the reader has read", () => {
+  it("uses the complete-history watermark when imported timestamp order hides a newer unread id", () => {
+    expect(readThrough([{ key: "tc-40" }], "te-99")).toBe("te-99");
+    expect(readThrough([{ key: "tc-99" }], "te-40")).toBe("tc-99");
+    expect(readThrough([], "te-99")).toBe("te-99");
+    expect(readThrough([{ key: "comment-3" }], "event-0")).toBe("");
+  });
+
   it("is the newest row, whichever kind it is", () => {
     expect(readThrough([{ key: "te-1" }, { key: "tc-2" }])).toBe("tc-2");
   });

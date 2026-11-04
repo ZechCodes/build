@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { passesSettled } from "./waits.js";
 
 const helloFixture = JSON.parse(readFileSync(resolve(process.cwd(), "../fixtures/api/v1/session.hello.json"), "utf8"));
 const PAGING_GREETING = helloFixture.result;
@@ -299,6 +300,7 @@ describe("a tracker synced from a bridge that pages", () => {
     const seen = watchTheList();
     held.release();
     held = null;
+    await passesSettled(sync, "dev-1");
     await settle();
 
     const titlesOf120 = seen.map((tasks) => tasks.find((task) => task.number === 120)?.title);
@@ -401,6 +403,7 @@ describe("a tracker synced from a bridge that pages", () => {
     const seen = watchTheList();
     held.release();
     held = null;
+    await passesSettled(sync, "dev-1");
     await settle();
 
     expect(seen.length).toBeGreaterThan(0);

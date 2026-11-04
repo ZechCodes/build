@@ -30,10 +30,14 @@
             "assignee": {
               "kind": "",
               "agent_id": "Actual\u0000suffix"
-            }
+            },
+            "last_reviewed_snapshot_id": null
           },
           "timeline": [],
-          "has_more": false
+          "has_more": false,
+          "next_cursor": null,
+          "timeline_incarnation": "synthetic-task-history-incarnation",
+          "timeline_read_through": null
         },
         "selection": {
           "pending_present": true
@@ -286,5 +290,10 @@
         ]
       }
     }
-  ]
+  ],
+  "task_timeline_paging": {
+    "since": "3.35.0",
+    "capability": "tasks.timelinePaged",
+    "note": "task_head.row shares the bounded tasks.get timeline envelope and authenticated older-page continuation; head snapshots omit task body bytes."
+  }
 }

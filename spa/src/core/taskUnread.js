@@ -23,6 +23,7 @@ import { isFinished } from "./trackerAgentTasks.js";
 import { changedSince } from "./trackerModel.js";
 import { timelineRows } from "./trackerTimeline.js";
 import { taskUnreadReading, latestTaskMark, taskWatchBaseline } from "./trackerUnread.js";
+import { partialTimelineCount, timelineNeedsCounters } from "./taskTimelineWindow.js";
 
 const listedCount = (task) => (Number.isSafeInteger(task?.unread_count) ? task.unread_count : null);
 
@@ -39,10 +40,14 @@ function timelineUnread(task, detail) {
  *  `detail` its cached `tasks.get` record when there is one. */
 export function taskUnreadCount(task, detail = null) {
   if (task?.watched !== true) return 0;
+  if (timelineNeedsCounters(detail)) return summarizedTimelineUnread(task, detail);
   const listed = listedCount(task);
   const timelineIsCurrent = Array.isArray(detail?.timeline) && !changedSince(task, detail);
   return timelineIsCurrent || listed === null ? timelineUnread(task, detail) : listed;
 }
+
+const summarizedTimelineUnread = (task, detail) => partialTimelineCount(task, detail, "unread_count")
+  ?? listedCount(task) ?? (detail?.has_more === true ? 0 : timelineUnread(task, detail));
 
 /** Per-task display only. Totals and rail arithmetic retain taskUnreadCount. */
 export function taskUnreadDisplayCount(task, detail, { unknown = false, previous } = {}) {

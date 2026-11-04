@@ -224,7 +224,18 @@ impl TaskReadContext {
             require_str(params, "project_id")?
         } else {
             let id = require_str(params, "task_id")?;
-            self.tracker_task(source, &id)?.0
+            if method == "tasks.get" && super::bounded_detail::requested(params)? {
+                let (path, _) = source
+                    .task_project_authority(&id)
+                    .stored()?
+                    .ok_or_else(|| format!("unknown task_id: {id}"))?;
+                self.project_ids
+                    .get(&path)
+                    .cloned()
+                    .ok_or_else(|| format!("unknown task_id: {id}"))?
+            } else {
+                self.tracker_task(source, &id)?.0
+            }
         };
         let project_path = self
             .project_paths
@@ -373,6 +384,9 @@ impl TaskReadContext {
         source: &impl TaskReadSource,
         params: &Value,
     ) -> Result<Value, String> {
+        if super::bounded_detail::requested(params)? {
+            return self.tasks_get_paged(source, params);
+        }
         let task_id = require_str(params, "task_id")?;
         let (project, task) = self.tracker_task(source, &task_id)?;
         let timeline = source.load_tracker_timeline(&task_id).stored()?;
@@ -460,7 +474,7 @@ impl TaskReadContext {
     }
 }
 
-fn extend_task_summary(
+pub(super) fn extend_task_summary(
     source: &impl TaskReadSource,
     task: &Task,
     row: &mut Value,

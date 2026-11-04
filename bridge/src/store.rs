@@ -142,6 +142,8 @@ pub enum StoreError {
     SyncInvalid(String),
     #[error("invalid task summary data: {0}")]
     TaskSummaryInvalid(String),
+    #[error("Task history cursor is no longer current; read its newest page again")]
+    TaskTimelineCursorInvalid,
     #[error("invalid retention policy: {0}")]
     RetentionInvalid(String),
     #[error("mutation journal: {0}")]

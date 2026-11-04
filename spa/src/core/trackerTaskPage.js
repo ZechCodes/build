@@ -23,7 +23,6 @@ import {
   captureTaskDetailRead,
   taskAddress,
   tasksAddress,
-  taskRecord,
   taskRecordAt,
   readTaskRecord,
   writeTaskRecord,
@@ -83,6 +82,7 @@ import { readTaskWaitingOnSupport, taskWaitingOnSupportAddress } from "./taskWai
 import { mountMeasuredHeight } from "./measuredInset.js";
 import { mountTaskCommentRecovery } from "./taskCommentRecovery.js";
 import { provenExpiredFailure } from "./writeOperationIntent.js";
+import { isTaskTimelineCursorFence, keepTaskTimelineAnchor, prependTaskTimeline, requestTaskDetail, taskDetailRecord } from "./taskTimelinePages.js";
 
 /** Whether one flush of `tasks` items says anything about this task. */
 const namesTask = (items, taskId) =>
@@ -169,8 +169,13 @@ export function focusTaskComment(host, commentId, { scroll = true } = {}) {
 
 export function mountTaskPage(host, options) {
   wireReaderMotion(host);
-  const replyNavigation = createTaskReplyNavigation(host);
+  const replyNavigation = createTaskReplyNavigation(host, { reveal: readCommentAnchor });
   const readingPolicy = followConversation();
+  const olderReadingPolicy = followConversation({ olderItemsPrepended: true });
+  let selectedAnchor = options.commentId || null;
+  let selectedAnchorPage = null;
+  let anchorIncarnation = null;
+  let anchorSelection = 0;
   let stopHeadMeasurement = () => {};
   let reviewPage = null;
   let waitingEditor = null;
@@ -184,6 +189,12 @@ export function mountTaskPage(host, options) {
     ...options,
     task: null,
     rows: [],
+    anchorRows: [],
+    timelineCursor: null,
+    timelineReadThrough: null,
+    partialTimeline: false,
+    timelinePaged: false,
+    timelineIdentities: {},
     reviewSnapshots: [],
     review: null,
     reviewForTaskSupported: false,
@@ -303,7 +314,7 @@ export function mountTaskPage(host, options) {
     // window left showing this overnight must not say so each time an agent
     // comments. Coming back marks what is on screen (readerPresence.js).
     if (!canMarkRead || !state.task || !readerIsHere()) return;
-    const through = readThrough(state.rows);
+    const through = readThrough(state.rows, state.timelineReadThrough);
     if (!through || through === markedThrough) return;
     void wrapTaskMutationCall(state.deviceId, "tasks.read_through", () => {
       const authority = captureTaskAction(state);
@@ -388,11 +399,15 @@ export function mountTaskPage(host, options) {
     agentGroups: groups(),
     agentModels: agentModelsFromFeed(state.feed(), state.projectKey),
     workspaces: projectWorkspaces(),
-    identities: state.task.identities || {},
+    identities: { ...state.timelineIdentities, ...state.task.identities },
     deviceId: state.deviceId,
     projectId: state.projectId,
     projectName: projectName(state.feed(), state.projectKey),
     rows: state.rows,
+    anchorRows: state.anchorRows,
+    timelineMore: Boolean(state.timelineCursor),
+    partialTimeline: state.partialTimeline,
+    canSeekComment: state.timelinePaged,
     reviewSnapshots: state.reviewSnapshots,
     review: state.review,
     reviewSupport: state.reviewSupport,
@@ -487,7 +502,7 @@ export function mountTaskPage(host, options) {
     else container.insertBefore(node, before);
   }
 
-  const paint = () => {
+  const paint = ({ olderItemsPrepended = false } = {}) => {
     if (state.disposed) return;
     if (!state.task) return paintUnframed(state.loaded ? taskMissingHtml() : "");
     const parts = taskPageParts(state.task, pageContext());
@@ -495,14 +510,15 @@ export function mountTaskPage(host, options) {
     const repaint = () => paintParts(parts, typing);
     // First paint opens at the top. While composing, native anchoring keeps
     // the focused box on screen as comments arrive above it (#153).
-    keepReadingPlace(repaint);
+    keepReadingPlace(repaint, olderItemsPrepended);
     markRoutedComment();
   };
 
-  function keepReadingPlace(repaint) {
+  function keepReadingPlace(repaint, olderItemsPrepended = false) {
     // A late review header must not turn an untouched start-of-page into a
     // timeline reading position by anchoring the first comment below it.
-    if (!framed || host.scrollTop === 0 || composerOwnsPlace()) repaint();
+    if (olderItemsPrepended && framed) paintKeepingPlace(host, repaint, { opening: () => false, policy: olderReadingPolicy });
+    else if (!framed || host.scrollTop === 0 || composerOwnsPlace()) repaint();
     else paintKeepingPlace(host, repaint, { opening: () => false, policy: readingPolicy });
   }
 
@@ -608,7 +624,7 @@ export function mountTaskPage(host, options) {
   }
 
   function openRoutedReviewAnchor() {
-    const row = state.rows.find((entry) => entry.key === state.commentId);
+    const row = [...state.anchorRows, ...state.rows].find((entry) => entry.key === state.commentId);
     if (reviewTemplate && state.review && row?.anchor && !commentAnchorOpened && reviewPage) {
       commentAnchorOpened = true;
       const target = reviewPage;
@@ -624,14 +640,15 @@ export function mountTaskPage(host, options) {
     if (!record?.task) {
       state.task = null;
       state.rows = [];
+      state.anchorRows = [];
+      state.timelineCursor = null;
       return;
     }
     state.task = record.task;
     // Whoever mounted this page may want to say which task is open — the
     // route names an id, but only a read knows its number and title.
     state.onTaskRead?.(record.task);
-    state.rows = timelineRows(record.timeline);
-    void referenceLookups.update({ body: record.task.body, rows: state.rows });
+    takeTimeline(record);
     // Read the mark while it still says where this visit began. The open
     // mark below advances it, but the held divider must not move with it.
     updateUnread();
@@ -641,6 +658,31 @@ export function mountTaskPage(host, options) {
     // that reaches the end (#65).
     watch.settle(watchStateOf(record.task));
     markRead();
+  }
+
+  function takeTimeline(record) {
+    state.rows = timelineRows(record.timeline);
+    state.timelineCursor = record.next_cursor || null;
+    state.timelineReadThrough = record.timeline_read_through || null;
+    state.partialTimeline = record.has_more === true;
+    state.timelinePaged = Object.hasOwn(record, "next_cursor");
+    const anchor = takeSelectedAnchor(record);
+    state.timelineIdentities = { ...record.timeline_identities, ...anchor?.timeline_identities };
+    const shown = new Set(state.rows.map((row) => row.key));
+    state.anchorRows = timelineRows(anchor?.timeline).filter((row) => !shown.has(row.key));
+    void referenceLookups.update({ body: record.task.body, rows: [...state.anchorRows, ...state.rows] });
+  }
+
+  function takeSelectedAnchor(record) {
+    const incarnation = record.timeline_incarnation || null;
+    if (incarnation !== anchorIncarnation) selectedAnchorPage = null;
+    anchorIncarnation = incarnation;
+    const pages = record.timeline_anchor_pages || {};
+    if (selectedAnchor && Object.hasOwn(pages, selectedAnchor)) selectedAnchorPage = pages[selectedAnchor];
+    else if (record.has_more !== true) selectedAnchorPage = null;
+    // Slot eviction is cache pressure, not deletion of the comment already
+    // painted in this mounted view. A new incarnation or complete head clears it.
+    return selectedAnchorPage;
   }
 
   function requestFullContent(task, authority) {
@@ -743,10 +785,12 @@ export function mountTaskPage(host, options) {
   const taskWatcher = subscribeCache(taskAddress(state.deviceId, state.projectId, state.taskId), async () => {
     const cached = await readTaskRecord(state.deviceId, state.projectId, state.taskId);
     if (state.disposed || !cached) return;
+    const previousFirst = state.rows[0]?.key;
     take(cached, { keepDrafts: Boolean(state.task), live: true });
     void readContentHeader();
     reads.succeeded();
-    paint();
+    paint({ olderItemsPrepended: Boolean(previousFirst) && state.rows.findIndex((row) => row.key === previousFirst) > 0 });
+    void readRoutedComment();
   });
 
   const waitingOnSupportWatcher = subscribeCache(taskWaitingOnSupportAddress(state.deviceId), async () => {
@@ -882,11 +926,12 @@ export function mountTaskPage(host, options) {
         captureTaskContentRead(taskAddress(state.deviceId, state.projectId, state.taskId), { revalidate: "full" }),
       ]);
       if (!acceptsTaskReadDispatch(authority, demand)) return;
-      const answer = await state.callRpc("tasks.get", { task_id: state.taskId });
-      if (state.disposed || !authority.accept()) return;
+      const request = await requestTaskDetail({ ...authority, active: () => !state.disposed && authority.accept() });
+      if (!request?.accept()) return;
+      const answer = request.answer;
       // The pull is a writer. The subscription above owns the read and paint.
-      await writeTaskRecord(state.deviceId, state.projectId, state.taskId, taskRecord(answer.task, answer.timeline), {
-        accept: (held) => !state.disposed && authority.accept() && checklist.acceptsRead(checklistBasis, held)
+      await writeTaskRecord(state.deviceId, state.projectId, state.taskId, taskDetailRecord(answer), {
+        accept: (held) => request.accept() && checklist.acceptsRead(checklistBasis, held)
           && !scopedSyncOwns(state.deviceId, taskSyncScope(state.taskId)),
         detailBasis, contentRead, onOrdinaryDeferred: () => deferTaskRead(authority),
       });
@@ -902,6 +947,85 @@ export function mountTaskPage(host, options) {
     } finally {
       releaseRepairRead(reservation);
     }
+  }
+
+  let olderHistoryRead = null;
+  const anchorReads = new Map();
+  let routedAnchorAttempted = false;
+
+  async function paintCachedHistory(owner) {
+    const record = await readTaskRecord(owner.deviceId, owner.projectId, owner.taskId);
+    if (state.disposed || !owner.accept() || !record) return false;
+    const previousFirst = state.rows[0]?.key;
+    take(record, { keepDrafts: true });
+    paint({ olderItemsPrepended: Boolean(previousFirst) && state.rows.findIndex((row) => row.key === previousFirst) > 0 });
+    return true;
+  }
+
+  async function readHistoryPage(selectors, acceptSelection = () => true) {
+    const owner = captureTaskAction(state);
+    const address = taskAddress(owner.deviceId, owner.projectId, owner.taskId);
+    const [detailBasis, contentRead] = await Promise.all([
+      captureTaskDetailRead(owner.deviceId, owner.projectId, owner.taskId),
+      captureTaskContentRead(address, { revalidate: "full" }),
+    ]);
+    const request = await requestTaskDetail({ ...owner, ...selectors,
+      active: () => !state.disposed && owner.accept() && acceptSelection() });
+    if (!request?.accept()) return false;
+    let written;
+    if (request.legacy) written = await writeTaskRecord(owner.deviceId, owner.projectId, owner.taskId, taskDetailRecord(request.answer), {
+      detailBasis, contentRead, accept: request.accept,
+    });
+    else written = selectors.anchor
+      ? await keepTaskTimelineAnchor(address, selectors.anchor, request.answer, request.accept)
+      : await prependTaskTimeline(address, selectors.before, request.answer, request.accept);
+    return written && paintCachedHistory(owner);
+  }
+
+  function readOlderHistory() {
+    if (olderHistoryRead) return olderHistoryRead;
+    if (state.disposed || !state.timelineCursor) return Promise.resolve(false);
+    olderHistoryRead = readHistoryPage({ before: state.timelineCursor }).catch(olderHistoryFailure)
+      .finally(() => { olderHistoryRead = null; });
+    return olderHistoryRead;
+  }
+
+  async function olderHistoryFailure(error) {
+    if (state.disposed) return false;
+    if (isTaskTimelineCursorFence(error)) {
+      await Promise.resolve(refresh()).catch(() => {});
+      return false;
+    }
+    notifyError("Could not load older history", messageOf(error));
+    return false;
+  }
+
+  function readCommentAnchor(anchor) {
+    if (state.disposed) return Promise.resolve(false);
+    if (selectedAnchor === anchor && anchorReads.has(anchor)) return anchorReads.get(anchor);
+    selectedAnchor = anchor;
+    selectedAnchorPage = null;
+    const selection = ++anchorSelection;
+    const accepts = () => selection === anchorSelection;
+    const pending = readSelectedComment(anchor, accepts).catch((error) => {
+      if (!state.disposed) notifyError("Could not load this comment", messageOf(error));
+      return false;
+    }).finally(() => { if (anchorReads.get(anchor) === pending) anchorReads.delete(anchor); });
+    anchorReads.set(anchor, pending);
+    return pending;
+  }
+
+  async function readSelectedComment(anchor, accepts) {
+    await paintCachedHistory(captureTaskAction(state));
+    if (state.disposed || !accepts()) return false;
+    if ([...state.anchorRows, ...state.rows].some((row) => row.key === anchor)) return true;
+    return readHistoryPage({ anchor }, accepts);
+  }
+
+  function readRoutedComment() {
+    if (!state.commentId || routedAnchorAttempted || !state.task || !state.timelinePaged) return;
+    routedAnchorAttempted = true;
+    return readCommentAnchor(state.commentId);
   }
 
   // ---- the writes ----------------------------------------------------------
@@ -1251,7 +1375,7 @@ export function mountTaskPage(host, options) {
     reviewPage = mountTaskReviewPage(host.querySelector('[data-task-review]'), {
       ...options, dedicated: reviewTemplate,
       reviewRoute: continuingReviewComments ? { ...options.reviewRoute, view: "comments" } : options.reviewRoute,
-      feedbackHost: host.querySelector('[data-review-feedback-host]'), task: () => state.task, rows: () => state.rows, workspaces: projectWorkspaces, onTaskChanged: refresh,
+      feedbackHost: host.querySelector('[data-review-feedback-host]'), task: () => state.task, rows: () => [...state.anchorRows, ...state.rows], workspaces: projectWorkspaces, onTaskChanged: refresh,
       generationOf: () => deviceSession(state.deviceId),
       keepReadingPlace,
     });
@@ -1261,13 +1385,15 @@ export function mountTaskPage(host, options) {
   }
 
   function wireReviewComments() {
+    const older = host.querySelector("[data-task-timeline-older]");
+    if (older) older.onclick = () => void readOlderHistory();
     replyNavigation.wire();
     host.querySelectorAll('[data-review-anchor]').forEach((button) => {
       button.onclick = () => void reviewPage?.openAnchor(JSON.parse(button.dataset.reviewAnchor));
     });
     host.querySelectorAll('[data-review-reply]').forEach((button) => {
       button.onclick = () => {
-        const row = state.rows.find((item) => item.key === button.dataset.reviewReply);
+        const row = [...state.anchorRows, ...state.rows].find((item) => item.key === button.dataset.reviewReply);
         if (row) void reviewPage?.reply({ ...row, id: row.key });
       };
     });
@@ -1296,7 +1422,7 @@ export function mountTaskPage(host, options) {
   const releaseSyncTask = registerScopedSync({ deviceId: state.deviceId, projectId: state.projectId,
     scope: taskSyncScope(state.taskId) });
   paint();
-  void paintFromCache().then(refreshForMount);
+  void paintFromCache().then(async () => { await refreshForMount(); await readRoutedComment(); });
   // The view has no timer. Durable scopes use the engine's 30-second head
   // checks; legacy reads follow pushes. An item that names this task
   // is what re-reads it, and the pass behind that (core/cacheSync.js) is the

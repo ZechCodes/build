@@ -30,6 +30,7 @@ import { reconcileTaskReadFacts, hasTaskWatchSnapshot } from "./taskWatchFacts.j
 import { TASK_WATCH_INTENT_CACHE, reconcileTaskWatchIntent, selectTaskWatchIntentGuard } from "./taskWatchIntents.js";
 import { blindTaskWatchInterference, retireTaskWatchFacts } from "./taskWatchAuthority.js";
 import { projectColumnsAddress, withProjectColumns } from "./projectColumnsCache.js";
+import { mergeTaskTimeline, taskTimelineFields } from "./taskTimelineWindow.js";
 const normalizedAddress = (deviceId, projectId, taskId) => ({ deviceId, entityId: projectId, kind: "tracker-summary", sub: taskId });
 
 export const TRACKER_TASKS_KIND = "tracker-tasks";
@@ -566,10 +567,12 @@ const detailAccepted = (held, note, taskId, options) => options.accept(held)
   && (options.detailBasis === undefined || options.detailBasis === (note?.value?.rows?.[taskId] || 0));
 
 function publishedDetail(held, record, result, contentRead, facts) {
-  const timeline = result.acceptedBody || !contentRead ? record.timeline : held?.timeline;
+  const history = result.acceptedBody || !contentRead ? mergeTaskTimeline(held, record) : held;
   const independent = facts || record.task;
-  const next = preserveTaskFloors(held, { ...record, task: withTaskContentComponents(independent, result.task), timeline: timeline || [] });
-  return next;
+  const next = { ...record };
+  for (const field of Object.keys(taskTimelineFields(next))) delete next[field];
+  Object.assign(next, taskTimelineFields(history), { task: withTaskContentComponents(independent, result.task), timeline: history?.timeline || [] });
+  return preserveTaskFloors(held, next);
 }
 
 function contentDetail(detail, record, headerBarrier, context, address, contentRead, projection) {

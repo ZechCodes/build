@@ -35,7 +35,9 @@ export const commentReplyLabel = (parent, context = {}) => parent
 export function commentReplyHtml(row, context) {
   if (!row.replyTo) return '<div class="tracker-task-comment-reply" hidden></div>';
   const parent = context.replyIndex.comments.get(row.replyTo);
-  if (!parent) return '<div class="tracker-task-comment-reply">Reply to a comment</div>';
+  if (!parent) return context.canSeekComment
+    ? `<button class="tracker-task-comment-reply" type="button" data-comment-jump="${esc(row.replyTo)}">Reply to an earlier comment</button>`
+    : '<div class="tracker-task-comment-reply">Reply to a comment</div>';
   const name = actorName(parent.actor, context);
   const when = parent.at ? `<span class="task-when" title="${esc(parent.at)}">${esc(ageText(parent.at))}</span>` : "";
   return `<button class="tracker-task-comment-reply" type="button" data-comment-jump="${esc(parent.key)}" aria-label="${esc(`Go to the comment by ${name}`)}">
@@ -46,26 +48,27 @@ export function commentReplyHtml(row, context) {
 
 export const commentRepliesHtml = (row, context) => {
   const replies = context.replyIndex.replies.get(row.key) || [];
+  const label = context.partialTimeline ? "Show reply" : `${replies.length} ${replies.length === 1 ? "reply" : "replies"}`;
   return replies.length
-    ? `<button class="task-comment-replies" type="button" data-comment-jump="${esc(replies[0])}">${replies.length} ${replies.length === 1 ? "reply" : "replies"}</button>`
+    ? `<button class="task-comment-replies" type="button" data-comment-jump="${esc(replies[0])}">${label}</button>`
     : '<div class="task-comment-replies" hidden></div>';
 };
 
 /** A page-owned activation handler. Stable buttons are wired after patching;
  *  no paint moves the scroller, and disposal cancels the arrival mark. */
-export function createTaskReplyNavigation(host) {
+export function createTaskReplyNavigation(host, { reveal = () => false } = {}) {
   let highlighted = null;
   let timer = null;
+  let navigation = 0;
   const clearHighlight = () => {
     clearTimeout(timer);
     if (highlighted) highlighted.classList.remove("task-comment-target");
     highlighted = null;
   };
-  const activate = (event) => {
-    const id = event.currentTarget.dataset.commentJump;
+  const focus = (id) => {
     const row = [...host.querySelectorAll(".task-comment[data-comment-id]")]
       .find((candidate) => candidate.dataset.commentId === id);
-    if (!row) return;
+    if (!row) return false;
     clearHighlight();
     // A routed-comment mark belongs to the route and outlives this brief one.
     if (!row.classList.contains("task-comment-target")) highlighted = row;
@@ -75,6 +78,15 @@ export function createTaskReplyNavigation(host) {
     const top = host.scrollTop + row.getBoundingClientRect().top - host.getBoundingClientRect().top - host.clientTop - headroom - 12;
     host.scrollTo({ top: Math.max(0, top), behavior: "auto" });
     timer = setTimeout(clearHighlight, 1800);
+    return true;
+  };
+  const activate = (event) => {
+    const id = event.currentTarget.dataset.commentJump;
+    const requested = ++navigation;
+    if (focus(id)) return;
+    void Promise.resolve(reveal(id)).then((found) => {
+      if (found && requested === navigation) focus(id);
+    }).catch(() => {});
   };
   const buttons = () => host.querySelectorAll(".task-comment-card button[data-comment-jump]");
   return {
@@ -85,6 +97,7 @@ export function createTaskReplyNavigation(host) {
       if (highlighted && host.contains(highlighted)) highlighted.classList.add("task-comment-target");
     },
     dispose() {
+      navigation += 1;
       buttons().forEach((button) => { button.onclick = null; });
       clearHighlight();
     },

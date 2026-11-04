@@ -273,6 +273,16 @@ CREATE TABLE IF NOT EXISTS tracker_comments (
 -- the id, which is time-ordered itself.
 CREATE INDEX IF NOT EXISTS tracker_comments_by_task
     ON tracker_comments(task_id, created_at, id);
+-- A bounded task page retains the user's last-reviewed hint even when that
+-- opinion is outside its timeline window. Guard corrupt historical records;
+-- the indexed expression avoids decoding the comment body on this read.
+CREATE INDEX IF NOT EXISTS tracker_comments_user_opinions
+    ON tracker_comments(task_id,created_at,id,
+        CASE WHEN length(CAST(json_extract(record,'$.opinion.snapshot_id') AS BLOB))<=256
+        THEN json_extract(record,'$.opinion.snapshot_id') END)
+    WHERE CASE WHEN json_valid(record) THEN
+        json_extract(record,'$.author.kind')='user'
+        AND json_type(record,'$.opinion.snapshot_id')='text' ELSE 0 END;
 
 CREATE TABLE IF NOT EXISTS tracker_events (
     id       TEXT PRIMARY KEY,

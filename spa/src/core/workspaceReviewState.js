@@ -44,7 +44,7 @@ export async function readWorkspaceReviewContext(scope) {
   const task = held?.review?.task_id ? await readTaskRecord(scope.deviceId, scope.projectId, held.review.task_id) : null;
   const createDraft = (await readUiRecord(reviewCreateDraftAddress(scope)))?.value;
   const tasks = await readReviewTaskChoices(scope);
-  return { workspace, project, held, createDraft, reviewedSnapshot: lastReviewedSnapshot(held?.review, task?.timeline), sources: await sourceRecords(scope, workspace), catalog,
+  return { workspace, project, held, createDraft, reviewedSnapshot: lastReviewedSnapshot(held?.review, task), sources: await sourceRecords(scope, workspace), catalog,
     tasks,
     reviewerOptions: assigneeOptions(assignableAgents(keyed, projectKey)).filter((option) => ["user", "project_agent", "agent"].includes(option.kind)),
     support: reviewSupportFor(held?.review, support) };
@@ -67,9 +67,14 @@ function sourceOnDifferentBranch(source, binding) {
   return Boolean(branch) && shortReviewRef(branch) !== shortReviewRef(binding.dedicated_branch_ref);
 }
 
-function lastReviewedSnapshot(review, timeline) {
-  const opinion = timelineRows(timeline).filter((row) => row.actor?.kind === "user" && row.opinion?.snapshot_id).at(-1)?.opinion;
-  return review?.snapshots?.find((snapshot) => snapshot.id === opinion?.snapshot_id);
+const timelineReviewedSnapshotId = (timeline) => timelineRows(timeline)
+  .filter((row) => row.actor?.kind === "user" && row.opinion?.snapshot_id).at(-1)?.opinion?.snapshot_id;
+
+export function lastReviewedSnapshot(review, detail) {
+  const observed = detail?.task;
+  const id = !detail?.timeline_legacy_complete && Object.hasOwn(observed || {}, "last_reviewed_snapshot_id") ? observed.last_reviewed_snapshot_id
+    : timelineReviewedSnapshotId(detail?.timeline);
+  return review?.snapshots?.find((snapshot) => snapshot.id === id);
 }
 
 export function formatReviewSinceNote({ count, head, reviewedHead, rewritten = false }) {

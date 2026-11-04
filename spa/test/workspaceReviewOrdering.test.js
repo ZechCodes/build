@@ -19,6 +19,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({
   whenGreeted: async (_context, dispatch) => ({ sent: dispatch() }),
 }));
 vi.mock("../src/core/changeEvents.js", () => ({
+  onBridgeGreeted: () => () => {},
   bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "git", "tasks"] } }),
   subscriptionsSettledFor: async () => {},
   onSubscriptionHeld: () => () => {},

@@ -249,6 +249,10 @@ impl Store {
         ReadTransaction::new(&self.connection()).load_tracker_task(task_id)
     }
 
+    pub fn load_tracker_task_bounded(&self, task_id: &str) -> Result<Option<Task>, StoreError> {
+        ReadTransaction::new(&self.connection()).load_tracker_task_bounded(task_id)
+    }
+
     pub fn task_project_authority(
         &self,
         task_id: &str,
@@ -670,6 +674,22 @@ pub(super) fn decode<T: serde::de::DeserializeOwned>(
 }
 
 impl ReadTransaction<'_> {
+    /// Refuse oversized imported records before copying or decoding their body.
+    /// Normal task body writes already enforce MAX_BODY_BYTES (32,000 bytes).
+    pub fn load_tracker_task_bounded(&self, task_id: &str) -> Result<Option<Task>, StoreError> {
+        let raw: Option<Option<String>> = self.connection().query_row(
+            "SELECT CASE WHEN length(CAST(record AS BLOB))<=524288 THEN record END FROM tracker_tasks WHERE id=?1",
+            [task_id], |row| row.get(0),
+        ).optional()?;
+        match raw {
+            Some(Some(raw)) => decode(&raw, "tracker_tasks", task_id).map(Some),
+            Some(None) => Err(StoreError::TaskSummaryInvalid(
+                "bounded task record exceeds 524288 bytes".into(),
+            )),
+            None => Ok(None),
+        }
+    }
+
     pub fn load_tracker_task(&self, task_id: &str) -> Result<Option<Task>, StoreError> {
         let conn = self.connection();
         let raw: Option<String> = conn

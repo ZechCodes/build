@@ -42,8 +42,10 @@ mod retention;
 mod retention_install;
 mod schema;
 mod task_publication;
+mod task_timeline;
 pub(super) use device_producers::collect as collect_device;
 pub(super) use task_publication::{collect as collect_tasks, touch as touch_task};
+pub use task_timeline::{TaskTimelinePage, TASK_TIMELINE_DEFAULT_LIMIT, TASK_TIMELINE_MAX_LIMIT};
 
 pub use journal::PublicationBatch;
 pub use reads::{Head, HeadResult, SyncReadConnection};

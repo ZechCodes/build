@@ -65,6 +65,9 @@ task_queries! {
     task_summary_identity_with_owner(id: &str) -> Option<(crate::tracker::TaskAgentIdentity, Option<String>)>;
     list_task_filter_choices(project: &str, dimension: &str, after: Option<&str>, limit: usize) -> Vec<TaskFilterChoice>;
     load_tracker_task(id: &str) -> Option<Task>;
+    load_tracker_task_bounded(id: &str) -> Option<Task>;
+    task_timeline_page(id: &str, before: Option<&str>, limit: usize) -> crate::store::sync::TaskTimelinePage;
+    task_timeline_anchor_page(id: &str, anchor: &str, limit: usize) -> crate::store::sync::TaskTimelinePage;
     load_tracker_timeline(id: &str) -> Vec<TimelineEntry>;
     load_tracker_timelines(ids: &[String]) -> HashMap<String, Vec<TimelineEntry>>;
     load_review_summary(id: &str) -> Option<ReviewSummary>;

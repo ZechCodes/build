@@ -247,6 +247,7 @@ export function mountWorkspaceChanges(body, { directories, current, git, review 
       // restore the directory's context through its gate.
       if (visible === shown) return;
       visible = shown;
+      reviewEntry?.setVisible(shown);
       for (const [sourceId, surface] of surfaces) {
         const active = shown && sourceId === standing;
         if (active) surface.gate.show();

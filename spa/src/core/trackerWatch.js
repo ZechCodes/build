@@ -18,6 +18,7 @@
 // capabilities object with every flag off.
 
 import { bridgeCapabilities } from "./changeEvents.js";
+import { latestTaskMark } from "./trackerUnread.js";
 
 /**
  * Whether this device's bridge carries automatic read marks.
@@ -79,7 +80,8 @@ const INVENTED_KEY = /^(comment|event)-\d+$/;
  * whatever it was, for good, and say nothing: the bridge answers that refusal
  * with a quiet no-op and this page swallows read-mark failures by design.
  */
-export const readThrough = (rows) => {
+export const readThrough = (rows, authoritative) => {
   const newest = (rows || []).at(-1)?.key || "";
-  return INVENTED_KEY.test(newest) ? "" : newest;
+  const local = INVENTED_KEY.test(newest) ? "" : newest;
+  return authoritative ? latestTaskMark(local, authoritative) || "" : local;
 };

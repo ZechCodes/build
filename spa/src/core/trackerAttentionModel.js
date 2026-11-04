@@ -17,6 +17,7 @@ import { projectCoordinatorAgent, projectRosterRows } from "./projectRosterFeed.
 import { isFinished } from "./trackerAgentTasks.js";
 import { changedSince } from "./trackerModel.js";
 import { latestTaskMark } from "./trackerUnread.js";
+import { partialTimelineCount, timelineNeedsCounters } from "./taskTimelineWindow.js";
 
 /** Tasks held by an agent the feed lists for this project, mid-turn or not
  *  and whatever its job, until they reach Done. The id predates the rule. */
@@ -80,6 +81,10 @@ export const unreadAsks = (task, detail, askedOnly = false, reviewSupport = {}) 
  *  comment there. */
 export function hasUnreadInboxComment(task, detail, inboxRow) {
   if (!inboxRow || inboxRow.done_until_next === true || !(Number(inboxRow.unread) > 0)) return false;
+  if (timelineNeedsCounters(detail)) {
+    const count = partialTimelineCount(task, detail, "unread_agent_comments");
+    if (count !== null) return count > 0;
+  }
   return unreadAgentComments(task, detail).length > 0;
 }
 
@@ -121,11 +126,15 @@ const holdingAgentOf = (task, knownAgents, projectAgent) => {
 };
 
 /** Compact summary counts stand in for history until current details are cached. */
-const serviceHistoryIsCurrent = (task, detail) => Array.isArray(detail?.timeline) && !changedSince(task, detail);
+const serviceHistoryIsCurrent = (task, detail) => !timelineNeedsCounters(detail) && !changedSince(task, detail);
 const taskReadMark = (task, detail) => latestTaskMark(detail?.task?.read_through, task?.read_through) || "";
 
 export function hasUnreadReviewServiceAsk(task, detail, reviewSupport = {}) {
   if (!reviewSupport.verdictDelivery || task?.watched !== true) return false;
+  if (timelineNeedsCounters(detail)) {
+    const count = partialTimelineCount(task, detail, "unread_service_mentions");
+    if (count !== null) return count > 0;
+  }
   if (!serviceHistoryIsCurrent(task, detail)) return Number(task.unread_service_mentions) > 0;
   const mark = taskReadMark(task, detail);
   return detail.timeline.some((entry) => isServiceAsk(entry) && afterMark(entry.id, mark));
@@ -152,8 +161,14 @@ const reasonsOf = (task, hasUnreadComment, askedOnly, serviceAsk, reviewSupport)
  *  long after Stop watching cached `watched: false`. A bridge that announces
  *  the rule always says `watched`, so the task's own is the watch. */
 const hasUnreadAsk = (task, detail, inboxRow, askedOnly, reviewSupport) => (askedOnly
-  ? task?.watched === true && unreadAsks(task, detail, true, reviewSupport).length > 0
+  ? task?.watched === true && hasUnreadTimelineAsk(task, detail, true, reviewSupport)
   : hasUnreadInboxComment(task, detail, inboxRow));
+
+function hasUnreadTimelineAsk(task, detail, askedOnly, reviewSupport) {
+  const count = timelineNeedsCounters(detail)
+    ? partialTimelineCount(task, detail, askedOnly ? "unread_mentions" : "unread_agent_comments") : null;
+  return count !== null ? count > 0 : unreadAsks(task, detail, askedOnly, reviewSupport).length > 0;
+}
 
 const attentionReasonsOf = (task, detail, inboxRow, askedOnly, reviewSupport) =>
   reasonsOf(task, hasUnreadAsk(task, detail, inboxRow, askedOnly, reviewSupport), askedOnly,
@@ -163,7 +178,7 @@ const attentionReasonsOf = (task, detail, inboxRow, askedOnly, reviewSupport) =>
  *  read from the cached task records alone. The task's own `watched` is the
  *  watch, so no feed row is consulted. None for a task nobody watches. */
 export const watchedTaskReasons = (task, detail, askedOnly = false, reviewSupport = {}) =>
-  task?.watched === true ? reasonsOf(task, unreadAsks(task, detail, askedOnly, reviewSupport).length > 0, askedOnly,
+  task?.watched === true ? reasonsOf(task, hasUnreadTimelineAsk(task, detail, askedOnly, reviewSupport), askedOnly,
     hasUnreadReviewServiceAsk(task, detail, reviewSupport), reviewSupport) : [];
 
 /** One task's attention, with every reason available to a Dashboard row.

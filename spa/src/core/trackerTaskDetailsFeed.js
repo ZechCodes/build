@@ -6,7 +6,8 @@ import { lazyViewReadsEnabled, scopedSyncOwns, wakeScopedSync } from "./scopedSy
 // which a fetched detail reaches a reader.
 
 import { readCached, readCachedMany, recordWriteOf, subscribeCache } from "./localCache.js";
-import { TRACKER_TASK_KIND, taskAddress, taskRecord, writeTaskRecord, captureTaskDetailRead } from "./trackerCache.js";
+import { TRACKER_TASK_KIND, taskAddress, writeTaskRecord, captureTaskDetailRead } from "./trackerCache.js";
+import { requestTaskDetail, taskDetailRecord } from "./taskTimelinePages.js";
 import { changedSince } from "./trackerModel.js";
 import { trailingRead } from "./trailingRead.js";
 import { deviceSession } from "./deviceReconnect.js";
@@ -94,7 +95,7 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
     if (answer?.task?.id !== id) return;
     // The transaction selects ordinary content and independent read/watch/PR
     // families separately, retaining newer content without dropping new facts.
-    await writeTaskRecord(deviceId, projectId, id, taskRecord(answer?.task, answer?.timeline), {
+    await writeTaskRecord(deviceId, projectId, id, taskDetailRecord(answer), {
       detailBasis: basis.detailBasis, contentRead: basis.contentRead,
       accept: acceptsRead, onOrdinaryDeferred: () => deferRead(id, acceptsRead),
     });
@@ -127,8 +128,11 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
         captureTaskContentRead(address(id), { revalidate: "full" }),
       ]);
       if (!acceptsOwner() || !stillWanted(id, version)) return;
-      const answer = await callRpc("tasks.get", { task_id: id });
-      await writeAnswer(id, answer, { detailBasis, contentRead }, () => acceptsOwner() && stillWanted(id, version));
+      const request = await requestTaskDetail({ deviceId, taskId: id, callRpc,
+        active: () => acceptsOwner() && stillWanted(id, version) });
+      if (!request?.accept()) return;
+      await writeAnswer(id, request.answer, { detailBasis, contentRead },
+        () => request.accept() && acceptsOwner() && stillWanted(id, version));
     } catch {
       // The list remains useful offline. A later list version can retry.
     }

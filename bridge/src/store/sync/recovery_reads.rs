@@ -4,7 +4,6 @@ use super::{
 };
 use crate::store::{ReadTransaction, TaskSummaryCandidate};
 use rusqlite::{params, OptionalExtension};
-use serde_json::Value;
 use std::collections::BTreeMap;
 
 pub enum CursorSequence {
@@ -161,53 +160,4 @@ impl ReadTransaction<'_> {
         )?;
         Ok((anchor != i64::MAX).then_some(anchor))
     }
-    /// Two indexed newest-head seeks, not an all-history UNION sort or decode.
-    /// Oversized necessary rows fail explicitly before their bytes are loaded.
-    pub fn sync_task_timeline_head(&self, id: &str) -> Result<(Vec<Value>, bool), SyncError> {
-        let mut entries = Vec::new();
-        for (table, at, kind) in [
-            ("tracker_comments", "created_at", "comment"),
-            ("tracker_events", "at", "event"),
-        ] {
-            let sql=format!("SELECT {at},id,CASE WHEN length(CAST(record AS BLOB))<=65536 THEN record END FROM {table} WHERE task_id=?1 ORDER BY {at} DESC,id DESC LIMIT 51");
-            let rows = self
-                .connection()
-                .prepare(&sql)?
-                .query_map([id], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, Option<String>>(2)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            for (at, id, raw) in rows {
-                entries.push((at, id, kind, raw));
-            }
-        }
-        entries.sort_by(|a, b| (&b.0, &b.1).cmp(&(&a.0, &a.1)));
-        let more = entries.len() > 50;
-        let mut timeline = entries
-            .into_iter()
-            .take(50)
-            .map(|(_, _, kind, raw)| timeline_row(kind, raw))
-            .collect::<Result<Vec<_>, _>>()?;
-        timeline.reverse();
-        Ok((timeline, more))
-    }
-}
-
-fn timeline_row(kind: &str, raw: Option<String>) -> Result<Value, SyncError> {
-    let raw =
-        raw.ok_or_else(|| SyncError::Unavailable("timeline head row exceeds 65536 bytes".into()))?;
-    let mut value: Value = serde_json::from_str(&raw)
-        .map_err(|_| SyncError::Unavailable("invalid timeline head row".into()))?;
-    value
-        .as_object_mut()
-        .ok_or_else(|| SyncError::Unavailable("invalid timeline head row".into()))?
-        .insert("type".into(), Value::String(kind.into()));
-    let entry: crate::tracker::TimelineEntry = serde_json::from_value(value)
-        .map_err(|_| SyncError::Unavailable("invalid timeline head row".into()))?;
-    serde_json::to_value(entry)
-        .map_err(|_| SyncError::Unavailable("invalid timeline head row".into()))
 }

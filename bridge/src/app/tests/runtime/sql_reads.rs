@@ -45,7 +45,7 @@ async fn task_sql_lane_answers_while_app_is_held_and_observes_next_commit() {
             "sql",
             "data",
             json!({
-                "id": 1, "method": "tasks.get", "params": { "task_id": task["id"] }
+                "id": 1, "method": "tasks.get", "params": { "task_id": task["id"], "timeline_paged": true }
             }),
         ),
     )
@@ -87,6 +87,22 @@ async fn task_sql_lane_answers_while_app_is_held_and_observes_next_commit() {
         .await
         .unwrap();
     assert_eq!(answer["result"]["task"]["title"], "after", "{answer}");
+    wire.accept(
+        &intake,
+        client_request(&key,"sql","data",json!({
+            "id":3,"method":"tasks.get","params":{
+                "task_id":task["id"],"timeline_paged":true,"before":"malformed-synthetic-timeline-cursor"
+            }
+        })),
+    ).await.unwrap();
+    let refused = tokio::time::timeout(Duration::from_secs(5), final_answer(&mut wire, &key))
+        .await
+        .unwrap();
+    assert_eq!(refused["error_code"], "invalid_params", "{refused}");
+    assert_eq!(
+        refused["details"]["reason"], "task_timeline_cursor_invalid",
+        "{refused}"
+    );
 }
 
 async fn final_answer(wire: &mut ChannelWire, key: &str) -> Value {

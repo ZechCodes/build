@@ -5,6 +5,7 @@ import { observeTaskContent, reconcileTaskContentWrite, retireTaskContent } from
 import { reconcileTaskReadFacts } from "./taskWatchFacts.js";
 import { withTaskReadFacts } from "./taskSummaryCache.js";
 import { canonicalSummaryFilters } from "./taskSummaryQuery.js";
+import { mergeTaskTimeline, taskTimelineFields } from "./taskTimelineWindow.js";
 
 const listKinds = new Set(["tracker-tasks", "tracker-tasks-query", "tracker-tasks-page", "tracker-summary-query"]);
 export const revisionAddress = ({ deviceId, projectId }, id) => ({ deviceId, entityId: projectId, kind: "sync-task-revision", sub: id });
@@ -79,10 +80,15 @@ export function taskRecordValue(held, record, options) {
   const value = { ...held?.value, ...selected, read_order: options.capture.contentRead.readOrder, stale: false };
   if (options.address.kind === "tracker-task") {
     if (record.kind !== "task_head") return held ? invalidatedValue(held) : null;
-    value.timeline = record.row.timeline;
-    value.has_more = record.row.has_more;
+    mergeTimelineRecord(value, held, record, options.response.incarnation);
   }
   return value;
+}
+
+function mergeTimelineRecord(value, held, record, incarnation) {
+  const incoming = { ...record.row, timeline_incarnation: incarnation, timeline_identities: record.row.task?.identities || {} };
+  for (const field of Object.keys(taskTimelineFields(value))) delete value[field];
+  Object.assign(value, taskTimelineFields(mergeTaskTimeline(held?.value, incoming)));
 }
 
 function acceptedMember(record) {

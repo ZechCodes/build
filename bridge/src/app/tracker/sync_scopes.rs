@@ -223,11 +223,15 @@ impl TaskSyncScope {
         let member = self.task.is_some() || self.member(read, project, &candidate.row, pending)?;
         let dto: crate::api::v1::tasks::TaskSummaryView = serde_json::from_value(candidate.row)
             .map_err(|e| SyncError::Unavailable(format!("invalid task summary: {e}")))?;
-        let summary =
+        let mut summary =
             serde_json::to_value(dto).map_err(|e| SyncError::Unavailable(e.to_string()))?;
         let row = if self.task.is_some() {
-            let (timeline, more) = read.sync_task_timeline_head(id)?;
-            json!({"task":summary,"timeline":timeline,"has_more":more})
+            let page =
+                read.task_timeline_page(id, None, crate::store::sync::TASK_TIMELINE_DEFAULT_LIMIT)?;
+            summary["last_reviewed_snapshot_id"] = json!(page.last_reviewed_snapshot_id);
+            json!({"task":summary,"timeline":page.timeline,"has_more":page.has_more,
+                "next_cursor":page.next_cursor,"timeline_incarnation":page.timeline_incarnation,
+                "timeline_read_through":page.timeline_read_through})
         } else {
             summary
         };

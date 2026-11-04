@@ -9,7 +9,7 @@ export { TASK_CONTENT_GENERATION_ADDRESS, taskContentScopeAddress, taskWatchCont
 export const TASK_CONTENT_CACHE = "__task_content_cache";
 const OBSERVATION = "__task_content_observation";
 const headerFields = `id project_id number title state status labels priority assignee created_by created_at updated_at
-closed_at done_at trackers attachment_count summary_truncated deferred_assignment`.split(/\s+/);
+closed_at done_at trackers attachment_count summary_truncated deferred_assignment last_reviewed_snapshot_id`.split(/\s+/);
 const bodyFields = ["body", "attachments", "identities"];
 const nested = {
   header: { links: ["workspace_ids", "parent_task_id"], dependencies: ["blocked", "waiting_on_count", "blocks_count"] },

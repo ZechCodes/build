@@ -98,6 +98,7 @@ it("persists invalidation before advancing the cursor", async () => {
     { expectedCursor: "opaque-cursor", response: response("invalidated") });
   expect((await raw(summaries.summaryAddress(place, "task-1"))).stale).toBe(true);
   expect((await raw(summaries.summaryQueryAddress(place, scope.filters))).stale).toBe(true);
+  expect((await summaries.readSummaryQuery(place, scope.filters)).stale).toBe(true);
   expect((await writer.readCursor()).cursor).toBe("invalidated");
 });
 
@@ -204,4 +205,10 @@ it("retries a snapshot whose membership row was overtaken by another scope", asy
   expect(await publish(closed, [record("task-1", "9")], { snapshot: true })).toBe(false);
   expect(await closed.readCursor()).toBeUndefined();
   expect((await raw(summaries.summaryAddress(place, "task-1"))).task.id).toBe("task-1");
+});
+
+it("retains honest normalized uncertainty when a task head lacks unread counter authority", async () => {
+  const writer = create();
+  await publish(writer, [record("task-1", "1", { row: task("task-1", { watched: true }) })], { snapshot: true });
+  expect((await summaries.readSummaryQuery(place, scope.filters)).stale).toBe(true);
 });

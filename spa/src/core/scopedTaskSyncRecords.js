@@ -46,12 +46,13 @@ function selectedTask(held, record, options) {
     { context: options.context, address: options.address, heldWritten: recordWriteOf(held) });
   const facts = reconcileTaskReadFacts(options.place, held?.value?.task, incoming,
     { context: options.context, contentRead: options.capture.contentRead, markerPolicy: "canonical" });
-  return withTaskReadFacts(result.task, facts.task);
+  return { task: withTaskReadFacts(result.task, facts.task), watch_uncertain: !facts.watchCertain,
+    watch_read_order: facts.selectedWatchRead, needs_unread_refresh: facts.needsUnreadRefresh };
 }
 
 function invalidatedValue(held) {
   if (!held?.value) return null;
-  const value = { ...held.value, stale: true };
+  const value = { ...held.value, stale: true, needs_unread_refresh: true };
   if (value.task) value.task = retireTaskContent(value.task);
   return value;
 }
@@ -59,8 +60,8 @@ function invalidatedValue(held) {
 export function taskRecordValue(held, record, options) {
   if (rowRemoved(record)) return DELETE_CACHED_RECORD;
   if (rowInvalidated(record)) return invalidatedValue(held);
-  const task = selectedTask(held, record, options);
-  const value = { ...held?.value, task, read_order: options.capture.contentRead.readOrder, stale: false };
+  const selected = selectedTask(held, record, options);
+  const value = { ...held?.value, ...selected, read_order: options.capture.contentRead.readOrder, stale: false };
   if (options.address.kind === "tracker-task") {
     if (record.kind !== "task_head") return held ? invalidatedValue(held) : null;
     value.timeline = record.row.timeline;

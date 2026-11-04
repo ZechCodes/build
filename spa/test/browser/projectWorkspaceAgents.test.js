@@ -480,6 +480,8 @@ it("dismisses the default mobile panel when native navigation leaves the canonic
         await changed;
       }, destination);
       await settled(page);
+      // Exit concealment also uses a timer, which getAnimations cannot observe.
+      await page.locator(INPUT).waitFor({ state: "hidden" });
       expect(await page.locator(INPUT).isVisible(), JSON.stringify(destination)).toBe(false);
       expect(await page.locator(INPUT).evaluate((node) => document.activeElement === node)).toBe(false);
       await page.evaluate(() => window.__layoutModules.shell.stopShell());

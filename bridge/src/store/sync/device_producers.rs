@@ -105,7 +105,12 @@ fn agent_projections(
     let Some((owner, raw)) = stored else {
         return Ok(None);
     };
-    let raw = raw.ok_or_else(|| super::invalid("device agent facts are incomplete"))?;
+    let Some(raw) = raw else {
+        // Preserve canonical maintenance without exposing an incomplete device
+        // projection. An owned source save or removal repairs this fence.
+        super::device_facts::mark_unavailable(conn, id)?;
+        return Ok(None);
+    };
     let agent: super::device_facts::AgentFacts =
         serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
             path: format!("agents/{id}").into(),

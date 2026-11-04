@@ -213,8 +213,12 @@ Workspace links resolve owner root facts through the registry root map; a run's
 owner id is not a workspace id. Missing mappings produce null links. Registry
 mapping changes touch affected owners through indexes. Agent facts contain only
 bounded directory fields and exact thread-generation identity, avoiding decoding
-historical agent sessions/revisions on hot publication. Display text is clipped
-before fingerprinting; opaque ids remain exact. Working state, availability,
+historical agent sessions/revisions on hot publication. If compact facts are
+missing, canonical maintenance can still commit: its transaction records a
+durable device fence rather than scanning history or exposing partial rows.
+An owned agent save or canonical removal clears the captured marker generation
+in the same transaction as publication; failed publication preserves the fence.
+Display text is clipped before fingerprinting; opaque ids remain exact. Working state, availability,
 active process/terminal counts and filesystem liveness remain outside records.
 
 Unread attention is an incremental Fenwick counter over committed item deltas.

@@ -1142,4 +1142,26 @@ fn device_missing_facts_fences_scope_without_aborting_pruning_and_repairs_atomic
         .admit_device_lease("repair", "epoch", NOW)
         .expect("owned source publication repairs the facts and fence together");
     assert_eq!(projection(&store, "agent", &id)["owner_id"], run.id);
+    store
+        .writer_for_test()
+        .execute("DELETE FROM device_agent_facts WHERE agent_id=?1", [&id])
+        .unwrap();
+    let mut attention = Attention::default();
+    attention.read_through(&id, 1);
+    store
+        .save_attention(
+            &HashMap::from([(run.id.clone(), attention)]),
+            &HashSet::from([run.id.clone()]),
+        )
+        .unwrap();
+    assert!(matches!(
+        store.writer().admit_device_lease("repair", "epoch", NOW),
+        Err(crate::store::sync::SyncError::Unavailable(_))
+    ));
+    run.agents.clear();
+    store.save_run(&run).unwrap();
+    store
+        .writer()
+        .admit_device_lease("repair", "epoch", NOW)
+        .expect("retiring the canonical agent also retires its missing-facts fence");
 }

@@ -3,6 +3,23 @@ use crate::{agent::Agent, models::ModelChoice, store::StoreError};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
+const FACTS_DIRTY: &str = "device_agent_facts";
+pub(super) fn mark_unavailable(conn: &Connection, id: &str) -> Result<(), StoreError> {
+    super::device::mark_dirty(conn, FACTS_DIRTY, id, super::now_ms())?;
+    Ok(())
+}
+fn clear_marker(conn: &Connection, id: &str) -> Result<(), StoreError> {
+    let generation: Option<i64> = conn
+        .prepare_cached("SELECT generation FROM sync_dirty WHERE kind=?1 AND key=?2")?
+        .query_row(params![FACTS_DIRTY, id], |row| row.get(0))
+        .optional()?;
+    if let Some(generation) = generation {
+        conn.prepare_cached("DELETE FROM sync_dirty WHERE kind=?1 AND key=?2 AND generation=?3")?
+            .execute(params![FACTS_DIRTY, id, generation])?;
+    }
+    Ok(())
+}
+
 #[derive(Deserialize, Serialize)]
 pub(super) struct AgentFacts {
     pub id: String,
@@ -68,7 +85,7 @@ pub(in crate::store) fn seed_agent(
         thread_generation_revision: agent.thread.generation_revision.to_string(),
     };
     conn.prepare_cached("INSERT INTO device_agent_facts VALUES(?1,?2) ON CONFLICT(agent_id) DO UPDATE SET record=?2")?.execute(params![agent.id,serde_json::to_string(&facts).expect("device facts")])?;
-    Ok(())
+    clear_marker(conn, &agent.id)
 }
 pub(in crate::store) fn seed_owner(
     conn: &Connection,
@@ -118,6 +135,7 @@ pub(in crate::store) fn forget_agent(conn: &Connection, id: &str) -> Result<(), 
     if installed(conn)? {
         conn.prepare_cached("DELETE FROM device_agent_facts WHERE agent_id=?1")?
             .execute([id])?;
+        clear_marker(conn, id)?;
     }
     Ok(())
 }

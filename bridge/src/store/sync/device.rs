@@ -17,26 +17,34 @@ pub struct DeviceLease {
     pub expires_at_ms: i64,
 }
 
+/// One generation and its marker share the caller's canonical transaction.
+pub(super) fn mark_dirty(
+    conn: &rusqlite::Connection,
+    kind: &str,
+    key: &str,
+    now: i64,
+) -> Result<i64, StoreError> {
+    let generation: i64 = conn.query_row(
+        "UPDATE meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)
+         WHERE key='device_dirty_generation' AND CAST(value AS INTEGER)<9223372036854775807
+         RETURNING CAST(value AS INTEGER)",
+        [],
+        |row| row.get(0),
+    )?;
+    conn.execute(
+        "INSERT INTO sync_dirty(kind,key,generation,marked_at_ms) VALUES(?1,?2,?3,?4)
+         ON CONFLICT(kind,key) DO UPDATE SET generation=?3,marked_at_ms=?4",
+        params![kind, key, generation, now],
+    )?;
+    Ok(generation)
+}
+
 impl StoreWriter {
     /// Persist before acknowledging a file or memory authority change.
     pub fn mark_sync_dirty(&self, kind: &str, key: &str, now: i64) -> Result<i64, SyncError> {
         validate_identity(kind, key)?;
-        self.transaction(|tx| {
-            let generation: i64 = tx.query_row(
-                "UPDATE meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)
-                 WHERE key='device_dirty_generation' AND CAST(value AS INTEGER)<9223372036854775807
-                 RETURNING CAST(value AS INTEGER)",
-                [],
-                |row| row.get(0),
-            )?;
-            tx.execute(
-                "INSERT INTO sync_dirty(kind,key,generation,marked_at_ms) VALUES(?1,?2,?3,?4)
-                 ON CONFLICT(kind,key) DO UPDATE SET generation=?3,marked_at_ms=?4",
-                params![kind, key, generation, now],
-            )?;
-            Ok(generation)
-        })
-        .map_err(SyncError::from)
+        self.transaction(|tx| mark_dirty(tx, kind, key, now))
+            .map_err(SyncError::from)
     }
 
     /// Projection, journal and marker clear commit together. A newer marker

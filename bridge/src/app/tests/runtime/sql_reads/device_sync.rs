@@ -74,6 +74,10 @@ async fn device_roundtrip(deadline: Duration, fixture_rows: usize) {
         "device wire snapshot rows={fixture_rows} elapsed_us={}",
         snapshot_elapsed.as_micros()
     );
+    assert!(
+        snapshot_elapsed <= deadline,
+        "complete device snapshot exceeded {deadline:?}: {snapshot_elapsed:?}"
+    );
     let phases = samples.snapshot();
     eprintln!("device snapshot phases={phases}");
     assert_eq!(
@@ -135,9 +139,11 @@ async fn device_roundtrip(deadline: Duration, fixture_rows: usize) {
         let answer = tokio::time::timeout(deadline, final_answer(&mut wire, &key))
             .await
             .unwrap();
-        eprintln!(
-            "device wire {method} elapsed_us={}",
-            started.elapsed().as_micros()
+        let elapsed = started.elapsed();
+        eprintln!("device wire {method} elapsed_us={}", elapsed.as_micros());
+        assert!(
+            elapsed <= deadline,
+            "complete {method} exceeded {deadline:?}: {elapsed:?}"
         );
         assert_eq!(answer["ok"], true, "{answer}");
         if method == "sync.changes" {

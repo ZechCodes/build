@@ -704,11 +704,13 @@ fn device_followup_archived_worktree_and_workspace_lifecycle_publish_durable_row
         .writer_for_test()
         .query_row("SELECT head FROM sync_state", [], |row| row.get(0))
         .unwrap();
-    let mut observed = crate::reclaim::LifecycleRecord::default();
-    observed.idle = true;
-    observed.reclaimable = true;
-    observed.measured_at_ms = 100;
-    observed.holds = vec!["live process".into()];
+    let observed = crate::reclaim::LifecycleRecord {
+        idle: true,
+        reclaimable: true,
+        measured_at_ms: 100,
+        holds: vec!["live process".into()],
+        ..Default::default()
+    };
     store
         .save_workspace_lifecycle(&HashMap::from([("workspace".into(), observed)]))
         .unwrap();

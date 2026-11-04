@@ -92,7 +92,7 @@ fn add_nodes(nodes: &mut BTreeMap<(String, i64), i64>, id: &str, mut node: i64, 
     }
     while node > 0 {
         *nodes.entry((id.to_owned(), node)).or_default() += delta;
-        let Some(next) = node.checked_add(node & -node) else {
+        let Some(next) = node.checked_add(node.isolate_lowest_one()) else {
             break;
         };
         node = next;
@@ -121,7 +121,7 @@ fn prefix(conn: &Connection, id: &str, current: i64, mut node: i64) -> Result<i6
     let mut count = 0;
     while node > 0 {
         count+=conn.prepare_cached("SELECT total FROM device_attention_counts WHERE conversation_id=?1 AND generation=?2 AND node=?3")?.query_row(params![id,current,node],|row|row.get::<_,i64>(0)).optional()?.unwrap_or(0);
-        node -= node & -node;
+        node -= node.isolate_lowest_one();
     }
     Ok(count)
 }

@@ -105,7 +105,11 @@ async fn mutation_during_device_paging_keeps_the_leased_keyset_and_versions() {
         .unwrap();
 
     let next = (
-        first["next"]["first_seq"].as_str().unwrap().parse::<i64>().unwrap(),
+        first["next"]["first_seq"]
+            .as_str()
+            .unwrap()
+            .parse::<i64>()
+            .unwrap(),
         first["next"]["kind"].as_str().unwrap(),
         first["next"]["key"].as_str().unwrap(),
     );
@@ -115,7 +119,11 @@ async fn mutation_during_device_paging_keeps_the_leased_keyset_and_versions() {
         .unwrap();
     assert_eq!(second["records"][0]["row"]["name"], "b");
     let next = (
-        second["next"]["first_seq"].as_str().unwrap().parse::<i64>().unwrap(),
+        second["next"]["first_seq"]
+            .as_str()
+            .unwrap()
+            .parse::<i64>()
+            .unwrap(),
         second["next"]["kind"].as_str().unwrap(),
         second["next"]["key"].as_str().unwrap(),
     );

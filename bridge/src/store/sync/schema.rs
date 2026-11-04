@@ -117,8 +117,11 @@ pub(in crate::store) fn initialize(
     }
     put(&tx, "sync_schema", DEFINITION)?;
     put(&tx, "sync_file_binding", &binding)?;
-    tx.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('device_dirty_generation',
-        CAST((SELECT COALESCE(MAX(generation),0) FROM sync_dirty) AS TEXT))", [])?;
+    tx.execute(
+        "INSERT OR IGNORE INTO meta(key,value) VALUES('device_dirty_generation',
+        CAST((SELECT COALESCE(MAX(generation),0) FROM sync_dirty) AS TEXT))",
+        [],
+    )?;
     tx.execute_batch("CREATE TABLE IF NOT EXISTS device_project_ids(path TEXT PRIMARY KEY, project_id TEXT NOT NULL) WITHOUT ROWID;")?;
     tx.commit()?;
     super::retention_install::install(conn)?;

@@ -97,15 +97,19 @@ pub(super) fn backfill(conn: &Connection, id: &str) -> Result<(), StoreError> {
     facts.topic = display(&facts.topic);
     facts.name = display(&facts.name);
     conn.execute("INSERT INTO device_agent_facts VALUES(?1,?2) ON CONFLICT(agent_id) DO UPDATE SET record=?2",params![id,serde_json::to_string(&facts).expect("device facts")])?;
+    backfill_owner(conn, &owner)
+}
+
+pub(super) fn backfill_owner(conn: &Connection, id: &str) -> Result<(), StoreError> {
     let exists: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM device_owner_projects WHERE owner_id=?1)",
-        [&owner],
+        [id],
         |row| row.get(0),
     )?;
     if !exists {
-        let links:Option<(String,Option<String>)>=conn.query_row("SELECT json_extract(record,'$.project_path'),json_extract(record,'$.worktree_path') FROM implementations WHERE id=?1 UNION ALL SELECT json_extract(record,'$.project_path'),NULL FROM tasks WHERE id=?1 LIMIT 1",[&owner],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+        let links:Option<(String,Option<String>)>=conn.query_row("SELECT json_extract(record,'$.project_path'),json_extract(record,'$.worktree_path') FROM implementations WHERE id=?1 UNION ALL SELECT json_extract(record,'$.project_path'),NULL FROM tasks WHERE id=?1 LIMIT 1",[id],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
         if let Some((project, workspace)) = links {
-            seed_owner(conn, &owner, &project, workspace.as_deref())?;
+            seed_owner(conn, id, &project, workspace.as_deref())?;
         }
     }
     Ok(())

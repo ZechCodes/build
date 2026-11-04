@@ -21,9 +21,12 @@ const COVERED: &[&str] = &[
     "implementations",
     "tasks",
     "archived_worktrees",
+    "operations",
     "inbox_retained_messages",
     "inbox_retained_run_messages",
 ];
+
+const NAMED_META: &[&str] = &["user_session", "workspace_lifecycle"];
 
 #[derive(Default)]
 struct Body {
@@ -58,8 +61,15 @@ fn mutation_tables(raw: &str) -> (BTreeSet<String>, bool) {
         };
         if let Some(table) = next {
             dynamic |= table.starts_with('{');
-            if COVERED.contains(&table.as_str()) {
+            if COVERED.contains(&table.as_str()) || table == "meta" {
                 tables.insert(table.clone());
+            }
+        }
+    }
+    if tables.contains("meta") {
+        for family in NAMED_META {
+            if words.iter().any(|word| word == family) {
+                tables.insert(format!("meta:{family}"));
             }
         }
     }
@@ -99,7 +109,7 @@ impl<'ast> Visit<'ast> for BodyVisitor<'_> {
         let (tables, dynamic) = mutation_tables(&value);
         self.body.tables.extend(tables);
         self.body.dynamic |= dynamic;
-        if COVERED.contains(&value.as_str()) {
+        if COVERED.contains(&value.as_str()) || NAMED_META.contains(&value.as_str()) {
             self.body.named.insert(value);
         }
     }
@@ -109,6 +119,9 @@ impl<'ast> Visit<'ast> for BodyVisitor<'_> {
                 let (tables, dynamic) = mutation_tables(value);
                 self.body.tables.extend(tables);
                 self.body.dynamic |= dynamic;
+                if NAMED_META.contains(&value.as_str()) {
+                    self.body.named.insert(value.clone());
+                }
             }
         }
     }
@@ -130,8 +143,20 @@ impl Inventory {
         self.hooks
             .insert(format!("{}::{name}", self.file), body.calls);
         if body.dynamic {
-            body.tables.extend(body.named);
+            body.tables.extend(
+                body.named
+                    .iter()
+                    .filter(|name| COVERED.contains(&name.as_str()))
+                    .cloned(),
+            );
             body.tables.insert("<dynamic>".into());
+        }
+        if body.tables.remove("meta") {
+            for family in NAMED_META {
+                if body.named.contains(*family) {
+                    body.tables.insert(format!("meta:{family}"));
+                }
+            }
         }
         for table in body.tables {
             self.writers
@@ -227,6 +252,16 @@ fn every_canonical_sql_writer_has_an_audited_publication_owner() {
     }
     // Startup migrations are classified separately from transactional producers.
     let expected: BTreeSet<String> = [
+        "conversation_reset.rs::reset_conversation -> operations",
+        "maintenance.rs::cleanup_batch -> operations", // Private payload erasure; pending membership is unchanged.
+        "operations.rs::recover_operations -> operations", // All transitions remain inside the pending set.
+        "operations.rs::transition_operation -> operations",
+        "operations.rs::insert_operation -> operations",
+        "reviews/verdict_delivery.rs::redirect_review_verdict_delivery -> operations",
+        "reviews/verdict_delivery.rs::retire_superseded_retry -> operations",
+        "user_session.rs::save_user_session -> meta:user_session",
+        "user_session.rs::save_user_session_if_newer -> meta:user_session",
+        "workspace_lifecycle.rs::save_workspace_lifecycle -> meta:workspace_lifecycle",
         "conversation_reset.rs::reset_conversation -> agents",
         "conversation_reset.rs::reset_conversation -> attention",
         "conversation_reset.rs::reset_conversation -> implementations",
@@ -287,6 +322,82 @@ fn every_canonical_sql_writer_has_an_audited_publication_owner() {
     .collect();
     assert_eq!(actual,expected,"new/removed SQL writer: classify its source-transaction hook or startup/private-only boundary, then add a semantic producer case");
     for (owner, required) in [
+        (
+            "entities.rs::write_agents",
+            &[
+                "seed_device_agent",
+                "before_device_item",
+                "reset_device_conversation",
+            ][..],
+        ),
+        ("entities.rs::write_task", &["seed_device_owner"][..]),
+        ("entities.rs::write_run", &["seed_device_owner"][..]),
+        ("entities.rs::save_attention", &["touch_device_owner"][..]),
+        (
+            "entities.rs::retain_agent_message_times",
+            &["retain_device_agent"][..],
+        ),
+        (
+            "entities.rs::delete_run_retaining_inbox_messages",
+            &["retain_device_owner"][..],
+        ),
+        (
+            "entities.rs::remove_owner_identities",
+            &["forget_device_owner", "reset_device_conversation"][..],
+        ),
+        (
+            "entities.rs::clear_retained_project_messages",
+            &["clear_device_project"][..],
+        ),
+        (
+            "entities.rs::save_archived_worktree",
+            &["touch_device_archive"][..],
+        ),
+        (
+            "conversation_reset.rs::reset_conversation",
+            &["reset_device_conversation", "seed_device_agent"][..],
+        ),
+        (
+            "operations.rs::acknowledge_messages",
+            &["before_device_item"][..],
+        ),
+        (
+            "operations/delivery_status.rs::write_status",
+            &["before_device_item"][..],
+        ),
+        (
+            "retention.rs::prune_conversation_batch",
+            &["before_device_item"][..],
+        ),
+        (
+            "operations.rs::insert_operation",
+            &["touch_device_conversation"][..],
+        ),
+        (
+            "operations.rs::transition_operation",
+            &["touch_device_conversation"][..],
+        ),
+        (
+            "reviews/verdict_delivery.rs::redirect_review_verdict_delivery",
+            &["touch_device_operation"][..],
+        ),
+        (
+            "reviews/verdict_delivery.rs::retire_superseded_retry",
+            &["touch_device_operation"][..],
+        ),
+        (
+            "reviews/verdict_delivery.rs::touch_device_operation",
+            &["touch_device_conversation"][..],
+        ),
+        (
+            "workspace_lifecycle.rs::save_workspace_lifecycle",
+            &["stage_device_lifecycle"][..],
+        ),
+        ("user_session.rs::save_user_session", &["stage_device"][..]),
+        (
+            "user_session.rs::save_user_session_if_newer",
+            &["stage_device"][..],
+        ),
         (
             "tracker.rs::write_tracker_task",
             &["touch_task", "task_written"][..],

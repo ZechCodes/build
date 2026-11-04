@@ -232,7 +232,16 @@ impl AppState {
         run_id: String,
         active: ActiveRun,
     ) -> Result<(), String> {
-        self.finish_run_mutation_kind(run_id, active, RunMutationKind::Adoption)
+        if let Err(error) = self.mark_device_lifecycle_dirty() {
+            self.restore_run_after_failed_save(&run_id, active);
+            self.settle_failed_mutation(&run_id);
+            return Err(error);
+        }
+        self.device_lifecycle_holds += 1;
+        let result = self.finish_run_mutation_kind(run_id, active, RunMutationKind::Adoption);
+        self.device_lifecycle_holds -= 1;
+        self.settle_device_lifecycle();
+        result
     }
 
     fn finish_run_mutation_kind(

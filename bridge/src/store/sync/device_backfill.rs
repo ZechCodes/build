@@ -346,6 +346,9 @@ fn backfill_retained(
             [&id],
             |row| row.get(0),
         )?;
+        if !project {
+            super::device_facts::backfill_owner(tx, &id)?;
+        }
         super::device_families::retain_time(
             tx,
             if project { "project" } else { "owner" },

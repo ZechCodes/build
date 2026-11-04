@@ -280,6 +280,11 @@ fn device_followup_agent_workspace_id_uses_the_registry_directory_identity() {
         .workspace_ensure_conversation(&json!({"workspace_id":workspace_id}))
         .unwrap();
     let owner = conversation["entity_id"].as_str().unwrap();
+    let mut active = app.take_run(owner).unwrap();
+    active.agents =
+        crate::agent::AgentRoster::with_first(owner, Default::default(), "2026-01-01T00:00:00Z");
+    app.finish_run_mutation(owner.to_owned(), active).unwrap();
+
     let agent_id: String = store
         .writer_for_test()
         .query_row("SELECT id FROM agents WHERE owner_id=?1", [owner], |row| {

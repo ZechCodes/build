@@ -113,7 +113,7 @@ fn gc(tx: &Transaction<'_>, now: i64) -> Result<GcProgress, StoreError> {
     let bytes = gc_journal(tx, floor, &mut progress)?;
     progress.removed_revisions=tx.execute("DELETE FROM sync_revisions WHERE (entity_kind,entity_key) IN (SELECT entity_kind,entity_key FROM sync_revisions WHERE deleted=1 AND seq<=?1 ORDER BY seq LIMIT ?2)",params![floor,remaining(tx,before) as i64])?;
     progress.removed_leases=tx.execute("DELETE FROM sync_leases WHERE id IN (SELECT id FROM sync_leases WHERE expires_at_ms<=?1 ORDER BY expires_at_ms,id LIMIT ?2)",params![now,remaining(tx,before) as i64])?;
-    let projection_floor:i64=tx.query_row("SELECT MAX(projection_pressure_floor,COALESCE((SELECT seq FROM sync_leases WHERE expires_at_ms>?1 ORDER BY seq LIMIT 1),head)) FROM sync_state WHERE id=1",[now],|row|row.get(0))?;
+    let projection_floor:i64=tx.query_row("SELECT MAX(projection_pressure_floor,COALESCE((SELECT seq FROM sync_leases ORDER BY seq LIMIT 1),head)) FROM sync_state WHERE id=1",[],|row|row.get(0))?;
     let retained_bytes = gc_versions(tx, projection_floor, remaining(tx, before), &mut progress)?;
     progress.removed_counter_rows = super::device_thread::gc(tx, remaining(tx, before))?;
     let tombstones_pending = gc_tombstones(

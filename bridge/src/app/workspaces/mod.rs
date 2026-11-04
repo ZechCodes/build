@@ -447,10 +447,7 @@ impl AppState {
     }
 
     pub(crate) fn workspace_get(&mut self, params: &Value) -> Result<Value, String> {
-        self.adopt_legacy_workspaces();
-        self.workspaces.refresh_local_capabilities();
-        self.workspaces.refresh_finished_local();
-        self.publish_read_metadata();
+        self.refresh_workspace_snapshot_observations();
         let id = require_str(params, "workspace_id")?;
         let workspace = self
             .workspaces

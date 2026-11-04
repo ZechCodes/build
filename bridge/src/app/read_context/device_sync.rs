@@ -24,6 +24,7 @@ impl ReadService {
         self.call(frame,connection)
     }
     fn read_device(&self,payload:&Value,mut connection:Option<ReadConnection>,opening:&str,epoch:&str)->Result<Value,ApiError> {
+        if !self.device_ready {return Err(ApiError::retryable_unavailable("sync_reconciling"));}
         let _admission=self.admission.as_ref().map(|gate|gate.try_enter_read().ok_or_else(||ApiError::busy("bridge update handoff in progress"))).transpose()?;
         let method=payload["method"].as_str().unwrap_or("");
         let params=crate::api::v1::normalize_read_params(method,&payload["params"])?;

@@ -526,6 +526,7 @@ pub(super) fn insert_operation(
             now,
         ],
     )?;
+    super::sync::touch_device_conversation(tx,&receipt.conversation_id)?;
     Ok(())
 }
 

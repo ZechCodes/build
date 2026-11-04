@@ -149,7 +149,11 @@ impl AppState {
         if work.git.is_some() {
             self.active_deferred_filesystem_jobs -= 1;
         }
-        self.finish_task_delivery(work.intent, work.git.as_ref(), result)
+        self.device_lifecycle_holds += 1;
+        let finished = self.finish_task_delivery(work.intent, work.git.as_ref(), result);
+        self.device_lifecycle_holds -= 1;
+        self.settle_device_lifecycle();
+        finished
     }
 
     pub(super) fn finish_task_delivery(

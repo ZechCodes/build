@@ -12,6 +12,10 @@ pub use device::{DeviceLease, DEVICE_LEASES_PER_OPENING, DEVICE_LEASE_TTL_MS};
 mod device_producers;
 mod device_backfill;
 mod device_thread;
+mod device_facts;
+mod device_families;
+pub(in crate::store) use device_families::{touch_archive as touch_device_archive, lifecycle as stage_device_lifecycle, retain_agent as retain_device_agent, retain_owner as retain_device_owner, forget_owner as forget_device_owner, clear_project as clear_device_project};
+pub(in crate::store) use device_facts::{seed_agent as seed_device_agent, seed_owner as seed_device_owner, forget_agent as device_facts_forget_agent};
 pub(in crate::store) use device_thread::{before_item as before_device_item, reset as reset_device_conversation};
 pub(in crate::store) use device_producers::{
     touch_agent as touch_device_agent, touch_owner as touch_device_owner,

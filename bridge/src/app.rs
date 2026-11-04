@@ -289,6 +289,8 @@ pub struct AppState {
     committed_entities: transactions::CommittedEntities,
     read_view: read_view::ReadViewSlot,
     snapshot_observations: snapshot_projection::SnapshotObservations,
+    device_lifecycle_holds: usize,
+    device_lifecycle_dirty: std::cell::Cell<bool>,
     /// Projects one of whose sources is moving; their workers wait (#533).
     source_moves: projects::SourceMoves,
     /// Deferred filesystem work claimed under the mutex and not yet applied.
@@ -693,6 +695,8 @@ impl AppState {
             committed_entities: Default::default(),
             read_view: read_view::ReadViewSlot::default(),
             snapshot_observations: snapshot_projection::SnapshotObservations::default(),
+            device_lifecycle_holds: 0,
+            device_lifecycle_dirty: std::cell::Cell::new(false),
             source_moves: projects::SourceMoves::default(),
             active_deferred_filesystem_jobs: 0,
             worktrees_root,

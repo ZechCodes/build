@@ -296,6 +296,7 @@ fn retain_agent_message_times(
     run_id: &str,
     agent_id: &str,
 ) -> Result<(), StoreError> {
+    super::sync::retain_device_agent(tx, run_id, agent_id)?;
     let mut query = tx.prepare(
         "SELECT json_extract(item, '$.data.created_at') FROM thread_items \
          WHERE agent_id = ?1 AND message = 1 \
@@ -484,6 +485,7 @@ impl Store {
             // Copy and delete in this transaction so replay sees either both
             // the old conversation or its retained message times.
             retain_agent_message_times(tx, owner_id, gone)?;
+            super::sync::device_facts_forget_agent(tx, gone)?;
             super::sync::reset_device_conversation(tx, gone)?;
             tx.execute("DELETE FROM thread_items WHERE agent_id = ?1", [gone])?;
             tx.execute("DELETE FROM agents WHERE id = ?1", [gone])?;
@@ -534,6 +536,7 @@ impl Store {
                 agent.ordinal,
                 serde_json::to_string(&skeleton).expect("an agent always serializes")
             ])?;
+            super::sync::seed_device_agent(tx, owner_id, agent)?;
             super::task_summaries::identity_refresh(tx, &agent.id)?;
 
             let mut stored: HashMap<i64, i64> = stored_cursors
@@ -924,6 +927,7 @@ impl Store {
         project_id: &str,
     ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            super::sync::retain_device_owner(tx, run_id, project_id)?;
             super::sync::touch_device_owner(tx, run_id)?;
             remove_owner_identities(tx, run_id)?;
             tx.execute(
@@ -968,6 +972,7 @@ impl Store {
     /// until then a failed multi-step deletion can leave the project alive.
     pub fn clear_retained_project_messages(&self, project_id: &str) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            super::sync::clear_device_project(tx, project_id)?;
             tx.execute(
                 "DELETE FROM inbox_retained_messages WHERE project_id = ?1",
                 [project_id],
@@ -1031,6 +1036,7 @@ impl Store {
         record: &PersistedArchivedWorktree,
     ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            super::sync::touch_device_archive(tx, &record.worktree_id)?;
             tx.execute(
                 "INSERT INTO archived_worktrees (id, record) VALUES (?1, ?2)
                  ON CONFLICT(id) DO UPDATE SET record = ?2",
@@ -1183,6 +1189,7 @@ pub(super) fn write_task(
             serde_json::to_string(&skeleton).expect("a Task always serializes")
         ],
     )?;
+    super::sync::seed_device_owner(tx, &record.id, &record.project_path, None)?;
     super::task_summaries::owner_refresh(tx, &record.id)
 }
 
@@ -1205,17 +1212,20 @@ pub(super) fn write_run(
             serde_json::to_string(&skeleton).expect("a run always serializes")
         ],
     )?;
+    super::sync::seed_device_owner(tx, &record.id, &record.project_path, Some(&record.worktree_path))?;
     super::task_summaries::owner_refresh(tx, &record.id)
 }
 
 /// Capture roster IDs before deleting canonical rows so their bounded identity
 /// projections are removed in the same transaction as the owner.
 fn remove_owner_identities(tx: &rusqlite::Transaction, owner: &str) -> Result<(), StoreError> {
+    super::sync::forget_device_owner(tx, owner)?;
     let ids = tx
         .prepare("SELECT id FROM agents WHERE owner_id=?1")?
         .query_map([owner], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     for id in ids {
+        super::sync::device_facts_forget_agent(tx, &id)?;
         super::sync::reset_device_conversation(tx, &id)?;
         super::task_summaries::identity_remove(tx, &id)?;
     }

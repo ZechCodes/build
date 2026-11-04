@@ -45,6 +45,8 @@ impl Store {
                 skeleton.thread.items.clear();
                 tx.execute("UPDATE agents SET record = ?2 WHERE id = ?1",
                     rusqlite::params![agent.id, serde_json::to_string(&skeleton).expect("agent serializes")])?;
+                let owner:String=tx.query_row("SELECT owner_id FROM agents WHERE id=?1",[&agent.id],|row|row.get(0))?;
+                super::sync::seed_device_agent(tx,&owner,&skeleton)?;
                 super::task_summaries::identity_refresh(tx, &agent.id)?;
             }
             for owner in summary_owners {

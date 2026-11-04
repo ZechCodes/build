@@ -638,11 +638,15 @@ impl AppState {
         action: BridgeAction,
     ) -> (Result<Value, String>, Option<DeferredJob>) {
         let queued_before = self.delivery_queue.checkpoint();
+        self.device_lifecycle_holds += 1;
         let answered = self.on_agent_mcp_action(entity_id, agent_id, action);
+        self.device_lifecycle_holds -= 1;
         if answered.is_err() {
             self.drop_turns_queued_since(queued_before);
         }
-        (answered, self.take_deferred())
+        let deferred = self.take_deferred();
+        self.settle_device_lifecycle();
+        (answered, deferred)
     }
 
     /// One agent's tool, drained — for the tests that own the state directly

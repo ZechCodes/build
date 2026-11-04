@@ -356,10 +356,17 @@ impl AppState {
     }
 
     pub(in crate::app) fn refresh_workspace_snapshot_observations(&mut self) {
+        if let Err(error) = self.mark_device_lifecycle_dirty() {
+            eprintln!("device sync workspace refresh: {error}");
+            return;
+        }
+        self.device_lifecycle_holds += 1;
         self.adopt_legacy_workspaces();
         self.workspaces.refresh_local_capabilities();
         self.workspaces.refresh_finished_local();
         self.publish_read_metadata();
+        self.device_lifecycle_holds -= 1;
+        self.settle_device_lifecycle();
     }
 
     pub(in crate::app) fn workspace_list_snapshot(&self, params: &Value) -> Result<Value, String> {
@@ -1172,10 +1179,18 @@ impl AppState {
     }
 
     pub(crate) fn reopen_workspace(&mut self, workspace_id: &str) -> Result<(), String> {
-        self.workspaces.reopen(workspace_id)
+        self.mark_device_lifecycle_dirty()?;
+        let result = self.workspaces.reopen(workspace_id);
+        self.settle_device_lifecycle();
+        result
     }
 
     fn adopt_legacy_workspaces(&mut self) {
+        if let Err(error) = self.mark_device_lifecycle_dirty() {
+            eprintln!("device sync workspace adoption: {error}");
+            return;
+        }
+        self.device_lifecycle_holds += 1;
         let primary = self
             .projects
             .iter()
@@ -1253,6 +1268,8 @@ impl AppState {
                 .adopt_root(&project_id, id, name, path, source_id, true);
         }
         self.adopt_external_git_worktrees();
+        self.device_lifecycle_holds -= 1;
+        self.settle_device_lifecycle();
     }
 
     /// Read only Git's local worktree registry. This deliberately avoids the

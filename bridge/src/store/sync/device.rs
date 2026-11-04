@@ -59,7 +59,7 @@ impl StoreWriter {
             }
             let entity = Entity::new(kind, key);
             match record {
-                Some(record) => batch.upsert(entity, record, &[Stream::device()]),
+                Some(mut record) => {bound_display(&mut record);batch.upsert(entity, record, &[Stream::device()]);}
                 None => batch.remove(entity, &[Stream::device()]),
             }
             tx.execute(
@@ -83,49 +83,41 @@ impl StoreWriter {
                 "invalid device lease owner".into(),
             ));
         }
-        let mut connection = self.connection();
+        let mut connection=match self.connection.try_lock() {
+            Ok(connection)=>connection,
+            Err(std::sync::TryLockError::Poisoned(error))=>error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock)=>return Err(SyncError::Unavailable("device snapshot admission busy".into())),
+        };
         #[cfg(test)]
         let _hold=crate::timing::phase_samples::phase("device.lease_writer_hold");
-        let tx = connection.transaction()?;
-        ensure_ready(&tx)?;
-        let retained:i64=tx.query_row("SELECT retained_version_bytes FROM sync_state WHERE id=1",[],|row|row.get(0))?;
-        if retained>super::retention::MAX_RETAINED_VERSION_BYTES {
-            return Err(SyncError::Unavailable("device snapshot retention pressure".into()));
+        connection.busy_timeout(std::time::Duration::ZERO)?;
+        let result=admit_lease(&mut connection,opening,epoch,now);
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        match result {
+            Err(SyncError::Database(error)) if matches!(error.sqlite_error_code(),Some(rusqlite::ErrorCode::DatabaseBusy|rusqlite::ErrorCode::DatabaseLocked))=>Err(SyncError::Unavailable("device snapshot admission busy".into())),
+            result=>result,
         }
-        let (head, incarnation): (i64, String) = tx.query_row(
-            "SELECT s.head,m.value FROM sync_state s JOIN meta m ON m.key='sync_incarnation' WHERE s.id=1",
-            [], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        let active: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM sync_leases WHERE incarnation=?1 AND epoch=?2 AND expires_at_ms>?3",
-            params![incarnation,epoch,now], |row| row.get(0))?;
-        let for_opening: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM sync_leases WHERE incarnation=?1 AND epoch=?2 AND opening=?3 AND expires_at_ms>?4",
-            params![incarnation,epoch,opening,now], |row| row.get(0))?;
-        if active >= DEVICE_LEASES_PER_STORE as i64 || for_opening >= DEVICE_LEASES_PER_OPENING as i64 {
-            return Err(SyncError::Unavailable("device lease quota exceeded".into()));
-        }
-        let id = uuid::Uuid::new_v4().to_string();
-        let expires_at_ms = now.saturating_add(DEVICE_LEASE_TTL_MS);
-        tx.execute(
-            "INSERT INTO sync_leases(id,scope_digest,opening,incarnation,epoch,seq,expires_at_ms)
-             VALUES(?1,?2,?3,?4,?5,?6,?7)",
-            params![
-                id,
-                device_scope().digest(),
-                opening,
-                incarnation,
-                epoch,
-                head,
-                expires_at_ms
-            ],
-        )?;
-        tx.commit()?;
-        Ok(DeviceLease {
-            id,
-            watermark: super::Sequence::new(head)?,
-            expires_at_ms,
-        })
     }
+
+}
+
+fn admit_lease(connection:&mut rusqlite::Connection,opening:&str,epoch:&str,now:i64)->Result<DeviceLease,SyncError> {
+    let tx=connection.transaction()?;
+    ensure_ready(&tx)?;
+    let (head,incarnation,retained,floor):(i64,String,i64,i64)=tx.query_row(
+        "SELECT s.head,m.value,s.retained_version_bytes,s.projection_pressure_floor FROM sync_state s JOIN meta m ON m.key='sync_incarnation' WHERE s.id=1",[],
+        |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?;
+    if retained>=super::retention::MAX_RETAINED_VERSION_BYTES {return Err(SyncError::Unavailable("device snapshot retention pressure".into()));}
+    // At most sixteen valid leases exist. Reclaiming at most sixteen invalid
+    // metadata rows per admission prevents epoch/expiry/pressure churn growth.
+    tx.execute("DELETE FROM sync_leases WHERE id IN (SELECT id FROM sync_leases WHERE incarnation<>?1 OR epoch<>?2 OR expires_at_ms<=?3 OR seq<?4 LIMIT 16)",params![incarnation,epoch,now,floor])?;
+    let active:i64=tx.query_row("SELECT COUNT(*) FROM (SELECT 1 FROM sync_leases WHERE incarnation=?1 AND epoch=?2 AND expires_at_ms>?3 AND seq>=?4 LIMIT 17)",params![incarnation,epoch,now,floor],|row|row.get(0))?;
+    let for_opening:i64=tx.query_row("SELECT COUNT(*) FROM (SELECT 1 FROM sync_leases WHERE incarnation=?1 AND epoch=?2 AND opening=?3 AND expires_at_ms>?4 AND seq>=?5 LIMIT 5)",params![incarnation,epoch,opening,now,floor],|row|row.get(0))?;
+    if active>=DEVICE_LEASES_PER_STORE as i64 || for_opening>=DEVICE_LEASES_PER_OPENING as i64 {return Err(SyncError::Unavailable("device lease quota exceeded".into()));}
+    let id=uuid::Uuid::new_v4().to_string();let expires_at_ms=now.saturating_add(DEVICE_LEASE_TTL_MS);
+    tx.execute("INSERT INTO sync_leases(id,scope_digest,opening,incarnation,epoch,seq,expires_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![id,device_scope().digest(),opening,incarnation,epoch,head,expires_at_ms])?;
+    tx.commit()?;
+    Ok(DeviceLease{id,watermark:super::Sequence::new(head)?,expires_at_ms})
 }
 
 impl ReadTransaction<'_> {
@@ -214,7 +206,7 @@ impl ReadTransaction<'_> {
             if records.len()==limit {break;}
             if let Some(record)=self.device_record_at(kind,key,watermark)? {
                 let size=serde_json::to_vec(&record).map_err(|_|SyncError::Unavailable("invalid device record".into()))?.len()+1;
-                if bytes+size>super::MAX_RECOVERY_BYTES-16384 {break;}
+                if bytes+size>super::MAX_RECOVERY_BYTES-65536 {break;}
                 if record["row"].is_null() {return Ok(None);}
                 bytes+=size;
                 records.push(record);
@@ -287,10 +279,11 @@ pub(super) fn apply_projection(
     seq: i64,
 ) -> Result<(), StoreError> {
     let raw = record.map(Value::to_string);
-    let bytes = raw.as_ref().map_or(0, |raw| raw.len());
-    if bytes > DEVICE_ROW_BYTES {
+    let payload_bytes = raw.as_ref().map_or(0, |raw| raw.len());
+    if payload_bytes > DEVICE_ROW_BYTES {
         return Err(invalid("device projection row exceeds 64 KiB"));
     }
+    let bytes=version_bytes(entity,payload_bytes);
     let previous: Option<(i64, bool, Option<String>, i64)> = tx
         .prepare_cached(
             "SELECT from_seq,deleted,record,record_bytes FROM sync_projection WHERE kind=?1 AND key=?2",
@@ -299,7 +292,9 @@ pub(super) fn apply_projection(
             Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })
         .optional()?;
-    if let Some((from, deleted, previous, previous_bytes)) = previous {
+    if let Some((from, deleted, previous, _)) = previous {
+        let previous_bytes=version_bytes(entity,previous.as_ref().map_or(0,String::len));
+        if super::retention::retain_version(tx,previous_bytes,seq)? {
         tx.execute(
             "INSERT INTO sync_projection_versions(kind,key,from_seq,to_seq,deleted,record,record_bytes)
              VALUES(?1,?2,?3,?4,?5,?6,?7)",
@@ -313,7 +308,7 @@ pub(super) fn apply_projection(
                 previous_bytes
             ],
         )?;
-        super::retention::retain_version(tx, previous_bytes, seq)?;
+        }
     } else {
         tx.execute(
             "INSERT INTO sync_projection_keys(kind,key,first_seq) VALUES(?1,?2,?3)",
@@ -331,7 +326,7 @@ pub(super) fn apply_projection(
             seq,
             record.is_none(),
             raw,
-            bytes as i64
+            bytes
         ],
     )?;
     Ok(())
@@ -346,7 +341,7 @@ pub(in crate::store) fn stage(
     record: Option<Value>,
 ) -> Result<(), StoreError> {
     match record {
-        Some(record) => batch.upsert(entity, record, &[Stream::device()]),
+        Some(mut record) => {bound_display(&mut record);batch.upsert(entity, record, &[Stream::device()]);}
         None => {
             let published: bool = tx
                 .prepare_cached(
@@ -393,4 +388,18 @@ pub(super) fn ensure_ready(conn: &rusqlite::Connection) -> Result<(), SyncError>
 
 fn over_budget(incarnation:&str,epoch:&str)->Value {
     json!({"status":"resync_required","incarnation":incarnation,"bridge_epoch":epoch,"reason":"over_budget"})
+}
+
+fn version_bytes(entity:&Entity,payload:usize)->i64 {(payload+entity.kind.len()+entity.key.len()+128) as i64}
+
+fn bound_display(value:&mut Value) {
+    match value {
+        Value::Object(fields)=>for (key,value) in fields {
+            if matches!(key.as_str(),"name"|"topic"|"title"|"error"|"last_message_summary") {
+                if let Some(text)=value.as_str() {*value=Value::String(text.chars().take(256).collect());}
+            } else {bound_display(value);}
+        },
+        Value::Array(values)=>for value in values {bound_display(value);},
+        _=>{},
+    }
 }

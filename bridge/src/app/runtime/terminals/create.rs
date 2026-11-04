@@ -79,6 +79,9 @@ pub(super) fn create(
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("term.create.commit");
         validate_identity(&app, &selector, &captured, &resolved)?;
+        if resolved.adoption.is_some() {
+            app.mark_device_lifecycle_dirty()?;
+        }
         let (tab, output) = opened
             .0
             .take()
@@ -94,6 +97,7 @@ pub(super) fn create(
         if let Some(id) = adopted_workspace {
             app.publish_terminal_workspace_observations(&id);
         }
+        app.settle_device_lifecycle();
         app.note_terminals_at(&reserved.key.root);
         // Capture attention with registration, before a later close/removal
         // can prune the owner and advance its durable-map epoch.

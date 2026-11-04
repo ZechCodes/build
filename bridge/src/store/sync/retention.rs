@@ -68,6 +68,7 @@ pub struct GcProgress {
     pub removed_projection_versions: usize,
     pub removed_projection_rows: usize,
     pub removed_projection_keys: usize,
+    pub removed_counter_rows: usize,
     pub changed_rows: u64,
     pub pending: bool,
 }
@@ -80,11 +81,14 @@ impl StoreWriter {
 
 pub(super) const MAX_RETAINED_VERSION_BYTES: i64 = 64 * 1024 * 1024;
 
-pub(super) fn retain_version(tx: &Transaction<'_>, bytes: i64, to_seq: i64) -> Result<(), StoreError> {
-    tx.execute("UPDATE sync_state SET retained_version_bytes=retained_version_bytes+?1,
-        projection_pressure_floor=CASE WHEN retained_version_bytes+?1>?2 THEN MAX(projection_pressure_floor,?3) ELSE projection_pressure_floor END WHERE id=1",
-        params![bytes,MAX_RETAINED_VERSION_BYTES,to_seq])?;
-    Ok(())
+pub(super) fn retain_version(tx: &Transaction<'_>, bytes: i64, to_seq: i64) -> Result<bool, StoreError> {
+    let retained:i64=tx.query_row("SELECT retained_version_bytes FROM sync_state WHERE id=1",[],|row|row.get(0))?;
+    if retained>MAX_RETAINED_VERSION_BYTES.saturating_sub(bytes) {
+        tx.execute("UPDATE sync_state SET projection_pressure_floor=MAX(projection_pressure_floor,?1) WHERE id=1",[to_seq])?;
+        return Ok(false);
+    }
+    tx.execute("UPDATE sync_state SET retained_version_bytes=retained_version_bytes+?1 WHERE id=1",[bytes])?;
+    Ok(true)
 }
 
 fn remaining(tx: &Transaction<'_>, before: u64) -> usize {
@@ -100,14 +104,16 @@ fn gc(tx: &Transaction<'_>, now: i64) -> Result<GcProgress, StoreError> {
     progress.removed_leases=tx.execute("DELETE FROM sync_leases WHERE id IN (SELECT id FROM sync_leases WHERE expires_at_ms<=?1 ORDER BY expires_at_ms,id LIMIT ?2)",params![now,remaining(tx,before) as i64])?;
     let projection_floor:i64=tx.query_row("SELECT MAX(projection_pressure_floor,COALESCE((SELECT seq FROM sync_leases WHERE expires_at_ms>?1 ORDER BY seq LIMIT 1),head)) FROM sync_state WHERE id=1",[now],|row|row.get(0))?;
     let retained_bytes=gc_versions(tx,projection_floor,remaining(tx,before),&mut progress)?;
-    let tombstones_pending=gc_tombstones(tx,floor,remaining(tx,before)/2,&mut progress)?;
+    progress.removed_counter_rows=super::device_thread::gc(tx,remaining(tx,before))?;
+    let tombstones_pending=gc_tombstones(tx,floor,remaining(tx,before)/2,progress.removed_projection_versions>0,&mut progress)?;
     tx.execute("UPDATE sync_state SET floor=MAX(floor,?1),total_bytes=total_bytes-?2,retained_version_bytes=MAX(0,retained_version_bytes-?3) WHERE id=1 AND (floor<?1 OR ?2<>0 OR ?3<>0)",params![floor,bytes,retained_bytes])?;
     progress.changed_rows=tx.total_changes()-before;
     progress.pending=tombstones_pending || tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM sync_journal WHERE seq<=?1)
          OR EXISTS(SELECT 1 FROM sync_revisions WHERE deleted=1 AND seq<=?1)
          OR EXISTS(SELECT 1 FROM sync_leases WHERE expires_at_ms<=?2)
-         OR EXISTS(SELECT 1 FROM sync_projection_versions WHERE to_seq<=?3)",
+         OR EXISTS(SELECT 1 FROM sync_projection_versions WHERE to_seq<=?3)
+         OR EXISTS(SELECT 1 FROM device_attention_gc)",
          params![floor,now,projection_floor],|row|row.get::<_,bool>(0))?;
     Ok(progress)
 }
@@ -142,9 +148,14 @@ fn gc_versions(tx:&Transaction<'_>,floor:i64,limit:usize,progress:&mut GcProgres
     Ok(bytes)
 }
 
-fn gc_tombstones(tx:&Transaction<'_>,floor:i64,limit:usize,progress:&mut GcProgress)->Result<bool,StoreError> {
+fn gc_tombstones(tx:&Transaction<'_>,floor:i64,limit:usize,rescan:bool,progress:&mut GcProgress)->Result<bool,StoreError> {
     let (seq,kind,key):(i64,String,String)=tx.query_row("SELECT gc_projection_seq,gc_projection_kind,gc_projection_key FROM sync_state WHERE id=1",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
-    if limit==0 {return tombstones_after(tx,floor,seq,&kind,&key);}
+    let after=tombstones_after(tx,floor,seq,&kind,&key)?;
+    if !after && rescan {
+        tx.execute("UPDATE sync_state SET gc_projection_seq=0,gc_projection_kind='',gc_projection_key='' WHERE id=1",[])?;
+        return tombstones_after(tx,floor,0,"","");
+    }
+    if limit==0 {return Ok(after);}
     let rows=tx.prepare("SELECT from_seq,kind,key FROM sync_projection WHERE deleted=1 AND (from_seq,kind,key)>(?1,?2,?3) AND from_seq<=?4 ORDER BY from_seq,kind,key LIMIT ?5")?
         .query_map(params![seq,kind,key,floor,limit as i64],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
     for (_,kind,key) in &rows {

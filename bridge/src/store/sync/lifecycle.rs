@@ -14,7 +14,7 @@ impl StoreWriter {
         Ok(self.connection().prepare("SELECT kind,key,generation FROM sync_dirty WHERE kind IN ('registry','project','project_source','workspace','workspace_directory') ORDER BY kind,key")?
             .query_map([],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?.collect::<Result<Vec<_>,_>>()?)
     }
-    pub fn reconcile_device_registry(&self,generation:i64,rows:&BTreeMap<Entity,Value>,projects:&BTreeMap<String,String>,_markers:&[(String,String,i64)])->Result<(),SyncError> {
+    pub fn reconcile_device_registry(&self,generation:i64,rows:&BTreeMap<Entity,Value>,projects:&BTreeMap<String,String>,markers:&[(String,String,i64)])->Result<(),SyncError> {
         self.sync_transaction(|tx,batch| {
             let held:Option<i64>=tx.query_row("SELECT generation FROM sync_dirty WHERE kind='registry' AND key='lifecycle'",[],|row|row.get(0)).optional()?;
             if held!=Some(generation) {return Err(super::invalid("stale device registry generation"));}
@@ -28,10 +28,10 @@ impl StoreWriter {
             }
             for (entity,row) in rows {super::stage_device(tx,batch,entity.clone(),Some(row.clone()))?;}
             reconcile_project_ids(tx,projects)?;
-            tx.execute("DELETE FROM sync_dirty WHERE kind='registry' AND key='lifecycle' AND generation=?1",[generation])?;
-            // Startup owns these durable registry families, including markers
-            // left by an older process immediately before a crash.
-            tx.execute("DELETE FROM sync_dirty WHERE kind IN ('project','project_source','workspace','workspace_directory')",[])?;
+            reconcile_workspace_roots(tx,rows)?;
+            for (kind,key,expected) in markers {
+                tx.execute("DELETE FROM sync_dirty WHERE kind=?1 AND key=?2 AND generation=?3",params![kind,key,expected])?;
+            }
             Ok(())
         })?;
         Ok(())
@@ -50,5 +50,25 @@ fn reconcile_project_ids(tx:&rusqlite::Transaction<'_>,projects:&BTreeMap<String
         tx.execute("DELETE FROM device_project_ids WHERE path=?1",[path])?;
         super::touch_device_project(tx,path)?;
     }
+    Ok(())
+}
+
+fn reconcile_workspace_roots(tx:&rusqlite::Transaction<'_>,rows:&BTreeMap<Entity,Value>)->Result<(),crate::store::StoreError> {
+    let roots=rows.iter().filter(|(entity,_)|entity.kind=="workspace").filter_map(|(entity,row)|row["root"].as_str().map(|root|(root.to_owned(),entity.key.clone()))).collect::<BTreeMap<_,_>>();
+    let previous=tx.prepare("SELECT root,workspace_id FROM device_workspace_roots")?.query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?.collect::<Result<BTreeMap<_,_>,_>>()?;
+    for (root,id) in &roots {
+        if previous.get(root)!=Some(id) {
+            tx.execute("INSERT INTO device_workspace_roots VALUES(?1,?2) ON CONFLICT(root) DO UPDATE SET workspace_id=?2",params![root,id])?;
+            touch_root(tx,root)?;
+        }
+    }
+    for root in previous.keys().filter(|root|!roots.contains_key(*root)) {
+        tx.execute("DELETE FROM device_workspace_roots WHERE root=?1",[root])?;touch_root(tx,root)?;
+    }
+    Ok(())
+}
+fn touch_root(tx:&rusqlite::Transaction<'_>,root:&str)->Result<(),crate::store::StoreError> {
+    let owners=tx.prepare("SELECT owner_id FROM device_owner_projects WHERE workspace_path=?1")?.query_map([root],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
+    for owner in owners {super::touch_device_owner(tx,&owner)?;super::device_families::touch_retained(tx,"owner",&owner)?;}
     Ok(())
 }

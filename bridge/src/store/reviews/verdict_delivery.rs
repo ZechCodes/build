@@ -301,6 +301,7 @@ impl Store {
                 Some((status, _)) if status == "queued" => {
                     let changed = tx.execute("UPDATE operations SET status='delivered',execution_error='Recipient removed before verdict handoff',updated_at=?2 WHERE operation_id=?1 AND status='queued'", params![expected_operation_id,now_rfc3339()])?;
                     if changed == 0 { return Ok(false); }
+                    touch_device_operation(tx,expected_operation_id)?;
                 }
                 Some((status, Some(_))) if status == "delivered" => {}
                 _ => return Ok(false),
@@ -441,6 +442,7 @@ fn retire_superseded_retry(tx: &Transaction, operation: &str) -> Result<(), Stor
         return Err(invalid("a claimed verdict operation cannot be replaced"));
     }
     tx.execute("UPDATE operations SET status='delivered',execution_error='Superseded verdict retried as context only',updated_at=?2 WHERE operation_id=?1 AND status='queued'",params![operation,now_rfc3339()])?;
+    touch_device_operation(tx,operation)?;
     Ok(())
 }
 
@@ -533,3 +535,9 @@ fn invalid(reason: &str) -> StoreError {
 
 #[cfg(test)]
 mod tests;
+
+fn touch_device_operation(tx:&Transaction<'_>,operation:&str)->Result<(),StoreError> {
+    let conversation:Option<String>=tx.query_row("SELECT conversation_id FROM operations WHERE operation_id=?1",[operation],|row|row.get(0)).optional()?;
+    if let Some(conversation)=conversation {crate::store::sync::touch_device_conversation(tx,&conversation)?;}
+    Ok(())
+}

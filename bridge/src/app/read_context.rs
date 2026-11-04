@@ -45,6 +45,7 @@ pub(in crate::app) struct ReadService {
     context: ReadContextSlot,
     admission: Option<Arc<crate::update::AdmissionGate>>,
     writer: Option<crate::store::StoreWriter>,
+    device_ready: bool,
 }
 
 impl AppState {
@@ -205,6 +206,7 @@ impl AppState {
             context: Arc::clone(&self.read_context),
             admission: self.update_admission(),
             writer: self.store.as_ref().map(crate::store::Store::writer),
+            device_ready: self.snapshot_projection_initialized(),
         }
     }
 }

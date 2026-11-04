@@ -642,12 +642,15 @@ impl AppState {
         context: Option<&crate::execution::CallContext>,
     ) -> (Result<Value, ApiError>, Option<DeferredJob>) {
         let queued_before = self.delivery_queue.checkpoint();
+        self.device_lifecycle_holds += 1;
         let outcome = self.route(method, params, context);
+        self.device_lifecycle_holds -= 1;
         if outcome.is_err() {
             self.drop_turns_queued_since(queued_before);
-            self.settle_device_lifecycle();
         }
-        match self.take_deferred() {
+        let deferred = self.take_deferred();
+        self.settle_device_lifecycle();
+        match deferred {
             // Nothing is settled until the git work returns, so the stamp waits
             // for `apply_deferred` too.
             Some(deferred) => (outcome, Some(deferred)),
@@ -670,6 +673,7 @@ impl AppState {
         done: DeferredDone,
     ) -> Result<Value, String> {
         self.active_deferred_filesystem_jobs -= 1;
+        self.device_lifecycle_holds += 1;
         let DeferredDone {
             outcome: done,
             check,
@@ -692,7 +696,6 @@ impl AppState {
             DeferredOutcome::Read(result) => result,
             DeferredOutcome::Watch(reply) => Ok(reply),
         };
-        self.settle_device_lifecycle();
         match &applied {
             Ok(result) => {
                 if self.deferred_work.is_none() {
@@ -710,6 +713,8 @@ impl AppState {
             }
             Err(_) => self.drop_turns_queued_since(queued_before),
         }
+        self.device_lifecycle_holds -= 1;
+        self.settle_device_lifecycle();
         // LAST, and deliberately after the write-back: the git ran and the
         // state it moved is written down whatever shape the value took, so
         // only the reply is refused. A mismatch is this bridge's own bug —
@@ -1020,6 +1025,10 @@ impl AppState {
             if let Err(error)=self.mark_device_lifecycle_dirty() {eprintln!("device sync registry observation: {error}");}
         }
         self.settle_device_lifecycle();
+        self.note_board_lists_while_reconciling(lists);
+    }
+
+    pub(in crate::app) fn note_board_lists_while_reconciling(&self, lists: crate::changes::BoardLists) {
         self.publish_read_metadata();
         self.changes.note_board_lists(lists);
         // An entity may have arrived with a checkout or left with one: the

@@ -10,23 +10,27 @@ impl AppState {
             store.writer().mark_sync_dirty("registry","lifecycle",crate::store::sync::now_ms())
                 .map_err(|error|format!("could not persist sync marker: {error}"))?;
         }
+        self.device_lifecycle_dirty.set(true);
         Ok(())
     }
     pub(in crate::app) fn reconcile_device_lifecycle(&self)->Result<(),String> {
-        if self.deferred_work.is_some() || self.active_deferred_filesystem_jobs>0 || self.project_deletion_in_progress {return Ok(());}
+        if !self.device_lifecycle_dirty.get() || self.device_lifecycle_holds>0 || self.deferred_work.is_some() || self.active_deferred_filesystem_jobs>0 || self.project_deletion_in_progress {return Ok(());}
         let Some(store)=&self.store else {return Ok(());};
         let writer=store.writer();
         let Some(generation)=writer.device_registry_generation().map_err(|error|error.to_string())? else {return Ok(());};
         let markers=writer.device_registry_markers().map_err(|error|error.to_string())?;
         let (rows,projects)=self.device_registry_rows()?;
-        writer.reconcile_device_registry(generation,&rows,&projects,&markers).map_err(|error|error.to_string())
+        writer.reconcile_device_registry(generation,&rows,&projects,&markers).map_err(|error|error.to_string())?;
+        self.device_lifecycle_dirty.set(false);
+        Ok(())
     }
     pub(in crate::app) fn settle_device_lifecycle(&self) {
         if let Err(error)=self.reconcile_device_lifecycle() {eprintln!("device sync reconciliation: {error}");}
     }
     pub(in crate::app) fn initialize_device_lifecycle(&self)->Result<(),String> {
         self.mark_device_lifecycle_dirty()?;
-        self.reconcile_device_lifecycle()
+        self.settle_device_lifecycle();
+        Ok(())
     }
     fn device_registry_rows(&self)->Result<RegistryRows,String> {
         let config=self.config_value(&self.projects_dir,self.default_harness,self.isolation);

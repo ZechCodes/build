@@ -10,8 +10,14 @@ pub const STAGED_LIFETIME_SECONDS: i64 = 24 * 60 * 60;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "scope", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GrantScope {
-    Agent { agent_id: String, conversation_id: String, generation: String },
-    Project { project_id: String },
+    Agent {
+        agent_id: String,
+        conversation_id: String,
+        generation: String,
+    },
+    Project {
+        project_id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,7 +69,9 @@ impl SecretValue {
         Ok(value)
     }
 
-    pub fn as_bytes(&self) -> &[u8] { &self.0 }
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 impl Drop for SecretValue {
@@ -76,22 +84,40 @@ impl Drop for SecretValue {
 pub fn validate_id(id: &str) -> Result<()> {
     let raw = id.strip_prefix("sec_").ok_or(SecretError::Invalid)?;
     let uuid = uuid::Uuid::parse_str(raw).map_err(|_| SecretError::Invalid)?;
-    if uuid.hyphenated().to_string() != raw { return Err(SecretError::Invalid); }
+    if uuid.hyphenated().to_string() != raw {
+        return Err(SecretError::Invalid);
+    }
     Ok(())
 }
 
 impl SecretContext {
     pub fn validate(&self) -> Result<()> {
         validate_id(&self.id)?;
-        for text in [&self.device_id, &self.creator, &self.name, &self.stage.owner_id,
-            &self.stage.conversation_id, &self.stage.generation] {
+        for text in [
+            &self.device_id,
+            &self.creator,
+            &self.name,
+            &self.stage.owner_id,
+            &self.stage.conversation_id,
+            &self.stage.generation,
+        ] {
             validate_text(text)?;
         }
-        if let Some(draft) = &self.stage.draft_id { validate_text(draft)?; }
-        if self.ttl_seconds.is_some_and(|ttl| ttl <= 0) { return Err(SecretError::Invalid); }
+        if let Some(draft) = &self.stage.draft_id {
+            validate_text(draft)?;
+        }
+        if self.ttl_seconds.is_some_and(|ttl| ttl <= 0) {
+            return Err(SecretError::Invalid);
+        }
         match &self.grant {
-            GrantScope::Agent { agent_id, conversation_id, generation } => {
-                for text in [agent_id, conversation_id, generation] { validate_text(text)?; }
+            GrantScope::Agent {
+                agent_id,
+                conversation_id,
+                generation,
+            } => {
+                for text in [agent_id, conversation_id, generation] {
+                    validate_text(text)?;
+                }
             }
             GrantScope::Project { project_id } => validate_text(project_id)?,
         }
@@ -100,6 +126,8 @@ impl SecretContext {
 }
 
 fn validate_text(text: &str) -> Result<()> {
-    if text.is_empty() || text.len() > 128 || text.contains('\0') { return Err(SecretError::Invalid); }
+    if text.is_empty() || text.len() > 128 || text.contains('\0') {
+        return Err(SecretError::Invalid);
+    }
     Ok(())
 }

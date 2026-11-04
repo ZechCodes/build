@@ -27,3 +27,7 @@ mod lifecycle;
 pub use lifecycle::*;
 #[cfg(test)]
 mod backup_tests;
+mod clock;
+pub use clock::Clock;
+mod sweeper;
+pub use sweeper::SweeperHandle;

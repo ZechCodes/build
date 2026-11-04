@@ -1,4 +1,315 @@
-use super::{validate_id, Result, SecretContext, SecretError, SecretValue};
+//! Encrypted files behind a pinned private directory descriptor. Plaintext is
+//! never passed to the filesystem; all leaf names are generated identifiers.
+use super::{validate_id, Result, SecretContext, SecretError, SecretValue, MAX_VALUE_BYTES};
+use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
+use aes_gcm::{Aes256Gcm, Nonce};
+use dryoc::types::{Bytes, MutBytes, NewByteArray, StackByteArray};
+use rustix::fd::OwnedFd;
+use rustix::fs::{self, AtFlags, FileType, Mode, OFlags};
+use sha2::{Digest, Sha256};
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::Path;
+
+const KEY_NAME: &str = "vault.key";
+const MAGIC: &[u8] = b"BUILDSEC\x01";
+const KEY_ID_BYTES: usize = 16;
+const NONCE_BYTES: usize = 12;
+const HEADER_BYTES: usize = MAGIC.len() + KEY_ID_BYTES + NONCE_BYTES;
+const TAG_BYTES: usize = 16;
+const MAX_FILE_BYTES: usize = HEADER_BYTES + TAG_BYTES + MAX_VALUE_BYTES;
+const READ_FLAGS: OFlags = OFlags::RDONLY
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC)
+    .union(OFlags::NONBLOCK);
+
+/// Neither the key nor plaintext implements ordinary Debug/serialization at
+/// this boundary. The key's backing storage zeroizes on drop.
+pub struct Vault {
+    directory: File,
+    key: StackByteArray<32>,
+    key_id: [u8; KEY_ID_BYTES],
+}
+
+impl Vault {
+    /// A pre-existing private directory never receives a replacement key,
+    /// including after an interrupted initialization. Recovery is explicit.
+    pub fn open(state_root: &Path, has_records: bool) -> Result<Self> {
+        let root = io(fs::open(
+            state_root,
+            READ_FLAGS | OFlags::DIRECTORY,
+            Mode::empty(),
+        ))?;
+        let (directory, created) = open_directory(&root, has_records)?;
+        let key = if created {
+            let key = StackByteArray::<32>::gen();
+            publish(&directory, KEY_NAME, key.as_slice(), true)?;
+            key
+        } else {
+            load_key(&directory)?
+        };
+        let digest = Sha256::digest(key.as_slice());
+        let mut key_id = [0; KEY_ID_BYTES];
+        key_id.copy_from_slice(&digest[..KEY_ID_BYTES]);
+        Ok(Self {
+            directory,
+            key,
+            key_id,
+        })
+    }
+
+    pub fn write(&self, context: &SecretContext, value: &SecretValue) -> Result<()> {
+        context.validate()?;
+        self.validate_key()?;
+        validate_existing_blob(&self.directory, &context.id)?;
+        let cipher = self.cipher()?;
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let mut encrypted = self.header(nonce.as_slice());
+        let aad = authenticated_context(context, &encrypted)?;
+        let body = cipher
+            .encrypt(
+                &nonce,
+                Payload {
+                    msg: value.as_bytes(),
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| SecretError::Unavailable)?;
+        encrypted.extend_from_slice(&body);
+        publish(&self.directory, &context.id, &encrypted, false)
+    }
+
+    pub fn read(&self, context: &SecretContext) -> Result<SecretValue> {
+        context.validate()?;
+        self.validate_key()?;
+        let file = private_file(&self.directory, &context.id)?;
+        let size = io(fs::fstat(&file))?.st_size;
+        if size < (HEADER_BYTES + TAG_BYTES) as i64 || size > MAX_FILE_BYTES as i64 {
+            return Err(SecretError::Unavailable);
+        }
+        // Both the stat bound and the read bound matter: a concurrent file
+        // enlargement cannot turn a metadata-size check into unbounded input.
+        let mut encrypted = Vec::with_capacity(size as usize);
+        file.take((MAX_FILE_BYTES + 1) as u64)
+            .read_to_end(&mut encrypted)?;
+        self.validate_header(&encrypted)?;
+        let nonce = Nonce::from_slice(&encrypted[HEADER_BYTES - NONCE_BYTES..HEADER_BYTES]);
+        let aad = authenticated_context(context, &encrypted[..HEADER_BYTES])?;
+        let plaintext = self
+            .cipher()?
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: &encrypted[HEADER_BYTES..],
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| SecretError::Unavailable)?;
+        SecretValue::new(plaintext)
+    }
+
+    pub fn delete(&self, id: &str) -> Result<()> {
+        validate_id(id)?;
+        self.delete_entry(id)
+    }
+
+    /// Does not follow links, even for a damaged/orphaned entry. A directory
+    /// cannot be unlinked here; callers retain its tombstone and retry cleanup.
+    pub fn delete_entry(&self, name: &str) -> Result<()> {
+        validate_cleanup_name(name)?;
+        validate_private(&self.directory, FileType::Directory, 0o700)?;
+        match fs::unlinkat(&self.directory, name, AtFlags::empty()) {
+            Ok(()) => self.directory.sync_all().map_err(SecretError::Io),
+            Err(rustix::io::Errno::NOENT) => Ok(()),
+            Err(error) => Err(SecretError::Io(error.into())),
+        }
+    }
+
+    /// Only the vault's generated blob and temporary-file namespaces are
+    /// returned. Key files are never candidates for lifecycle deletion.
+    pub fn entries(&self) -> Result<Vec<String>> {
+        validate_private(&self.directory, FileType::Directory, 0o700)?;
+        let mut entries = io(fs::Dir::read_from(&self.directory))?;
+        let mut names = Vec::new();
+        while let Some(entry) = entries.read() {
+            let entry = io(entry)?;
+            if let Ok(name) = entry.file_name().to_str() {
+                if validate_cleanup_name(name).is_ok() {
+                    names.push(name.to_owned());
+                }
+            }
+        }
+        Ok(names)
+    }
+
+    fn cipher(&self) -> Result<Aes256Gcm> {
+        Aes256Gcm::new_from_slice(self.key.as_slice()).map_err(|_| SecretError::Unavailable)
+    }
+
+    fn header(&self, nonce: &[u8]) -> Vec<u8> {
+        let mut header = Vec::with_capacity(HEADER_BYTES);
+        header.extend_from_slice(MAGIC);
+        header.extend_from_slice(&self.key_id);
+        header.extend_from_slice(nonce);
+        header
+    }
+
+    fn validate_header(&self, bytes: &[u8]) -> Result<()> {
+        if bytes.len() < HEADER_BYTES + TAG_BYTES || bytes.len() > MAX_FILE_BYTES {
+            return Err(SecretError::Unavailable);
+        }
+        if !bytes.starts_with(MAGIC)
+            || bytes[MAGIC.len()..MAGIC.len() + KEY_ID_BYTES] != self.key_id
+        {
+            return Err(SecretError::Unavailable);
+        }
+        Ok(())
+    }
+
+    fn validate_key(&self) -> Result<()> {
+        validate_private(&self.directory, FileType::Directory, 0o700)?;
+        // A live handle also fails closed if its key disappears or changes.
+        // Never replace a key simply because the cached key is still usable.
+        if load_key(&self.directory)?.as_slice() != self.key.as_slice() {
+            return Err(SecretError::Unavailable);
+        }
+        Ok(())
+    }
+}
+
+fn open_directory(root: &OwnedFd, has_records: bool) -> Result<(File, bool)> {
+    let created = if has_records {
+        false
+    } else {
+        match fs::mkdirat(root, "secrets", Mode::from_bits_truncate(0o700)) {
+            Ok(()) => {
+                io(fs::fsync(root))?;
+                true
+            }
+            Err(rustix::io::Errno::EXIST) => false,
+            Err(error) => return Err(SecretError::Io(error.into())),
+        }
+    };
+    let directory = File::from(io(fs::openat(
+        root,
+        "secrets",
+        READ_FLAGS | OFlags::DIRECTORY,
+        Mode::empty(),
+    ))?);
+    validate_private(&directory, FileType::Directory, 0o700)?;
+    Ok((directory, created))
+}
+
+fn load_key(directory: &File) -> Result<StackByteArray<32>> {
+    let mut file = private_file(directory, KEY_NAME)?;
+    if io(fs::fstat(&file))?.st_size != 32 {
+        return Err(SecretError::Unavailable);
+    }
+    let mut key = StackByteArray::<32>::default();
+    file.read_exact(key.as_mut_slice())?;
+    Ok(key)
+}
+
+fn private_file(directory: &File, name: &str) -> Result<File> {
+    let file = File::from(io(fs::openat(directory, name, READ_FLAGS, Mode::empty()))?);
+    validate_private(&file, FileType::RegularFile, 0o600)?;
+    Ok(file)
+}
+
+fn validate_private(file: &File, file_type: FileType, permissions: u32) -> Result<()> {
+    let stat = io(fs::fstat(file))?;
+    // SAFETY: geteuid has no arguments or memory preconditions.
+    let owner = unsafe { libc::geteuid() };
+    if FileType::from_raw_mode(stat.st_mode) != file_type
+        || stat.st_uid != owner
+        || stat.st_mode & 0o7777 != permissions
+    {
+        return Err(SecretError::Unavailable);
+    }
+    if file_type == FileType::RegularFile && stat.st_nlink != 1 {
+        return Err(SecretError::Unavailable);
+    }
+    Ok(())
+}
+
+fn validate_existing_blob(directory: &File, name: &str) -> Result<()> {
+    match private_file(directory, name) {
+        Ok(_) => Err(SecretError::Conflict),
+        Err(SecretError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn authenticated_context(context: &SecretContext, header: &[u8]) -> Result<Vec<u8>> {
+    let mut aad = b"build.device.secret.vault.v1\0".to_vec();
+    aad.extend_from_slice(header);
+    aad.extend(serde_json::to_vec(context).map_err(|_| SecretError::Invalid)?);
+    Ok(aad)
+}
+
+/// `bytes` contains only ciphertext (or the dedicated randomly generated key),
+/// never a user's plaintext value. Temporary files stay in the private dir.
+fn publish(directory: &File, name: &str, bytes: &[u8], key: bool) -> Result<()> {
+    let prefix = if key { ".vault-key-" } else { ".sec-tmp-" };
+    let temporary = format!("{prefix}{}", uuid::Uuid::new_v4());
+    let descriptor = io(fs::openat(
+        directory,
+        temporary.as_str(),
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_bits_truncate(0o600),
+    ))?;
+    let result = write_and_rename(directory, File::from(descriptor), &temporary, name, bytes);
+    if result.is_err() {
+        let _ = fs::unlinkat(directory, temporary.as_str(), AtFlags::empty());
+    }
+    result
+}
+
+fn write_and_rename(
+    directory: &File,
+    mut file: File,
+    temporary: &str,
+    name: &str,
+    bytes: &[u8],
+) -> Result<()> {
+    validate_private(&file, FileType::RegularFile, 0o600)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    // NOREPLACE fences another service instance publishing the same id
+    // between our initial existence check and this atomic publication.
+    match fs::renameat_with(
+        directory,
+        temporary,
+        directory,
+        name,
+        fs::RenameFlags::NOREPLACE,
+    ) {
+        Ok(()) => {}
+        Err(rustix::io::Errno::EXIST) => return Err(SecretError::Conflict),
+        Err(error) => return Err(SecretError::Io(error.into())),
+    }
+    directory.sync_all()?;
+    Ok(())
+}
+
+fn validate_cleanup_name(name: &str) -> Result<()> {
+    if validate_id(name).is_ok() {
+        return Ok(());
+    }
+    let raw = name
+        .strip_prefix(".sec-tmp-")
+        .or_else(|| name.strip_prefix(".vault-key-"))
+        .ok_or(SecretError::Invalid)?;
+    let uuid = uuid::Uuid::parse_str(raw).map_err(|_| SecretError::Invalid)?;
+    if uuid.hyphenated().to_string() != raw {
+        return Err(SecretError::Invalid);
+    }
+    Ok(())
+}
+
+fn io<T>(result: rustix::io::Result<T>) -> Result<T> {
+    result.map_err(|error| SecretError::Io(error.into()))
+}
 
 #[cfg(test)]
 #[path = "vault_tests.rs"]

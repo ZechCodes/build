@@ -290,7 +290,8 @@ pub enum StoreError {
 /// 20 adds transactional task summary projections.
 /// 21 adds durable review verdict and revision delivery journals.
 /// 22 adds the separate scoped sync journal and retained stream floors.
-pub const SCHEMA_VERSION: i64 = 23;
+/// 24 adds device-local secret metadata, attachment bindings and clock high-water.
+pub const SCHEMA_VERSION: i64 = 24;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -418,6 +419,7 @@ impl Store {
         retention::upgrade_thread_retention_indexes(&conn)?;
         retention::upgrade_agent_conversation_index(&conn)?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(secrets::SCHEMA)?;
         ensure_operation_receipt_columns(&conn)?;
         retention::ensure_upload_retention_columns(&conn)?;
         let journal_incarnation = mutations::initialize(&conn)?;

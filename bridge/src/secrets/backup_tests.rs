@@ -43,7 +43,9 @@ fn database_backup_preserves_metadata_without_copying_device_vault() {
     assert_eq!(files, ["build.db"]);
     let database_bytes = fs::read(database).unwrap();
     assert!(!database_bytes.windows(key.len()).any(|bytes| bytes == key));
-    assert!(!database_bytes.windows(blob.len()).any(|bytes| bytes == blob));
+    assert!(!database_bytes
+        .windows(blob.len())
+        .any(|bytes| bytes == blob));
     assert_eq!(fs::read(vault.join("vault.key")).unwrap(), key);
     assert_eq!(fs::read(vault.join(secret_id)).unwrap(), blob);
 }

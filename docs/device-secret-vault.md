@@ -25,6 +25,15 @@ confirmed `NotFound` for the key or its directory permits `key_lost` retirement
 and fresh-key creation, after all old grants are durably retired. Old contexts
 remain unavailable after that missing-key recovery.
 
+New-key initialization records its intended key identifier in SQLite with a
+FULL commit before publishing `vault.key`. Registration then atomically promotes
+that pending identifier to active. A crash or failure after publication leaves
+enough durable intent for startup to recognize that exact key, retry file and
+directory fsync, and finish registration. A pending identifier without a key
+allows a fresh attempt after the retirement barrier. No key bytes are stored in
+SQLite. A pre-existing key without matching active or pending identity remains
+foreign and is never adopted; corrupt present keys still fail closed unchanged.
+
 Every other fault preserves the key, blobs and grants exactly: corrupt or
 substituted keys, unsafe modes/ownership, extra hard links, EIO and unknown or
 malformed expected identifiers disable only secret access. Repairing the

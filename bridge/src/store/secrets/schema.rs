@@ -44,7 +44,8 @@ CREATE INDEX IF NOT EXISTS secrets_unretired
     ON secret_records(id) WHERE revoked_at IS NULL;
 CREATE TABLE IF NOT EXISTS secret_vault_state (
     singleton INTEGER PRIMARY KEY CHECK (singleton=1),
-    active_key_id TEXT
+    active_key_id TEXT,
+    pending_key_id TEXT CHECK (pending_key_id IS NULL OR active_key_id IS NULL)
 );
 CREATE TABLE IF NOT EXISTS secret_clock (
     singleton INTEGER PRIMARY KEY CHECK (singleton=1),
@@ -69,6 +70,18 @@ pub(in crate::store) fn initialize(connection: &rusqlite::Connection) -> rusqlit
         .collect::<rusqlite::Result<Vec<_>>>()?;
     if !columns.iter().any(|column| column == "revocation_reason") {
         connection.execute_batch("ALTER TABLE secret_records ADD COLUMN revocation_reason TEXT CHECK (revocation_reason IS NULL OR revocation_reason IN ('key_lost','revoked','expired'))")?;
+    }
+    ensure_pending_key_column(connection)?;
+    Ok(())
+}
+
+fn ensure_pending_key_column(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let columns = connection
+        .prepare("PRAGMA table_info(secret_vault_state)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !columns.iter().any(|column| column == "pending_key_id") {
+        connection.execute_batch("ALTER TABLE secret_vault_state ADD COLUMN pending_key_id TEXT CHECK (pending_key_id IS NULL OR active_key_id IS NULL)")?;
     }
     Ok(())
 }

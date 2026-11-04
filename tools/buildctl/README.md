@@ -275,7 +275,10 @@ If a forward fix is unsuitable, arrange an operator-reviewed metadata-only
 restore to a newly provisioned, clean device-state destination using the
 supported backup/migration procedure, with the vault excluded. This CLI has no
 arbitrary-destination or vault-retirement option; coordinate that procedure
-before changing state paths or retiring a vault. Normal Build backups do not
+before changing state paths or retiring a vault. If startup refuses a foreign
+or unregistered key, stop the bridge, preserve the vault and metadata together,
+and arrange an operator-reviewed restore of matching state or the fresh-state
+procedure above; never delete the key to force startup. Normal Build backups do not
 contain secret values; a user-managed value backup is a separate recovery input.
 
 When neither the target nor the backup has a vault entry, to roll back first

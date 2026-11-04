@@ -17,8 +17,7 @@ where
     let unavailable = writer.secrets_unretired_count()?;
     match opener(root, true) {
         Ok(vault) => {
-            if matches!(writer.secret_vault_key_id(), Ok(Some(expected)) if expected == vault.key_id())
-            {
+            if let Some(vault) = resume_registered_key(vault, writer) {
                 return Ok(Some(vault));
             }
         }
@@ -49,8 +48,29 @@ fn initialize_missing_key(root: &Path, writer: &StoreWriter, now: i64) -> Option
         return None;
     }
     std::fs::create_dir_all(root).ok()?;
-    let vault = Vault::reinitialize_after_retirement(root).ok()?;
-    writer.secrets_set_vault_key_id(&vault.key_id()).ok()?;
+    let vault = Vault::prepare_after_retirement(root).ok()?;
+    writer.secrets_prepare_vault_key(&vault.key_id()).ok()?;
+    vault.publish_key().ok()?;
+    activate_pending_key(vault, writer)
+}
+
+fn resume_registered_key(vault: Vault, writer: &StoreWriter) -> Option<Vault> {
+    if writer.secret_vault_key_id().ok()? == Some(vault.key_id()) {
+        return Some(vault);
+    }
+    if writer.secret_vault_pending_key_id().ok()? != Some(vault.key_id())
+        || writer.secrets_unretired_count().ok()? != 0
+    {
+        return None;
+    }
+    activate_pending_key(vault, writer)
+}
+
+fn activate_pending_key(vault: Vault, writer: &StoreWriter) -> Option<Vault> {
+    // A previous attempt may have failed after rename but before directory
+    // fsync. Retry file AND directory durability before registering this key.
+    vault.sync_key_publication().ok()?;
+    writer.secrets_finish_vault_key(&vault.key_id()).ok()?;
     Some(vault)
 }
 

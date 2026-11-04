@@ -83,11 +83,38 @@ impl Vault {
     /// unlinked or replaced. Strict `open` never invokes recovery. Interrupted
     /// initialization can retry only while the key remains absent.
     pub fn reinitialize_after_retirement(state_root: &Path) -> Result<Self> {
+        let candidate = Self::prepare_after_retirement(state_root)?;
+        candidate.publish_key()?;
+        Ok(candidate)
+    }
+
+    /// Trusted caller has durably retired all grants. This creates no key
+    /// file: persist this candidate's pending ID before calling publish_key.
+    pub(super) fn prepare_after_retirement(state_root: &Path) -> Result<Self> {
         let root = open_state_root(state_root)?;
         let (directory, _) = open_directory(&root, false)?;
         erase_retired_files(&directory)?;
-        let key = create_key(&directory)?;
-        Ok(Self::from_key(directory, key))
+        Ok(Self::from_key(directory, StackByteArray::<32>::gen()))
+    }
+
+    pub(super) fn publish_key(&self) -> Result<()> {
+        self.publish_key_with_sync(File::sync_all)
+    }
+
+    /// The injected directory sync executes after the actual atomic rename.
+    /// Production always supplies File::sync_all; tests can fail this boundary.
+    pub(super) fn publish_key_with_sync<F>(&self, sync: F) -> Result<()>
+    where
+        F: FnOnce(&File) -> std::io::Result<()>,
+    {
+        publish_with_sync(&self.directory, KEY_NAME, self.key.as_slice(), true, sync)
+    }
+
+    pub(super) fn sync_key_publication(&self) -> Result<()> {
+        self.validate_key()?;
+        private_file(&self.directory, KEY_NAME)?.sync_all()?;
+        self.directory.sync_all()?;
+        Ok(())
     }
 
     fn from_key(directory: File, key: StackByteArray<32>) -> Self {
@@ -348,6 +375,19 @@ fn authenticated_context(context: &SecretContext, header: &[u8]) -> Result<Vec<u
 /// `bytes` contains only ciphertext (or the dedicated randomly generated key),
 /// never a user's plaintext value. Temporary files stay in the private dir.
 fn publish(directory: &File, name: &str, bytes: &[u8], key: bool) -> Result<()> {
+    publish_with_sync(directory, name, bytes, key, File::sync_all)
+}
+
+fn publish_with_sync<F>(
+    directory: &File,
+    name: &str,
+    bytes: &[u8],
+    key: bool,
+    sync: F,
+) -> Result<()>
+where
+    F: FnOnce(&File) -> std::io::Result<()>,
+{
     let prefix = if key { ".vault-key-" } else { ".sec-tmp-" };
     let temporary = format!("{prefix}{}", uuid::Uuid::new_v4());
     let descriptor = io(fs::openat(
@@ -356,20 +396,31 @@ fn publish(directory: &File, name: &str, bytes: &[u8], key: bool) -> Result<()> 
         OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::from_bits_truncate(0o600),
     ))?;
-    let result = write_and_rename(directory, File::from(descriptor), &temporary, name, bytes);
+    let result = write_and_rename(
+        directory,
+        File::from(descriptor),
+        &temporary,
+        name,
+        bytes,
+        sync,
+    );
     if result.is_err() {
         let _ = fs::unlinkat(directory, temporary.as_str(), AtFlags::empty());
     }
     result
 }
 
-fn write_and_rename(
+fn write_and_rename<F>(
     directory: &File,
     mut file: File,
     temporary: &str,
     name: &str,
     bytes: &[u8],
-) -> Result<()> {
+    sync: F,
+) -> Result<()>
+where
+    F: FnOnce(&File) -> std::io::Result<()>,
+{
     validate_private(&file, FileType::RegularFile, 0o600)?;
     file.write_all(bytes)?;
     file.sync_all()?;
@@ -386,7 +437,7 @@ fn write_and_rename(
         Err(rustix::io::Errno::EXIST) => return Err(SecretError::Conflict),
         Err(error) => return Err(SecretError::Io(error.into())),
     }
-    directory.sync_all()?;
+    sync(directory)?;
     Ok(())
 }
 

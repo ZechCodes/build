@@ -1177,9 +1177,13 @@ and creates a fresh key after FULL retirement. Corrupt/present keys, unsafe
 permissions or owners, hard links and I/O errors preserve keys, blobs and grants
 and close only secret access. A startup-sweep failure also disables only secrets.
 An active key identifier detects same-length substitution. Recovery uses a
-tested count-only diagnostic; metadata Debug redacts names, and expiry records
-reason `expired` independently from explicit `revoked`. See [device vault storage and
-lifetime](docs/device-secret-vault.md) for the file format, limits and clock
+FULL-committed pending key identifier before publishing a fresh key, then
+commits that identifier as active. Startup resumes only a matching pending key
+after retrying file and directory fsync; an unregistered foreign key remains
+unavailable. Pending initialization without a key can retry after the retirement
+barrier. Recovery uses a tested count-only diagnostic; metadata Debug redacts
+names, and expiry records reason `expired` independently from explicit `revoked`.
+See [device vault storage and lifetime](docs/device-secret-vault.md) for the file format, limits and clock
 policy. Release authority/audit and sealed upload validation belong to the
 subsequent slices and must precede any external exposure.
 

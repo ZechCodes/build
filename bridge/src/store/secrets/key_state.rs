@@ -3,10 +3,17 @@ use crate::secrets::{Result, SecretError};
 use crate::store::StoreWriter;
 use rusqlite::{params, Connection, OptionalExtension};
 
+type KeyState = (Option<String>, Option<String>);
+
 impl StoreWriter {
-    /// Identifier of the active vault key, never key material.
+    /// Identifier of the active vault key, never key material. Both markers
+    /// are validated together so malformed pending state cannot be ignored.
     pub fn secret_vault_key_id(&self) -> Result<Option<String>> {
-        key_id_in(&self.connection())
+        Ok(key_state_in(&self.connection())?.0)
+    }
+
+    pub fn secret_vault_pending_key_id(&self) -> Result<Option<String>> {
+        Ok(key_state_in(&self.connection())?.1)
     }
 
     pub fn secrets_unretired_count(&self) -> Result<usize> {
@@ -17,42 +24,88 @@ impl StoreWriter {
     pub fn secrets_set_vault_key_id(&self, key_id: &str) -> Result<()> {
         validate_key_id(key_id)?;
         durable(self, |tx| {
-            let previous = key_id_in(tx)?;
-            if previous.as_deref() != Some(key_id) && unretired_in(tx)? > 0 {
+            let (previous, pending) = key_state_in(tx)?;
+            if pending.is_some() || (previous.as_deref() != Some(key_id) && unretired_in(tx)? > 0) {
                 return Err(SecretError::Conflict);
             }
-            tx.execute("INSERT INTO secret_vault_state(singleton,active_key_id) VALUES (1,?1) ON CONFLICT(singleton) DO UPDATE SET active_key_id=excluded.active_key_id",[key_id])?;
+            tx.execute("INSERT INTO secret_vault_state(singleton,active_key_id,pending_key_id) VALUES (1,?1,NULL) ON CONFLICT(singleton) DO UPDATE SET active_key_id=excluded.active_key_id,pending_key_id=NULL",[key_id])?;
             Ok(())
         })
     }
 
-    /// The retirement barrier must commit before any vault key is replaced.
-    /// A failed write rolls back both all tombstones and the expected key ID.
+    /// FULL-sync intent must commit before any candidate key bytes are
+    /// published. Only a completed retirement barrier permits reservation.
+    pub fn secrets_prepare_vault_key(&self, key_id: &str) -> Result<()> {
+        validate_key_id(key_id)?;
+        durable(self, |tx| {
+            let (active, pending) = key_state_in(tx)?;
+            if active.is_some()
+                || pending.as_deref().is_some_and(|pending| pending != key_id)
+                || unretired_in(tx)? > 0
+            {
+                return Err(SecretError::Conflict);
+            }
+            let changed = tx.execute("INSERT INTO secret_vault_state(singleton,active_key_id,pending_key_id) VALUES (1,NULL,?1) ON CONFLICT(singleton) DO UPDATE SET active_key_id=NULL,pending_key_id=excluded.pending_key_id",[key_id])?;
+            if changed != 1 {
+                return Err(SecretError::Conflict);
+            }
+            Ok(())
+        })
+    }
+
+    /// Compare-and-swap a durably published pending identity into active state.
+    /// Publication and its file/directory fsync must precede this FULL commit.
+    pub fn secrets_finish_vault_key(&self, key_id: &str) -> Result<()> {
+        validate_key_id(key_id)?;
+        durable(self, |tx| {
+            let (active, pending) = key_state_in(tx)?;
+            if active.as_deref() == Some(key_id) && pending.is_none() {
+                return Ok(());
+            }
+            if active.is_some() || pending.as_deref() != Some(key_id) || unretired_in(tx)? > 0 {
+                return Err(SecretError::Conflict);
+            }
+            let changed = tx.execute("UPDATE secret_vault_state SET active_key_id=?1,pending_key_id=NULL WHERE singleton=1 AND active_key_id IS NULL AND pending_key_id=?1",[key_id])?;
+            if changed != 1 {
+                return Err(SecretError::Conflict);
+            }
+            Ok(())
+        })
+    }
+
+    /// The retirement barrier must commit before any new key is prepared.
+    /// Failures roll back tombstones and both key markers together.
     pub fn secrets_retire_key_lost(&self, now: i64) -> Result<usize> {
         if now < 0 {
             return Err(SecretError::Invalid);
         }
         durable(self, |tx| {
             let retired = tx.execute("UPDATE secret_records SET revoked_at=?1,revocation_reason='key_lost',revision=revision+1 WHERE revoked_at IS NULL",params![now])?;
-            tx.execute("INSERT INTO secret_vault_state(singleton,active_key_id) VALUES (1,NULL) ON CONFLICT(singleton) DO UPDATE SET active_key_id=NULL",[])?;
+            tx.execute("INSERT INTO secret_vault_state(singleton,active_key_id,pending_key_id) VALUES (1,NULL,NULL) ON CONFLICT(singleton) DO UPDATE SET active_key_id=NULL,pending_key_id=NULL",[])?;
             Ok(retired)
         })
     }
 }
 
-fn key_id_in(connection: &Connection) -> Result<Option<String>> {
-    let key_id: Option<String> = connection
+fn key_state_in(connection: &Connection) -> Result<KeyState> {
+    let (active, pending): KeyState = connection
         .query_row(
-            "SELECT active_key_id FROM secret_vault_state WHERE singleton=1",
+            "SELECT active_key_id,pending_key_id FROM secret_vault_state WHERE singleton=1",
             [],
-            |row| row.get::<_, Option<String>>(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
-        .flatten();
-    if let Some(key_id) = &key_id {
+        .unwrap_or_default();
+    for key_id in [active.as_deref(), pending.as_deref()]
+        .into_iter()
+        .flatten()
+    {
         validate_key_id(key_id).map_err(|_| SecretError::Unavailable)?;
     }
-    Ok(key_id)
+    if active.is_some() && pending.is_some() {
+        return Err(SecretError::Unavailable);
+    }
+    Ok((active, pending))
 }
 
 fn unretired_in(connection: &Connection) -> Result<usize> {

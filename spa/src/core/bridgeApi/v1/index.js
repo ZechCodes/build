@@ -170,6 +170,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     diffs: { perFile: names.has("diffs.perFile") },
     bodies: { pages: names.has("bodies.pages"), mediaRawPages: names.has("fs.mediaRawPages") },
     sync: {
+      device: names.has("sync.device"),
       projectTasks: names.has("sync.projectTasks"),
       task: names.has("sync.task"),
     },

@@ -211,7 +211,16 @@ async fn agent_and_conversation_writers_publish_current_rows_and_roster_deletion
 
     run.agents.clear();
     store.save_run(&run).unwrap();
-    assert!(device_rows(&store).await.is_empty());
+    let retained = device_rows(&store).await;
+    assert_eq!(
+        retained.len(),
+        1,
+        "only the durable retained session may survive roster deletion"
+    );
+    assert_eq!(retained[0]["kind"], "owner_session");
+    assert_eq!(retained[0]["row"]["owner_id"], run.id);
+    assert_eq!(retained[0]["row"]["project_id"], "proj-registry");
+    assert!(retained[0]["row"]["retained_last_activity_ms"].is_i64());
     let deletes: i64 = store
         .writer_for_test()
         .query_row(

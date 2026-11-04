@@ -15,9 +15,12 @@ const scopeKey = ({ deviceId, scope }) => JSON.stringify([deviceId, scope]);
 
 export function createScopedSyncRegistry({ channel, now = Date.now } = {}) {
   const owner = randomToken(), local = new Map(), remote = new Map(), listeners = new Set(), wakeListeners = new Set();
-  let sequence = 0, signature = "", disposed = false;
+  let sequence = 0, signature = "", disposed = false, timer = null;
   const all = () => [...local.values(), ...[...remote.values()].flatMap((tab) => tab.scopes)];
-  const selected = () => cappedScopes(all());
+  function selected() {
+    for (const [id, tab] of remote) if (now() - tab.at >= PRESENCE_LEASE_MS) remote.delete(id);
+    return cappedScopes(all());
+  }
   function notify() {
     const next = JSON.stringify(selected());
     if (next === signature) return;
@@ -40,36 +43,49 @@ export function createScopedSyncRegistry({ channel, now = Date.now } = {}) {
     const hint = { deviceId: data.deviceId, scopes: data.scopes.slice(0, MAX_TRACKED_SYNC_SCOPES) };
     wakeListeners.forEach((listener) => listener(hint));
   }
+  // Mounts advertise their presence; active runtime observers also need to
+  // expire remote leases even when this tab has no mounted scope of its own.
+  // Merely importing the registry starts no recurring work.
+  function updateTimer() {
+    const needed = !disposed && (local.size || listeners.size || wakeListeners.size);
+    if (!needed) { clearInterval(timer); timer = null; return; }
+    if (timer !== null) return;
+    timer = setInterval(() => { publish(); notify(); }, PRESENCE_INTERVAL_MS);
+    timer.unref?.();
+    channel?.postMessage({ type: "request", owner });
+  }
+  function observe(observers, listener) {
+    if (disposed) return () => {};
+    observers.add(listener); updateTimer();
+    return () => { observers.delete(listener); updateTimer(); };
+  }
   if (channel) channel.onmessage = receive;
   channel?.postMessage({ type: "request", owner });
-  const timer = setInterval(() => {
-    for (const [id, tab] of remote) if (now() - tab.at >= PRESENCE_LEASE_MS) remote.delete(id);
-    publish(); notify();
-  }, PRESENCE_INTERVAL_MS);
-  timer.unref?.();
 
   return {
     register(registration) {
+      if (disposed) return () => {};
       // Duplicate mounts belong to one continuous opening. A new opening
       // after the final release must not inherit the previous cursor proof.
       const key = scopeKey(registration);
       const opening = selected().find((entry) => entry.key === key)?.registration || randomToken();
       const id = `${owner}:${++sequence}`;
       local.set(id, { ...registration, registration: opening, opened: now(), ordinal: sequence, owner, id, key });
+      updateTimer();
       publish(); notify();
-      return () => { local.delete(id); publish(); notify(); };
+      return () => { local.delete(id); updateTimer(); publish(); notify(); };
     },
     tracked: (deviceId) => selected().filter((entry) => entry.deviceId === deviceId),
-    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    subscribe: (listener) => observe(listeners, listener),
     wake(deviceId, scopes) {
       if (disposed || !scopes.length) return;
       publish();
       channel?.postMessage({ type: "wake", owner, deviceId, scopes: scopes.slice(0, MAX_TRACKED_SYNC_SCOPES) });
     },
-    subscribeWake(listener) { wakeListeners.add(listener); return () => wakeListeners.delete(listener); },
+    subscribeWake: (listener) => observe(wakeListeners, listener),
     dispose() {
       if (disposed) return;
-      local.clear(); publish(); disposed = true; clearInterval(timer); channel?.close(); listeners.clear(); wakeListeners.clear();
+      local.clear(); publish(); disposed = true; updateTimer(); channel?.close(); listeners.clear(); wakeListeners.clear();
     },
   };
 }

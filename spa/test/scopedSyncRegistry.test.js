@@ -94,3 +94,29 @@ it("keeps a continuous registration across duplicate mounts and renews it after 
   closeSecond(); scopes.register(task("a"));
   expect(scopes.tracked("d")[0].registration).not.toBe(registration);
 });
+
+it("starts presence on the first local mount and stops it on the final release", () => {
+  vi.useFakeTimers();
+  const scopes = registry();
+  expect(vi.getTimerCount()).toBe(0);
+  const first = scopes.register(task("a")), second = scopes.register(task("b"));
+  expect(vi.getTimerCount()).toBe(1);
+  first(); expect(vi.getTimerCount()).toBe(1);
+  second(); expect(vi.getTimerCount()).toBe(0);
+});
+
+it("keeps remote lease expiry running for observers without a local mount", async () => {
+  vi.useFakeTimers();
+  const channel = { onmessage: null, postMessage: vi.fn(), close: vi.fn() };
+  const scopes = registry({ channel });
+  const changed = vi.fn(), stop = scopes.subscribe(changed);
+  expect(vi.getTimerCount()).toBe(1);
+  channel.onmessage({ data: { type: "presence", owner: "remote", scopes: [{ ...task("remote"),
+    id: "remote:1", key: JSON.stringify(["d", taskSyncScope("remote")]), opened: Date.now(), ordinal: 1 }] } });
+  expect(scopes.tracked("d")).toHaveLength(1);
+  changed.mockClear();
+  await vi.advanceTimersByTimeAsync(15_000);
+  expect(scopes.tracked("d")).toHaveLength(0);
+  expect(changed).toHaveBeenCalledOnce();
+  stop(); expect(vi.getTimerCount()).toBe(0);
+});

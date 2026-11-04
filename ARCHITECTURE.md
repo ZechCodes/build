@@ -4274,8 +4274,11 @@ gate attachment display.
   failed reads without size evidence remain retryable.
 - **Durable task scope recovery.** `scopedSyncRegistry.js` describes mounted
   project task queries and task details, sharing presence with the lock holder
-  across tabs and limiting each device to sixteen active scopes. Followers
-  relay named wake requests to that holder. Definitions
+  across tabs and limiting each device to sixteen active scopes. Importing
+  the registry starts no timer. Mounted registrations and active runtime
+  observers keep presence and remote-lease expiry running; the final release
+  or unsubscribe stops that interval. Followers relay named wake requests
+  to the holder. Definitions
   use canonical filters and order; cursors never cross definitions. Current
   greetings independently gate `sync.projectTasks` and `sync.task`.
   `scopedSyncRuntime.js` starts `scopedSyncEngine.js` after a Web Lock grant
@@ -4319,6 +4322,9 @@ gate attachment display.
   page publication merge current columns inside their publication transaction.
   Column painters use an independent metadata reader and subscription, without
   changing task catalogues; existing embedded list columns remain a fallback.
+  Metadata chrome can update during retained-unread hydration, while task
+  frames wait for the current rows' display notes. A newer hydration replaces
+  an obsolete query's pending paint fence.
   Legacy column helpers share that reader to avoid refetching cold metadata.
   Task
   heads contain summary and timeline data; an engine-owned detail reader

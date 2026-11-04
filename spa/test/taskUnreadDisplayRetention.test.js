@@ -317,6 +317,117 @@ async function blindRestorePriorLineage(title) {
 
 describe("D5 unmounted admitted lineage versus blind paint", () => {
 
+  it("waits for retained unread display hydration before a metadata repaint exposes remounted rows", async () => {
+    await renderPersistAndLeave();
+    const blind = { ...await listedTask(), watch_started_after: "te-90" };
+    delete blind.unread_count;
+    expect(await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+      tracker.tasksRecord([blind], columns()))).toBe(true);
+    await blindRestorePriorLineage("Hydrating retained unread display");
+    const read = cache.readCachedMany;
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    let waiting = false;
+    vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+      const records = await read(addresses);
+      if (addresses.length === 4 && addresses[0].kind === "task-content-generation"
+        && addresses[3].sub === JSON.stringify(["tracker-task", taskId])) {
+        waiting = true;
+        await held;
+      }
+      return records;
+    });
+    const { mountTasksPane } = await import("../src/core/trackerTasksPane.js");
+    pane = mountTasksPane(paneHost, { deviceId: scope.deviceId, projectId: scope.projectId,
+      projectKey: project.projectKey, projectName: project.name, defaultView: "list", callRpc: rpc,
+      catalog: () => ({ providers: [] }), feed: () => ({ items: [], workspaces: [] }) });
+    try {
+      await vi.waitFor(() => expect(waiting).toBe(true), WAIT);
+      const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+      await cache.writeCached(projectColumnsAddress(scope.deviceId, scope.projectId), {
+        columns: [{ id: "ready", name: "Hydrated metadata" }], columns_read_order: Date.now(),
+      });
+      paneHost.querySelector('[data-filter-menu="status"] .fmenu-press').click();
+      await vi.waitFor(() => expect(paneHost.querySelector('[data-filter-menu="status"]').textContent)
+        .toContain("Hydrated metadata"), WAIT);
+      expect(paneHost.querySelector(".task-title")).toBeNull();
+    } finally {
+      release();
+    }
+    await vi.waitFor(() => expect(paneHost.querySelector(".task-title")?.textContent)
+      .toBe("Hydrating retained unread display"), WAIT);
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+  });
+
+  it("paints the current query when an obsolete query's display hydration is still held", async () => {
+    await renderPersistAndLeave();
+    await tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId,
+      { project_id: scope.projectId, state: "open" }, tracker.tasksRecord([full()], columns(), 100));
+    await cache.deleteCached([tracker.tasksAddress(scope.deviceId, scope.projectId)]);
+    const read = cache.readCachedMany;
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    let hydrations = 0;
+    vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+      const records = await read(addresses);
+      if (addresses.length === 4 && addresses[0].kind === "task-content-generation"
+        && addresses[3].sub === JSON.stringify(["tracker-task", taskId])) {
+        hydrations += 1;
+        if (hydrations === 1) await held;
+      }
+      return records;
+    });
+    const { mountTasksPane } = await import("../src/core/trackerTasksPane.js");
+    pane = mountTasksPane(paneHost, { deviceId: scope.deviceId, projectId: scope.projectId,
+      projectKey: project.projectKey, projectName: project.name, defaultView: "list", callRpc: rpc,
+      catalog: () => ({ providers: [] }), feed: () => ({ items: [], workspaces: [] }) });
+    try {
+      await vi.waitFor(() => expect(hydrations).toBe(1), WAIT);
+      paneHost.querySelector('[data-task-view="board"]').click();
+      await vi.waitFor(() => expect(hydrations).toBeGreaterThan(1), WAIT);
+      await vi.waitFor(() => expect(paneHost.querySelector(".task-card-title")?.textContent)
+        .toBe("Before incomplete action"), WAIT);
+      expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+    } finally {
+      release();
+    }
+  });
+
+  it("paints an uncached local filter preview while an obsolete query's display hydration is held", async () => {
+    await seedSelectedInputs();
+    await mountPane();
+    const read = cache.readCachedMany;
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    let waiting = false;
+    vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+      const records = await read(addresses);
+      if (addresses.length === 4 && addresses[0].kind === "task-content-generation"
+        && addresses[3].sub === JSON.stringify(["tracker-task", taskId])) {
+        waiting = true;
+        await held;
+      }
+      return records;
+    });
+    try {
+      await tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId,
+        { project_id: scope.projectId, state: "open" },
+        tracker.tasksRecord([full({ title: "Pending query display" })], columns(), 100));
+      await vi.waitFor(() => expect(waiting).toBe(true), WAIT);
+      expect(paneHost.querySelector(".task-title")?.textContent).toBe("Before incomplete action");
+      expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+      const status = paneHost.querySelector('[data-filter-menu="status"]');
+      status.querySelector(".fmenu-press").click();
+      await vi.waitFor(() => expect(status.querySelector('[data-value="done"]')).not.toBeNull(), WAIT);
+      status.querySelector('[data-value="done"]').click();
+      await vi.waitFor(() => expect(paneHost.querySelector(".task-title")).toBeNull(), WAIT);
+      expect(await tracker.readTasksQueryCached(scope.deviceId, scope.projectId,
+        { project_id: scope.projectId, state: "open", status: "done" })).toBeNull();
+    } finally {
+      release();
+    }
+  });
+
   it("retains rendered3 on remount after a blind-only rewrite without an admitted replacement", async () => {
     await renderPersistAndLeave();
     // Force an actual blind floor change, then restore the previous raw floor.

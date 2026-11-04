@@ -265,6 +265,14 @@ export function mountTasksPane(host, options) {
     scope: { deviceId: state.deviceId, projectId: state.projectId }, consumer: "tasks-pane",
     active: () => !state.disposed, sessionOf: () => deviceSession(state.deviceId), onChange: () => paint(),
   });
+  let unreadHydrationSerial = 0;
+  let unreadHydrationPending = false;
+  async function hydrateUnreadTasks() {
+    const serial = ++unreadHydrationSerial;
+    unreadHydrationPending = true;
+    try { await unreadDisplay.updateTasks(state.shown); }
+    finally { if (serial === unreadHydrationSerial) unreadHydrationPending = false; }
+  }
   /** Each watched task's unread, as the bubble on its row, card or dashboard
    *  line says it (#104): off the cached timeline while it is current, and
    *  the list's own count otherwise (core/taskUnread.js). */
@@ -328,6 +336,9 @@ export function mountTasksPane(host, options) {
       filters: state.filters,
     });
     remoteChoices.paintContinuation();
+    // Keep the previous task frame until its next rows' retained display
+    // notes are ready. Independent metadata paints may finish first.
+    if (unreadHydrationPending) return;
     const view = VIEWS[state.view] || VIEWS[LIST_VIEW];
     paintedUnread.clear();
     view.paint(chrome.body, view.entries(), paintContext(), view.wire);
@@ -347,6 +358,7 @@ export function mountTasksPane(host, options) {
     state.visibleCount = Number(saved.visibleCount) || TASK_PAGE_SIZE;
     if (priorView !== state.view) state.onViewChange?.(state.view);
     previewQuery();
+    void hydrateUnreadTasks().then(paint);
     paint();
     watchQuery();
     void refresh();
@@ -391,7 +403,7 @@ export function mountTasksPane(host, options) {
     state.shown = kept(state.unscopedShown);
     state.displayAddress = wholeListIsNewer() ? tasksAddress(state.deviceId, state.projectId)
       : tasksQueryAddress(state.deviceId, state.projectId, params);
-    await unreadDisplay.updateTasks(state.shown);
+    await hydrateUnreadTasks();
     if (!currentQuery(serial)) return;
     details?.updateTasks(state.shown);
     // On a cold device the background whole-list pass may not have landed
@@ -437,7 +449,7 @@ export function mountTasksPane(host, options) {
       state.shown = kept(state.unscopedShown);
       state.displayAddress = tasksAddress(state.deviceId, state.projectId);
     }
-    await unreadDisplay.updateTasks(state.shown);
+    await hydrateUnreadTasks();
     if (state.disposed) return;
     details?.updateTasks(state.shown);
     reads.seen(at); // this list is as old as the cache's stamp, not as old as now

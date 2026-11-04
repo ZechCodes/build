@@ -421,6 +421,16 @@ describe("the New menu", () => {
 });
 
 describe("directory context actions", () => {
+  it.each(["symlink", "submodule"])("offers no context actions for a %s row", (kind) => {
+    row("docs").dataset.kind = kind;
+    mount();
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    row("docs").dispatchEvent(event);
+    expect(document.querySelector(".file-context-menu")).toBeNull();
+    expect(event.defaultPrevented).toBe(false);
+    expect(uploads.enqueue).not.toHaveBeenCalled();
+    expect(callRpc).not.toHaveBeenCalled();
+  });
   const context = (element) => element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
   const choose = (name) => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent.includes(name)).click();
   it("reuses the directory-targeted picker from the menu", () => {

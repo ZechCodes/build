@@ -217,6 +217,7 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
   const contextItems = (row) => {
     if (!rootOf(row)) return [];
     if (row.dataset.kind === "file") return [{ id: "download", label: "Download" }];
+    if (!row.matches('[data-kind="dir"], [data-root-head], [data-upload-root]')) return [];
     return [
       ...(support.uploads ? [{ id: "upload", label: "Upload files here" }] : []),
       ...(support.createDirectory ? [{ id: "folder", label: "New directory" }] : []),

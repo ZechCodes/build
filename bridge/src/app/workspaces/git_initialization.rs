@@ -128,6 +128,7 @@ impl AppState {
     }
 
     pub(crate) fn workspace_init_git(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         let workspace_id = require_str(params, "workspace_id")?;
         let source_id = require_str(params, "source_id")?;
         let targets = parse_git_init_targets(require_str(params, "target")?.as_str())?;

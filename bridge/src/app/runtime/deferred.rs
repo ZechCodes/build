@@ -645,6 +645,7 @@ impl AppState {
         let outcome = self.route(method, params, context);
         if outcome.is_err() {
             self.drop_turns_queued_since(queued_before);
+            self.settle_device_lifecycle();
         }
         match self.take_deferred() {
             // Nothing is settled until the git work returns, so the stamp waits
@@ -691,6 +692,7 @@ impl AppState {
             DeferredOutcome::Read(result) => result,
             DeferredOutcome::Watch(reply) => Ok(reply),
         };
+        self.settle_device_lifecycle();
         match &applied {
             Ok(result) => {
                 if self.deferred_work.is_none() {
@@ -1014,6 +1016,10 @@ impl AppState {
     /// next board item carries that list in full. Every other board note
     /// moves rows, which ride their own items.
     pub(in crate::app) fn note_board_lists_changed(&self, lists: crate::changes::BoardLists) {
+        if lists.projects || lists.workspaces {
+            if let Err(error)=self.mark_device_lifecycle_dirty() {eprintln!("device sync registry observation: {error}");}
+        }
+        self.settle_device_lifecycle();
         self.publish_read_metadata();
         self.changes.note_board_lists(lists);
         // An entity may have arrived with a checkout or left with one: the

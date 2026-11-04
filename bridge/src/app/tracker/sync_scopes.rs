@@ -30,6 +30,15 @@ pub struct TaskSyncScope {
 }
 
 impl TaskSyncScope {
+    pub fn device()->Self {
+        let mut recovery=Self::task("","","");
+        recovery.scope=Scope::new(Stream::device(),json!({"kind":"device"}));
+        recovery.definition=json!({"kind":"device"});
+        recovery.task=None;
+        recovery
+    }
+    fn is_device(&self)->bool {self.scope.stream().kind==crate::store::sync::StreamKind::Device}
+
     pub fn project(project_id: &str, project_key: &str, filters: &Value) -> Result<Self, String> {
         validate_fields(filters)?;
         let selected = TaskSelections::parse(filters)?;
@@ -137,7 +146,7 @@ impl TaskSyncScope {
     }
 
     fn ensure_supported(&self, read: &ReadTransaction<'_>) -> Result<(), SyncError> {
-        if self.task.is_some() {
+        if self.task.is_some() || self.is_device() {
             return Ok(());
         }
         if let Some(domain) = read.task_query_unsupported_domain(

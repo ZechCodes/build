@@ -7,6 +7,7 @@ impl AppState {
         &mut self,
         reserved: &Workspace,
     ) -> Result<DeferredGit, String> {
+        self.mark_device_lifecycle_dirty()?;
         self.project_for(&reserved.project_id)?;
         if self.workspace_reserved(&reserved.id) {
             return Err(crate::reclaim::BUSY.to_string());

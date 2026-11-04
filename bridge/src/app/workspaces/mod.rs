@@ -767,6 +767,7 @@ impl AppState {
     }
 
     pub(crate) fn workspace_create(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         if self.deferred_work.is_some() {
             return Err("another filesystem operation is still running".to_string());
         }
@@ -886,6 +887,7 @@ impl AppState {
     /// what was finished is written on the way out; the live record and the
     /// files do not come back. Recovery is pulling the remote.
     pub(crate) fn workspace_finish(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         self.finish_workspace(params, None)
     }
 
@@ -1014,6 +1016,7 @@ impl AppState {
     /// and the new name would be gone from memory and disk with no error
     /// anywhere.
     pub(crate) fn workspace_rename(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         let workspace_id = require_str(params, "workspace_id")?;
         let name = require_str(params, "name")?;
         if self.deferred_work.is_some()
@@ -1034,6 +1037,7 @@ impl AppState {
     }
 
     pub(crate) fn workspace_retry(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         if self.deferred_work.is_some() {
             return Err("another filesystem operation is still running".to_string());
         }
@@ -1099,6 +1103,7 @@ impl AppState {
     /// the workspace by (`branch_delete`); any other action, or none, keeps
     /// it.
     pub(crate) fn workspace_finish_legacy(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         self.adopt_legacy_workspaces();
         let branch = params.get("branch").and_then(Value::as_str);
         let project_id = params.get("project_id").and_then(Value::as_str);

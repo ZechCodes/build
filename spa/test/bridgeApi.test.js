@@ -160,10 +160,10 @@ describe("adapter selection", () => {
 
 describe("named capabilities", () => {
   it("gates each durable sync scope by its exact advertised name", () => {
-    const flags = (capabilities) => v1.capabilitiesOf({ api_version: "3.32.0", capabilities }).sync;
-    expect(flags(["sync.projectTasks", "sync.task"])).toEqual({ projectTasks: true, task: true });
-    expect(flags(["sync.device"])).toEqual({ projectTasks: false, task: false });
-    expect(flags(["sync.head", "sync.snapshot", "sync.changes"])).toEqual({ projectTasks: false, task: false });
+    const flags = (capabilities) => v1.capabilitiesOf({ api_version: "3.33.0", capabilities }).sync;
+    expect(flags(["sync.projectTasks", "sync.task"])).toEqual({ device: false, projectTasks: true, task: true });
+    expect(flags(["sync.device"])).toEqual({ device: true, projectTasks: false, task: false });
+    expect(flags(["sync.head", "sync.snapshot", "sync.changes"])).toEqual({ device: false, projectTasks: false, task: false });
   });
 
   it("gates attachment chunks and raw media pages by their announced names", () => {

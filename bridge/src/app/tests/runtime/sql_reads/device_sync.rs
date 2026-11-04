@@ -2,16 +2,16 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn device_sync_wire_uses_leased_snapshot_and_replays_changes_off_app_lock() {
-    device_roundtrip(Duration::from_secs(5)).await;
+    device_roundtrip(Duration::from_secs(5), 4).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "100 ms acceptance timing runs serially in the release timing gate"]
 async fn device_sync_wire_roundtrip_within_100ms() {
-    device_roundtrip(Duration::from_millis(100)).await;
+    device_roundtrip(Duration::from_millis(100), 6000).await;
 }
 
-async fn device_roundtrip(deadline: Duration) {
+async fn device_roundtrip(deadline: Duration, fixture_rows:usize) {
     let dir = tempfile::tempdir().unwrap();
     let (_repo, app, _project_id) = tracked(dir.path());
     let store = app.store.clone().unwrap();
@@ -19,6 +19,10 @@ async fn device_roundtrip(deadline: Duration) {
     let now = crate::store::sync::now_ms();
     let generation = writer.mark_sync_dirty("wire_fixture", "wire-fixture", now).unwrap();
     writer.reconcile_sync_dirty("wire_fixture", "wire-fixture", generation, Some(json!({"name":"before"})), now).unwrap();
+    writer.sync_transaction(|_,batch| {
+        for index in 0..fixture_rows {batch.upsert(crate::store::sync::Entity::new("wire_fixture",&format!("large-{index:05}")),json!({"name":"bounded directory"}),&[crate::store::sync::Stream::device()]);}
+        Ok(())
+    }).unwrap();
     let state = app.shared();
     let transport = crate::transport::generate_transport_keypair();
     let intake = FrameIntake::new(AppState::handler(Arc::clone(&state)), transport.clone());
@@ -34,11 +38,14 @@ async fn device_roundtrip(deadline: Duration) {
         released.recv_timeout(Duration::from_secs(10)).unwrap();
     });
     holding.recv_timeout(Duration::from_secs(5)).unwrap();
+    let snapshot_started=std::time::Instant::now();
     wire.accept(&intake, client_request(&key, "device-sync", "data", json!({"id":1,"method":"sync.snapshot","params":{"scope":{"kind":"device"},"limit":100}}))).await.unwrap();
     let answer = tokio::time::timeout(deadline, final_answer(&mut wire, &key)).await;
+    let snapshot_elapsed=snapshot_started.elapsed();
     release.send(()).unwrap();
     holder.join().unwrap();
     let answer = answer.expect("device lease admission and first page must bypass app lock before release");
+    eprintln!("device wire snapshot rows={fixture_rows} elapsed_us={}",snapshot_elapsed.as_micros());
     assert_eq!(answer["ok"], true, "{answer}");
     assert_eq!(answer["result"]["consistency"], "leased", "{answer}");
     assert!(answer["result"]["lease"]["id"].is_string(), "{answer}");
@@ -50,8 +57,10 @@ async fn device_roundtrip(deadline: Duration) {
         (2,"sync.head",json!({"scope":{"kind":"device"},"cursor":cursor})),
         (3,"sync.changes",json!({"scope":{"kind":"device"},"cursor":cursor})),
     ] {
+        let started=std::time::Instant::now();
         wire.accept(&intake, client_request(&key, "device-sync", "data", json!({"id":id,"method":method,"params":params}))).await.unwrap();
         let answer = tokio::time::timeout(deadline, final_answer(&mut wire,&key)).await.unwrap();
+        eprintln!("device wire {method} elapsed_us={}",started.elapsed().as_micros());
         assert_eq!(answer["ok"],true,"{answer}");
         if method=="sync.changes" {
             assert!(answer["result"]["changes"].as_array().unwrap().iter().any(|row|row["key"]=="wire-fixture" && row["row"]["name"]=="after"),"{answer}");

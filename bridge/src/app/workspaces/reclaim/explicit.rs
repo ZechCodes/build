@@ -80,6 +80,7 @@ impl AppState {
         params: &Value,
         actor: &Actor,
     ) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         let workspace = self.workspace_to_remove(params)?;
         let boundary = self.refuse_removing_what_is_not_builds(&workspace)?;
         let tasks = self.tasks_of_workspace(&workspace.id);

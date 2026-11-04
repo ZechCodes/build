@@ -164,3 +164,64 @@ fn device_followup_pressure_invalidated_leases_allow_replacement_after_gc() {
     for _ in 0..DEVICE_LEASES_PER_OPENING {store.writer().admit_device_lease("opening","epoch",NOW).expect("invalidated leases do not consume quota");}
     assert!(store.writer().admit_device_lease("opening","epoch",NOW).is_err());
 }
+
+#[test]
+fn device_followup_repeated_epoch_changes_keep_lease_metadata_bounded() {
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();
+    for epoch in 0..100 {store.writer().admit_device_lease("opening",&format!("epoch-{epoch}"),NOW).unwrap();}
+    let rows:i64=store.writer_for_test().query_row("SELECT COUNT(*) FROM sync_leases",[],|row|row.get(0)).unwrap();
+    assert!(rows<=16,"invalid lease metadata accumulated: {rows}");
+}
+
+#[test]
+fn device_followup_authoritative_reconcile_preserves_newer_per_entity_markers() {
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();let writer=store.writer();
+    writer.mark_sync_dirty("project","one",NOW).unwrap();
+    let generation=writer.mark_sync_dirty("registry","lifecycle",NOW).unwrap();
+    let markers=writer.device_registry_markers().unwrap();
+    let newer=writer.mark_sync_dirty("project","one",NOW+1).unwrap();
+    writer.reconcile_device_registry(generation,&std::collections::BTreeMap::new(),&std::collections::BTreeMap::new(),&markers).unwrap();
+    let current:i64=store.writer_for_test().query_row("SELECT generation FROM sync_dirty WHERE kind='project' AND key='one'",[],|row|row.get(0)).expect("newer marker must remain fenced");
+    assert_eq!(current,newer);
+    assert!(writer.admit_device_lease("opening","epoch",NOW+1).is_err());
+}
+
+#[test]
+fn device_followup_busy_writer_refuses_lease_admission_instead_of_waiting() {
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();
+    let held=store.writer_for_test();let writer=store.writer();let (sent,received)=std::sync::mpsc::channel();
+    let caller=std::thread::spawn(move||sent.send(writer.admit_device_lease("opening","epoch",NOW)).unwrap());
+    let response=received.recv_timeout(std::time::Duration::from_secs(3));
+    drop(held);caller.join().unwrap();
+    assert!(matches!(response,Ok(Err(SyncError::Unavailable(_)))),"busy admission must refuse before the held writer is released: {response:?}");
+    store.writer().admit_device_lease("opening","epoch",NOW).unwrap();
+}
+
+#[tokio::test]
+async fn device_followup_dirty_fence_covers_device_continuation_helpers() {
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();
+    let scope=Scope::new(Stream::device(),json!({"kind":"device"}));let mut read=store.read_pool().acquire_sync().await;
+    let token=read.read(|tx|tx.sync_encode_continuation(&scope,"device_snapshot",json!({"position":1}))).unwrap().unwrap();
+    store.writer().mark_sync_dirty("registry","lifecycle",NOW).unwrap();
+    read.read(|tx|{
+        assert!(matches!(tx.sync_encode_continuation(&scope,"device_snapshot",json!({"position":1})),Err(SyncError::Unavailable(_))));
+        assert!(matches!(tx.sync_decode_continuation::<serde_json::Value>(&scope,"device_snapshot",&token),Err(SyncError::Unavailable(_))));
+        let task=Scope::new(Stream::task("task-synthetic"),json!({"kind":"task","task_id":"task-synthetic"}));
+        tx.sync_encode_continuation(&task,"snapshot",json!({"position":1})).unwrap();
+    }).unwrap();
+}
+
+#[test]
+fn device_followup_external_writer_lock_refuses_metadata_admission_without_changing_write_policy() {
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();
+    let external=rusqlite::Connection::open(directory.path().join("build.db")).unwrap();
+    external.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let writer=store.writer();let (sent,received)=std::sync::mpsc::channel();
+    let caller=std::thread::spawn(move||sent.send(writer.admit_device_lease("opening","epoch",NOW)).unwrap());
+    let response=received.recv_timeout(std::time::Duration::from_secs(3));
+    external.execute_batch("COMMIT").unwrap();caller.join().unwrap();
+    assert!(matches!(response,Ok(Err(SyncError::Unavailable(_)))),"lease metadata must fail retryably while an external writer is held: {response:?}");
+    let timeout:i64=store.writer_for_test().pragma_query_value(None,"busy_timeout",|row|row.get(0)).unwrap();
+    assert_eq!(timeout,5000,"ordinary writes retain their existing wait policy");
+    store.writer().admit_device_lease("opening","epoch",NOW).unwrap();
+}

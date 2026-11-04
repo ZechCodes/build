@@ -262,6 +262,7 @@ impl AppState {
         self.seed_anchors_for_records_without_one();
         self.migrate_legacy_dismissals();
         self.close_recovered_working_intervals();
+        self.initialize_device_lifecycle()?;
         Ok(())
     }
 

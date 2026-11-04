@@ -10,7 +10,11 @@ impl StoreWriter {
     pub fn device_registry_generation(&self)->Result<Option<i64>,SyncError> {
         Ok(self.connection().query_row("SELECT generation FROM sync_dirty WHERE kind='registry' AND key='lifecycle'",[],|row|row.get(0)).optional()?)
     }
-    pub fn reconcile_device_registry(&self,generation:i64,rows:&BTreeMap<Entity,Value>,projects:&BTreeMap<String,String>)->Result<(),SyncError> {
+    pub fn device_registry_markers(&self)->Result<Vec<(String,String,i64)>,SyncError> {
+        Ok(self.connection().prepare("SELECT kind,key,generation FROM sync_dirty WHERE kind IN ('registry','project','project_source','workspace','workspace_directory') ORDER BY kind,key")?
+            .query_map([],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?.collect::<Result<Vec<_>,_>>()?)
+    }
+    pub fn reconcile_device_registry(&self,generation:i64,rows:&BTreeMap<Entity,Value>,projects:&BTreeMap<String,String>,_markers:&[(String,String,i64)])->Result<(),SyncError> {
         self.sync_transaction(|tx,batch| {
             let held:Option<i64>=tx.query_row("SELECT generation FROM sync_dirty WHERE kind='registry' AND key='lifecycle'",[],|row|row.get(0)).optional()?;
             if held!=Some(generation) {return Err(super::invalid("stale device registry generation"));}

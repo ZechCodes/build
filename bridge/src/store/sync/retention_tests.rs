@@ -226,3 +226,39 @@ fn device_followup_gc_lease_seek_does_not_walk_an_expired_prefix() {
     let steps=LEASE_STEPS.with(Cell::get);
     assert!(steps>0 && steps<200,"oldest lease seek walked expired history: {steps}");
 }
+
+#[test]
+fn device_followup_pressure_does_not_grow_retained_bytes_past_the_cap() {
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();
+    publish(&store,"one",Some(json!({"version":1})));
+    store.writer_for_test().execute("UPDATE sync_state SET retained_version_bytes=67108860",[]).unwrap();
+    publish(&store,"one",Some(json!({"version":2})));
+    let retained:i64=store.writer_for_test().query_row("SELECT retained_version_bytes FROM sync_state",[],|row|row.get(0)).unwrap();
+    assert!(retained<=67108864,"pressure retained another version above the cap: {retained}");
+}
+
+#[test]
+fn device_followup_gc_resumes_wrapped_candidates_when_versions_become_unprotected() {
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();
+    publish(&store,"one",Some(json!({"v":1})));
+    let lease=store.writer().admit_device_lease("opening","epoch",NOW).unwrap();
+    publish(&store,"one",None);
+    store.writer_for_test().execute("UPDATE sync_state SET floor=head",[]).unwrap();
+    let protected=store.writer().sync_gc_batch(NOW).unwrap();
+    assert_eq!(protected.removed_projection_rows,0);
+    assert!(!protected.pending,"protected-only pass must yield");
+    let expired=store.writer().sync_gc_batch(lease.expires_at_ms+1).unwrap();
+    assert!(expired.pending,"newly unprotected rows before the wrapped cursor must schedule continuation");
+    let removed=store.writer().sync_gc_batch(lease.expires_at_ms+1).unwrap();
+    assert_eq!(removed.removed_projection_rows,1);
+}
+
+#[test]
+fn device_followup_retained_tombstones_charge_identity_and_version_metadata() {
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();
+    let key="k".repeat(4096);
+    publish(&store,&key,None);
+    publish(&store,&key,Some(json!({"v":1})));
+    let retained:i64=store.writer_for_test().query_row("SELECT retained_version_bytes FROM sync_state",[],|row|row.get(0)).unwrap();
+    assert!(retained>=key.len() as i64+128,"a zero-payload version still occupies identity/metadata bytes: {retained}");
+}

@@ -32,6 +32,8 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum Scope {
+    #[serde(rename = "device")]
+    Device,
     #[serde(rename = "project_tasks")]
     ProjectTasks {
         project_id: String,
@@ -143,6 +145,7 @@ pub enum HeadResult {
 pub enum SnapshotConsistency {
     LiveKeyset,
     SingleRead,
+    Leased,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -161,6 +164,9 @@ pub struct Selection {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct SnapshotLease {pub id:String,pub expires_at_ms:i64}
+
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum SnapshotResult {
     Ok {
@@ -170,6 +176,8 @@ pub enum SnapshotResult {
         cursor: String,
         bridge_epoch: String,
         consistency: SnapshotConsistency,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease: Option<SnapshotLease>,
         records: Vec<Record>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next_page: Option<String>,

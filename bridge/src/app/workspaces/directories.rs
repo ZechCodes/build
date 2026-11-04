@@ -265,6 +265,7 @@ impl AppState {
     /// Answers `workspace.get`'s shape from the drain: one read repaints every
     /// surface that names the workspace's directories.
     pub(crate) fn workspace_add_directory(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         let workspace = self.workspace_to_change(params)?;
         let seed = self.directory_seed(&workspace, params)?;
         let captured_source = match &seed {
@@ -325,6 +326,7 @@ impl AppState {
     /// so it is working in every directory of the workspace at once and the
     /// files being removed are the ones it is writing.
     pub(crate) fn workspace_remove_directory(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         let workspace = self.workspace_to_change(params)?;
         let directory_id = require_str(params, "directory_id")?;
         let directory = workspace

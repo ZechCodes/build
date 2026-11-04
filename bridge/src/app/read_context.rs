@@ -1,6 +1,7 @@
 //! Immutable admission and identity overlays for independent SQL reads.
 //! Producers publish while already owning the app; readers never acquire it.
 
+mod device_sync;
 mod mcp_addresses;
 mod mcp_bootstrap;
 mod mcp_history;
@@ -43,6 +44,7 @@ enum ReadFence {
 pub(in crate::app) struct ReadService {
     context: ReadContextSlot,
     admission: Option<Arc<crate::update::AdmissionGate>>,
+    writer: Option<crate::store::StoreWriter>,
 }
 
 impl AppState {
@@ -202,6 +204,7 @@ impl AppState {
         ReadService {
             context: Arc::clone(&self.read_context),
             admission: self.update_admission(),
+            writer: self.store.as_ref().map(crate::store::Store::writer),
         }
     }
 }

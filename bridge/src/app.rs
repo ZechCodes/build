@@ -17,6 +17,7 @@ mod captures;
 mod config;
 #[cfg(test)]
 mod device_lifecycle_tests;
+mod device_lifecycle;
 mod facts;
 mod fs;
 mod git;

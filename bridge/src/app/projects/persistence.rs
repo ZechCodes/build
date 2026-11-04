@@ -10,6 +10,7 @@ impl AppState {
         id: &str,
         change: impl FnOnce(&mut ProjectRegistry) -> Result<(), String>,
     ) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         let project = self
             .projects
             .get(id)

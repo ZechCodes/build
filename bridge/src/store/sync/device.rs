@@ -84,6 +84,8 @@ impl StoreWriter {
             ));
         }
         let mut connection = self.connection();
+        #[cfg(test)]
+        let _hold=crate::timing::phase_samples::phase("device.lease_writer_hold");
         let tx = connection.transaction()?;
         ensure_ready(&tx)?;
         let retained:i64=tx.query_row("SELECT retained_version_bytes FROM sync_state WHERE id=1",[],|row|row.get(0))?;

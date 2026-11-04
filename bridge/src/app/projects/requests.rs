@@ -178,6 +178,7 @@ impl WorktreeMutation for OpenProjectSources {
 
 impl AppState {
     pub(crate) fn project_init_git(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         let project_id = require_str(params, "project_id")?;
         let project = self
             .projects
@@ -231,6 +232,7 @@ impl AppState {
     /// or the projects folder by default — and register it. An optional `remote`
     /// is wired as `origin` at creation.
     pub(crate) fn project_create(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         // A folder that is back answers as the project it was, not a new one.
         self.revive_parked_projects();
         let name = usable_project_name(require_str(params, "name")?)?;
@@ -429,6 +431,7 @@ impl AppState {
     /// the directories it was cut with, and `workspace.add_directory` is how
     /// one of them gets this folder.
     pub(crate) fn project_add_source(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         let project_id = require_str(params, "project_id")?;
         let project = self.project_for(&project_id)?;
         let project_name = usable_project_name(safe_mount_name(&project.name))?;
@@ -471,6 +474,7 @@ impl AppState {
     /// workspaces. Nothing on disk moves: the folder is the user's, and every
     /// workspace already holding a directory from it keeps that directory.
     pub(crate) fn project_remove_source(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         let project_id = require_str(params, "project_id")?;
         let source_id = require_str(params, "source_id")?;
         let project = self.project_for(&project_id)?;
@@ -513,6 +517,7 @@ impl AppState {
     /// edited the way `project.update_source` edits any source's. An empty
     /// url takes `origin` off.
     pub(crate) fn project_set_remote(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         let project_id = require_str(params, "project_id")?;
         let url = require_str(params, "url")?;
         let project = self
@@ -539,6 +544,7 @@ impl AppState {
     /// it is stored, so a client only ever repaints from a row the bridge would
     /// honour; naming no isolation at all is a missing param, not a clear.
     pub(crate) fn project_set_isolation(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         let project_id = require_str(params, "project_id")?;
         let project = self
             .projects

@@ -50,6 +50,7 @@ struct SourceAddress {
 
 impl AppState {
     pub(crate) fn project_update_source(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         let project_id = require_str(params, "project_id")?;
         let source_id = require_str(params, "source_id")?;
         let project = self.project_for(&project_id)?;

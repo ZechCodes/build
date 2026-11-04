@@ -70,6 +70,7 @@ impl AppState {
         if self.snapshot_observations.ready {
             return;
         }
+        if let Err(error)=self.initialize_device_lifecycle() {eprintln!("device sync startup: {error}");}
         self.cli_readings.warm();
         self.revive_parked_projects();
         self.warm_snapshot_board_observations();

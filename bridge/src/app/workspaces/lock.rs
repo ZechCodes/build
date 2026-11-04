@@ -4,6 +4,7 @@ use serde_json::Value;
 
 impl AppState {
     pub(crate) fn workspace_set_locked(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         let workspace_id = require_str(params, "workspace_id")?;
         let locked = params
             .get("locked")

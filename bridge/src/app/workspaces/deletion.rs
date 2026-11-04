@@ -278,6 +278,7 @@ impl AppState {
     /// does — the acknowledgement and the drain's real answer are one type, so
     /// a client reads the same value whichever half it sees.
     pub(crate) fn workspace_delete(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         let workspace = self.workspace_to_remove(params)?;
         let boundary = self.refuse_removing_what_is_not_builds(&workspace)?;
         if workspace.status == WorkspaceStatus::Provisioning {

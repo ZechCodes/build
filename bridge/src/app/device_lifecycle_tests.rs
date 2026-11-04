@@ -118,3 +118,45 @@ fn lifecycle_deferred_workspace_keeps_fence_until_authoritative_settlement() {
     // Negative control: a completed manifest publication re-opens admission.
     store.writer().admit_device_lease("opening", "epoch", i64::MAX / 2).unwrap();
 }
+
+#[test]
+fn device_followup_settings_do_not_leave_the_registry_dirty() {
+    let (_root,mut app,store)=fixture();
+    app.settings_set(&json!({"watch_agent_filed_tasks":false})).unwrap();
+    store.writer().admit_device_lease("opening","epoch",i64::MAX/2).expect("successful settings persistence must settle its marker");
+}
+
+#[test]
+fn device_followup_prepared_delivery_holds_the_fence_before_job_accounting() {
+    let (_root,mut app,store)=fixture();
+    let reserved=app.workspaces.reserve_delivery_workspace("proj-1","deferred",&[],crate::isolation::Isolation::default()).unwrap();
+    let _job=app.prepare_deferred_workspace_snapshot(&reserved).unwrap();
+    assert!(matches!(store.writer().admit_device_lease("opening","epoch",i64::MAX/2),Err(crate::store::sync::SyncError::Unavailable(ref reason)) if reason=="sync_reconciling"));
+}
+
+#[test]
+fn device_followup_reopen_publishes_and_marker_failure_preserves_the_manifest() {
+    let (root,mut app,store)=fixture();
+    let mut workspace=app.workspaces.begin("proj-1","finished",&[]).unwrap();
+    workspace.status=crate::workspace::WorkspaceStatus::Finished;
+    workspace.archived_at=Some("2026-01-01T00:00:00Z".into());
+    let manifest=workspace.root.join(crate::workspace::MANIFEST_FILE);
+    std::fs::write(&manifest,serde_json::to_vec(&workspace).unwrap()).unwrap();
+    app.workspaces.reload().unwrap();app.initialize_device_lifecycle().unwrap();
+    store.fail_next_write();
+    assert!(app.reopen_workspace(&workspace.id).is_err());
+    assert_eq!(app.workspaces.get(&workspace.id).unwrap().status,crate::workspace::WorkspaceStatus::Finished);
+    app.reopen_workspace(&workspace.id).unwrap();
+    assert_eq!(row(root.path(),"workspace",&workspace.id).unwrap()["status"],"ready");
+}
+
+#[test]
+fn device_followup_background_capability_refresh_publishes_without_a_list_note() {
+    let (root,mut app,_store)=fixture();
+    let result=app.dispatch("workspace.create",&json!({"project_id":"proj-1","name":"plain"})).unwrap();
+    let workspace=app.workspaces.get(result["workspace_id"].as_str().unwrap()).unwrap().clone();
+    let directory=workspace.directories.first().unwrap();
+    git2::Repository::init(&directory.path).unwrap();
+    app.refresh_workspace_snapshot_observations();
+    assert_eq!(row(root.path(),"workspace_directory",&format!("{}/{}",workspace.id,directory.id)).unwrap()["is_git"],true);
+}

@@ -580,3 +580,34 @@ fn device_followup_backfill_resumes_after_a_committed_chunk_and_refuses_partial_
     assert_eq!(projection(&store,"inbox_conversation",&id)["unread_count"],270);
     store.writer().admit_device_lease("opening","epoch",NOW).unwrap();
 }
+
+#[test]
+fn device_followup_retained_summaries_use_saved_facts_after_owner_history_is_removed() {
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();
+    store.writer_for_test().execute("INSERT INTO device_project_ids VALUES('/device-producers','proj-registry')",[]).unwrap();
+    let mut run=run_record("retained-summary");
+    run.agents[0].thread.post_agent("last answer",None,AT);store.save_run(&run).unwrap();
+    let last=projection(&store,"inbox_conversation",&run.agents[0].id)["last_activity_ms"].clone();
+    run.agents.clear();store.save_run(&run).unwrap();
+    assert_eq!(projection(&store,"workspace_session",&run.id)["retained_last_activity_ms"],last);
+    store.delete_run_retaining_inbox_messages(&run.id,"proj-registry").unwrap();
+    assert_eq!(projection(&store,"project_session","proj-registry")["retained_last_activity_ms"],last);
+    drop(store);let store=Store::new(directory.path()).unwrap();
+    assert_eq!(projection(&store,"project_session","proj-registry")["retained_last_activity_ms"],last);
+    store.clear_retained_project_messages("proj-registry").unwrap();
+    let deleted:bool=store.writer_for_test().query_row("SELECT deleted FROM sync_projection WHERE kind='project_session' AND key='proj-registry'",[],|row|row.get(0)).unwrap();
+    assert!(deleted,"clearing retained authority must tombstone its summary");
+}
+
+#[test]
+fn device_followup_summary_keyset_contains_only_committed_visible_items() {
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();
+    let mut run=run_record("sparse-summary");let id=&run.agents[0].id.clone();
+    run.agents[0].thread.post_user("question",None,AT);
+    for _ in 0..300 {run.agents[0].thread.post_agent_progress("working",None,AT);}
+    run.agents[0].thread.post_agent("answer",None,AT);store.save_run(&run).unwrap();
+    let rows:i64=store.writer_for_test().query_row("SELECT COUNT(*) FROM device_summary_items WHERE conversation_id=?1",[id],|row|row.get(0)).unwrap();
+    assert_eq!(rows,2,"transient items must never enter the device summary keyset");
+    let plan:String=store.writer_for_test().query_row("EXPLAIN QUERY PLAN SELECT sequence,summary FROM device_summary_items WHERE conversation_id=?1 AND generation=0 ORDER BY sequence DESC LIMIT 1",[id],|row|row.get(3)).unwrap();
+    assert!(plan.contains("SEARCH") && !plan.contains("TEMP"),"{plan}");
+}

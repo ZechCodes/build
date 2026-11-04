@@ -32,25 +32,36 @@ function agentProjection(agent, conversation, identity, previous) {
 }
 
 const ownerIdOf = (agents, field, id) => agents.find((agent) => agent[field] === id)?.owner_id;
-const mergeList = (held, incoming, deleted, idOf) => {
-  const next = new Map((held || []).filter((row) => !deleted.has(idOf(row))).map((row) => [idOf(row), row]));
+const mergeList = (held, incoming, deleted, idOf, snapshot = false) => {
+  const present = new Set(incoming.map(idOf));
+  const next = new Map((held || []).filter((row) => !deleted.has(idOf(row)) && (!snapshot || present.has(idOf(row)))).map((row) => [idOf(row), row]));
   for (const row of incoming) next.set(idOf(row), { ...next.get(idOf(row)), ...row });
   return [...next.values()];
 };
 const deletedKeys = (rows, kind) => new Set([...rows.values()].filter((entry) => entry.kind === kind && entry.deleted).map((entry) => entry.key));
 
-function projectOwners(rows, held) {
+function projectOwners(rows, held, snapshot = false) {
   const retired = deletedKeys(rows, "owner_session");
   const selected = heldProjectOwners(held("projects"), retired);
+  if (snapshot) removeAbsentOwnerHints(rows, selected);
   const identities = new Map(valuesOf(rows, "identity").map((row) => [row.agent_id, row]));
-  for (const agent of valuesOf(rows, "agent")) {
-    if (agent.project_id && !retired.has(agent.owner_id)
-      && ["coordinator", "worker"].includes(identities.get(agent.id)?.project_role)) selected.set(agent.project_id, agent.owner_id);
-  }
+  selectRoleOwners(rows, selected, identities, retired);
   for (const owner of valuesOf(rows, "owner_session")) {
     if (owner.project_id && typeof owner.pinned_agent_id === "string") selected.set(owner.project_id, owner.owner_id);
   }
   return selected;
+}
+
+function removeAbsentOwnerHints(rows, selected) {
+  const present = new Set([...valuesOf(rows, "agent"), ...valuesOf(rows, "owner_session")].map((row) => row.owner_id));
+  for (const [project, owner] of selected) if (!present.has(owner)) selected.delete(project);
+}
+
+function selectRoleOwners(rows, selected, identities, retired) {
+  for (const agent of valuesOf(rows, "agent")) {
+    if (agent.project_id && !retired.has(agent.owner_id)
+      && ["coordinator", "worker"].includes(identities.get(agent.id)?.project_role)) selected.set(agent.project_id, agent.owner_id);
+  }
 }
 
 function heldProjectOwners(projects = [], retired) {
@@ -62,13 +73,13 @@ function heldProjectOwners(projects = [], retired) {
   return selected;
 }
 
-export function deviceDirectories(rows, held, deviceId) {
+export function deviceDirectories(rows, held, deviceId, snapshot = false) {
   const agents = valuesOf(rows, "agent"), sources = valuesOf(rows, "project_source"), directories = valuesOf(rows, "workspace_directory");
   const lifecycles = new Map(valuesOf(rows, "workspace_lifecycle").map((row) => [row.workspace_id, row]));
   const projectSessions = new Map(valuesOf(rows, "project_session").map((row) => [row.project_id, row]));
   const ownerRows = valuesOf(rows, "owner_session");
   const ownerSessions = new Map(ownerRows.filter((row) => row.workspace_id).map((row) => [row.workspace_id, row]));
-  const projectOwnersById = projectOwners(rows, held);
+  const projectOwnersById = projectOwners(rows, held, snapshot);
   const projects = valuesOf(rows, "project").map((project) => stampProject({ ...project,
     ...sessionProjection(projectSessions.get(project.project_id)), entity_id: projectOwnersById.get(project.project_id) ?? null,
     sources: sources.filter((source) => source.project_id === project.project_id) }, deviceId));
@@ -78,11 +89,24 @@ export function deviceDirectories(rows, held, deviceId) {
     entity_id: ownerIdOf(agents, "workspace_id", workspace.id) || ownerSessions.get(workspace.id)?.owner_id || workspace.entity_id,
     directories: directories.filter((directory) => directory.workspace_id === workspace.id) }, deviceId));
   const result = {
-    projects: mergeList(held("projects"), projects, deletedKeys(rows, "project"), (project) => project.id || project.project_id),
-    workspaces: mergeList(held("workspaces"), workspaces, deletedKeys(rows, "workspace"), (workspace) => workspace.id),
+    projects: mergeList(held("projects"), projects, deletedKeys(rows, "project"), (project) => project.id || project.project_id, snapshot),
+    workspaces: mergeList(held("workspaces"), workspaces, deletedKeys(rows, "workspace"), (workspace) => workspace.id, snapshot),
   };
   clearRetiredDirectoryFields(rows, result);
   return result;
+}
+
+export function deviceProjectReplica(rows, project, held) {
+  const source = rows.get(deviceRecordId("project", project.id))?.row;
+  if (!source) return held || project;
+  // Each projection retains its own runtime/policy observations; copying a
+  // sibling list's held fields could overwrite a newer settings observation.
+  const next = { ...held, ...source };
+  for (const field of ["id", "deviceId", "projectKey", "sources", "entity_id", ...sessionFields]) {
+    if (Object.hasOwn(project, field)) next[field] = project[field];
+    else delete next[field];
+  }
+  return next;
 }
 
 const lifecycleFields = ["pruned_bytes", "pruned_at_ms", "noticed_at_ms", "size_bytes", "size_measured_at_ms"];
@@ -221,7 +245,7 @@ export function deviceProjectRosters(rows, owners, held) {
   return rosters;
 }
 
-export function deviceFeed(rows, owners, directories, held, deviceId) {
+export function deviceFeed(rows, owners, directories, held, deviceId, snapshot = false) {
   const previous = held("feed") || {};
   const captures = valuesOf(rows, "inbox_capture").map((row) => stampRow({ ...row, kind: "capture", capture_id: row.id,
     unread: row.needs_answer === true, unread_count: row.needs_answer ? 1 : 0,
@@ -230,9 +254,10 @@ export function deviceFeed(rows, owners, directories, held, deviceId) {
     unread: row.unread_count || 0 }, deviceId));
   const managed = new Set([...rows.values()].filter((entry) => ["inbox_task", "inbox_capture", "agent", "inbox_conversation", "owner_session"].includes(entry.kind))
     .map((entry) => (entry.row || entry.previousRow)?.owner_id || entry.key));
-  const unchanged = (previous.items || []).filter((row) => !managed.has(row.entity_id || row.task_id || row.capture_id));
+  const unchanged = snapshot ? [] : (previous.items || []).filter((row) => !managed.has(row.entity_id || row.task_id || row.capture_id));
   const items = [...unchanged, ...owners.values(), ...captures, ...tasks];
-  return { ...previous, projects: directoryRuntimeAliases(directories.projects, previous.projects),
+  const retired = snapshot ? { plans: [], externalWorktrees: [], external_worktrees: [], pending: [] } : {};
+  return { ...previous, ...retired, projects: directoryRuntimeAliases(directories.projects, previous.projects),
     workspaces: directoryRuntimeAliases(directories.workspaces, previous.workspaces), items, runs: [...owners.values()], cached: false };
 }
 
@@ -244,10 +269,18 @@ function directoryRuntimeAliases(rows, previous) {
     .filter((field) => Object.hasOwn(before.get(row.id) || {}, field)).map((field) => [field, before.get(row.id)[field]])) }));
 }
 
-export function deviceArchive(rows, previous = {}) {
+const standaloneWorktree = (row) => Boolean(row.worktree_id) && !row.run_id && !row.task_id && !row.workspace_id;
+export function deviceArchive(rows, previous = {}, snapshot = false) {
   const incoming = valuesOf(rows, "archived_worktree").map((row) => ({ ...row, kind: "branch", worktree_id: row.id,
     title: row.name, state: row.status, finished_at: row.archived_at }));
-  return { ...previous, items: mergeList(previous.items, incoming, deletedKeys(rows, "archived_worktree"), (row) => row.worktree_id || row.id) };
+  // archived.list also owns historical runs/plans and finished workspaces.
+  // Device membership covers standalone archived worktrees, not that composite.
+  const outside = (previous.items || []).filter((row) => !standaloneWorktree(row));
+  const represented = new Set(outside.map((row) => row.worktree_id).filter(Boolean));
+  const selected = incoming.filter((row) => !represented.has(row.worktree_id));
+  const worktrees = (previous.items || []).filter(standaloneWorktree);
+  return { ...previous, items: [...outside,
+    ...mergeList(worktrees, selected, deletedKeys(rows, "archived_worktree"), (row) => row.worktree_id || row.id, snapshot)] };
 }
 
 export const deviceFamilies = new Set(["project", "project_source", "workspace", "workspace_directory", "badge", "agent", "identity",

@@ -97,6 +97,137 @@ const legacyUnlinkedOwner = () => {
   });
 };
 
+async function seedLegacySnapshotMembership() {
+  const task = deviceRecords().find((record) => record.kind === "inbox_task").row;
+  const ghost = { ...task, id: "legacy-inbox-task", title: "Legacy watched task" };
+  const outside = { ...task, id: "outside-task", watched: false, title: "Independent whole-list task" };
+  const oldProject = { id: "legacy-project", project_id: "legacy-project", name: "Removed project", entity_id: "legacy-project-owner" };
+  const current = { id: "proj-1", project_id: "proj-1", entity_id: "project-owner", compaction_thresholds: { codex: 12345 } };
+  const ownerless = { id: "proj-2", project_id: "proj-2", entity_id: "ghost-owner-p2" };
+  const agent = deviceRecords().find((record) => record.kind === "agent").row;
+  const oldOwner = { kind: "branch", entity_id: "legacy-owner", run_id: "legacy-owner", project_id: "legacy-project", workspace_id: "legacy-workspace",
+    agents: [{ ...agent, owner_id: "legacy-owner", id: "legacy-agent", conversation_id: "legacy-agent", thread_id: "legacy-thread" }] };
+  const oldCapture = { kind: "capture", capture_id: "legacy-capture", title: "Removed capture" };
+  const archiveOutside = [
+    { kind: "task", task_id: "archived-task", worktree_id: null, title: "Historical plan" },
+    { kind: "workspace", workspace_id: "archived-workspace", worktree_id: null, title: "Finished workspace" },
+    { kind: "branch", run_id: "archived-run", worktree_id: "linked-worktree", title: "Historical run with worktree facts" },
+  ];
+  const puts = [
+    [address("projects"), [oldProject, current, ownerless]],
+    [address("device-projects"), [oldProject, { ...current, compaction_thresholds: { codex: 24680 } }, ownerless]],
+    [address("workspaces"), [{ id: "legacy-workspace", project_id: "legacy-project", entity_id: "legacy-owner" },
+      { id: "workspace-1", project_id: "proj-1", work_summary: "Held runtime", lifecycle: { idle: true, holds: ["dirty"], reclaimable: false } }]],
+    [address("project-settings", "legacy-project"), { project_id: "legacy-project", compaction_thresholds: { codex: 99999 } }],
+    [address("project-settings", "proj-1"), { project_id: "proj-1", compaction_thresholds: { codex: 67890 } }],
+    [address("row", "legacy-owner"), oldOwner],
+    [address("row", "ghost-owner-p2"), { kind: "project", entity_id: "ghost-owner-p2", project_id: "proj-2", agents: [] }],
+    [address("project-agents", "legacy-project-owner"), { entity_id: "legacy-project-owner", pinned_agent_id: null, agents: [] }],
+    [address("project-agents", "ghost-owner-p2"), { entity_id: "ghost-owner-p2", pinned_agent_id: null, agents: [] }],
+    [address("feed"), { items: [oldCapture, oldOwner, { kind: "tracker_task", task_id: ghost.id, project_id: "proj-1" }], runs: [oldOwner],
+      plans: [{ kind: "task", task_id: "legacy-plan" }], externalWorktrees: [{ kind: "worktree", worktree_id: "legacy-external" }],
+      external_worktrees: [{ kind: "worktree", worktree_id: "legacy-snake-external" }], pending: [{ workspace_id: "legacy-pending" }] }],
+    [address("archive"), { items: [{ kind: "branch", worktree_id: "legacy-archive", title: "Removed worktree" }, ...archiveOutside] }],
+    [address("user-session"), { session_started_ms: 10, last_activity_ms: 20, previous_session_ended_ms: 1, now_ms: 30, gap_ms: 21600000 }],
+    [address("tracker-tasks", "proj-1"), { tasks: [ghost, outside] }],
+    [address("tracker-summary", "proj-1", ghost.id), { task: ghost }],
+    [address("tracker-task", "proj-1", ghost.id), { task: { ...ghost, body: "Keep independent task body" }, timeline: [{ id: "event-1", body: "Keep timeline" }], has_more: false }],
+    [{ ...address("projects"), deviceId: "other-device" }, [{ id: "other-project", name: "Other device" }]],
+  ];
+  await Promise.all(puts.map(([target, value]) => cache.writeCached(target, value)));
+  return archiveOutside;
+}
+
+function completeSnapshotRecords() {
+  const records = [...deviceRecords(), ...projectOwnerRecords()];
+  records.find((record) => record.kind === "badge").row.projects = 2;
+  const project = records.find((record) => record.kind === "project");
+  records.push(deviceRecord("project", "proj-2", { ...project.row, id: "proj-2", project_id: "proj-2", name: "Ownerless project", path: "/synthetic/Ownerless project" }));
+  return records;
+}
+
+async function expectLegacyMembershipGone({ empty, archiveOutside }) {
+  expect((await raw("projects")).map((project) => project.id)).toEqual(empty ? [] : ["proj-1", "proj-2"]);
+  expect((await raw("device-projects")).map((project) => project.id)).toEqual(empty ? [] : ["proj-1", "proj-2"]);
+  expect((await raw("workspaces")).map((workspace) => workspace.id)).toEqual(empty ? [] : ["workspace-1"]);
+  for (const owner of ["legacy-owner", "ghost-owner-p2"]) expect(await raw("row", owner)).toBeUndefined();
+  for (const owner of ["legacy-project-owner", "ghost-owner-p2"]) expect(await raw("project-agents", owner)).toBeUndefined();
+  expect(await raw("project-settings", "legacy-project")).toBeUndefined();
+  const feed = await raw("feed");
+  expect(feed.items.some((row) => row.capture_id === "legacy-capture" || row.entity_id === "legacy-owner" || row.task_id === "legacy-inbox-task")).toBe(false);
+  for (const field of ["plans", "externalWorktrees", "external_worktrees", "pending"]) expect(feed[field] || []).toEqual([]);
+  const archive = await raw("archive");
+  expect(archive.items.filter((row) => row.worktree_id === "legacy-archive")).toEqual([]);
+  for (const row of archiveOutside) expect(archive.items).toContainEqual(row);
+  const catalog = await raw("tracker-tasks", "proj-1");
+  expect(catalog.tasks.map((task) => task.id)).toEqual(expect.arrayContaining(["legacy-inbox-task", "outside-task"]));
+  expect(catalog.tasks.find((task) => task.id === "legacy-inbox-task").watched).toBe(false);
+  expect(catalog.tasks.find((task) => task.id === "outside-task").watched).toBe(false);
+  expect(await raw("tracker-task", "proj-1", "legacy-inbox-task")).toMatchObject({ task: { body: "Keep independent task body" }, timeline: [{ id: "event-1", body: "Keep timeline" }] });
+  expect((await cache.readCached({ ...address("projects"), deviceId: "other-device" })).value).toEqual([{ id: "other-project", name: "Other device" }]);
+}
+
+it("a completed nonempty first snapshot reconciles legacy-only device projection membership", async () => {
+  const archiveOutside = await seedLegacySnapshotMembership(), writer = create();
+  expect(await publish(writer, completeSnapshotRecords(), { snapshot: true })).toBe(true);
+  await expectLegacyMembershipGone({ empty: false, archiveOutside });
+  expect((await raw("projects"))[0].compaction_thresholds).toEqual({ codex: 12345 });
+  expect((await raw("device-projects"))[0].compaction_thresholds).toEqual({ codex: 24680 });
+  expect((await raw("project-settings", "proj-1")).compaction_thresholds).toEqual({ codex: 67890 });
+  expect((await raw("projects"))[1].entity_id).toBeNull();
+  expect((await raw("workspaces"))[0]).toMatchObject({ work_summary: "Held runtime", lifecycle: { idle: true, holds: ["dirty"], reclaimable: false } });
+  expect(await raw("project-agents", "project-owner")).toMatchObject({ pinned_agent_id: "coordinator" });
+});
+
+it("a completed empty first snapshot clears legacy-only device membership but preserves independent records", async () => {
+  const archiveOutside = await seedLegacySnapshotMembership(), writer = create();
+  expect(await publish(writer, [], { snapshot: true })).toBe(true);
+  await expectLegacyMembershipGone({ empty: true, archiveOutside });
+  expect(await raw("user-session")).toBeUndefined();
+  expect(await raw("project-settings", "proj-1")).toBeUndefined();
+});
+
+it("a pending unacknowledged optimistic create fences a complete snapshot before membership cleanup", async () => {
+  const archiveOutside = await seedLegacySnapshotMembership(), writer = create();
+  let finish;
+  mutations.wrapTaskMutationCall(deviceId, "tasks.create", () => new Promise((resolve) => { finish = resolve; }));
+  const captured = await writer.capture(), before = await raw("projects");
+  try {
+    expect(await writer.publish({ records: [], capture: captured, snapshot: true, response: response("pending-create") })).toBe(false);
+    expect(await raw("projects")).toEqual(before);
+    expect((await raw("feed")).items.some((row) => row.capture_id === "legacy-capture")).toBe(true);
+    expect((await raw("archive")).items).toContainEqual(archiveOutside[0]);
+    expect(await writer.readCursor()).toBeUndefined();
+  } finally { finish(); await Promise.resolve(); }
+});
+
+it("a completed resnapshot after journal incarnation rotation reconciles raw and legacy-only membership", async () => {
+  const writer = create();
+  await publish(writer, deviceRecords(), { snapshot: true, response: { ...response("journal-2"), incarnation: "journal-2" } });
+  const archiveOutside = await seedLegacySnapshotMembership();
+  expect(await writer.reset({ capture: await writer.capture(), expectedCursor: "journal-2" })).toBe(true);
+  expect(await publish(writer, [], { snapshot: true, response: { ...response("journal-3"), incarnation: "journal-3", watermark: "9" } })).toBe(true);
+  await expectLegacyMembershipGone({ empty: true, archiveOutside });
+  expect((await writer.readCursor()).incarnation).toBe("journal-3");
+});
+
+it("shared project retirement fences cleanup of legacy rows even before any raw device membership exists", async () => {
+  await seedLegacySnapshotMembership();
+  const writer = create(), captured = await writer.capture(), before = await raw("projects");
+  const authority = await import("../src/core/taskContentAuthority.js");
+  await authority.mergeTaskContentRecordsTogether({ deviceId, projectId: "legacy-project" }, [], () => ({ values: [], retire: true }));
+  expect(await writer.publish({ records: [], capture: captured, snapshot: true, response: response("retired-first") })).toBe(false);
+  expect(await raw("projects")).toEqual(before);
+});
+
+it("thread retirement during a first snapshot fences the entire legacy membership cleanup", async () => {
+  await seedLegacySnapshotMembership();
+  const writer = create(), captured = await writer.capture(), before = await raw("projects");
+  await cache.writeCached(address("thread", "legacy-owner", "legacy-agent"), { thread_id: "new-legacy-thread", thread_generation_revision: "2", retired_thread_ids: ["legacy-thread"], items: [] });
+  expect(await writer.publish({ records: [], capture: captured, snapshot: true, response: response("retired-thread-first") })).toBe(false);
+  expect(await raw("projects")).toEqual(before);
+});
+
 it.each(["coordinator", null])("an unrelated null-workspace legacy owner cannot steal a project owner proven by pin=%s or roles", async (pin) => {
   const writer = create();
   await cache.writeCached(address("project-agents", "legacy-owner"), { entity_id: "legacy-owner", pinned_agent_id: null, agents: [] });
@@ -262,11 +393,12 @@ it.each([false, true])("historical deletes carrying the current recreated row pr
   expect((await raw("feed")).items.find((row) => row.capture_id === "capture-1")?.title).toBe("Recreated capture");
 });
 
-it("retains the cache on empty snapshots and refuses late captures or pending local mutations", async () => {
+it("retains the cache on empty incremental pages and refuses late snapshots or pending local mutations", async () => {
   const writer = create();
   await cache.writeCached(address("feed"), { items: [{ kind: "capture", capture_id: "cached", title: "Cached capture" }] });
   const held = await raw("feed");
-  await publish(writer, [], { snapshot: true, response: response("empty") });
+  expect(await publish(writer, [], { snapshot: true, accept: () => false, response: response("late") })).toBe(false);
+  await publish(writer, [], { response: response("empty") });
   expect(await raw("feed")).toEqual(held);
   const capture = await writer.capture(); let finish;
   mutations.wrapTaskMutationCall(deviceId, "entity.seen", () => new Promise((resolve) => { finish = resolve; }));

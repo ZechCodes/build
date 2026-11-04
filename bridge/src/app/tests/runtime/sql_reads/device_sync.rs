@@ -11,6 +11,14 @@ async fn device_sync_wire_roundtrip_within_100ms() {
     device_roundtrip(Duration::from_millis(100), 6000).await;
 }
 
+fn check_wire_latency(label: &str, elapsed: Duration, deadline: Duration) {
+    eprintln!("device wire {label} elapsed_us={}", elapsed.as_micros());
+    assert!(
+        elapsed <= deadline,
+        "complete {label} exceeded {deadline:?}: {elapsed:?}"
+    );
+}
+
 async fn device_roundtrip(deadline: Duration, fixture_rows: usize) {
     let dir = tempfile::tempdir().unwrap();
     let (_repo, app, _project_id) = tracked(dir.path());
@@ -70,13 +78,10 @@ async fn device_roundtrip(deadline: Duration, fixture_rows: usize) {
     holder.join().unwrap();
     let answer =
         answer.expect("device lease admission and first page must bypass app lock before release");
-    eprintln!(
-        "device wire snapshot rows={fixture_rows} elapsed_us={}",
-        snapshot_elapsed.as_micros()
-    );
-    assert!(
-        snapshot_elapsed <= deadline,
-        "complete device snapshot exceeded {deadline:?}: {snapshot_elapsed:?}"
+    check_wire_latency(
+        &format!("snapshot rows={fixture_rows}"),
+        snapshot_elapsed,
+        deadline,
     );
     let phases = samples.snapshot();
     eprintln!("device snapshot phases={phases}");
@@ -140,11 +145,7 @@ async fn device_roundtrip(deadline: Duration, fixture_rows: usize) {
             .await
             .unwrap();
         let elapsed = started.elapsed();
-        eprintln!("device wire {method} elapsed_us={}", elapsed.as_micros());
-        assert!(
-            elapsed <= deadline,
-            "complete {method} exceeded {deadline:?}: {elapsed:?}"
-        );
+        check_wire_latency(method, elapsed, deadline);
         assert_eq!(answer["ok"], true, "{answer}");
         if method == "sync.changes" {
             assert!(

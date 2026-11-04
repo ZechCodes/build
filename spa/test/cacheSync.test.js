@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { called, passesSettled } from "./waits.js";
 import { task as trackerTask } from "./trackerWireFixture.js";
-import { deviceRecords } from "./fixtures/deviceSync.js";
+import { deviceRecords, projectOwnerRecords } from "./fixtures/deviceSync.js";
 
 const ago = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
@@ -2844,24 +2844,28 @@ it("uses columns-only support for a cold pushed task read without refetching met
 });
 
 
+const projectDeviceRecords = () => [deviceRecords().find((record) => record.kind === "project"), ...projectOwnerRecords()];
+
 it.each([
   ["3.34.0", false, false], ["3.33.0", true, false], ["3.34.0", true, true],
 ])("selects exactly one device list and roster writer (wire %s, sync.device=%s)", async (version, capable, owned) => {
   vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
   deviceScopedSupported = capable; deviceWireVersion = version;
   projectWorkersSupported = true;
-  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records: [] });
+  const records = projectDeviceRecords();
+  const listedProject = { ...records[0].row, entity_id: "project-owner", run_id: "project-owner" };
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records });
   script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
-  script["project.list"] = () => ({ projects: [projectList] });
-  const roster = { entity_id: "run-proj", pinned_agent_id: "coordinator-later", agents: [
-    { id: "worker-first", ordinal: 1, project_role: "worker" },
-    { id: "coordinator-later", ordinal: 2, project_role: "coordinator" },
+  script["project.list"] = () => ({ projects: [listedProject] });
+  const roster = { entity_id: "project-owner", pinned_agent_id: "coordinator", agents: [
+    { id: "worker", ordinal: 1, project_role: "worker" },
+    { id: "coordinator", ordinal: 3, project_role: "coordinator" },
   ] };
   script["agent.list"] = () => roster;
-  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, [projectList]);
+  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, [listedProject]);
   await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, []);
-  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [], projects: [projectList], workspaces: [] });
-  await cache.writeCached({ deviceId: "dev-1", entityId: "run-proj", kind: "project-agents" }, roster);
+  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [], projects: [listedProject], workspaces: [] });
+  await cache.writeCached({ deviceId: "dev-1", entityId: "project-owner", kind: "project-agents" }, roster);
   try {
     sync.startCacheSync();
     await passesSettled(sync, "dev-1");
@@ -2869,7 +2873,11 @@ it.each([
     for (const method of ["board.list", "project.list", "workspace.list", "agent.list"]) {
       expect(calls(method).length > 0, method).toBe(!owned);
     }
-    expect((await read("run-proj", "project-agents")).value).toEqual(roster);
+    const published = (await read("project-owner", "project-agents")).value;
+    expect(published.entity_id).toBe(roster.entity_id);
+    expect(published.pinned_agent_id).toBe(roster.pinned_agent_id);
+    expect(published.agents.map(({ id, ordinal, project_role }) => ({ id, ordinal, project_role }))).toEqual(roster.agents);
+    if (!owned) expect(published).toEqual(roster);
   } finally { vi.unstubAllGlobals(); }
 });
 
@@ -2923,33 +2931,30 @@ it("wakes the device engine for legacy state pushes while preserving its cached 
 
 it("enriches only existing engine rows with runtime state without replacing durable names, reads or membership", async () => {
   vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
-  deviceScopedSupported = true;
-  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records: [] });
+  deviceScopedSupported = true; projectWorkersSupported = true;
+  const records = projectDeviceRecords().map((record) => record.kind === "agent"
+    ? { ...record, row: { ...record.row, read_through_sequence: "9", last_sequence: "9", unread_count: 0 } } : record);
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records });
   script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
-  const row = branchItem({ entity_id: "run-1", title: "Engine title", working: false, agents: [{
-    id: "agent-1", conversation_id: "agent-1", thread_id: "thread-1", thread_generation_revision: 2,
-    name: "Engine agent", topic: "Engine topic", read_through_sequence: "9", unread_count: 0, working: false,
-  }] });
-  const roster = { entity_id: "run-1", pinned_agent_id: "agent-1", agents: row.agents };
-  await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "row" }, row);
-  await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "project-agents" }, roster);
-  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, []);
-  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, []);
-  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [row], projects: [], workspaces: [] });
   try {
     sync.startCacheSync(); await passesSettled(sync, "dev-1");
-    const state = { ...row, title: "Legacy title", working: true, agents: [{ ...row.agents[0],
+    const row = (await read("project-owner", "row")).value;
+    const roster = (await read("project-owner", "project-agents")).value;
+    expect(row).toBeDefined(); expect(roster).toBeDefined();
+    const state = { ...row, title: "Legacy title", working: true, agents: row.agents.map((agent) => ({ ...agent,
       name: "Legacy agent", topic: "Legacy topic", read_through_sequence: "1", unread_count: 8, working: true,
-    }, { id: "legacy-only", working: true }] };
+    })).concat({ id: "legacy-only", working: true }) };
     await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([
-      { entity_id: "run-1", state }, { entity_id: "legacy-new-owner", state: { ...state, entity_id: "legacy-new-owner" } },
+      { entity_id: "project-owner", state }, { entity_id: "legacy-new-owner", state: { ...state, entity_id: "legacy-new-owner" } },
     ]);
     await settle();
-    const written = (await read("run-1", "row")).value;
-    expect(written).toEqual({ ...row, working: true, agents: [{ ...row.agents[0], working: true }] });
+    const written = (await read("project-owner", "row")).value;
+    expect(written).toEqual({ ...row, working: true, agents: row.agents.map((agent) => ({ ...agent, working: true })) });
     expect(await read("legacy-new-owner", "row")).toBeUndefined();
     expect((await read("", "feed")).value.items).toMatchObject([written]);
-    expect((await read("run-1", "project-agents")).value).toEqual({ ...roster, working: true, agents: [{ ...row.agents[0], working: true }] });
+    const observed = new Set(row.agents.map((agent) => agent.id));
+    expect((await read("project-owner", "project-agents")).value).toEqual({ ...roster, working: true,
+      agents: roster.agents.map((agent) => observed.has(agent.id) ? { ...agent, working: true } : agent) });
   } finally { vi.unstubAllGlobals(); }
 });
 
@@ -2980,16 +2985,13 @@ it.each(["3.33.0", "3.34.0"])("restores the whole legacy pass when reconnect cro
 it("enriches cached workspace liveness without overwriting engine lifecycle facts or directory ownership", async () => {
   vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
   deviceScopedSupported = true;
-  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records: [] });
+  const records = deviceRecords().filter((record) => ["project", "workspace", "workspace_lifecycle", "owner_session", "project_session"].includes(record.kind));
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records });
   script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
-  const workspace = { id: "workspace-runtime", workspace_id: "workspace-runtime", name: "Engine workspace", lifecycle: {
-    size_bytes: 200, pruned_bytes: 100, idle: false, reclaimable: false, holds: [],
-  } };
-  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, []);
-  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [workspace]);
-  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [], projects: [], workspaces: [workspace] });
   try {
     sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    const workspace = (await read("", "workspaces")).value.find((row) => row.id === "workspace-1");
+    expect(workspace).toBeDefined();
     await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([{ entity_id: "board", state: { workspaces: [
       { ...workspace, name: "Legacy workspace", lifecycle: { size_bytes: 999, pruned_bytes: 999, idle: true, reclaimable: true, holds: ["dirty"], dirty_files: 3 } },
       { id: "legacy-only-workspace", name: "Legacy only" },

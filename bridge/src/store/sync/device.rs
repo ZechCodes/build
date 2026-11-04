@@ -419,6 +419,7 @@ pub(super) fn apply_projection(
     entity: &Entity,
     record: Option<&Value>,
     seq: i64,
+    budget: &mut super::retention::VersionBudget,
 ) -> Result<(), StoreError> {
     let raw = record.map(Value::to_string);
     let payload_bytes = raw.as_ref().map_or(0, |raw| raw.len());
@@ -436,7 +437,7 @@ pub(super) fn apply_projection(
         .optional()?;
     if let Some((from, deleted, previous, _)) = previous {
         let previous_bytes = version_bytes(entity, previous.as_ref().map_or(0, String::len));
-        if super::retention::retain_version(tx, previous_bytes, seq)? {
+        if budget.retain(previous_bytes, seq) {
             tx.prepare_cached("INSERT INTO sync_projection_versions(kind,key,from_seq,to_seq,deleted,record,record_bytes)
              VALUES(?1,?2,?3,?4,?5,?6,?7)")?.execute(
             params![

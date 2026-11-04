@@ -55,14 +55,28 @@ impl PublicationBatch {
         tx: &Transaction<'_>,
         now: i64,
     ) -> Result<Vec<Event>, StoreError> {
-        let (mut cumulative, mut at): (i64, i64) = tx
-            .prepare_cached("SELECT cumulative_bytes,last_at_ms FROM sync_state WHERE id=1")?
-            .query_row([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let (mut cumulative, mut at, persisted_floor, retained, pressure_floor):
+            (i64, i64, i64, i64, i64) = tx
+            .prepare_cached("SELECT cumulative_bytes,last_at_ms,floor,retained_version_bytes,projection_pressure_floor FROM sync_state WHERE id=1")?
+            .query_row([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
+        let mut budget = retention::VersionBudget {
+            retained,
+            pressure_floor,
+        };
         at = at.max(now);
         let mut events = Vec::new();
         let mut added_bytes = 0_i64;
+        let mut stream_heads = BTreeMap::new();
         for (entity, publication) in &self.0 {
-            if let Some((event, bytes)) = publish_one(tx, entity, publication, at, cumulative)? {
+            if let Some((event, bytes)) = publish_one(
+                tx,
+                entity,
+                publication,
+                at,
+                cumulative,
+                &mut budget,
+                &mut stream_heads,
+            )? {
                 cumulative = cumulative
                     .checked_add(bytes)
                     .ok_or_else(|| invalid("byte counter exhausted"))?;
@@ -70,11 +84,18 @@ impl PublicationBatch {
                 events.push(event);
             }
         }
+        write_stream_heads(tx, &stream_heads)?;
         if let Some(last) = events.last() {
-            tx.prepare_cached("UPDATE sync_state SET head=?1,cumulative_bytes=?2,total_bytes=total_bytes+?3,last_at_ms=?4 WHERE id=1")?.execute(params![last.seq.get(),cumulative,added_bytes,at])?;
-            let floor = retention::logical_floor(tx, now, retention::Policy::DEFAULT)?;
-            tx.prepare_cached("UPDATE sync_state SET floor=?1 WHERE id=1 AND floor<?1")?
-                .execute([floor])?;
+            let floor = retention::logical_floor_at(
+                tx,
+                now,
+                retention::Policy::DEFAULT,
+                last.seq.get(),
+                persisted_floor,
+                cumulative,
+            )?;
+            tx.prepare_cached("UPDATE sync_state SET head=?1,cumulative_bytes=?2,total_bytes=total_bytes+?3,last_at_ms=?4,floor=?5,retained_version_bytes=?6,projection_pressure_floor=?7 WHERE id=1")?
+                .execute(params![last.seq.get(),cumulative,added_bytes,at,floor,budget.retained,budget.pressure_floor])?;
         }
         Ok(events)
     }
@@ -98,6 +119,8 @@ fn publish_one(
     publication: &Publication,
     at: i64,
     cumulative: i64,
+    budget: &mut retention::VersionBudget,
+    stream_heads: &mut BTreeMap<Stream, i64>,
 ) -> Result<Option<(Event, i64)>, StoreError> {
     validate(entity, &publication.streams)?;
     let fingerprint = fingerprint(publication.record.as_ref());
@@ -141,7 +164,7 @@ fn publish_one(
         .checked_add(bytes)
         .ok_or_else(|| invalid("byte counter exhausted"))?;
     let seq: i64 = tx.prepare_cached("INSERT INTO sync_journal(at_ms,entity_kind,entity_key,operation,record_bytes,cumulative_bytes) VALUES(?1,?2,?3,?4,?5,?6) RETURNING seq")?.query_row(params![at,entity.kind,entity.key,operation.as_str(),bytes,next],|r|r.get(0))?;
-    write_routes(tx, &routes, seq)?;
+    write_routes(tx, &routes, seq, stream_heads)?;
     let device = Stream::device();
     if old_streams.contains(&device) || current_streams.contains(&device) {
         super::device::apply_projection(
@@ -152,6 +175,7 @@ fn publish_one(
                 .then_some(publication.record.as_ref())
                 .flatten(),
             seq,
+            budget,
         )?;
     }
     let streams = serde_json::to_string(current_streams).expect("routes serialize");
@@ -210,11 +234,23 @@ fn write_routes(
     tx: &Transaction<'_>,
     routes: &BTreeSet<Stream>,
     seq: i64,
+    heads: &mut BTreeMap<Stream, i64>,
 ) -> Result<(), StoreError> {
     for route in routes {
         tx.prepare_cached("INSERT INTO sync_routes(stream_kind,stream_key,seq) VALUES(?1,?2,?3)")?
             .execute(params![route.kind.as_str(), route.key, seq])?;
-        tx.prepare_cached("INSERT INTO sync_stream_state(stream_kind,stream_key,head) VALUES(?1,?2,?3) ON CONFLICT(stream_kind,stream_key) DO UPDATE SET head=excluded.head")?.execute(params![route.kind.as_str(),route.key,seq])?;
+        heads.insert(route.clone(), seq);
+    }
+    Ok(())
+}
+
+fn write_stream_heads(
+    tx: &Transaction<'_>,
+    heads: &BTreeMap<Stream, i64>,
+) -> Result<(), StoreError> {
+    for (route, seq) in heads {
+        tx.prepare_cached("INSERT INTO sync_stream_state(stream_kind,stream_key,head) VALUES(?1,?2,?3) ON CONFLICT(stream_kind,stream_key) DO UPDATE SET head=excluded.head")?
+            .execute(params![route.kind.as_str(), route.key, seq])?;
     }
     Ok(())
 }

@@ -31,6 +31,19 @@ pub(super) fn logical_floor(
     let (head, persisted, bytes): (i64, i64, i64) = conn
         .prepare_cached("SELECT head,floor,cumulative_bytes FROM sync_state WHERE id=1")?
         .query_row([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    logical_floor_at(conn, now, policy, head, persisted, bytes)
+}
+
+/// Evaluate a transaction's final counters before publishing its single head
+/// update. Journal rows already exist in the same transaction at this point.
+pub(super) fn logical_floor_at(
+    conn: &Connection,
+    now: i64,
+    policy: Policy,
+    head: i64,
+    persisted: i64,
+    bytes: i64,
+) -> Result<i64, StoreError> {
     // Append timestamps and byte prefixes are monotonic. These reverse seeks
     // touch one index winner, never MAX(seq) across every expired row.
     let age: i64 = conn.prepare_cached("SELECT COALESCE((SELECT seq FROM sync_journal WHERE at_ms<?1 ORDER BY at_ms DESC,seq DESC LIMIT 1),0)")?.query_row([now.saturating_sub(policy.max_age_ms)],|r|r.get(0))?;
@@ -78,23 +91,22 @@ impl StoreWriter {
 
 pub(super) const MAX_RETAINED_VERSION_BYTES: i64 = 64 * 1024 * 1024;
 
-pub(super) fn retain_version(
-    tx: &Transaction<'_>,
-    bytes: i64,
-    to_seq: i64,
-) -> Result<bool, StoreError> {
-    let retained: i64 = tx
-        .prepare_cached("SELECT retained_version_bytes FROM sync_state WHERE id=1")?
-        .query_row([], |row| row.get(0))?;
-    if retained > MAX_RETAINED_VERSION_BYTES.saturating_sub(bytes) {
-        tx.prepare_cached("UPDATE sync_state SET projection_pressure_floor=MAX(projection_pressure_floor,?1) WHERE id=1")?.execute([to_seq])?;
-        return Ok(false);
+/// Accounting is local to one publication transaction. No marker or deferred
+/// write escapes it: journal::publish writes these counters with the head.
+pub(super) struct VersionBudget {
+    pub retained: i64,
+    pub pressure_floor: i64,
+}
+
+impl VersionBudget {
+    pub fn retain(&mut self, bytes: i64, to_seq: i64) -> bool {
+        if self.retained > MAX_RETAINED_VERSION_BYTES.saturating_sub(bytes) {
+            self.pressure_floor = self.pressure_floor.max(to_seq);
+            return false;
+        }
+        self.retained += bytes;
+        true
     }
-    tx.prepare_cached(
-        "UPDATE sync_state SET retained_version_bytes=retained_version_bytes+?1 WHERE id=1",
-    )?
-    .execute([bytes])?;
-    Ok(true)
 }
 
 fn remaining(tx: &Transaction<'_>, before: u64) -> usize {

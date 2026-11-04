@@ -14,7 +14,28 @@ const address = (kind) => ({ deviceId, entityId: "", kind });
 const project = (name) => ({ ...deviceRecords().find((record) => record.kind === "project").row, name });
 const reply = (extra) => ({ status: "ok", scope, incarnation: "incarnation-paint", bridge_epoch: "epoch-paint", ...extra });
 const reconciling = () => Object.assign(new Error("sync_reconciling"), { code: "unavailable", retryable: true });
-const tick = async () => { for (let count = 0; count < 12; count += 1) await new Promise(setImmediate); };
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+};
+
+// A retry settles only after its asynchronous cache capture and RPC refusal
+// schedule the next backoff. No fixed number of IndexedDB turns establishes it.
+async function settledRetry(request, calls, nextDelay, run) {
+  const scheduled = deferred(), setTimer = globalThis.setTimeout;
+  const timer = vi.spyOn(globalThis, "setTimeout").mockImplementation((callback, delay, ...args) => {
+    const handle = setTimer(callback, delay, ...args);
+    if (delay === nextDelay && request.mock.calls.length === calls) scheduled.resolve();
+    return handle;
+  });
+  try {
+    const result = await run();
+    await scheduled.promise;
+    expect(request).toHaveBeenCalledTimes(calls);
+    return result;
+  } finally { timer.mockRestore(); }
+}
 let cache, feed, inbox, contexts, engine;
 
 beforeEach(async () => {
@@ -36,6 +57,7 @@ afterEach(() => {
   inbox?.unmountInboxList(); feed?.stopFeed(); feed?.dropFeedDevice(deviceId);
   contexts?.resetDeviceContexts();
   document.body.innerHTML = "";
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -73,17 +95,18 @@ it("keeps cached inbox and directory DOM and records identical through a long fe
   const kinds = ["projects", "device-projects", "feed"];
   const beforeCache = await Promise.all(kinds.map((kind) => cache.readCached(address(kind))));
   let fenced = true;
-  const onError = vi.fn();
+  const onError = vi.fn(), changesRequested = deferred(), changesReply = deferred();
   const request = vi.fn(async (method) => {
     if (fenced) throw reconciling();
-    return method === "sync.snapshot" ? reply({ consistency: "leased", lease: { id: "lease-paint", expires_at_ms: Date.now() + 60_000 },
-      watermark: "1", cursor: "cursor-paint-1", records: [deviceRecord("project", "proj-1", project("Caught-up project"))] })
-      : reply({ head: "1", cursor: "cursor-paint-1", changes: [] });
+    if (method === "sync.snapshot") return reply({ consistency: "leased", lease: { id: "lease-paint", expires_at_ms: Date.now() + 60_000 },
+      watermark: "1", cursor: "cursor-paint-1", records: [deviceRecord("project", "proj-1", project("Caught-up project"))] });
+    changesRequested.resolve();
+    return changesReply.promise;
   });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-  expect(await startEngine(request, onError)).toBe(false);
-  await vi.advanceTimersByTimeAsync(1000); await tick();
-  await vi.advanceTimersByTimeAsync(2000); await tick();
+  expect(await settledRetry(request, 1, 1000, () => startEngine(request, onError))).toBe(false);
+  await settledRetry(request, 2, 2000, () => vi.advanceTimersByTimeAsync(1000));
+  await settledRetry(request, 3, 5000, () => vi.advanceTimersByTimeAsync(2000));
   expect(request).toHaveBeenCalledTimes(3);
   expect(onError).not.toHaveBeenCalled();
   expect(await Promise.all(kinds.map((kind) => cache.readCached(address(kind))))).toEqual(beforeCache);
@@ -91,7 +114,12 @@ it("keeps cached inbox and directory DOM and records identical through a long fe
   expect(host.innerHTML).toBe(beforeDirectory);
   expect(document.body.textContent).not.toMatch(/sync_reconciling|reconciling|No projects yet|No activity/i);
   fenced = false;
-  await vi.advanceTimersByTimeAsync(5000); await tick();
+  await vi.advanceTimersByTimeAsync(5000);
+  await changesRequested.promise;
+  // Join the active recovery while its changes response is deliberately held.
+  const caughtUp = engine.catchUp(scope);
+  changesReply.resolve(reply({ head: "1", cursor: "cursor-paint-1", changes: [] }));
+  expect(await caughtUp).toBe(true);
   vi.useRealTimers();
   await vi.waitFor(() => {
     expect(document.querySelector("#inbox-list .stitle")?.textContent).toBe("Caught-up project");
@@ -106,11 +134,11 @@ it("reports a persisting genuine failure through the engine's existing error cal
   const request = vi.fn(async () => { throw failure; });
   const onError = vi.fn();
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
-  expect(await startEngine(request, onError)).toBe(false);
+  expect(await settledRetry(request, 1, 1000, () => startEngine(request, onError))).toBe(false);
   expect(onError).not.toHaveBeenCalled();
-  await vi.advanceTimersByTimeAsync(1000); await tick();
+  await settledRetry(request, 2, 2000, () => vi.advanceTimersByTimeAsync(1000));
   expect(onError).not.toHaveBeenCalled();
-  await vi.advanceTimersByTimeAsync(2000); await tick();
+  await settledRetry(request, 3, 5000, () => vi.advanceTimersByTimeAsync(2000));
   expect(request).toHaveBeenCalledTimes(3);
   expect(onError).toHaveBeenCalledWith(failure);
   expect(document.querySelector("#inbox-list .stitle")?.textContent).toBe("Cached project");

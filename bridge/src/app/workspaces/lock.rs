@@ -20,7 +20,7 @@ impl AppState {
             return Err(crate::reclaim::BUSY.to_string());
         }
         if self.workspaces.get(&workspace_id).is_none() {
-            self.adopt_legacy_workspaces();
+            self.adopt_legacy_workspaces()?;
         }
         let workspace = self.workspaces.set_locked(&workspace_id, locked)?;
         self.note_board_lists_changed(crate::changes::BoardLists::WORKSPACES);

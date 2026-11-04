@@ -153,32 +153,43 @@ impl GitCallScope for UnrelatedGitFixture {
 
 struct RegistryGitFixture;
 impl GitCallScope for RegistryGitFixture {
-    fn changes_device_registry(&self) -> bool { true }
+    fn changes_device_registry(&self) -> bool {
+        true
+    }
     fn invalidate(&self, _: &mut AppState) {}
 }
 struct RefusedRegistryHandoff;
 impl crate::app::git::deferred::DeferredGitWork for RefusedRegistryHandoff {
-    fn run(&self, _: &Value) -> Result<Value,String> { Ok(json!({})) }
+    fn run(&self, _: &Value) -> Result<Value, String> {
+        Ok(json!({}))
+    }
     fn invalidate(&self, _: &mut AppState) {}
-    fn settle(&self, app: &mut AppState, _: Value) -> Result<Value,String> {
-        app.defer_git_work(RegistryGitFixture, |_,_|Ok(json!({})), &json!({}), true);
+    fn settle(&self, app: &mut AppState, _: Value) -> Result<Value, String> {
+        app.defer_git_work(RegistryGitFixture, |_, _| Ok(json!({})), &json!({}), true);
         Err("synthetic refused registry handoff".into())
     }
 }
 
 #[test]
 fn device_fix_round_refused_registry_handoff_does_not_strand_its_fence() {
-    let (_root,mut app,store)=fixture();
+    let (_root, mut app, store) = fixture();
     app.refresh_workspace_snapshot_observations();
     app.mark_device_lifecycle_dirty().unwrap();
-    app.deferred_work=Some(DeferredWork::Git(Box::new(DeferredGit {
-        call:Box::new(RefusedRegistryHandoff),params:Value::Null,invalidates:false,registry_change:true,gate:None,
+    app.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
+        call: Box::new(RefusedRegistryHandoff),
+        params: Value::Null,
+        invalidates: false,
+        registry_change: true,
+        gate: None,
     })));
-    let job=app.take_deferred().unwrap();
-    assert!(matches!(app.apply_deferred_stage("registry.fixture", &json!({}),job.run()),DeferredNext::Answered(Err(_))));
+    let job = app.take_deferred().unwrap();
+    assert!(matches!(
+        app.apply_deferred_stage("registry.fixture", &json!({}), job.run()),
+        DeferredNext::Answered(Err(_))
+    ));
     assert!(app.deferred_work.is_none());
-    assert_eq!(app.active_device_registry_jobs,0);
-    assert_eq!(app.active_deferred_filesystem_jobs,0);
+    assert_eq!(app.active_device_registry_jobs, 0);
+    assert_eq!(app.active_deferred_filesystem_jobs, 0);
     assert_registry_ready(&store);
 }
 

@@ -357,8 +357,10 @@ impl AppState {
 
     pub(in crate::app) fn refresh_workspace_snapshot_observations(&mut self) {
         self.device_lifecycle_holds += 1;
-        self.adopt_legacy_workspaces();
-        if let Err(error) = self.apply_workspace_snapshot_observations() {
+        let result = self
+            .adopt_legacy_workspaces()
+            .and_then(|_| self.apply_workspace_snapshot_observations());
+        if let Err(error) = result {
             eprintln!("device sync workspace refresh: {error}");
         }
         self.publish_read_metadata();
@@ -1047,7 +1049,7 @@ impl AppState {
             return Err(crate::reclaim::BUSY.to_string());
         }
         if self.workspaces.get(&workspace_id).is_none() {
-            self.adopt_legacy_workspaces();
+            self.adopt_legacy_workspaces()?;
         }
         self.workspaces.rename(&workspace_id, &name)?;
         // The feed names workspaces, so every browser standing in one is
@@ -1125,7 +1127,7 @@ impl AppState {
     /// it.
     pub(crate) fn workspace_finish_legacy(&mut self, params: &Value) -> Result<Value, String> {
         self.mark_device_lifecycle_dirty()?;
-        self.adopt_legacy_workspaces();
+        self.adopt_legacy_workspaces()?;
         let branch = params.get("branch").and_then(Value::as_str);
         let project_id = params.get("project_id").and_then(Value::as_str);
         let workspace_id = self
@@ -1158,7 +1160,7 @@ impl AppState {
         source_id: &str,
     ) -> Result<WorkspaceDirectory, String> {
         if self.workspaces.get(workspace_id).is_none() {
-            self.adopt_legacy_workspaces();
+            self.adopt_legacy_workspaces()?;
         }
         let workspace = self
             .workspaces
@@ -1183,7 +1185,7 @@ impl AppState {
 
     pub(crate) fn workspace_root(&mut self, workspace_id: &str) -> Result<PathBuf, String> {
         if self.workspaces.get(workspace_id).is_none() {
-            self.adopt_legacy_workspaces();
+            self.adopt_legacy_workspaces()?;
         }
         let workspace = self
             .workspaces
@@ -1199,8 +1201,15 @@ impl AppState {
         result
     }
 
-    fn adopt_legacy_workspaces(&mut self) {
+    fn adopt_legacy_workspaces(&mut self) -> Result<(), String> {
         self.device_lifecycle_holds += 1;
+        let result = self.adopt_legacy_workspace_rows();
+        self.device_lifecycle_holds -= 1;
+        self.settle_device_lifecycle();
+        result
+    }
+
+    fn adopt_legacy_workspace_rows(&mut self) -> Result<(), String> {
         let primary = self
             .projects
             .iter()
@@ -1222,7 +1231,7 @@ impl AppState {
             .collect::<Vec<_>>();
         for (project_id, name, path, source_id, is_git) in primary {
             let id = format!("legacy-{project_id}");
-            self.adopt_observed_root(&project_id, id, name, path, source_id, is_git);
+            self.adopt_observed_root(&project_id, id, name, path, source_id, is_git)?;
         }
         // A durable workspace may use a run-shaped entity solely as its
         // conversation owner. Such owners deliberately have no Git base branch;
@@ -1273,11 +1282,9 @@ impl AppState {
             })
             .collect::<Vec<_>>();
         for (project_id, id, name, path, source_id) in runs {
-            self.adopt_observed_root(&project_id, id, name, path, source_id, true);
+            self.adopt_observed_root(&project_id, id, name, path, source_id, true)?;
         }
-        self.adopt_external_git_worktrees();
-        self.device_lifecycle_holds -= 1;
-        self.settle_device_lifecycle();
+        self.adopt_external_git_worktrees()
     }
 
     fn adopt_observed_root(
@@ -1288,9 +1295,9 @@ impl AppState {
         path: PathBuf,
         source_id: String,
         is_git: bool,
-    ) {
+    ) -> Result<(), String> {
         if self.workspaces.get(&id).is_some() {
-            return;
+            return Ok(());
         }
         let workspace = WorkspaceRegistry::prepare_root_adoption(
             self.workspaces.root(),
@@ -1301,11 +1308,9 @@ impl AppState {
             source_id,
             is_git,
         );
-        if let Err(error) = self.mark_device_lifecycle_dirty() {
-            eprintln!("device sync workspace adoption: {error}");
-            return;
-        }
+        self.mark_device_lifecycle_dirty()?;
         self.workspaces.install_prepared_root_adoption(workspace);
+        Ok(())
     }
 
     /// Read only Git's local worktree registry. This deliberately avoids the
@@ -1315,7 +1320,7 @@ impl AppState {
     /// The same pass takes rows away: a checkout Build does not own is only
     /// ever a window onto a folder somebody else made, so the window closes
     /// when the folder does ([`Self::prune_adopted_checkouts`]).
-    fn adopt_external_git_worktrees(&mut self) {
+    fn adopt_external_git_worktrees(&mut self) -> Result<(), String> {
         let projects = self
             .projects
             .iter()
@@ -1362,14 +1367,15 @@ impl AppState {
                     path.clone(),
                     source_id.clone(),
                     true,
-                );
+                )?;
             }
             let live = checkouts
                 .into_iter()
                 .map(|(_, path)| path)
                 .collect::<Vec<_>>();
-            self.prune_adopted_checkouts(&project_id, &live);
+            self.prune_adopted_checkouts(&project_id, &live)?;
         }
+        Ok(())
     }
 
     /// Take away the rows of checkouts that are no longer there.
@@ -1385,7 +1391,11 @@ impl AppState {
     /// project's own repository and a run's worktree are adopted under their
     /// own ids from records that are still live, and neither is this pass's
     /// to remove.
-    fn prune_adopted_checkouts(&mut self, project_id: &str, live: &[PathBuf]) {
+    fn prune_adopted_checkouts(
+        &mut self,
+        project_id: &str,
+        live: &[PathBuf],
+    ) -> Result<(), String> {
         let stale = self
             .workspaces
             .list(Some(project_id))
@@ -1402,12 +1412,10 @@ impl AppState {
         for id in stale {
             // Absence or an inspection error is not confirmed deletion;
             // keep durable policy for a checkout that may return.
-            if let Err(error) = self.mark_device_lifecycle_dirty() {
-                eprintln!("device sync workspace removal: {error}");
-                continue;
-            }
+            self.mark_device_lifecycle_dirty()?;
             self.workspaces.forget(&id);
         }
+        Ok(())
     }
 }
 

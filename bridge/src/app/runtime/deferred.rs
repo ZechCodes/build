@@ -758,6 +758,7 @@ impl AppState {
             // A refused write-back hands nothing on.
             self.deferred_work = None;
             self.deferred_result_check = None;
+            self.settle_device_lifecycle();
             return DeferredNext::Answered(applied);
         }
         match self.take_deferred() {

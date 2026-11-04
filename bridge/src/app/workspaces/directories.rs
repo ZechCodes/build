@@ -420,7 +420,7 @@ impl AppState {
             return Err(crate::reclaim::BUSY.to_string());
         }
         if self.workspaces.get(&workspace_id).is_none() {
-            self.adopt_legacy_workspaces();
+            self.adopt_legacy_workspaces()?;
         }
         self.workspaces
             .get(&workspace_id)

@@ -130,3 +130,12 @@ it("bounds empty snapshot pages without publishing a partial membership", async 
   expect(rpc.mock.calls.length).toBeLessThanOrEqual(1000);
   expect(store.publish).not.toHaveBeenCalled();
 });
+
+it("resnapshots a stale scope on open even when its saved applied head matches", async () => {
+  const rpc = vi.fn().mockResolvedValueOnce(response({ head: "2" })).mockResolvedValueOnce(snapshot())
+    .mockResolvedValueOnce(changes());
+  const { engine, store } = fixture(rpc, { cursor: "stale-cursor", incarnation: "i", appliedHead: "2", snapshotRequired: true });
+  await engine.checkHeads();
+  expect(rpc.mock.calls.map(([method]) => method)).toEqual(["sync.head", "sync.snapshot", "sync.changes"]);
+  expect(store.publish.mock.calls[0][0]).toMatchObject({ snapshot: true, expectedCursor: "stale-cursor" });
+});

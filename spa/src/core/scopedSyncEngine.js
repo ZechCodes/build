@@ -7,7 +7,8 @@ const MAX_SNAPSHOT_PAGES = 1000;
 const identity = (scope) => JSON.stringify(scope);
 const pageParams = (page) => page ? { page } : {};
 const cursorParams = (held) => held?.cursor ? { cursor: held.cursor } : {};
-const caughtUp = (held, answer) => Boolean(held?.cursor && held.incarnation === answer.incarnation && held.appliedHead === answer.head);
+const caughtUp = (held, answer) => Boolean(held?.cursor && !held.snapshotRequired
+  && held.incarnation === answer.incarnation && held.appliedHead === answer.head);
 
 export function createScopedSyncEngine({ request, storeFor, active = () => true, epoch = () => null }) {
   const scopes = new Map();
@@ -87,11 +88,12 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
   }
 
   async function recoverOnce(entry, held) {
-    if (held?.cursor) return changes(entry, held.cursor);
+    if (held?.cursor && !held.snapshotRequired) return changes(entry, held.cursor);
     const capture = await entry.store.capture();
-    const result = await snapshot(entry, capture, null);
+    const cursor = held?.cursor ?? null;
+    const result = await snapshot(entry, capture, cursor);
     if (!result) return false;
-    return result.resync ? { ...result, capture, cursor: null } : changes(entry, result.cursor);
+    return result.resync ? { ...result, capture, cursor } : changes(entry, result.cursor);
   }
 
   function run(entry, operation) {

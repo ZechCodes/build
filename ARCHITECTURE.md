@@ -4274,7 +4274,8 @@ gate attachment display.
   failed reads without size evidence remain retryable.
 - **Durable task scope recovery.** `scopedSyncRegistry.js` describes mounted
   project task queries and task details, sharing presence with the lock holder
-  across tabs and limiting each device to sixteen active scopes. Definitions
+  across tabs and limiting each device to sixteen active scopes. Followers
+  relay named wake requests to that holder. Definitions
   use canonical filters and order; cursors never cross definitions. Current
   greetings independently gate `sync.projectTasks` and `sync.task`.
   `scopedSyncRuntime.js` runs `scopedSyncEngine.js` only under an actual Web
@@ -4286,7 +4287,11 @@ gate attachment display.
   the cursor in one IndexedDB transaction, using task-content lifetime,
   mutation and row-revision fences. Cursor resets affect one scope. The seen
   head is separate from the fully applied head so an interrupted continuation
-  remains repairable. New replica kinds use the existing records store and
+  remains repairable. Invalidation records require a fresh snapshot on open,
+  including when the applied head matches. Cursors share their owning project's
+  eviction namespace. Live-keyset membership can publish while retaining newer
+  cached entity revisions, then replay repairs post-watermark membership.
+  New replica kinds use the existing records store and
   preserve cached content without a schema upgrade.
   Pushes wake this reader; reconnect, foreground return and a thirty-second
   `sync.head` interval repair missed notifications. Connection passes capture

@@ -72,3 +72,23 @@ it("restarts an expired first snapshot lease with no previously stored cursor", 
   expect(await engine.catchUp(scope)).toBe(true);
   expect(await ids()).toEqual(["task-2"]);
 });
+
+it("reopens an invalidated scope with a snapshot even though its cursor was durably saved", async () => {
+  let snapshots = 0;
+  const rpc = vi.fn(async (method) => {
+    if (method === "sync.snapshot") {
+      snapshots += 1;
+      return snapshot([row("task-1", snapshots === 1 ? "1" : "3")],
+        { cursor: snapshots === 1 ? "S" : "S3", watermark: snapshots === 1 ? "1" : "3" });
+    }
+    return changes(snapshots === 1 ? [row("task-1", "2", { operation: "invalidate", row: null })] : []);
+  });
+  const first = fixture(rpc);
+  expect(await first.engine.catchUp(scope)).toBe(true);
+  expect(await first.store.readCursor()).toMatchObject({ cursor: "C4", snapshotRequired: true });
+  first.engine.dispose();
+  const reopened = fixture(rpc);
+  expect(await reopened.engine.catchUp(scope)).toBe(true);
+  expect(snapshots).toBe(2);
+  expect(await reopened.store.readCursor()).toMatchObject({ snapshotRequired: false });
+});

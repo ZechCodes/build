@@ -218,3 +218,20 @@ it("retains honest normalized uncertainty when a task head lacks unread counter 
   await publish(writer, [record("task-1", "1", { row: task("task-1", { watched: true }) })], { snapshot: true });
   expect((await summaries.readSummaryQuery(place, scope.filters)).stale).toBe(true);
 });
+
+it("evicts owning project cursors with their replicas so reopening snapshots instead of resuming empty content", async () => {
+  const project = create(), detail = create({ kind: "task", task_id: "task-1" });
+  const siblingScope = { kind: "project_tasks", project_id: "proj-other", filters: {}, order: "number" };
+  const sibling = sync.createScopedTaskSyncCache({ deviceId, projectId: "proj-other", scope: siblingScope, bridgeIdentity: deviceId });
+  await publish(project, [record("task-1")], { snapshot: true });
+  await publish(detail, [record("task-1", "1", { kind: "task_head", row: { task: task("task-1"), timeline: [] } })], { snapshot: true });
+  await publish(sibling, [], { snapshot: true, response: response("sibling-cursor") });
+  await cache.evictEntity(deviceId, projectId);
+  const reopened = create();
+  expect(await reopened.readCursor()).toBeUndefined();
+  expect(await create({ kind: "task", task_id: "task-1" }).readCursor()).toBeUndefined();
+  expect((await sibling.readCursor()).cursor).toBe("sibling-cursor");
+  expect(await publish(reopened, [record("task-1", "2")], { snapshot: true, response: response("reopened-snapshot") })).toBe(true);
+  expect(await ids()).toEqual(["task-1"]);
+  expect((await reopened.readCursor()).cursor).toBe("reopened-snapshot");
+});

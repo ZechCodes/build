@@ -8,7 +8,12 @@ import { taskAddress, tasksQueryAddress } from "./trackerCache.js";
 import { currentRevision, isMembership, matchingMembership, membershipValue, removedDetail,
   revisionAddress, revisionValue, scopeFilters, taskRecordValue } from "./scopedTaskSyncRecords.js";
 
-export const syncCursorAddress = (deviceId, scope) => ({ deviceId, entityId: "", kind: "sync-cursor", sub: JSON.stringify(scope) });
+// A project eviction removes its recovery position in the same range delete
+// as its replicas. Retaining that position after dropping content would make
+// a no-change replay leave a reopened view permanently empty.
+export const syncCursorAddress = (deviceId, scope, projectId = scope.project_id) => ({
+  deviceId, entityId: projectId, kind: "sync-cursor", sub: JSON.stringify(scope),
+});
 const keyOf = (address) => JSON.stringify([address.deviceId, address.entityId, address.kind, address.sub || ""]);
 const distinct = (addresses) => [...new Map(addresses.map((address) => [keyOf(address), address])).values()];
 const tokenOf = (cursor) => cursor?.cursor ?? null;
@@ -95,7 +100,7 @@ function reducePublication(addresses, records, options, held, context) {
 
 export function createScopedTaskSyncCache({ deviceId, scope, projectId, bridgeIdentity, queryParams, active = () => true }) {
   const place = { deviceId, projectId: projectId || scope.project_id };
-  const cursor = syncCursorAddress(deviceId, scope);
+  const cursor = syncCursorAddress(deviceId, scope, place.projectId);
   const readCursor = async () => (await readCanonicalCached(cursor))?.value;
   const capture = async () => {
     const mutationEpoch = taskMutationEpoch(deviceId), pending = taskMutationsPending(deviceId);

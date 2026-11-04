@@ -611,3 +611,36 @@ fn device_followup_summary_keyset_contains_only_committed_visible_items() {
     let plan:String=store.writer_for_test().query_row("EXPLAIN QUERY PLAN SELECT sequence,summary FROM device_summary_items WHERE conversation_id=?1 AND generation=0 ORDER BY sequence DESC LIMIT 1",[id],|row|row.get(3)).unwrap();
     assert!(plan.contains("SEARCH") && !plan.contains("TEMP"),"{plan}");
 }
+
+#[test]
+fn device_followup_long_durable_titles_do_not_fail_canonical_writes() {
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();
+    let mut run=run_record("long-title");run.agents[0].topic=Some("title".repeat(40_000));
+    store.save_run(&run).expect("device summary limits must not reject a valid canonical topic");
+    let row=projection(&store,"agent",&run.agents[0].id);
+    assert!(row["topic"].as_str().unwrap().chars().count()<=256);
+    let raw:String=store.writer_for_test().query_row("SELECT record FROM agents WHERE id=?1",[&run.agents[0].id],|row|row.get(0)).unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&raw).unwrap()["topic"],run.agents[0].topic.as_deref().unwrap());
+}
+
+#[test]
+fn device_followup_hot_projection_does_not_decode_historical_agent_metadata() {
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();
+    let run=run_record("history-free-facts");store.save_run(&run).unwrap();
+    store.writer_for_test().execute("UPDATE agents SET record=json_set(record,'$.thread.sessions',json('[\"opaque historical session\"]')) WHERE id=?1",[&run.agents[0].id]).unwrap();
+    let attention=Attention{muted:true,..Default::default()};
+    store.save_attention(&HashMap::from([(run.id.clone(),attention)]),&HashSet::from([run.id.clone()])).expect("a device update must consume saved directory facts, not decode historical sessions");
+    assert_eq!(projection(&store,"inbox_conversation",&run.agents[0].id)["muted"],true);
+}
+
+#[test]
+fn device_followup_empty_conversation_reset_publishes_the_durable_generation() {
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();
+    let mut run=run_record("empty-generation");let id=run.agents[0].id.clone();store.save_run(&run).unwrap();
+    let before=projection(&store,"inbox_conversation",&id);
+    run.agents[0].thread.generation_revision+=1;
+    store.reset_conversation(&id,&run.agents,&HashMap::new(),&HashSet::from([run.id.clone()])).unwrap();
+    let after=projection(&store,"inbox_conversation",&id);
+    assert_eq!(after["thread_generation_revision"],"1");
+    assert_ne!(before,after,"reset of an empty conversation still invalidates its generation");
+}

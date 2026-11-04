@@ -4307,7 +4307,11 @@ gate attachment display.
   Legacy task writers yield only the exact tracked query/detail. A filtered
   task query leaves the legacy whole-project replica current; an unfiltered
   default-order scope owns that replica itself. Named recovery triggers also
-  refresh project columns without advancing the task rows' read order. Task
+  refresh project columns without advancing the task rows' read order. When
+  the legacy reader owns the whole list, column reads and publication share
+  its project queue; exact engine-owned scopes bypass that queue. A separate
+  column clock fences older replies, and unchanged columns leave the task
+  record's write identity intact. Task
   heads contain summary and timeline data; an engine-owned detail reader
   supplies body fields through their own task-content authority. Inbox and
   directory recovery keep the ordered pass; no device scope is advertised.

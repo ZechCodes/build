@@ -29,6 +29,34 @@ beforeEach(async () => {
 });
 afterEach(async () => { await wipeCache(); });
 
+it("keeps an accepted local mark-read across older device publications until bridge confirmation", async () => {
+  const { createScopedDeviceSyncCache } = await import("../src/core/scopedDeviceSyncCache.js");
+  const { deviceRecord, deviceRecords } = await import("./fixtures/deviceSync.js");
+  const scope = { kind: "device" };
+  const store = createScopedDeviceSyncCache({ deviceId: "dev-1", scope, bridgeIdentity: "dev-1" });
+  const response = (cursor) => ({ status: "ok", incarnation: "seen-device", cursor, watermark: "1", head: "3", bridge_epoch: "epoch" });
+  const records = deviceRecords();
+  expect(await store.publish({ snapshot: true, records, capture: await store.capture(), expectedCursor: null, response: response("C1") })).toBe(true);
+  const owner = { ...address, entityId: "owner-1" };
+  const seeded = (await readCached(owner)).value;
+  const confirmed = { ...seeded, unread: false, unread_count: 0, needs_attention: false, unread_reason: null,
+    agents: seeded.agents.map((agent) => ({ ...agent, thread_generation_revision: 1,
+      read_through_sequence: 5, unread_count: 0, unread_reason: null })) };
+  call.mockImplementation(async (method) => method === "entity.seen" ? { ok: true } : { items: [confirmed] });
+  expect(await markSeen("owner-1", "agent-1", 1, 5, "thread-1", "dev-1")).toBe(true);
+  expect((await readCached(owner)).value.agents[0].read_through_sequence).toBe(5);
+  const feed = { ...address, entityId: "", kind: "feed" };
+  await vi.waitFor(async () => expect((await readCached(feed)).value.items.find((row) => row.entity_id === "owner-1").unread_count).toBe(0));
+  const prior = records.find((record) => record.kind === "inbox_conversation");
+  expect(await store.publish({ records: [deviceRecord(prior.kind, prior.key, prior.row, "2")],
+    capture: await store.capture(), expectedCursor: "C1", response: response("C2") })).toBe(true);
+  expect((await readCached(owner)).value).toMatchObject({ unread_count: 0, agents: [{ read_through_sequence: 5, unread_count: 0 }] });
+  expect(await store.publish({ records: [deviceRecord(prior.kind, prior.key,
+    { ...prior.row, read_through_sequence: "5", unread_count: 0, unread_reason: null }, "3")],
+    capture: await store.capture(), expectedCursor: "C2", response: response("C3") })).toBe(true);
+  expect((await readCached(owner)).value.unread_count).toBe(0);
+});
+
 it("keeps the latest observed read cursor when overlapping older-bridge roster refreshes finish", async () => {
   await writeCached(address, roster(10));
   const older = deferred();

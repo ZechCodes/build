@@ -172,7 +172,6 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     sync: {
       projectTasks: names.has("sync.projectTasks"),
       task: names.has("sync.task"),
-      device: names.has("sync.device"),
     },
     reviews: {
       snapshotRetired: names.has("tasks.review.snapshotRetired"),

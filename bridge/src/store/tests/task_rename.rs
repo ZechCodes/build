@@ -151,8 +151,42 @@ fn every_row(store: &Store) -> Vec<String> {
     let conn = store.connection();
     let mut rows = Vec::new();
     for table in tables {
+        let quoted_table = format!("\"{}\"", table.replace('"', "\"\""));
+        let without_rowid = conn
+            .query_row(
+                "SELECT instr(upper(sql), 'WITHOUT ROWID') > 0 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [&table],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap();
+        let order = if without_rowid {
+            let mut primary_key = conn
+                .prepare(&format!("PRAGMA table_info({quoted_table})"))
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(5)?, row.get::<_, String>(1)?))
+                })
+                .unwrap()
+                .filter_map(|column| {
+                    let (position, name) = column.unwrap();
+                    (position > 0).then_some((position, name))
+                })
+                .collect::<Vec<_>>();
+            primary_key.sort_by_key(|(position, _)| *position);
+            assert!(
+                !primary_key.is_empty(),
+                "WITHOUT ROWID table {table} must have a primary key"
+            );
+            primary_key
+                .into_iter()
+                .map(|(_, name)| format!("\"{}\"", name.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(", ")
+        } else {
+            "rowid".into()
+        };
         let mut statement = conn
-            .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+            .prepare(&format!("SELECT * FROM {quoted_table} ORDER BY {order}"))
             .unwrap();
         let width = statement.column_count();
         let found = statement

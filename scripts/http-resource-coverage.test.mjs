@@ -241,9 +241,10 @@ const sourceFingerprintParts = {
   "core/bridgeEpoch.js": ["e04a0a11", "6535b020", "abcac20c", "972a554f", "8d51fbb9", "6ef07fd8", "16062ed0", "9cd4d213"],
   "core/bridgeUpdatePanel.js": ["f9b19cc7", "4abdfc5a", "d159194d", "49ee91ed", "d39ab2e7", "15a6a80f", "0cb51530", "623ca8e5"],
   "core/bridgeUpdates.js": ["279cb932", "0495aa46", "c347f93b", "10a492d5", "8d29b0a9", "e9309a9a", "91de7993", "e5f40ad3"],
-  // #997 review cacheSync.js:2159: session-tip writes and push marks yield to the device owner; existing RPC sites and dispatch are unchanged.
-  "core/cacheSync.js": ["365be0d9", "f0668bb8", "26892414", "cc1d5bf0", "0bd2f2f0", "7b478a81", "73c8f4bf", "8a1d2957"],
-  "core/captureDecisionView.js": ["f9f42a7d", "d94162aa", "5aea82e5", "85e6bcb2", "73ffce61", "2ac99214", "8b78b55f", "30a7a61a"],
+  // #997 runtime-board cacheSync.js:754,783,1978: existing board.list also refreshes only runtime collections; durable scope/tip writers stay gated, no new method.
+  "core/cacheSync.js": ["24a41972", "f87eaf04", "bc3bc284", "60325be4", "9a1bd33d", "553a4d21", "15307094", "68d954de"],
+  // #997 runtime-board captureDecisionView.js:142: branch choices join cached runtime run bodies; existing RPC and mutation dispatch unchanged.
+  "core/captureDecisionView.js": ["15299f0a", "f1762e74", "8af22269", "0f16e798", "ccf8e367", "d2d759e2", "554ce8fc", "002692f1"],
   // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
   "core/changeEvents.js": ["5b082d0b", "2ed9b187", "214c16ae", "1500d5f0", "43734602", "ae810be0", "ad7fd196", "1d5703a6"],
   "core/changesComments.js": ["7a5e0b06", "c47bf122", "ac5370b8", "debd8dc8", "388227b8", "f9ea1623", "d413134a", "635a2a7d"],
@@ -253,8 +254,10 @@ const sourceFingerprintParts = {
   "core/chatRepository.js": ["a7331089", "a8f626b3", "3c5700e5", "e726dfbe", "7aeb4d75", "59d71243", "6bb28ca2", "6e0dd982"],
   // #997 compactionCache.js:57: use captured version authority without importing connection state into cache helpers.
   "core/compactionCache.js": ["4e4482a7", "24057b98", "0a358b45", "3beeb686", "8c8c7388", "79aecece", "7b4cc21b", "75595548"],
-  "core/compose.js": ["012665e7", "87915aea", "9314f63c", "7b036438", "70ec846e", "09d98f92", "e8746b91", "051b004e"],
-  "core/composeView.js": ["b560ac00", "27513049", "482b025b", "79f330a5", "44f3a97f", "f2c88efa", "2f36708b", "a8951245"],
+  // #997 runtime-board compose.js:236: branch options join scoped cached runs; producer method maps and RPC arguments unchanged.
+  "core/compose.js": ["04ba4233", "c03d8a65", "2fb7e1a0", "33dd7876", "b9eebdbe", "8f295ce8", "d3407278", "65247a74"],
+  // #997 runtime-board composeView.js:274: branch choices use cached runtime runs; RPC and mutation dispatch unchanged.
+  "core/composeView.js": ["c23f86ee", "e1c3714c", "7d01aa7b", "6178100a", "291f1c3e", "44eed077", "6f4dedc9", "a52c7553"],
   "core/consoleModel.js": ["4feba529", "663ba471", "6fe6e2a1", "3eb66e5c", "815545f8", "f70a5b48", "a6248d75", "94d9ed20"],
   "core/conversationCompaction.js": ["4e076445", "2fd7fb1d", "1ca9681e", "b39ea814", "01d5b9f9", "26f91118", "a52788ca", "54220e9e"],
   "core/conversationDetail.js": ["a54ac9f8", "f54c61d4", "cea363a5", "b098964f", "16ecc016", "490b853d", "76d94602", "ad5a773a"],
@@ -275,7 +278,8 @@ const sourceFingerprintParts = {
   "core/inboxCaptures.js": ["48a7f5fb", "b2132a83", "5901fb31", "4fb0c5ae", "97005297", "2d0b9db6", "be2c3e6d", "1271b663"],
   "core/inboxDevices.js": ["f9a293e4", "dff4b2b4", "f5fc7940", "f5c1f48d", "a66a5718", "238826a6", "e3dc6b9f", "4060a79e"],
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
-  "core/inboxView.js": ["14bb4bec", "80dab237", "c54f914a", "aa1e22fb", "7e38c2f9", "70a2abb0", "0d245427", "39d10d67"],
+  // #997 runtime-board inboxView.js:193,206,320: scoped pending display and cached branch choices; existing RPC and mutation dispatch unchanged.
+  "core/inboxView.js": ["73e318f8", "d3681787", "0ff602b2", "03923c2e", "8ac8746f", "13fd8ee3", "d314907b", "c5aa4b97"],
   "core/isolation.js": ["1b646651", "086eea7f", "b0a97d6f", "8993ed77", "7e6e246e", "4110fbc2", "7defb076", "77f79221"],
   "core/markdownFences.js": ["10057396", "68214f4d", "d193015e", "2552698e", "c48313df", "6df2e223", "7e3bc837", "2805a4bb"],
   "core/modelCatalog.js": ["c293ea11", "fff0969f", "7852c8cd", "0c252f82", "fe666159", "95919417", "25a661ec", "c93fd9b4"],

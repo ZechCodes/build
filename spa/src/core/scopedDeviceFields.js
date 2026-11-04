@@ -1,6 +1,6 @@
 // One ownership list for runtime enrichment and device capture admission.
 // Everything outside these fields remains guarded by the original cache write.
-export const deviceRuntimeRowFields = ["working", "working_time", "agents_running"];
+export const deviceRuntimeRowFields = ["working", "working_time", "agents_running", "stat"];
 export const deviceRuntimeAgentFields = [...deviceRuntimeRowFields, "state", "active_model", "active_effort", "has_terminal", "can_interrupt",
   "start_error", "surface_session_generation", "surfaces", "last_context_tokens", "last_context_at",
   "session_cache_read_tokens", "compaction", "compact_at_tokens", "max_context_tokens"];

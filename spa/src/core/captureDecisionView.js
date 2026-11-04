@@ -139,7 +139,7 @@ export function mountCaptureDecision(host, captureId) {
     const page = model();
     const ui = {
       projects: feed.projects,
-      branches: branchOptions(feed.items, draft.projectId),
+      branches: branchOptions(feed.items, draft.projectId, feed.runs),
       projectId: draft.projectId,
       kind: draft.kind,
       branch: draft.branch,

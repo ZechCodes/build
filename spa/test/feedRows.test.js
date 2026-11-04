@@ -133,3 +133,31 @@ describe("the wake behind a board write", () => {
     expect(loads).toHaveLength(0);
   });
 });
+
+
+describe("branch navigation over owned items and live run observations", () => {
+  it("joins the exact run branch without creating membership or borrowing another device or project", async () => {
+    const { branchRowIn } = await import("../src/core/feedRows.js");
+    const row = { kind: "branch", deviceId: "device-a", project_id: "p1", entity_id: "run-1" };
+    const snapshot = { items: [row], runs: [
+      { deviceId: "device-b", project_id: "p1", run_id: "run-1", branch: "wrong-device" },
+      { deviceId: "device-a", project_id: "p2", run_id: "run-1", branch: "wrong-project" },
+      { deviceId: "device-a", project_id: "p1", run_id: "run-1", branch: "workspace-recorded-name" },
+      { deviceId: "device-a", project_id: "p1", run_id: "absent-owner", branch: "no-membership" },
+    ] };
+    expect(branchRowIn(snapshot, "p1", "workspace-recorded-name")).toMatchObject({ ...row, branch: "workspace-recorded-name" });
+    for (const branch of ["wrong-device", "wrong-project", "no-membership"]) expect(branchRowIn(snapshot, "p1", branch)).toBeNull();
+    expect(row).not.toHaveProperty("branch");
+  });
+
+  it("follows live branch observations including an explicit detached null and retains legacy rows without a run", async () => {
+    const { branchRowIn } = await import("../src/core/feedRows.js");
+    const row = { kind: "branch", project_id: "p1", run_id: "run-1", branch: "old" };
+    const snapshot = { items: [row, { kind: "branch", project_id: "p1", branch: "external" }], runs: [{ project_id: "p1", run_id: "run-1", branch: "renamed" }] };
+    expect(branchRowIn(snapshot, "p1", "renamed")).toMatchObject({ run_id: "run-1" });
+    expect(branchRowIn(snapshot, "p1", "old")).toBeNull();
+    snapshot.runs[0].branch = null;
+    expect(branchRowIn(snapshot, "p1", "old")).toBeNull();
+    expect(branchRowIn(snapshot, "p1", "external")).toMatchObject({ branch: "external" });
+  });
+});

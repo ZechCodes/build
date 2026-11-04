@@ -155,7 +155,9 @@ async function expectLegacyMembershipGone({ empty, archiveOutside }) {
   expect(await raw("project-settings", "legacy-project")).toBeUndefined();
   const feed = await raw("feed");
   expect(feed.items.some((row) => row.capture_id === "legacy-capture" || row.entity_id === "legacy-owner" || row.task_id === "legacy-inbox-task")).toBe(false);
-  for (const field of ["plans", "externalWorktrees", "external_worktrees", "pending"]) expect(feed[field] || []).toEqual([]);
+  for (const field of ["plans", "externalWorktrees", "external_worktrees", "pending"]) expect(feed[field]).toHaveLength(1);
+  expect(feed.runs).toHaveLength(1);
+  expect(feed.runs[0].entity_id).toBe("legacy-owner");
   const archive = await raw("archive");
   expect(archive.items.filter((row) => row.worktree_id === "legacy-archive")).toEqual([]);
   for (const row of archiveOutside) expect(archive.items).toContainEqual(row);
@@ -185,6 +187,68 @@ it("a completed empty first snapshot clears legacy-only device membership but pr
   await expectLegacyMembershipGone({ empty: true, archiveOutside });
   expect(await raw("user-session")).toBeUndefined();
   expect(await raw("project-settings", "proj-1")).toBeUndefined();
+});
+
+const boardRuntime = () => ({
+  pending: [{ entity_id: "pending-workspace", project_id: "proj-1", title: "Merging branch", state: "updating", deviceId }],
+  externalWorktrees: [{ project_id: "proj-1", branch: "unadopted", worktree_id: "external-checkout", path: "/synthetic/external", deviceId }],
+  external_worktrees: [{ project_id: "proj-1", branch: "unadopted", worktree_id: "external-checkout" }],
+  plans: [{ task_id: "legacy-plan", project_id: "proj-1", title: "Held legacy plan" }],
+  runs: [{ run_id: "runtime-run", project_id: "proj-1", goal: "Held run goal", state: "review", base_branch: "dev", base_sha: "synthetic-base-sha" }],
+});
+
+const publicationModes = ["nonempty first", "empty first", "incremental", "journal rotation"];
+async function publishWithRuntimeCollections(mode) {
+  const writer = create();
+  if (mode === "incremental" || mode === "journal rotation") await publish(writer, deviceRecords(), { snapshot: true });
+  const runtime = boardRuntime();
+  await cache.writeCached(address("feed"), { ...await raw("feed"), ...runtime });
+  if (mode === "journal rotation") expect(await writer.reset({ capture: await writer.capture(), expectedCursor: "cursor-1" })).toBe(true);
+  const records = mode === "empty first" || mode === "journal rotation" ? [] : deviceRecords().map((record) => ({ ...record, revision: "2" }));
+  expect(await publish(writer, records, {
+    snapshot: mode !== "incremental", expectedCursor: mode === "incremental" ? "cursor-1" : undefined,
+    response: { ...response("runtime-preserved"), incarnation: mode === "journal rotation" ? "journal-3" : "incarnation", watermark: "2" },
+  })).toBe(true);
+  return { feed: await raw("feed"), runtime };
+}
+
+it.each(publicationModes)("pending lifecycle observations survive a %s device publication", async (mode) => {
+  const { feed, runtime } = await publishWithRuntimeCollections(mode);
+  const { mergePendingRows } = await import("../src/core/inbox.js");
+  const painted = mergePendingRows(feed.items, feed.pending).find((row) => row.entity_id === "pending-workspace");
+  expect(painted).toMatchObject({ title: "Merging branch", pending: "updating", placeholder: true, working: true });
+  expect(feed.pending).toEqual(runtime.pending);
+  expect(feed.plans).toEqual(runtime.plans);
+});
+
+it.each(publicationModes)("external checkout navigation survives a %s device publication", async (mode) => {
+  const { feed, runtime } = await publishWithRuntimeCollections(mode);
+  const { worktreeRowIn } = await import("../src/core/feedRows.js");
+  expect(worktreeRowIn(feed, "proj-1", "unadopted")).toMatchObject({ kind: "branch", run: null, worktree_id: "external-checkout", path: "/synthetic/external" });
+  expect(feed.externalWorktrees).toEqual(runtime.externalWorktrees);
+  expect(feed.external_worktrees).toEqual(runtime.external_worktrees);
+});
+
+it.each(publicationModes)("run body facts survive a %s device publication", async (mode) => {
+  const { feed, runtime } = await publishWithRuntimeCollections(mode);
+  const { runBodyIn } = await import("../src/core/feedRows.js");
+  const { __cacheObserved: observed, ...body } = runBodyIn(feed, "runtime-run");
+  expect(observed).toMatchObject({ at: expect.any(Number), order: expect.any(Number) });
+  expect(body).toEqual(runtime.runs[0]);
+  expect(runBodyIn(feed, "runtime-run")).toMatchObject({ goal: "Held run goal", state: "review", base_branch: "dev", base_sha: "synthetic-base-sha" });
+});
+
+it("plain-folder navigation uses the primary source path rather than another Git source", async () => {
+  const records = deviceRecords(), source = records.find((record) => record.kind === "project_source");
+  source.row.is_git = false;
+  records.unshift(deviceRecord("project_source", "proj-1/other-git", { ...source.row, id: "other-git", path: "/synthetic/other-repo", mount: ".", is_git: true }));
+  const writer = create();
+  expect(await publish(writer, records, { snapshot: true })).toBe(true);
+  const { branchStateIn } = await import("../src/views/branchSeed.js");
+  expect(branchStateIn(await raw("feed"), "proj-1", "folder")).toMatchObject({ defaultTab: "files", row: { is_git: false, kind: "branch" } });
+  expect((await raw("projects"))[0].is_git).toBe(false);
+  expect((await raw("device-projects"))[0].is_git).toBe(false);
+  expect((await raw("project-settings", "proj-1")).is_git).toBe(false);
 });
 
 it("a pending unacknowledged optimistic create fences a complete snapshot before membership cleanup", async () => {

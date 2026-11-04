@@ -2,7 +2,8 @@
 // projections with process observations, which the device wire omits deliberately.
 import { mergeCachedRecordsTogether } from "./localCache.js";
 import { entityIdOf } from "./entityId.js";
-import { FEED_COLLECTIONS } from "./feedMerge.js";
+import { FEED_COLLECTIONS, stampRow } from "./feedMerge.js";
+import { notePush, pushedSince } from "./pushFence.js";
 import { deviceRuntimeRowFields as rowFields, deviceRuntimeAgentFields as agentFields,
   deviceRuntimeWorkspaceFields as workspaceFields, deviceRuntimeLifecycleFields as lifecycleRuntimeFields } from "./scopedDeviceFields.js";
 const address = (deviceId, kind, entityId = "") => ({ deviceId, entityId, kind });
@@ -60,12 +61,52 @@ function runtimeWorkspaces(held, incoming) {
   });
 }
 
-export function enrichDeviceRuntimeBoard(deviceId, incoming, active) {
-  if (!Array.isArray(incoming.workspaces)) return Promise.resolve(false);
-  return mergeCachedRecordsTogether([address(deviceId, "workspaces"), address(deviceId, "feed")], ([workspaces, feed]) => {
-    if (!active()) return null;
+const runtimeBoardCollections = { pending: "pending", external_worktrees: "externalWorktrees", plans: "plans", runs: "runs" };
+export const hasDeviceRuntimeCollections = (incoming) => Object.keys(runtimeBoardCollections).some((field) => Array.isArray(incoming[field]));
+
+// Run bodies still supply review goal/state/base facts. Their conversation
+// digests must never compete with device-owned rosters, read marks or sessions.
+const runConversationFields = new Set(["agents", "pinned_agent_id", "owned_conversation", "thread", "thread_id",
+  "thread_generation_revision", "generation_revision", "read_through_sequence", "watch_started_after", "last_sequence",
+  "item_count", "last_event", "agent_id", "conversation_id", "session_started_ms", "last_activity_ms", "retained_last_activity_ms",
+  "anchor", "last_activity", "needs_attention", "unread", "unread_count", "unread_reason", "muted", "dismissed", "attention"]);
+const runtimeRunBody = (row) => Object.fromEntries(Object.entries(row).filter(([field]) => !runConversationFields.has(field)));
+
+function boardWorkspaceObservations(incoming) {
+  const rows = new Map((incoming.workspaces || []).map((row) => [row.id || row.workspace_id, row]));
+  for (const summary of incoming.workspace_summaries || []) {
+    rows.set(summary.workspace_id, { ...rows.get(summary.workspace_id), workspace_id: summary.workspace_id,
+      work_summary: summary.work_summary, can_finish: summary.can_finish === true, finish_blockers: summary.finish_blockers || [] });
+  }
+  return [...rows.values()];
+}
+
+function runtimeBoardFeed(held, incoming, deviceId, workspaces) {
+  const next = { ...held };
+  let observed = false;
+  for (const [wire, field] of Object.entries(runtimeBoardCollections)) {
+    if (!Array.isArray(incoming[wire])) continue;
+    next[field] = incoming[wire].map((row) => stampRow(field === "runs" ? runtimeRunBody(row) : row, deviceId));
+    observed = true;
+  }
+  if (Array.isArray(held?.workspaces) && workspaces.length) {
+    next.workspaces = runtimeWorkspaces(held.workspaces, workspaces);
+    observed = true;
+  }
+  return observed ? changed(held, next) : null;
+}
+
+/** Runtime board observations own no device membership. Missing properties
+ * are partial pushes; only a present array (including []) replaces its field. */
+export function enrichDeviceRuntimeBoard(deviceId, incoming, active, { fence, pushed = false } = {}) {
+  const feedAddress = address(deviceId, "feed");
+  return mergeCachedRecordsTogether([address(deviceId, "workspaces"), feedAddress], ([workspaces, feed]) => {
+    if (!active() || fence !== undefined && pushedSince(feedAddress, fence)) return null;
     const rows = workspaces?.value, view = feed?.value;
-    return [Array.isArray(rows) ? changed(rows, runtimeWorkspaces(rows, incoming.workspaces)) : null,
-      Array.isArray(view?.workspaces) ? changed(view, { ...view, workspaces: runtimeWorkspaces(view.workspaces, incoming.workspaces) }) : null];
+    const observations = boardWorkspaceObservations(incoming);
+    const nextFeed = runtimeBoardFeed(view, incoming, deviceId, observations);
+    if (nextFeed && pushed) notePush(feedAddress);
+    return [Array.isArray(rows) && observations.length ? changed(rows, runtimeWorkspaces(rows, observations)) : null,
+      nextFeed];
   });
 }

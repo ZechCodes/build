@@ -271,7 +271,7 @@ function paintPrompt() {
 /** The manual panel: where the work goes, what it becomes there, and which
  *  harness picks it up. Rendered only while its disclosure is open. */
 function advancedHtml() {
-  const branches = branchOptions(feed.items, box.projectId);
+  const branches = branchOptions(feed.items, box.projectId, feed.runs);
   const projectOptions = feed.projects
     .map(
       (project) =>

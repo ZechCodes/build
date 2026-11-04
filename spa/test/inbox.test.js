@@ -317,6 +317,30 @@ describe("the rows a lifecycle verb in flight leaves", () => {
     expect(pending.canFinish).toBe(false);
   });
 
+  it.each([
+    { deviceId: "dev-2", project_id: "p1", projectKey: "dev-2/p1" },
+    { deviceId: "dev-1", project_id: "p2", projectKey: "dev-1/p2" },
+  ])("keeps identical pending ids separate in device/project scope $projectKey", (otherScope) => {
+    const first = creating({ entity_id: "same-path-hash", state: "creating" });
+    const second = creating({ ...otherScope, entity_id: "same-path-hash", state: "updating" });
+    expect(mergePendingRows([], [first, second])).toMatchObject([
+      { deviceId: first.deviceId, projectKey: first.projectKey, pending: "creating" },
+      { deviceId: second.deviceId, projectKey: second.projectKey, pending: "updating" },
+    ]);
+    const standing = branch({ entity_id: "same-path-hash" });
+    const result = mergePendingRows([standing], [second]);
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual(standing);
+    expect(result[1]).toMatchObject({ deviceId: second.deviceId, projectKey: second.projectKey, placeholder: true });
+  });
+
+  it("keeps the unscoped legacy pending merge when neither row carries scope facts", () => {
+    const standing = { kind: "branch", entity_id: "legacy-owner" };
+    expect(mergePendingRows([standing], [{ entity_id: "legacy-owner", state: "updating" }])).toEqual([
+      { ...standing, pending: "updating", working: true },
+    ]);
+  });
+
   // The wire's real shape: the row names the run it settles as (`entity_id`)
   // and the checkout it holds (`checkout_id`, a worktree hash). The run's card
   // carries both, under its run id.
@@ -355,7 +379,7 @@ describe("the rows a lifecycle verb in flight leaves", () => {
   it("says on a task's own card that its planning workspace is being cut", () => {
     const items = mergePendingRows(
       [task()],
-      [creating({ entity_id: "iss-1", checkout_id: null, title: "Ship the mascot" })],
+      [creating({ entity_id: "iss-1", project_id: "p2", projectKey: "dev-1/p2", checkout_id: null, title: "Ship the mascot" })],
     );
     expect(items).toHaveLength(1);
     const entries = listed(items);
@@ -371,7 +395,7 @@ describe("the rows a lifecycle verb in flight leaves", () => {
   // it keeps opening for the whole of that git.
   it("keeps a standing card openable while a verb runs on it", () => {
     const [entry] = listed(
-      mergePendingRows([task()], [creating({ entity_id: "iss-1", checkout_id: null, title: "Ship the mascot" })]),
+      mergePendingRows([task()], [creating({ entity_id: "iss-1", project_id: "p2", projectKey: "dev-1/p2", checkout_id: null, title: "Ship the mascot" })]),
     );
     expect(entry.facts).toBe("Creating…");
     expect(entry.placeholder).toBe(false);

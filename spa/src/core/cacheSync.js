@@ -41,7 +41,7 @@ import { commitPatchParams } from "./commitDiffTarget.js";
 
 import { captureScopedSync, deviceScopedSyncOwns, projectScopedSyncOwns, reconcileScopedSyncRuntime, startScopedSyncRuntime,
   stopScopedSyncRuntime, wakeScopedSync, wakeScopedSyncChanges } from "./scopedSyncRuntime.js";
-import { enrichDeviceRuntimeState, enrichDeviceRuntimeBoard } from "./scopedDeviceRuntime.js";
+import { enrichDeviceRuntimeState, enrichDeviceRuntimeBoard, hasDeviceRuntimeCollections } from "./scopedDeviceRuntime.js";
 import { refreshReadState } from "./readStateRepair.js";
 import { discoverRosterThreads, discoverSyncOwnership, emptySyncDiscovery, queueSuccessor, readsSyncGroup as readsGroup, requiredSuccessorGroups, syncReadGroup } from "./syncSuccessors.js";
 import { syncDiagnostics } from "./syncDiagnostics.js";
@@ -752,9 +752,12 @@ async function heldSyncLists(context) {
  *  any workspace has been read. A device whose bridge does not serve
  *  workspaces still has a board. */
 async function readLists(context, fence) {
-  if (deviceScopedSyncOwns(context.deviceId)) return await heldSyncLists(context) || {
-    view: liveFeedSnapshot({}, {}, {}, context.deviceId), sourceTerminalReads: await projectTerminalReads(context),
-  };
+  if (deviceScopedSyncOwns(context.deviceId)) {
+    await readDeviceRuntimeBoard(context);
+    return await heldSyncLists(context) || {
+      view: liveFeedSnapshot({}, {}, {}, context.deviceId), sourceTerminalReads: await projectTerminalReads(context),
+    };
+  }
   const owner = context;
   context = { ...owner, active: () => owner.active() && !deviceScopedSyncOwns(owner.deviceId) };
   const observations = await Promise.all(["projects", "workspaces"].map((kind) =>
@@ -775,6 +778,17 @@ async function readLists(context, fence) {
     lists.sourceTerminalReads = await projectTerminalReads(context);
   }
   return lists;
+}
+
+// board.list still owns process-local lifecycle rows and legacy body lookups;
+// device recovery owns items, directories, rosters and pooled session facts.
+async function readDeviceRuntimeBoard(context, priority = "foreground") {
+  const fence = pushFence();
+  const board = await ask(context, "board.list", {}, priority, addressOf(context, "", "feed"));
+  if (!board || !context.active()) return;
+  await writeUsageLimits(context.deviceId, board.usage_limits);
+  await enrichDeviceRuntimeBoard(context.deviceId, { pending: [], external_worktrees: [], plans: [], runs: [], ...board },
+    () => context.active() && deviceScopedSyncOwns(context.deviceId), { fence });
 }
 
 async function landOwnershipList(context, kind, rows, before, fence) {
@@ -1964,7 +1978,13 @@ async function applySourceDiff(context, entityId, diff, source) {
 async function applyBoard(context, state) {
   if (deviceScopedSyncOwns(context.deviceId)) {
     await writeUsageLimits(context.deviceId, state.usage_limits);
-    await enrichDeviceRuntimeBoard(context.deviceId, state, () => context.active() && deviceScopedSyncOwns(context.deviceId));
+    await enrichDeviceRuntimeBoard(context.deviceId, state,
+      () => context.active() && deviceScopedSyncOwns(context.deviceId), { pushed: true });
+    // Current board invalidations normally carry only their revision. Carried
+    // runtime arrays are partial observations and never need a replacement pull.
+    if (Object.hasOwn(state, "revision") && !hasDeviceRuntimeCollections(state)) {
+      deferPush(context, "board", "board-runtime", () => readDeviceRuntimeBoard(context, "background"));
+    }
     return;
   }
   const owner = context;

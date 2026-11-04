@@ -80,7 +80,9 @@ export function deviceDirectories(rows, held, deviceId, snapshot = false) {
   const ownerRows = valuesOf(rows, "owner_session");
   const ownerSessions = new Map(ownerRows.filter((row) => row.workspace_id).map((row) => [row.workspace_id, row]));
   const projectOwnersById = projectOwners(rows, held, snapshot);
+  // The registry identifies the primary source by its exact project path.
   const projects = valuesOf(rows, "project").map((project) => stampProject({ ...project,
+    is_git: sources.find((source) => source.project_id === project.project_id && source.path === project.path)?.is_git,
     ...sessionProjection(projectSessions.get(project.project_id)), entity_id: projectOwnersById.get(project.project_id) ?? null,
     sources: sources.filter((source) => source.project_id === project.project_id) }, deviceId));
   const workspaces = valuesOf(rows, "workspace").map((workspace) => stampWorkspace({ ...workspace,
@@ -102,7 +104,7 @@ export function deviceProjectReplica(rows, project, held) {
   // Each projection retains its own runtime/policy observations; copying a
   // sibling list's held fields could overwrite a newer settings observation.
   const next = { ...held, ...source };
-  for (const field of ["id", "deviceId", "projectKey", "sources", "entity_id", ...sessionFields]) {
+  for (const field of ["id", "deviceId", "projectKey", "sources", "entity_id", "is_git", ...sessionFields]) {
     if (Object.hasOwn(project, field)) next[field] = project[field];
     else delete next[field];
   }
@@ -248,7 +250,7 @@ export function deviceProjectRosters(rows, owners, held) {
 export function deviceFeed(rows, owners, directories, held, deviceId, snapshot = false) {
   const previous = held("feed") || {};
   const captures = valuesOf(rows, "inbox_capture").map((row) => stampRow({ ...row, kind: "capture", capture_id: row.id,
-    unread: row.needs_answer === true, unread_count: row.needs_answer ? 1 : 0,
+    working: row.state === "routing", unread: row.needs_answer === true, unread_count: row.needs_answer ? 1 : 0,
     unread_reason: row.error ? "routing_failed" : null }, deviceId));
   const tasks = valuesOf(rows, "inbox_task").map((row) => stampRow({ ...row, kind: "tracker_task", task_id: row.id,
     unread: row.unread_count || 0 }, deviceId));
@@ -256,9 +258,10 @@ export function deviceFeed(rows, owners, directories, held, deviceId, snapshot =
     .map((entry) => (entry.row || entry.previousRow)?.owner_id || entry.key));
   const unchanged = snapshot ? [] : (previous.items || []).filter((row) => !managed.has(row.entity_id || row.task_id || row.capture_id));
   const items = [...unchanged, ...owners.values(), ...captures, ...tasks];
-  const retired = snapshot ? { plans: [], externalWorktrees: [], external_worktrees: [], pending: [] } : {};
-  return { ...previous, ...retired, projects: directoryRuntimeAliases(directories.projects, previous.projects),
-    workspaces: directoryRuntimeAliases(directories.workspaces, previous.workspaces), items, runs: [...owners.values()], cached: false };
+  // Pending verbs, external checkouts, plans and full run bodies remain live
+  // board observations; device families own only items and directory membership.
+  return { ...previous, projects: directoryRuntimeAliases(directories.projects, previous.projects),
+    workspaces: directoryRuntimeAliases(directories.workspaces, previous.workspaces), items, cached: false };
 }
 
 function directoryRuntimeAliases(rows, previous) {

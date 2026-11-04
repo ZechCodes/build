@@ -4370,6 +4370,13 @@ gate attachment display.
   exact tracked device scope, including mounted directory and roster refreshes.
   Wire 3.33 and older retain the legacy pass. Runtime observations and policy
   refreshes update only fields excluded from the durable projection.
+  `board.list` remains live for pending lifecycle operations, external
+  worktrees, legacy plans and run bodies. Full reads replace these runtime
+  collections; partial board pushes replace only fields they carry. Device
+  snapshots preserve them. Runtime run bodies exclude roster, read-state and
+  session authority, so they cannot override device-owned inbox facts.
+  Managed branch lookups join the observed run branch by exact device,
+  project and owner; project Git capability comes from its primary source.
   The explicit owner pin comes from `owner_session`; roles come from
   `identity`. Missing pins never promote a worker by roster position. Live
   owner and project session fields match the bridge list snapshots, including
@@ -4381,6 +4388,9 @@ gate attachment display.
   membership and removes rows known only to the legacy writer. Change pages
   remain incremental. Snapshot cleanup preserves independent archive history
   and task bodies, and uses the same mutation and generation fences as updates.
+  Pending lifecycle placeholders are a scoped display overlay, including while
+  a workspace is being created; their keys and matching stay device/project
+  scoped without adding inbox membership or unread authority.
   Thread tips retain generation repair but yield pooled session writes and
   push marks to an owned device scope. A declined publication retries with
   bounded backoff outside the captured recovery instead of awaiting a head check.

@@ -2845,6 +2845,19 @@ it("uses columns-only support for a cold pushed task read without refetching met
 
 
 const projectDeviceRecords = () => [deviceRecords().find((record) => record.kind === "project"), ...projectOwnerRecords()];
+const expectedDeviceWorker = {
+  id: "worker", owner_id: "project-owner", project_id: "proj-1", workspace_id: null,
+  conversation_id: "worker", thread_id: "thread-worker", thread_generation_revision: "1", ordinal: 1,
+  provider: "codex", model: "synthetic-model", effort: "medium", watched: true, choice_revision: 1,
+  created_at: "2026-11-01T12:00:00Z", title: "Worker", topic: "Worker", name: "Worker", created_by: null,
+  read_through_sequence: "0", watch_started_after: "0", last_sequence: "5", unread_count: 2, unread_reason: "reply", project_role: "worker",
+};
+const expectedDeviceProjectRoster = { entity_id: "project-owner", pinned_agent_id: "coordinator", agents: [
+  expectedDeviceWorker,
+  { ...expectedDeviceWorker, id: "coordinator", conversation_id: "coordinator", thread_id: "thread-coordinator", ordinal: 3,
+    title: "Coordinator", topic: "Coordinator", name: "Coordinator", project_role: "coordinator" },
+] };
+
 
 it.each([
   ["3.34.0", false, false], ["3.33.0", true, false], ["3.34.0", true, true],
@@ -2870,14 +2883,12 @@ it.each([
     sync.startCacheSync();
     await passesSettled(sync, "dev-1");
     expect(calls("sync.snapshot").filter(([, params]) => params.scope.kind === "device").length > 0).toBe(owned);
-    for (const method of ["board.list", "project.list", "workspace.list", "agent.list"]) {
+    for (const method of ["project.list", "workspace.list", "agent.list"]) {
       expect(calls(method).length > 0, method).toBe(!owned);
     }
+    expect(calls("board.list").length).toBeGreaterThan(0);
     const published = (await read("project-owner", "project-agents")).value;
-    expect(published.entity_id).toBe(roster.entity_id);
-    expect(published.pinned_agent_id).toBe(roster.pinned_agent_id);
-    expect(published.agents.map(({ id, ordinal, project_role }) => ({ id, ordinal, project_role }))).toEqual(roster.agents);
-    if (!owned) expect(published).toEqual(roster);
+    expect(published).toEqual(owned ? expectedDeviceProjectRoster : roster);
   } finally { vi.unstubAllGlobals(); }
 });
 
@@ -2890,15 +2901,16 @@ it.each([false, true])("switches device and legacy list ownership on reconnect (
   try {
     sync.startCacheSync();
     await passesSettled(sync, "dev-1");
-    expect(calls("board.list").length > 0).toBe(!initial);
+    expect(calls("board.list").length > 0).toBe(true);
     bridge.call.mockClear();
     deviceScopedSupported = !initial;
     registerDevice("dev-1");
     for (const changed of stateListeners) changed();
     await passesSettled(sync, "dev-1");
-    for (const method of ["board.list", "project.list", "workspace.list"]) {
+    for (const method of ["project.list", "workspace.list"]) {
       expect(calls(method).length > 0, method).toBe(initial);
     }
+    expect(calls("board.list").length).toBeGreaterThan(0);
     expect(calls("sync.snapshot").filter(([, params]) => params.scope.kind === "device").length > 0).toBe(!initial);
   } finally { vi.unstubAllGlobals(); }
 });
@@ -2941,7 +2953,7 @@ it("enriches only existing engine rows with runtime state without replacing dura
     const row = (await read("project-owner", "row")).value;
     const roster = (await read("project-owner", "project-agents")).value;
     expect(row).toBeDefined(); expect(roster).toBeDefined();
-    const state = { ...row, title: "Legacy title", working: true, agents: row.agents.map((agent) => ({ ...agent,
+    const state = { ...row, title: "Legacy title", working: true, stat: { files_changed: 3, insertions: 8, deletions: 1 }, agents: row.agents.map((agent) => ({ ...agent,
       name: "Legacy agent", topic: "Legacy topic", read_through_sequence: "1", unread_count: 8, working: true,
     })).concat({ id: "legacy-only", working: true }) };
     await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([
@@ -2949,11 +2961,11 @@ it("enriches only existing engine rows with runtime state without replacing dura
     ]);
     await settle();
     const written = (await read("project-owner", "row")).value;
-    expect(written).toEqual({ ...row, working: true, agents: row.agents.map((agent) => ({ ...agent, working: true })) });
+    expect(written).toEqual({ ...row, working: true, stat: state.stat, agents: row.agents.map((agent) => ({ ...agent, working: true })) });
     expect(await read("legacy-new-owner", "row")).toBeUndefined();
     expect((await read("", "feed")).value.items).toMatchObject([written]);
     const observed = new Set(row.agents.map((agent) => agent.id));
-    expect((await read("project-owner", "project-agents")).value).toEqual({ ...roster, working: true,
+    expect((await read("project-owner", "project-agents")).value).toEqual({ ...roster, working: true, stat: state.stat,
       agents: roster.agents.map((agent) => observed.has(agent.id) ? { ...agent, working: true } : agent) });
   } finally { vi.unstubAllGlobals(); }
 });
@@ -2974,9 +2986,10 @@ it.each(["3.33.0", "3.34.0"])("restores the whole legacy pass when reconnect cro
     deviceWireVersion = version === "3.34.0" ? "3.33.0" : "3.34.0";
     registerDevice("dev-1"); for (const changed of stateListeners) changed();
     await passesSettled(sync, "dev-1");
-    for (const method of ["board.list", "project.list", "workspace.list", "agent.list"]) {
+    for (const method of ["project.list", "workspace.list", "agent.list"]) {
       expect(calls(method).length > 0, method).toBe(version === "3.34.0");
     }
+    expect(calls("board.list").length).toBeGreaterThan(0);
     expect(calls("sync.snapshot").filter(([, params]) => params.scope.kind === "device").length > 0).toBe(version === "3.33.0");
   } finally { vi.unstubAllGlobals(); }
 });
@@ -3081,4 +3094,205 @@ it.each([
       expect(calls("sync.changes")).toHaveLength(0);
     }
   } finally { release(catchup); generation.mockRestore(); marks.mockRestore(); vi.unstubAllGlobals(); }
+});
+
+
+const runtimeBoardObservation = (label) => ({
+  pending: [{ entity_id: "pending-worktree", project_id: "proj-1", project: "Synthetic project", title: label,
+    branch: "creating-branch", state: "creating", checkout_id: "pending-worktree", implements: null, isolation: "worktree", pending_seconds: 3 }],
+  external_worktrees: [{ worktree_id: "external-worktree", project_id: "proj-1", path: "/synthetic/external", branch: "outside",
+    base_branch: "dev", isolation: "worktree", adoptable: true, agent_working: false, can_finish: false }],
+  plans: [{ plan_id: "legacy-plan", project_id: "proj-1", goal: label, state: "drafting", needs_attention: false }],
+  runs: [{ run_id: "legacy-run", project_id: "proj-1", goal: label, state: "review", base_branch: "dev", base_sha: "synthetic-base-sha" }],
+});
+const stampedRuntimeRows = (rows) => rows.map((row) => ({ ...row, deviceId: "dev-1", projectKey: "dev-1/proj-1" }));
+const expectRuntimeBoard = (feed, observation) => {
+  expect(feed.pending).toEqual(stampedRuntimeRows(observation.pending));
+  expect(feed.externalWorktrees).toEqual(stampedRuntimeRows(observation.external_worktrees));
+  expect(feed.plans).toEqual(stampedRuntimeRows(observation.plans));
+  expect(feed.runs).toEqual(stampedRuntimeRows(observation.runs));
+};
+
+it.each(["connection", "reconnect", "visibility"])("reads only runtime board collections on the existing owned %s trigger", async (trigger) => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true; projectWorkersSupported = true;
+  const records = projectDeviceRecords();
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  let observation = runtimeBoardObservation("First runtime observation");
+  script["board.list"] = () => ({ ...observation, items: [{ kind: "capture", capture_id: "legacy-only" }],
+    projects: [{ project_id: "legacy-project" }], workspaces: [{ id: "legacy-workspace" }] });
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    expect(calls("board.list")).toHaveLength(1);
+    expectRuntimeBoard((await read("", "feed")).value, observation);
+    const owned = { projects: await read("", "projects"), workspaces: await read("", "workspaces"),
+      row: await read("project-owner", "row"), roster: await read("project-owner", "project-agents") };
+    bridge.call.mockClear();
+    observation = runtimeBoardObservation("Next runtime observation");
+    if (trigger === "connection") await sync.syncDevice("dev-1", "connection");
+    if (trigger === "reconnect") { registerDevice("dev-1"); for (const changed of stateListeners) changed(); }
+    if (trigger === "visibility") document.dispatchEvent(new Event("visibilitychange"));
+    await passesSettled(sync, "dev-1");
+    expect(calls("board.list")).toHaveLength(1);
+    expectRuntimeBoard((await read("", "feed")).value, observation);
+    expect((await read("", "projects")).value).toEqual(owned.projects.value);
+    expect((await read("", "workspaces")).value).toEqual(owned.workspaces.value);
+    expect((await read("project-owner", "row")).value).toEqual(owned.row.value);
+    expect((await read("project-owner", "project-agents")).value).toEqual(owned.roster.value);
+    expect((await read("", "feed")).value.items.some((row) => row.capture_id === "legacy-only")).toBe(false);
+    for (const method of ["project.list", "workspace.list", "agent.list"]) expect(calls(method), method).toHaveLength(0);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("owned board pushes replace only present runtime collections and explicit empties clear them", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true;
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records: projectDeviceRecords() });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    const before = { projects: await read("", "projects"), workspaces: await read("", "workspaces"),
+      row: await read("project-owner", "row"), roster: await read("project-owner", "project-agents") };
+    const observation = runtimeBoardObservation("Pushed runtime observation");
+    const inbox = registeredWatchers.find((watcher) => watcher.id === "s-inbox");
+    await inbox.onChanges([{ entity_id: "board", state: { ...observation, items: [], projects: [], workspaces: [] } }]);
+    await settle();
+    expectRuntimeBoard((await read("", "feed")).value, observation);
+    await inbox.onChanges([{ entity_id: "board", state: { pending: [] } }]); await settle();
+    const partial = (await read("", "feed")).value;
+    expectRuntimeBoard(partial, { ...observation, pending: [] });
+    await inbox.onChanges([{ entity_id: "board", state: { plans: [], runs: [], external_worktrees: [] } }]); await settle();
+    expectRuntimeBoard((await read("", "feed")).value, { pending: [], plans: [], runs: [], external_worktrees: [] });
+    expect((await read("", "projects")).value).toEqual(before.projects.value);
+    expect((await read("", "workspaces")).value).toEqual(before.workspaces.value);
+    expect((await read("project-owner", "row")).value).toEqual(before.row.value);
+    expect((await read("project-owner", "project-agents")).value).toEqual(before.roster.value);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("retries a device publication raced by a runtime board observation without a head check", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true;
+  const records = projectDeviceRecords();
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  let entered, release;
+  const requested = new Promise((resolve) => { entered = resolve; });
+  const held = new Promise((resolve) => { release = resolve; });
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    const changes = [{ ...records[0], row: { ...records[0].row, name: "Caught-up device project" }, operation: "upsert", seq: "2", revision: "2" }];
+    const answer = scopedAnswer({ head: "2", cursor: "device-next", changes });
+    script["sync.changes"] = () => { entered(); return held; };
+    bridge.call.mockClear();
+    const { captureScopedSync } = await import("../src/core/scopedSyncRuntime.js");
+    const recovering = captureScopedSync("dev-1"); await requested;
+    const observation = runtimeBoardObservation("Runtime observation during capture");
+    const { enrichDeviceRuntimeBoard } = await import("../src/core/scopedDeviceRuntime.js");
+    // Call the actual cache writer without another wake, so only the existing
+    // bounded retry can repair this publication's stale capture.
+    await enrichDeviceRuntimeBoard("dev-1", observation, () => true);
+    script["sync.changes"] = () => answer;
+    release(answer); await recovering;
+    await vi.waitFor(async () => {
+      expectRuntimeBoard((await read("", "feed")).value, observation);
+      expect((await read("", "projects")).value[0].name).toBe("Caught-up device project");
+    }, { timeout: 5_000 });
+    expect(calls("sync.changes").length).toBeGreaterThan(1);
+    expect(calls("sync.head")).toHaveLength(0);
+  } finally { release(scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] })); vi.unstubAllGlobals(); }
+});
+
+
+it("refreshes runtime board collections after an owned revision-only board push", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true;
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records: projectDeviceRecords() });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  let observation = runtimeBoardObservation("Before board revision");
+  script["board.list"] = () => observation;
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1"); bridge.call.mockClear();
+    observation = runtimeBoardObservation("After board revision");
+    await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([{ entity_id: "board", state: { revision: 10 } }]);
+    await settle();
+    expect(calls("board.list")).toHaveLength(1);
+    expectRuntimeBoard((await read("", "feed")).value, observation);
+    for (const method of ["project.list", "workspace.list", "agent.list"]) expect(calls(method), method).toHaveLength(0);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+
+it("runtime run bodies cannot replace device roster generations or acknowledged read marks", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true; projectWorkersSupported = true;
+  const records = projectDeviceRecords().map((record) => record.kind === "agent" ? { ...record, row: { ...record.row,
+    thread_generation_revision: "2", read_through_sequence: "5", unread_count: 0, unread_reason: null } } : record);
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    const stale = { ...runtimeBoardObservation("Durable run body").runs[0], run_id: "project-owner",
+      pinned_agent_id: "worker", session_started_ms: 1, last_activity_ms: 2, unread_count: 2,
+      agents: [{ ...expectedDeviceWorker, thread_generation_revision: "1", read_through_sequence: "0" }],
+      thread: { id: "stale-thread", thread_id: "stale-thread", generation_revision: "1", item_count: 3, last_sequence: "3" } };
+    await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([{ entity_id: "board", state: { runs: [stale] } }]);
+    await settle();
+    const record = await read("", "feed");
+    const { cachedFeedView } = await import("../src/core/cachedRows.js");
+    const { withCacheFreshness } = await import("../src/core/cacheFreshness.js");
+    const { freshestRosters } = await import("../src/core/inboxRoster.js");
+    const { projectAgentEntries } = await import("../src/core/inboxProjectAgent.js");
+    const { rememberProjectAgentsSupport } = await import("../src/core/projectAgentsCache.js");
+    await rememberProjectAgentsSupport("dev-1", { agents: { projectWorkers: true } });
+    const view = await cachedFeedView("dev-1");
+    const runs = record.value.runs.map((row) => withCacheFreshness(row, record));
+    const roster = freshestRosters([...view.items, ...runs])("dev-1/proj-1", "project-owner");
+    const readFacts = (agents) => agents.map((agent) => ({ id: agent.id, generation: agent.thread_generation_revision,
+      read: agent.read_through_sequence, unread: agent.unread_count }));
+    // The owner row is pinned-only; the separate project roster is complete.
+    expect(readFacts(roster.agents)).toEqual([{ id: "coordinator", generation: "2", read: "5", unread: 0 }]);
+    expect(readFacts(view.projects[0].projectRoster.agents)).toEqual([
+      { id: "worker", generation: "2", read: "5", unread: 0 }, { id: "coordinator", generation: "2", read: "5", unread: 0 },
+    ]);
+    expect(projectAgentEntries(view.projects, view.items, runs)[0].unreadCount).toBe(0);
+    expect(record.value.runs[0]).toEqual({ run_id: "project-owner", project_id: "proj-1", goal: "Durable run body", state: "review",
+      base_branch: "dev", base_sha: "synthetic-base-sha",
+      deviceId: "dev-1", projectKey: "dev-1/proj-1" });
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("normalizes absent runtime collections on a full owned board read while keeping partial push omissions", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true;
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records: projectDeviceRecords() });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  let observation = runtimeBoardObservation("Old runtime body");
+  script["board.list"] = () => observation;
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    observation = { items: [], runs: [], external_worktrees: [], pending: [] };
+    await sync.syncDevice("dev-1", "connection"); await passesSettled(sync, "dev-1");
+    expectRuntimeBoard((await read("", "feed")).value, { pending: [], external_worktrees: [], plans: [], runs: [] });
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("refreshes existing workspace runtime summaries from the owned board read without replacing directory fields", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true;
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records: deviceRecords() });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  let summaries = [];
+  script["board.list"] = () => ({ items: [], runs: [], pending: [], external_worktrees: [], workspace_summaries: summaries });
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    const before = (await read("", "workspaces")).value[0];
+    summaries = [{ workspace_id: "workspace-1", work_summary: { total: 3, running: 1 }, can_finish: true, finish_blockers: [] },
+      { workspace_id: "legacy-only", work_summary: { total: 7 }, can_finish: true }];
+    await sync.syncDevice("dev-1", "connection"); await passesSettled(sync, "dev-1");
+    const expected = { ...before, work_summary: summaries[0].work_summary, can_finish: true, finish_blockers: [] };
+    expect((await read("", "workspaces")).value).toEqual([expected]);
+    expect((await read("", "feed")).value.workspaces).toEqual([expected]);
+  } finally { vi.unstubAllGlobals(); }
 });

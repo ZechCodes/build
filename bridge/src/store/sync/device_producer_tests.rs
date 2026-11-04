@@ -1385,3 +1385,123 @@ fn device_missing_facts_startup_repair_chunks_resume_after_publication_failure()
         "repair-129"
     );
 }
+
+#[test]
+fn device_334_pin_republishes_later_ordinal_roles_and_owner_pin_atomically() {
+    use crate::project_roster::ProjectRole;
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let mut run = run_record("pin-334");
+    let mut later =
+        AgentRoster::with_first("later-334", ModelChoice::default(), AT).agents()[0].clone();
+    later.ordinal = 2;
+    later.project_role = Some(ProjectRole::Worker);
+    run.agents[0].project_role = Some(ProjectRole::Coordinator);
+    run.pinned_agent_id = Some(run.agents[0].id.clone());
+    run.agents.push(later);
+    store.save_run(&run).unwrap();
+    let before = journal_head(&store);
+    run.agents[0].project_role = Some(ProjectRole::Worker);
+    run.agents[1].project_role = Some(ProjectRole::Coordinator);
+    run.pinned_agent_id = Some(run.agents[1].id.clone());
+    store.save_run(&run).unwrap();
+    assert_eq!(
+        projection(&store, "identity", &run.agents[0].id)["project_role"],
+        "worker"
+    );
+    assert_eq!(
+        projection(&store, "identity", &run.agents[1].id)["project_role"],
+        "coordinator"
+    );
+    assert_eq!(
+        projection(&store, "owner_session", &run.id)["pinned_agent_id"],
+        run.agents[1].id
+    );
+    let changed: Vec<(String, String)> = store
+        .writer_for_test()
+        .prepare("SELECT entity_kind,entity_key FROM sync_journal WHERE seq>?1")
+        .unwrap()
+        .query_map([before], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for entity in [
+        ("identity", run.agents[0].id.as_str()),
+        ("identity", run.agents[1].id.as_str()),
+        ("owner_session", run.id.as_str()),
+    ] {
+        assert!(
+            changed.contains(&(entity.0.into(), entity.1.into())),
+            "missing publication: {changed:?}"
+        );
+    }
+    store.writer_for_test().execute_batch("CREATE TRIGGER reject_334_pin BEFORE INSERT ON sync_journal WHEN NEW.entity_kind='owner_session' BEGIN SELECT RAISE(ABORT,'synthetic pin refusal'); END;").unwrap();
+    run.pinned_agent_id = Some(run.agents[0].id.clone());
+    run.agents[0].project_role = Some(ProjectRole::Coordinator);
+    run.agents[1].project_role = Some(ProjectRole::Worker);
+    assert!(store.save_run(&run).is_err());
+    assert_eq!(
+        projection(&store, "identity", &run.agents[1].id)["project_role"],
+        "coordinator"
+    );
+    assert_eq!(
+        projection(&store, "owner_session", &run.id)["pinned_agent_id"],
+        run.agents[1].id
+    );
+}
+
+#[test]
+fn device_334_pin_keeps_missing_recorded_pin_and_null_roles_without_inference() {
+    use crate::project_roster::ProjectRole;
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let mut run = run_record("missing-pin-334");
+    run.pinned_agent_id = Some("recorded-but-absent".into());
+    run.agents[0].project_role = Some(ProjectRole::Worker);
+    store.save_run(&run).unwrap();
+    assert_eq!(
+        projection(&store, "owner_session", &run.id)["pinned_agent_id"],
+        "recorded-but-absent"
+    );
+    assert_eq!(
+        projection(&store, "identity", &run.agents[0].id)["project_role"],
+        "worker"
+    );
+    run.agents[0].project_role = None;
+    run.pinned_agent_id = None;
+    store.save_run(&run).unwrap();
+    let identity = projection(&store, "identity", &run.agents[0].id);
+    assert!(identity.as_object().unwrap().contains_key("project_role"));
+    assert!(identity["project_role"].is_null());
+}
+
+#[test]
+fn device_334_pin_upgrade_reprojects_saved_roles_and_pins_without_agent_save() {
+    use crate::project_roster::ProjectRole;
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let mut run = run_record("upgrade-pin-334");
+    run.agents[0].project_role = Some(ProjectRole::Coordinator);
+    run.pinned_agent_id = Some(run.agents[0].id.clone());
+    store.save_run(&run).unwrap();
+    {
+        let conn = store.writer_for_test();
+        conn.execute(
+            "DELETE FROM meta WHERE key='device_owner_facts_334_position'",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch("DROP TABLE IF EXISTS device_owner_pins;")
+            .unwrap();
+    }
+    drop(store);
+    let store = Store::new(directory.path()).unwrap();
+    assert_eq!(
+        projection(&store, "identity", &run.agents[0].id)["project_role"],
+        "coordinator"
+    );
+    assert_eq!(
+        projection(&store, "owner_session", &run.id)["pinned_agent_id"],
+        run.agents[0].id
+    );
+}

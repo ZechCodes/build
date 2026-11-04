@@ -72,8 +72,54 @@ impl AppState {
         let rows = store
             .session_message_times()
             .map_err(|error| format!("session rebuild: {error}"))?;
+        let pools = store
+            .device_session_summaries()
+            .map_err(|error| format!("session pool rebuild: {error}"))?;
         self.replace_session_summaries(rows);
+        self.apply_device_session_summaries(pools);
         Ok(())
+    }
+
+    /// Explicit reset already captured its history rows before the write;
+    /// restore independent compact authority without another transcript replay.
+    pub(in crate::app) fn restore_device_session_summaries(&mut self) -> Result<(), String> {
+        let Some(store) = self.store.as_ref() else {
+            return Ok(());
+        };
+        let pools = store
+            .device_session_summaries()
+            .map_err(|error| format!("session pool restore: {error}"))?;
+        self.apply_device_session_summaries(pools);
+        Ok(())
+    }
+    fn apply_device_session_summaries(&mut self, pools: Vec<(String, String, SessionSummary)>) {
+        // Until an old store resolves registry IDs to stable paths, its live
+        // and retained pools may be separate. The exact timestamp replay above
+        // remains authoritative until mapping reconciliation joins them.
+        let unresolved = pools
+            .iter()
+            .filter(|(kind, _, _)| kind == "project")
+            .filter_map(|(_, key, _)| key.strip_prefix("@registry:").map(str::to_owned))
+            .collect::<std::collections::HashSet<_>>();
+        // Durable pool boundaries survive reclaimed transcript prefixes. The
+        // history replay above still restores exact per-agent seen cursors.
+        for (kind, key, summary) in pools {
+            let id = if kind == "owner" {
+                Some(key)
+            } else if let Some(id) = key.strip_prefix("@registry:") {
+                Some(id.to_owned())
+            } else {
+                self.projects
+                    .find_by_canonical_path(std::path::Path::new(&key))
+                    .map(|project| project.id.clone())
+            };
+            if let Some(id) = id {
+                if kind == "project" && unresolved.contains(&id) {
+                    continue;
+                }
+                self.session_summaries.insert(id, summary);
+            }
+        }
     }
 
     pub(in crate::app) fn replace_session_summaries(

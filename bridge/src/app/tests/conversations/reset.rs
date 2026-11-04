@@ -693,3 +693,64 @@ fn conversation_reset_requires_current_generation_for_choice_watch_and_compactio
         assert_eq!(accepted["ok"], true, "{verb}: {accepted:?}");
     }
 }
+
+#[test]
+fn device_334_sessions_reset_matches_lists_and_preserves_unrelated_pruned_boundaries() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (_, survivor) = planned_run_in_review(&mut state, "unrelated durable session");
+    let (_, target) = planned_run_in_review(&mut state, "reset durable session");
+    let project_id = state.projects.project_id_of(&target).unwrap().to_owned();
+    let mut active = state.take_run(&survivor).unwrap();
+    let agent = active.agents.primary_mut().unwrap();
+    let survivor_agent = agent.id.clone();
+    agent
+        .thread
+        .post_agent("session anchor", None, "2030-01-01T00:00:00Z");
+    for _ in 0..150 {
+        agent
+            .thread
+            .post_agent("reclaimable middle", None, "2030-01-01T01:00:00Z");
+    }
+    state.finish_run_mutation(survivor.clone(), active).unwrap();
+    let mut active = state.take_run(&target).unwrap();
+    active.agents.primary_mut().unwrap().thread.post_agent(
+        "to reset",
+        None,
+        "2030-01-02T00:00:00Z",
+    );
+    state.finish_run_mutation(target.clone(), active).unwrap();
+    let store = state.require_store().unwrap().clone();
+    let pruned = store
+        .prune_conversation_batch(
+            &survivor_agent,
+            crate::store::RetentionPolicy::default(),
+            "2035-01-01T00:00:00Z",
+        )
+        .unwrap();
+    assert!(pruned.items_deleted > 0);
+    let reset = state.handle(req("conversation.reset", reset_params(&state, &target)));
+    assert_eq!(reset["ok"], true, "{reset}");
+    assert!(state.session_summary(&target).session_started_ms.is_none());
+    let anchor = crate::session_summary::message_millis("2030-01-01T00:00:00Z").unwrap();
+    assert_eq!(
+        state.session_summary(&survivor).session_started_ms,
+        Some(anchor)
+    );
+    let raw:String=store.writer_for_test().query_row("SELECT record FROM sync_projection WHERE kind='owner_session' AND key=?1 AND deleted=0",[&target],|row|row.get(0)).unwrap();
+    let owner: Value = serde_json::from_str(&raw).unwrap();
+    assert!(owner["session_started_ms"].is_null());
+    assert!(owner["last_activity_ms"].is_null());
+    let raw:String=store.writer_for_test().query_row("SELECT record FROM sync_projection WHERE kind='project_session' AND key=?1 AND deleted=0",[&project_id],|row|row.get(0)).unwrap();
+    let device: Value = serde_json::from_str(&raw).unwrap();
+    let list = state.project_list()["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["project_id"] == project_id)
+        .unwrap()
+        .clone();
+    for field in ["session_started_ms", "last_activity_ms"] {
+        assert_eq!(device[field], list[field], "reset project session: {field}");
+    }
+}

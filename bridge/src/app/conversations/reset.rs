@@ -170,6 +170,7 @@ impl AppState {
             self.install_reset_agent(agent)?;
         }
         self.replace_session_summaries(summary_rows);
+        let session_result = self.restore_device_session_summaries();
         let thread_id = self.conversation_at(&address)?.id.clone();
         self.board
             .attention_mut()
@@ -188,6 +189,7 @@ impl AppState {
         }
         self.note_board_changed();
         cleanup_result?;
+        session_result?;
         let agent = self
             .entity_agents(&address.entity_id)?
             .by_id(&address.agent_id)

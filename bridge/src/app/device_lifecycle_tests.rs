@@ -912,3 +912,130 @@ fn device_followup_adopted_owner_marks_before_staging_its_workspace_alias() {
         "the committed owner must remain available"
     );
 }
+
+#[test]
+fn device_334_sessions_equal_workspace_and_project_list_snapshots_for_unwatched_activity() {
+    let (root, mut app, store) = fixture();
+    let created = app
+        .dispatch(
+            "workspace.create",
+            &json!({"project_id":"proj-1","name":"pooled-session-334"}),
+        )
+        .unwrap();
+    let workspace_id = created["workspace_id"].as_str().unwrap();
+    let conversation = app
+        .workspace_ensure_conversation(&json!({"workspace_id":workspace_id}))
+        .unwrap();
+    let owner = conversation["entity_id"].as_str().unwrap().to_owned();
+    for at in [
+        "2026-01-01T00:00:00Z",
+        "2026-01-01T07:00:00Z",
+        "2026-01-02T02:00:00Z",
+    ] {
+        let mut active = app.take_run(&owner).unwrap();
+        if active.agents.is_empty() {
+            active.agents = crate::agent::AgentRoster::with_first(
+                &owner,
+                Default::default(),
+                "2026-01-01T00:00:00Z",
+            );
+        }
+        let agent = active.agents.primary_mut().unwrap();
+        agent.watched = false;
+        if at == "2026-01-02T02:00:00Z" {
+            agent
+                .thread
+                .post_agent_progress("unwatched progress session fact", None, at);
+        } else {
+            agent.thread.post_agent("unwatched session fact", None, at);
+        }
+        app.finish_run_mutation(owner.clone(), active).unwrap();
+        let workspace = app.workspaces.get(workspace_id).unwrap();
+        let workspace_row = app.workspace_list_snapshot_row(workspace).unwrap();
+        let project_row = app.project_list()["projects"][0].clone();
+        for (kind, key, list) in [
+            ("owner_session", owner.as_str(), workspace_row),
+            ("project_session", "proj-1", project_row),
+        ] {
+            let device = row(root.path(), kind, key).expect("durable session record");
+            for field in ["session_started_ms", "last_activity_ms"] {
+                assert_eq!(device[field], list[field], "{kind}.{field} at {at}");
+            }
+        }
+    }
+    let mut active = app.take_run(&owner).unwrap();
+    let agent = active.agents.primary_mut().unwrap();
+    let agent_id = agent.id.clone();
+    for _ in 0..150 {
+        agent
+            .thread
+            .post_agent("reclaimable session history", None, "2026-01-02T03:00:00Z");
+    }
+    app.finish_run_mutation(owner.clone(), active).unwrap();
+    let expected = row(root.path(), "owner_session", &owner).unwrap();
+    let reclaimed = store
+        .prune_conversation_batch(
+            &agent_id,
+            crate::store::RetentionPolicy::default(),
+            "2026-11-24T12:00:00Z",
+        )
+        .unwrap();
+    assert!(reclaimed.items_deleted > 0);
+    app.rebuild_session_summaries().unwrap();
+    let workspace = app
+        .workspace_list_snapshot_row(app.workspaces.get(workspace_id).unwrap())
+        .unwrap();
+    for field in ["session_started_ms", "last_activity_ms"] {
+        assert_eq!(
+            workspace[field], expected[field],
+            "durable boundary after prefix reclamation: {field}"
+        );
+    }
+}
+
+#[test]
+fn device_334_sessions_unmapped_startup_keeps_exact_pooled_list_fields() {
+    let (root, mut app, store) = fixture();
+    let created = app
+        .dispatch(
+            "workspace.create",
+            &json!({"project_id":"proj-1","name":"unmapped-session-334"}),
+        )
+        .unwrap();
+    let conversation = app
+        .workspace_ensure_conversation(&json!({"workspace_id":created["workspace_id"]}))
+        .unwrap();
+    let owner = conversation["entity_id"].as_str().unwrap().to_owned();
+    let mut active = app.take_run(&owner).unwrap();
+    active.agents =
+        crate::agent::AgentRoster::with_first(&owner, Default::default(), "2026-01-01T00:00:00Z");
+    active.agents.primary_mut().unwrap().thread.post_user(
+        "live activity",
+        None,
+        "2026-01-01T07:00:00Z",
+    );
+    app.finish_run_mutation(owner, active).unwrap();
+    let first = crate::session_summary::message_millis("2026-01-01T00:00:00Z").unwrap();
+    let last = crate::session_summary::message_millis("2026-01-01T07:00:00Z").unwrap();
+    store
+        .writer_for_test()
+        .execute(
+            "INSERT INTO inbox_retained_messages VALUES('proj-1',?1)",
+            [first],
+        )
+        .unwrap();
+    store.writer_for_test().execute_batch("DELETE FROM device_project_ids; DELETE FROM device_session_project_ids; DELETE FROM device_pooled_sessions; DELETE FROM meta WHERE key='device_sessions_334_position';").unwrap();
+    app.store = None;
+    drop(store);
+    let store = crate::store::Store::new(root.path().join("store")).unwrap();
+    app.store = Some(store);
+    app.rebuild_session_summaries().unwrap();
+    let project = app.project_list()["projects"][0].clone();
+    assert_eq!(project["session_started_ms"], first);
+    assert_eq!(project["last_activity_ms"], last);
+    app.initialize_device_lifecycle().unwrap();
+    let device = row(root.path(), "project_session", "proj-1").unwrap();
+    for field in ["session_started_ms", "last_activity_ms"] {
+        assert_eq!(device[field], project[field], "startup mapping: {field}");
+    }
+}

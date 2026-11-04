@@ -15,7 +15,8 @@ pub(super) fn install(conn: &Connection) -> Result<(), StoreError> {
         CREATE INDEX IF NOT EXISTS device_summary_attention ON device_summary_items(conversation_id,generation,sequence) WHERE attention=1;
         CREATE TABLE IF NOT EXISTS device_attention_gc(conversation_id TEXT NOT NULL,generation INTEGER NOT NULL,PRIMARY KEY(conversation_id,generation)) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS device_conversation_sessions(conversation_id TEXT PRIMARY KEY,session_started_ms INTEGER,last_activity_ms INTEGER) WITHOUT ROWID;
-        CREATE TEMP TABLE device_item_touches(conversation_id TEXT NOT NULL,sequence INTEGER NOT NULL,old_attention INTEGER NOT NULL,PRIMARY KEY(conversation_id,sequence)) WITHOUT ROWID;")?;
+        CREATE TEMP TABLE device_item_touches(conversation_id TEXT NOT NULL,sequence INTEGER NOT NULL,old_attention INTEGER NOT NULL,new_item INTEGER NOT NULL,touch_order INTEGER NOT NULL,PRIMARY KEY(conversation_id,sequence)) WITHOUT ROWID;
+        CREATE INDEX device_item_touch_order ON device_item_touches(touch_order);")?;
     Ok(())
 }
 fn installed(conn: &Connection) -> Result<bool, StoreError> {
@@ -31,7 +32,7 @@ pub(in crate::store) fn before_item(
     seq: i64,
 ) -> Result<(), StoreError> {
     if installed(conn)? {
-        conn.prepare_cached("INSERT OR IGNORE INTO temp.device_item_touches VALUES(?1,?2,COALESCE((SELECT attention FROM thread_items WHERE agent_id=?1 AND sequence=?2),0))")?.execute(params![id,seq])?;
+        conn.prepare_cached("INSERT OR IGNORE INTO temp.device_item_touches VALUES(?1,?2,COALESCE((SELECT attention FROM thread_items WHERE agent_id=?1 AND sequence=?2),0),NOT EXISTS(SELECT 1 FROM thread_items WHERE agent_id=?1 AND sequence=?2),COALESCE((SELECT MAX(touch_order) FROM temp.device_item_touches),0)+1)")?.execute(params![id,seq])?;
     }
     Ok(())
 }
@@ -45,10 +46,10 @@ pub(super) fn generation(conn: &Connection, id: &str) -> Result<i64, StoreError>
         .unwrap_or(0))
 }
 pub(super) fn flush(tx: &Transaction<'_>) -> Result<(), StoreError> {
-    let rows=tx.prepare_cached("SELECT conversation_id,sequence,old_attention FROM temp.device_item_touches ORDER BY conversation_id,sequence")?
-        .query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?,row.get::<_,i64>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
+    let rows=tx.prepare_cached("SELECT conversation_id,sequence,old_attention,new_item FROM temp.device_item_touches ORDER BY touch_order")?
+        .query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?,row.get::<_,i64>(2)?,row.get::<_,bool>(3)?)))?.collect::<Result<Vec<_>,_>>()?;
     let mut deltas = BTreeMap::new();
-    for (id, seq, old) in rows {
+    for (id, seq, old, new_item) in rows {
         let current = tx
             .prepare_cached(&format!(
                 "SELECT {ITEM_FIELDS} FROM thread_items WHERE agent_id=?1 AND sequence=?2"
@@ -68,7 +69,7 @@ pub(super) fn flush(tx: &Transaction<'_>) -> Result<(), StoreError> {
             seq,
             current.as_ref().map_or(0, |row| row.0) - old,
         );
-        observe(tx, &id, seq, current.as_ref())?;
+        observe(tx, &id, seq, current.as_ref(), new_item)?;
         super::device_producers::touch_conversation(tx, &id)?;
     }
     apply_nodes(tx, deltas)?;
@@ -85,7 +86,7 @@ pub(super) fn backfill_item(
     let mut nodes = BTreeMap::new();
     add_nodes(&mut nodes, id, seq, meta.0);
     apply_nodes(tx, nodes)?;
-    observe(tx, id, seq, Some(meta))
+    observe(tx, id, seq, Some(meta), false)
 }
 fn add_nodes(nodes: &mut BTreeMap<(String, i64), i64>, id: &str, mut node: i64, delta: i64) {
     if delta == 0 {
@@ -140,6 +141,7 @@ fn observe(
     id: &str,
     seq: i64,
     meta: Option<&ItemMeta>,
+    new_item: bool,
 ) -> Result<(), StoreError> {
     let current = generation(tx, id)?;
     let Some((attention, message, handoff, raw)) = meta else {
@@ -150,6 +152,9 @@ fn observe(
         source,
     })?;
     let data = &value["data"];
+    if new_item {
+        observe_pooled_session(tx, id, *message, data)?;
+    }
     if flag(data, "still_working") || (*attention == 0 && !*message) {
         return remove_summary(tx, id, current, seq);
     }
@@ -165,6 +170,26 @@ fn observe(
     }
     Ok(())
 }
+// List sessions include every new message, even progress that does not
+// contribute an attention row. In-place edits retain their original place.
+fn observe_pooled_session(
+    tx: &Transaction<'_>,
+    id: &str,
+    message: bool,
+    data: &Value,
+) -> Result<(), StoreError> {
+    if !message || flag(data, "from_build") {
+        return Ok(());
+    }
+    if let Some(at) = data["created_at"]
+        .as_str()
+        .and_then(crate::session_summary::message_millis)
+    {
+        super::device_sessions::note_message(tx, id, at)?;
+    }
+    Ok(())
+}
+
 fn remove_summary(
     tx: &Transaction<'_>,
     id: &str,

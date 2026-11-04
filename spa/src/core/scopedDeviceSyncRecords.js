@@ -1,6 +1,7 @@
 // Device rows are durable summaries, never live process or filesystem state.
 // Rebuild the existing cache projections; mounted views never read this wire.
 import { stampProject, stampRow, stampWorkspace } from "./feedMerge.js";
+import { deviceRuntimeRowFields } from "./scopedDeviceFields.js";
 
 export const deviceRecordId = (kind, key) => JSON.stringify([kind, key]);
 // Change pages overlay a historical operation on the key's CURRENT row and
@@ -24,7 +25,8 @@ export function preserveConversationRead(held, incoming) {
 }
 
 function agentProjection(agent, conversation, identity, previous) {
-  const incoming = { ...previous, ...agent, ...conversation, id: agent.id,
+  const base = sameThread(previous, agent) ? previous : undefined;
+  const incoming = { ...base, ...agent, ...conversation, id: agent.id,
     conversation_id: agent.conversation_id, project_role: identity?.project_role ?? null };
   return preserveConversationRead(previous, incoming);
 }
@@ -98,26 +100,36 @@ function clearRetiredDirectoryFields(rows, result) {
   }
 }
 
-function oldAgent(held, ownerId, id) {
+function oldAgent(held, ownerId, id, current) {
   const row = held("row", ownerId), roster = held("project-agents", ownerId);
   const rowAgent = row?.agents?.find((agent) => agent.id === id), rosterAgent = roster?.agents?.find((agent) => agent.id === id);
   // Either immediate row repair or the complete roster's confirmation can
   // arrive first. Retain the stronger cursor on the same thread generation.
   if (!rowAgent) return rosterAgent;
-  return rosterAgent ? preserveConversationRead(rowAgent, rosterAgent) : rowAgent;
+  if (!rosterAgent || sameThread(rowAgent, current) && !sameThread(rosterAgent, current)) return rowAgent;
+  return preserveConversationRead(rowAgent, rosterAgent);
 }
 
-function ownerRow(owner, agents, conversations, session, held, deviceId, projectOwnerIds) {
+function ownerRow(owner, agents, conversations, session, held, deviceId, projectOwnerIds, retiredConversations) {
   const previous = held("row", owner), first = agents[0] || session;
-  const summaries = agents.map((agent) => conversations.get(agent.id)).filter(Boolean);
+  const listed = projectOwnerIds.has(owner) ? agents.filter((agent) => agent.id === session?.pinned_agent_id) : agents;
+  const summaries = listed.map((agent) => conversations.get(agent.id)).filter(Boolean);
   return stampRow({ ...previous, kind: ownerKind(owner, first, previous, projectOwnerIds), entity_id: owner,
     run_id: owner, project_id: first.project_id, workspace_id: first.workspace_id,
     agents, ...ownerAttention(agents),
     muted: summaries.length > 0 && summaries.every((row) => row.muted),
     dismissed: summaries.length > 0 && summaries.every((row) => row.dismissed),
     pending: summaries.some((row) => row.pending),
-    ...conversationActivity(previous, summaries),
+    ...conversationActivity(previousConversation(previous, listed, retiredConversations), summaries),
   }, deviceId);
+}
+
+function previousConversation(previous, agents, retired) {
+  if (!previous) return undefined;
+  const before = new Map((previous.agents || []).map((agent) => [agent.id, agent]));
+  if (before.size !== agents.length) return undefined;
+  return agents.every((agent) => sameThread(before.get(agent.id), agent)
+    && before.get(agent.id).watched === agent.watched && !retired.has(agent.id)) ? previous : undefined;
 }
 
 function ownerKind(owner, first, previous, projectOwnerIds) {
@@ -137,20 +149,38 @@ function ownerAttention(agents) {
 
 function conversationActivity(previous, summaries) {
   const newest = summaries.reduce((held, row) => !held || row.last_activity_ms >= held.last_activity_ms ? row : held, null);
-  return { title: newest?.title ?? previous?.title,
-    last_message_summary: newest?.last_message_summary ?? previous?.last_message_summary };
+  return { title: observedField(newest, previous, "title"),
+    last_message_summary: observedField(newest, previous, "last_message_summary") ?? null };
+}
+
+const observedField = (incoming, previous, field) => incoming && Object.hasOwn(incoming, field) ? incoming[field] : previous?.[field];
+
+export function deviceConversationRecords(rows) {
+  return [...rows.values()].filter((record) => record.kind === "inbox_conversation" && !record.deleted
+    && sameThread(rows.get(deviceRecordId("agent", record.row.agent_id))?.row, record.row));
+}
+
+export function devicePendingConversationOwners(rows) {
+  return new Set([...rows.values()].filter((record) => record.kind === "inbox_conversation" && !record.deleted)
+    .filter((record) => {
+      const agent = rows.get(deviceRecordId("agent", record.row.agent_id))?.row;
+      return agent && !sameThread(agent, record.row);
+    }).map((record) => record.row.owner_id));
 }
 
 export function deviceOwners(rows, held, deviceId) {
-  const conversations = new Map(valuesOf(rows, "inbox_conversation").map((row) => [row.agent_id, row]));
+  // A change page may split an agent reset from its conversation reset. Never
+  // attach the older conversation generation to that newly observed agent.
+  const conversations = new Map(deviceConversationRecords(rows).map(({ row }) => [row.agent_id, row]));
   const identities = new Map(valuesOf(rows, "identity").map((row) => [row.agent_id, row]));
   const sessions = new Map(valuesOf(rows, "owner_session").map((row) => [row.owner_id, row]));
   const retired = deletedKeys(rows, "owner_session");
+  const retiredConversations = deletedKeys(rows, "inbox_conversation");
   const projectOwnerIds = new Set(projectOwners(rows, held).values());
   const owners = new Map();
   for (const agent of valuesOf(rows, "agent")) {
     if (retired.has(agent.owner_id)) continue;
-    const next = agentProjection(agent, conversations.get(agent.id), identities.get(agent.id), oldAgent(held, agent.owner_id, agent.id));
+    const next = agentProjection(agent, conversations.get(agent.id), identities.get(agent.id), oldAgent(held, agent.owner_id, agent.id, agent));
     if (!owners.has(agent.owner_id)) owners.set(agent.owner_id, []);
     owners.get(agent.owner_id).push(next);
   }
@@ -158,7 +188,7 @@ export function deviceOwners(rows, held, deviceId) {
   for (const agents of owners.values()) agents.sort((a, b) => a.ordinal - b.ordinal || a.id.localeCompare(b.id));
   return new Map([...owners].map(([owner, agents]) => {
     const session = sessions.get(owner);
-    const row = ownerRow(owner, agents, conversations, session, held, deviceId, projectOwnerIds);
+    const row = ownerRow(owner, agents, conversations, session, held, deviceId, projectOwnerIds, retiredConversations);
     // Unlinked legacy owners have no active rail consumer; retain raw facts
     // until a registered workspace, project authority or held kind identifies them.
     if (!row.kind) return null;
@@ -202,7 +232,16 @@ export function deviceFeed(rows, owners, directories, held, deviceId) {
     .map((entry) => (entry.row || entry.previousRow)?.owner_id || entry.key));
   const unchanged = (previous.items || []).filter((row) => !managed.has(row.entity_id || row.task_id || row.capture_id));
   const items = [...unchanged, ...owners.values(), ...captures, ...tasks];
-  return { ...previous, ...directories, items, runs: [...owners.values()], cached: false };
+  return { ...previous, projects: directoryRuntimeAliases(directories.projects, previous.projects),
+    workspaces: directoryRuntimeAliases(directories.workspaces, previous.workspaces), items, runs: [...owners.values()], cached: false };
+}
+
+function directoryRuntimeAliases(rows, previous) {
+  const before = new Map((previous || []).map((row) => [row.id, row]));
+  // State enrichment also observes directory aliases inside the feed without
+  // rewriting their canonical lists. Preserve that alias's runtime fields.
+  return rows.map((row) => ({ ...row, ...Object.fromEntries(deviceRuntimeRowFields
+    .filter((field) => Object.hasOwn(before.get(row.id) || {}, field)).map((field) => [field, before.get(row.id)[field]])) }));
 }
 
 export function deviceArchive(rows, previous = {}) {

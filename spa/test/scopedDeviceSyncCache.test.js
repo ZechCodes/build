@@ -306,6 +306,125 @@ it("a retired conversation thread rejects stale device digests without advancing
   expect((await writer.readCursor()).cursor).toBe("cursor-1");
 });
 
+it("runtime state enrichment during a capture does not cancel durable catch-up or lose its newer working fields", async () => {
+  const writer = create(); await publish(writer, deviceRecords(), { snapshot: true });
+  const captured = await writer.capture();
+  const { enrichDeviceRuntimeState } = await import("../src/core/scopedDeviceRuntime.js");
+  await enrichDeviceRuntimeState(deviceId, "owner-1", { working: true, agents_running: 1,
+    agents: [{ id: "agent-1", thread_id: "thread-1", thread_generation_revision: 1, working: true, state: "live" }] }, () => true);
+  const conversation = deviceRecords().find((record) => record.kind === "inbox_conversation");
+  expect(await writer.publish({ capture: captured, records: [{ ...conversation, revision: "2", row: { ...conversation.row, title: "New durable title" } }],
+    expectedCursor: "cursor-1", response: response("runtime-state") })).toBe(true);
+  expect(await raw("row", "owner-1")).toMatchObject({ title: "New durable title", working: true, agents_running: 1, agents: [{ working: true, state: "live" }] });
+});
+
+it("runtime workspace verdict enrichment during a capture survives a durable workspace update", async () => {
+  const writer = create(); await publish(writer, deviceRecords(), { snapshot: true });
+  const captured = await writer.capture();
+  const { enrichDeviceRuntimeBoard } = await import("../src/core/scopedDeviceRuntime.js");
+  await enrichDeviceRuntimeBoard(deviceId, { workspaces: [{ id: "workspace-1", work_summary: "Working", can_finish: false,
+    finish_blockers: ["Working"], lifecycle: { idle: true, holds: ["agent_working"], reclaimable: false, size_bytes: 9999 } }] }, () => true);
+  const workspace = deviceRecords().find((record) => record.kind === "workspace");
+  expect(await writer.publish({ capture: captured, records: [{ ...workspace, revision: "2", row: { ...workspace.row, locked: true } }],
+    expectedCursor: "cursor-1", response: response("runtime-workspace") })).toBe(true);
+  expect((await raw("workspaces"))[0]).toMatchObject({ locked: true, work_summary: "Working", finish_blockers: ["Working"],
+    lifecycle: { idle: true, holds: ["agent_working"], size_bytes: 200 } });
+});
+
+it("a clock-only session observation during a capture survives durable session catch-up", async () => {
+  const writer = create(); await publish(writer, deviceRecords(), { snapshot: true });
+  const captured = await writer.capture(), session = await raw("user-session");
+  const { writeListedUserSession } = await import("../src/core/userSessionCache.js");
+  await writeListedUserSession(deviceId, { user_session: { ...session, gap_ms: 21600000, now_ms: 1793534500000 } }, () => true, () => true);
+  await cache.mergeCachedAtomically(address("user-session"), (held) => ({ ...held, gap_ms: 21600000 }));
+  const record = deviceRecords().find((record) => record.kind === "user_session");
+  expect(await writer.publish({ capture: captured, records: [{ ...record, revision: "2", row: { ...record.row, last_activity_ms: 1793534401000 } }],
+    expectedCursor: "cursor-1", response: response("runtime-clock") })).toBe(true);
+  expect(await raw("user-session")).toMatchObject({ last_activity_ms: 1793534401000, now_ms: 1793534500000, gap_ms: 21600000 });
+});
+
+it("runtime-only admission never permits an owned read mark change or a push fence", async () => {
+  const writer = create(); await publish(writer, deviceRecords(), { snapshot: true });
+  const captured = await writer.capture(), row = await raw("row", "owner-1");
+  await cache.writeCached(address("row", "owner-1"), { ...row, working: true, unread_count: 0,
+    agents: row.agents.map((agent) => ({ ...agent, read_through_sequence: 5, unread_count: 0 })) });
+  const project = deviceRecords().find((record) => record.kind === "project");
+  expect(await writer.publish({ capture: captured, records: [{ ...project, revision: "2" }], expectedCursor: "cursor-1", response: response("owned-changed") })).toBe(false);
+  const nextCapture = await writer.capture();
+  const { notePush } = await import("../src/core/pushFence.js");
+  notePush(address("row", "owner-1"));
+  expect(await writer.publish({ capture: nextCapture, records: [{ ...project, revision: "2" }], expectedCursor: "cursor-1", response: response("push-fenced") })).toBe(false);
+});
+
+it("metadata-only publications advance without republishing raw retired owner generations", async () => {
+  const writer = create(); await publish(writer, deviceRecords(), { snapshot: true });
+  const captured = await writer.capture(), row = await cache.readCanonicalCached(address("row", "owner-1"));
+  await cache.writeCached(address("thread", "owner-1", "agent-1"), { thread_id: "thread-2", thread_generation_revision: "2", retired_thread_ids: ["thread-1"], items: [] });
+  const project = deviceRecords().find((record) => record.kind === "project");
+  expect(await writer.publish({ capture: captured, records: [{ ...project, revision: "2", row: { ...project.row, name: "Late metadata" } }],
+    expectedCursor: "cursor-1", response: response("retired-metadata") })).toBe(true);
+  expect((await writer.readCursor()).cursor).toBe("retired-metadata");
+  expect((await raw("projects"))[0].name).toBe("Late metadata");
+  expect((await cache.readCanonicalCached(address("row", "owner-1"))).write).toBe(row.write);
+});
+
+it.each([false, true])("a split agent/conversation generation change advances while holding its complete cached projection with local reset=%s", async (localReset) => {
+  const writer = create(); await publish(writer, deviceRecords(), { snapshot: true });
+  const agent = deviceRecords().find((record) => record.kind === "agent");
+  await cache.writeCached(address("thread", "owner-1", "agent-1"), { thread_id: "thread-2", thread_generation_revision: "2", retired_thread_ids: ["thread-1"], items: [] });
+  if (localReset) await cache.mergeCachedAtomically(address("row", "owner-1"), (held) => ({ ...held, last_message_summary: null,
+    agents: held.agents.map((agent) => ({ ...agent, thread_id: "thread-2", thread_generation_revision: "2", read_through_sequence: 0, unread_count: 0 })) }));
+  const project = deviceRecords().find((record) => record.kind === "project");
+  expect(await publish(writer, [{ ...project, revision: "2" }], { expectedCursor: "cursor-1",
+    response: { ...response("metadata-prefix"), continuation: "next-agent" } })).toBe(true);
+  expect((await raw("row", "owner-1")).agents[0].thread_id).toBe(localReset ? "thread-2" : "thread-1");
+  expect(await publish(writer, [{ ...agent, revision: "2", row: { ...agent.row, thread_id: "thread-2", thread_generation_revision: "2" } }],
+    { expectedCursor: "metadata-prefix", response: { ...response("new-agent"), continuation: "next-conversation" } })).toBe(true);
+  expect((await raw("row", "owner-1")).agents[0].thread_id).toBe(localReset ? "thread-2" : "thread-1");
+  expect((await raw("row", "owner-1")).last_message_summary).toBe(localReset ? null : "Synthetic reply");
+  const conversation = deviceRecords().find((record) => record.kind === "inbox_conversation");
+  expect(await publish(writer, [{ ...conversation, revision: "2", row: { ...conversation.row, thread_id: "thread-2", thread_generation_revision: "2", title: "New generation", last_message_summary: null } }],
+    { expectedCursor: "new-agent", response: response("new-conversation") })).toBe(true);
+  expect((await raw("row", "owner-1")).title).toBe("New generation");
+  expect((await raw("row", "owner-1")).last_message_summary).toBeNull();
+});
+
+it("a new-generation local read mark wins over a still older complete roster generation", async () => {
+  const writer = create(); await publish(writer, [...deviceRecords(), ...projectOwnerRecords()], { snapshot: true });
+  await cache.writeCached(address("thread", "project-owner", "coordinator"), { thread_id: "thread-coordinator-2", thread_generation_revision: "2", retired_thread_ids: ["thread-coordinator"], items: [] });
+  await cache.mergeCachedAtomically(address("row", "project-owner"), (held) => ({ ...held, last_message_summary: null,
+    agents: held.agents.map((agent) => ({ ...agent, thread_id: "thread-coordinator-2", thread_generation_revision: "2", read_through_sequence: 5, unread_count: 0 })) }));
+  const agent = projectOwnerRecords().find((record) => record.key === "coordinator" && record.kind === "agent");
+  expect(await publish(writer, [{ ...agent, revision: "2", row: { ...agent.row, thread_id: "thread-coordinator-2", thread_generation_revision: "2" } }],
+    { expectedCursor: "cursor-1", response: response("new-generation-read") })).toBe(true);
+  expect((await raw("row", "project-owner")).agents[0]).toMatchObject({ thread_id: "thread-coordinator-2", read_through_sequence: 5, unread_count: 0 });
+});
+
+it("an unwatch tombstone resolves a split generation without attaching old conversation fields to the new agent", async () => {
+  const writer = create(); await publish(writer, deviceRecords(), { snapshot: true });
+  await cache.writeCached(address("thread", "owner-1", "agent-1"), { thread_id: "thread-2", thread_generation_revision: "2", retired_thread_ids: ["thread-1"], items: [] });
+  const agent = deviceRecords().find((record) => record.kind === "agent");
+  const next = { ...agent, revision: "2", row: { ...agent.row, thread_id: "thread-2", thread_generation_revision: "2", watched: false,
+    read_through_sequence: "0", unread_count: 0, unread_reason: null, title: null, topic: null, name: null } };
+  expect(await publish(writer, [next], { expectedCursor: "cursor-1", response: { ...response("unwatch-agent"), continuation: "unwatch-conversation" } })).toBe(true);
+  expect((await raw("row", "owner-1")).agents[0].thread_id).toBe("thread-1");
+  expect(await publish(writer, [deviceRecord("inbox_conversation", "agent-1", null, "2", { operation: "delete", member: false })],
+    { expectedCursor: "unwatch-agent", response: response("unwatched") })).toBe(true);
+  const row = await raw("row", "owner-1");
+  expect(row.agents[0]).toMatchObject({ thread_id: "thread-2", read_through_sequence: "0", unread_count: 0, title: null });
+  expect(row.agents[0].last_message_summary).toBeUndefined();
+  expect(row.last_message_summary).toBeNull();
+  expect(row.title).not.toBe("Synthetic agent");
+});
+
+it("an explicit empty conversation preview clears its same-generation previous summary", async () => {
+  const writer = create(); await publish(writer, deviceRecords(), { snapshot: true });
+  const conversation = deviceRecords().find((record) => record.kind === "inbox_conversation");
+  expect(await publish(writer, [{ ...conversation, revision: "2", row: { ...conversation.row, last_message_summary: null } }],
+    { expectedCursor: "cursor-1", response: response("empty-preview") })).toBe(true);
+  expect((await raw("row", "owner-1")).last_message_summary).toBeNull();
+});
+
 it("refuses a stale capture when a previously absent owner row was created during its request", async () => {
   const writer = create(), capture = await writer.capture();
   await cache.writeCached(address("row", "owner-1"), { entity_id: "owner-1", title: "Immediate local row", agents: [] });

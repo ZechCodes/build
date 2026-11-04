@@ -3,14 +3,8 @@
 import { mergeCachedRecordsTogether } from "./localCache.js";
 import { entityIdOf } from "./entityId.js";
 import { FEED_COLLECTIONS } from "./feedMerge.js";
-
-const rowFields = ["working", "working_time", "agents_running"];
-const agentFields = [...rowFields, "state", "active_model", "active_effort", "has_terminal", "can_interrupt",
-  "start_error", "surface_session_generation", "surfaces", "last_context_tokens", "last_context_at",
-  "session_cache_read_tokens", "compaction", "compact_at_tokens", "max_context_tokens"];
-const workspaceFields = ["work_summary", "can_finish", "finish_blockers"];
-const lifecycleRuntimeFields = ["measured_at_ms", "last_activity_ms", "idle", "reclaimable", "holds",
-  "dirty_files", "unpushed_commits", "behind_commits"];
+import { deviceRuntimeRowFields as rowFields, deviceRuntimeAgentFields as agentFields,
+  deviceRuntimeWorkspaceFields as workspaceFields, deviceRuntimeLifecycleFields as lifecycleRuntimeFields } from "./scopedDeviceFields.js";
 const address = (deviceId, kind, entityId = "") => ({ deviceId, entityId, kind });
 const changed = (before, after) => JSON.stringify(before) !== JSON.stringify(after) ? after : null;
 const pick = (held, incoming, fields) => ({ ...held,

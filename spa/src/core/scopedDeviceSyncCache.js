@@ -9,7 +9,9 @@ import { taskRecordValue } from "./scopedTaskSyncRecords.js";
 import { summaryAddress } from "./taskSummaryCache.js";
 import { taskAddress, tasksAddress } from "./trackerCache.js";
 import { pushFence, pushedSince } from "./pushFence.js";
-import { deviceArchive, deviceDirectories, deviceFamilies, deviceFeed, deviceListedOwners, deviceOwners, deviceProjectRosters, deviceRecordAddress,
+import { deviceOwnedProjection } from "./scopedDeviceFields.js";
+import { deviceArchive, deviceConversationRecords, deviceDirectories, deviceFamilies, deviceFeed, deviceListedOwners, deviceOwners,
+  devicePendingConversationOwners, deviceProjectRosters, deviceRecordAddress,
   deviceRecordId, deviceRoot, removedDeviceRecord } from "./scopedDeviceSyncRecords.js";
 
 const addressKey = ({ deviceId, entityId, kind, sub = "" }) => JSON.stringify([deviceId, entityId, kind, sub]);
@@ -94,15 +96,43 @@ function writeDirectories(rows, writer, deviceId) {
   const fullOwners = deviceOwners(rows, held, deviceId);
   const rosters = deviceProjectRosters(rows, fullOwners, held);
   const owners = deviceListedOwners(fullOwners, rosters);
-  for (const [owner, row] of owners) {
-    writer.set(deviceRoot(deviceId, "row", owner), row);
-  }
-  for (const [owner, roster] of rosters) {
-    writer.set(deviceRoot(deviceId, "project-agents", owner), { ...held("project-agents", owner), ...roster });
-  }
+  const visible = writeOwners(rows, owners, rosters, held, writer, deviceId);
   removeUnclassifiedOwners(rows, fullOwners, rosters, writer, deviceId);
   removeDeletedOwners(rows, owners, rosters, writer, deviceId);
-  writer.set(deviceRoot(deviceId, "feed"), deviceFeed(rows, owners, directories, held, deviceId));
+  writer.set(deviceRoot(deviceId, "feed"), deviceFeed(rows, visible, directories, held, deviceId));
+}
+
+function ownerDigests(rows) {
+  const agents = [...rows.values()].filter((record) => record.kind === "agent" && !record.deleted);
+  const groups = new Map();
+  for (const record of [...agents, ...deviceConversationRecords(rows)]) {
+    const owner = record.row.owner_id;
+    if (!groups.has(owner)) groups.set(owner, []);
+    groups.get(owner).push(record);
+  }
+  return groups;
+}
+
+const cachedFeedOwner = (held, owner) => held("row", owner)
+  || held("feed")?.items?.find((row) => (row.entity_id || row.run_id) === owner);
+
+function writeOwners(rows, owners, rosters, held, writer, deviceId) {
+  const digests = ownerDigests(rows), visible = new Map();
+  const pending = devicePendingConversationOwners(rows);
+  for (const [owner, row] of owners) {
+    if (pending.has(owner) || !currentThreads(rows, digests.get(owner) || [], writer, deviceId)) {
+      // An unrelated metadata page must advance before a later agent-reset
+      // page. Keep this owner's current paint until its raw generation catches up.
+      const current = cachedFeedOwner(held, owner);
+      if (current) visible.set(owner, current);
+      continue;
+    }
+    visible.set(owner, row);
+    writer.set(deviceRoot(deviceId, "row", owner), row);
+    if (rosters.has(owner)) writer.set(deviceRoot(deviceId, "project-agents", owner),
+      { ...held("project-agents", owner), ...rosters.get(owner) });
+  }
+  return visible;
 }
 
 function removeUnclassifiedOwners(rows, owners, rosters, writer, deviceId) {
@@ -222,7 +252,21 @@ function currentCapture(capture, deviceId, active) {
 
 function captureStillHeld(capture, addresses, held) {
   return addresses.every((address, index) => !pushedSince(address, capture.fence)
-    && (!dataKinds.has(address.kind) || (capture.writes.get(addressKey(address)) ?? null) === recordWriteOf(held[index])));
+    && (!dataKinds.has(address.kind) || capturedValueCurrent(capture, address, held[index])));
+}
+
+function capturedValueCurrent(capture, address, held) {
+  const key = addressKey(address), written = capture.writes.get(key) ?? null;
+  if (written === recordWriteOf(held)) return true;
+  return written !== null && capture.projections.has(key)
+    && capture.projections.get(key) === deviceOwnedProjection(address.kind, held?.value);
+}
+
+function captureProjections(addresses, held) {
+  return new Map(addresses.flatMap((address, index) => {
+    const projection = deviceOwnedProjection(address.kind, held[index]?.value);
+    return held[index] && projection !== undefined ? [[addressKey(address), projection]] : [];
+  }));
 }
 
 function currentProjects(projects) {
@@ -267,7 +311,7 @@ export function createScopedDeviceSyncCache({ deviceId, scope, bridgeIdentity, a
     const projects = new Map();
     for (const projectId of knownProjects(rows)) projects.set(projectId,
       await captureTaskContentRead({ deviceId, projectId }, { revalidate: "summary" }));
-    return { mutationEpoch, pending, fence, projects,
+    return { mutationEpoch, pending, fence, projects, projections: captureProjections(addresses, held),
       writes: new Map(addresses.map((address, index) => [addressKey(address), recordWriteOf(held[index])])) };
   }
   async function publish({ records = [], capture: captured, expectedCursor, response, snapshot = false, accept = () => true }) {

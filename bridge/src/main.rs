@@ -53,6 +53,8 @@
 //! is gated on pairing: the api must confirm this device is approved and owned
 //! by an account before anything is written. `uninstall-service` removes it.
 
+mod daemon_secrets;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -846,9 +848,7 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
     drop(review_sync);
     drop(retention);
     drop(receiver_maintenance);
-    if let Some(sweeper) = secret_sweeper {
-        sweeper.stop().await;
-    }
+    daemon_secrets::stop_sweeper(secret_sweeper).await;
     reclaim_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     source_sync_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     // It writes from the live roster's newest lists and never waits on the app

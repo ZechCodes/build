@@ -3,7 +3,7 @@ use crate::secrets::{GrantScope, StageContext};
 use std::os::unix::fs::{symlink, PermissionsExt};
 
 fn fixture() -> tempfile::TempDir {
-    tempfile::tempdir_in("/home/zech/Projects/.agent-scratch/secrets-a/tmp").unwrap()
+    tempfile::tempdir().unwrap()
 }
 
 fn context() -> SecretContext {

@@ -63,6 +63,11 @@ fn lifecycle_observation_branch_change_marks_before_manifest_and_publishes_then_
     let workspace = app.workspaces.get(id).unwrap().clone();
     let directory = &workspace.directories[0];
     let repository = git2::Repository::init(&directory.path).unwrap();
+    let signature = git2::Signature::now("Fixture", "fixture@example.test").unwrap();
+    let tree_id = repository.index().unwrap().write_tree().unwrap();
+    let tree = repository.find_tree(tree_id).unwrap();
+    let commit_id = repository.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[]).unwrap();
+    repository.branch("observed-branch", &repository.find_commit(commit_id).unwrap(), false).unwrap();
     app.refresh_workspace_snapshot_observations();
     let before = dirty_generation(root.path());
     let manifest = workspace.root.join(crate::workspace::MANIFEST_FILE);
@@ -75,6 +80,19 @@ fn lifecycle_observation_branch_change_marks_before_manifest_and_publishes_then_
     assert!(dirty_generation(root.path()) > before);
     assert_eq!(row(root.path(), "workspace_directory", &format!("{id}/{}", directory.id)).unwrap()["branch"], "observed-branch");
     assert_registry_ready(&store);
+}
+
+#[test]
+fn lifecycle_observation_unrelated_git_job_does_not_hold_an_existing_marker() {
+    let (_root, mut app, store) = fixture();
+    app.refresh_workspace_snapshot_observations();
+    app.defer_file(|| (), |_, ()| Ok(json!({})));
+    let job = app.take_deferred().unwrap();
+    app.mark_device_lifecycle_dirty().unwrap();
+    app.settle_device_lifecycle();
+    assert_registry_ready(&store);
+    app.apply_deferred("fs.fixture", &json!({}), job.run()).unwrap();
+    assert_eq!(app.active_deferred_filesystem_jobs, 0);
 }
 
 #[test]

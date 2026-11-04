@@ -267,6 +267,300 @@ async fn scoped_sync_wire_reads_bypass_the_app_lock_and_device_is_plainly_refuse
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn removed_scopes_resync_only_for_authenticated_positions() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project_id) = tracked(dir.path());
+    let task = filed(&mut app, &project_id, "removed scope");
+    let _second = filed(&mut app, &project_id, "removed scope page two");
+    let task_id = task["id"].as_str().unwrap().to_owned();
+    let state = app.shared();
+    let transport = crate::transport::generate_transport_keypair();
+    let intake = FrameIntake::new(AppState::handler(Arc::clone(&state)), transport.clone());
+    let mut wire = ChannelWire::open();
+    let key = crate::transport::generate_session_key();
+    wire.open_session(
+        &intake,
+        "removed-sync",
+        &session_init("removed-sync", &transport.public_key_b64, &key),
+    )
+    .unwrap();
+    wire.outbound.try_recv().unwrap();
+
+    async fn ask(
+        wire: &mut ChannelWire,
+        intake: &Arc<FrameIntake>,
+        key: &str,
+        id: u64,
+        method: &str,
+        params: Value,
+    ) -> Value {
+        wire.accept(
+            intake,
+            client_request(
+                key,
+                "removed-sync",
+                "data",
+                json!({"id":id,"method":method,"params":params}),
+            ),
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), final_answer(wire, key))
+            .await
+            .unwrap()
+    }
+
+    let project_scope = json!({"kind":"project_tasks","project_id":project_id});
+    let task_scope = json!({"kind":"task","task_id":task_id});
+    let project = ask(
+        &mut wire,
+        &intake,
+        &key,
+        1,
+        "sync.snapshot",
+        json!({"scope":project_scope,"limit":1}),
+    )
+    .await;
+    let task = ask(
+        &mut wire,
+        &intake,
+        &key,
+        2,
+        "sync.snapshot",
+        json!({"scope":task_scope}),
+    )
+    .await;
+    let project_cursor = project["result"]["cursor"].as_str().unwrap().to_owned();
+    let project_page = project["result"]["next_page"]
+        .as_str()
+        .expect("two records produce a continuation")
+        .to_owned();
+    let task_cursor = task["result"]["cursor"].as_str().unwrap().to_owned();
+
+    {
+        let mut app = state.lock().unwrap();
+        let path = app.tracker_project_path(&project_id).unwrap();
+        app.store
+            .as_ref()
+            .unwrap()
+            .delete_tracker_tasks_of_project(&path, |_| Ok(()))
+            .unwrap();
+        app.projects.remove(&project_id);
+        app.publish_read_metadata();
+    }
+
+    for (id, scope, cursor) in [
+        (3, project_scope.clone(), project_cursor.clone()),
+        (4, task_scope.clone(), task_cursor.clone()),
+    ] {
+        let answer = ask(
+            &mut wire,
+            &intake,
+            &key,
+            id,
+            "sync.changes",
+            json!({"scope":scope,"cursor":cursor}),
+        )
+        .await;
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert_eq!(answer["result"]["status"], "resync_required", "{answer}");
+        assert_eq!(answer["result"]["reason"], "scope_removed", "{answer}");
+        assert!(answer["result"].get("changes").is_none(), "{answer}");
+    }
+
+    for (id, scope, cursor) in [
+        (5, project_scope.clone(), project_cursor.clone()),
+        (6, task_scope.clone(), task_cursor),
+    ] {
+        let answer = ask(
+            &mut wire,
+            &intake,
+            &key,
+            id,
+            "sync.head",
+            json!({"scope":scope,"cursor":cursor}),
+        )
+        .await;
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert_eq!(answer["result"]["status"], "resync_required", "{answer}");
+        assert_eq!(answer["result"]["reason"], "scope_removed", "{answer}");
+    }
+
+    let answer = ask(
+        &mut wire,
+        &intake,
+        &key,
+        7,
+        "sync.snapshot",
+        json!({"scope":project_scope.clone(),"page":project_page,"limit":1}),
+    )
+    .await;
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(answer["result"]["status"], "resync_required", "{answer}");
+    assert_eq!(answer["result"]["reason"], "scope_removed", "{answer}");
+    assert!(answer["result"].get("records").is_none(), "{answer}");
+
+    let mut forged = project_cursor.into_bytes();
+    let last = forged.last_mut().unwrap();
+    *last = if *last == b'A' { b'B' } else { b'A' };
+    let forged = String::from_utf8(forged).unwrap();
+    let answer = ask(
+        &mut wire,
+        &intake,
+        &key,
+        8,
+        "sync.changes",
+        json!({"scope":project_scope.clone(),"cursor":forged}),
+    )
+    .await;
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert_eq!(answer["error_code"], "not_found", "{answer}");
+
+    let answer = ask(
+        &mut wire,
+        &intake,
+        &key,
+        9,
+        "sync.snapshot",
+        json!({"scope":project_scope}),
+    )
+    .await;
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert_eq!(answer["error_code"], "not_found", "{answer}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_sync_admission_uses_indexed_authority_without_decoding_the_canonical_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project_id) = tracked(dir.path());
+    let task = filed(&mut app, &project_id, "indexed authority");
+    let task_id = task["id"].as_str().unwrap().to_owned();
+    let store = app.store.as_ref().unwrap().clone();
+    let state = app.shared();
+    let transport = crate::transport::generate_transport_keypair();
+    let intake = FrameIntake::new(AppState::handler(state), transport.clone());
+    store
+        .writer_for_test()
+        .execute(
+            "UPDATE tracker_tasks SET record='not-json' WHERE id=?1",
+            [&task_id],
+        )
+        .unwrap();
+    let mut wire = ChannelWire::open();
+    let key = crate::transport::generate_session_key();
+    wire.open_session(
+        &intake,
+        "indexed-sync",
+        &session_init("indexed-sync", &transport.public_key_b64, &key),
+    )
+    .unwrap();
+    wire.outbound.try_recv().unwrap();
+    wire.accept(
+        &intake,
+        client_request(
+            &key,
+            "indexed-sync",
+            "data",
+            json!({
+                "id":1,"method":"sync.snapshot",
+                "params":{"scope":{"kind":"task","task_id":task_id}}
+            }),
+        ),
+    )
+    .await
+    .unwrap();
+    let answer = tokio::time::timeout(Duration::from_secs(5), final_answer(&mut wire, &key))
+        .await
+        .unwrap();
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(
+        answer["result"]["records"][0]["row"]["task"]["title"],
+        "indexed authority"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restored_older_store_resets_a_missing_task_scope_by_incarnation() {
+    let dir = tempfile::tempdir().unwrap();
+    let backup = dir.path().join("before-task.db");
+    let (home, mut app, project_id) = tracked(dir.path());
+    app.store.as_ref().unwrap().backup_to(&backup).unwrap();
+    let task = filed(&mut app, &project_id, "newer than backup");
+    let task_id = task["id"].as_str().unwrap().to_owned();
+    let old_cursor = {
+        let state = app.shared();
+        let transport = crate::transport::generate_transport_keypair();
+        let intake = FrameIntake::new(AppState::handler(state), transport.clone());
+        let mut wire = ChannelWire::open();
+        let key = crate::transport::generate_session_key();
+        wire.open_session(
+            &intake,
+            "pre-restore-sync",
+            &session_init("pre-restore-sync", &transport.public_key_b64, &key),
+        )
+        .unwrap();
+        wire.outbound.try_recv().unwrap();
+        wire.accept(
+            &intake,
+            client_request(
+                &key,
+                "pre-restore-sync",
+                "data",
+                json!({
+                    "id":1,"method":"sync.snapshot",
+                    "params":{"scope":{"kind":"task","task_id":task_id}}
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+        let answer = final_answer(&mut wire, &key).await;
+        answer["result"]["cursor"].as_str().unwrap().to_owned()
+    };
+
+    std::fs::copy(&backup, dir.path().join("store/build.db")).unwrap();
+    drop(crate::store::Store::new_after_restore(dir.path().join("store")).unwrap());
+    let (_new_home, restored, restored_project) = tracked(dir.path());
+    assert_eq!(restored_project, project_id);
+    let state = restored.shared();
+    let transport = crate::transport::generate_transport_keypair();
+    let intake = FrameIntake::new(AppState::handler(state), transport.clone());
+    let mut wire = ChannelWire::open();
+    let key = crate::transport::generate_session_key();
+    wire.open_session(
+        &intake,
+        "post-restore-sync",
+        &session_init("post-restore-sync", &transport.public_key_b64, &key),
+    )
+    .unwrap();
+    wire.outbound.try_recv().unwrap();
+    wire.accept(
+        &intake,
+        client_request(
+            &key,
+            "post-restore-sync",
+            "data",
+            json!({
+                "id":2,"method":"sync.changes",
+                "params":{"scope":{"kind":"task","task_id":task_id},"cursor":old_cursor}
+            }),
+        ),
+    )
+    .await
+    .unwrap();
+    let answer = tokio::time::timeout(Duration::from_secs(5), final_answer(&mut wire, &key))
+        .await
+        .unwrap();
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(answer["result"]["status"], "resync_required", "{answer}");
+    assert_eq!(
+        answer["result"]["reason"], "incarnation_changed",
+        "{answer}"
+    );
+    drop(home);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn write_recovery_reads_bypass_held_app_and_writer() {
     let dir = tempfile::tempdir().unwrap();
     let (_repo, app, _project_id) = tracked(dir.path());

@@ -37,6 +37,7 @@ pub(in crate::app) struct ReadContext {
 enum ReadFence {
     Thread(ThreadReadFence),
     Task(TaskReadFence),
+    RemovedSync,
 }
 
 pub(in crate::app) struct ReadService {
@@ -241,6 +242,8 @@ impl ReadService {
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
         let result = self.read(method, &params, connection.as_mut());
+        #[cfg(test)]
+        let _serialization = crate::timing::phase_samples::phase("reply.shape");
         api::reply(id, result)
     }
 
@@ -250,6 +253,8 @@ impl ReadService {
         params: &Value,
         connection: Option<&mut ReadConnection>,
     ) -> Result<Value, ApiError> {
+        #[cfg(test)]
+        let admission = crate::timing::phase_samples::stage("sync.admission");
         let _lease = self
             .admission
             .as_ref()
@@ -269,6 +274,8 @@ impl ReadService {
                 super::rpc::PROJECT_DELETION_IN_PROGRESS,
             ));
         }
+        #[cfg(test)]
+        drop(admission);
         let (result, fence) = match connection {
             Some(connection) => connection
                 .read(|read| Self::query(&context, Some(read), method, &params))
@@ -295,51 +302,7 @@ impl ReadService {
         let read = transaction
             .ok_or_else(|| task_error("tasks need a durable store; this bridge has none".into()))?;
         if method.starts_with("sync.") {
-            let asked = params
-                .get("scope")
-                .cloned()
-                .ok_or_else(|| ApiError::invalid_params("missing required param: scope"))?;
-            let asked: crate::api::v1::sync::Scope = serde_json::from_value(asked)
-                .map_err(|error| ApiError::invalid_params(error.to_string()))?;
-            let (scope, fence) = context.tasks.sync_scope(read, &asked).map_err(task_error)?;
-            let epoch = crate::bridge_epoch::current();
-            let now = crate::store::sync::now_ms();
-            let answer = match method {
-                "sync.head" => {
-                    let params: crate::api::v1::sync::HeadParams =
-                        serde_json::from_value(params.clone())
-                            .map_err(|error| ApiError::invalid_params(error.to_string()))?;
-                    scope.head(read, params.cursor.as_deref(), epoch, now)
-                }
-                "sync.snapshot" => {
-                    let params: crate::api::v1::sync::SnapshotParams =
-                        serde_json::from_value(params.clone())
-                            .map_err(|error| ApiError::invalid_params(error.to_string()))?;
-                    scope.snapshot(
-                        read,
-                        params.page.as_deref(),
-                        params.limit.unwrap_or(100) as usize,
-                        epoch,
-                        now,
-                    )
-                }
-                "sync.changes" => {
-                    let params: crate::api::v1::sync::ChangesParams =
-                        serde_json::from_value(params.clone())
-                            .map_err(|error| ApiError::invalid_params(error.to_string()))?;
-                    scope.changes(
-                        read,
-                        &params.cursor,
-                        params.continuation.as_deref(),
-                        params.limit.unwrap_or(100) as usize,
-                        epoch,
-                        now,
-                    )
-                }
-                _ => return Err(ApiError::unknown_method(method)),
-            }
-            .map_err(sync_error)?;
-            return Ok((answer, ReadFence::Task(fence)));
+            return Self::query_sync(context, read, method, params);
         }
         let fence = context
             .tasks
@@ -357,6 +320,121 @@ impl ReadService {
         .map_err(task_error)?;
         Ok((answer, ReadFence::Task(fence)))
     }
+    fn query_sync(
+        context: &ReadContext,
+        read: &ReadTransaction<'_>,
+        method: &str,
+        params: &Value,
+    ) -> Result<(Value, ReadFence), ApiError> {
+        let asked = params
+            .get("scope")
+            .cloned()
+            .ok_or_else(|| ApiError::invalid_params("missing required param: scope"))?;
+        let asked: crate::api::v1::sync::Scope = serde_json::from_value(asked)
+            .map_err(|error| ApiError::invalid_params(error.to_string()))?;
+        #[cfg(test)]
+        let scope_resolution = crate::timing::phase_samples::stage("sync.scope_resolution");
+        let admission = context.tasks.sync_scope(read, &asked).map_err(task_error)?;
+        #[cfg(test)]
+        drop(scope_resolution);
+        let epoch = crate::bridge_epoch::current();
+        let now = crate::store::sync::now_ms();
+        #[cfg(test)]
+        let recovery = crate::timing::phase_samples::stage("sync.recovery");
+        let (answer, fence) = match method {
+            "sync.head" => {
+                let params: crate::api::v1::sync::HeadParams =
+                    serde_json::from_value(params.clone())
+                        .map_err(|error| ApiError::invalid_params(error.to_string()))?;
+                match admission {
+                    super::tracker::TaskSyncAdmission::Active(scope, fence) => (
+                        scope.head(read, params.cursor.as_deref(), epoch, now),
+                        ReadFence::Task(fence),
+                    ),
+                    super::tracker::TaskSyncAdmission::Removed(scope, missing) => {
+                        let Some(cursor) = params.cursor.as_deref() else {
+                            return Err(task_error(missing));
+                        };
+                        let answer = scope
+                            .removed_head(read, cursor, epoch, now)
+                            .map_err(|error| removed_sync_error(error, &missing))?;
+                        (Ok(answer), ReadFence::RemovedSync)
+                    }
+                    super::tracker::TaskSyncAdmission::Unknown(missing) => {
+                        return Err(task_error(missing))
+                    }
+                }
+            }
+            "sync.snapshot" => {
+                let params: crate::api::v1::sync::SnapshotParams =
+                    serde_json::from_value(params.clone())
+                        .map_err(|error| ApiError::invalid_params(error.to_string()))?;
+                match admission {
+                    super::tracker::TaskSyncAdmission::Active(scope, fence) => (
+                        scope.snapshot(
+                            read,
+                            params.page.as_deref(),
+                            params.limit.unwrap_or(100) as usize,
+                            epoch,
+                            now,
+                        ),
+                        ReadFence::Task(fence),
+                    ),
+                    super::tracker::TaskSyncAdmission::Removed(scope, missing) => {
+                        let Some(page) = params.page.as_deref() else {
+                            return Err(task_error(missing));
+                        };
+                        let answer = scope
+                            .removed_snapshot(read, page, epoch, now)
+                            .map_err(|error| removed_sync_error(error, &missing))?;
+                        (Ok(answer), ReadFence::RemovedSync)
+                    }
+                    super::tracker::TaskSyncAdmission::Unknown(missing) => {
+                        return Err(task_error(missing))
+                    }
+                }
+            }
+            "sync.changes" => {
+                let params: crate::api::v1::sync::ChangesParams =
+                    serde_json::from_value(params.clone())
+                        .map_err(|error| ApiError::invalid_params(error.to_string()))?;
+                match admission {
+                    super::tracker::TaskSyncAdmission::Active(scope, fence) => (
+                        scope.changes(
+                            read,
+                            &params.cursor,
+                            params.continuation.as_deref(),
+                            params.limit.unwrap_or(100) as usize,
+                            epoch,
+                            now,
+                        ),
+                        ReadFence::Task(fence),
+                    ),
+                    super::tracker::TaskSyncAdmission::Removed(scope, missing) => {
+                        let answer = scope
+                            .removed_changes(
+                                read,
+                                &params.cursor,
+                                params.continuation.as_deref(),
+                                epoch,
+                                now,
+                            )
+                            .map_err(|error| removed_sync_error(error, &missing))?;
+                        (Ok(answer), ReadFence::RemovedSync)
+                    }
+                    super::tracker::TaskSyncAdmission::Unknown(missing) => {
+                        return Err(task_error(missing))
+                    }
+                }
+            }
+            _ => return Err(ApiError::unknown_method(method)),
+        };
+        let answer = answer.map_err(sync_error)?;
+        #[cfg(test)]
+        drop(recovery);
+        Ok((answer, fence))
+    }
+
     fn validate_fence(&self, fence: &ReadFence) -> Result<(), ApiError> {
         let latest = self.context.load_full().expect("initialized context");
         match fence {
@@ -365,6 +443,7 @@ impl ReadService {
                 super::rpc::PROJECT_DELETION_IN_PROGRESS,
             )),
             ReadFence::Task(fence) => latest.tasks.validate_fence(fence).map_err(task_error),
+            ReadFence::RemovedSync => Ok(()),
         }
     }
 }
@@ -387,5 +466,14 @@ fn sync_error(error: crate::store::sync::SyncError) -> ApiError {
         SyncError::Unavailable(message) => ApiError::unavailable(message),
         SyncError::Store(error) => ApiError::classify(error.to_string()),
         SyncError::Database(error) => ApiError::internal(error.to_string()),
+    }
+}
+
+fn removed_sync_error(error: crate::store::sync::SyncError, missing: &str) -> ApiError {
+    match error {
+        crate::store::sync::SyncError::MalformedCursor
+        | crate::store::sync::SyncError::ScopeMismatch
+        | crate::store::sync::SyncError::FutureCursor => task_error(missing.into()),
+        other => sync_error(other),
     }
 }

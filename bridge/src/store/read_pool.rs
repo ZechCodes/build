@@ -154,6 +154,11 @@ type TransactionObserver =
     Box<dyn Fn(std::time::Duration, std::time::Duration, std::time::Duration) + Send>;
 
 impl ReadConnection {
+    pub(crate) fn retain_class_permit(&mut self, permit: OwnedSemaphorePermit) {
+        debug_assert!(self.class_permit.is_none());
+        self.class_permit = Some(permit);
+    }
+
     /// Test-only transaction boundaries; absent from the daemon and its stats.
     #[cfg(test)]
     pub(crate) fn observe_transactions(

@@ -42,6 +42,13 @@ impl ReadQuotas {
 }
 
 impl ReadPool {
+    pub(crate) fn try_acquire_class(&self, class: ReadClass) -> Option<OwnedSemaphorePermit> {
+        self.inner.classes.0[class as usize]
+            .clone()
+            .try_acquire_owned()
+            .ok()
+    }
+
     /// Waiters stay outside SQL capacity until their class is admitted. The
     /// owned permit follows the SQL job across cancellation and blocking work.
     pub(crate) async fn acquire_class(&self, class: ReadClass) -> OwnedSemaphorePermit {

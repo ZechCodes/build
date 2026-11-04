@@ -47,6 +47,20 @@
         "bridge_epoch": "bridge-epoch-1",
         "reason": "over_budget"
       }
+    },
+    {
+      "params": {
+        "scope": {"kind": "task", "task_id": "deleted-task"},
+        "cursor": "authenticated-deleted-scope-cursor"
+      },
+      "result": {
+        "status": "resync_required",
+        "scope": {"kind": "task", "task_id": "deleted-task"},
+        "incarnation": "sync-incarnation-1",
+        "head": "42",
+        "bridge_epoch": "bridge-epoch-1",
+        "reason": "scope_removed"
+      }
     }
   ]
 }

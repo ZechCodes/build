@@ -47,6 +47,21 @@
         "bridge_epoch": "bridge-epoch-1",
         "reason": "retention_expired"
       }
+    },
+    {
+      "params": {
+        "scope": {"kind": "project_tasks", "project_id": "deleted-project"},
+        "limit": 25,
+        "page": "authenticated-deleted-scope-page"
+      },
+      "result": {
+        "status": "resync_required",
+        "scope": {"kind": "project_tasks", "project_id": "deleted-project"},
+        "incarnation": "sync-incarnation-1",
+        "head": "42",
+        "bridge_epoch": "bridge-epoch-1",
+        "reason": "scope_removed"
+      }
     }
   ]
 }

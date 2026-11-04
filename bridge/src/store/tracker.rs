@@ -249,6 +249,10 @@ impl Store {
         ReadTransaction::new(&self.connection()).load_tracker_task(task_id)
     }
 
+    pub fn task_project_key(&self, task_id: &str) -> Result<Option<String>, StoreError> {
+        ReadTransaction::new(&self.connection()).task_project_key(task_id)
+    }
+
     /// One project's tasks, newest first — `number` descending, which is the
     /// order they are read in and the order the index is built in.
     pub fn list_tracker_tasks(

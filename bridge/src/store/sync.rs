@@ -176,6 +176,7 @@ pub struct Event {
 #[serde(rename_all = "snake_case")]
 pub enum ResyncReason {
     IncarnationChanged,
+    ScopeRemoved,
     RetentionExpired,
     OverBudget,
     LeaseExpired,

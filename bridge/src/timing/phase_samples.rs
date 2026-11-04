@@ -62,6 +62,20 @@ impl PhaseSamples {
 }
 
 impl FrameClock {
+    pub(crate) fn record_request_duration(
+        &self,
+        frame: &crate::transport::Frame,
+        phase: &'static str,
+        elapsed: Duration,
+    ) {
+        if let (Some(method), Some(samples)) = (
+            frame.payload["method"].as_str(),
+            self.phase_samples.lock().unwrap().as_ref(),
+        ) {
+            samples.record(method, phase, elapsed);
+        }
+    }
+
     pub(crate) fn sample_serialization<T>(&self, tool: &str, work: impl FnOnce() -> T) -> T {
         let started = Instant::now();
         let value = work();

@@ -859,8 +859,14 @@ async fn anchor_order_preserves_the_890_order_field_on_pages_and_changes() {
 }
 
 #[tokio::test]
+#[ignore = "timing: release-profile timing.yml"]
 async fn large_recovery_reads_finish_under_100ms_while_the_app_lock_is_held() {
+    use crate::app::AppState;
+    use crate::carrier::testing::{client_request, session_init, ChannelWire};
+    use crate::carrier::{FrameIntake, OutboundEnvelope, SessionSender};
+    use crate::tracker::{TaskAgentIdentity, TaskEvent, TaskEventKind};
     use rusqlite::params;
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -871,7 +877,7 @@ async fn large_recovery_reads_finish_under_100ms_while_the_app_lock_is_held() {
         dir.path().to_path_buf(),
     )
     .unwrap();
-    let app = crate::app::AppState::new_configured(
+    let mut app = crate::app::AppState::new_configured(
         dir.path().join("repo"),
         dir.path().join("worktrees"),
         "main",
@@ -880,8 +886,15 @@ async fn large_recovery_reads_finish_under_100ms_while_the_app_lock_is_held() {
     )
     .with_task_store(dir.path().join("store"))
     .unwrap();
+    let project_id = app.add_project("/synthetic-project".into(), "main".into());
+    for index in 0..2_000 {
+        app.add_project(
+            dir.path().join(format!("registry-project-{index:04}")),
+            "main".into(),
+        );
+    }
     let store = app.store.as_ref().unwrap().clone();
-    let seed = create(&store, "scale seed");
+    let mut seed = create(&store, "scale seed");
     let project = "/synthetic-project";
     let now = crate::store::sync::now_ms();
     {
@@ -955,7 +968,41 @@ async fn large_recovery_reads_finish_under_100ms_while_the_app_lock_is_held() {
         tx.commit().unwrap();
     }
 
-    let scope = TaskSyncScope::project("synthetic-project", project, &json!({})).unwrap();
+    seed.body = "large durable body ".repeat(8_192);
+    seed.identities = (0..512)
+        .map(|index| {
+            let id = format!("agent-{index:04}");
+            (
+                id.clone(),
+                TaskAgentIdentity {
+                    agent_id: id,
+                    name: Some(format!("Durable Agent {index}")),
+                    project_role: None,
+                    ordinal: Some(index),
+                    workspace_id: Some(format!("workspace-{index:04}")),
+                    workspace_name: Some(format!("Long-lived workspace {index}")),
+                    provider: Some("fixture".into()),
+                    available: false,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let history = (0..500)
+        .map(|index| {
+            TaskEvent::new(
+                &seed.id,
+                Actor::User,
+                TaskEventKind::Moved,
+                json!({"from":"backlog","to":"backlog","fixture_index":index}),
+                NOW,
+            )
+        })
+        .collect::<Vec<_>>();
+    store
+        .save_tracker_task_activity(&seed, &[], &history)
+        .unwrap();
+
+    let scope = TaskSyncScope::project(&project_id, project, &json!({})).unwrap();
     let mut read = store.read_pool().acquire_sync().await;
     let cursor = read
         .read(|tx| {
@@ -966,8 +1013,33 @@ async fn large_recovery_reads_finish_under_100ms_while_the_app_lock_is_held() {
         })
         .unwrap()
         .unwrap();
+    drop(read);
 
+    let samples = app.frame_clock.capture_phases();
     let app = Arc::new(Mutex::new(app));
+    let scheduled = Arc::new(Mutex::new(BTreeMap::new()));
+    let scheduled_observer = Arc::clone(&scheduled);
+    let handler =
+        AppState::handler(Arc::clone(&app)).observe_sql(move |frame, checkout, handoff| {
+            scheduled_observer
+                .lock()
+                .unwrap()
+                .insert(frame.payload["id"].as_u64().unwrap(), (checkout, handoff));
+        });
+    let transport = crate::transport::generate_transport_keypair();
+    let intake = FrameIntake::new(handler, transport.clone());
+    let mut wire = ChannelWire::open();
+    let key = crate::transport::generate_session_key();
+    wire.open_session(
+        &intake,
+        "sync-large",
+        &session_init("sync-large", &transport.public_key_b64, &key),
+    )
+    .unwrap();
+    assert!(matches!(
+        wire.outbound.try_recv(),
+        Ok(OutboundEnvelope::SessionAccept { .. })
+    ));
     let (locked, waiting) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
     let held = Arc::clone(&app);
@@ -978,27 +1050,88 @@ async fn large_recovery_reads_finish_under_100ms_while_the_app_lock_is_held() {
     });
     waiting.recv_timeout(Duration::from_secs(5)).unwrap();
 
-    let mut measured = |name: &str, work: &mut dyn FnMut(&mut SyncReadConnection) -> Value| {
+    async fn final_answer(wire: &mut ChannelWire, key: &str) -> Value {
+        loop {
+            let envelope = wire.outbound.recv().await.unwrap();
+            let answer = SessionSender::decrypt_push(key, &envelope);
+            if answer.get("accepted").is_none() {
+                return answer;
+            }
+        }
+    }
+    let requests = [
+        (
+            "sync.head",
+            json!({"scope":{"kind":"project_tasks","project_id":project_id},"cursor":cursor}),
+        ),
+        (
+            "sync.snapshot",
+            json!({"scope":{"kind":"project_tasks","project_id":project_id},"limit":100}),
+        ),
+        (
+            "sync.changes",
+            json!({"scope":{"kind":"project_tasks","project_id":project_id},"cursor":cursor,"limit":100}),
+        ),
+        (
+            "sync.snapshot",
+            json!({"scope":{"kind":"task","task_id":seed.id},"limit":100}),
+        ),
+    ];
+    for (offset, (name, params)) in requests.into_iter().enumerate() {
         let started = Instant::now();
-        let answer = work(&mut read);
+        let id = offset as u64 + 1;
+        wire.accept(
+            &intake,
+            client_request(
+                &key,
+                "sync-large",
+                "data",
+                json!({"id":id,"method":name,"params":params}),
+            ),
+        )
+        .await
+        .unwrap();
+        let answer = final_answer(&mut wire, &key).await;
         let elapsed = started.elapsed();
-        assert_eq!(answer["status"], "ok", "{name}: {answer}");
+        samples.record_client_total(name, elapsed);
+        assert_eq!(answer["ok"], true, "{name}: {answer}");
+        assert_eq!(answer["result"]["status"], "ok", "{name}: {answer}");
         assert!(
             elapsed <= Duration::from_millis(100),
-            "{name} took {elapsed:?} on 100k journal rows and 10k tasks"
+            "{name} took {elapsed:?} through the carrier"
         );
-        eprintln!("sync_large_read {name} elapsed_us={}", elapsed.as_micros());
-    };
-    measured("head", &mut |read| {
-        read.read(|tx| scope.head(tx, Some(&cursor), "scale-epoch", now))
-            .unwrap()
-            .unwrap()
-    });
-    measured("snapshot", &mut |read| snapshot(read, &scope, None, 100));
-    measured("changes", &mut |read| {
-        changes(read, &scope, &cursor, None, 100)
-    });
+        eprintln!(
+            "sync_large_read method={name} id={id} client_total_us={}",
+            elapsed.as_micros()
+        );
+    }
 
     release.send(()).unwrap();
     holder.join().unwrap();
+    let phases = samples.snapshot();
+    for method in ["sync.head", "sync.snapshot", "sync.changes"] {
+        let row = &phases[method];
+        for component in [
+            "client.total",
+            "sync.admission.total",
+            "sync.scope_resolution.total",
+            "sync.recovery.total",
+            "reply.serialization",
+        ] {
+            assert!(
+                row.get(component).is_some(),
+                "missing {method} {component}: {phases}"
+            );
+        }
+    }
+    let scheduled = scheduled.lock().unwrap();
+    assert_eq!(scheduled.len(), 4, "one carrier schedule per request");
+    for (id, (checkout, handoff)) in scheduled.iter() {
+        eprintln!(
+            "sync_large_read id={id} queue_and_class_checkout_us={} worker_handoff_us={}",
+            checkout.as_micros(),
+            handoff.as_micros()
+        );
+    }
+    eprintln!("sync_large_read components={phases}");
 }

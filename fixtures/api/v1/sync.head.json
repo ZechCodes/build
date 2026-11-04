@@ -41,6 +41,20 @@
         "bridge_epoch": "bridge-epoch-2",
         "reason": "incarnation_changed"
       }
+    },
+    {
+      "params": {
+        "scope": {"kind": "project_tasks", "project_id": "deleted-project"},
+        "cursor": "authenticated-deleted-scope-cursor"
+      },
+      "result": {
+        "status": "resync_required",
+        "scope": {"kind": "project_tasks", "project_id": "deleted-project"},
+        "incarnation": "sync-incarnation-1",
+        "head": "42",
+        "bridge_epoch": "bridge-epoch-1",
+        "reason": "scope_removed"
+      }
     }
   ]
 }

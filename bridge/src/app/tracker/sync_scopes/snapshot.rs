@@ -21,6 +21,34 @@ impl Page {
 }
 
 impl TaskSyncScope {
+    pub fn removed_snapshot(
+        &self,
+        read: &ReadTransaction<'_>,
+        page: &str,
+        epoch: &str,
+        now: i64,
+    ) -> Result<Value, SyncError> {
+        let position = read.sync_decode_continuation::<Page>(&self.scope, "snapshot", page)?;
+        let head = match self.checked_head(read, None, epoch, now)? {
+            Ok(head) => head,
+            Err(reset) => return Ok(reset),
+        };
+        let reason = match position {
+            Continuation::Foreign(page) => {
+                page.validate()?;
+                ResyncReason::IncarnationChanged
+            }
+            Continuation::Current(page) => {
+                page.validate()?;
+                if page.watermark > head.head {
+                    return Err(SyncError::FutureCursor);
+                }
+                ResyncReason::ScopeRemoved
+            }
+        };
+        Ok(self.resync(&head, reason))
+    }
+
     pub fn snapshot(
         &self,
         read: &ReadTransaction<'_>,

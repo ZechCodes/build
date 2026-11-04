@@ -49,7 +49,7 @@ mod read_identities;
 mod read_source;
 #[cfg(test)]
 pub(in crate::app) use push::news_phrase;
-pub(in crate::app) use read::{TaskReadContext, TaskReadFence};
+pub(in crate::app) use read::{TaskReadContext, TaskReadFence, TaskSyncAdmission};
 mod query_selections;
 mod refs;
 mod reminder;

@@ -10,6 +10,7 @@ use crate::store::{
 };
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 mod changes;
 mod snapshot;
@@ -22,7 +23,7 @@ pub struct TaskSyncScope {
     scope: Scope,
     definition: Value,
     project: String,
-    project_ids: BTreeMap<String, String>,
+    project_ids: Arc<BTreeMap<String, String>>,
     task: Option<String>,
     selected: TaskSelections,
     query: QuerySelections,
@@ -57,7 +58,7 @@ impl TaskSyncScope {
             scope,
             definition: json!({"kind":"project_tasks","project_id":project_id,"filters":canonical,"order":query.order}),
             project: project_key.into(),
-            project_ids: BTreeMap::from([(project_key.into(), project_id.into())]),
+            project_ids: Arc::new(BTreeMap::from([(project_key.into(), project_id.into())])),
             task: None,
             selected,
             query,
@@ -69,7 +70,7 @@ impl TaskSyncScope {
             scope: Scope::new(Stream::task(task_id), definition.clone()),
             definition,
             project: project_key.into(),
-            project_ids: BTreeMap::from([(project_key.into(), project_id.into())]),
+            project_ids: Arc::new(BTreeMap::from([(project_key.into(), project_id.into())])),
             task: Some(task_id.into()),
             selected: TaskSelections::parse(&json!({})).expect("empty selection"),
             query: QuerySelections::parse(&json!({})).expect("empty query"),
@@ -77,7 +78,7 @@ impl TaskSyncScope {
     }
     /// Resolve a current row that moved between projects with the same captured
     /// authorization directory. Missing context refuses; it never exposes paths.
-    pub fn with_project_ids(mut self, ids: BTreeMap<String, String>) -> Self {
+    pub fn with_project_ids(mut self, ids: Arc<BTreeMap<String, String>>) -> Self {
         self.project_ids = ids;
         self
     }
@@ -105,6 +106,30 @@ impl TaskSyncScope {
             "retention_floor":head.retention_floor,
             "bridge_epoch":head.bridge_epoch,
         }))
+    }
+
+    pub fn removed_head(
+        &self,
+        read: &ReadTransaction<'_>,
+        cursor: &str,
+        epoch: &str,
+        now: i64,
+    ) -> Result<Value, SyncError> {
+        let position = read.sync_cursor_sequence(&self.scope, cursor)?;
+        let head = match self.checked_head(read, None, epoch, now)? {
+            Ok(head) => head,
+            Err(reset) => return Ok(reset),
+        };
+        let reason = match position {
+            crate::store::sync::CursorSequence::Foreign => ResyncReason::IncarnationChanged,
+            crate::store::sync::CursorSequence::Current(sequence) => {
+                if sequence > head.head {
+                    return Err(SyncError::FutureCursor);
+                }
+                ResyncReason::ScopeRemoved
+            }
+        };
+        Ok(self.resync(&head, reason))
     }
 
     fn ensure_supported(&self, read: &ReadTransaction<'_>) -> Result<(), SyncError> {

@@ -31,6 +31,49 @@ impl Run {
     }
 }
 impl TaskSyncScope {
+    pub fn removed_changes(
+        &self,
+        read: &ReadTransaction<'_>,
+        cursor: &str,
+        continuation: Option<&str>,
+        epoch: &str,
+        now: i64,
+    ) -> Result<Value, SyncError> {
+        let origin = match read.sync_cursor_sequence(&self.scope, cursor)? {
+            CursorSequence::Foreign => None,
+            CursorSequence::Current(origin) => Some(origin),
+        };
+        let mut foreign = origin.is_none();
+        let mut run_head = None;
+        if let Some(token) = continuation {
+            match read.sync_decode_continuation::<Run>(&self.scope, "changes", token)? {
+                Continuation::Foreign(run) => {
+                    run.bytes()?;
+                    foreign = true;
+                }
+                Continuation::Current(run) => {
+                    run.bytes()?;
+                    if origin.is_some_and(|origin| run.origin != origin) {
+                        return Err(SyncError::MalformedCursor);
+                    }
+                    run_head = Some(run.head);
+                }
+            }
+        }
+        let head = match self.checked_head(read, None, epoch, now)? {
+            Ok(head) => head,
+            Err(reset) => return Ok(reset),
+        };
+        if foreign {
+            return Ok(self.resync(&head, ResyncReason::IncarnationChanged));
+        }
+        let origin = origin.expect("a current run has a current origin");
+        if origin > head.head || run_head.is_some_and(|run_head| run_head > head.head) {
+            return Err(SyncError::FutureCursor);
+        }
+        Ok(self.resync(&head, ResyncReason::ScopeRemoved))
+    }
+
     pub fn changes(
         &self,
         read: &ReadTransaction<'_>,

@@ -54,6 +54,7 @@ macro_rules! task_queries {
 
 task_queries! {
     task_summary_by_number(project: &str, number: u64) -> Option<TaskSummaryCandidate>;
+    task_project_key(id: &str) -> Option<String>;
     task_counts(project: &str, agents: &[String]) -> Vec<crate::store::TaskCounts>;
     tracker_list_key() -> String;
     task_query_basis() -> String;

@@ -10,7 +10,7 @@ use tokio::sync::{oneshot, Notify, OwnedSemaphorePermit, Semaphore};
 
 use super::io::{DedicatedExecutors, Execution};
 use super::{FrameHandler, SessionSender};
-use crate::store::{ReadConnection, ReadPool};
+use crate::store::{ReadClass, ReadConnection, ReadPool};
 use crate::timing::{Priority, QueuedFrame, WaitTimer};
 use crate::transport::Frame;
 
@@ -247,6 +247,7 @@ impl Drop for ReadDispatcher {
 impl Queue {
     fn notify_admitted(&self) {
         self.ready.notify_one();
+        self.changed.notify_waiters();
     }
 
     /// A full queue keeps exactly the carrier's current intake future parked.
@@ -298,10 +299,15 @@ impl Queue {
         }
     }
 
+    #[cfg(test)]
     fn take(&self) -> Option<Work> {
+        self.take_eligible(true)
+    }
+
+    fn take_eligible(&self, allow_sync: bool) -> Option<Work> {
         let (work, more_ready) = {
             let mut waiting = self.waiting.lock().unwrap();
-            let work = waiting.take();
+            let work = waiting.take_eligible(allow_sync);
             (work, !waiting.ready.is_empty())
         };
         // Pass a single wakeup along the backlog. Notify's stored permit may
@@ -314,13 +320,10 @@ impl Queue {
         work
     }
 
-    fn next_method(&self) -> Option<String> {
+    fn has_eligible(&self, allow_sync: bool) -> bool {
         let mut waiting = self.waiting.lock().unwrap();
         waiting.prune();
-        let opening = *waiting.ready.front()?;
-        waiting.openings.get(&opening)?.front()?.frame.payload["method"]
-            .as_str()
-            .map(str::to_owned)
+        waiting.has_eligible(allow_sync)
     }
 }
 
@@ -334,9 +337,24 @@ impl Waiting {
             .retain(|opening| self.openings.contains_key(opening));
     }
 
-    fn take(&mut self) -> Option<Work> {
+    fn has_eligible(&self, allow_sync: bool) -> bool {
+        self.ready.iter().any(|opening| {
+            self.openings
+                .get(opening)
+                .and_then(|jobs| jobs.front())
+                .is_some_and(|job| allow_sync || !job_is_sync(job))
+        })
+    }
+
+    fn take_eligible(&mut self, allow_sync: bool) -> Option<Work> {
         self.prune();
-        let opening = self.ready.pop_front()?;
+        let index = self.ready.iter().position(|opening| {
+            self.openings
+                .get(opening)
+                .and_then(|jobs| jobs.front())
+                .is_some_and(|job| allow_sync || !job_is_sync(job))
+        })?;
+        let opening = self.ready.remove(index)?;
         let jobs = self.openings.get_mut(&opening)?;
         let mut work = Work::new(jobs.pop_front()?);
         // Fold only queued callers. Each counted against B until this pop, and
@@ -357,6 +375,12 @@ impl Waiting {
         }
         Some(work)
     }
+}
+
+fn job_is_sync(job: &Job) -> bool {
+    job.frame.payload["method"]
+        .as_str()
+        .is_some_and(|method| method.starts_with("sync."))
 }
 
 struct Work {
@@ -407,6 +431,8 @@ impl Work {
         connection: Option<ReadConnection>,
         lane: ReadLane,
     ) {
+        #[cfg(test)]
+        let observed = self.job.frame.clone();
         self.callers.retain(|(_, caller)| caller.read_is_live());
         let Some((_, sender)) = self.callers.last() else {
             return;
@@ -432,7 +458,15 @@ impl Work {
             if sender.read_is_live() {
                 let mut answer = answer.clone();
                 answer["id"] = id;
+                #[cfg(test)]
+                let serialization_started = std::time::Instant::now();
                 sender.push_read_reply(answer);
+                #[cfg(test)]
+                handler.clock.record_request_duration(
+                    &observed,
+                    "reply.serialization",
+                    serialization_started.elapsed(),
+                );
             }
         }
     }
@@ -529,17 +563,22 @@ async fn coordinate_sql(queue: Arc<Queue>, handler: FrameHandler) {
         .get()
         .expect("initialized SQL executors");
     while queue.work_available().await {
-        let Some(permit) = while_live(&queue, None, executors.acquire()).await else {
-            continue;
-        };
-        let Some(peeked_method) = queue.next_method() else {
-            continue;
-        };
-        let peeked_sync = peeked_method.starts_with("sync.");
         #[cfg(test)]
         let checkout_started = std::time::Instant::now();
+        let mut class_permit = pool
+            .as_ref()
+            .and_then(|pool| pool.try_acquire_class(ReadClass::SyncRecovery));
+        let mut allow_sync = pool.is_none() || class_permit.is_some();
+        if !queue.has_eligible(allow_sync) {
+            let Some(pool) = &pool else { continue };
+            let Some(permit) = sync_class_while_waiting(&queue, pool).await else {
+                continue;
+            };
+            class_permit = Some(permit);
+            allow_sync = true;
+        }
         let mut connection = match &pool {
-            Some(pool) => match connection_while_waiting(&queue, pool, peeked_sync).await {
+            Some(pool) => match connection_while_waiting(&queue, pool, allow_sync).await {
                 Some(connection) => Some(connection),
                 None => continue,
             },
@@ -547,25 +586,29 @@ async fn coordinate_sql(queue: Arc<Queue>, handler: FrameHandler) {
         };
         #[cfg(test)]
         let checkout = checkout_started.elapsed();
-        let Some(work) = queue.take() else { continue };
-        // A cancelled front request can reveal a different family after the
-        // connection was checked out. Never let that race bypass recovery's
-        // class quota; an extra recovery permit on an ordinary read is safe.
+        let Some(work) = queue.take_eligible(allow_sync) else {
+            continue;
+        };
         let work_is_sync = work.job.frame.payload["method"]
             .as_str()
             .is_some_and(|method| method.starts_with("sync."));
-        if work_is_sync && !peeked_sync {
-            drop(connection.take());
-            connection = match &pool {
-                Some(pool) => Some(pool.acquire_sync_connection().await),
-                None => None,
-            };
+        if work_is_sync {
+            if let (Some(connection), Some(class_permit)) =
+                (connection.as_mut(), class_permit.take())
+            {
+                connection.retain_class_permit(class_permit);
+            }
         }
+        drop(class_permit);
+        let Some(executor_permit) = while_live(&queue, Some(&work), executors.acquire()).await
+        else {
+            continue;
+        };
         #[cfg(test)]
         let work = work.with_measurement(checkout);
         let handler = handler.clone();
         let _ = executors
-            .submit(permit, move || work.run(&handler, connection))
+            .submit(executor_permit, move || work.run(&handler, connection))
             .await;
     }
 }
@@ -598,15 +641,9 @@ async fn while_live<T>(
 async fn connection_while_waiting(
     queue: &Queue,
     pool: &ReadPool,
-    sync: bool,
+    allow_sync: bool,
 ) -> Option<ReadConnection> {
-    let acquiring = async {
-        if sync {
-            pool.acquire_sync_connection().await
-        } else {
-            pool.acquire().await
-        }
-    };
+    let acquiring = pool.acquire();
     tokio::pin!(acquiring);
     loop {
         let changed = queue.changed.notified();
@@ -614,12 +651,35 @@ async fn connection_while_waiting(
         changed.as_mut().enable();
         {
             let waiting = queue.waiting.lock().unwrap();
-            if waiting.closed || waiting.ready.is_empty() {
+            if waiting.closed || !waiting.has_eligible(allow_sync) {
                 return None;
             }
         }
         tokio::select! {
             connection = &mut acquiring => return Some(connection),
+            _ = changed => {},
+        }
+    }
+}
+
+/// A saturated recovery class waits outside both SQL connections and executor
+/// slots. New ordinary work or cancellation makes the coordinator reselect.
+async fn sync_class_while_waiting(queue: &Queue, pool: &ReadPool) -> Option<OwnedSemaphorePermit> {
+    let acquiring = pool.acquire_class(ReadClass::SyncRecovery);
+    tokio::pin!(acquiring);
+    loop {
+        let changed = queue.changed.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        {
+            let mut waiting = queue.waiting.lock().unwrap();
+            waiting.prune();
+            if waiting.closed || !waiting.has_eligible(true) || waiting.has_eligible(false) {
+                return None;
+            }
+        }
+        tokio::select! {
+            permit = &mut acquiring => return Some(permit),
             _ = changed => {},
         }
     }

@@ -1695,6 +1695,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sync_post_resources_return_scope_removed_after_project_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_root = std::fs::canonicalize(dir.path()).unwrap();
+        let repo = crate::git_fixture::init_repo_named(&state_root, "sync-repo");
+        let context = crate::harness::HarnessContext::resolved(
+            state_root.join("mcp.sock"),
+            state_root.clone(),
+        )
+        .unwrap();
+        let mut app_state = crate::app::AppState::new_unrooted_configured(
+            state_root.join("worktrees"),
+            "main",
+            true,
+            context,
+        )
+        .with_task_store(state_root.join("store"))
+        .unwrap();
+        let project_id = app_state.add_project(repo, "main".into());
+        let state = Arc::new(Mutex::new(app_state));
+        let execution = ExecutionService::new(crate::app::AppState::handler(Arc::clone(&state)));
+        let runtime = runtime_with(
+            execution,
+            Arc::new(WitnessVerifier {
+                calls: Arc::new(AtomicUsize::new(0)),
+                authority: Some(authority()),
+            }),
+        );
+        let app = runtime.router();
+        let opened = app
+            .clone()
+            .oneshot(open_request(Body::from(r#"{"api_range":">=3 <4"}"#)))
+            .await
+            .unwrap();
+        let session_id = opening_id(opened).await;
+        let (status, created) = resource_json(
+            &app,
+            "POST",
+            format!("/v1/projects/{project_id}/tasks"),
+            &session_id,
+            Some(json!({"title":"HTTP removed scope"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        let task_id = created["result"]["task"]["id"].as_str().unwrap().to_owned();
+        let project_scope = json!({"kind":"project_tasks","project_id":project_id});
+        let task_scope = json!({"kind":"task","task_id":task_id});
+        let mut cursors = Vec::new();
+        for scope in [&project_scope, &task_scope] {
+            let (status, snapshot) = resource_json(
+                &app,
+                "POST",
+                "/v1/sync/snapshot-queries",
+                &session_id,
+                Some(json!({"scope":scope})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{snapshot}");
+            cursors.push(snapshot["result"]["cursor"].as_str().unwrap().to_owned());
+        }
+        let (status, deleted) = resource_json(
+            &app,
+            "DELETE",
+            format!("/v1/projects/{project_id}"),
+            &session_id,
+            Some(json!({"confirm":true})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{deleted}");
+        for (scope, cursor) in [project_scope, task_scope].into_iter().zip(cursors) {
+            let (status, changes) = resource_json(
+                &app,
+                "POST",
+                "/v1/sync/change-queries",
+                &session_id,
+                Some(json!({"scope":scope,"cursor":cursor})),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{changes}");
+            assert_eq!(changes["result"]["status"], "resync_required");
+            assert_eq!(changes["result"]["reason"], "scope_removed");
+            assert!(changes["result"].get("changes").is_none());
+        }
+    }
+
+    #[tokio::test]
     async fn read_only_grant_can_read_but_cannot_dispatch_a_mutation() {
         let mut read_only = authority();
         read_only.scopes = vec!["bridge:read".into()].into();

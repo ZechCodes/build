@@ -13,6 +13,17 @@ pub enum CursorSequence {
 }
 
 impl ReadTransaction<'_> {
+    pub fn task_project_key(&self, id: &str) -> Result<Option<String>, crate::store::StoreError> {
+        Ok(self
+            .connection()
+            .query_row(
+                "SELECT project_key FROM tracker_task_summaries WHERE task_id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     pub fn sync_cursor_sequence(
         &self,
         scope: &Scope,

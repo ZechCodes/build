@@ -28,6 +28,7 @@ struct Client {
     carrier: CarrierHandle,
     rx: mpsc::UnboundedReceiver<OutboundEnvelope>,
     key: String,
+    session: String,
 }
 
 impl Client {
@@ -38,15 +39,20 @@ impl Client {
     }
 
     fn attach(intake: Arc<FrameIntake>, key: String) -> Self {
+        Self::attach_named(intake, key, "sql")
+    }
+
+    fn attach_named(intake: Arc<FrameIntake>, key: String, session: &str) -> Self {
         let (carrier, mut rx) = CarrierHandle::open_channel();
-        let init = session_init("sql", intake.transport_public_key(), &key);
-        intake.open("sql", &init, &carrier).unwrap();
+        let init = session_init(session, intake.transport_public_key(), &key);
+        intake.open(session, &init, &carrier).unwrap();
         rx.try_recv().unwrap();
         Self {
             intake,
             carrier,
             rx,
             key,
+            session: session.into(),
         }
     }
 
@@ -55,7 +61,7 @@ impl Client {
             .accept(
                 client_request(
                     &self.key,
-                    "sql",
+                    &self.session,
                     "data",
                     json!({"id":id,"method":method,"params":params}),
                 ),
@@ -272,6 +278,63 @@ async fn callers_waiting_for_connections_still_count_against_backlog() {
         assert_eq!(client.reply().await["ok"], true);
     }
     assert_eq!(client.intake.dispatcher.sql_depths(), (0, 0));
+}
+
+fn class_aware_handler(pool: crate::store::ReadPool) -> FrameHandler {
+    FrameHandler::new(
+        FrameClock::new(),
+        |_, frame, _| json!({"id":frame.payload["id"],"ok":true}),
+    )
+    .with_sql_reads(Some(pool), |_, frame, _, connection| {
+        assert!(connection.is_some());
+        json!({"id":frame.payload["id"],"ok":true,"method":frame.payload["method"]})
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saturated_sync_class_does_not_occupy_workers_needed_by_ordinary_reads() {
+    let temporary = tempfile::tempdir().unwrap();
+    let store = crate::store::Store::new(temporary.path()).unwrap();
+    let pool = store.read_pool();
+    let _held = [pool.acquire_sync().await, pool.acquire_sync().await];
+    let sync = Client::new(class_aware_handler(pool));
+    sync.send(1, "sync.head", json!({})).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let mut ordinary = Client::attach_named(
+        sync.intake.clone(),
+        transport::generate_session_key(),
+        "ordinary",
+    );
+    ordinary.send(2, "tasks.get", json!({})).await;
+    let reply = tokio::time::timeout(Duration::from_millis(500), ordinary.reply())
+        .await
+        .expect("ordinary SQL read bypasses a saturated sync class");
+    assert_eq!(reply["id"], 2);
+    assert_eq!(reply["method"], "tasks.get");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_a_peeked_sync_reselects_the_next_eligible_class() {
+    let temporary = tempfile::tempdir().unwrap();
+    let store = crate::store::Store::new(temporary.path()).unwrap();
+    let pool = store.read_pool();
+    let _held = [pool.acquire_sync().await, pool.acquire_sync().await];
+    let sync = Client::new(class_aware_handler(pool));
+    sync.send(1, "sync.head", json!({})).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let mut ordinary = Client::attach_named(
+        sync.intake.clone(),
+        transport::generate_session_key(),
+        "ordinary",
+    );
+    ordinary.send(2, "tasks.get", json!({})).await;
+    sync.intake.close_carrier(&sync.carrier);
+    let reply = tokio::time::timeout(Duration::from_millis(500), ordinary.reply())
+        .await
+        .expect("cancelling a sync wait reselects the ordinary read class");
+    assert_eq!(reply["id"], 2);
+    assert_eq!(reply["method"], "tasks.get");
 }
 
 fn spa_sql_read_limit() -> usize {

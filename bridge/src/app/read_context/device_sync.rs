@@ -79,7 +79,26 @@ impl ReadService {
             .read(|read| query(read, method, &params, lease, opening, epoch, now))
             .map_err(|error| ApiError::classify(error.to_string()))?
             .map_err(device_error)?;
-        crate::api::v1::check_read_result(method, result)
+        let result = crate::api::v1::check_read_result(method, result)?;
+        self.release_completed_device_snapshot(method, &result, opening, epoch);
+        Ok(result)
+    }
+    fn release_completed_device_snapshot(
+        &self,
+        method: &str,
+        result: &Value,
+        opening: &str,
+        epoch: &str,
+    ) {
+        if method != "sync.snapshot"
+            || result["status"] != "ok"
+            || result.get("next_page").is_some()
+        {
+            return;
+        }
+        if let (Some(writer), Some(id)) = (&self.writer, result["lease"]["id"].as_str()) {
+            writer.release_device_lease_best_effort(id, opening, epoch);
+        }
     }
     fn admit_device(
         &self,

@@ -1,7 +1,7 @@
 //! Non-SQL publication boundaries use only synthetic registries and files.
 use super::*;
 use rusqlite::OptionalExtension;
-use serde_json::json;
+use serde_json::{json, Value};
 
 fn fixture() -> (tempfile::TempDir, AppState, crate::store::Store) {
     let root = tempfile::tempdir().unwrap();
@@ -142,7 +142,8 @@ fn lifecycle_observation_unrelated_git_job_does_not_hold_an_existing_marker() {
     app.mark_device_lifecycle_dirty().unwrap();
     app.settle_device_lifecycle();
     assert_registry_ready(&store);
-    app.apply_deferred("changes.unsubscribe", &json!({}), watch.run()).unwrap();
+    app.apply_deferred("changes.unsubscribe", &json!({}), watch.run())
+        .unwrap();
 }
 
 struct UnrelatedGitFixture;
@@ -195,23 +196,45 @@ fn row(root: &std::path::Path, kind: &str, key: &str) -> Option<serde_json::Valu
 
 fn snapshot_frame(page: Option<&str>, limit: usize) -> crate::transport::Frame {
     crate::transport::Frame {
-        session_id:"lease-test".into(), message_id:"snapshot".into(), frame_type:"data".into(),
-        sender:"client".into(), created_at:"now".into(),
-        payload:json!({"id":1,"method":"sync.snapshot","params":{"scope":{"kind":"device"},"page":page,"limit":limit}}),
+        session_id: "lease-test".into(),
+        message_id: "snapshot".into(),
+        frame_type: "data".into(),
+        sender: "client".into(),
+        created_at: "now".into(),
+        payload: json!({"id":1,"method":"sync.snapshot","params":{"scope":{"kind":"device"},"page":page,"limit":limit}}),
     }
 }
-async fn lease_page(app: &AppState, store: &crate::store::Store, opening: &str, page: Option<&str>, limit: usize) -> Value {
-    let connection = store.read_pool().acquire_sync().await;
-    let answer = app.read_service().call_for_opening(snapshot_frame(page,limit),Some(connection),opening,"epoch");
-    assert_eq!(answer["ok"],true,"{answer}");
-    assert_eq!(answer["result"]["status"],"ok","{answer}");
+async fn lease_page(
+    app: &AppState,
+    store: &crate::store::Store,
+    opening: &str,
+    page: Option<&str>,
+    limit: usize,
+) -> Value {
+    let connection = store.read_pool().acquire_sync_connection().await;
+    let answer = app.read_service().call_for_opening(
+        snapshot_frame(page, limit),
+        Some(connection),
+        opening,
+        "epoch",
+    );
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(answer["result"]["status"], "ok", "{answer}");
     answer["result"].clone()
 }
 fn lease_count(store: &crate::store::Store) -> i64 {
-    store.writer_for_test().query_row("SELECT COUNT(*) FROM sync_leases",[],|row|row.get(0)).unwrap()
+    store
+        .writer_for_test()
+        .query_row("SELECT COUNT(*) FROM sync_leases", [], |row| row.get(0))
+        .unwrap()
 }
 fn retained_bytes(store: &crate::store::Store) -> i64 {
-    store.writer_for_test().query_row("SELECT retained_version_bytes FROM sync_state",[],|row|row.get(0)).unwrap()
+    store
+        .writer_for_test()
+        .query_row("SELECT retained_version_bytes FROM sync_state", [], |row| {
+            row.get(0)
+        })
+        .unwrap()
 }
 
 #[tokio::test]
@@ -220,13 +243,13 @@ async fn device_fix_round_five_complete_snapshots_and_seventeen_openings_release
     app.initialize_snapshot_projection();
     app.initialize_read_context();
     for _ in 0..5 {
-        let answer=lease_page(&app,&store,"one-opening",None,500).await;
+        let answer = lease_page(&app, &store, "one-opening", None, 500).await;
         assert!(answer.get("next_page").is_none());
     }
     for index in 0..17 {
-        lease_page(&app,&store,&format!("opening-{index}"),None,500).await;
+        lease_page(&app, &store, &format!("opening-{index}"), None, 500).await;
     }
-    assert_eq!(lease_count(&store),0);
+    assert_eq!(lease_count(&store), 0);
 }
 
 #[tokio::test]
@@ -234,21 +257,50 @@ async fn device_fix_round_completed_snapshot_releases_retained_versions_toward_h
     let (_root, mut app, store) = fixture();
     app.initialize_snapshot_projection();
     app.initialize_read_context();
-    store.writer().sync_transaction(|_,batch| {
-        batch.upsert(crate::store::sync::Entity::new("lease_fixture","one"),json!({"name":"before"}),&[crate::store::sync::Stream::device()]); Ok(())
-    }).unwrap();
-    let first=lease_page(&app,&store,"gc-opening",None,1).await;
-    let page=first["next_page"].as_str().unwrap();
-    store.writer().sync_transaction(|_,batch| {
-        batch.upsert(crate::store::sync::Entity::new("lease_fixture","one"),json!({"name":"after"}),&[crate::store::sync::Stream::device()]); Ok(())
-    }).unwrap();
-    store.writer().sync_gc_batch(crate::store::sync::now_ms()).unwrap();
-    assert!(retained_bytes(&store)>0,"an unfinished snapshot must protect old versions");
-    let last=lease_page(&app,&store,"gc-opening",Some(page),500).await;
+    store
+        .writer()
+        .sync_transaction(|_, batch| {
+            batch.upsert(
+                crate::store::sync::Entity::new("lease_fixture", "one"),
+                json!({"name":"before"}),
+                &[crate::store::sync::Stream::device()],
+            );
+            Ok(())
+        })
+        .unwrap();
+    let first = lease_page(&app, &store, "gc-opening", None, 1).await;
+    let page = first["next_page"].as_str().unwrap();
+    store
+        .writer()
+        .sync_transaction(|_, batch| {
+            batch.upsert(
+                crate::store::sync::Entity::new("lease_fixture", "one"),
+                json!({"name":"after"}),
+                &[crate::store::sync::Stream::device()],
+            );
+            Ok(())
+        })
+        .unwrap();
+    store
+        .writer()
+        .sync_gc_batch(crate::store::sync::now_ms())
+        .unwrap();
+    assert!(
+        retained_bytes(&store) > 0,
+        "an unfinished snapshot must protect old versions"
+    );
+    let last = lease_page(&app, &store, "gc-opening", Some(page), 500).await;
     assert!(last.get("next_page").is_none());
-    store.writer().sync_gc_batch(crate::store::sync::now_ms()).unwrap();
-    assert_eq!(retained_bytes(&store),0,"finished snapshot must stop pinning the cleanup floor");
-    assert_eq!(lease_count(&store),0);
+    store
+        .writer()
+        .sync_gc_batch(crate::store::sync::now_ms())
+        .unwrap();
+    assert_eq!(
+        retained_bytes(&store),
+        0,
+        "finished snapshot must stop pinning the cleanup floor"
+    );
+    assert_eq!(lease_count(&store), 0);
 }
 
 #[tokio::test]
@@ -256,25 +308,34 @@ async fn device_fix_round_busy_writer_serves_final_page_and_leaves_lease_to_expi
     let (_root, mut app, store) = fixture();
     app.initialize_snapshot_projection();
     app.initialize_read_context();
-    let first=lease_page(&app,&store,"busy-opening",None,1).await;
-    let page=first["next_page"].as_str().unwrap().to_owned();
-    let service=app.read_service();
-    let connection=store.read_pool().acquire_sync().await;
-    let held=store.writer_for_test();
-    let (sent,received)=std::sync::mpsc::channel();
-    let reader=std::thread::spawn(move||{
-        sent.send(service.call_for_opening(snapshot_frame(Some(&page),500),Some(connection),"busy-opening","epoch")).unwrap();
+    let first = lease_page(&app, &store, "busy-opening", None, 1).await;
+    let page = first["next_page"].as_str().unwrap().to_owned();
+    let service = app.read_service();
+    let connection = store.read_pool().acquire_sync_connection().await;
+    let held = store.writer_for_test();
+    let (sent, received) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        sent.send(service.call_for_opening(
+            snapshot_frame(Some(&page), 500),
+            Some(connection),
+            "busy-opening",
+            "epoch",
+        ))
+        .unwrap();
     });
-    let answer=received.recv_timeout(std::time::Duration::from_millis(500));
+    let answer = received.recv_timeout(std::time::Duration::from_millis(500));
     drop(held);
     reader.join().unwrap();
-    let answer=answer.expect("lease cleanup must not wait for the held writer");
-    assert_eq!(answer["ok"],true,"{answer}");
-    assert_eq!(answer["result"]["status"],"ok");
+    let answer = answer.expect("lease cleanup must not wait for the held writer");
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(answer["result"]["status"], "ok");
     assert!(answer["result"].get("next_page").is_none());
-    assert_eq!(lease_count(&store),1,"busy cleanup is best effort");
-    store.writer().sync_gc_batch(first["lease"]["expires_at_ms"].as_i64().unwrap()+1).unwrap();
-    assert_eq!(lease_count(&store),0);
+    assert_eq!(lease_count(&store), 1, "busy cleanup is best effort");
+    store
+        .writer()
+        .sync_gc_batch(first["lease"]["expires_at_ms"].as_i64().unwrap() + 1)
+        .unwrap();
+    assert_eq!(lease_count(&store), 0);
 }
 
 #[test]

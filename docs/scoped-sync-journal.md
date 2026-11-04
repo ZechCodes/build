@@ -249,6 +249,9 @@ checks durable dirtiness. Snapshot pages seek `(first_seq, kind, key)` below the
 frozen watermark, inspect at most 2,000 candidates plus one lookahead, and keep
 the complete encoded reply within 1 MiB. A row payload over 64 KiB requests an
 explicit reset. Lease expiry is checked again after SQL, assembly and encoding.
+After serving the final page, the read service releases the lease with a
+nonblocking writer attempt. A busy mutex or SQLite writer leaves it to expire;
+completion never acquires the app lock or waits for the writer.
 Device page continuations allow a bounded 64 KiB token for escaped opaque keys;
 other continuation purposes retain the smaller bound.
 
@@ -262,3 +265,11 @@ when history becomes collectible.
 
 These device hooks do not connect a SPA consumer. Capability recognition and
 contract fixtures belong here; consumer synchronization is #997.
+
+Workspace ticks observe before marking and persist only actual capability,
+branch, finished-state or membership changes. Unchanged ticks leave the dirty
+generation alone. Deferred registry holds are separate from filesystem safety
+claims: reads, watches and unrelated git work do not delay reconciliation. A
+registry job releases its hold before final settlement, including handoffs to
+another registry stage. Attention saves compare old and new live domain records
+and re-project only added, removed or changed owners.

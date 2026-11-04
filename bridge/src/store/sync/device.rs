@@ -40,6 +40,22 @@ pub(super) fn mark_dirty(
 }
 
 impl StoreWriter {
+    /// Completion is advisory: contention leaves the finite lease to expire.
+    /// Neither the writer mutex nor an external SQLite writer may delay a read.
+    pub fn release_device_lease_best_effort(&self, id: &str, opening: &str, epoch: &str) {
+        let Ok(connection) = self.connection.try_lock() else {
+            return;
+        };
+        if connection.busy_timeout(std::time::Duration::ZERO).is_err() {
+            return;
+        }
+        let _ = connection.execute(
+            "DELETE FROM sync_leases WHERE id=?1 AND opening=?2 AND epoch=?3",
+            params![id, opening, epoch],
+        );
+        let _ = connection.busy_timeout(std::time::Duration::from_secs(5));
+    }
+
     /// Persist before acknowledging a file or memory authority change.
     pub fn mark_sync_dirty(&self, kind: &str, key: &str, now: i64) -> Result<i64, SyncError> {
         validate_identity(kind, key)?;

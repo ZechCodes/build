@@ -435,14 +435,13 @@ impl Store {
             self.attention_map_epoch
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let previous = tx
-                .prepare("SELECT entity_id FROM attention")?
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<_>, _>>()?;
-            for id in previous {
+                .prepare("SELECT entity_id,record FROM attention")?
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<HashMap<_, _>, _>>()?;
+            for id in changed_attention_owners(&previous, attention, live) {
                 super::sync::touch_device_owner(tx, &id)?;
-            }
-            for id in live {
-                super::sync::touch_device_owner(tx, id)?;
             }
             tx.execute("DELETE FROM attention", [])?;
             let mut insert =
@@ -1082,6 +1081,31 @@ impl Store {
         }
         std::fs::read_to_string(self.plan_docs_dir(plan_id).join(rel_path)).ok()
     }
+}
+
+/// Compare domain records so map serialization order cannot create false work.
+fn changed_attention_owners(
+    previous: &HashMap<String, String>,
+    attention: &HashMap<String, Attention>,
+    live: &HashSet<String>,
+) -> Vec<String> {
+    previous
+        .keys()
+        .chain(attention.keys())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .filter_map(|id| {
+            let current = attention.get(id).filter(|_| live.contains(id));
+            let unchanged = match (previous.get(id), current) {
+                (None, None) => true,
+                (Some(raw), Some(current)) => {
+                    serde_json::from_str::<Attention>(raw).is_ok_and(|old| old == *current)
+                }
+                _ => false,
+            };
+            (!unchanged).then(|| id.clone())
+        })
+        .collect()
 }
 
 pub(super) fn device_capture(record: &crate::capture::Capture) -> serde_json::Value {

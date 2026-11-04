@@ -376,7 +376,9 @@ impl AppState {
         for workspace in capabilities {
             self.workspaces.apply_local_capabilities(workspace)?;
         }
-        for id in finished {
+        // Capabilities can reveal a new repository in a finished directory.
+        // Re-observe after applying them; the marker already covers this pass.
+        for id in self.workspaces.observe_finished_local() {
             self.workspaces.reopen(&id)?;
         }
         Ok(())

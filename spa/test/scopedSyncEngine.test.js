@@ -117,3 +117,16 @@ it("captures finite recovery without waiting for a push that arrives during the 
   const pushed = engine.wake(() => true); held.resolve(changes());
   expect(await captured).toBe(true); await pushed; expect(rpc).toHaveBeenCalledTimes(2);
 });
+
+it("bounds empty snapshot pages without publishing a partial membership", async () => {
+  let pages = 0;
+  const rpc = vi.fn(async () => {
+    pages += 1;
+    if (pages > 1100) throw new Error("unbounded page walk");
+    return snapshot({ records: [], next_page: `page-${pages}` });
+  });
+  const { engine, store } = fixture(rpc);
+  expect(await engine.catchUp(scope)).toBe(false);
+  expect(rpc.mock.calls.length).toBeLessThanOrEqual(1000);
+  expect(store.publish).not.toHaveBeenCalled();
+});

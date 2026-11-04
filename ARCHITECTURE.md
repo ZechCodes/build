@@ -4272,7 +4272,30 @@ gate attachment display.
   review reads still fetch uncapped patches and pages. Markers follow the
   newest twenty unpushed hashes and the workspace's eviction and expiry rules;
   failed reads without size evidence remain retryable.
-- **Reconnect catch-up.** The bridge starts a subscription empty and records a
+- **Durable task scope recovery.** `scopedSyncRegistry.js` describes mounted
+  project task queries and task details, sharing presence with the lock holder
+  across tabs and limiting each device to sixteen active scopes. Definitions
+  use canonical filters and order; cursors never cross definitions. Current
+  greetings independently gate `sync.projectTasks` and `sync.task`.
+  `scopedSyncRuntime.js` runs `scopedSyncEngine.js` only under an actual Web
+  Lock grant. The legacy timeout fallback cannot authorize journal writes;
+  browsers without Web Locks retain legacy task reads.
+  The engine stages snapshot pages before publication, then drains changes
+  from the snapshot's opaque cursor through each fixed-head continuation.
+  `scopedTaskSyncCache.js` commits rows, query membership, invalidations and
+  the cursor in one IndexedDB transaction, using task-content lifetime,
+  mutation and row-revision fences. Cursor resets affect one scope. The seen
+  head is separate from the fully applied head so an interrupted continuation
+  remains repairable. New replica kinds use the existing records store and
+  preserve cached content without a schema upgrade.
+  Pushes wake this reader; reconnect, foreground return and a thirty-second
+  `sync.head` interval repair missed notifications. Connection passes capture
+  finite open-scope recovery, while later pushes form separate trailing work.
+  Legacy task writers yield the tracked query/detail to the engine. Task
+  heads contain summary and timeline data; an engine-owned detail reader
+  supplies body fields through their own task-content authority. Inbox and
+  directory recovery keep the ordered pass; no device scope is advertised.
+- **Legacy reconnect catch-up.** The bridge starts a subscription empty and records a
   change only for the subscriptions it holds when the change happens. So a pass
   takes its subscriptions out before it reads anything, and where the cache has
   something to show it waits (bounded) for the bridge to answer them. A device
@@ -4521,8 +4544,9 @@ gate attachment display.
   it, or one the page does not name that was written after the page was
   read, keeps its place. An older bridge is read whole, as before.
 
-No timer polls the bridge for data. The data timers are the device presence
-poll against skriftapp and the served-version check. The presence poll runs
+Durable tracked task scopes check `sync.head` every thirty seconds while
+connected. Other data timers are the device presence poll against skriftapp
+and the served-version check. The presence poll runs
 every 15 s in the app and every 3 s on the waiting screen, and every second
 after this page approves a device, until the cached list calls it online or
 90 s pass (`spa/src/core/pendingPairing.js`, #321). The transport has its own:

@@ -3,6 +3,7 @@
 export const SYNC_HEAD_INTERVAL_MS = 30_000;
 const MAX_RESTARTS = 3;
 const MAX_SNAPSHOT_RECORDS = 100_000;
+const MAX_SNAPSHOT_PAGES = 1000;
 const identity = (scope) => JSON.stringify(scope);
 const pageParams = (page) => page ? { page } : {};
 const cursorParams = (held) => held?.cursor ? { cursor: held.cursor } : {};
@@ -40,17 +41,18 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
   }
 
   async function snapshot(entry, capture, expectedCursor) {
-    let page, first;
+    let page, first, pages = 0;
     const records = [];
     do {
       const answer = await read(entry, "sync.snapshot", pageParams(page));
+      pages += 1;
       if (!answer) return null;
       if (answer.status === "resync_required") return { resync: answer };
       if (answer.status !== "ok") return null;
       first ||= answer;
       if (!sameSnapshot(first, answer)) return null;
       records.push(...answer.records);
-      if (snapshotExceeded(records, answer, page)) return null;
+      if (snapshotExceeded(records, answer, page, pages)) return null;
       page = answer.next_page;
     } while (page);
     if (!stands(entry)) return null;
@@ -139,5 +141,5 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
 const sameSnapshot = (first, answer) => first.incarnation === answer.incarnation
   && first.watermark === answer.watermark && first.cursor === answer.cursor
   && first.bridge_epoch === answer.bridge_epoch;
-const snapshotExceeded = (records, answer, page) => records.length > MAX_SNAPSHOT_RECORDS
-  || Boolean(page && answer.next_page === page);
+const snapshotExceeded = (records, answer, page, pages) => records.length > MAX_SNAPSHOT_RECORDS
+  || Boolean(page && answer.next_page === page) || Boolean(answer.next_page && pages >= MAX_SNAPSHOT_PAGES);

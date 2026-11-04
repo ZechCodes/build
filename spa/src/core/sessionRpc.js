@@ -10,6 +10,7 @@
 // timeout, and the rule that tells a reply from a push.
 
 import { syncDiagnostics } from "./syncDiagnostics.js";
+import { scopedSyncDiagnosticKind } from "./scopedSyncDiagnostics.js";
 import { createSqlReadCredits, isSqlRead, SQL_READ_LIMIT } from "./sqlReadCredits.js";
 import { createBridgeEpoch, endedOpeningError } from "./bridgeEpoch.js";
 
@@ -352,7 +353,7 @@ export function createSessionRpc({
       if (closed) throw noCarrier();
       const id = "r" + ++requestId;
       let waiting;
-      const timing = syncDiagnostics.itemQueued(method, "rpc");
+      const timing = syncDiagnostics.itemQueued(method, scopedSyncDiagnosticKind(method, params));
       let timingSettled = false;
       const settleTiming = (outcome) => {
         if (timingSettled) return;

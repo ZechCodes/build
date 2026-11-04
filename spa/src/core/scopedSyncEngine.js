@@ -1,6 +1,11 @@
 // Scope-independent durable recovery. Tokens stay opaque; only server heads
 // are compared, and publication owns the cache/cursor transaction boundary.
 export const SYNC_HEAD_INTERVAL_MS = 30_000;
+const RETRY_DELAYS_MS = [1000, 2000, 5000, 10_000, 30_000];
+// Registry reconciliation can last for a clone. It is ordinary cache weather,
+// never a displayed failure, and must not extend a captured connection period.
+const reconciling = (error) => (error?.code || error?.error_code) === "unavailable"
+  && error?.retryable === true && error?.message === "sync_reconciling";
 const MAX_RESTARTS = 3;
 const MAX_SNAPSHOT_RECORDS = 100_000;
 const MAX_SNAPSHOT_PAGES = 1000;
@@ -17,7 +22,7 @@ function publishedSnapshot(entry, first, committed) {
   return { cursor: first.cursor };
 }
 
-export function createScopedSyncEngine({ request, storeFor, active = () => true, epoch = () => null, captureRequest }) {
+export function createScopedSyncEngine({ request, storeFor, active = () => true, epoch = () => null, captureRequest, onError = () => {} }) {
   const scopes = new Map();
   const opening = captureRequest || epochOpenings(epoch);
   let disposed = false;
@@ -29,7 +34,7 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
     const key = identity(scope);
     if (scopes.has(key)) return;
     scopes.set(key, { scope, store: storeFor(scope), running: null, trailing: null, fresh: true,
-      opening: null, validateCursor: false, lastCursor: null });
+      opening: null, validateCursor: false, lastCursor: null, retry: null, attempts: 0, failures: 0 });
   }
   const stands = (entry) => current() && scopes.get(identity(entry.scope)) === entry;
   // A scope can outlive its transport; each operation belongs to exactly
@@ -121,6 +126,7 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
       if (!result?.resync) return result;
       if (!await reset(entry, token, result.resync, result.capture, result.cursor)) return false;
     }
+    scheduleRetry(entry, token);
     return false;
   }
 
@@ -133,12 +139,41 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
     return result.resync ? { ...result, capture, cursor } : changes(entry, token, result.cursor);
   }
 
+  function scheduleRetry(entry, token) {
+    if (!accepts(entry, token) || entry.retry) return;
+    const delay = RETRY_DELAYS_MS[Math.min(entry.attempts++, RETRY_DELAYS_MS.length - 1)];
+    entry.retry = setTimeout(() => {
+      entry.retry = null;
+      if (accepts(entry, token)) void catchUp(entry.scope);
+    }, delay);
+    entry.retry.unref?.();
+  }
+
+  function failed(entry, token, error) {
+    if (!accepts(entry, token)) return false;
+    entry.failures = reconciling(error) ? 0 : entry.failures + 1;
+    if (entry.failures === 3) onError(error);
+    scheduleRetry(entry, token);
+    return false;
+  }
+
+  async function perform(entry, token, operation) {
+    try {
+      const result = await operation(token);
+      if (result === true && accepts(entry, token)) {
+        clearTimeout(entry.retry); entry.retry = null; entry.attempts = 0; entry.failures = 0;
+      }
+      return result;
+    } catch (error) { return failed(entry, token, error); }
+  }
+
   function run(entry, operation) {
     if (!stands(entry)) return Promise.resolve(false);
     const token = takeOpening(entry);
     if (!token) return Promise.resolve(false);
     if (entry.running?.token === token) return entry.running.promise;
-    const running = { token, promise: Promise.resolve().then(() => operation(token)).catch(() => false) };
+    clearTimeout(entry.retry); entry.retry = null;
+    const running = { token, promise: Promise.resolve().then(() => perform(entry, token, operation)) };
     entry.running = running;
     void running.promise.finally(() => { if (entry.running === running) entry.running = null; });
     return running.promise;
@@ -179,8 +214,12 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
     .filter((entry) => predicate(entry.scope)).map(wakeOne));
   return {
     track, catchUp, checkHeads, wake, foreground: () => wake(),
-    untrack: (scope) => scopes.delete(identity(scope)),
-    dispose() { disposed = true; clearInterval(timer); scopes.clear(); },
+    untrack: (scope) => { clearTimeout(scopes.get(identity(scope))?.retry); scopes.delete(identity(scope)); },
+    dispose() {
+      disposed = true; clearInterval(timer);
+      for (const entry of scopes.values()) clearTimeout(entry.retry);
+      scopes.clear();
+    },
   };
 }
 

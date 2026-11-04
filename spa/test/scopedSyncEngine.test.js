@@ -167,3 +167,59 @@ it("starts a newly tracked scope with a snapshot before using a persisted cursor
   expect(rpc.mock.calls.some(([, params]) => params.cursor === "old-persisted")).toBe(false);
   expect(store.publish.mock.calls[0][0].expectedCursor).toBe("old-persisted");
 });
+
+it("silently retries a reconciling device scope with backoff outside the captured recovery", async () => {
+  const device = { kind: "device" }, onError = vi.fn();
+  const fence = Object.assign(new Error("sync_reconciling"), { code: "unavailable", retryable: true });
+  const request = vi.fn().mockRejectedValueOnce(fence).mockRejectedValueOnce(fence)
+    .mockResolvedValueOnce(snapshot({ records: [] })).mockResolvedValue(changes());
+  const store = { readCursor: async () => null, capture: async () => ({}), publish: vi.fn(async () => true) };
+  const engine = createScopedSyncEngine({ request, storeFor: () => store, onError });
+  engines.push(engine); engine.track(device);
+  expect(await engine.catchUp(device)).toBe(false);
+  expect(store.publish).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(999); expect(request).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1); expect(request).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(1999); expect(request).toHaveBeenCalledTimes(2);
+  await vi.advanceTimersByTimeAsync(1); expect(store.publish).toHaveBeenCalledTimes(2);
+  expect(onError).not.toHaveBeenCalled();
+});
+
+it("reports a persistent non-fence failure through the error handler and retires pending retries", async () => {
+  const device = { kind: "device" }, onError = vi.fn(), failure = new Error("synthetic read failure");
+  const request = vi.fn().mockRejectedValue(failure);
+  const engine = createScopedSyncEngine({ request, storeFor: () => ({ readCursor: async () => null,
+    capture: async () => ({}) }), onError });
+  engines.push(engine); engine.track(device);
+  await engine.catchUp(device); expect(onError).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1000); expect(onError).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(2000); expect(onError).toHaveBeenCalledExactlyOnceWith(failure);
+  engine.untrack(device);
+  await vi.advanceTimersByTimeAsync(30_000); expect(request).toHaveBeenCalledTimes(3);
+});
+
+it("resnapshots device leases and preserves large opaque page and change continuations", async () => {
+  const device = { kind: "device" }, page = "p".repeat(65_536), continuation = "c".repeat(65_536);
+  let position = null;
+  const store = { readCursor: async () => position, capture: async () => ({}),
+    reset: vi.fn(async () => { position = null; return true; }),
+    publish: vi.fn(async ({ response: answer }) => { position = { cursor: answer.cursor }; return true; }) };
+  const record = { kind: "project", key: "project-synthetic", revision: "1", row: {
+    id: "project-synthetic", project_id: "project-synthetic", name: "project", path: "/synthetic/project" } };
+  const request = vi.fn().mockResolvedValueOnce(snapshot({ records: [record], next_page: page }))
+    .mockResolvedValueOnce(response({ status: "resync_required", reason: "lease_expired" }))
+    .mockResolvedValueOnce(snapshot({ records: [record], next_page: page }))
+    .mockResolvedValueOnce(snapshot({ records: [] }))
+    .mockResolvedValueOnce(changes({ cursor: "C1", continuation }))
+    .mockResolvedValueOnce(changes({ cursor: "C2" }));
+  const engine = createScopedSyncEngine({ request, storeFor: () => store });
+  engines.push(engine); engine.track(device);
+  expect(await engine.catchUp(device)).toBe(true);
+  expect(request.mock.calls.map(([method]) => method)).toEqual([
+    "sync.snapshot", "sync.snapshot", "sync.snapshot", "sync.snapshot", "sync.changes", "sync.changes"]);
+  expect(request.mock.calls[1][1]).toEqual({ scope: device, page });
+  expect(request.mock.calls[3][1]).toEqual({ scope: device, page });
+  expect(request.mock.calls[5][1]).toEqual({ scope: device, cursor: "opaque-S", continuation });
+  expect(store.publish.mock.calls.map(([batch]) => batch.expectedCursor)).toEqual([null, "opaque-S", "C1"]);
+  expect(store.reset).toHaveBeenCalledTimes(1);
+});

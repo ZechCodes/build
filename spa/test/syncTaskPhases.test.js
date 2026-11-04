@@ -162,3 +162,16 @@ it("retains custom cold board columns while scoped recovery owns membership", as
   expect(await trackerCache.readTasksRecord("dev-1", "p1")).toMatchObject({ tasks: [], columns: [{ id: "custom", name: "Custom" }] });
   expect(ask.mock.calls.filter(([, method]) => method === "tasks.list")).toHaveLength(0);
 });
+it("refreshes independent review metadata after scoped catch-up finishes", async () => {
+  scoped.owns = true;
+  const waking = gate();
+  scoped.wake.mockReturnValueOnce(waking.promise);
+  const { pass, context, ask, readReviews } = fixture();
+  const finishing = pass.rest("p1", "background");
+  await vi.waitFor(() => expect(scoped.wake).toHaveBeenCalled());
+  expect(readReviews).not.toHaveBeenCalled();
+  waking.release([]);
+  expect(await finishing).toBe(true);
+  expect(readReviews).toHaveBeenCalledExactlyOnceWith(context, "p1", "background");
+  expect(ask.mock.calls.filter(([, method]) => method === "tasks.list")).toHaveLength(0);
+});

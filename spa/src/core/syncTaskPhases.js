@@ -89,7 +89,6 @@ function projectPhases(context, projectId, { ask, readReviews }) {
   };
   const finish = async (nextPriority) => {
     if (!await first(nextPriority) || !context.active()) return false;
-    if (projectScopedSyncOwns(context.deviceId, projectId)) return true;
     if (pull && !await pull.rest()) return false;
     if (!context.active()) return false;
     await readReviews(context, projectId, nextPriority);

@@ -110,9 +110,13 @@ export function createScopedTaskSyncCache({ deviceId, scope, projectId, bridgeId
       (held, context) => reducePublication(addresses, records, options, held, context),
       { watchTaskIds: records.map((record) => record.key) });
   };
-  const reset = ({ capture: captured, expectedCursor } = {}) => mergeTaskContentRecordsTogether(place, [cursor], ([held], context) => {
-    if (!acceptsCapture(captured, context, active, deviceId) || tokenOf(held?.value) !== (expectedCursor ?? null)) return null;
-    return { values: [DELETE_CACHED_RECORD] };
-  });
+  const reset = async ({ capture: captured, expectedCursor } = {}) => {
+    let admitted = false, committed = false;
+    await mergeTaskContentRecordsTogether(place, [cursor], ([held], context) => {
+      admitted = acceptsCapture(captured, context, active, deviceId) && tokenOf(held?.value) === (expectedCursor ?? null);
+      return admitted ? { values: [DELETE_CACHED_RECORD] } : null;
+    }, { onCommit: () => { committed = admitted; } });
+    return committed;
+  };
   return { readCursor, capture, publish, reset };
 }

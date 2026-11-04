@@ -183,6 +183,12 @@ it("fences cursor resets against a successor publication and cache replacement",
   expect(await writer.readCursor()).toBeUndefined();
 });
 
+it("admits a fenced cursor reset when a first snapshot has no cursor to delete", async () => {
+  const writer = create();
+  expect(await writer.reset({ capture: await writer.capture() })).toBe(true);
+  expect(await writer.readCursor()).toBeUndefined();
+});
+
 it("creates the cold legacy query at its exact mounted params", async () => {
   const params = { project_id: projectId, state: "open" };
   const writer = sync.createScopedTaskSyncCache({ deviceId, projectId, scope, bridgeIdentity: deviceId, queryParams: params });

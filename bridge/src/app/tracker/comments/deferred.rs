@@ -90,6 +90,7 @@ impl AppState {
             call: Box::new(write),
             params: Value::Null,
             invalidates: false,
+            registry_change: false,
             #[cfg(test)]
             gate: None,
         })));

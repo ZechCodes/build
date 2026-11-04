@@ -148,6 +148,7 @@ impl AppState {
         if compaction_changed {
             self.note_compaction_changed("device", None);
         }
+        self.settle_device_lifecycle();
         Ok(response)
     }
 }

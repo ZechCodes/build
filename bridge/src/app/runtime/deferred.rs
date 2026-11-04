@@ -104,6 +104,13 @@ impl DeferredDone {
 }
 
 impl DeferredWork {
+    pub(in crate::app) fn changes_device_registry(&self) -> bool {
+        match self {
+            Self::Lifecycle(_) => true,
+            Self::Git(git) => git.registry_change,
+            Self::Read(_) | Self::Watch(_) | Self::External(_) => false,
+        }
+    }
     /// The lock-free phase. Consumes the work so nothing can run it twice.
     pub(in crate::app) fn run(self) -> DeferredOutcome {
         match self {
@@ -642,11 +649,15 @@ impl AppState {
         context: Option<&crate::execution::CallContext>,
     ) -> (Result<Value, ApiError>, Option<DeferredJob>) {
         let queued_before = self.delivery_queue.checkpoint();
+        self.device_lifecycle_holds += 1;
         let outcome = self.route(method, params, context);
+        self.device_lifecycle_holds -= 1;
         if outcome.is_err() {
             self.drop_turns_queued_since(queued_before);
         }
-        match self.take_deferred() {
+        let deferred = self.take_deferred();
+        self.settle_device_lifecycle();
+        match deferred {
             // Nothing is settled until the git work returns, so the stamp waits
             // for `apply_deferred` too.
             Some(deferred) => (outcome, Some(deferred)),
@@ -669,6 +680,14 @@ impl AppState {
         done: DeferredDone,
     ) -> Result<Value, String> {
         self.active_deferred_filesystem_jobs -= 1;
+        if match &done.outcome {
+            DeferredOutcome::Lifecycle(_) => true,
+            DeferredOutcome::Git { git, .. } => git.registry_change,
+            DeferredOutcome::Read(_) | DeferredOutcome::Watch(_) => false,
+        } {
+            self.active_device_registry_jobs -= 1;
+        }
+        self.device_lifecycle_holds += 1;
         let DeferredDone {
             outcome: done,
             check,
@@ -708,6 +727,8 @@ impl AppState {
             }
             Err(_) => self.drop_turns_queued_since(queued_before),
         }
+        self.device_lifecycle_holds -= 1;
+        self.settle_device_lifecycle();
         // LAST, and deliberately after the write-back: the git ran and the
         // state it moved is written down whatever shape the value took, so
         // only the reply is refused. A mismatch is this bridge's own bug —
@@ -737,6 +758,7 @@ impl AppState {
             // A refused write-back hands nothing on.
             self.deferred_work = None;
             self.deferred_result_check = None;
+            self.settle_device_lifecycle();
             return DeferredNext::Answered(applied);
         }
         match self.take_deferred() {
@@ -774,6 +796,9 @@ impl AppState {
         // Claim before either the relay or MCP drain releases the mutex.
         // All variants can observe filesystem state that deletion would remove.
         self.active_deferred_filesystem_jobs += 1;
+        if work.changes_device_registry() {
+            self.active_device_registry_jobs += 1;
+        }
         Some(DeferredJob { work, check })
     }
 
@@ -1014,6 +1039,19 @@ impl AppState {
     /// next board item carries that list in full. Every other board note
     /// moves rows, which ride their own items.
     pub(in crate::app) fn note_board_lists_changed(&self, lists: crate::changes::BoardLists) {
+        if lists.projects || lists.workspaces {
+            if let Err(error) = self.mark_device_lifecycle_dirty() {
+                eprintln!("device sync registry observation: {error}");
+            }
+        }
+        self.settle_device_lifecycle();
+        self.note_board_lists_while_reconciling(lists);
+    }
+
+    pub(in crate::app) fn note_board_lists_while_reconciling(
+        &self,
+        lists: crate::changes::BoardLists,
+    ) {
         self.publish_read_metadata();
         self.changes.note_board_lists(lists);
         // An entity may have arrived with a checkout or left with one: the

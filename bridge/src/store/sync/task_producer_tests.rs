@@ -17,6 +17,16 @@ fn events(store: &Store) -> Vec<(i64, String, String)> {
         .collect::<Result<_, _>>()
         .unwrap()
 }
+fn task_event_count(store: &Store) -> usize {
+    store
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM sync_journal WHERE entity_kind='task'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap() as usize
+}
 fn create(store: &Store) -> Task {
     store
         .create_tracker_task(
@@ -256,7 +266,7 @@ fn task_state_status_assignment_labels_and_read_watch_dismiss_writers_publish() 
     for (n, mutate) in mutations.into_iter().enumerate() {
         mutate(&mut task);
         store.save_tracker_task_activity(&task, &[], &[]).unwrap();
-        assert_eq!(events(&store).len(), n + 2, "producer case {n}");
+        assert_eq!(task_event_count(&store), n + 2, "producer case {n}");
     }
 }
 

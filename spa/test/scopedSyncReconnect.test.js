@@ -9,12 +9,12 @@ vi.mock("../src/core/deviceContexts.js", async () => ({
   captureDeviceGreeting: (context) => {
     if (!fake.greeted || !context.session) return null;
     const opening = fake.opening, session = context.session, epoch = fake.epoch;
-    return { epoch, capabilities: { sync: { projectTasks: true } },
+    return { epoch, capabilities: { sync: { device: false, projectTasks: true } },
       current: () => fake.greeted && fake.opening === opening && context.session === session && fake.epoch === epoch };
   },
 }));
 vi.mock("../src/core/changeEvents.js", () => ({
-  bridgeCapabilities: () => ({ sync: { projectTasks: true } }), onBridgeGreeted: () => () => {},
+  bridgeCapabilities: () => ({ sync: { device: false, projectTasks: true } }), onBridgeGreeted: () => () => {},
 }));
 vi.mock("../src/core/scopedSyncRegistry.js", async () => ({
   ...await vi.importActual("../src/core/scopedSyncRegistry.js"),

@@ -170,10 +170,12 @@ impl AppState {
                 workspace,
             },
         };
+        self.mark_device_lifecycle_dirty()?;
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(job),
             params: Value::Null,
             invalidates: true,
+            registry_change: true,
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
         })));

@@ -435,6 +435,9 @@ impl Store {
             let operations_deleted = 0;
             let batch_limit = BATCH_ROWS - backups_deleted;
             let message_times = batch_message_times(tx,id,floor,batch_limit,policy,&cutoff)?;
+            let device_items=tx.prepare("SELECT sequence FROM thread_items WHERE agent_id=?1 AND sequence<?2 ORDER BY sequence LIMIT ?3")?
+                .query_map(rusqlite::params![id,floor as i64,batch_limit as i64],|row|row.get::<_,i64>(0))?.collect::<Result<Vec<_>,_>>()?;
+            for sequence in device_items {super::sync::before_device_item(tx,id,sequence)?;}
             let items_deleted = tx.execute(
                 "DELETE FROM thread_items WHERE agent_id = ?1 AND sequence IN (SELECT sequence FROM thread_items WHERE agent_id = ?1 AND sequence < ?2 ORDER BY sequence LIMIT ?3)",
                 rusqlite::params![id, floor as i64, batch_limit as i64])?;

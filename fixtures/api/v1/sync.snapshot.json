@@ -2,12 +2,18 @@
   "method": "sync.snapshot",
   "since": "3.32.0",
   "params": {
-    "scope": {"kind": "task", "task_id": "task-1"},
+    "scope": {
+      "kind": "task",
+      "task_id": "task-1"
+    },
     "limit": 100
   },
   "result": {
     "status": "ok",
-    "scope": {"kind": "task", "task_id": "task-1"},
+    "scope": {
+      "kind": "task",
+      "task_id": "task-1"
+    },
     "incarnation": "sync-incarnation-1",
     "watermark": "42",
     "cursor": "signed-watermark-cursor",
@@ -21,27 +27,43 @@
         "row": {
           "task": {
             "id": "task-1",
-            "assignee": {"kind": "", "agent_id": "Actual\u0000suffix"}
+            "assignee": {
+              "kind": "",
+              "agent_id": "Actual\u0000suffix"
+            }
           },
           "timeline": [],
           "has_more": false
         },
-        "selection": {"pending_present": true}
+        "selection": {
+          "pending_present": true
+        }
       }
     ]
   },
-  "errors": ["invalid_params", "not_found", "unavailable", "internal"],
+  "errors": [
+    "invalid_params",
+    "not_found",
+    "unavailable",
+    "internal"
+  ],
   "note": "The NUL fixture pins canonical pending presence and opaque actor bytes independently of the clipped display kind.",
   "examples": [
     {
       "params": {
-        "scope": {"kind": "project_tasks", "project_id": "proj-1"},
+        "scope": {
+          "kind": "project_tasks",
+          "project_id": "proj-1"
+        },
         "limit": 25,
         "page": "signed-keyset-page"
       },
       "result": {
         "status": "resync_required",
-        "scope": {"kind": "project_tasks", "project_id": "proj-1"},
+        "scope": {
+          "kind": "project_tasks",
+          "project_id": "proj-1"
+        },
         "incarnation": "sync-incarnation-1",
         "head": "42",
         "bridge_epoch": "bridge-epoch-1",
@@ -50,17 +72,79 @@
     },
     {
       "params": {
-        "scope": {"kind": "project_tasks", "project_id": "deleted-project"},
+        "scope": {
+          "kind": "project_tasks",
+          "project_id": "deleted-project"
+        },
         "limit": 25,
         "page": "authenticated-deleted-scope-page"
       },
       "result": {
         "status": "resync_required",
-        "scope": {"kind": "project_tasks", "project_id": "deleted-project"},
+        "scope": {
+          "kind": "project_tasks",
+          "project_id": "deleted-project"
+        },
         "incarnation": "sync-incarnation-1",
         "head": "42",
         "bridge_epoch": "bridge-epoch-1",
         "reason": "scope_removed"
+      }
+    },
+    {
+      "since": "3.33.0",
+      "params": {
+        "scope": {
+          "kind": "device"
+        },
+        "limit": 100
+      },
+      "result": {
+        "status": "ok",
+        "scope": {
+          "kind": "device"
+        },
+        "incarnation": "sync-incarnation-1",
+        "bridge_epoch": "bridge-epoch-1",
+        "watermark": "42",
+        "cursor": "signed-device-watermark-cursor",
+        "consistency": "leased",
+        "lease": {
+          "id": "device-lease-1",
+          "expires_at_ms": 1800000300000
+        },
+        "records": [
+          {
+            "kind": "project",
+            "key": "proj-1",
+            "revision": "42",
+            "row": {
+              "id": "proj-1",
+              "project_id": "proj-1",
+              "name": "Synthetic project"
+            }
+          }
+        ],
+        "next_page": "signed-device-opening-bound-page"
+      }
+    },
+    {
+      "since": "3.33.0",
+      "params": {
+        "scope": {
+          "kind": "device"
+        },
+        "page": "signed-expired-device-page"
+      },
+      "result": {
+        "status": "resync_required",
+        "scope": {
+          "kind": "device"
+        },
+        "incarnation": "sync-incarnation-1",
+        "bridge_epoch": "bridge-epoch-1",
+        "head": "45",
+        "reason": "lease_expired"
       }
     }
   ]

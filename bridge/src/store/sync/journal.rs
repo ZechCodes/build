@@ -55,11 +55,9 @@ impl PublicationBatch {
         tx: &Transaction<'_>,
         now: i64,
     ) -> Result<Vec<Event>, StoreError> {
-        let (mut cumulative, mut at): (i64, i64) = tx.query_row(
-            "SELECT cumulative_bytes,last_at_ms FROM sync_state WHERE id=1",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
+        let (mut cumulative, mut at): (i64, i64) = tx
+            .prepare_cached("SELECT cumulative_bytes,last_at_ms FROM sync_state WHERE id=1")?
+            .query_row([], |r| Ok((r.get(0)?, r.get(1)?)))?;
         at = at.max(now);
         let mut events = Vec::new();
         let mut added_bytes = 0_i64;
@@ -73,12 +71,10 @@ impl PublicationBatch {
             }
         }
         if let Some(last) = events.last() {
-            tx.execute("UPDATE sync_state SET head=?1,cumulative_bytes=?2,total_bytes=total_bytes+?3,last_at_ms=?4 WHERE id=1",params![last.seq.get(),cumulative,added_bytes,at])?;
+            tx.prepare_cached("UPDATE sync_state SET head=?1,cumulative_bytes=?2,total_bytes=total_bytes+?3,last_at_ms=?4 WHERE id=1")?.execute(params![last.seq.get(),cumulative,added_bytes,at])?;
             let floor = retention::logical_floor(tx, now, retention::Policy::DEFAULT)?;
-            tx.execute(
-                "UPDATE sync_state SET floor=?1 WHERE id=1 AND floor<?1",
-                [floor],
-            )?;
+            tx.prepare_cached("UPDATE sync_state SET floor=?1 WHERE id=1 AND floor<?1")?
+                .execute([floor])?;
         }
         Ok(events)
     }
@@ -146,6 +142,18 @@ fn publish_one(
         .ok_or_else(|| invalid("byte counter exhausted"))?;
     let seq: i64 = tx.prepare_cached("INSERT INTO sync_journal(at_ms,entity_kind,entity_key,operation,record_bytes,cumulative_bytes) VALUES(?1,?2,?3,?4,?5,?6) RETURNING seq")?.query_row(params![at,entity.kind,entity.key,operation.as_str(),bytes,next],|r|r.get(0))?;
     write_routes(tx, &routes, seq)?;
+    let device = Stream::device();
+    if old_streams.contains(&device) || current_streams.contains(&device) {
+        super::device::apply_projection(
+            tx,
+            entity,
+            current_streams
+                .contains(&device)
+                .then_some(publication.record.as_ref())
+                .flatten(),
+            seq,
+        )?;
+    }
     let streams = serde_json::to_string(current_streams).expect("routes serialize");
     tx.prepare_cached("INSERT INTO sync_revisions(entity_kind,entity_key,seq,deleted,fingerprint,streams) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(entity_kind,entity_key) DO UPDATE SET seq=excluded.seq,deleted=excluded.deleted,fingerprint=excluded.fingerprint,streams=excluded.streams")?.execute(params![entity.kind,entity.key,seq,deleted,fingerprint,streams])?;
     Ok(Some((

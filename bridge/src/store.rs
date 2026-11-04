@@ -289,7 +289,7 @@ pub enum StoreError {
 /// 20 adds transactional task summary projections.
 /// 21 adds durable review verdict and revision delivery journals.
 /// 22 adds the separate scoped sync journal and retained stream floors.
-pub const SCHEMA_VERSION: i64 = 22;
+pub const SCHEMA_VERSION: i64 = 23;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -356,10 +356,11 @@ impl Store {
                 path: database_path,
                 cause: cause.to_string(),
             })?;
-        // Canonical and projection writes share this one connection. Their
-        // combined working set exceeds rusqlite's default of 16; retain it
-        // rather than compiling the card program on every metadata write.
-        conn.set_prepared_statement_cache_capacity(32);
+        // Canonical and projection writes share this one connection. The bounded
+        // canonical, task and device
+        // publication programs together exceed 32 statements. Keep all hot
+        // programs resident instead of evicting the task card on each write.
+        conn.set_prepared_statement_cache_capacity(128);
         // Refuse BEFORE writing anything. A store written by a newer bridge
         // must not receive this build's pragmas or DDL on the way to being
         // rejected — the refusal exists to leave it untouched.

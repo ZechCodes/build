@@ -80,6 +80,9 @@ impl TaskReadContext {
         asked: &crate::api::v1::sync::Scope,
     ) -> Result<TaskSyncAdmission, String> {
         match asked {
+            crate::api::v1::sync::Scope::Device => {
+                Err("device sync requires its independent recovery adapter".into())
+            }
             crate::api::v1::sync::Scope::ProjectTasks {
                 project_id,
                 filters,

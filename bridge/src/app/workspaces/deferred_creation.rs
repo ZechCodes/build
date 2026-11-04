@@ -7,6 +7,7 @@ impl AppState {
         &mut self,
         reserved: &Workspace,
     ) -> Result<DeferredGit, String> {
+        self.mark_device_lifecycle_dirty()?;
         self.project_for(&reserved.project_id)?;
         if self.workspace_reserved(&reserved.id) {
             return Err(crate::reclaim::BUSY.to_string());
@@ -18,7 +19,7 @@ impl AppState {
         // unfinished inputs, always pinning Git bases under their shared lock.
         let base_syncs = self.retry_sync_subjects(&workspace.project_id, &sources);
         self.refresh_workspace_snapshot_observation(&workspace.id);
-        self.note_board_lists_changed(crate::changes::BoardLists::WORKSPACES);
+        self.note_board_lists_while_reconciling(crate::changes::BoardLists::WORKSPACES);
         Ok(DeferredGit {
             call: Box::new(WorkspaceCreateWork {
                 registry_root: self.workspaces.root().to_path_buf(),
@@ -43,6 +44,7 @@ impl AppState {
             }),
             params: Value::Null,
             invalidates: true,
+            registry_change: true,
             #[cfg(test)]
             gate: None,
         })

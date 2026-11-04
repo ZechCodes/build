@@ -296,6 +296,7 @@ fn retain_agent_message_times(
     run_id: &str,
     agent_id: &str,
 ) -> Result<(), StoreError> {
+    super::sync::retain_device_agent(tx, run_id, agent_id)?;
     let mut query = tx.prepare(
         "SELECT json_extract(item, '$.data.created_at') FROM thread_items \
          WHERE agent_id = ?1 AND message = 1 \
@@ -433,6 +434,15 @@ impl Store {
             // the live map; the same writer lock orders both operations.
             self.attention_map_epoch
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let previous = tx
+                .prepare("SELECT entity_id,record FROM attention")?
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<HashMap<_, _>, _>>()?;
+            for id in changed_attention_owners(&previous, attention, live) {
+                super::sync::touch_device_owner(tx, &id)?;
+            }
             tx.execute("DELETE FROM attention", [])?;
             let mut insert =
                 tx.prepare("INSERT INTO attention (entity_id, record) VALUES (?1, ?2)")?;
@@ -468,11 +478,14 @@ impl Store {
             .collect::<Result<_, _>>()?;
         drop(roster);
         for gone in existing.iter().filter(|id| !keep.contains(id.as_str())) {
+            super::sync::touch_device_agent(tx, gone)?;
             // Removing an agent removes its conversation, but cannot erase the
             // time it contributed to the still-live workspace/project session.
             // Copy and delete in this transaction so replay sees either both
             // the old conversation or its retained message times.
             retain_agent_message_times(tx, owner_id, gone)?;
+            super::sync::device_facts_forget_agent(tx, gone)?;
+            super::sync::reset_device_conversation(tx, gone)?;
             tx.execute("DELETE FROM thread_items WHERE agent_id = ?1", [gone])?;
             tx.execute("DELETE FROM agents WHERE id = ?1", [gone])?;
             super::task_summaries::identity_remove(tx, gone)?;
@@ -505,6 +518,7 @@ impl Store {
         )?;
 
         for agent in agents {
+            super::sync::touch_device_agent(tx, &agent.id)?;
             // The agent row carries everything about the conversation EXCEPT
             // its items — sessions, revisions, the last completion report —
             // because those are small, bounded and always read whole.
@@ -521,6 +535,7 @@ impl Store {
                 agent.ordinal,
                 serde_json::to_string(&skeleton).expect("an agent always serializes")
             ])?;
+            super::sync::seed_device_agent(tx, owner_id, agent)?;
             super::task_summaries::identity_refresh(tx, &agent.id)?;
 
             let mut stored: HashMap<i64, i64> = stored_cursors
@@ -541,6 +556,7 @@ impl Store {
                 if previous == Some(updated) {
                     continue;
                 }
+                super::sync::before_device_item(tx, &agent.id, sequence)?;
                 upsert_item.execute(rusqlite::params![
                     agent.id,
                     sequence,
@@ -557,6 +573,7 @@ impl Store {
             // what is left over is deleted rather than left behind to reappear
             // on the next load.
             for orphan in stored.keys() {
+                super::sync::before_device_item(tx, &agent.id, *orphan)?;
                 delete_item.execute(rusqlite::params![agent.id, orphan])?;
             }
         }
@@ -779,6 +796,7 @@ impl Store {
                 .collect();
             drop(owned);
             for owner in std::iter::once(plan_id.to_string()).chain(runs) {
+                super::sync::touch_device_owner(tx, &owner)?;
                 remove_owner_identities(tx, &owner)?;
                 tx.execute(
                     "DELETE FROM inbox_retained_run_messages WHERE run_id = ?1",
@@ -883,6 +901,7 @@ impl Store {
     }
     pub fn delete_run(&self, run_id: &str) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            super::sync::touch_device_owner(tx, run_id)?;
             remove_owner_identities(tx, run_id)?;
             tx.execute(
                 "DELETE FROM inbox_retained_run_messages WHERE run_id = ?1",
@@ -907,6 +926,8 @@ impl Store {
         project_id: &str,
     ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            super::sync::retain_device_owner(tx, run_id, project_id)?;
+            super::sync::touch_device_owner(tx, run_id)?;
             remove_owner_identities(tx, run_id)?;
             tx.execute(
                 "INSERT INTO inbox_retained_messages (project_id, ts_ms) \
@@ -950,6 +971,7 @@ impl Store {
     /// until then a failed multi-step deletion can leave the project alive.
     pub fn clear_retained_project_messages(&self, project_id: &str) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            super::sync::clear_device_project(tx, project_id)?;
             tx.execute(
                 "DELETE FROM inbox_retained_messages WHERE project_id = ?1",
                 [project_id],
@@ -958,7 +980,7 @@ impl Store {
         })
     }
     pub fn save_capture(&self, record: &crate::capture::Capture) -> Result<(), StoreError> {
-        self.in_transaction(|tx| {
+        self.writer().sync_transaction(|tx, batch| {
             tx.execute(
                 "INSERT INTO captures (id, record) VALUES (?1, ?2)
                  ON CONFLICT(id) DO UPDATE SET record = ?2",
@@ -967,12 +989,24 @@ impl Store {
                     serde_json::to_string(record).expect("a capture always serializes")
                 ],
             )?;
+            super::sync::stage_device(
+                tx,
+                batch,
+                super::sync::Entity::new("inbox_capture", &record.id),
+                Some(device_capture(record)),
+            )?;
             Ok(())
         })
     }
     pub fn delete_capture(&self, capture_id: &str) -> Result<(), StoreError> {
-        self.in_transaction(|tx| {
+        self.writer().sync_transaction(|tx, batch| {
             tx.execute("DELETE FROM captures WHERE id = ?1", [capture_id])?;
+            super::sync::stage_device(
+                tx,
+                batch,
+                super::sync::Entity::new("inbox_capture", capture_id),
+                None,
+            )?;
             Ok(())
         })
     }
@@ -1001,6 +1035,7 @@ impl Store {
         record: &PersistedArchivedWorktree,
     ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            super::sync::touch_device_archive(tx, &record.worktree_id)?;
             tx.execute(
                 "INSERT INTO archived_worktrees (id, record) VALUES (?1, ?2)
                  ON CONFLICT(id) DO UPDATE SET record = ?2",
@@ -1046,6 +1081,45 @@ impl Store {
         }
         std::fs::read_to_string(self.plan_docs_dir(plan_id).join(rel_path)).ok()
     }
+}
+
+/// Compare domain records so map serialization order cannot create false work.
+fn changed_attention_owners(
+    previous: &HashMap<String, String>,
+    attention: &HashMap<String, Attention>,
+    live: &HashSet<String>,
+) -> Vec<String> {
+    previous
+        .keys()
+        .chain(attention.keys())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .filter_map(|id| {
+            let current = attention.get(id).filter(|_| live.contains(id));
+            let unchanged = match (previous.get(id), current) {
+                (None, None) => true,
+                (Some(raw), Some(current)) => {
+                    serde_json::from_str::<Attention>(raw).is_ok_and(|old| old == *current)
+                }
+                _ => false,
+            };
+            (!unchanged).then(|| id.clone())
+        })
+        .collect()
+}
+
+pub(super) fn device_capture(record: &crate::capture::Capture) -> serde_json::Value {
+    let title = record.text.chars().take(256).collect::<String>();
+    serde_json::json!({
+        "id":record.id,
+        "project_id":record.routing.as_ref().map(|routing| routing.project_id.as_str()),
+        "title":title,
+        "state":record.state,
+        "created_at":record.created_at,
+        "updated_at":record.created_at,
+        "needs_answer":record.awaiting_answer(),
+        "error":if matches!(record.state, crate::capture::CaptureState::Failed) {record.progress.as_deref()} else {None},
+    })
 }
 
 pub(super) fn primary_agent_id(
@@ -1139,6 +1213,7 @@ pub(super) fn write_task(
             serde_json::to_string(&skeleton).expect("a Task always serializes")
         ],
     )?;
+    super::sync::seed_device_owner(tx, &record.id, &record.project_path, None)?;
     super::task_summaries::owner_refresh(tx, &record.id)
 }
 
@@ -1161,17 +1236,26 @@ pub(super) fn write_run(
             serde_json::to_string(&skeleton).expect("a run always serializes")
         ],
     )?;
+    super::sync::seed_device_owner(
+        tx,
+        &record.id,
+        &record.project_path,
+        Some(&record.worktree_path),
+    )?;
     super::task_summaries::owner_refresh(tx, &record.id)
 }
 
 /// Capture roster IDs before deleting canonical rows so their bounded identity
 /// projections are removed in the same transaction as the owner.
 fn remove_owner_identities(tx: &rusqlite::Transaction, owner: &str) -> Result<(), StoreError> {
+    super::sync::forget_device_owner(tx, owner)?;
     let ids = tx
         .prepare("SELECT id FROM agents WHERE owner_id=?1")?
         .query_map([owner], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     for id in ids {
+        super::sync::device_facts_forget_agent(tx, &id)?;
+        super::sync::reset_device_conversation(tx, &id)?;
         super::task_summaries::identity_remove(tx, &id)?;
     }
     Ok(())

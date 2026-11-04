@@ -168,7 +168,7 @@ impl TaskSyncScope {
         let mut cache = BTreeMap::new();
         let mut bytes = 0;
         for event in events {
-            if event.entity.kind != "task" {
+            if !self.is_device() && event.entity.kind != "task" {
                 return Err(SyncError::Unavailable(
                     "unexpected task recovery entity".into(),
                 ));
@@ -176,10 +176,14 @@ impl TaskSyncScope {
             // One current-row read per entity within this request, with no
             // retained replay state. Repeated task events cannot repeatedly
             // decode the same bounded timeline head.
-            let base = match cache.entry(event.entity.key.clone()) {
+            let base = match cache.entry(event.entity.clone()) {
                 std::collections::btree_map::Entry::Occupied(row) => row.into_mut(),
                 std::collections::btree_map::Entry::Vacant(row) => {
-                    row.insert(self.record(read, &event.entity.key)?)
+                    row.insert(if self.is_device() {
+                        read.sync_device_record(&event.entity.kind, &event.entity.key)?
+                    } else {
+                        self.record(read, &event.entity.key)?
+                    })
                 }
             };
             let mut record = base.clone();

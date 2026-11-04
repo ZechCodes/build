@@ -16,11 +16,16 @@ pub(in crate::app) struct DeferredGit {
     pub(in crate::app) params: Value,
     /// Whether a successful call made the scope's cached summaries stale.
     pub(in crate::app) invalidates: bool,
+    /// This job can change durable project/workspace registry observations.
+    pub(in crate::app) registry_change: bool,
     #[cfg(test)]
     pub(in crate::app) gate: Option<OffLockGate>,
 }
 
 impl GitCallScope for GitScope {
+    fn changes_device_registry(&self) -> bool {
+        true
+    }
     fn mutation_path(&self) -> Option<&std::path::Path> {
         // Selector identity does not determine repository identity: adopted
         // workspace aliases can reach the original source, and linked worktrees
@@ -113,6 +118,9 @@ pub(in crate::app) trait DeferredGitWork: Send {
 /// project, which cached summaries describe it — and what to drop from those
 /// caches once a call against it has changed the tree.
 pub(in crate::app) trait GitCallScope: Send {
+    fn changes_device_registry(&self) -> bool {
+        false
+    }
     fn invalidate(&self, app: &mut AppState);
     fn mutation_path(&self) -> Option<&std::path::Path> {
         None

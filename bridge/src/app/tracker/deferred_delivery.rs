@@ -99,6 +99,9 @@ impl AppState {
                 if git.is_some() {
                     self.active_deferred_filesystem_jobs += 1;
                 }
+                if git.as_ref().is_some_and(|git| git.registry_change) {
+                    self.active_device_registry_jobs += 1;
+                }
                 self.task_delivery_in_flight.insert(intent.id.clone());
                 Ok(Some(TaskDeliveryWork { intent, git }))
             }
@@ -149,7 +152,14 @@ impl AppState {
         if work.git.is_some() {
             self.active_deferred_filesystem_jobs -= 1;
         }
-        self.finish_task_delivery(work.intent, work.git.as_ref(), result)
+        if work.git.as_ref().is_some_and(|git| git.registry_change) {
+            self.active_device_registry_jobs -= 1;
+        }
+        self.device_lifecycle_holds += 1;
+        let finished = self.finish_task_delivery(work.intent, work.git.as_ref(), result);
+        self.device_lifecycle_holds -= 1;
+        self.settle_device_lifecycle();
+        finished
     }
 
     pub(super) fn finish_task_delivery(

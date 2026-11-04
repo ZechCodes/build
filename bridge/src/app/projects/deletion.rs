@@ -66,6 +66,7 @@ impl DeferredGitWork for DeleteProjectFiles {
 
 impl AppState {
     pub(crate) fn project_delete(&mut self, params: &Value) -> Result<Value, String> {
+        self.mark_device_lifecycle_dirty()?;
         let project_id = require_str(params, "project_id")?;
         if params.get("confirm").and_then(Value::as_bool) != Some(true) {
             return Err("project.delete requires confirm: true".into());
@@ -179,6 +180,7 @@ impl AppState {
             }),
             params: params.clone(),
             invalidates: true,
+            registry_change: true,
             #[cfg(test)]
             gate: None,
         })));

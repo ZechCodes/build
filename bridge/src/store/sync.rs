@@ -6,12 +6,39 @@
 mod continuations;
 mod cursor;
 pub use continuations::Continuation;
+mod device;
+pub(in crate::store) use device::stage as stage_device;
+pub use device::{DeviceLease, DEVICE_LEASES_PER_OPENING, DEVICE_LEASE_TTL_MS};
+mod device_backfill;
+mod device_facts;
+mod device_families;
+mod device_producers;
+mod device_thread;
+pub(in crate::store) use device_facts::{
+    forget_agent as device_facts_forget_agent, seed_agent as seed_device_agent,
+    seed_owner as seed_device_owner,
+};
+pub(in crate::store) use device_families::{
+    clear_project as clear_device_project, forget_owner as forget_device_owner,
+    lifecycle as stage_device_lifecycle, retain_agent as retain_device_agent,
+    retain_owner as retain_device_owner, touch_archive as touch_device_archive,
+};
+pub(in crate::store) use device_producers::{
+    touch_agent as touch_device_agent, touch_conversation as touch_device_conversation,
+    touch_owner as touch_device_owner, touch_project as touch_device_project,
+};
+pub(in crate::store) use device_thread::{
+    before_item as before_device_item, reset as reset_device_conversation,
+};
 mod journal;
+mod lifecycle;
 mod reads;
 mod recovery_reads;
 mod retention;
+mod retention_install;
 mod schema;
 mod task_publication;
+pub(super) use device_producers::collect as collect_device;
 pub(super) use task_publication::{collect as collect_tasks, touch as touch_task};
 
 pub use journal::PublicationBatch;
@@ -254,8 +281,15 @@ pub(crate) fn now_ms() -> i64 {
 #[cfg(test)]
 mod cursor_tests;
 #[cfg(test)]
+mod device_producer_tests;
+#[cfg(test)]
+mod device_tests;
+#[cfg(test)]
 mod startup_tests;
 #[cfg(test)]
 mod task_producer_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod device_entry_tests;

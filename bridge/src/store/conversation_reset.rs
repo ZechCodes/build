@@ -29,11 +29,13 @@ impl Store {
         summary_owners: &HashSet<String>,
     ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            super::sync::reset_device_conversation(tx, conversation_id)?;
             tx.execute("DELETE FROM conversation_retention WHERE agent_id = ?1", [conversation_id])?;
             tx.execute("DELETE FROM thread_items WHERE agent_id = ?1", [conversation_id])?;
             tx.execute("DELETE FROM operations WHERE conversation_id = ?1", [conversation_id])?;
             tx.execute("DELETE FROM conversation_attachment_uploads WHERE conversation_id = ?1", [conversation_id])?;
             for agent in agents {
+                super::sync::reset_device_conversation(tx, &agent.id)?;
                 tx.execute("DELETE FROM conversation_retention WHERE agent_id = ?1", [&agent.id])?;
                 tx.execute("DELETE FROM thread_items WHERE agent_id = ?1", [&agent.id])?;
                 tx.execute("DELETE FROM operations WHERE conversation_id = ?1", [&agent.id])?;
@@ -43,6 +45,8 @@ impl Store {
                 skeleton.thread.items.clear();
                 tx.execute("UPDATE agents SET record = ?2 WHERE id = ?1",
                     rusqlite::params![agent.id, serde_json::to_string(&skeleton).expect("agent serializes")])?;
+                let owner:String=tx.query_row("SELECT owner_id FROM agents WHERE id=?1",[&agent.id],|row|row.get(0))?;
+                super::sync::seed_device_agent(tx,&owner,&skeleton)?;
                 super::task_summaries::identity_refresh(tx, &agent.id)?;
             }
             for owner in summary_owners {
@@ -50,6 +54,7 @@ impl Store {
                 tx.execute("UPDATE tasks SET record = json_set(record, '$.last_summary', NULL, '$.last_error', NULL) WHERE id = ?1", [owner])?;
             }
             for (owner, record) in attention {
+                super::sync::touch_device_owner(tx, owner)?;
                 tx.execute("INSERT INTO attention (entity_id, record) VALUES (?1, ?2) ON CONFLICT(entity_id) DO UPDATE SET record = ?2",
                     rusqlite::params![owner, serde_json::to_string(record).expect("attention serializes")])?;
             }

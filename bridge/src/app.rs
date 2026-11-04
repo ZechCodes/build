@@ -15,6 +15,9 @@ mod board;
 mod board_index;
 mod captures;
 mod config;
+mod device_lifecycle;
+#[cfg(test)]
+mod device_lifecycle_tests;
 mod facts;
 mod fs;
 mod git;
@@ -286,10 +289,14 @@ pub struct AppState {
     committed_entities: transactions::CommittedEntities,
     read_view: read_view::ReadViewSlot,
     snapshot_observations: snapshot_projection::SnapshotObservations,
+    device_lifecycle_holds: usize,
+    device_lifecycle_dirty: std::cell::Cell<bool>,
     /// Projects one of whose sources is moving; their workers wait (#533).
     source_moves: projects::SourceMoves,
     /// Deferred filesystem work claimed under the mutex and not yet applied.
     active_deferred_filesystem_jobs: usize,
+    /// Only jobs that can publish project/workspace registry changes fence sync.
+    active_device_registry_jobs: usize,
     worktrees_root: std::path::PathBuf,
     /// Durable multi-source workspaces plus adopted legacy Git-root checkouts.
     workspaces: crate::workspace::WorkspaceRegistry,
@@ -690,8 +697,11 @@ impl AppState {
             committed_entities: Default::default(),
             read_view: read_view::ReadViewSlot::default(),
             snapshot_observations: snapshot_projection::SnapshotObservations::default(),
+            device_lifecycle_holds: 0,
+            device_lifecycle_dirty: std::cell::Cell::new(false),
             source_moves: projects::SourceMoves::default(),
             active_deferred_filesystem_jobs: 0,
+            active_device_registry_jobs: 0,
             worktrees_root,
             workspaces,
             projects_dir: default_projects_dir(),

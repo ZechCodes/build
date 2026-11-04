@@ -4,6 +4,7 @@ use crate::app::tests::tracker::{filed, tracked};
 use crate::carrier::testing::{client_request, session_init, ChannelWire};
 use crate::carrier::{FrameIntake, OutboundEnvelope};
 
+mod device_sync;
 mod thread_revision;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -99,7 +100,7 @@ async fn final_answer(wire: &mut ChannelWire, key: &str) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn scoped_sync_wire_reads_bypass_the_app_lock_and_device_is_plainly_refused() {
+async fn scoped_sync_wire_reads_bypass_the_app_lock_and_device_head_is_available() {
     let dir = tempfile::tempdir().unwrap();
     let (_repo, mut app, project_id) = tracked(dir.path());
     let task = filed(&mut app, &project_id, "durable recovery");
@@ -234,16 +235,11 @@ async fn scoped_sync_wire_reads_bypass_the_app_lock_and_device_is_plainly_refuse
     )
     .await
     .unwrap();
-    let refused = tokio::time::timeout(Duration::from_secs(5), final_answer(&mut wire, &key))
+    let available = tokio::time::timeout(Duration::from_secs(5), final_answer(&mut wire, &key))
         .await
         .unwrap();
-    assert_eq!(refused["ok"], false, "{refused}");
-    assert_eq!(refused["error_code"], "invalid_params");
-    assert_eq!(refused["retryable"], false);
-    assert!(refused["error"]
-        .as_str()
-        .unwrap()
-        .contains("unknown variant `device`"));
+    assert_eq!(available["ok"], true, "{available}");
+    assert_eq!(available["result"]["scope"]["kind"], "device");
 
     wire.accept(
         &intake,

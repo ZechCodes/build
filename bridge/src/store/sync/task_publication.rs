@@ -62,9 +62,53 @@ pub(in crate::store) fn collect(
         if force {
             batch.force(&entity);
         }
+        super::device::stage(
+            tx,
+            batch,
+            Entity::new("inbox_task", &id),
+            inbox_projection(tx, &id)?,
+        )?;
     }
-    tx.execute("DELETE FROM temp.sync_task_touches", [])?;
+    tx.prepare_cached("DELETE FROM temp.sync_task_touches")?
+        .execute([])?;
     Ok(())
+}
+
+pub(super) fn inbox_projection(conn: &Connection, id: &str) -> Result<Option<Value>, StoreError> {
+    let raw: Option<(String, bool, bool, String)> = conn
+        .prepare_cached(
+            "SELECT s.record,json_extract(s.record,'$.watched')=1,q.pending_present,s.project_key
+             FROM tracker_task_summaries s JOIN tracker_task_query_sources q ON q.task_id=s.task_id
+             WHERE s.task_id=?1",
+        )?
+        .query_row([id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .optional()?;
+    raw.filter(|(_, watched, _, _)| *watched)
+        .map(|(raw, _, pending, project)| {
+            let mut row: Value =
+                serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
+                    path: std::path::PathBuf::from(format!("tracker_task_summaries/{id}")),
+                    source,
+                })?;
+            let project_id: Option<String> = conn
+                .prepare_cached("SELECT project_id FROM device_project_ids WHERE path=?1")?
+                .query_row([&project], |row| row.get(0))
+                .optional()?;
+            row["project_id"] = json!(project_id);
+            if let Some(object) = row.as_object_mut() {
+                object.remove("project_key");
+                object.remove("project_path");
+            }
+            row.as_object_mut()
+                .ok_or_else(|| {
+                    StoreError::TaskSummaryInvalid("task summary is not an object".into())
+                })?
+                .insert("selection".into(), json!({"pending_present":pending}));
+            Ok(row)
+        })
+        .transpose()
 }
 
 fn routes(id: &str, project: &str) -> [Stream; 2] {
@@ -113,7 +157,7 @@ fn history_head(conn: &Connection, id: &str) -> Result<Value, StoreError> {
              FROM {table} WHERE task_id=?1 ORDER BY {at} DESC,id DESC LIMIT 51"
         );
         let rows = conn
-            .prepare(&sql)?
+            .prepare_cached(&sql)?
             .query_map([id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,

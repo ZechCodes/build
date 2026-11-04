@@ -26,7 +26,13 @@ impl Store {
         records: &HashMap<String, LifecycleRecord>,
     ) -> Result<(), StoreError> {
         let value = serde_json::to_string(records).expect("lifecycle records serialize");
-        self.save_meta_json(WORKSPACE_LIFECYCLE_KEY, &value)
+        self.writer().sync_transaction(|tx, batch| {
+            tx.execute(
+                "INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=?2",
+                rusqlite::params![WORKSPACE_LIFECYCLE_KEY, value],
+            )?;
+            super::sync::stage_device_lifecycle(tx, batch, records)
+        })
     }
 
     pub fn load_idle_digests_sent(&self) -> Result<IdleDigestsSent, StoreError> {

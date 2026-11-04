@@ -31,12 +31,20 @@ impl Store {
 
     pub fn save_user_session(&self, session: &UserSession) -> Result<(), StoreError> {
         let value = serde_json::to_string(session).expect("a user session serializes");
-        self.connection().execute(
-            "INSERT INTO meta (key, value) VALUES (?1, ?2) \
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            rusqlite::params![USER_SESSION_KEY, value],
-        )?;
-        Ok(())
+        self.writer().sync_transaction(|tx, batch| {
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2) \
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                rusqlite::params![USER_SESSION_KEY, value],
+            )?;
+            super::sync::stage_device(
+                tx,
+                batch,
+                super::sync::Entity::new("user_session", "current"),
+                Some(serde_json::to_value(session).expect("a user session serializes")),
+            )?;
+            Ok(())
+        })
     }
 
     /// Save a presence snapshot captured before releasing application state.
@@ -48,8 +56,9 @@ impl Store {
             return Ok(());
         };
         let value = serde_json::to_string(session).expect("a user session serializes");
-        self.connection().execute(
-            "INSERT INTO meta (key, value) VALUES (?1, ?2) \
+        self.writer().sync_transaction(|tx, batch| {
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value \
              WHERE json_extract(meta.value, '$.last_activity_ms') IS NULL \
                 OR json_extract(meta.value, '$.last_activity_ms') < ?3 \
@@ -58,15 +67,32 @@ impl Store {
                          OR ?4 <= json_extract(meta.value, '$.session_started_ms')) \
                     AND (json_extract(meta.value, '$.previous_session_ended_ms') IS NULL \
                          OR ?5 >= json_extract(meta.value, '$.previous_session_ended_ms')))",
-            rusqlite::params![
-                USER_SESSION_KEY,
-                value,
-                last_activity,
-                session.session_started_ms,
-                session.previous_session_ended_ms,
-            ],
-        )?;
-        Ok(())
+                rusqlite::params![
+                    USER_SESSION_KEY,
+                    value,
+                    last_activity,
+                    session.session_started_ms,
+                    session.previous_session_ended_ms,
+                ],
+            )?;
+            let actual: String = tx.query_row(
+                "SELECT value FROM meta WHERE key=?1",
+                [USER_SESSION_KEY],
+                |row| row.get(0),
+            )?;
+            super::sync::stage_device(
+                tx,
+                batch,
+                super::sync::Entity::new("user_session", "current"),
+                Some(
+                    serde_json::from_str(&actual).map_err(|source| StoreError::Corrupt {
+                        path: PathBuf::from(format!("meta/{USER_SESSION_KEY}")),
+                        source,
+                    })?,
+                ),
+            )?;
+            Ok(())
+        })
     }
 
     /// When the user did each stored thing: the task events and comments

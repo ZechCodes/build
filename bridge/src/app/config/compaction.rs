@@ -175,6 +175,7 @@ impl AppState {
         let prospective = std::mem::replace(&mut self.compaction_policies, committed);
         self.persist_config(&config)?;
         self.compaction_policies = prospective;
+        self.settle_device_lifecycle();
         if let Some(projection) = projection {
             self.publish_prepared_snapshot_projection(projection);
         }

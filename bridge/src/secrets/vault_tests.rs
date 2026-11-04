@@ -556,55 +556,29 @@ fn explicit_retirement_recovery_recreates_missing_vault_or_key() {
 }
 
 #[test]
-fn explicit_retirement_recovery_rotates_corrupt_regular_key_and_removes_old_blobs() {
-    for same_length in [false, true] {
+fn explicit_retirement_recovery_refuses_every_present_key_without_modification() {
+    for damage in ["valid", "short", "substituted"] {
         let root = fixture();
         let old = Vault::open(root.path(), false).unwrap();
-        let original_key_id = old.key_id();
-        let old_context = context();
+        let context = context();
         old.write(
-            &old_context,
-            &SecretValue::new(b"synthetic retired fixture".to_vec()).unwrap(),
+            &context,
+            &SecretValue::new(b"synthetic preserved fixture".to_vec()).unwrap(),
         )
         .unwrap();
-        let path = root.path().join("secrets").join(&old_context.id);
-        let old_ciphertext = std::fs::read(&path).unwrap();
         let key_path = root.path().join("secrets/vault.key");
-        let mut corrupt = std::fs::read(&key_path).unwrap();
-        if same_length {
-            corrupt[0] ^= 1;
-        } else {
-            corrupt.truncate(1);
+        let blob_path = root.path().join("secrets").join(&context.id);
+        let mut key = std::fs::read(&key_path).unwrap();
+        match damage {
+            "short" => key.truncate(1),
+            "substituted" => key[0] ^= 1,
+            _ => {}
         }
-        std::fs::write(&key_path, &corrupt).unwrap();
-        if same_length {
-            assert_ne!(
-                Vault::open(root.path(), true).unwrap().key_id(),
-                original_key_id
-            );
-        } else {
-            assert!(Vault::open(root.path(), true).is_err());
-        }
-        assert_eq!(std::fs::read(&key_path).unwrap(), corrupt);
-        let temp_name = format!(".sec-tmp-{}", uuid::Uuid::new_v4());
-        std::fs::write(
-            root.path().join("secrets").join(&temp_name),
-            b"synthetic ciphertext temp fixture",
-        )
-        .unwrap();
-        let recovered = Vault::reinitialize_after_retirement(root.path()).unwrap();
-        assert_ne!(recovered.key_id(), original_key_id);
-        assert!(!path.exists());
-        assert!(!root.path().join("secrets").join(&temp_name).exists());
-        std::fs::write(&path, old_ciphertext).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(recovered.read(&old_context).is_err());
-        assert_eq!(
-            std::fs::read_dir(root.path().join("secrets"))
-                .unwrap()
-                .count(),
-            2
-        );
+        std::fs::write(&key_path, &key).unwrap();
+        let ciphertext = std::fs::read(&blob_path).unwrap();
+        assert!(Vault::reinitialize_after_retirement(root.path()).is_err());
+        assert_eq!(std::fs::read(&key_path).unwrap(), key);
+        assert_eq!(std::fs::read(&blob_path).unwrap(), ciphertext);
     }
 }
 
@@ -670,16 +644,66 @@ fn retirement_recovery_refuses_fifo_insecure_and_linked_keys() {
 }
 
 #[test]
-fn recovery_cleanup_failure_prevents_key_replacement() {
+fn recovery_cleanup_failure_prevents_new_key_creation() {
     let root = fixture();
-    let old = Vault::open(root.path(), false).unwrap();
-    let key_path = root.path().join("secrets/vault.key");
-    let original_key = std::fs::read(&key_path).unwrap();
+    let _old = Vault::open(root.path(), false).unwrap();
+    let key = root.path().join("secrets/vault.key");
+    std::fs::remove_file(&key).unwrap();
     std::fs::create_dir(root.path().join("secrets").join(context().id)).unwrap();
     assert!(Vault::reinitialize_after_retirement(root.path()).is_err());
-    assert_eq!(std::fs::read(&key_path).unwrap(), original_key);
+    assert!(!key.exists());
+}
+
+#[test]
+fn owner_validation_can_refuse_drift_without_changing_ownership_or_bytes() {
+    let root = fixture();
+    let _vault = Vault::open(root.path(), false).unwrap();
+    let file = File::open(root.path().join("secrets/vault.key")).unwrap();
+    let before = std::fs::read(root.path().join("secrets/vault.key")).unwrap();
+    let owner = unsafe { libc::geteuid() };
+    assert!(validate_private_with_owner(&file, FileType::RegularFile, 0o600, owner).is_ok());
+    assert!(validate_private_with_owner(
+        &file,
+        FileType::RegularFile,
+        0o600,
+        owner.wrapping_add(1)
+    )
+    .is_err());
     assert_eq!(
-        Vault::open(root.path(), true).unwrap().key_id(),
-        old.key_id()
+        std::fs::read(root.path().join("secrets/vault.key")).unwrap(),
+        before
     );
+}
+
+#[test]
+fn key_absence_check_refuses_unsafe_paths_and_distinguishes_present_keys() {
+    let root = fixture();
+    assert!(Vault::key_is_absent(root.path()).unwrap());
+    let _vault = Vault::open(root.path(), false).unwrap();
+    assert!(!Vault::key_is_absent(root.path()).unwrap());
+    let key = root.path().join("secrets/vault.key");
+    std::fs::remove_file(&key).unwrap();
+    assert!(Vault::key_is_absent(root.path()).unwrap());
+    let target = root.path().join("synthetic-target");
+    std::fs::write(&target, b"synthetic target fixture").unwrap();
+    symlink(&target, &key).unwrap();
+    assert!(Vault::key_is_absent(root.path()).is_err());
+    std::fs::remove_file(&key).unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &key,
+        FileType::Fifo,
+        Mode::from_bits_truncate(0o600),
+        0,
+    )
+    .unwrap();
+    assert!(Vault::key_is_absent(root.path()).is_err());
+    std::fs::remove_file(&key).unwrap();
+    std::fs::set_permissions(
+        root.path().join("secrets"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    assert!(Vault::key_is_absent(root.path()).is_err());
+    assert_eq!(std::fs::read(target).unwrap(), b"synthetic target fixture");
 }

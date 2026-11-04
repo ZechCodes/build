@@ -6,14 +6,15 @@ use super::{
 };
 use crate::store::StoreWriter;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 struct Inner {
-    state_root: PathBuf,
     device_id: String,
     writer: StoreWriter,
     vault: Option<Vault>,
+    closed: AtomicBool,
     state: Mutex<ClockState>,
     jobs: Arc<tokio::sync::Semaphore>,
 }
@@ -47,31 +48,48 @@ impl SecretService {
         writer: StoreWriter,
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
+        Self::open_with_clock_and_opener(state_root, device_id, writer, clock, Vault::open)
+    }
+
+    pub(crate) fn open_with_clock_and_opener<F>(
+        state_root: &Path,
+        device_id: &str,
+        writer: StoreWriter,
+        clock: Arc<dyn Clock>,
+        opener: F,
+    ) -> Result<Self>
+    where
+        F: FnOnce(&Path, bool) -> Result<Vault>,
+    {
         if device_id.is_empty() || device_id.len() > 128 {
             return Err(SecretError::Invalid);
         }
         let highwater = writer.secret_clock_highwater()?;
         let recovery_time = clock.wall_seconds().max(highwater).max(0);
-        let vault = super::recovery::open_vault(state_root, &writer, recovery_time)?;
+        let vault = super::recovery::open_vault_with(state_root, &writer, recovery_time, opener)?;
         let service = Self {
             inner: Arc::new(Inner {
-                state_root: state_root.to_path_buf(),
                 device_id: device_id.into(),
                 writer,
                 vault,
+                closed: AtomicBool::new(false),
                 state: Mutex::new(ClockState::new(clock, highwater)),
                 jobs: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_JOBS)),
             }),
         };
-        service.sweep()?;
+        if service.sweep().is_err() {
+            service.inner.closed.store(true, Ordering::Release);
+            super::recovery::report_unavailable(
+                service.inner.writer.secrets_unretired_count().unwrap_or(0),
+            );
+        }
         Ok(service)
     }
 
-    pub(crate) fn state_root(&self) -> &Path {
-        &self.inner.state_root
-    }
-
     fn vault(&self) -> Result<&Vault> {
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Err(SecretError::Unavailable);
+        }
         self.inner.vault.as_ref().ok_or(SecretError::Unavailable)
     }
 
@@ -137,6 +155,7 @@ impl SecretService {
     /// Storage composition helper, not message admission. A secret-bearing send
     /// MUST use store::secrets::attach_in in the message's own transaction.
     pub fn attach(&self, ids: &[String], operation_id: &str) -> Result<Vec<SecretRecord>> {
+        self.vault()?;
         let mut state = self.state();
         let observation = state.observe(&self.inner.writer)?;
         let before: Vec<_> = ids
@@ -190,7 +209,9 @@ impl SecretService {
         if observation.rollback && record.context.ttl_seconds.is_some() {
             return Err(SecretError::ClockRollback);
         }
-        vault.read(&record.context)
+        vault
+            .read(&record.context)
+            .map_err(|_| SecretError::Unavailable)
     }
 
     fn require_unexpired(
@@ -204,7 +225,7 @@ impl SecretService {
             // must not reopen a value that this process already denied.
             self.inner
                 .writer
-                .secrets_revoke(&record.context.id, observation.effective_now)?;
+                .secrets_expire(&record.context.id, observation.effective_now)?;
             return Err(SecretError::Unavailable);
         }
         Ok(())
@@ -243,7 +264,7 @@ impl SecretService {
     }
 
     pub fn sweep(&self) -> Result<SweepReport> {
-        let Some(vault) = &self.inner.vault else {
+        let Ok(vault) = self.vault() else {
             return Ok(SweepReport::default());
         };
         let mut state = self.state();
@@ -282,10 +303,16 @@ impl SecretService {
         if record.revoked_at.is_some() {
             return Ok(true);
         }
-        if record.context.device_id != self.inner.device_id || state.expired(record, observation) {
+        if record.context.device_id != self.inner.device_id {
             self.inner
                 .writer
                 .secrets_revoke(&record.context.id, observation.effective_now)?;
+            return Ok(true);
+        }
+        if state.expired(record, observation) {
+            self.inner
+                .writer
+                .secrets_expire(&record.context.id, observation.effective_now)?;
             return Ok(true);
         }
         Ok(false)
@@ -295,3 +322,7 @@ impl SecretService {
 #[cfg(test)]
 #[path = "lifecycle_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "startup_sweep_tests.rs"]
+mod startup_sweep_tests;

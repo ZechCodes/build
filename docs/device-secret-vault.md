@@ -6,23 +6,30 @@ admission are separate slices. Do not expose the raw storage read method before
 those checks are implemented. Values are never ordinary file attachments.
 
 The vault is `<BridgeConfig.state_root>/secrets/`, outside project/worktree
-storage. Startup and project/source admission reject tree roots inside or
-containing the vault, resolving symlinks and missing leaves in both channels.
+storage. Environment configuration and new project/source admission reject
+tree roots inside or containing the vault, resolving symlinks and missing
+leaves. A conflicting persisted project/workspace layout disables only secret
+access at startup; the bridge keeps running and retains the independent fence
+against new overlapping sources.
 Production overrides that use the entire `~/.build` directory as a task,
 project or worktree root must instead use a disjoint subdirectory. Persisted
 updater jobs are checked before rollback backup/install/recovery too.
 The directory is private (0700); key and encrypted files are private
 regular files (0600), accessed relative to a pinned directory descriptor with
 no-follow checks. The dedicated random 256-bit `vault.key` is independent of
-identity, transport and MCP keys. Missing, corrupt, insecure or substituted key
-files fail closed. The metadata stores the active key identifier, so a changed
-32-byte key also fails closed. Startup durably retires affected grants with
-`key_lost`, preserving normal bridge operation. Only after every old grant is
-retired may explicit cleanup create/register a fresh random key; old contexts
-remain unavailable. An unknown key is never adopted, even after interrupted
-recovery with zero lifetime records. A single bounded startup diagnostic gives
-only the affected count. If retirement or safe cleanup fails, secret access
-stays unavailable and the key is not substituted for unretired grants.
+identity, transport and MCP keys. The metadata stores the active key identifier,
+so a changed 32-byte key fails closed as well as a short/corrupt key. Only
+confirmed `NotFound` for the key or its directory permits `key_lost` retirement
+and fresh-key creation, after all old grants are durably retired. Old contexts
+remain unavailable after that missing-key recovery.
+
+Every other fault preserves the key, blobs and grants exactly: corrupt or
+substituted keys, unsafe modes/ownership, extra hard links, EIO and unknown or
+malformed expected identifiers disable only secret access. Repairing the
+original key/permissions and restarting can restore those existing grants.
+Present keys are never unlinked or replaced by recovery. The startup diagnostic
+is a tested fixed count-only format with no names or IDs. A startup sweep failure
+also closes only secret access; it cannot abort the daemon.
 
 Each `sec_<canonical UUID>` file has a versioned header, vault key identifier,
 fresh random nonce, AES-256-GCM ciphertext and tag. A domain-separated canonical
@@ -30,7 +37,8 @@ metadata encoding authenticates device, secret ID, creator, name, TTL, grant
 scope and immutable staging context. Only ciphertext reaches temporary files;
 private temporary creation, fsync, atomic publication and directory fsync make
 the blob durable before metadata acceptance. Values/keys have no ordinary Debug
-or serialization implementation; narrowly scoped buffers are zeroized where
+or serialization implementation; metadata Debug redacts names and arbitrary
+context fields. Narrowly scoped buffers are zeroized where
 supported. This does not promise secure memory against an administrator.
 
 Metadata alone lives in dedicated SQLite tables, using the existing writer.
@@ -46,7 +54,8 @@ Every read checks its tombstone, device, absolute expiry (`now >= expires_at`)
 and the process monotonic deadline. A persistent wall-clock high-water mark
 survives restart; clock rollback denies TTL-bearing reads until wall time
 catches up, and detected monotonic expiry is durably retired before denial, so restart or
-clock recovery cannot reopen it. No-expiry
+clock recovery cannot reopen it. Expired grants use reason `expired`; explicit
+revocation uses `revoked`, and existing tombstones are preserved. No-expiry
 attached values remain usable during rollback. Restoring the entire disk and
 clock against an administrator is out of scope.
 
@@ -72,9 +81,9 @@ Build's database backup/export copies metadata only, excluding vault files and
 the key. Restoring metadata without the vault starts the daemon, retires old
 records as `key_lost` and makes old IDs return the same unavailable error. A
 new key can serve new secrets after that durable retirement; it never serves
-the old grants. The same policy covers corrupt regular keys. Unsafe filesystem
-entries or failed retirement keep secret access unavailable while the rest of
-the bridge remains usable. State migration excludes source vaults and refuses
+the old grants. Corrupt present keys never trigger retirement or rotation;
+their metadata and files remain intact. Unsafe filesystem entries, failed
+retirement or failed startup maintenance keep only secret access unavailable. State migration excludes source vaults and refuses
 any existing target vault even with `--force`, so it cannot copy a key into
 staging or a rollback backup. Rollback refuses a vault in both the current
 target and the retained backup before walking either tree. It checks again at

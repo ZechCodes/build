@@ -19,3 +19,6 @@ mod tests;
 
 #[cfg(test)]
 mod key_tests;
+
+#[cfg(test)]
+mod expiry_tests;

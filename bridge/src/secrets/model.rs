@@ -1,5 +1,6 @@
 use super::{Result, SecretError};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 pub const MAX_VALUE_BYTES: usize = 16 * 1024;
 pub const MAX_STAGED_PER_CREATOR: usize = 100;
@@ -20,7 +21,7 @@ pub enum GrantScope {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StageContext {
     pub owner_id: String,
@@ -30,7 +31,7 @@ pub struct StageContext {
 }
 
 /// Immutable context authenticated by every vault blob. Metadata only.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecretContext {
     pub id: String,
@@ -42,7 +43,7 @@ pub struct SecretContext {
     pub stage: StageContext,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecretRecord {
     pub context: SecretContext,
     pub created_at: i64,
@@ -56,6 +57,35 @@ pub struct SecretRecord {
     /// Digest of the sealed upload bytes, never of the plaintext.
     pub upload_digest: String,
     pub blob_present: bool,
+}
+
+// Names and arbitrary caller metadata can be sensitive even when a value is
+// absent. Debug formatting never traverses those fields, including nested ones.
+impl fmt::Debug for StageContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StageContext")
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for SecretContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SecretContext")
+            .field("name", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for SecretRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SecretRecord")
+            .field("context", &self.context)
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Intentionally neither Debug nor Serialize. Borrow only for encryption/release.
@@ -132,3 +162,7 @@ fn validate_text(text: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "model_tests.rs"]
+mod tests;

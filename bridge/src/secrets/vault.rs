@@ -54,13 +54,34 @@ impl Vault {
             .collect()
     }
 
+    /// Confirm key absence through private, pinned, no-follow directory handles.
+    /// Every other filesystem fault is returned, never interpreted as loss.
+    pub(super) fn key_is_absent(state_root: &Path) -> Result<bool> {
+        let root = match open_state_root(state_root) {
+            Ok(root) => root,
+            Err(SecretError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(true)
+            }
+            Err(error) => return Err(error),
+        };
+        let directory = match open_directory(&root, true) {
+            Ok((directory, _)) => directory,
+            Err(SecretError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(true)
+            }
+            Err(error) => return Err(error),
+        };
+        missing_key(&directory)
+    }
+
     /// Explicit destructive recovery after the grant-retirement barrier.
     ///
     /// The trusted caller MUST durably retire every existing grant before
     /// calling this method, and prevent new admission until it completes.
     /// This filesystem primitive cannot certify the database transaction.
-    /// Strict `open` never invokes recovery or replaces a missing/corrupt key.
-    /// An interrupted recovery can be retried after the same durable barrier.
+    /// The key must be absent. A present key, including a corrupt one, is never
+    /// unlinked or replaced. Strict `open` never invokes recovery. Interrupted
+    /// initialization can retry only while the key remains absent.
     pub fn reinitialize_after_retirement(state_root: &Path) -> Result<Self> {
         let root = open_state_root(state_root)?;
         let (directory, _) = open_directory(&root, false)?;
@@ -217,20 +238,23 @@ fn generated_entries(directory: &File) -> Result<Vec<String>> {
     Ok(names)
 }
 
-fn erase_retired_files(directory: &File) -> Result<()> {
-    // Validate the key before changing anything. Recovery accepts damaged
-    // contents only in an owned, private, singly linked regular file (or absence).
-    // NONBLOCK and NOFOLLOW refuse FIFOs and links without opening targets.
+fn missing_key(directory: &File) -> Result<bool> {
     match private_file(directory, KEY_NAME) {
-        Ok(_) => {}
-        Err(SecretError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
+        Ok(_) => Ok(false),
+        Err(SecretError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+fn erase_retired_files(directory: &File) -> Result<()> {
+    if !missing_key(directory)? {
+        return Err(SecretError::Unavailable);
     }
     for name in generated_entries(directory)? {
         unlink_retired_entry(directory, &name)?;
     }
-    unlink_retired_entry(directory, KEY_NAME)?;
-    // All old names must be durably gone before the fresh key is published.
+    // Old blobs must be durably gone before publishing a fresh key. NOREPLACE
+    // also refuses a key that appeared concurrently after the absence check.
     directory.sync_all()?;
     Ok(())
 }
@@ -282,9 +306,18 @@ fn private_file(directory: &File, name: &str) -> Result<File> {
 }
 
 fn validate_private(file: &File, file_type: FileType, permissions: fs::RawMode) -> Result<()> {
-    let stat = io(fs::fstat(file))?;
     // SAFETY: geteuid has no arguments or memory preconditions.
     let owner = unsafe { libc::geteuid() };
+    validate_private_with_owner(file, file_type, permissions, owner)
+}
+
+fn validate_private_with_owner(
+    file: &File,
+    file_type: FileType,
+    permissions: fs::RawMode,
+    owner: libc::uid_t,
+) -> Result<()> {
+    let stat = io(fs::fstat(file))?;
     if FileType::from_raw_mode(stat.st_mode) != file_type
         || stat.st_uid != owner
         || stat.st_mode & 0o7777 != permissions

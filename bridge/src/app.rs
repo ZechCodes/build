@@ -345,6 +345,8 @@ pub struct AppState {
     /// enabled.
     store: Option<Store>,
     secret_service: Option<crate::secrets::SecretService>,
+    // Source admission keeps the vault fence even when secret startup degrades.
+    secret_state_root: Option<std::path::PathBuf>,
     /// What the user said, before anything decided where it goes, keyed by
     /// capture id. Durable from the moment it is taken — the router runs after
     /// the write, never instead of it.
@@ -725,6 +727,7 @@ impl AppState {
             user_session: Default::default(),
             store: None,
             secret_service: None,
+            secret_state_root: None,
             captures: HashMap::new(),
             router_sessions: HashMap::new(),
             updates: None,

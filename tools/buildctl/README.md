@@ -260,7 +260,26 @@ operations and retryable failed intents whose target workspace has gone are
 listed as undeliverable stale records with IDs and targets, without changing
 statuses. Missing roots for live or unknown targets fail verification.
 
-To roll back, first have the operator stop dev and confirm both bridges are
+The first dev bridge startup creates a device-local `secrets/` vault, even if
+no secret was uploaded. Once that entry exists, this state rollback is refused;
+`--force` cannot bypass the vault boundary. Keep both bridges stopped while
+choosing recovery, and keep the existing vault at its original location: its
+key is needed for any retained values. Do not delete it or move it into a
+`.retired-…` directory or rollback backup to make this command pass.
+
+Prefer a forward fix in the current dev state. Preserve the migration backup
+and its manifest, obtain a reviewed fix ref, then intentionally deploy that ref
+with `scripts/buildctl --env dev bridge deploy <forward-fix-ref>` and validate
+dev as above while prod stays stopped. This retains the current state and vault.
+If a forward fix is unsuitable, arrange an operator-reviewed metadata-only
+restore to a newly provisioned, clean device-state destination using the
+supported backup/migration procedure, with the vault excluded. This CLI has no
+arbitrary-destination or vault-retirement option; coordinate that procedure
+before changing state paths or retiring a vault. Normal Build backups do not
+contain secret values; a user-managed value backup is a separate recovery input.
+
+When neither the target nor the backup has a vault entry, to roll back first
+have the operator stop dev and confirm both bridges are
 `inactive` or `failed`. Restore using the exact backup path printed by migration, then have
 the operator restart prod:
 

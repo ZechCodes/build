@@ -11,21 +11,28 @@ impl AppState {
         state_root: &Path,
         device_id: &str,
     ) -> Result<Self, SecretError> {
-        self.validate_secret_storage_layout(state_root)
-            .map_err(|_| SecretError::Invalid)?;
-        let writer = self
+        self.secret_state_root = Some(state_root.to_path_buf());
+        self.secret_service = None;
+        if self.validate_secret_storage_layout(state_root).is_err() {
+            eprintln!("secret vault unavailable");
+            return Ok(self);
+        }
+        let opened = self
             .store
             .as_ref()
-            .ok_or(SecretError::Unavailable)?
-            .writer();
-        self.secret_service = Some(SecretService::open(state_root, device_id, writer)?);
+            .ok_or(SecretError::Unavailable)
+            .and_then(|store| SecretService::open(state_root, device_id, store.writer()));
+        match opened {
+            Ok(service) => self.secret_service = Some(service),
+            Err(_) => eprintln!("secret vault unavailable"),
+        }
         Ok(self)
     }
 
     /// All project admission doors use the same resolved device-vault fence.
     pub(in crate::app) fn validate_secret_source(&self, path: &Path) -> Result<(), String> {
-        if let Some(service) = &self.secret_service {
-            crate::config::vault::validate_tree("project source", path, service.state_root())?;
+        if let Some(root) = &self.secret_state_root {
+            crate::config::vault::validate_tree("project source", path, root)?;
         }
         Ok(())
     }

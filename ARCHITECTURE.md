@@ -1168,15 +1168,17 @@ as message admission. The standalone service attach helper is not a wire send.
 The private `secrets/` directory contains a dedicated key and AES-256-GCM blobs.
 Build backups contain metadata only; migration excludes source vaults and
 refuses a target with a vault, including forced rollback backups. Configuration,
-restored project/workspace roots and dynamic source admission also refuse trees
-that overlap the vault; persisted updater jobs are checked before any store
-backup or rollback. Restored references can therefore be unavailable; this
-foundation keeps the daemon available if their vault key is missing or corrupt,
-first durably retiring affected grants as `key_lost`. An active key identifier
-in metadata detects same-length substitution. Explicit safe key rotation occurs
-only after retirement; old IDs remain unavailable and new IDs can use a fresh
-key. Failed retirement/cleanup closes secret access without substituting a key.
-Recovery logs one bounded count-only line. See [device vault storage and
+restored project/workspace layouts and dynamic source admission are checked
+against the vault. New overlapping sources are refused; a persisted overlap
+keeps the bridge running with secret access disabled and the admission fence
+retained. Persisted updater jobs are checked before any store backup or rollback.
+Only confirmed missing-key (`NotFound`) recovery retires grants as `key_lost`
+and creates a fresh key after FULL retirement. Corrupt/present keys, unsafe
+permissions or owners, hard links and I/O errors preserve keys, blobs and grants
+and close only secret access. A startup-sweep failure also disables only secrets.
+An active key identifier detects same-length substitution. Recovery uses a
+tested count-only diagnostic; metadata Debug redacts names, and expiry records
+reason `expired` independently from explicit `revoked`. See [device vault storage and
 lifetime](docs/device-secret-vault.md) for the file format, limits and clock
 policy. Release authority/audit and sealed upload validation belong to the
 subsequent slices and must precede any external exposure.

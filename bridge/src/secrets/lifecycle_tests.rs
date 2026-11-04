@@ -337,56 +337,41 @@ fn monotonic_expiry_during_rollback_remains_retired_after_clock_recovery() {
 
 #[test]
 fn key_loss_recovers_storage_only_after_retiring_old_contexts() {
-    for corrupt in [false, true] {
-        let (dir, store, clock, service) = fixture();
-        let record = stage(&service, None);
-        attach(&service, &record);
-        let key = dir.path().join("secrets/vault.key");
-        let original = std::fs::read(&key).unwrap();
-        drop(service);
-        if corrupt {
-            std::fs::write(&key, [42u8; 32]).unwrap();
-        } else {
-            std::fs::remove_dir_all(dir.path().join("secrets")).unwrap();
-        }
-        let recovered =
-            SecretService::open_with_clock(dir.path(), "synthetic-device", store.writer(), clock)
-                .unwrap();
-        assert!(matches!(
-            recovered.read(&record.context.id),
-            Err(SecretError::Unavailable)
-        ));
-        let retired = store
-            .writer()
-            .secret_record(&record.context.id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(retired.revocation_reason.as_deref(), Some("key_lost"));
-        assert!(retired.revoked_at.is_some());
-        assert!(!retired.blob_present);
-        assert_ne!(std::fs::read(&key).unwrap(), original);
-        let new = stage(&recovered, None);
-        attach(&recovered, &new);
-        assert_eq!(
-            recovered.read(&new.context.id).unwrap().as_bytes(),
-            b"synthetic-value-only"
-        );
-        assert!(matches!(
-            recovered.read(&record.context.id),
-            Err(SecretError::Unavailable)
-        ));
-    }
-}
-
-#[test]
-fn retirement_failure_keeps_bad_key_and_all_secret_access_unavailable() {
     let (dir, store, clock, service) = fixture();
     let record = stage(&service, None);
     attach(&service, &record);
     let key = dir.path().join("secrets/vault.key");
+    let original = std::fs::read(&key).unwrap();
     drop(service);
-    std::fs::write(&key, b"synthetic damaged key").unwrap();
+    std::fs::remove_dir_all(dir.path().join("secrets")).unwrap();
+    let recovered =
+        SecretService::open_with_clock(dir.path(), "synthetic-device", store.writer(), clock)
+            .unwrap();
+    let retired = store
+        .writer()
+        .secret_record(&record.context.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(retired.revocation_reason.as_deref(), Some("key_lost"));
+    assert!(retired.revoked_at.is_some());
+    assert!(!retired.blob_present);
+    assert_ne!(std::fs::read(&key).unwrap(), original);
+    assert!(recovered.read(&record.context.id).is_err());
+    let fresh = stage(&recovered, None);
+    attach(&recovered, &fresh);
+    assert!(recovered.read(&fresh.context.id).is_ok());
+}
+
+#[test]
+fn retirement_failure_keeps_missing_key_and_all_secret_access_unavailable() {
+    let (dir, store, clock, service) = fixture();
+    let record = stage(&service, None);
+    attach(&service, &record);
+    drop(service);
+    let key = dir.path().join("secrets/vault.key");
+    std::fs::remove_file(&key).unwrap();
     store.writer_for_test().execute_batch("CREATE TRIGGER synthetic_refuse_key_loss BEFORE UPDATE OF revoked_at ON secret_records BEGIN SELECT RAISE(ABORT,'synthetic retirement failure'); END;").unwrap();
+    let original = store.writer().secret_record(&record.context.id).unwrap();
     let unavailable = SecretService::open_with_clock(
         dir.path(),
         "synthetic-device",
@@ -394,27 +379,12 @@ fn retirement_failure_keeps_bad_key_and_all_secret_access_unavailable() {
         clock.clone(),
     )
     .unwrap();
-    assert!(matches!(
-        unavailable.read(&record.context.id),
-        Err(SecretError::Unavailable)
-    ));
-    assert!(matches!(
-        unavailable.stage(
-            context(None),
-            SecretValue::new(b"synthetic".to_vec()).unwrap(),
-            uuid::Uuid::new_v4().to_string(),
-            "b".repeat(64)
-        ),
-        Err(SecretError::Unavailable)
-    ));
-    assert_eq!(std::fs::read(&key).unwrap(), b"synthetic damaged key");
-    assert!(store
-        .writer()
-        .secret_record(&record.context.id)
-        .unwrap()
-        .unwrap()
-        .revoked_at
-        .is_none());
+    assert!(unavailable.read(&record.context.id).is_err());
+    assert!(!key.exists());
+    assert_eq!(
+        store.writer().secret_record(&record.context.id).unwrap(),
+        original
+    );
     drop(unavailable);
     store
         .writer_for_test()
@@ -433,11 +403,247 @@ fn retirement_failure_keeps_bad_key_and_all_secret_access_unavailable() {
             .as_deref(),
         Some("key_lost")
     );
-    assert!(matches!(
-        recovered.read(&record.context.id),
-        Err(SecretError::Unavailable)
-    ));
-    let new = stage(&recovered, None);
-    attach(&recovered, &new);
-    assert!(recovered.read(&new.context.id).is_ok());
+    assert!(recovered.read(&record.context.id).is_err());
+    let fresh = stage(&recovered, None);
+    attach(&recovered, &fresh);
+    assert!(recovered.read(&fresh.context.id).is_ok());
+}
+
+#[derive(PartialEq, Eq)]
+struct RecoverySnapshot {
+    records: Vec<SecretRecord>,
+    expected_key_id: Option<String>,
+    key: Vec<u8>,
+    blobs: Vec<(String, Vec<u8>, u32)>,
+    directory_mode: u32,
+    key_mode: u32,
+}
+
+impl std::fmt::Debug for RecoverySnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RecoverySnapshot")
+            .field("records_count", &self.records.len())
+            .field("blob_count", &self.blobs.len())
+            .field("key_length", &self.key.len())
+            .finish_non_exhaustive()
+    }
+}
+
+fn recovery_snapshot(dir: &std::path::Path, store: &Store) -> RecoverySnapshot {
+    use std::os::unix::fs::PermissionsExt;
+    let records = store.writer().secret_records().unwrap();
+    let blobs = records
+        .iter()
+        .map(|record| {
+            let path = dir.join("secrets").join(&record.context.id);
+            (
+                record.context.id.clone(),
+                std::fs::read(&path).unwrap(),
+                std::fs::metadata(path).unwrap().permissions().mode(),
+            )
+        })
+        .collect();
+    RecoverySnapshot {
+        records,
+        expected_key_id: store
+            .writer_for_test()
+            .query_row(
+                "SELECT active_key_id FROM secret_vault_state WHERE singleton=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+        key: std::fs::read(dir.join("secrets/vault.key")).unwrap(),
+        blobs,
+        directory_mode: std::fs::metadata(dir.join("secrets"))
+            .unwrap()
+            .permissions()
+            .mode(),
+        key_mode: std::fs::metadata(dir.join("secrets/vault.key"))
+            .unwrap()
+            .permissions()
+            .mode(),
+    }
+}
+
+#[test]
+fn corrupt_present_key_closes_only_secret_access_and_preserves_recoverable_grants() {
+    for same_length in [false, true] {
+        let (dir, store, clock, service) = fixture();
+        let record = stage(&service, None);
+        attach(&service, &record);
+        drop(service);
+        let key = dir.path().join("secrets/vault.key");
+        let original = std::fs::read(&key).unwrap();
+        let mut corrupt = original.clone();
+        if same_length {
+            corrupt[0] ^= 1;
+        } else {
+            corrupt.truncate(1);
+        }
+        std::fs::write(&key, corrupt).unwrap();
+        let before = recovery_snapshot(dir.path(), &store);
+        let unavailable = SecretService::open_with_clock(
+            dir.path(),
+            "synthetic-device",
+            store.writer(),
+            clock.clone(),
+        )
+        .unwrap();
+        assert!(unavailable.inner.vault.is_none());
+        assert!(unavailable.read(&record.context.id).is_err());
+        assert_eq!(recovery_snapshot(dir.path(), &store), before);
+        drop(unavailable);
+        std::fs::write(&key, original).unwrap();
+        let restored =
+            SecretService::open_with_clock(dir.path(), "synthetic-device", store.writer(), clock)
+                .unwrap();
+        assert_eq!(
+            restored.read(&record.context.id).unwrap().as_bytes(),
+            b"synthetic-value-only"
+        );
+        assert!(store
+            .writer()
+            .secret_record(&record.context.id)
+            .unwrap()
+            .unwrap()
+            .revoked_at
+            .is_none());
+    }
+}
+
+#[test]
+fn present_key_mode_directory_mode_and_hardlink_drift_leave_vault_and_rows_untouched() {
+    use std::os::unix::fs::PermissionsExt;
+    for damage in ["key_mode", "directory_mode", "hardlink"] {
+        let (dir, store, clock, service) = fixture();
+        let record = stage(&service, None);
+        attach(&service, &record);
+        drop(service);
+        let key = dir.path().join("secrets/vault.key");
+        let directory = dir.path().join("secrets");
+        match damage {
+            "key_mode" => {
+                std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap()
+            }
+            "directory_mode" => {
+                std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755))
+                    .unwrap()
+            }
+            _ => std::fs::hard_link(&key, dir.path().join("synthetic-linked-key")).unwrap(),
+        }
+        let before = recovery_snapshot(dir.path(), &store);
+        let unavailable = SecretService::open_with_clock(
+            dir.path(),
+            "synthetic-device",
+            store.writer(),
+            clock.clone(),
+        )
+        .unwrap();
+        assert!(unavailable.inner.vault.is_none());
+        assert_eq!(recovery_snapshot(dir.path(), &store), before);
+        drop(unavailable);
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if damage == "hardlink" {
+            std::fs::remove_file(dir.path().join("synthetic-linked-key")).unwrap();
+        }
+        let restored =
+            SecretService::open_with_clock(dir.path(), "synthetic-device", store.writer(), clock)
+                .unwrap();
+        assert!(restored.read(&record.context.id).is_ok());
+    }
+}
+
+#[test]
+fn expected_key_id_mismatch_malformed_or_missing_with_present_key_never_resets() {
+    for replacement in [
+        Some("f".repeat(32)),
+        Some("synthetic-malformed-key-id".into()),
+        None,
+    ] {
+        let (dir, store, clock, service) = fixture();
+        let record = stage(&service, None);
+        attach(&service, &record);
+        drop(service);
+        let expected = store.writer().secret_vault_key_id().unwrap();
+        store
+            .writer_for_test()
+            .execute(
+                "UPDATE secret_vault_state SET active_key_id=?1",
+                [replacement],
+            )
+            .unwrap();
+        let before = recovery_snapshot(dir.path(), &store);
+        let unavailable = SecretService::open_with_clock(
+            dir.path(),
+            "synthetic-device",
+            store.writer(),
+            clock.clone(),
+        )
+        .unwrap();
+        assert!(unavailable.inner.vault.is_none());
+        assert_eq!(recovery_snapshot(dir.path(), &store), before);
+        drop(unavailable);
+        store
+            .writer_for_test()
+            .execute("UPDATE secret_vault_state SET active_key_id=?1", [expected])
+            .unwrap();
+        let restored =
+            SecretService::open_with_clock(dir.path(), "synthetic-device", store.writer(), clock)
+                .unwrap();
+        assert!(restored.read(&record.context.id).is_ok());
+    }
+}
+
+#[test]
+fn injected_owner_eio_and_false_not_found_faults_preserve_every_grant_and_file() {
+    for fault in ["owner", "io", "not_found"] {
+        let (dir, store, clock, service) = fixture();
+        let record = stage(&service, None);
+        attach(&service, &record);
+        drop(service);
+        let before = recovery_snapshot(dir.path(), &store);
+        let unavailable = SecretService::open_with_clock_and_opener(
+            dir.path(),
+            "synthetic-device",
+            store.writer(),
+            clock.clone(),
+            |_, _| match fault {
+                "io" => Err(SecretError::Io(std::io::Error::from_raw_os_error(
+                    libc::EIO,
+                ))),
+                "not_found" => Err(SecretError::Io(std::io::ErrorKind::NotFound.into())),
+                _ => Err(SecretError::Unavailable),
+            },
+        )
+        .unwrap();
+        assert!(unavailable.inner.vault.is_none());
+        assert!(unavailable.read(&record.context.id).is_err());
+        assert_eq!(recovery_snapshot(dir.path(), &store), before);
+        drop(unavailable);
+        let restored =
+            SecretService::open_with_clock(dir.path(), "synthetic-device", store.writer(), clock)
+                .unwrap();
+        assert!(restored.read(&record.context.id).is_ok());
+    }
+}
+
+#[test]
+fn present_unregistered_key_with_no_records_is_not_adopted_or_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("tasks")).unwrap();
+    let vault = Vault::open(dir.path(), false).unwrap();
+    let key_path = dir.path().join("secrets/vault.key");
+    let key = std::fs::read(&key_path).unwrap();
+    assert_eq!(store.writer().secret_vault_key_id().unwrap(), None);
+    let service =
+        SecretService::open_with_clock(dir.path(), "synthetic-device", store.writer(), clock())
+            .unwrap();
+    assert!(service.inner.vault.is_none());
+    assert_eq!(std::fs::read(key_path).unwrap(), key);
+    assert_eq!(store.writer().secret_vault_key_id().unwrap(), None);
+    assert!(!store.writer().secrets_have_records().unwrap());
+    drop(vault);
 }

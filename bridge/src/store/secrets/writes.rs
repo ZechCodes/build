@@ -36,14 +36,13 @@ impl StoreWriter {
     }
 
     pub fn secrets_revoke(&self, id: &str, now: i64) -> Result<SecretRecord> {
-        if now < 0 {
-            return Err(SecretError::Invalid);
-        }
-        durable(self, |tx| {
-            let _ = records::required(tx, id)?;
-            tx.execute("UPDATE secret_records SET revoked_at=?2,revocation_reason='revoked',revision=revision+1 WHERE id=?1 AND revoked_at IS NULL", params![id,now])?;
-            records::required(tx, id)
-        })
+        tombstone(self, id, now, "revoked")
+    }
+
+    /// Persist the observed expiry before deleting bytes or returning denial.
+    /// The original tombstone remains authoritative on every retry.
+    pub fn secrets_expire(&self, id: &str, now: i64) -> Result<SecretRecord> {
+        tombstone(self, id, now, "expired")
     }
 
     pub fn secrets_mark_deleted(&self, id: &str) -> Result<()> {
@@ -77,6 +76,22 @@ impl StoreWriter {
     pub fn secrets_flush(&self) -> Result<()> {
         durable(self, |tx| observe_in(tx, 0))
     }
+}
+
+fn tombstone(
+    writer: &StoreWriter,
+    id: &str,
+    now: i64,
+    reason: &'static str,
+) -> Result<SecretRecord> {
+    if now < 0 {
+        return Err(SecretError::Invalid);
+    }
+    durable(writer, |tx| {
+        let _ = records::required(tx, id)?;
+        tx.execute("UPDATE secret_records SET revoked_at=?2,revocation_reason=?3,revision=revision+1 WHERE id=?1 AND revoked_at IS NULL",params![id,now,reason])?;
+        records::required(tx, id)
+    })
 }
 
 pub(super) fn observe_in(tx: &Transaction<'_>, now: i64) -> Result<()> {

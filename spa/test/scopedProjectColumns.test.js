@@ -74,7 +74,7 @@ it("retains the column ordering clock across a legacy whole-list replacement", a
   await cache.writeCached(address, { tasks: [task], read_order: 456, columns });
   releaseOlder({ columns: [{ id: "old", name: "Obsolete columns" }] });
   expect(await older).toBe(false);
-  expect(await tracker.readTasksRecord("d1", "p1")).toEqual({ tasks: [task], read_order: 456, columns });
+  expect(await tracker.readTasksRecord("d1", "p1")).toMatchObject({ tasks: [task], read_order: 456, columns });
 });
 it("retains the task list write stamp when a column refresh returns identical metadata", async () => {
   const address = tracker.tasksAddress("d1", "p1"), columns = [{ id: "ready", name: "Ready" }];
@@ -84,4 +84,26 @@ it("retains the task list write stamp when a column refresh returns identical me
   const after = await cache.readCanonicalCached(address);
   expect(cache.recordWriteOf(after)).toBe(cache.recordWriteOf(before));
   expect(after.value).toEqual(before.value);
+});
+
+
+it("keeps a task-content baseline unchanged when another writer changes columns", async () => {
+  const address = tracker.tasksAddress("d1", "p1");
+  await cache.writeCached(address, { tasks: [{ id: "held-task" }], read_order: 123, columns: [{ id: "old", name: "Old" }] });
+  const before = await cache.readCanonicalCached(address);
+  const columns = [{ id: "custom", name: "Changed" }];
+  expect(await refreshScopedProjectColumns(options(async () => ({ columns })))).toBe(true);
+  const after = await cache.readCanonicalCached(address);
+  expect(cache.recordWriteOf(after)).toBe(cache.recordWriteOf(before));
+  expect(after).toEqual(before);
+  const projected = await tracker.readTasksCached("d1", "p1");
+  expect(projected.at).toBe(before.at);
+  expect(projected.value).toMatchObject({ tasks: [{ id: "held-task" }], read_order: 123, columns });
+});
+
+it("renders columns-only cold support without claiming a task-list observation", async () => {
+  const columns = [{ id: "custom", name: "Changed" }];
+  expect(await refreshScopedProjectColumns(options(async () => ({ columns })))).toBe(true);
+  expect(await cache.readCanonicalCached(tracker.tasksAddress("d1", "p1"))).toBeUndefined();
+  expect(await tracker.readTasksCached("d1", "p1")).toMatchObject({ at: 0, value: { tasks: [], read_order: -1, columns } });
 });

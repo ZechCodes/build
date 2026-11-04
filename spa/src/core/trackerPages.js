@@ -24,6 +24,7 @@
 // held row written after the page's copy of it keeps its place, and so does a
 // row the page does not name that was written after the page was read.
 
+import { projectColumnsAddress, withProjectColumns } from "./projectColumnsCache.js";
 import { cachedSubKeys, deleteCached, readCached, recordWriteOf } from "./localCache.js";
 import { lastSayIn, readsAddress, withStretch } from "./taskReadOrder.js";
 import { bridgeCapabilities } from "./changeEvents.js";
@@ -146,10 +147,11 @@ function pageTaskFacts(address, held, raw, contentRead, context) {
 
 export const foldTasksPage = (address, stretch, columnsOf) =>
   mergeTaskContentRecordsTogether({ deviceId: address.deviceId, projectId: address.entityId },
-    [address, readsAddress(address)], ([heldRecord, readsRecord], context) => {
+    [address, readsAddress(address), projectColumnsAddress(address.deviceId, address.entityId)], ([heldRecord, readsRecord, columnsRecord], context) => {
       const held = heldRecord?.value, reads = readsRecord?.value;
       const content = contentPageRows(held, stretch, reads, address, context, recordWriteOf(heldRecord));
-      return { values: [tasksRecord(content.rows, columnsOf(held), foldedOrder(heldRecord, stretch)), withStretch(reads, stretch)],
+      return { values: [withProjectColumns(tasksRecord(content.rows, columnsOf(held), foldedOrder(heldRecord, stretch)), columnsRecord?.value),
+        withStretch(reads, stretch), null],
         retire: content.retire };
     }, { watchTaskIds: (stretch.tasks || []).map((task) => task.id) });
 

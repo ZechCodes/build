@@ -2644,6 +2644,99 @@ const configureScopedProject = (records = []) => {
   script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "scoped-cursor", changes: [] });
 };
 
+it.each(["connection", "push"])("finishes a held scope wake after switching from whole-list to filtered ownership (%s)", async (entry) => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  configureScopedProject();
+  const registry = await import("../src/core/scopedSyncRegistry.js");
+  const runtime = await import("../src/core/scopedSyncRuntime.js");
+  let releaseScope = registry.registerScopedSync({ deviceId: "dev-1", projectId: "p1", scope: registry.projectSyncScope("p1") });
+  let releaseWake, enteredWake;
+  const held = new Promise((resolve) => { releaseWake = resolve; });
+  const wakeHeld = new Promise((resolve) => { enteredWake = resolve; });
+  if (entry === "push") { sync.startCacheSync(); await passesSettled(sync, "dev-1"); }
+  const wake = runtime.wakeScopedSync;
+  let wakeCount = 0;
+  const delayed = vi.spyOn(runtime, "wakeScopedSync").mockImplementation(async (...args) => {
+    // applyTasks wakes once before entering the task queue. Hold its second
+    // wake, inside readTasksNow, so both entry paths really own the queue.
+    if (entry === "push" && ++wakeCount === 1) return wake(...args);
+    enteredWake();
+    await held;
+    return wake(...args);
+  });
+  try {
+    let pushed;
+    if (entry === "connection") sync.startCacheSync();
+    else pushed = registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([
+      { entity_id: "p1", tasks: { task_ids: ["wake-before-switch"] } },
+    ]);
+    await wakeHeld;
+    const connectionPass = entry === "connection" ? sync.passInFlight("dev-1") : sync.syncDevice("dev-1");
+    expect(connectionPass).not.toBeNull();
+    releaseScope();
+    releaseScope = registry.registerScopedSync({ deviceId: "dev-1", projectId: "p1",
+      scope: registry.projectSyncScope("p1", { state: "open" }), queryParams: { project_id: "p1", state: "open" } });
+    const captured = runtime.captureScopedSync("dev-1");
+    releaseWake();
+    let finished = false;
+    void Promise.all([pushed, connectionPass, captured]).then(() => { finished = true; });
+    await vi.waitFor(() => expect(finished, "connection pass and captured recovery must drain after filter switch").toBe(true));
+    const created = trackerTask({ id: "after-filter-switch", number: 8, state: "closed" });
+    script["tasks.list"] = () => ({ tasks: [created] });
+    await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([
+      { entity_id: "p1", tasks: { task_ids: [created.id] } },
+    ]);
+    await passesSettled(sync, "dev-1");
+    await vi.waitFor(async () => expect((await read("p1", "tracker-tasks"))?.value?.tasks?.map((task) => task.id)).toContain(created.id));
+  } finally { releaseWake(); releaseScope(); delayed.mockRestore(); vi.unstubAllGlobals(); }
+});
+
+it("publishes whole-list tasks across another tab's column refresh with independent runtimes and queues", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  configureScopedProject();
+  const trackerA = await import("../src/core/trackerCache.js");
+  const old = trackerTask({ id: "before-other-tab", state: "closed" });
+  const created = trackerTask({ id: "new-from-held-list", number: 9, state: "closed" });
+  await cache.writeCached(trackerA.tasksAddress("dev-1", "p1"), {
+    tasks: [old], read_order: 1, columns: [{ id: "backlog", name: "Old" }],
+  });
+  let releaseList, syncB, releaseScope;
+  const heldList = new Promise((resolve) => { releaseList = resolve; });
+  script["tasks.list"] = () => heldList;
+  try {
+    sync.startCacheSync();
+    await called(bridge.call, () => calls("tasks.list").length > 0);
+    // Independent module graphs model two tabs sharing only IndexedDB.
+    vi.resetModules();
+    syncB = await import("../src/core/cacheSync.js");
+    const registryB = await import("../src/core/scopedSyncRegistry.js");
+    const runtimeB = await import("../src/core/scopedSyncRuntime.js");
+    const trackerB = await import("../src/core/trackerCache.js");
+    const columns = [{ id: "backlog", name: "Renamed in tab B" }, { id: "new", name: "New" }];
+    script["tasks.columns"] = () => ({ columns });
+    // B has a mounted filtered query but no inbox project: only its scoped
+    // metadata writer can touch A's whole-list support in this interleaving.
+    script["project.list"] = () => ({ projects: [] });
+    releaseScope = registryB.registerScopedSync({ deviceId: "dev-1", projectId: "p1",
+      scope: registryB.projectSyncScope("p1", { state: "open" }), queryParams: { project_id: "p1", state: "open" } });
+    // A frozen holder never grants B the lock. B becomes an eligible writer
+    // through the same bounded timeout used in production.
+    navigator.locks.request.mockImplementation(() => new Promise(() => {}));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    syncB.startCacheSync();
+    await vi.advanceTimersByTimeAsync(syncB.LOCK_WAIT_MS);
+    await runtimeB.captureScopedSync("dev-1");
+    await vi.waitFor(async () => expect((await trackerB.readTasksRecord("dev-1", "p1"))?.columns).toEqual(columns));
+    expect(calls("tasks.list")).toHaveLength(1);
+    releaseList({ tasks: [old, created] });
+    await Promise.all([passesSettled(sync, "dev-1"), passesSettled(syncB, "dev-1")]);
+    const published = await trackerA.readTasksRecord("dev-1", "p1");
+    expect(published.tasks.map((task) => task.id)).toContain(created.id);
+    expect(published.columns).toEqual(columns);
+    expect((await read("p1", "tracker-tasks"))?.value?.columns).toEqual(columns);
+  } finally { releaseList({ tasks: [old, created] }); releaseScope?.(); syncB?.stopCacheSync(); vi.useRealTimers(); vi.unstubAllGlobals(); }
+});
+
 it("keeps the cold whole-project cache current when only the mounted open query is engine-owned", async () => {
   vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
   configureScopedProject();
@@ -2716,7 +2809,7 @@ it.each([false, true])("keeps refreshed scoped columns after a held legacy task 
       scope: registry.projectSyncScope("p1", { state: "open" }), queryParams: { project_id: "p1", state: "open" } });
     const recovery = runtime.captureScopedSync("dev-1");
     await settle();
-    expect(calls("tasks.columns")).toHaveLength(0);
+    await vi.waitFor(() => expect(calls("tasks.columns").length).toBeGreaterThan(0));
     releaseList({ tasks: [task, created] });
     await Promise.all([recovery, passesSettled(sync, "dev-1")]);
     expect((await read("p1", "tracker-tasks"))?.value?.tasks?.map((task) => task.id)).toContain(created.id);

@@ -4286,8 +4286,10 @@ gate attachment display.
   from the snapshot's opaque cursor through each fixed-head continuation.
   Every continuation keeps that run's original request cursor; the latest
   committed cursor supplies only the transaction's comparison baseline.
-  Historical event operations carry the current entity projection, so a null
-  current row is applied as a tombstone even on an older upsert event.
+  Historical upserts carry the current entity projection, so a null current
+  row is applied as a tombstone even on an older upsert event. Invalidations
+  retain shared task bytes, mark them stale and remove membership only from
+  the affected scope when the task is no longer a member.
   `scopedTaskSyncCache.js` commits rows, query membership, invalidations and
   the cursor in one IndexedDB transaction, using task-content lifetime,
   mutation and row-revision fences. Cursor resets affect one scope. The seen
@@ -4307,11 +4309,15 @@ gate attachment display.
   Legacy task writers yield only the exact tracked query/detail. A filtered
   task query leaves the legacy whole-project replica current; an unfiltered
   default-order scope owns that replica itself. Named recovery triggers also
-  refresh project columns without advancing the task rows' read order. When
-  the legacy reader owns the whole list, column reads and publication share
-  its project queue; exact engine-owned scopes bypass that queue. A separate
-  column clock fences older replies, and unchanged columns leave the task
-  record's write identity intact. Task
+  refresh project columns without advancing the task rows' read order. The
+  project-scoped `tracker-columns-order` record holds columns and their shared
+  ordering clock independently of task membership. Column refresh never writes
+  the task list or enters its queue, so a filter switch cannot wait on its own
+  task phase and a second tab cannot retire an in-flight list's baseline.
+  List readers overlay canonical columns in one cache transaction; list and
+  page publication merge those columns inside their publication transaction.
+  Column painters subscribe to that separate record. Existing list columns
+  remain a fallback until the first metadata refresh. Task
   heads contain summary and timeline data; an engine-owned detail reader
   supplies body fields through their own task-content authority. Inbox and
   directory recovery keep the ordered pass; no device scope is advertised.

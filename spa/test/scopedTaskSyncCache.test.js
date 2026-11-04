@@ -204,6 +204,33 @@ it("removes membership on an invalidation with member false", async () => {
   expect(await ids()).toEqual([]);
 });
 
+it("invalidates a filter exit without deleting shared task content or other cached memberships", async () => {
+  const writer = create();
+  await publish(writer, [record("task-1")], { snapshot: true });
+  const detail = { deviceId, entityId: projectId, kind: "tracker-task", sub: "task-1" };
+  const closed = summaries.summaryQueryAddress(place, { states: ["closed"] });
+  const inactiveClosed = legacy({ project_id: projectId, state: "closed" });
+  const inactiveOpen = legacy({ project_id: projectId, state: "open" });
+  await cache.writeCached(detail, { task: task("task-1", { body: "held body" }), timeline: ["held timeline"] });
+  await cache.writeCached(closed, { ids: ["task-1"] });
+  await cache.writeCached(inactiveClosed, { tasks: [task("task-1")] });
+  await cache.writeCached(inactiveOpen, { tasks: [task("task-1")] });
+  const closedBefore = await cache.readCached(closed), inactiveBefore = await cache.readCached(inactiveClosed);
+  expect(await publish(writer, [record("task-1", "2", { operation: "invalidate", member: false, row: null })],
+    { expectedCursor: "opaque-cursor", response: response("filter-exit-invalidated") })).toBe(true);
+  expect(await ids()).toEqual([]);
+  expect((await raw(inactiveOpen)).tasks).toEqual([]);
+  expect(await raw(summaries.summaryAddress(place, "task-1"))).toMatchObject({ task: { id: "task-1" }, stale: true });
+  expect(await raw(detail)).toMatchObject({ task: { id: "task-1", body: "held body" }, timeline: ["held timeline"], stale: true });
+  expect((await raw(detail)).task.__task_content_cache.retired.header).toEqual(expect.any(String));
+  expect((await cache.readCached(closed)).write).toBe(closedBefore.write);
+  expect((await cache.readCached(inactiveClosed)).write).toBe(inactiveBefore.write);
+  expect((await raw(closed)).ids).toEqual(["task-1"]);
+  expect((await raw(inactiveClosed)).tasks[0].id).toBe("task-1");
+  expect(await raw({ deviceId, entityId: projectId, kind: "sync-task-revision", sub: "task-1" })).toMatchObject({ deleted: false, stale: true });
+  expect(await writer.readCursor()).toMatchObject({ cursor: "filter-exit-invalidated", snapshotRequired: true });
+});
+
 it("publishes live snapshot membership while keeping newer bytes accepted by another scope", async () => {
   const writer = create();
   await publish(writer, [record("task-1", "10", { row: task("task-1", { title: "newer row" }) })], { snapshot: true });

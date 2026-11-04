@@ -1026,13 +1026,6 @@ function serializeTasks(context, projectId, operation) {
   const key = JSON.stringify([context.deviceId, projectId]);
   return taskReadQueue(key, taskReadGeneration(context.deviceId), operation);
 }
-function serializeProjectMetadata(deviceId, projectId, read) {
-  const context = syncContext(contextFor(deviceId));
-  if (!context?.active()) return Promise.resolve(false);
-  // A default journal query already owns this queue's task phase. Filtered
-  // queries share metadata with the legacy whole walk and wait for its write.
-  return projectScopedSyncOwns(deviceId, projectId) ? read() : serializeTasks(context, projectId, read);
-}
 const taskReadGenerations = new Map();
 function taskReadGeneration(deviceId) {
   const session = sessionOf(deviceId);
@@ -2587,7 +2580,7 @@ function onVisibilityChange() {
 
 export function startCacheSync() {
   stopCacheSync();
-  startScopedSyncRuntime({ ownsLock: () => scopedWriterEligible, prepareProject: serializeProjectMetadata,
+  startScopedSyncRuntime({ ownsLock: () => scopedWriterEligible,
     request: (deviceId, method, params, scope) => {
       const context = syncContext(contextFor(deviceId));
       const readScope = { deviceId, entityId: scope.project_id || scope.task_id, kind: "scoped-sync", sub: JSON.stringify(scope) };

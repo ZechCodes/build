@@ -1,3 +1,4 @@
+import { projectColumnsAddress } from "./projectColumnsCache.js";
 import { registerScopedSync, taskSyncScope } from "./scopedSyncRegistry.js";
 import { scopedSyncOwns, wakeScopedSync } from "./scopedSyncRuntime.js";
 // One task's page, mounted.
@@ -689,7 +690,9 @@ export function mountTaskPage(host, options) {
   bindWatchControl();
   const stopWatchControlLifetime = onDeviceStateChanged(bindWatchControl);
 
+  let columnsReadSerial = 0;
   async function paintFromCache() {
+    const columnsSerial = ++columnsReadSerial;
     const [cached, list, at, checklistSupported, waitingOnSupported] = await Promise.all([
       readTaskRecord(state.deviceId, state.projectId, state.taskId),
       readTasksRecord(state.deviceId, state.projectId),
@@ -700,12 +703,23 @@ export function mountTaskPage(host, options) {
     if (state.disposed) return;
     state.checklistSupported = checklistSupported;
     state.waitingOnSupported = waitingOnSupported;
-    state.columns = columnsOf(list?.columns);
+    if (columnsSerial === columnsReadSerial) state.columns = columnsOf(list?.columns);
     if (!cached?.task || state.task) return;
     take(cached, { live: false });
     reads.seen(at); // this copy is as old as the cache's stamp, not as old as now
     paint();
   }
+
+  async function paintColumnsFromCache() {
+    const serial = ++columnsReadSerial;
+    const list = await readTasksRecord(state.deviceId, state.projectId);
+    if (state.disposed || serial !== columnsReadSerial) return;
+    state.columns = columnsOf(list?.columns);
+    paint();
+  }
+  const columnsWatcher = subscribeCache(projectColumnsAddress(state.deviceId, state.projectId), () => {
+    void paintColumnsFromCache();
+  });
 
   /** What a reference written on this page names is the shared index's
    *  answer (core/referenceIndex.js, #229): the project's task list, the
@@ -1322,6 +1336,7 @@ export function mountTaskPage(host, options) {
       watcher.dispose();
       stopGreeting();
       taskWatcher?.();
+      columnsWatcher();
       contentHeaderWatcher();
       stopWatchControl();
       stopWatchControlLifetime();

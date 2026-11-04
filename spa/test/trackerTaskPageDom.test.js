@@ -1852,3 +1852,17 @@ it("durable ownership registers detail and prevents the legacy detail writer", a
   page.dispose(); page = null;
   expect(durable.release).toHaveBeenCalled();
 });
+it("repaints mounted task status choices from a columns-only cache publication", async () => {
+  await mount();
+  const labels = () => [...host.querySelectorAll("#task-status option")].map((option) => option.textContent);
+  expect(labels()).toContain("In progress");
+  call.mockClear();
+  const local = await import("../src/core/localCache.js");
+  const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+  await local.writeCached(projectColumnsAddress("dev-1", "proj-1"), {
+    columns: [{ id: "custom", name: "New column" }, { id: "in_progress", name: "Building" }], columns_read_order: Date.now(),
+  });
+  await vi.waitFor(() => expect(labels()).toEqual(["New column", "Building"]), { timeout: 5000 });
+  expect(host.querySelector("#task-status").value).toBe("in_progress");
+  expect(listed("tasks.get")).toHaveLength(0);
+});

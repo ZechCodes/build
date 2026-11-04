@@ -91,9 +91,8 @@ function reconcileDevice(context) {
 
 function prepareScope(held, entry) {
   if (entry.scope.kind !== "project_tasks") return refreshBody(held, entry);
-  const read = () => refreshScopedProjectColumns({ deviceId: held.context.deviceId, projectId: entry.projectId,
+  return refreshScopedProjectColumns({ deviceId: held.context.deviceId, projectId: entry.projectId,
     active: held.active, callRpc: (method, params) => runtime.request(held.context.deviceId, method, params, entry.scope) });
-  return runtime.prepareProject ? runtime.prepareProject(held.context.deviceId, entry.projectId, read) : read();
 }
 
 function refreshBody(held, entry) {

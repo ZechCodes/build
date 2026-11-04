@@ -4,6 +4,7 @@ import { cachedAddresses, DELETE_CACHED_RECORD, readCanonicalCached } from "./lo
 import { captureTaskContentRead, mergeTaskContentRecordsTogether } from "./taskContentAuthority.js";
 import { taskMutationEpoch, taskMutationsPending } from "./taskMutationFence.js";
 import { summaryAddress, summaryQueryAddress } from "./taskSummaryCache.js";
+import { projectColumnsAddress, withProjectColumns } from "./projectColumnsCache.js";
 import { taskAddress, tasksAddress, tasksQueryAddress } from "./trackerCache.js";
 import { currentRevision, isMembership, matchingMembership, membershipValue, removedDetail,
   revisionAddress, revisionValue, scopeFilters, snapshotMembers, taskRecordValue } from "./scopedTaskSyncRecords.js";
@@ -47,7 +48,7 @@ function primaryMemberships(place, scope, queryParams) {
 }
 
 function publicationAddresses(place, scope, cursor, existing, records, queryParams) {
-  return distinct([cursor, ...primaryMemberships(place, scope, queryParams),
+  return distinct([cursor, projectColumnsAddress(place.deviceId, place.projectId), ...primaryMemberships(place, scope, queryParams),
     ...existing.filter(isMembership),
     ...records.flatMap((record) => [summaryAddress(place, record.key), taskAddress(place.deviceId, place.projectId, record.key),
       revisionAddress(place, record.key)]),
@@ -83,8 +84,10 @@ function applyRows(addresses, held, records, options) {
   const members = options.snapshot ? snapshotMembers(records, revisionOf, options.response.incarnation) : selected;
   for (const address of addresses.filter(isMembership)) {
     const matches = matchingMembership(address, options.scope);
-    next.set(keyOf(address), membershipValue(get(address), members,
-      { ...options, address, matches, taskOf, snapshot: options.snapshot && matches, removed: options.removed && matches }));
+    const membership = membershipValue(get(address), members,
+      { ...options, address, matches, taskOf, snapshot: options.snapshot && matches, removed: options.removed && matches });
+    const columns = get(projectColumnsAddress(options.place.deviceId, options.place.projectId))?.value;
+    next.set(keyOf(address), withProjectColumns(membership, columns));
   }
   return next;
 }

@@ -1,3 +1,4 @@
+import { projectColumnsAddress } from "./projectColumnsCache.js";
 import { registerScopedSync, projectSyncScope } from "./scopedSyncRegistry.js";
 import { scopedSyncOwns, wakeScopedSync } from "./scopedSyncRuntime.js";
 import { agentModelsFromFeed } from "./agentModelBadge.js";
@@ -447,6 +448,9 @@ export function mountTasksPane(host, options) {
   const wholeListWatcher = subscribeCache(tasksAddress(state.deviceId, state.projectId), () => {
     void paintFromCache();
   });
+  const columnsWatcher = subscribeCache(projectColumnsAddress(state.deviceId, state.projectId), () => {
+    void paintFromCache();
+  });
 
   async function paintUserSession() {
     const session = await readUserSession(state.deviceId);
@@ -887,6 +891,7 @@ export function mountTasksPane(host, options) {
       uiRecord.dispose();
       watcher.dispose();
       wholeListWatcher?.();
+      columnsWatcher();
       userSessionWatcher?.();
       ruleWatcher?.();
       reviewFactsWatcher();

@@ -1794,3 +1794,18 @@ it("durable ownership registers the query and prevents mounted legacy list write
   pane.dispose(); pane = null;
   expect(durable.release).toHaveBeenCalled();
 });
+it("repaints mounted board columns from a columns-only cache publication", async () => {
+  const held = task({ id: "held-board-task", status: "backlog" });
+  await trackerCache.writeTasksRecord("dev-1", "proj-1", { tasks: [held], columns: columns() });
+  call = vi.fn(() => new Promise(() => {}));
+  await mount({ view: "board" });
+  expect(columnNames()).toEqual(["Backlog", "Ready", "In progress", "In review", "Done"]);
+  call.mockClear();
+  const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+  await cache.writeCached(projectColumnsAddress("dev-1", "proj-1"), {
+    columns: [{ id: "custom", name: "New column" }, { id: "backlog", name: "Queued" }], columns_read_order: Date.now(),
+  });
+  await vi.waitFor(() => expect(columnNames()).toEqual(["New column", "Queued"]), { timeout: 5000 });
+  expect(cardsIn("backlog")).toEqual([held.id]);
+  expect(listed("tasks.list")).toHaveLength(0);
+});

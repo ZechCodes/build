@@ -29,6 +29,7 @@ import { summaryTaskReadMutation, withTaskReadFacts, sameTaskReadFacts } from ".
 import { reconcileTaskReadFacts, hasTaskWatchSnapshot } from "./taskWatchFacts.js";
 import { TASK_WATCH_INTENT_CACHE, reconcileTaskWatchIntent, selectTaskWatchIntentGuard } from "./taskWatchIntents.js";
 import { blindTaskWatchInterference, retireTaskWatchFacts } from "./taskWatchAuthority.js";
+import { projectColumnsAddress, withProjectColumns } from "./projectColumnsCache.js";
 const normalizedAddress = (deviceId, projectId, taskId) => ({ deviceId, entityId: projectId, kind: "tracker-summary", sub: taskId });
 
 export const TRACKER_TASKS_KIND = "tracker-tasks";
@@ -74,10 +75,9 @@ export const taskAddress = (deviceId, projectId, taskId) => ({
   sub: String(taskId || ""),
 });
 
-/** The list record. `columns` rides beside the tasks because the two are read
- *  together on every paint — a board cannot be drawn from one without the
- *  other — and because the columns change far more rarely than the tasks, so
- *  holding them costs a field and saves a round trip on every cold open.
+/** The list record. Embedded columns support old bridges and cold caches;
+ *  canonical project metadata is overlaid by readers and publication reducers
+ *  without changing this task list's membership or observation baseline.
  *
  *  `readOrder` is the number the read that answered it took before it asked
  *  (core/taskReadOrder.js): when the bridge was asked, not when the answer
@@ -391,8 +391,7 @@ export function preserveTaskFloors(held, incoming) {
 /** What the cache holds for a project, or null when it has never been read
  *  there. Never throws: a cache miss and a broken cache are the same answer. */
 export async function readTasksRecord(deviceId, projectId) {
-  const record = await readCached(tasksAddress(deviceId, projectId));
-  return record?.value || null;
+  return (await readTasksCached(deviceId, projectId))?.value || null;
 }
 
 function detailWithHeaderBarrier(value, header) {
@@ -421,7 +420,13 @@ async function readListCached(address) {
   return record?.value ? { at: record.at || 0, value: record.value } : null;
 }
 
-export const readTasksCached = (deviceId, projectId) => readListCached(tasksAddress(deviceId, projectId));
+export async function readTasksCached(deviceId, projectId) {
+  const [record, columns] = await readCachedMany([tasksAddress(deviceId, projectId), projectColumnsAddress(deviceId, projectId)]);
+  const value = record?.value, metadata = columns?.value;
+  if (!value && !Array.isArray(metadata?.columns)) return null;
+  const list = value || { tasks: [], read_order: -1 };
+  return { at: record?.at || 0, value: withProjectColumns(list, metadata) };
+}
 
 export const readTasksQueryCached = (deviceId, projectId, params) =>
   readListCached(tasksQueryAddress(deviceId, projectId, params));
@@ -508,11 +513,13 @@ function selectedListRecord(held, record, rows, results, admitsMembership, posit
 
 function writeContentLists(deviceId, projectId, entries, accept) {
   const watchTaskIds = [...new Set(entries.flatMap(({ record }) => (record.tasks || []).map((task) => task.id)))];
-  return mergeTaskContentRecordsTogether({ deviceId, projectId }, entries.map(({ address }) => address), (held, context) => {
+  const columnsAddress = projectColumnsAddress(deviceId, projectId);
+  return mergeTaskContentRecordsTogether({ deviceId, projectId }, [...entries.map(({ address }) => address), columnsAddress], (held, context) => {
     if (!accept()) return null;
     const results = entries.map(({ address, record, contentRead }, index) => contentList(held[index]?.value, record,
       address, context, recordWriteOf(held[index]), contentRead));
-    return { values: results.map((result) => result?.record || null), retire: results.some((result) => result?.retire),
+    const columns = held[entries.length]?.value;
+    return { values: [...results.map((result) => withProjectColumns(result?.record, columns) || null), null], retire: results.some((result) => result?.retire),
       retireWatch: results.some((result) => result?.retireWatch) };
   }, { watchTaskIds });
 }

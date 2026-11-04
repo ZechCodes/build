@@ -4377,6 +4377,13 @@ gate attachment display.
   pending mutations and shared task generations, and rejects captures whose
   cache records changed. Historical events use current membership when
   applying tombstones, so an old delete cannot remove a recreated record.
+  A completed device snapshot, including an empty one, replaces owned
+  membership and removes rows known only to the legacy writer. Change pages
+  remain incremental. Snapshot cleanup preserves independent archive history
+  and task bodies, and uses the same mutation and generation fences as updates.
+  Thread tips retain generation repair but yield pooled session writes and
+  push marks to an owned device scope. A declined publication retries with
+  bounded backoff outside the captured recovery instead of awaiting a head check.
   Retryable `sync_reconciling` refusals retain cached paint without a notice
   and retry with bounded backoff outside captured connection recovery. A
   persistent ordinary failure reaches the existing error callback.

@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { called, passesSettled } from "./waits.js";
 import { task as trackerTask } from "./trackerWireFixture.js";
+import { deviceRecords } from "./fixtures/deviceSync.js";
 
 const ago = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
@@ -2998,4 +2999,84 @@ it("enriches cached workspace liveness without overwriting engine lifecycle fact
     expect((await read("", "workspaces")).value).toEqual(expected);
     expect((await read("", "feed")).value.workspaces).toEqual(expected);
   } finally { vi.unstubAllGlobals(); }
+});
+
+
+it.each([
+  ["3.34.0", true], ["3.33.0", true], ["3.34.0", false],
+])("thread session tips yield both their writes and push marks to the device scope (wire %s, advertised %s)", async (version, advertised) => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = advertised; deviceWireVersion = version;
+  const owned = advertised && version === "3.34.0";
+  const initial = deviceRecords().filter((record) => ["project", "workspace", "owner_session", "project_session"].includes(record.kind));
+  const project = initial.find((record) => record.kind === "project").row;
+  const workspace = initial.find((record) => record.kind === "workspace").row;
+  const owner = initial.find((record) => record.kind === "owner_session").row;
+  const projectSession = initial.find((record) => record.kind === "project_session").row;
+  script["project.list"] = () => ({ projects: [{ ...project, ...projectSession }] });
+  script["workspace.list"] = () => ({ workspaces: [{ ...workspace, entity_id: owner.owner_id,
+    session_started_ms: owner.session_started_ms, last_activity_ms: owner.last_activity_ms }] });
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-tip-cursor", records: initial });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-tip-cursor", changes: [] });
+  sync.startCacheSync(); await passesSettled(sync, "dev-1");
+  await cache.writeCached({ deviceId: "dev-1", entityId: "owner-1", kind: "thread", sub: "agent-1" }, {
+    thread_id: "thread-1", thread_generation_revision: 1, deliveredSequence: 1, items: [], total: 1,
+  });
+  const before = { projects: await read("", "projects"), workspaces: await read("", "workspaces") };
+  let entered, release;
+  const requested = new Promise((resolve) => { entered = resolve; });
+  const response = new Promise((resolve) => { release = resolve; });
+  const nextSession = { session_started_ms: owner.session_started_ms + 1_500, last_activity_ms: owner.last_activity_ms + 2_000 };
+  const changes = initial.filter((record) => record.kind !== "workspace").map((record, index) => ({
+    ...record, revision: String(index + 2), seq: String(index + 2), operation: "upsert",
+    row: record.kind === "project" ? { ...record.row, name: "Device publication from the same push" } : { ...record.row, ...nextSession },
+  }));
+  const catchup = scopedAnswer({ head: "4", cursor: "device-tip-next", changes });
+  if (owned) script["sync.changes"] = () => { entered(); return response; };
+  const generations = await import("../src/core/conversationReset.js");
+  const reconcile = generations.reconcileConversationGeneration;
+  const generation = vi.spyOn(generations, "reconcileConversationGeneration").mockImplementation(async (options) => {
+    // Reproduce the production ordering deterministically: the engine has
+    // captured its fence and sent sync.changes before this push's tip lands.
+    if (owned && options.entityId === "owner-1") await requested;
+    return reconcile(options);
+  });
+  const fences = await import("../src/core/pushFence.js");
+  const marks = vi.spyOn(fences, "notePush");
+  const tipSession = { session_started_ms: owner.session_started_ms, last_activity_ms: owner.last_activity_ms + 1_000 };
+  const tip = { agent_id: "agent-1", conversation_id: "agent-1", thread_id: "thread-1", thread_generation_revision: 1,
+    project_id: "proj-1", workspace_id: "workspace-1", project_session: tipSession, workspace_session: tipSession,
+    since_sequence: 1, last_sequence: 2, items: [{ type: "message",
+      data: { id: "tip-message", sequence: 2, role: "agent", body: "Synthetic message", created_at: "2026-11-01T12:00:01Z" } }] };
+  bridge.call.mockClear();
+  try {
+    const pushed = registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([
+      { entity_id: "owner-1", thread: [tip] },
+    ]);
+    if (owned) await requested;
+    await pushed;
+    expect((await read("owner-1", "thread", "agent-1")).value).toMatchObject({
+      thread_id: "thread-1", thread_generation_revision: 1, deliveredSequence: 2,
+    });
+    const rootMarks = marks.mock.calls.filter(([address]) => address.entityId === "" && ["projects", "workspaces"].includes(address.kind));
+    if (owned) {
+      expect(rootMarks).toEqual([]);
+      expect(await read("", "projects")).toEqual(before.projects);
+      expect(await read("", "workspaces")).toEqual(before.workspaces);
+      release(catchup);
+      await vi.waitFor(async () => {
+        const projects = (await read("", "projects")).value;
+        const workspaces = (await read("", "workspaces")).value;
+        expect(projects.find((row) => row.id === "proj-1")).toMatchObject({ name: "Device publication from the same push", ...nextSession });
+        expect(workspaces.find((row) => row.id === "workspace-1")).toMatchObject(nextSession);
+      }, { timeout: 5_000 });
+      expect(calls("sync.changes")).toHaveLength(1);
+      expect(calls("sync.head")).toHaveLength(0);
+    } else {
+      expect(rootMarks.map(([address]) => address.kind).sort()).toEqual(["projects", "workspaces"]);
+      expect((await read("", "projects")).value.find((row) => row.id === "proj-1")).toMatchObject(tipSession);
+      expect((await read("", "workspaces")).value.find((row) => row.id === "workspace-1")).toMatchObject(tipSession);
+      expect(calls("sync.changes")).toHaveLength(0);
+    }
+  } finally { release(catchup); generation.mockRestore(); marks.mockRestore(); vi.unstubAllGlobals(); }
 });

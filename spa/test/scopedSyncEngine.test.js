@@ -85,6 +85,21 @@ it("leaves a failed publication cursor available to re-read on the next trigger"
   expect(await engine.catchUp(scope)).toBe(true); expect(rpc.mock.calls[1][1].cursor).toBe("C0");
 });
 
+it.each(["snapshot", "changes"])("retries a stale %s publication promptly without extending captured recovery or waiting for a head check", async (phase) => {
+  const rpc = vi.fn(async (method) => method === "sync.snapshot" ? snapshot() : changes());
+  const { engine, store, cursor } = await fixture(rpc, phase === "changes" ? { cursor: "C0" } : undefined);
+  store.publish.mockResolvedValueOnce(false);
+  expect(await engine.catchUp(scope)).toBe(false);
+  expect(cursor()?.cursor).toBe(phase === "changes" ? "C0" : undefined);
+  const firstCalls = rpc.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(999);
+  expect(rpc).toHaveBeenCalledTimes(firstCalls);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(cursor()?.cursor).toBe("opaque-C");
+  expect(rpc.mock.calls.length).toBeGreaterThan(firstCalls);
+  expect(rpc.mock.calls.some(([method]) => method === "sync.head")).toBe(false);
+});
+
 it.each(["incarnation_changed", "retention_expired", "over_budget", "lease_expired"])("resnapshots only the affected scope on %s", async (reason) => {
   const rpc = vi.fn().mockResolvedValueOnce(response({ status: "resync_required", reason }))
     .mockResolvedValueOnce(snapshot()).mockResolvedValueOnce(changes());

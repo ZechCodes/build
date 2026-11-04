@@ -241,8 +241,8 @@ const sourceFingerprintParts = {
   "core/bridgeEpoch.js": ["e04a0a11", "6535b020", "abcac20c", "972a554f", "8d51fbb9", "6ef07fd8", "16062ed0", "9cd4d213"],
   "core/bridgeUpdatePanel.js": ["f9b19cc7", "4abdfc5a", "d159194d", "49ee91ed", "d39ab2e7", "15a6a80f", "0cb51530", "623ca8e5"],
   "core/bridgeUpdates.js": ["279cb932", "0495aa46", "c347f93b", "10a492d5", "8d29b0a9", "e9309a9a", "91de7993", "e5f40ad3"],
-  // #997 cacheSync.js:754,2608: scope ownership gates existing reads; scoped requests keep the same sync.head/snapshot/changes dispatch.
-  "core/cacheSync.js": ["833682a7", "ecdab8e6", "edbff9c9", "48de5d38", "c25bd817", "c7ad151f", "65748530", "80cbb4e7"],
+  // #997 review cacheSync.js:2159: session-tip writes and push marks yield to the device owner; existing RPC sites and dispatch are unchanged.
+  "core/cacheSync.js": ["365be0d9", "f0668bb8", "26892414", "cc1d5bf0", "0bd2f2f0", "7b478a81", "73c8f4bf", "8a1d2957"],
   "core/captureDecisionView.js": ["f9f42a7d", "d94162aa", "5aea82e5", "85e6bcb2", "73ffce61", "2ac99214", "8b78b55f", "30a7a61a"],
   // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
   "core/changeEvents.js": ["5b082d0b", "2ed9b187", "214c16ae", "1500d5f0", "43734602", "ae810be0", "ad7fd196", "1d5703a6"],
@@ -301,8 +301,8 @@ const sourceFingerprintParts = {
   "core/scopedProjectColumns.js": ["050be4f1", "7bc93888", "92cfb0a6", "eec46373", "f5b4c3f8", "22bbd079", "a8a0081b", "cf9db94a"],
   // #997 scopedSyncDiagnostics.js:4: device is a closed diagnostic label, never a resource selector.
   "core/scopedSyncDiagnostics.js": ["6cc8fdb6", "b09c4e34", "fe7d1304", "b21f55d1", "28d9740b", "71c566cd", "db179dcd", "ef3bd1bf"],
-  // #997 scopedSyncEngine.js:54: fenced recovery retries the existing three sync query methods without new dispatch sites.
-  "core/scopedSyncEngine.js": ["7519a497", "0171eb87", "1482be1b", "9922d4db", "dd15a443", "c25c1602", "165f5e8c", "effb6a89"],
+  // #997 review scopedSyncEngine.js:62,147: declined publications retry bounded recovery through the same three sync queries; no new dispatch site.
+  "core/scopedSyncEngine.js": ["2f3ab7a1", "b5bad14b", "d4f774c0", "dbbec9c6", "124d8d1d", "05076d00", "a441b99d", "2b2a333e"],
   "core/scopedTaskBody.js": ["fbd220c8", "7cabb3dd", "a35b1c7d", "7cd87534", "580ab9d7", "2a59e4bf", "58203468", "541df08c"],
   "core/session.js": ["3d180500", "f13f38ec", "64d5d01d", "ec44e3c7", "ef80b3cc", "85470f82", "ad7080e1", "69c47137"],
   "core/sessionRpc.js": ["5d583ef2", "0faaf478", "09fbf975", "ab15af9f", "a78fd5f8", "fc4bab2e", "49d4ef64", "4e13ad2d"],

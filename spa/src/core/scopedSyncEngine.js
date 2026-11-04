@@ -63,7 +63,12 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
     const accept = () => accepts(entry, token);
     if (!accept()) return false;
     const committed = await entry.store.publish({ ...batch, accept });
-    if (!committed) return false;
+    if (!committed) {
+      // A local write can retire this capture without another push arriving.
+      // Retry outside the captured recovery, using the same bounded backoff.
+      scheduleRetry(entry, token);
+      return false;
+    }
     if (entry.opening === token) entry.lastCursor = batch.removed ? null : batch.response.cursor;
     return accept();
   }

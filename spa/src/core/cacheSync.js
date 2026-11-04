@@ -2157,16 +2157,18 @@ const tipRunsOnFromRecord = (tip, held) =>
 /** A thread tip carries the summaries changed by its message. Project agent
  * tips update only the project; workspace tips update both owning records. */
 async function applySessionTip(context, entityId, tip) {
+  const active = () => context.active() && !deviceScopedSyncOwns(context.deviceId);
+  if (!active()) return;
   const options = {
     threadAddress: agentThreadAddress(context, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id }),
     threadId: tip.thread_id, conversationId: tipKey(tip), threadGenerationRevision: tip.thread_generation_revision,
-    active: context.active,
+    active,
   };
   for (const [kind, id, session] of [
     ["workspaces", tip.workspace_id, tip.workspace_session],
     ["projects", tip.project_id, tip.project_session],
   ]) {
-    if (!context.active()) return;
+    if (!active()) return;
     if (!id) continue;
     if (options.threadGenerationRevision) notePush(addressOf(context, "", kind));
     await updateSessionSummary(addressOf(context, "", kind), kind, id, session, options);

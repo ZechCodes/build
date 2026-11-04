@@ -107,7 +107,7 @@ fn agent_projections(
     };
     let Some(raw) = raw else {
         // Preserve canonical maintenance without exposing an incomplete device
-        // projection. An owned source save or removal repairs this fence.
+        // projection. Startup repair or an owned source save/removal repairs it.
         super::device_facts::mark_unavailable(conn, id)?;
         return Ok(None);
     };

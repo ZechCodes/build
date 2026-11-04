@@ -218,6 +218,11 @@ missing, canonical maintenance can still commit: its transaction records a
 durable device fence rather than scanning history or exposing partial rows.
 An owned agent save or canonical removal clears the captured marker generation
 in the same transaction as publication; failed publication preserves the fence.
+Startup also repairs these markers without waiting for an agent save. Each
+transaction hydrates at most 128 marked directory facts and publishes them with
+the captured-generation clear. Failed publication rolls back the facts and
+clear together; a delayed repair cannot clear a newer marker. This recovery
+does not restart transcript backfill.
 Display text is clipped before fingerprinting; opaque ids remain exact. Working state, availability,
 active process/terminal counts and filesystem liveness remain outside records.
 

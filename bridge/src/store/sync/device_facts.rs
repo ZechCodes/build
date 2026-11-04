@@ -1,6 +1,6 @@
 //! Compact directory facts, captured from owned records without their history.
 use crate::{agent::Agent, models::ModelChoice, store::StoreError};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
 const FACTS_DIRTY: &str = "device_agent_facts";
@@ -18,6 +18,63 @@ fn clear_marker(conn: &Connection, id: &str) -> Result<(), StoreError> {
             .execute(params![FACTS_DIRTY, id, generation])?;
     }
     Ok(())
+}
+
+/// Recover only dirty directory facts, with a bounded publication transaction.
+/// Completed upgrade backfills need not be restarted or revisit transcripts.
+pub(super) fn repair_missing(conn: &mut Connection) -> Result<(), StoreError> {
+    loop {
+        let tx = conn.transaction()?;
+        let markers = tx
+            .prepare_cached(
+                "SELECT key,generation FROM sync_dirty WHERE kind=?1 ORDER BY key LIMIT 128",
+            )?
+            .query_map([FACTS_DIRTY], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        if markers.is_empty() {
+            return Ok(());
+        }
+        for (id, generation) in markers {
+            if repair_marker(&tx, &id, generation)? {
+                super::device_producers::touch_agent(&tx, &id)?;
+            }
+        }
+        let mut batch = super::PublicationBatch::default();
+        super::device_producers::collect(&tx, &mut batch)?;
+        batch.publish(&tx, super::now_ms())?;
+        tx.commit()?;
+    }
+}
+
+pub(super) fn repair_marker(
+    tx: &Transaction<'_>,
+    id: &str,
+    generation: i64,
+) -> Result<bool, StoreError> {
+    let current: Option<i64> = tx
+        .prepare_cached("SELECT generation FROM sync_dirty WHERE kind=?1 AND key=?2")?
+        .query_row(params![FACTS_DIRTY, id], |row| row.get(0))
+        .optional()?;
+    if current != Some(generation) {
+        return Ok(false);
+    }
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agents WHERE id=?1)",
+        [id],
+        |row| row.get(0),
+    )?;
+    if exists {
+        backfill(tx, id)?;
+    } else {
+        tx.execute("DELETE FROM device_agent_facts WHERE agent_id=?1", [id])?;
+    }
+    tx.execute(
+        "DELETE FROM sync_dirty WHERE kind=?1 AND key=?2 AND generation=?3",
+        params![FACTS_DIRTY, id, generation],
+    )?;
+    Ok(true)
 }
 
 #[derive(Deserialize, Serialize)]

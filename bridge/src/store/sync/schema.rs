@@ -128,6 +128,7 @@ pub(in crate::store) fn initialize(
     super::task_publication::install(conn)?;
     super::device_producers::install(conn)?;
     super::device_backfill::install(conn)?;
+    super::device_facts::repair_missing(conn)?;
     Ok(())
 }
 

@@ -360,8 +360,8 @@ impl ReadService {
                             .map_err(|error| removed_sync_error(error, &missing))?;
                         (Ok(answer), ReadFence::RemovedSync)
                     }
-                    super::tracker::TaskSyncAdmission::Unknown(missing) => {
-                        return Err(task_error(missing))
+                    super::tracker::TaskSyncAdmission::Unavailable(message) => {
+                        return Err(ApiError::retryable_unavailable(message))
                     }
                 }
             }
@@ -389,8 +389,8 @@ impl ReadService {
                             .map_err(|error| removed_sync_error(error, &missing))?;
                         (Ok(answer), ReadFence::RemovedSync)
                     }
-                    super::tracker::TaskSyncAdmission::Unknown(missing) => {
-                        return Err(task_error(missing))
+                    super::tracker::TaskSyncAdmission::Unavailable(message) => {
+                        return Err(ApiError::retryable_unavailable(message))
                     }
                 }
             }
@@ -422,8 +422,8 @@ impl ReadService {
                             .map_err(|error| removed_sync_error(error, &missing))?;
                         (Ok(answer), ReadFence::RemovedSync)
                     }
-                    super::tracker::TaskSyncAdmission::Unknown(missing) => {
-                        return Err(task_error(missing))
+                    super::tracker::TaskSyncAdmission::Unavailable(message) => {
+                        return Err(ApiError::retryable_unavailable(message))
                     }
                 }
             }

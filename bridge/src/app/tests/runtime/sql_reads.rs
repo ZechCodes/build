@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::tests::project_agent::rooted;
 use crate::app::tests::tracker::{filed, tracked};
 use crate::carrier::testing::{client_request, session_init, ChannelWire};
 use crate::carrier::{FrameIntake, OutboundEnvelope};
@@ -430,6 +431,152 @@ async fn removed_scopes_resync_only_for_authenticated_positions() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn removed_project_scope_authenticates_after_an_ordinary_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project_id) = tracked(dir.path());
+    filed(&mut app, &project_id, "restart one");
+    filed(&mut app, &project_id, "restart two");
+    let state = app.shared();
+    let transport = crate::transport::generate_transport_keypair();
+    let intake = FrameIntake::new(AppState::handler(Arc::clone(&state)), transport.clone());
+    let mut wire = ChannelWire::open();
+    let key = crate::transport::generate_session_key();
+    wire.open_session(
+        &intake,
+        "before-restart",
+        &session_init("before-restart", &transport.public_key_b64, &key),
+    )
+    .unwrap();
+    wire.outbound.try_recv().unwrap();
+    wire.accept(
+        &intake,
+        client_request(
+            &key,
+            "before-restart",
+            "data",
+            json!({"id":1,"method":"sync.snapshot","params":{"scope":{"kind":"project_tasks","project_id":project_id},"limit":1}}),
+        ),
+    )
+    .await
+    .unwrap();
+    let snapshot = final_answer(&mut wire, &key).await;
+    let cursor = snapshot["result"]["cursor"].as_str().unwrap().to_owned();
+    let page = snapshot["result"]["next_page"].as_str().unwrap().to_owned();
+    {
+        let mut app = state.lock().unwrap();
+        let path = app.tracker_project_path(&project_id).unwrap();
+        app.store
+            .as_ref()
+            .unwrap()
+            .delete_tracker_tasks_of_project(&path, |_| Ok(()))
+            .unwrap();
+        app.projects.remove(&project_id);
+        app.publish_read_metadata();
+    }
+    drop(wire);
+    drop(intake);
+    drop(state);
+
+    let restarted = rooted(dir.path())
+        .with_task_store(dir.path().join("store"))
+        .unwrap();
+    let restarted = restarted.shared();
+    let transport = crate::transport::generate_transport_keypair();
+    let intake = FrameIntake::new(AppState::handler(restarted), transport.clone());
+    let mut wire = ChannelWire::open();
+    let key = crate::transport::generate_session_key();
+    wire.open_session(
+        &intake,
+        "after-restart",
+        &session_init("after-restart", &transport.public_key_b64, &key),
+    )
+    .unwrap();
+    wire.outbound.try_recv().unwrap();
+    for (id, method, extra) in [
+        (2, "sync.head", json!({"cursor":cursor})),
+        (3, "sync.changes", json!({"cursor":cursor})),
+        (4, "sync.snapshot", json!({"page":page,"limit":1})),
+    ] {
+        let mut params = json!({"scope":{"kind":"project_tasks","project_id":project_id}});
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        wire.accept(
+            &intake,
+            client_request(
+                &key,
+                "after-restart",
+                "data",
+                json!({"id":id,"method":method,"params":params}),
+            ),
+        )
+        .await
+        .unwrap();
+        let answer = final_answer(&mut wire, &key).await;
+        assert_eq!(answer["result"]["reason"], "scope_removed", "{answer}");
+    }
+
+    let foreign_dir = tempfile::tempdir().unwrap();
+    let (_repo, mut foreign_app, foreign_project) = tracked(foreign_dir.path());
+    assert_eq!(foreign_project, project_id);
+    filed(&mut foreign_app, &foreign_project, "foreign");
+    let foreign_state = foreign_app.shared();
+    let foreign_transport = crate::transport::generate_transport_keypair();
+    let foreign_intake =
+        FrameIntake::new(AppState::handler(foreign_state), foreign_transport.clone());
+    let mut foreign_wire = ChannelWire::open();
+    let foreign_key = crate::transport::generate_session_key();
+    foreign_wire
+        .open_session(
+            &foreign_intake,
+            "foreign",
+            &session_init("foreign", &foreign_transport.public_key_b64, &foreign_key),
+        )
+        .unwrap();
+    foreign_wire.outbound.try_recv().unwrap();
+    foreign_wire
+        .accept(
+            &foreign_intake,
+            client_request(
+                &foreign_key,
+                "foreign",
+                "data",
+                json!({"id":1,"method":"sync.snapshot","params":{"scope":{"kind":"project_tasks","project_id":foreign_project}}}),
+            ),
+        )
+        .await
+        .unwrap();
+    let foreign_cursor = final_answer(&mut foreign_wire, &foreign_key).await["result"]["cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (id, token, expected_ok, expected_reason) in [
+        (5, foreign_cursor, true, "incarnation_changed"),
+        (6, format!("{cursor}A"), false, ""),
+    ] {
+        wire.accept(
+            &intake,
+            client_request(
+                &key,
+                "after-restart",
+                "data",
+                json!({"id":id,"method":"sync.head","params":{"scope":{"kind":"project_tasks","project_id":project_id},"cursor":token}}),
+            ),
+        )
+        .await
+        .unwrap();
+        let answer = final_answer(&mut wire, &key).await;
+        assert_eq!(answer["ok"], expected_ok, "{answer}");
+        if expected_ok {
+            assert_eq!(answer["result"]["reason"], expected_reason, "{answer}");
+        } else {
+            assert_eq!(answer["error_code"], "not_found", "{answer}");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn task_sync_admission_uses_indexed_authority_without_decoding_the_canonical_record() {
     let dir = tempfile::tempdir().unwrap();
     let (_repo, mut app, project_id) = tracked(dir.path());
@@ -477,6 +624,81 @@ async fn task_sync_admission_uses_indexed_authority_without_decoding_the_canonic
         answer["result"]["records"][0]["row"]["task"]["title"],
         "indexed authority"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_sync_admission_fails_closed_on_incomplete_or_unregistered_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project_id) = tracked(dir.path());
+    let missing = filed(&mut app, &project_id, "missing summary")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mismatch = filed(&mut app, &project_id, "mismatched summary")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let outside = filed(&mut app, &project_id, "outside registry")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let store = app.store.as_ref().unwrap().clone();
+    let state = app.shared();
+    let transport = crate::transport::generate_transport_keypair();
+    let intake = FrameIntake::new(AppState::handler(state), transport.clone());
+    {
+        let connection = store.writer_for_test();
+        connection
+            .execute(
+                "DELETE FROM tracker_task_summaries WHERE task_id=?1",
+                [&missing],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE tracker_task_summaries SET project_key='/stale' WHERE task_id=?1",
+                [&mismatch],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE tracker_tasks SET project_key='/outside' WHERE id=?1",
+                [&outside],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE tracker_task_summaries SET project_key='/outside' WHERE task_id=?1",
+                [&outside],
+            )
+            .unwrap();
+    }
+    let mut wire = ChannelWire::open();
+    let key = crate::transport::generate_session_key();
+    wire.open_session(
+        &intake,
+        "authority-sync",
+        &session_init("authority-sync", &transport.public_key_b64, &key),
+    )
+    .unwrap();
+    wire.outbound.try_recv().unwrap();
+    for (id, task_id) in [missing, mismatch, outside].into_iter().enumerate() {
+        wire.accept(
+            &intake,
+            client_request(
+                &key,
+                "authority-sync",
+                "data",
+                json!({"id":id,"method":"sync.snapshot","params":{"scope":{"kind":"task","task_id":task_id}}}),
+            ),
+        )
+        .await
+        .unwrap();
+        let answer = final_answer(&mut wire, &key).await;
+        assert_eq!(answer["ok"], false, "{answer}");
+        assert_eq!(answer["error_code"], "unavailable", "{answer}");
+        assert_eq!(answer["retryable"], true, "{answer}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

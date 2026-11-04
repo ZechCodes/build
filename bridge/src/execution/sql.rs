@@ -341,22 +341,23 @@ impl Waiting {
         self.ready.iter().any(|opening| {
             self.openings
                 .get(opening)
-                .and_then(|jobs| jobs.front())
-                .is_some_and(|job| allow_sync || !job_is_sync(job))
+                .is_some_and(|jobs| jobs.iter().any(|job| allow_sync || !job_is_sync(job)))
         })
     }
 
     fn take_eligible(&mut self, allow_sync: bool) -> Option<Work> {
         self.prune();
-        let index = self.ready.iter().position(|opening| {
-            self.openings
-                .get(opening)
-                .and_then(|jobs| jobs.front())
-                .is_some_and(|job| allow_sync || !job_is_sync(job))
-        })?;
-        let opening = self.ready.remove(index)?;
+        let (opening_index, job_index) =
+            self.ready.iter().enumerate().find_map(|(index, opening)| {
+                self.openings.get(opening).and_then(|jobs| {
+                    jobs.iter()
+                        .position(|job| allow_sync || !job_is_sync(job))
+                        .map(|job| (index, job))
+                })
+            })?;
+        let opening = self.ready.remove(opening_index)?;
         let jobs = self.openings.get_mut(&opening)?;
-        let mut work = Work::new(jobs.pop_front()?);
+        let mut work = Work::new(jobs.remove(job_index)?);
         // Fold only queued callers. Each counted against B until this pop, and
         // each retains its carrier fence independently of the chosen handler.
         let mut remaining = VecDeque::new();
@@ -577,21 +578,23 @@ async fn coordinate_sql(queue: Arc<Queue>, handler: FrameHandler) {
             class_permit = Some(permit);
             allow_sync = true;
         }
-        let mut connection = match &pool {
-            Some(pool) => match connection_while_waiting(&queue, pool, allow_sync).await {
-                Some(connection) => Some(connection),
-                None => continue,
-            },
-            None => None,
-        };
-        #[cfg(test)]
-        let checkout = checkout_started.elapsed();
         let Some(work) = queue.take_eligible(allow_sync) else {
             continue;
         };
         let work_is_sync = work.job.frame.payload["method"]
             .as_str()
             .is_some_and(|method| method.starts_with("sync."));
+        let Some(executor_permit) = while_live(&queue, Some(&work), executors.acquire()).await
+        else {
+            continue;
+        };
+        let mut connection = match &pool {
+            Some(pool) => match while_live(&queue, Some(&work), pool.acquire()).await {
+                Some(connection) => Some(connection),
+                None => continue,
+            },
+            None => None,
+        };
         if work_is_sync {
             if let (Some(connection), Some(class_permit)) =
                 (connection.as_mut(), class_permit.take())
@@ -600,10 +603,8 @@ async fn coordinate_sql(queue: Arc<Queue>, handler: FrameHandler) {
             }
         }
         drop(class_permit);
-        let Some(executor_permit) = while_live(&queue, Some(&work), executors.acquire()).await
-        else {
-            continue;
-        };
+        #[cfg(test)]
+        let checkout = checkout_started.elapsed();
         #[cfg(test)]
         let work = work.with_measurement(checkout);
         let handler = handler.clone();
@@ -635,30 +636,6 @@ async fn while_live<T>(
             }
         }
         tokio::select! { result = &mut future => return Some(result), _ = changed => {} }
-    }
-}
-
-async fn connection_while_waiting(
-    queue: &Queue,
-    pool: &ReadPool,
-    allow_sync: bool,
-) -> Option<ReadConnection> {
-    let acquiring = pool.acquire();
-    tokio::pin!(acquiring);
-    loop {
-        let changed = queue.changed.notified();
-        tokio::pin!(changed);
-        changed.as_mut().enable();
-        {
-            let waiting = queue.waiting.lock().unwrap();
-            if waiting.closed || !waiting.has_eligible(allow_sync) {
-                return None;
-            }
-        }
-        tokio::select! {
-            connection = &mut acquiring => return Some(connection),
-            _ = changed => {},
-        }
     }
 }
 

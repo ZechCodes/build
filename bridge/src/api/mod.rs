@@ -251,6 +251,11 @@ pub enum ApiError {
         message: String,
         details: Option<Value>,
     },
+    /// A transient projection gap; same stable code, but safe to retry.
+    RetryableUnavailable {
+        message: String,
+        details: Option<Value>,
+    },
     /// A queue is full; the only retryable refusal.
     Busy {
         message: String,
@@ -334,6 +339,13 @@ impl ApiError {
         }
     }
 
+    pub fn retryable_unavailable(message: impl Into<String>) -> ApiError {
+        ApiError::RetryableUnavailable {
+            message: message.into(),
+            details: None,
+        }
+    }
+
     pub fn busy(message: impl Into<String>) -> ApiError {
         ApiError::Busy {
             message: message.into(),
@@ -366,7 +378,7 @@ impl ApiError {
             ApiError::Conflict { .. } => "conflict",
             ApiError::StaleVersion { .. } => "stale_version",
             ApiError::StaleBody { .. } => "stale_body",
-            ApiError::Unavailable { .. } => "unavailable",
+            ApiError::Unavailable { .. } | ApiError::RetryableUnavailable { .. } => "unavailable",
             ApiError::Busy { .. } => "busy",
             ApiError::UnsupportedVersion { .. } => "unsupported_version",
             ApiError::Internal { .. } => "internal",
@@ -375,7 +387,10 @@ impl ApiError {
 
     /// Whether the same request could succeed if sent again.
     pub fn retryable(&self) -> bool {
-        matches!(self, ApiError::Busy { .. })
+        matches!(
+            self,
+            ApiError::Busy { .. } | ApiError::RetryableUnavailable { .. }
+        )
     }
 
     fn parts(&self) -> (&str, Option<&Value>) {
@@ -389,6 +404,7 @@ impl ApiError {
             | ApiError::StaleVersion { message, details }
             | ApiError::StaleBody { message, details }
             | ApiError::Unavailable { message, details }
+            | ApiError::RetryableUnavailable { message, details }
             | ApiError::Busy { message, details }
             | ApiError::UnsupportedVersion { message, details }
             | ApiError::Internal { message, details } => (message, details.as_ref()),

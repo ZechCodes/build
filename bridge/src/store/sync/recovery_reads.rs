@@ -13,13 +13,17 @@ pub enum CursorSequence {
 }
 
 impl ReadTransaction<'_> {
-    pub fn task_project_key(&self, id: &str) -> Result<Option<String>, crate::store::StoreError> {
+    pub fn task_project_authority(
+        &self,
+        id: &str,
+    ) -> Result<Option<(String, Option<String>)>, crate::store::StoreError> {
         Ok(self
             .connection()
             .query_row(
-                "SELECT project_key FROM tracker_task_summaries WHERE task_id=?1",
+                "SELECT t.project_key,s.project_key FROM tracker_tasks t
+                 LEFT JOIN tracker_task_summaries s ON s.task_id=t.id WHERE t.id=?1",
                 [id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?)
     }

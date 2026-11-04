@@ -337,6 +337,22 @@ async fn cancelling_a_peeked_sync_reselects_the_next_eligible_class() {
     assert_eq!(reply["method"], "tasks.get");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_read_can_pass_a_saturated_sync_in_the_same_opening() {
+    let temporary = tempfile::tempdir().unwrap();
+    let store = crate::store::Store::new(temporary.path()).unwrap();
+    let pool = store.read_pool();
+    let _held = [pool.acquire_sync().await, pool.acquire_sync().await];
+    let mut client = Client::new(class_aware_handler(pool));
+    client.send(1, "sync.head", json!({})).await;
+    client.send(2, "tasks.get", json!({})).await;
+    let reply = tokio::time::timeout(Duration::from_millis(500), client.reply())
+        .await
+        .expect("ordinary SQL read passes a saturated sync in its opening");
+    assert_eq!(reply["id"], 2);
+    assert_eq!(reply["method"], "tasks.get");
+}
+
 fn spa_sql_read_limit() -> usize {
     include_str!("../../../spa/src/core/sqlReadCredits.js")
         .lines()

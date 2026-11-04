@@ -128,6 +128,22 @@ impl Scope {
             digest: format!("{:x}", Sha256::digest(bytes.as_bytes())),
         }
     }
+    /// Route with a local durable key while authenticating only the stable
+    /// wire identity supplied by the client.
+    pub fn wire_bound(stream: Stream, normalized_definition: Value) -> Self {
+        let bytes = json!([
+            "sync-scope",
+            1,
+            "device_user",
+            stream.kind,
+            normalized_definition
+        ])
+        .to_string();
+        Self {
+            stream,
+            digest: format!("{:x}", Sha256::digest(bytes.as_bytes())),
+        }
+    }
     pub fn digest(&self) -> &str {
         &self.digest
     }

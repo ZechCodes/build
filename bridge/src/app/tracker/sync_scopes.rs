@@ -34,13 +34,8 @@ impl TaskSyncScope {
         validate_fields(filters)?;
         let selected = TaskSelections::parse(filters)?;
         let query = QuerySelections::parse(filters)?;
-        let normalized = json!([
-            project_id,
-            project_key,
-            selected.canonical(),
-            query.canonical()
-        ]);
-        let scope = Scope::new(Stream::project(project_key), normalized);
+        let normalized = json!([project_id, selected.canonical(), query.canonical()]);
+        let scope = Scope::wire_bound(Stream::project(project_key), normalized);
         let mut canonical = serde_json::to_value(&query.filter).map_err(|e| e.to_string())?;
         canonical
             .as_object_mut()

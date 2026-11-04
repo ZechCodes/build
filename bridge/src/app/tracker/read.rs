@@ -26,7 +26,7 @@ pub(in crate::app) struct TaskReadFence {
 pub(in crate::app) enum TaskSyncAdmission {
     Active(super::sync_scopes::TaskSyncScope, TaskReadFence),
     Removed(super::sync_scopes::TaskSyncScope, String),
-    Unknown(String),
+    Unavailable(String),
 }
 
 impl TaskReadFence {
@@ -90,11 +90,11 @@ impl TaskReadContext {
                 if let Some(order) = order {
                     query["order"] = serde_json::to_value(order).map_err(|e| e.to_string())?;
                 }
-                let Some(project_path) = self.sync_project_paths.get(project_id).cloned() else {
-                    return Ok(TaskSyncAdmission::Unknown(format!(
-                        "unknown project_id: {project_id}"
-                    )));
-                };
+                let project_path = self
+                    .sync_project_paths
+                    .get(project_id)
+                    .cloned()
+                    .unwrap_or_default();
                 let scope =
                     super::sync_scopes::TaskSyncScope::project(project_id, &project_path, &query)?
                         .with_project_ids(Arc::clone(&self.project_ids));
@@ -114,18 +114,28 @@ impl TaskReadContext {
                 }
             }
             crate::api::v1::sync::Scope::Task { task_id } => {
-                let Some(project_path) = source.task_project_key(task_id).stored()? else {
+                let Some((project_path, summary_project)) =
+                    source.task_project_authority(task_id).stored()?
+                else {
                     return Ok(TaskSyncAdmission::Removed(
                         super::sync_scopes::TaskSyncScope::task(task_id, "", "")
                             .with_project_ids(Arc::clone(&self.project_ids)),
                         format!("unknown task_id: {task_id}"),
                     ));
                 };
+                let Some(summary_project) = summary_project else {
+                    return Ok(TaskSyncAdmission::Unavailable(
+                        "task projection is incomplete".into(),
+                    ));
+                };
+                if summary_project != project_path {
+                    return Ok(TaskSyncAdmission::Unavailable(
+                        "task projection does not match canonical authority".into(),
+                    ));
+                }
                 let Some(project_id) = self.project_ids.get(&project_path).cloned() else {
-                    return Ok(TaskSyncAdmission::Removed(
-                        super::sync_scopes::TaskSyncScope::task(task_id, "", "")
-                            .with_project_ids(Arc::clone(&self.project_ids)),
-                        format!("unknown task_id: {task_id}"),
+                    return Ok(TaskSyncAdmission::Unavailable(
+                        "task canonical project is not registered".into(),
                     ));
                 };
                 let scope =

@@ -208,6 +208,84 @@ async fn mixed_observation_prepares_on_sql_and_releases_all_connections_before_i
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sql_and_observation_lanes_share_one_non_deadlocking_resource_order() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::store::Store::new(root.path()).unwrap();
+    let pool = store.read_pool();
+    let mut held = Vec::new();
+    for _ in 0..sql::SQL_WORKERS {
+        held.push(pool.acquire().await);
+    }
+    let handler = FrameHandler::new(FrameClock::new(), |_, _, _| panic!("read lane required"))
+        .with_sql_reads(Some(pool.clone()), |_, frame, _, connection| {
+            assert!(connection.is_some());
+            json!({"id":frame.payload["id"],"ok":true})
+        })
+        .with_observation_reads(Some(pool), |frame, connection| {
+            assert!(connection.is_some());
+            Box::new(move || json!({"id":frame.payload["id"],"ok":true}))
+        });
+    let mut client = Client::new(handler);
+    for id in 0..sql::SQL_WORKERS {
+        client.send(id, "tasks.get", json!({"unique":id})).await;
+    }
+    for id in sql::SQL_WORKERS..2 * sql::SQL_WORKERS {
+        client
+            .send(id, "tasks.review.get", json!({"unique":id}))
+            .await;
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    drop(held);
+    for _ in 0..2 * sql::SQL_WORKERS {
+        tokio::time::timeout(Duration::from_secs(2), client.reply())
+            .await
+            .expect("both shared SQL lanes make progress");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_cross_lane_waiters_releases_shared_capacity() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::store::Store::new(root.path()).unwrap();
+    let pool = store.read_pool();
+    let mut held = Vec::new();
+    for _ in 0..sql::SQL_WORKERS {
+        held.push(pool.acquire().await);
+    }
+    let handler = FrameHandler::new(FrameClock::new(), |_, _, _| panic!("read lane required"))
+        .with_sql_reads(Some(pool.clone()), |_, frame, _, connection| {
+            assert!(connection.is_some());
+            json!({"id":frame.payload["id"],"ok":true})
+        })
+        .with_observation_reads(Some(pool), |frame, connection| {
+            assert!(connection.is_some());
+            Box::new(move || json!({"id":frame.payload["id"],"ok":true}))
+        });
+    let cancelled = Client::new(handler);
+    for id in 0..sql::SQL_WORKERS {
+        cancelled.send(id, "tasks.get", json!({"unique":id})).await;
+        cancelled
+            .send(
+                id + sql::SQL_WORKERS,
+                "tasks.review.get",
+                json!({"unique":id}),
+            )
+            .await;
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    cancelled.intake.close_carrier(&cancelled.carrier);
+    let mut survivor = Client::on_intake(cancelled.intake.clone(), "survivor");
+    survivor.send(99, "tasks.get", json!({})).await;
+    drop(held);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), survivor.reply())
+            .await
+            .expect("cancelled cross-lane waits release capacity")["id"],
+        99
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pure_observation_does_not_wait_for_sql_pool_capacity() {
     let root = tempfile::tempdir().unwrap();
     let store = crate::store::Store::new(root.path()).unwrap();

@@ -181,7 +181,6 @@
               "workspace_id": null,
               "conversation_id": "agent-2",
               "ordinal": 2,
-              "project_role": "coordinator",
               "thread_id": "thread-agent-2",
               "thread_generation_revision": "1",
               "provider": "codex",
@@ -212,7 +211,6 @@
               "workspace_id": null,
               "conversation_id": "agent-1",
               "ordinal": 1,
-              "project_role": "worker",
               "thread_id": "thread-agent-1",
               "thread_generation_revision": "1",
               "provider": "codex",
@@ -255,6 +253,34 @@
               "session_started_ms": 1800000000000,
               "last_activity_ms": 1800000060000,
               "retained_last_activity_ms": null
+            }
+          },
+          {
+            "kind": "identity",
+            "key": "agent-2",
+            "revision": "45",
+            "row": {
+              "agent_id": "agent-2",
+              "name": null,
+              "project_role": "coordinator",
+              "ordinal": 2,
+              "provider": "codex",
+              "workspace_id": null,
+              "workspace_name": null
+            }
+          },
+          {
+            "kind": "identity",
+            "key": "agent-1",
+            "revision": "45",
+            "row": {
+              "agent_id": "agent-1",
+              "name": null,
+              "project_role": "worker",
+              "ordinal": 1,
+              "provider": "codex",
+              "workspace_id": null,
+              "workspace_name": null
             }
           }
         ]

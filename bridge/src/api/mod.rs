@@ -72,7 +72,7 @@ use std::collections::BTreeSet;
 /// 3.31.0 retires snapshot writes and adds the compact legacy-review marker (#974).
 /// 3.32.0 adds bounded durable recovery for project task lists and opened tasks (#892).
 /// 3.33.0 completes leased durable device recovery (#995).
-/// 3.34.0 completes device roster pin/roles and live pooled session summaries (#997).
+/// 3.34.0 adds explicit device owner pins and live pooled session summaries (#997).
 pub const API_VERSION: &str = "3.34.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the

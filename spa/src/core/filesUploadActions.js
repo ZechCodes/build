@@ -4,7 +4,8 @@ import { parentPath } from "./fileTreeModel.js";
 import { fieldTraits } from "./fieldTraits.js";
 import { notifyError } from "./notify.js";
 import { ICON_UPLOAD, ICON_FOLDER_PLUS } from "./icons.js";
-import { mountLongPress } from "./longPress.js";
+import { mountFileContextMenu } from "./fileContextMenu.js";
+import { downloadFile } from "./fileDownload.js";
 import { closeSplitMenusWithin, menuButtonMarkup, mountSplitMenu } from "./splitButton.js";
 import "../styles/fileUploadActions.css";
 
@@ -27,15 +28,11 @@ const interactive = (event) => event.target.closest?.("[data-upload-action], .fu
 // host's capture handlers must let them reach it.
 const inNewMenu = (event) => event.target.closest?.(".fupload-new");
 const keepFromTree = (event) => event.stopPropagation();
-const actionRow = (event) => {
-  const row = event.target.closest?.(".frow");
-  return row?.querySelector(".fupload-directory-actions") ? row : null;
-};
 const destination = (root, parent) => [root.label, parent].filter(Boolean).join(" / ") || "/";
 
 /** Directory affordances decorate existing rows; drag feedback only changes a
  * class and an overlay attribute, preserving the tree's elements and geometry. */
-export function mountFilesUploadActions(host, { roots, capabilities, uploads, callRpc, onCreated, onFinished }) {
+export function mountFilesUploadActions(host, { roots, capabilities, uploads, callRpc, onCreated, onFinished, deviceId }) {
   let support = capabilities;
   let disposed = false;
   let dropRow = null;
@@ -151,6 +148,11 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
     container.addEventListener("keydown", keepFromTree);
     mountSplitMenu(container, { onChoose: (kind) => { if (NEW_ENTRIES[kind]) newEntry(targetOfRow(row), kind); } });
   };
+  const pickFiles = (target) => {
+    selectedTarget = target;
+    input.value = "";
+    input.click();
+  };
   const onClick = (event) => {
     if (!interactive(event) || inNewMenu(event)) return;
     event.stopPropagation();
@@ -158,9 +160,7 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
     if (!button) return;
     const target = targetOfRow(button.closest(".frow"));
     if (button.dataset.uploadAction === "folder") return newEntry(target, "folder");
-    selectedTarget = target;
-    input.value = "";
-    input.click();
+    pickFiles(target);
   };
   const onKeyDown = (event) => {
     if (!interactive(event) || inNewMenu(event)) return;
@@ -214,11 +214,22 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
   const observer = new MutationObserver(decorate);
   observer.observe(host, { childList: true, subtree: true });
   decorate();
-  const longPress = mountLongPress(host, {
-    targetOf: actionRow,
-    canStart: (event) => !interactive(event),
-    onReveal: (row) => row.classList.add("fupload-revealed"),
-    onDismiss: (row) => row.classList.remove("fupload-revealed"),
+  const contextItems = (row) => {
+    if (!rootOf(row)) return [];
+    if (row.dataset.kind === "file") return [{ id: "download", label: "Download" }];
+    return [
+      ...(support.uploads ? [{ id: "upload", label: "Upload files here" }] : []),
+      ...(support.createDirectory ? [{ id: "folder", label: "New directory" }] : []),
+    ];
+  };
+  const contextActions = {
+    upload: (row) => pickFiles(targetOfRow(row)),
+    folder: (row) => newEntry(targetOfRow(row), "folder"),
+    download: (row) => void downloadFile({ callRpc, scope: { ...rootOf(row).scope }, path: row.dataset.path, deviceId })
+      .catch((error) => notifyError("Could not download file", error.message)),
+  };
+  const contextMenu = mountFileContextMenu(host, {
+    itemsFor: contextItems, onChoose: (action, row) => contextActions[action]?.(row),
   });
   host.addEventListener("click", onClick, true);
   host.addEventListener("keydown", onKeyDown, true);
@@ -228,12 +239,12 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
   host.addEventListener("drop", onDrop);
   input.addEventListener("change", onChange);
   return {
-    setCapabilities(next) { support = next; longPress.clear(); clearDrop(); if (draft && !newEntryKinds(support).includes(draft.kind)) closeDraft(); decorate(); },
+    setCapabilities(next) { support = next; contextMenu.reset(); clearDrop(); if (draft && !newEntryKinds(support).includes(draft.kind)) closeDraft(); decorate(); },
     dispose() {
       disposed = true;
       observer.disconnect();
       closeSplitMenusWithin(host);
-      longPress.dispose();
+      contextMenu.dispose();
       clearDrop(); closeDraft(); input.remove();
       host.removeEventListener("click", onClick, true);
       host.removeEventListener("keydown", onKeyDown, true);

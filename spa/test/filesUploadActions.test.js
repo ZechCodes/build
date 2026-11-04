@@ -160,7 +160,7 @@ describe("touch directory actions", () => {
     expect(row("docs").getAttribute("aria-expanded")).toBe("true");
     tree.dispose();
   });
-  it("restores ordinary context menus after release", () => {
+  it("keeps the directory context menu available after release", () => {
     pointer(row("docs"), "pointerdown");
     vi.advanceTimersByTime(600);
     pointer(row("docs"), "pointerup");
@@ -172,7 +172,7 @@ describe("touch directory actions", () => {
     const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
     Object.assign(menu, { pointerType: "touch" });
     row("docs").dispatchEvent(menu);
-    expect(menu.defaultPrevented).toBe(false);
+    expect(menu.defaultPrevented).toBe(true);
   });
   it("cancels when a pending row disappears or the tree scrolls", () => {
     pointer(row("docs"), "pointerdown");
@@ -219,10 +219,10 @@ describe("touch directory actions", () => {
     click(button("docs", "folder"));
     expect(host.querySelector('[aria-label="New folder name"]')).not.toBeNull();
   });
-  it("does not intercept file context menus or fine-pointer holds", () => {
+  it("opens file context menus and leaves fine-pointer holds alone", () => {
     const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
     row("guide.md").dispatchEvent(menu);
-    expect(menu.defaultPrevented).toBe(false);
+    expect(menu.defaultPrevented).toBe(true);
     window.matchMedia.mockReturnValue({ matches: false });
     pointer(row("docs"), "pointerdown", { pointerType: "mouse" });
     vi.advanceTimersByTime(600);
@@ -417,5 +417,29 @@ describe("the New menu", () => {
     item("docs", "file").click();
     actions.setCapabilities({ uploads: true, createDirectory: true, createFile: false });
     expect(host.querySelector(".fupload-folder")).toBeNull();
+  });
+});
+
+describe("directory context actions", () => {
+  const context = (element) => element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+  const choose = (name) => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent.includes(name)).click();
+  it("reuses the directory-targeted picker from the menu", () => {
+    mount();
+    context(row("docs"));
+    choose("Upload files here");
+    const input = host.querySelector('input[type="file"]');
+    const files = [new File(["hello"], "a.txt")];
+    Object.defineProperty(input, "files", { value: files });
+    input.dispatchEvent(new Event("change"));
+    expect(uploads.enqueue).toHaveBeenCalledWith(expect.objectContaining({ scope: root.scope, parent: "docs", files }));
+  });
+  it("reuses inline folder creation from the menu", async () => {
+    mount();
+    context(row("docs"));
+    choose("New directory");
+    const input = host.querySelector(".fupload-folder input");
+    input.value = "nested";
+    key(input, "Enter");
+    await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith(root, "docs", "docs/nested", "folder"));
   });
 });

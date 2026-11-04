@@ -34,7 +34,7 @@ export function mountFilesUploads({ treeEl, viewerEl, roots, keyOf, tree, callRp
     if (kind === "file") onOpen(keyOf(current, path));
   };
   const actions = mountFilesUploadActions(treeEl, {
-    roots, capabilities: { uploads: false, createDirectory: false, createFile: false }, uploads, callRpc: rpc,
+    roots, capabilities: { uploads: false, createDirectory: false, createFile: false }, uploads, callRpc: rpc, deviceId,
     onCreated: (root, parent, path, kind) => void refresh(root, parent, path, kind),
     onFinished: ({ rootId, scope, parent }) => invalidate({ id: rootId, scope }, parent),
   });

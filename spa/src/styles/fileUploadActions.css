@@ -32,3 +32,11 @@
    would jump away from the finger mid-press. A press on the menu or its
    button is not a press on the row. */
 body .ftree .frow.fdir:has(.fupload-new:active) { filter:none; box-shadow:none; }
+/* The row context menu shares the app's split-menu chrome and theme tokens. */
+.file-context-menu { position:fixed; bottom:auto; right:auto; z-index:100;
+  max-width:calc(100vw - 16px); max-height:calc(100dvh - 16px); }
+.file-context-menu .mi .md:empty { display:none; }
+@media (any-pointer:coarse) {
+  .frow[data-path] { -webkit-touch-callout:none; user-select:none; }
+  .file-context-menu .mi { min-height:44px; justify-content:center; box-sizing:border-box; }
+}

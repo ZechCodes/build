@@ -1,5 +1,6 @@
 use super::support::*;
 use super::*;
+mod write_cost;
 
 #[test]
 fn recovery_message_lookups_decode_only_the_matching_message() {
@@ -227,34 +228,106 @@ fn project_history_survives_each_run_delete_until_explicit_project_clear() {
         .is_empty());
 }
 
-/// Appending one message writes ONE row. This is the whole reason the store
-/// changed: the JSON records it replaced rewrote every conversation on the
-/// Task for every append, and a store that upserted all N items per save
-/// would have moved that cost rather than removed it.
+/// The canonical append still writes only one item plus its agent and run.
+/// Device sync adds a fixed journal/projection budget, independent of history.
 #[test]
 fn appending_one_message_writes_one_row_however_long_the_conversation_is() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path().join("tasks")).expect("store opens");
-    let mut record = run_record("run-1", None, NOW);
-    for n in 0..60 {
-        record.agents[0]
-            .thread
-            .post_user(format!("message {n}"), None, NOW);
+    let mut short_cost = None;
+    for length in [1, 60, 4096] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        for n in 0..length {
+            record.agents[0]
+                .thread
+                .post_user(format!("message {n}"), None, NOW);
+        }
+        store.save_run(&record).expect("the first save writes");
+        let before = store.total_changes();
+        let cost = write_cost::WriteCost::start(&store);
+        record.agents[0].thread.post_user("one more", None, NOW);
+        store.save_run(&record).expect("the append saves");
+        let rows = cost.rows();
+        let written = store.total_changes() - before;
+        drop(cost);
+        assert_eq!(
+            rows.values().sum::<u64>(),
+            written,
+            "all writes must be attributed"
+        );
+        let canonical: u64 = ["thread_items", "agents", "implementations"]
+            .iter()
+            .map(|table| rows.get(*table).copied().unwrap_or(0))
+            .sum();
+        assert!(
+            canonical <= 3,
+            "an append wrote {canonical} canonical rows: {rows:?}"
+        );
+        // No unchanged compact facts may be re-written on a message append.
+        assert_eq!(
+            rows.get("device_agent_facts"),
+            None,
+            "unchanged agent facts: {rows:?}"
+        );
+        assert_eq!(
+            rows.get("device_owner_projects"),
+            None,
+            "unchanged owner facts: {rows:?}"
+        );
+        // Each append updates the agent and inbox device rows: two journal
+        // events, routes, stream heads, revisions, current rows and COW versions.
+        // Three sync_state updates account for the two retained versions and
+        // the batch head. TEMP touches cost insert+delete; one summary item is
+        // indexed for bounded unread/last-message projection. None is per item
+        // already in the transcript. Pin each table, including unknown writes.
+        let expected: std::collections::BTreeMap<String, u64> = [
+            ("agents", 1),
+            ("implementations", 1),
+            ("thread_items", 1),
+            ("device_item_touches", 2),
+            ("device_summary_items", 1),
+            ("sync_device_agent_touches", 2),
+            ("sync_journal", 2),
+            ("sync_routes", 2),
+            ("sync_stream_state", 2),
+            ("sync_revisions", 2),
+            ("sync_projection", 2),
+            ("sync_projection_versions", 2),
+            ("sync_state", 3),
+        ]
+        .into_iter()
+        .map(|(table, rows)| (table.to_owned(), rows))
+        .collect();
+        assert_eq!(
+            rows, expected,
+            "append must use only the enumerated constant device budget"
+        );
+        eprintln!("append length={length} writes={written} tables={rows:?}");
+        if let Some(ref short) = short_cost {
+            assert_eq!(
+                &rows, short,
+                "append writes must not grow with conversation length"
+            );
+        } else {
+            short_cost = Some(rows);
+        }
+        // Loading intentionally returns only the resident tail. Verify the
+        // durable conversation separately so the long fixture exercises all
+        // stored rows without weakening the tail-loading contract.
+        let stored: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM thread_items WHERE agent_id=?1",
+                [&record.agents[0].id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored as usize, length + 1);
+        assert_eq!(
+            reload_run(&store, "run-1").agents[0].thread.items.len(),
+            (length + 1).min(RESIDENT_CONVERSATION_TAIL)
+        );
     }
-    store.save_run(&record).expect("the first save writes");
-
-    let before = store.total_changes();
-    record.agents[0].thread.post_user("one more", None, NOW);
-    store.save_run(&record).expect("the append saves");
-    let written = store.total_changes() - before;
-
-    // One thread item, plus the agent row and the run row that always
-    // carry the entity's own state. Never the 61 items already stored.
-    assert!(
-        written <= 3,
-        "an append wrote {written} rows — the conversation is being rewritten"
-    );
-    assert_eq!(reload_run(&store, "run-1").agents[0].thread.items.len(), 61);
 }
 
 /// A conversation comes back in the order it happened, and an item taken

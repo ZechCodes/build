@@ -19,11 +19,11 @@ pub(super) fn install(conn: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 fn installed(conn: &Connection) -> Result<bool, StoreError> {
-    Ok(conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name='device_item_touches')",
-        [],
-        |row| row.get(0),
-    )?)
+    Ok(conn
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name='device_item_touches')",
+        )?
+        .query_row([], |row| row.get(0))?)
 }
 pub(in crate::store) fn before_item(
     conn: &Connection,
@@ -72,7 +72,8 @@ pub(super) fn flush(tx: &Transaction<'_>) -> Result<(), StoreError> {
         super::device_producers::touch_conversation(tx, &id)?;
     }
     apply_nodes(tx, deltas)?;
-    tx.execute("DELETE FROM temp.device_item_touches", [])?;
+    tx.prepare_cached("DELETE FROM temp.device_item_touches")?
+        .execute([])?;
     Ok(())
 }
 pub(super) fn backfill_item(
@@ -218,23 +219,23 @@ pub(in crate::store) fn reset(conn: &Connection, id: &str) -> Result<(), StoreEr
 pub(super) fn gc(tx: &Transaction<'_>, limit: usize) -> Result<usize, StoreError> {
     let before = tx.total_changes();
     while (tx.total_changes() - before) as usize + 2 < limit {
-        let next:Option<(String,i64)>=tx.query_row("SELECT conversation_id,generation FROM device_attention_gc ORDER BY conversation_id,generation LIMIT 1",[],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+        let next:Option<(String,i64)>=tx.prepare_cached("SELECT conversation_id,generation FROM device_attention_gc ORDER BY conversation_id,generation LIMIT 1")?.query_row([],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
         let Some((id, old)) = next else {
             break;
         };
         let budget = limit - (tx.total_changes() - before) as usize - 2;
-        tx.execute("DELETE FROM device_attention_counts WHERE conversation_id=?1 AND generation=?2 AND node IN (SELECT node FROM device_attention_counts WHERE conversation_id=?1 AND generation=?2 ORDER BY node LIMIT ?3)",params![id,old,budget as i64])?;
+        tx.prepare_cached("DELETE FROM device_attention_counts WHERE conversation_id=?1 AND generation=?2 AND node IN (SELECT node FROM device_attention_counts WHERE conversation_id=?1 AND generation=?2 ORDER BY node LIMIT ?3)")?.execute(params![id,old,budget as i64])?;
         let budget = limit - (tx.total_changes() - before) as usize - 2;
-        tx.execute("DELETE FROM device_summary_items WHERE conversation_id=?1 AND generation=?2 AND sequence IN (SELECT sequence FROM device_summary_items WHERE conversation_id=?1 AND generation=?2 ORDER BY sequence LIMIT ?3)",params![id,old,budget as i64])?;
-        let pending:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM device_attention_counts WHERE conversation_id=?1 AND generation=?2) OR EXISTS(SELECT 1 FROM device_summary_items WHERE conversation_id=?1 AND generation=?2)",params![id,old],|row|row.get(0))?;
+        tx.prepare_cached("DELETE FROM device_summary_items WHERE conversation_id=?1 AND generation=?2 AND sequence IN (SELECT sequence FROM device_summary_items WHERE conversation_id=?1 AND generation=?2 ORDER BY sequence LIMIT ?3)")?.execute(params![id,old,budget as i64])?;
+        let pending:bool=tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM device_attention_counts WHERE conversation_id=?1 AND generation=?2) OR EXISTS(SELECT 1 FROM device_summary_items WHERE conversation_id=?1 AND generation=?2)")?.query_row(params![id,old],|row|row.get(0))?;
         if pending {
             break;
         }
-        tx.execute(
+        tx.prepare_cached(
             "DELETE FROM device_attention_gc WHERE conversation_id=?1 AND generation=?2",
-            params![id, old],
-        )?;
-        tx.execute("DELETE FROM device_conversation_generations WHERE conversation_id=?1 AND NOT EXISTS(SELECT 1 FROM agents WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM thread_items WHERE agent_id=?1) AND NOT EXISTS(SELECT 1 FROM device_attention_gc WHERE conversation_id=?1) AND NOT EXISTS(SELECT 1 FROM device_attention_counts WHERE conversation_id=?1) AND NOT EXISTS(SELECT 1 FROM device_summary_items WHERE conversation_id=?1)",[id])?;
+        )?
+        .execute(params![id, old])?;
+        tx.prepare_cached("DELETE FROM device_conversation_generations WHERE conversation_id=?1 AND NOT EXISTS(SELECT 1 FROM agents WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM thread_items WHERE agent_id=?1) AND NOT EXISTS(SELECT 1 FROM device_attention_gc WHERE conversation_id=?1) AND NOT EXISTS(SELECT 1 FROM device_attention_counts WHERE conversation_id=?1) AND NOT EXISTS(SELECT 1 FROM device_summary_items WHERE conversation_id=?1)")?.execute([id])?;
     }
     Ok((tx.total_changes() - before) as usize)
 }

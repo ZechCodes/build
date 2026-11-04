@@ -88,7 +88,7 @@ describe("the adapter a greeting selects", () => {
       errors: { codes: true },
       diffs: { perFile: false },
       bodies: { pages: false, mediaRawPages: false },
-      sync: { projectTasks: false, task: false },
+      sync: { device: false, projectTasks: false, task: false },
   reviews: { snapshotRetired: false, reject: false, author: false, verdictDelivery: false, retryDelivery: false, get: false, snapshot: false, diff: false, commits: false, commit: false, since: false, anchorCommit: false, complete: false, act: false, comments: false,
       forTask: false, taskChoices: false, linkedTaskChoices: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },

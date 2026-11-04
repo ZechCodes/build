@@ -65,7 +65,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
   onBridgeGreeted: () => () => {},
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
-  bridgeCapabilities: () => ({ sync: { projectTasks: scopedSupported, task: scopedSupported }, agents: { projectWorkers: projectWorkersSupported }, changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] } }),
+  bridgeCapabilities: () => ({ sync: { device: false, projectTasks: scopedSupported, task: scopedSupported }, agents: { projectWorkers: projectWorkersSupported }, changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] } }),
   // A stand-in bridge holds whatever it is asked to at once
   // (test/cacheSyncDelivery.test.js drives the real one).
   subscriptionsSettledFor: async () => {},
@@ -89,7 +89,7 @@ const stateListeners = new Set();
 vi.mock("../src/core/deviceContexts.js", () => ({
   deviceContextIdentity: (deviceId) => deviceId,
   captureDeviceGreeting: (context) => scopedSupported ? { epoch: "scoped-epoch",
-    capabilities: { sync: { projectTasks: true, task: true } }, current: () => contexts.get(context.deviceId) === context } : null,
+    capabilities: { sync: { device: false, projectTasks: true, task: true } }, current: () => contexts.get(context.deviceId) === context } : null,
   contextFor: (deviceId) => contexts.get(deviceId) || null,
   liveContexts: () => [...contexts.values()],
   onDeviceStateChanged: (fn) => {

@@ -69,7 +69,8 @@ pub(in crate::store) fn collect(
             inbox_projection(tx, &id)?,
         )?;
     }
-    tx.execute("DELETE FROM temp.sync_task_touches", [])?;
+    tx.prepare_cached("DELETE FROM temp.sync_task_touches")?
+        .execute([])?;
     Ok(())
 }
 
@@ -92,11 +93,8 @@ pub(super) fn inbox_projection(conn: &Connection, id: &str) -> Result<Option<Val
                     source,
                 })?;
             let project_id: Option<String> = conn
-                .query_row(
-                    "SELECT project_id FROM device_project_ids WHERE path=?1",
-                    [&project],
-                    |row| row.get(0),
-                )
+                .prepare_cached("SELECT project_id FROM device_project_ids WHERE path=?1")?
+                .query_row([&project], |row| row.get(0))
                 .optional()?;
             row["project_id"] = json!(project_id);
             if let Some(object) = row.as_object_mut() {
@@ -159,7 +157,7 @@ fn history_head(conn: &Connection, id: &str) -> Result<Value, StoreError> {
              FROM {table} WHERE task_id=?1 ORDER BY {at} DESC,id DESC LIMIT 51"
         );
         let rows = conn
-            .prepare(&sql)?
+            .prepare_cached(&sql)?
             .query_map([id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,

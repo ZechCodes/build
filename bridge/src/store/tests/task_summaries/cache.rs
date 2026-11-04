@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct ProjectionPreparations<'a> {
     store: &'a Store,
-    count: Box<AtomicUsize>,
+    count: Box<[AtomicUsize; 2]>,
 }
 
 unsafe extern "C" fn observe_projection_insert(
@@ -16,13 +16,18 @@ unsafe extern "C" fn observe_projection_insert(
     _database: *const c_char,
     _trigger: *const c_char,
 ) -> c_int {
-    if action == rusqlite::ffi::SQLITE_INSERT && !table.is_null() {
+    if !table.is_null() {
         // SAFETY: SQLite supplies a valid NUL-terminated table name for this
         // callback. The observer owns the atomic until it unregisters below.
-        let is_projection =
-            unsafe { CStr::from_ptr(table) }.to_bytes() == b"tracker_task_summaries";
-        if is_projection {
-            unsafe { &*state.cast::<AtomicUsize>() }.fetch_add(1, Ordering::Relaxed);
+        let table = unsafe { CStr::from_ptr(table) }.to_bytes();
+        let counts = unsafe { &*state.cast::<[AtomicUsize; 2]>() };
+        if action == rusqlite::ffi::SQLITE_INSERT && table == b"tracker_task_summaries" {
+            counts[0].fetch_add(1, Ordering::Relaxed);
+        }
+        if action == rusqlite::ffi::SQLITE_READ
+            && (table.starts_with(b"device_") || table.starts_with(b"sync_"))
+        {
+            counts[1].fetch_add(1, Ordering::Relaxed);
         }
     }
     rusqlite::ffi::SQLITE_OK
@@ -32,7 +37,7 @@ impl<'a> ProjectionPreparations<'a> {
     fn observe(store: &'a Store) -> Self {
         let mut observer = Self {
             store,
-            count: Box::new(AtomicUsize::new(0)),
+            count: Box::new([AtomicUsize::new(0), AtomicUsize::new(0)]),
         };
         let connection = store.connection();
         // SAFETY: the mutex guard exclusively owns the live connection. The
@@ -42,7 +47,7 @@ impl<'a> ProjectionPreparations<'a> {
             rusqlite::ffi::sqlite3_set_authorizer(
                 connection.handle(),
                 Some(observe_projection_insert),
-                (&mut *observer.count as *mut AtomicUsize).cast(),
+                (&mut *observer.count as *mut [AtomicUsize; 2]).cast(),
             )
         };
         assert_eq!(code, rusqlite::ffi::SQLITE_OK);
@@ -50,7 +55,7 @@ impl<'a> ProjectionPreparations<'a> {
     }
 
     fn count(&self) -> usize {
-        self.count.load(Ordering::Relaxed)
+        self.count[0].load(Ordering::Relaxed)
     }
 }
 
@@ -88,6 +93,8 @@ fn repeated_metadata_and_comment_writes_reuse_the_projection_program() {
         save_metadata_and_comment(&store, &mut task, sequence);
     }
     let warmed = preparations.count();
+    let device_warmed = preparations.count[1].load(Ordering::Relaxed);
+    assert!(device_warmed > 0, "observer sees device publication SQL");
     assert!(warmed > 0, "the observer must see projection preparation");
     for sequence in 4..=8 {
         save_metadata_and_comment(&store, &mut task, sequence);
@@ -96,6 +103,11 @@ fn repeated_metadata_and_comment_writes_reuse_the_projection_program() {
         preparations.count(),
         warmed,
         "normal metadata/history writes must reuse the warmed projection program"
+    );
+    assert_eq!(
+        preparations.count[1].load(Ordering::Relaxed),
+        device_warmed,
+        "device publication statements must also reuse their warmed programs"
     );
     let card = summary(&store, "/summary");
     assert_eq!(card["title"], "metadata 8");

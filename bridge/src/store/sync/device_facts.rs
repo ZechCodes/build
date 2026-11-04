@@ -60,20 +60,17 @@ pub(super) fn repair_marker(
     if current != Some(generation) {
         return Ok(false);
     }
-    let exists: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM agents WHERE id=?1)",
-        [id],
-        |row| row.get(0),
-    )?;
+    let exists: bool = tx
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM agents WHERE id=?1)")?
+        .query_row([id], |row| row.get(0))?;
     if exists {
         backfill(tx, id)?;
     } else {
-        tx.execute("DELETE FROM device_agent_facts WHERE agent_id=?1", [id])?;
+        tx.prepare_cached("DELETE FROM device_agent_facts WHERE agent_id=?1")?
+            .execute([id])?;
     }
-    tx.execute(
-        "DELETE FROM sync_dirty WHERE kind=?1 AND key=?2 AND generation=?3",
-        params![FACTS_DIRTY, id, generation],
-    )?;
+    tx.prepare_cached("DELETE FROM sync_dirty WHERE kind=?1 AND key=?2 AND generation=?3")?
+        .execute(params![FACTS_DIRTY, id, generation])?;
     Ok(true)
 }
 
@@ -111,11 +108,11 @@ pub(super) fn install(conn: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 fn installed(conn: &Connection) -> Result<bool, StoreError> {
-    Ok(conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='device_agent_facts')",
-        [],
-        |row| row.get(0),
-    )?)
+    Ok(conn
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='device_agent_facts')",
+        )?
+        .query_row([], |row| row.get(0))?)
 }
 pub(in crate::store) fn seed_agent(
     conn: &Connection,
@@ -141,7 +138,7 @@ pub(in crate::store) fn seed_agent(
         thread_id: agent.thread.id.clone(),
         thread_generation_revision: agent.thread.generation_revision.to_string(),
     };
-    conn.prepare_cached("INSERT INTO device_agent_facts VALUES(?1,?2) ON CONFLICT(agent_id) DO UPDATE SET record=?2")?.execute(params![agent.id,serde_json::to_string(&facts).expect("device facts")])?;
+    conn.prepare_cached("INSERT INTO device_agent_facts VALUES(?1,?2) ON CONFLICT(agent_id) DO UPDATE SET record=?2 WHERE record IS NOT excluded.record")?.execute(params![agent.id,serde_json::to_string(&facts).expect("device facts")])?;
     clear_marker(conn, &agent.id)
 }
 pub(in crate::store) fn seed_owner(
@@ -151,18 +148,18 @@ pub(in crate::store) fn seed_owner(
     workspace: Option<&str>,
 ) -> Result<(), StoreError> {
     if installed(conn)? {
-        conn.prepare_cached("INSERT INTO device_owner_projects VALUES(?1,?2,?3) ON CONFLICT(owner_id) DO UPDATE SET project_path=?2,workspace_path=?3")?.execute(params![id,project,workspace])?;
+        conn.prepare_cached("INSERT INTO device_owner_projects VALUES(?1,?2,?3) ON CONFLICT(owner_id) DO UPDATE SET project_path=?2,workspace_path=?3 WHERE project_path IS NOT excluded.project_path OR workspace_path IS NOT excluded.workspace_path")?.execute(params![id,project,workspace])?;
     }
     Ok(())
 }
 pub(super) fn backfill(conn: &Connection, id: &str) -> Result<(), StoreError> {
-    let (owner,raw):(String,String)=conn.query_row("SELECT owner_id,json_object(
+    let (owner,raw):(String,String)=conn.prepare_cached("SELECT owner_id,json_object(
         'id',id,'owner_id',owner_id,'conversation_id',COALESCE(json_extract(record,'$.conversation_id'),id),
         'choice',json(COALESCE(json_extract(record,'$.choice'),'{}')),'choice_revision',COALESCE(json_extract(record,'$.choice_revision'),0),
         'ordinal',ordinal,'created_at',json_extract(record,'$.created_at'),'topic',json_extract(record,'$.topic'),'name',json_extract(record,'$.name'),
         'created_by',json_extract(record,'$.created_by'),'watched',json(CASE COALESCE(json_extract(record,'$.watched'),1) WHEN 0 THEN 'false' ELSE 'true' END),
         'watch_started_after',COALESCE(json_extract(record,'$.watch_started_after'),0),'thread_id',COALESCE(json_extract(record,'$.thread.id'),'thread:'||id),
-        'thread_generation_revision',''||COALESCE(record -> '$.thread.generation_revision','0')) FROM agents WHERE id=?1",[id],|row|Ok((row.get(0)?,row.get(1)?)))?;
+        'thread_generation_revision',''||COALESCE(record -> '$.thread.generation_revision','0')) FROM agents WHERE id=?1")?.query_row([id],|row|Ok((row.get(0)?,row.get(1)?)))?;
     let mut facts: AgentFacts =
         serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
             path: format!("agents/{id}").into(),
@@ -170,18 +167,16 @@ pub(super) fn backfill(conn: &Connection, id: &str) -> Result<(), StoreError> {
         })?;
     facts.topic = display(&facts.topic);
     facts.name = display(&facts.name);
-    conn.execute("INSERT INTO device_agent_facts VALUES(?1,?2) ON CONFLICT(agent_id) DO UPDATE SET record=?2",params![id,serde_json::to_string(&facts).expect("device facts")])?;
+    conn.prepare_cached("INSERT INTO device_agent_facts VALUES(?1,?2) ON CONFLICT(agent_id) DO UPDATE SET record=?2")?.execute(params![id,serde_json::to_string(&facts).expect("device facts")])?;
     backfill_owner(conn, &owner)
 }
 
 pub(super) fn backfill_owner(conn: &Connection, id: &str) -> Result<(), StoreError> {
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM device_owner_projects WHERE owner_id=?1)",
-        [id],
-        |row| row.get(0),
-    )?;
+    let exists: bool = conn
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM device_owner_projects WHERE owner_id=?1)")?
+        .query_row([id], |row| row.get(0))?;
     if !exists {
-        let links:Option<(String,Option<String>)>=conn.query_row("SELECT json_extract(record,'$.project_path'),json_extract(record,'$.worktree_path') FROM implementations WHERE id=?1 UNION ALL SELECT json_extract(record,'$.project_path'),NULL FROM tasks WHERE id=?1 LIMIT 1",[id],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+        let links:Option<(String,Option<String>)>=conn.prepare_cached("SELECT json_extract(record,'$.project_path'),json_extract(record,'$.worktree_path') FROM implementations WHERE id=?1 UNION ALL SELECT json_extract(record,'$.project_path'),NULL FROM tasks WHERE id=?1 LIMIT 1")?.query_row([id],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
         if let Some((project, workspace)) = links {
             seed_owner(conn, id, &project, workspace.as_deref())?;
         }

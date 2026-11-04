@@ -6,7 +6,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({
   onDeviceStateChanged: () => () => {},
 }));
 vi.mock("../src/core/changeEvents.js", () => ({
-  bridgeCapabilities: () => ({ sync: { projectTasks: true } }), onBridgeGreeted: () => () => {},
+  bridgeCapabilities: () => ({ sync: { device: false, projectTasks: true } }), onBridgeGreeted: () => () => {},
 }));
 vi.mock("../src/core/scopedSyncRegistry.js", async () => {
   const actual = await vi.importActual("../src/core/scopedSyncRegistry.js");
@@ -48,7 +48,7 @@ beforeEach(async () => {
   vi.resetModules(); vi.stubGlobal("navigator", { locks: { request: vi.fn() } });
   fake.lock = true; fake.clock = 1000; fake.cursors = new Map(); fake.stores = []; pending = [];
   fake.context = { deviceId: "d", session: {}, cacheScope: {}, active: () => true,
-    greeting: { epoch: "e", current: () => true, capabilities: { sync: { projectTasks: true } } } };
+    greeting: { epoch: "e", current: () => true, capabilities: { sync: { device: false, projectTasks: true } } } };
   channel = { onmessage: null, postMessage: vi.fn(), close: vi.fn() };
   const { createScopedSyncRegistry } = await vi.importActual("../src/core/scopedSyncRegistry.js");
   fake.registry = createScopedSyncRegistry({ channel, now: () => fake.clock });

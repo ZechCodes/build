@@ -7,7 +7,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({
   onDeviceStateChanged: (fn) => { fake.changed = fn; return () => {}; },
 }));
 vi.mock("../src/core/changeEvents.js", () => ({
-  bridgeCapabilities: () => ({ sync: { projectTasks: true, task: true } }),
+  bridgeCapabilities: () => ({ sync: { device: false, projectTasks: true, task: true } }),
   onBridgeGreeted: (fn) => { fake.greeted = fn; return () => {}; },
 }));
 vi.mock("../src/core/scopedSyncRegistry.js", () => ({
@@ -33,7 +33,7 @@ beforeEach(async () => {
   vi.resetModules(); fake.woken = null; fake.broadcast.mockClear(); fake.columns.mockClear(); fake.body.mockClear(); fake.lock = false; fake.engines = [];
   fake.scopes = [{ scope, projectId: "p1", key: "t1" }];
   fake.contexts = [{ deviceId: "d1", session: {}, cacheScope: {}, active: () => true,
-    greeting: { epoch: "e1", current: () => true, capabilities: { sync: { task: true, projectTasks: true } } } }];
+    greeting: { epoch: "e1", current: () => true, capabilities: { sync: { device: false, task: true, projectTasks: true } } } }];
   runtime = await import("../src/core/scopedSyncRuntime.js");
 });
 describe("scoped sync runtime ownership", () => {

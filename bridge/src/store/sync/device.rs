@@ -437,9 +437,8 @@ pub(super) fn apply_projection(
     if let Some((from, deleted, previous, _)) = previous {
         let previous_bytes = version_bytes(entity, previous.as_ref().map_or(0, String::len));
         if super::retention::retain_version(tx, previous_bytes, seq)? {
-            tx.execute(
-            "INSERT INTO sync_projection_versions(kind,key,from_seq,to_seq,deleted,record,record_bytes)
-             VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            tx.prepare_cached("INSERT INTO sync_projection_versions(kind,key,from_seq,to_seq,deleted,record,record_bytes)
+             VALUES(?1,?2,?3,?4,?5,?6,?7)")?.execute(
             params![
                 entity.kind,
                 entity.key,
@@ -452,18 +451,23 @@ pub(super) fn apply_projection(
         )?;
         }
     } else {
-        tx.execute(
-            "INSERT INTO sync_projection_keys(kind,key,first_seq) VALUES(?1,?2,?3)",
-            params![entity.kind, entity.key, seq],
-        )?;
+        tx.prepare_cached("INSERT INTO sync_projection_keys(kind,key,first_seq) VALUES(?1,?2,?3)")?
+            .execute(params![entity.kind, entity.key, seq])?;
     }
-    tx.execute(
+    tx.prepare_cached(
         "INSERT INTO sync_projection(kind,key,from_seq,deleted,record,record_bytes)
          VALUES(?1,?2,?3,?4,?5,?6)
          ON CONFLICT(kind,key) DO UPDATE SET from_seq=excluded.from_seq,deleted=excluded.deleted,
          record=excluded.record,record_bytes=excluded.record_bytes",
-        params![entity.kind, entity.key, seq, record.is_none(), raw, bytes],
-    )?;
+    )?
+    .execute(params![
+        entity.kind,
+        entity.key,
+        seq,
+        record.is_none(),
+        raw,
+        bytes
+    ])?;
     Ok(())
 }
 

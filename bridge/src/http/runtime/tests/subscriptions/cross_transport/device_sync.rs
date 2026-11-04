@@ -33,10 +33,9 @@ async fn device_sync_wire_http_uses_the_same_typed_scope_and_lease_contract() {
             now,
         )
         .unwrap();
-    // This transport contract needs an uncontended writer. AppState::shared
-    // also starts unrelated maintenance/delivery writers; admission correctly
-    // refuses those instead of waiting. The handler still performs startup
-    // projection and read-context initialization for this isolated app.
+    // A bare handler isolates this transport contract from maintenance jobs.
+    // Admission remains non-blocking; use the same bounded busy retry policy
+    // as the carrier tests if a writer does contend.
     let state = std::sync::Arc::new(std::sync::Mutex::new(app));
     let fixture = Fixture::new(AppState::handler(state));
     let client = fixture.http_client("device-sync-family").await;
@@ -44,21 +43,32 @@ async fn device_sync_wire_http_uses_the_same_typed_scope_and_lease_contract() {
         (r#"{"scope":{"kind":"device"},"limit":100}"#, true),
         (r#"{"scope":{"kind":"unknown_device"}}"#, false),
     ] {
-        let request = request_as(
-            &client.family,
-            "POST",
-            "/v1/sync/snapshot-queries",
-            &client.session,
-            Some(body),
-        );
-        let output = request
-            .extensions()
-            .get::<crate::http::listener::OutputAuthority>()
-            .unwrap()
-            .clone();
-        let response = fixture.app.clone().oneshot(request).await.unwrap();
-        let (status, answer) = json_response(response).await;
-        flush(output).await;
+        let mut attempt = 0;
+        let (status, answer) = loop {
+            attempt += 1;
+            let request = request_as(
+                &client.family,
+                "POST",
+                "/v1/sync/snapshot-queries",
+                &client.session,
+                Some(body),
+            );
+            let output = request
+                .extensions()
+                .get::<crate::http::listener::OutputAuthority>()
+                .unwrap()
+                .clone();
+            let response = fixture.app.clone().oneshot(request).await.unwrap();
+            let (status, answer) = json_response(response).await;
+            flush(output).await;
+            if !valid
+                || crate::test_support::device_sync::admission_ready(&answer, attempt)
+                    .await
+                    .expect("HTTP snapshot admission eventually succeeds")
+            {
+                break (status, answer);
+            }
+        };
         if valid {
             assert_eq!(status, StatusCode::OK);
             assert_eq!(answer["ok"], true, "{answer}");

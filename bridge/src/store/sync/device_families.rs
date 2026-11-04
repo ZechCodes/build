@@ -12,11 +12,11 @@ pub(super) fn install(conn: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 fn installed(conn: &Connection) -> Result<bool, StoreError> {
-    Ok(conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name='device_family_touches')",
-        [],
-        |row| row.get(0),
-    )?)
+    Ok(conn
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name='device_family_touches')",
+        )?
+        .query_row([], |row| row.get(0))?)
 }
 pub(in crate::store) fn touch_archive(conn: &Connection, id: &str) -> Result<(), StoreError> {
     if installed(conn)? {
@@ -51,7 +51,8 @@ pub(super) fn collect(
             stage_retained(tx, batch, &kind, &key)?;
         }
     }
-    tx.execute("DELETE FROM temp.device_family_touches", [])?;
+    tx.prepare_cached("DELETE FROM temp.device_family_touches")?
+        .execute([])?;
     Ok(())
 }
 pub(super) fn stage_archive(
@@ -60,16 +61,13 @@ pub(super) fn stage_archive(
     id: &str,
 ) -> Result<(), StoreError> {
     let raw: Option<String> = tx
-        .query_row(
-            "SELECT record FROM archived_worktrees WHERE id=?1",
-            [id],
-            |row| row.get(0),
-        )
+        .prepare_cached("SELECT record FROM archived_worktrees WHERE id=?1")?
+        .query_row([id], |row| row.get(0))
         .optional()?;
     let row=raw.map(|raw|->Result<Value,StoreError>{
         let record:crate::store::PersistedArchivedWorktree=serde_json::from_str(&raw).map_err(|source|StoreError::Corrupt{path:format!("archived_worktrees/{id}").into(),source})?;
-        tx.execute("INSERT INTO device_archive_projects VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET project_path=?2",params![id,record.project_path])?;
-        let project:Option<String>=tx.query_row("SELECT project_id FROM device_project_ids WHERE path=?1",[&record.project_path],|row|row.get(0)).optional()?;
+        tx.prepare_cached("INSERT INTO device_archive_projects VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET project_path=?2")?.execute(params![id,record.project_path])?;
+        let project:Option<String>=tx.prepare_cached("SELECT project_id FROM device_project_ids WHERE path=?1")?.query_row([&record.project_path],|row|row.get(0)).optional()?;
         Ok(json!({"id":id,"project_id":project,"name":record.worktree_name,"path":record.worktree_path,"branch":record.branch,"head_sha":record.head_sha,"action":record.action,"status":record.status,"archived_at":record.archived_at}))
     }).transpose()?;
     super::stage_device(tx, batch, Entity::new("archived_worktree", id), row)
@@ -89,7 +87,9 @@ pub(in crate::store) fn lifecycle(
     records: &std::collections::HashMap<String, crate::reclaim::LifecycleRecord>,
 ) -> Result<(), StoreError> {
     let previous = tx
-        .prepare("SELECT key FROM sync_projection WHERE kind='workspace_lifecycle' AND deleted=0")?
+        .prepare_cached(
+            "SELECT key FROM sync_projection WHERE kind='workspace_lifecycle' AND deleted=0",
+        )?
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     for id in previous {
@@ -189,15 +189,14 @@ fn stage_retained(
     key: &str,
 ) -> Result<(), StoreError> {
     let at: Option<i64> = tx
-        .query_row(
+        .prepare_cached(
             "SELECT last_activity_ms FROM device_retained_sessions WHERE kind=?1 AND key=?2",
-            params![kind, key],
-            |row| row.get(0),
-        )
+        )?
+        .query_row(params![kind, key], |row| row.get(0))
         .optional()?;
     let row=at.map(|at|->Result<Value,StoreError>{
         if kind=="project" {return Ok(json!({"project_id":key,"retained_last_activity_ms":at}));}
-        let links:Option<(Option<String>,Option<String>)>=tx.query_row("SELECT p.project_id,w.workspace_id FROM device_owner_projects o LEFT JOIN device_project_ids p ON p.path=o.project_path LEFT JOIN device_workspace_roots w ON w.root=o.workspace_path WHERE o.owner_id=?1",[key],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+        let links:Option<(Option<String>,Option<String>)>=tx.prepare_cached("SELECT p.project_id,w.workspace_id FROM device_owner_projects o LEFT JOIN device_project_ids p ON p.path=o.project_path LEFT JOIN device_workspace_roots w ON w.root=o.workspace_path WHERE o.owner_id=?1")?.query_row([key],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
         let (project,workspace)=links.unwrap_or((None,None));
         Ok(json!({"owner_id":key,"project_id":project,"workspace_id":workspace,"retained_last_activity_ms":at}))
     }).transpose()?;

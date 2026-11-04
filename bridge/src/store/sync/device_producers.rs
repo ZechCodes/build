@@ -18,8 +18,7 @@ pub(in crate::store) fn install(conn: &Connection) -> Result<(), StoreError> {
 }
 
 pub(in crate::store) fn touch_agent(conn: &Connection, id: &str) -> Result<(), StoreError> {
-    let installed: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name='sync_device_agent_touches')",
+    let installed: bool = conn.prepare_cached("SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name='sync_device_agent_touches')")?.query_row(
         [],
         |row| row.get(0),
     )?;
@@ -71,7 +70,8 @@ pub(in crate::store) fn collect(
         )?;
     }
     super::device_families::collect(tx, batch)?;
-    tx.execute("DELETE FROM temp.sync_device_agent_touches", [])?;
+    tx.prepare_cached("DELETE FROM temp.sync_device_agent_touches")?
+        .execute([])?;
     Ok(())
 }
 
@@ -153,12 +153,9 @@ fn agent_projections(
     let project_id = project_path
         .as_deref()
         .map(|path| {
-            conn.query_row(
-                "SELECT project_id FROM device_project_ids WHERE path=?1",
-                [path],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
+            conn.prepare_cached("SELECT project_id FROM device_project_ids WHERE path=?1")?
+                .query_row([path], |row| row.get::<_, String>(0))
+                .optional()
         })
         .transpose()?
         .flatten();
@@ -228,8 +225,7 @@ pub(super) fn owner_project_path(
 }
 
 pub(in crate::store) fn touch_conversation(conn: &Connection, id: &str) -> Result<(), StoreError> {
-    let installed: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name='sync_device_agent_touches')",
+    let installed: bool = conn.prepare_cached("SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name='sync_device_agent_touches')")?.query_row(
         [],
         |row| row.get(0),
     )?;
@@ -237,29 +233,29 @@ pub(in crate::store) fn touch_conversation(conn: &Connection, id: &str) -> Resul
         return Ok(());
     }
     touch_agent(conn, id)?;
-    conn.execute("INSERT OR IGNORE INTO temp.sync_device_agent_touches
-        SELECT id FROM agents WHERE CASE WHEN json_valid(record) THEN json_extract(record,'$.conversation_id') END=?1",[id])?;
+    conn.prepare_cached("INSERT OR IGNORE INTO temp.sync_device_agent_touches
+        SELECT id FROM agents WHERE CASE WHEN json_valid(record) THEN json_extract(record,'$.conversation_id') END=?1")?.execute([id])?;
     Ok(())
 }
 
 pub(in crate::store) fn touch_project(conn: &Connection, path: &str) -> Result<(), StoreError> {
-    conn.execute("INSERT OR IGNORE INTO temp.sync_device_agent_touches SELECT a.id FROM agents a JOIN device_owner_projects o ON o.owner_id=a.owner_id WHERE o.project_path=?1",[path])?;
+    conn.prepare_cached("INSERT OR IGNORE INTO temp.sync_device_agent_touches SELECT a.id FROM agents a JOIN device_owner_projects o ON o.owner_id=a.owner_id WHERE o.project_path=?1")?.execute([path])?;
     let owners = conn
-        .prepare("SELECT owner_id FROM device_owner_projects WHERE project_path=?1")?
+        .prepare_cached("SELECT owner_id FROM device_owner_projects WHERE project_path=?1")?
         .query_map([path], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     for owner in owners {
         super::device_families::touch_retained(conn, "owner", &owner)?;
     }
     let archives = conn
-        .prepare("SELECT id FROM device_archive_projects WHERE project_path=?1")?
+        .prepare_cached("SELECT id FROM device_archive_projects WHERE project_path=?1")?
         .query_map([path], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     for id in archives {
         super::device_families::touch_archive(conn, &id)?;
     }
     let ids = conn
-        .prepare("SELECT task_id FROM tracker_task_summaries WHERE project_key=?1")?
+        .prepare_cached("SELECT task_id FROM tracker_task_summaries WHERE project_key=?1")?
         .query_map([path], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     for id in ids {
@@ -270,9 +266,11 @@ pub(in crate::store) fn touch_project(conn: &Connection, path: &str) -> Result<(
 
 fn pending(conn: &Connection, id: &str) -> Result<bool, StoreError> {
     let legacy=format!("SELECT EXISTS(SELECT 1 FROM thread_items INDEXED BY thread_items_pending_delivery WHERE agent_id=?1 AND message=1 AND {})",crate::store::schema::RETENTION_PENDING_ITEM_SQL);
-    let pending: bool = conn.query_row(&legacy, [id], |row| row.get(0))?;
+    let pending: bool = conn
+        .prepare_cached(&legacy)?
+        .query_row([id], |row| row.get(0))?;
     if pending {
         return Ok(true);
     }
-    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE conversation_id=?1 AND status IN ('queued','claimed','uncertain'))",[id],|row|row.get(0))?)
+    Ok(conn.prepare_cached("SELECT EXISTS(SELECT 1 FROM operations WHERE conversation_id=?1 AND status IN ('queued','claimed','uncertain'))")?.query_row([id],|row|row.get(0))?)
 }

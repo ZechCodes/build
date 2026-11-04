@@ -233,6 +233,7 @@ it.each(["initial mount", "view change"])("reports unread display hydration fail
     expect(failedRead).toBe(true);
     expect(unhandled).toEqual([]);
     expect(notifyError).toHaveBeenCalledWith("Could not read this project's tasks", failure.message);
+    expect(notifyError).toHaveBeenCalledTimes(1);
     expect(columnNames()).toEqual(columns().map((column) => column.name));
     expect(cardsIn("backlog")).toEqual(["cached-hydration"]);
   } finally {
@@ -274,6 +275,7 @@ it.each(["query", "whole list"])("continues after rejected display hydration fro
     await flush();
     expect(unhandled).toEqual([]);
     expect(notifyError).toHaveBeenCalledWith("Could not read this project's tasks", failure.message);
+    expect(notifyError).toHaveBeenCalledTimes(1);
     expect(titles()).toEqual(["Subscribed cached task"]);
     expect(durable.wake.mock.calls.some(([deviceId, accepts]) => deviceId === "dev-1"
       && accepts({ kind: "task", task_id: "subscribed-hydration" }))).toBe(true);

@@ -267,7 +267,7 @@ export function mountTasksPane(host, options) {
   });
   async function hydrateUnreadTasks() {
     try { await unreadDisplay.updateTasks(state.shown); }
-    catch (error) { reportReadFailure(error); }
+    catch (error) { if (!error.superseded) reportReadFailure(error.cause ?? error); }
   }
   /** Each watched task's unread, as the bubble on its row, card or dashboard
    *  line says it (#104): off the cached timeline while it is current, and

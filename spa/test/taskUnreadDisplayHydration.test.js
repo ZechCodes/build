@@ -57,10 +57,28 @@ it("preserves direct hydration rejection while settling and notifying its caller
   const failure = new Error("Direct owner hydration failed");
   const report = vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(cache, "readCachedMany").mockRejectedValueOnce(failure);
-  await expect(owner.updateTasks([task])).rejects.toBe(failure);
+  await expect(owner.updateTasks([task])).rejects.toMatchObject({ cause: failure, message: failure.message, superseded: false });
   expect(onChange).toHaveBeenCalledOnce();
   expect(report).toHaveBeenCalledExactlyOnceWith("Task unread display persistence unavailable", failure);
   expect(owner.hydrating()).toBe(false);
+});
+
+it("wraps a shared failure separately for current and superseded hydration calls", async () => {
+  owner = createOwner({ scope, consumer: "tasks-pane" });
+  const failure = new Error("Shared unread storage failure");
+  vi.spyOn(console, "info").mockImplementation(() => {});
+  let rejectHeld;
+  const held = new Promise((_, reject) => { rejectHeld = reject; });
+  vi.spyOn(cache, "readCachedMany").mockReturnValueOnce(held).mockRejectedValueOnce(failure);
+  const obsolete = owner.updateTasks([task]).catch((error) => error);
+  const current = await owner.updateTasks([task]).catch((error) => error);
+  rejectHeld(failure);
+  const superseded = await obsolete;
+  expect(current).not.toBe(failure);
+  expect(superseded).not.toBe(current);
+  expect(current).toMatchObject({ cause: failure, message: failure.message, superseded: false });
+  expect(superseded).toMatchObject({ cause: failure, message: failure.message, superseded: true });
+  expect(failure).not.toHaveProperty("superseded");
 });
 
 it("starts idle without reading cache until tasks are supplied", () => {

@@ -19,7 +19,8 @@ export function createScopedSyncRegistry({ channel: providedChannel, createChann
   const all = () => [...local.values(), ...[...remote.values()].flatMap((tab) => tab.scopes)];
   function selected() {
     for (const [id, tab] of remote) if (now() - tab.at >= PRESENCE_LEASE_MS) remote.delete(id);
-    return cappedScopes(all());
+    const registrations = all(), winners = winningOpenings(registrations);
+    return cappedScopes(registrations).map((entry) => ({ ...entry, ...winners.get(entry.key) }));
   }
   function notify() {
     const next = JSON.stringify(selected());
@@ -36,7 +37,18 @@ export function createScopedSyncRegistry({ channel: providedChannel, createChann
     if (data.type === "wake") { receiveWake(data); return; }
     if (data.type !== "presence" || !Array.isArray(data.scopes)) return;
     remote.set(data.owner, { at: now(), scopes: data.scopes });
+    adoptOpenings();
     notify();
+  }
+  function adoptOpenings() {
+    const winners = winningOpenings(all());
+    let changed = false;
+    for (const [id, entry] of local) {
+      const winner = winners.get(entry.key);
+      if (!winner || sameOpening(entry, winner)) continue;
+      local.set(id, { ...entry, ...winner }); changed = true;
+    }
+    if (changed) publish();
   }
   function receiveWake(data) {
     if (typeof data.deviceId !== "string" || !Array.isArray(data.scopes)) return;
@@ -80,9 +92,10 @@ export function createScopedSyncRegistry({ channel: providedChannel, createChann
       // Duplicate mounts belong to one continuous opening. A new opening
       // after the final release must not inherit the previous cursor proof.
       const key = scopeKey(registration);
-      const opening = selected().find((entry) => entry.key === key)?.registration || randomToken();
+      const opening = selected().find((entry) => entry.key === key), opened = now();
       const id = `${owner}:${++sequence}`;
-      local.set(id, { ...registration, registration: opening, opened: now(), ordinal: sequence, owner, id, key });
+      local.set(id, { ...registration, registration: opening?.registration || randomToken(),
+        registrationOpened: opening?.registrationOpened ?? opened, opened, ordinal: sequence, owner, id, key });
       updateTimer();
       publish(); notify();
       return () => { local.delete(id); publish(); updateTimer(); notify(); };
@@ -100,6 +113,29 @@ export function createScopedSyncRegistry({ channel: providedChannel, createChann
       local.clear(); publish(); disposed = true; updateTimer(); providedChannel?.close(); listeners.clear(); wakeListeners.clear();
     },
   };
+}
+
+const sameOpening = (entry, winner) => entry.registration === winner.registration
+  && entry.registrationOpened === winner.registrationOpened;
+const earlierOpening = (candidate, held) => !held || candidate.registrationOpened < held.registrationOpened
+  || candidate.registrationOpened === held.registrationOpened && candidate.registration < held.registration;
+
+function openingIdentity(entry) {
+  const registrationOpened = entry.registrationOpened ?? entry.opened;
+  return typeof entry.registration === "string" && Number.isFinite(registrationOpened)
+    ? { registration: entry.registration, registrationOpened } : null;
+}
+
+// Presence is asynchronous: two tabs can open before hearing each other.
+// Carry the earliest opening through every surviving local duplicate. Its
+// identity time is separate from `opened`, which still orders the tracking cap.
+function winningOpenings(registrations) {
+  const winners = new Map();
+  for (const entry of registrations) {
+    const candidate = openingIdentity(entry);
+    if (candidate && earlierOpening(candidate, winners.get(entry.key))) winners.set(entry.key, candidate);
+  }
+  return winners;
 }
 
 function cappedScopes(registrations) {

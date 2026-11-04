@@ -317,6 +317,49 @@ async function blindRestorePriorLineage(title) {
 
 describe("D5 unmounted admitted lineage versus blind paint", () => {
 
+  it("keeps the current filter's badge without a notice when superseded hydration rejects", async () => {
+    await renderPersistAndLeave();
+    await tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId,
+      { project_id: scope.projectId, state: "open" },
+      tracker.tasksRecord([full({ title: "Superseded filter A" })], columns(), 100));
+    await tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId,
+      { project_id: scope.projectId, state: "open", status: "ready" },
+      tracker.tasksRecord([full({ title: "Current filter B" })], columns(), 101));
+    await cache.deleteCached([tracker.tasksAddress(scope.deviceId, scope.projectId)]);
+    const failure = new Error("Superseded unread display read failed");
+    const diagnostic = vi.spyOn(console, "info").mockImplementation(() => {});
+    const read = cache.readCachedMany;
+    let rejectHeld;
+    const held = new Promise((_, reject) => { rejectHeld = reject; });
+    let waiting = false;
+    vi.spyOn(cache, "readCachedMany").mockImplementation((addresses) => {
+      if (!waiting && addresses.length === 4 && addresses[0].kind === "task-content-generation"
+        && addresses[3].sub === JSON.stringify(["tracker-task", taskId])) {
+        waiting = true;
+        return held;
+      }
+      return read(addresses);
+    });
+    const { mountTasksPane } = await import("../src/core/trackerTasksPane.js");
+    pane = mountTasksPane(paneHost, { deviceId: scope.deviceId, projectId: scope.projectId,
+      projectKey: project.projectKey, projectName: project.name, defaultView: "list", callRpc: rpc,
+      catalog: () => ({ providers: [] }), feed: () => ({ items: [], workspaces: [] }) });
+    await vi.waitFor(() => expect(waiting).toBe(true), WAIT);
+    const status = paneHost.querySelector('[data-filter-menu="status"]');
+    status.querySelector(".fmenu-press").click();
+    await vi.waitFor(() => expect(status.querySelector('[data-value="ready"]')).not.toBeNull(), WAIT);
+    status.querySelector('[data-value="ready"]').click();
+    await vi.waitFor(() => expect(paneHost.querySelector(".task-title")?.textContent).toBe("Current filter B"), WAIT);
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+    expect(document.querySelector(".notice")).toBeNull();
+    rejectHeld(failure);
+    await vi.waitFor(() => expect(diagnostic).toHaveBeenCalledWith("Task unread display persistence unavailable", failure), WAIT);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.querySelector(".notice")).toBeNull();
+    expect(paneHost.querySelector(".task-title")?.textContent).toBe("Current filter B");
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+  });
+
   it("does not resurrect a retired display when settlement republishes the previous consumer snapshot", async () => {
     await renderPersistAndLeave();
     const previous = await listedTask();

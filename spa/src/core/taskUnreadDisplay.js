@@ -7,6 +7,7 @@ import { randomToken } from "./idbRecords.js";
 import { taskUnreadCount, taskUnreadDisplayCount } from "./taskUnread.js";
 import { changedSince } from "./trackerModel.js";
 import { TASK_FAMILY_CACHE, TASK_WATCH_CACHE, hasTaskWatchSnapshot } from "./taskWatchFacts.js";
+import { messageOf } from "./text.js";
 
 const DISPLAY = "task_unread_display";
 const consumers = ["tasks-pane", "inbox"];
@@ -185,7 +186,9 @@ export function createTaskUnreadDisplayOwner({ scope, consumer, active = () => t
       acceptNotes(read, ids, records);
     } catch (error) {
       reportFailure(error);
-      throw error;
+      const failure = new Error(messageOf(error), { cause: error });
+      failure.superseded = !usable() || read !== serial;
+      throw failure;
     } finally {
       if (read === serial) {
         hydrating = false;

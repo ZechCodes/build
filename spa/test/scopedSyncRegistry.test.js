@@ -163,3 +163,107 @@ it("reopens a lazy holder channel and rediscovers remote presence before forward
   expect(holder.tracked("d")).toHaveLength(0);
   stopAgain(); expect(channels).toHaveLength(0);
 });
+
+function asynchronousChannels() {
+  const channels = new Set(), pending = [], sent = [];
+  const createChannel = () => {
+    const channel = { onmessage: null,
+      postMessage(data) {
+        sent.push(structuredClone(data));
+        for (const peer of channels) if (peer !== channel) {
+          const copy = structuredClone(data);
+          pending.push(() => { if (channels.has(peer)) peer.onmessage?.({ data: copy }); });
+        }
+      },
+      close() { channels.delete(channel); },
+    };
+    channels.add(channel); return channel;
+  };
+  const flush = async () => {
+    let delivered = 0;
+    while (pending.length) {
+      if (++delivered > 100) throw new Error("Presence messages did not converge");
+      await Promise.resolve(); pending.shift()();
+    }
+  };
+  return { createChannel, flush, sent };
+}
+
+it.each([
+  ["fresh", "first"], ["fresh", "second"], ["idle", "first"], ["idle", "second"],
+])("converges asynchronous %s tab openings on the earliest registration when %s tab closes first", async (activation, closesFirst) => {
+  vi.useFakeTimers();
+  const bus = asynchronousChannels(); let clock = 100;
+  const holder = registry({ createChannel: bus.createChannel, now: () => clock }); holder.subscribe(vi.fn());
+  const first = registry({ createChannel: bus.createChannel, now: () => clock });
+  const second = registry({ createChannel: bus.createChannel, now: () => clock });
+  const closeFirst = first.register(task("shared"));
+  const original = first.tracked("d")[0];
+  if (activation === "idle") {
+    const stop = second.subscribe(vi.fn()); await bus.flush(); stop();
+  }
+  clock = 200;
+  const closeSecond = second.register(task("shared"));
+  clock = 201;
+  const closeDuplicate = second.register(task("shared"));
+  await bus.flush();
+  expect(first.tracked("d")[0].registration).toBe(original.registration);
+  expect(second.tracked("d")[0].registration).toBe(original.registration);
+  expect(holder.tracked("d")[0].registration).toBe(original.registration);
+  if (closesFirst === "first") {
+    closeFirst(); await bus.flush();
+    expect(second.tracked("d")[0].registration).toBe(original.registration);
+    expect(holder.tracked("d")[0].registration).toBe(original.registration);
+    closeSecond(); await bus.flush();
+    expect(second.tracked("d")[0].registration).toBe(original.registration);
+    closeDuplicate();
+  } else {
+    closeSecond(); await bus.flush();
+    expect(second.tracked("d")[0].registration).toBe(original.registration);
+    closeDuplicate(); await bus.flush();
+    expect(first.tracked("d")[0].registration).toBe(original.registration);
+    expect(holder.tracked("d")[0].registration).toBe(original.registration);
+    closeFirst();
+  }
+  await bus.flush();
+  expect(first.tracked("d")).toEqual([]); expect(second.tracked("d")).toEqual([]);
+  clock = 300;
+  const closeReopened = second.register(task("shared")); await bus.flush();
+  expect(second.tracked("d")[0].registration).not.toBe(original.registration);
+  closeReopened(); await bus.flush();
+});
+
+it("breaks simultaneous asynchronous opening ties by registration token and preserves the winner after its tab closes", async () => {
+  vi.useFakeTimers();
+  const bus = asynchronousChannels();
+  const first = registry({ createChannel: bus.createChannel, now: () => 100 });
+  const second = registry({ createChannel: bus.createChannel, now: () => 100 });
+  const closeFirst = first.register(task("shared")), firstToken = first.tracked("d")[0].registration;
+  const closeSecond = second.register(task("shared")), secondToken = second.tracked("d")[0].registration;
+  const winner = [firstToken, secondToken].sort()[0];
+  await bus.flush();
+  expect(first.tracked("d")[0].registration).toBe(winner);
+  expect(second.tracked("d")[0].registration).toBe(winner);
+  if (winner === firstToken) { closeFirst(); await bus.flush(); expect(second.tracked("d")[0].registration).toBe(winner); closeSecond(); }
+  else { closeSecond(); await bus.flush(); expect(first.tracked("d")[0].registration).toBe(winner); closeFirst(); }
+  await bus.flush();
+});
+
+it("adopts original opening metadata without aging a recently mounted scope out of the cap or echoing unchanged presence", async () => {
+  vi.useFakeTimers();
+  const bus = asynchronousChannels(); let clock = 1;
+  const first = registry({ createChannel: bus.createChannel, now: () => clock });
+  const second = registry({ createChannel: bus.createChannel, now: () => clock });
+  first.register(task("shared")); const original = first.tracked("d")[0];
+  for (let index = 0; index < MAX_TRACKED_SYNC_SCOPES; index += 1) {
+    clock = index + 2; second.register(task(`other-${index}`));
+  }
+  clock = 100; second.register(task("shared"));
+  await bus.flush();
+  expect(second.tracked("d")).toHaveLength(MAX_TRACKED_SYNC_SCOPES);
+  expect(second.tracked("d").find(({ scope }) => scope.task_id === "shared"))
+    .toMatchObject({ registration: original.registration, registrationOpened: 1, opened: 100 });
+  const sentBefore = bus.sent.length;
+  first.wake("d", [taskSyncScope("shared")]); await bus.flush();
+  expect(bus.sent.length - sentBefore).toBe(2);
+});

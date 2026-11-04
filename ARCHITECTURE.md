@@ -4306,7 +4306,10 @@ gate attachment display.
   preserve cached content without a schema upgrade.
   Continuous view registrations are named independently of sessions and lock
   ownership. A fresh opening snapshots; a handover of the same registration
-  resumes its committed cursor.
+  resumes its committed cursor. Asynchronous tab discovery converges each
+  continuously open scope on the earliest opening (token breaks ties). Tabs
+  adopt and carry that identity even when its originating tab closes; mount
+  recency remains separate for the active-scope cap.
   Pushes wake this reader; reconnect, foreground return and a thirty-second
   `sync.head` interval repair missed notifications. Connection passes capture
   finite open-scope recovery, while later pushes form separate trailing work.
@@ -4327,6 +4330,8 @@ gate attachment display.
   frames wait for the unread owner's latest read, including its note-change
   refreshes. Settlement reports failures and notifies painters; pane cache
   paths continue their details/catalogue publication after a handled failure.
+  Hydration rejections retain the original cause and identify superseded reads,
+  so an obsolete read cannot raise a user notice after a newer view has painted.
   The owner rejects recordings during hydration or from an obsolete watch
   snapshot, so a consumer's older frame cannot restore retired display history.
   Legacy column helpers share that reader to avoid refetching cold metadata.

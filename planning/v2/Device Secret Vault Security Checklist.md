@@ -4,7 +4,7 @@ Scope: #1001's unadvertised bridge storage/lifetime foundation. This does not
 qualify sealed uploads, session release authority/audit, raw CLI retrieval,
 wire admission or SPA delivery; those remain separate reviewed slices.
 
-**Scoped score: pending gating re-verification.** Ten foundation controls, ten points each.
+**Scoped score: 100/100.** All ten foundation controls re-verified after gating review.
 
 | # | Control | Evidence |
 |---|---|---|
@@ -90,5 +90,28 @@ The actual diagnostic emitter is pinned to a count-only format. The migration
 README now gives a forward-fix/fresh-state operator path after first startup
 makes rollback unavailable, without moving or deleting the vault.
 
-Each behavior regression was observed failing before implementation. Final
-counts and gates for this revision will be recorded below and on #1001.
+Each behavior regression was observed failing before implementation. The soft
+startup change additionally exposed a workspace-copy bypass: a persisted
+ancestor source could copy its vault into a disjoint workspace. The real built
+library reproduced that copy before the fix. Captured independent source policy
+now guards creation, directory additions, saved retries/deferred claims and
+immediate filesystem materialization; six targeted tests cover the blocked and
+safe cases.
+
+Final revision checks (all `nice -n 10`, actual exits):
+
+| Gate | Result | Exit |
+|---|---|---|
+| `cargo test --lib secrets` | 92 passed, 0 ignored | 0 |
+| Cargo-built lib binary: config isolation | 4 passed | 0 |
+| Cargo-built lib binary: updater vault paths | 2 passed | 0 |
+| `cargo test --test dev_channel` | 24 passed, 0 ignored | 0 |
+| `cargo clippy --all-targets -- -D warnings` | Clean, no new ratchets | 0 |
+| `cargo fmt --check` | Clean | 0 |
+| Semgrep across changed files | 59 files, 293 rules, no findings | 0 |
+| Gitleaks before push and diff check | Clean | 0 |
+
+The previously passing 107 Python migration/Git/CLI tests and Ruff result are
+retained: this revision changes their README only, with no Python code changes.
+The full suite remains reserved for the serial merge gate. Frozen head, exact
+commands, complete path list, fault-injection details and logs are on #1001.

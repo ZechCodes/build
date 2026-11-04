@@ -257,77 +257,99 @@ fn secrets_database_only_restore_starts_normal_app_retires_old_ids_and_accepts_n
 
 #[test]
 fn secrets_corrupt_present_key_preserves_state_and_repair_restores_access() {
-    use crate::secrets::{SecretError, SecretValue};
     for corrupt in [vec![b'T'; 32], b"synthetic-short-key".to_vec()] {
-        let root = tempfile::tempdir().unwrap();
-        let source_app = protected_app(root.path());
-        let old = attached_synthetic_secret(&source_app);
-        let key_path = root.path().join("secrets/vault.key");
-        let blob_path = root.path().join("secrets").join(&old.context.id);
-        let original_key = std::fs::read(&key_path).unwrap();
-        let original_blob = std::fs::read(&blob_path).unwrap();
-        drop(source_app);
-        std::fs::write(&key_path, &corrupt).unwrap();
+        assert_corrupt_key_preserved_and_repairable(&corrupt);
+    }
+}
 
-        let unavailable_app = app(root.path())
-            .with_secret_vault(root.path(), "synthetic-device")
-            .expect("a present corrupt key must not prevent normal daemon startup");
-        let service = unavailable_app.secret_service().unwrap();
-        for _ in 0..2 {
-            assert!(matches!(
-                service.read(&old.context.id),
-                Err(SecretError::Unavailable)
-            ));
-        }
-        let mut context = old.context.clone();
-        context.id = format!("sec_{}", uuid::Uuid::new_v4());
+fn assert_corrupt_key_preserved_and_repairable(corrupt: &[u8]) {
+    let root = tempfile::tempdir().unwrap();
+    let source_app = protected_app(root.path());
+    let old = attached_synthetic_secret(&source_app);
+    let key_path = root.path().join("secrets/vault.key");
+    let blob_path = root.path().join("secrets").join(&old.context.id);
+    let original_key = std::fs::read(&key_path).unwrap();
+    let original_blob = std::fs::read(&blob_path).unwrap();
+    drop(source_app);
+    std::fs::write(&key_path, corrupt).unwrap();
+
+    let unavailable_app = app(root.path())
+        .with_secret_vault(root.path(), "synthetic-device")
+        .expect("a present corrupt key must not prevent normal daemon startup");
+    let service = unavailable_app.secret_service().unwrap();
+    assert_secret_reads_and_stage_unavailable(&service, &old.context);
+    let store = unavailable_app.attached_store_for_test().unwrap();
+    let preserved = store
+        .writer()
+        .secret_record(&old.context.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(preserved, old);
+    assert!(preserved.revoked_at.is_none());
+    assert!(preserved.revocation_reason.is_none());
+    assert_eq!(store.writer().secret_records().unwrap(), vec![old.clone()]);
+    assert_eq!(std::fs::read(&key_path).unwrap(), corrupt);
+    assert_eq!(std::fs::read(&blob_path).unwrap(), original_blob);
+    drop(service);
+    drop(store);
+    drop(unavailable_app);
+
+    assert_original_key_repair(root.path(), &old, &original_key, &original_blob);
+}
+
+fn assert_secret_reads_and_stage_unavailable(
+    service: &crate::secrets::SecretService,
+    context: &crate::secrets::SecretContext,
+) {
+    use crate::secrets::{SecretError, SecretValue};
+    for _ in 0..2 {
         assert!(matches!(
-            service.stage(
-                context,
-                SecretValue::new(b"synthetic-new-value-only".to_vec()).unwrap(),
-                uuid::Uuid::new_v4().to_string(),
-                "b".repeat(64),
-            ),
+            service.read(&context.id),
             Err(SecretError::Unavailable)
         ));
-        let store = unavailable_app.attached_store_for_test().unwrap();
-        let preserved = store
-            .writer()
-            .secret_record(&old.context.id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(preserved, old);
-        assert!(preserved.revoked_at.is_none());
-        assert!(preserved.revocation_reason.is_none());
-        assert_eq!(store.writer().secret_records().unwrap(), vec![old.clone()]);
-        assert_eq!(std::fs::read(&key_path).unwrap(), corrupt);
-        assert_eq!(std::fs::read(&blob_path).unwrap(), original_blob);
-        drop(service);
-        drop(store);
-        drop(unavailable_app);
-
-        std::fs::write(&key_path, &original_key).unwrap();
-        let repaired_app = protected_app(root.path());
-        assert_eq!(
-            repaired_app
-                .secret_service()
-                .unwrap()
-                .read(&old.context.id)
-                .unwrap()
-                .as_bytes(),
-            b"synthetic-recovery-value-only"
-        );
-        let restored = repaired_app
-            .attached_store_for_test()
-            .unwrap()
-            .writer()
-            .secret_record(&old.context.id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(restored, old);
-        assert_eq!(std::fs::read(&key_path).unwrap(), original_key);
-        assert_eq!(std::fs::read(&blob_path).unwrap(), original_blob);
     }
+    let mut context = context.clone();
+    context.id = format!("sec_{}", uuid::Uuid::new_v4());
+    assert!(matches!(
+        service.stage(
+            context,
+            SecretValue::new(b"synthetic-new-value-only".to_vec()).unwrap(),
+            uuid::Uuid::new_v4().to_string(),
+            "b".repeat(64),
+        ),
+        Err(SecretError::Unavailable)
+    ));
+}
+
+fn assert_original_key_repair(
+    root: &Path,
+    old: &crate::secrets::SecretRecord,
+    original_key: &[u8],
+    original_blob: &[u8],
+) {
+    let key_path = root.join("secrets/vault.key");
+    let blob_path = root.join("secrets").join(&old.context.id);
+    std::fs::write(&key_path, original_key).unwrap();
+    let repaired_app = protected_app(root);
+    assert_eq!(
+        repaired_app
+            .secret_service()
+            .unwrap()
+            .read(&old.context.id)
+            .unwrap()
+            .as_bytes(),
+        b"synthetic-recovery-value-only"
+    );
+    let restored = repaired_app
+        .attached_store_for_test()
+        .unwrap()
+        .writer()
+        .secret_record(&old.context.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(&restored, old);
+    assert_eq!(std::fs::read(&key_path).unwrap(), original_key);
+    assert_eq!(std::fs::read(&blob_path).unwrap(), original_blob);
 }
 
 #[test]

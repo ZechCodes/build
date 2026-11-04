@@ -10,7 +10,9 @@ storage. Environment configuration and new project/source admission reject
 tree roots inside or containing the vault, resolving symlinks and missing
 leaves. A conflicting persisted project/workspace layout disables only secret
 access at startup; the bridge keeps running and retains the independent fence
-against new overlapping sources.
+against new overlapping sources. Workspace creation, directory addition and
+saved retries capture that fence and recheck it immediately before filesystem
+materialization, including when the secret service is disabled.
 Production overrides that use the entire `~/.build` directory as a task,
 project or worktree root must instead use a disjoint subdirectory. Persisted
 updater jobs are checked before rollback backup/install/recovery too.

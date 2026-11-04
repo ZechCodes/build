@@ -1165,3 +1165,55 @@ fn device_missing_facts_fences_scope_without_aborting_pruning_and_repairs_atomic
         .admit_device_lease("repair", "epoch", NOW)
         .expect("retiring the canonical agent also retires its missing-facts fence");
 }
+
+#[test]
+fn device_missing_facts_startup_repairs_without_agent_save_and_rejects_old_generation() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let mut run = run_record("facts-startup-repair");
+    for index in 0..150 {
+        run.agents[0].thread.post_agent(format!("message {index}"), None, AT);
+    }
+    store.save_run(&run).unwrap();
+    let id = &run.agents[0].id;
+    store.writer_for_test().execute("DELETE FROM device_agent_facts WHERE agent_id=?1", [id]).unwrap();
+    store.prune_conversation_batch(id, crate::store::RetentionPolicy::default(), "2026-11-24T12:00:00Z").unwrap();
+    let old: i64 = store.writer_for_test().query_row("SELECT generation FROM sync_dirty WHERE kind='device_agent_facts' AND key=?1", [id], |row| row.get(0)).unwrap();
+    let newer = store.writer().mark_sync_dirty("device_agent_facts", id, NOW).unwrap();
+    assert!(newer > old);
+    assert!(!store.writer().sync_transaction(|tx, _| super::device_facts::repair_marker(tx, id, old)).unwrap());
+    assert!(store.writer().reconcile_sync_dirty("device_agent_facts", id, old, None, NOW).is_err());
+    assert!(matches!(store.writer().admit_device_lease("repair", "epoch", NOW), Err(crate::store::sync::SyncError::Unavailable(_))));
+    drop(store);
+    let store = Store::new(directory.path()).unwrap();
+    store.writer().admit_device_lease("repair", "epoch", NOW).expect("startup must repair pruning's fence without any agent write");
+    assert_eq!(projection(&store, "agent", id)["owner_id"], run.id);
+    assert_eq!(store.writer_for_test().query_row("SELECT COUNT(*) FROM sync_dirty WHERE kind='device_agent_facts'", [], |row| row.get::<_,i64>(0)).unwrap(), 0);
+    drop(store);
+    let store = Store::new(directory.path()).unwrap();
+    store.writer().admit_device_lease("repair", "epoch", NOW).expect("a completed repair stays unfenced after restart");
+}
+
+#[test]
+fn device_missing_facts_startup_repair_chunks_resume_after_publication_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let run = run_record("facts-repair-chunks");
+    store.save_run(&run).unwrap();
+    for index in 0..130 {
+        let id = format!("repair-{index:03}");
+        store.writer_for_test().execute("INSERT INTO agents(id,owner_id,ordinal,record) SELECT ?1,owner_id,ordinal,json_set(record,'$.id',?1) FROM agents WHERE id=?2", rusqlite::params![id,run.agents[0].id]).unwrap();
+        store.writer().mark_sync_dirty("device_agent_facts", &id, NOW).unwrap();
+    }
+    store.writer_for_test().execute_batch("CREATE TRIGGER stop_device_facts_repair BEFORE INSERT ON sync_journal WHEN NEW.entity_kind='agent' AND NEW.entity_key='repair-128' BEGIN SELECT RAISE(ABORT,'synthetic startup repair publication failure'); END;").unwrap();
+    drop(store);
+    assert!(Store::new(directory.path()).is_err(), "partial startup repair must not admit reads");
+    let conn = rusqlite::Connection::open(directory.path().join("build.db")).unwrap();
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM device_agent_facts WHERE agent_id LIKE 'repair-%'", [], |row|row.get::<_,i64>(0)).unwrap(),128,"only the first bounded transaction committed");
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM sync_dirty WHERE kind='device_agent_facts'", [], |row|row.get::<_,i64>(0)).unwrap(),2,"publication failure must retain the remaining markers");
+    conn.execute_batch("DROP TRIGGER stop_device_facts_repair").unwrap();
+    drop(conn);
+    let store = Store::new(directory.path()).unwrap();
+    store.writer().admit_device_lease("repair", "epoch", NOW).unwrap();
+    assert_eq!(projection(&store, "agent", "repair-129")["id"], "repair-129");
+}

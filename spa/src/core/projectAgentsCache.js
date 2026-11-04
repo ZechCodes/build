@@ -1,4 +1,5 @@
 import { pushFence, pushedSince } from "./pushFence.js";
+import { deviceScopedSyncOwns, wakeScopedSync } from "./scopedSyncRuntime.js";
 import { cachedWriteOf, captureCachedRecord, isCachedWrite, mergeCachedAtomically, mergeCachedRecordsTogether, readCached, readCachedMany } from "./localCache.js";
 
 export const PROJECT_AGENTS_KIND = "project-agents";
@@ -18,10 +19,11 @@ export async function readProjectAgentsSupport(deviceId) {
   return (await readCached(projectAgentsSupportAddress(deviceId)))?.value || {};
 }
 
+// A complete roster remains authoritative when its recorded pin is absent
+// from membership or explicitly null. Neither fact promotes another agent.
 export const validProjectRoster = (roster, entityId) => typeof entityId === "string" && entityId.length > 0 && roster?.entity_id === entityId
-  && typeof roster.pinned_agent_id === "string"
-  && Array.isArray(roster.agents)
-  && roster.agents.some((agent) => agent.id === roster.pinned_agent_id);
+  && (roster.pinned_agent_id === null || typeof roster.pinned_agent_id === "string")
+  && Array.isArray(roster.agents);
 
 export async function readProjectAgents(deviceId, entityId) {
   if (!entityId) return null;
@@ -46,11 +48,13 @@ const immediateReads = new Map();
 let requestOrder = 0;
 const SYNC_DEFAULTS = { active: () => true, afterWrite: async () => {} };
 const workerRosterAvailable = (capabilities) => (typeof capabilities === "function" ? capabilities() : capabilities)?.agents?.projectWorkers === true;
-const readerActive = (options) => options.active() && workerRosterAvailable(options.capabilities);
+const callerActive = (options) => options.active() && workerRosterAvailable(options.capabilities);
+const readerActive = (options) => callerActive(options) && !deviceScopedSyncOwns(options.deviceId);
 
 export async function syncProjectAgents(options) {
   const request = { ...SYNC_DEFAULTS, ...options, fence: pushFence(), order: ++requestOrder };
-  if (!request.entityId || !readerActive(request)) return;
+  if (!request.entityId || !callerActive(request)) return;
+  if (deviceScopedSyncOwns(request.deviceId)) return confirmScopedRoster(request);
   const key = JSON.stringify([request.deviceId, request.entityId]);
   if (!request.background) return readImmediateRoster(key, request);
   const running = reads.get(key);
@@ -66,6 +70,17 @@ export async function syncProjectAgents(options) {
   if (!running.trailing) running.trailing = rosterReadGroup(request);
   else running.trailing.requests.push(request);
   return running.trailing.promise;
+}
+
+// User writes and read-state repair confirm through the same exact device
+// owner as the ordered pass; they never restore a second full-roster writer.
+async function confirmScopedRoster(request) {
+  const recovered = await wakeScopedSync(request.deviceId, (scope) => scope.kind === "device");
+  if (!recovered.some(Boolean) || !callerActive(request) || !deviceScopedSyncOwns(request.deviceId)) return;
+  const roster = (await readCached(projectAgentsAddress(request.deviceId, request.entityId)))?.value;
+  if (callerActive(request) && deviceScopedSyncOwns(request.deviceId) && validProjectRoster(roster, request.entityId)) {
+    await request.afterWrite(roster);
+  }
 }
 
 function rosterReadGroup(request) {

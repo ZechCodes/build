@@ -79,6 +79,14 @@ function conversationFacts(row, agents, hasRoster, roster) {
   return hasRoster ? [facts, `${runningCount} running`].filter(Boolean).join(" · ") : facts;
 }
 
+function pinnedAgent(project, row, agents) {
+  const roster = project.projectRoster;
+  if (roster) return agents.find((agent) => agent.id === roster.pinned_agent_id);
+  if (Object.hasOwn(row || {}, "pinned_agent_id")) return agents.find((agent) => agent.id === row.pinned_agent_id);
+  // Only legacy rows without recorded roles used roster position as the pin.
+  return agents.some((agent) => Object.hasOwn(agent, "project_role")) ? undefined : agents[0];
+}
+
 function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
   const { entityId, row, agents, complete } = conversationOf(project, rows, rosterOf);
   const hasRoster = complete || agents.length > 0;
@@ -88,9 +96,7 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
   const working = hasRoster ? agents.some(agentIsRunning) : agentIsRunning(row);
   const watchedWorking = hasRoster ? watchedAgentsRunning(agents) : working;
   const name = projectNameOf(project);
-  const pin = project.projectRoster
-    ? agents.find((agent) => agent.id === project.projectRoster.pinned_agent_id)
-    : agents[0];
+  const pin = pinnedAgent(project, row, agents);
   return {
     key: projectAgentEntryKey(project.projectKey),
     kind: PROJECT_AGENT,

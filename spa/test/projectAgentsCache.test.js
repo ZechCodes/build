@@ -110,3 +110,25 @@ it("rechecks dispatch capabilities after the cache fence is captured", async () 
   await syncProjectAgents({ deviceId: "device", entityId: "owner", capabilities: () => ++reads === 1 ? capabilities : {}, call });
   expect(call).not.toHaveBeenCalled();
 });
+
+
+it.each([null, "missing-pin"])("keeps a complete cached roster with recorded pin %j without promoting a worker", async (pinnedAgentId) => {
+  const { cachedFeedView } = await import("../src/core/cachedRows.js");
+  const { stampProject, stampRow } = await import("../src/core/feedMerge.js");
+  const { projectAgentEntries } = await import("../src/core/inboxProjectAgent.js");
+  const member = { ...worker, topic: "Worker topic", project_role: null, ordinal: 1 };
+  const recorded = { entity_id: "owner", pinned_agent_id: pinnedAgentId, agents: [member] };
+  expect(validProjectRoster(recorded, "owner")).toBe(true);
+  await rememberProjectAgentsSupport("device", capabilities);
+  await writeCached({ deviceId: "device", entityId: "", kind: "projects" },
+    [stampProject({ id: "project", project_id: "project", name: "Project label", entity_id: "owner" }, "device")]);
+  await writeCached({ deviceId: "device", entityId: "owner", kind: "row" }, stampRow({
+    kind: "project", entity_id: "owner", project_id: "project", agents: [member],
+  }, "device"));
+  await writeCached(projectAgentsAddress("device", "owner"), recorded);
+  expect(await readProjectAgents("device", "owner")).toEqual(recorded);
+  const view = await cachedFeedView("device");
+  expect(view.projects[0].projectRoster).toEqual(recorded);
+  expect(view.projects[0].projectRoster.agents[0].project_role).toBeNull();
+  expect(projectAgentEntries(view.projects, view.items, view.runs)[0].name).toBe("Project label");
+});

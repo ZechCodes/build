@@ -59,3 +59,31 @@ describe("cached project worker unread (#536)", () => {
     expect(entry).toMatchObject({ ownUnreadCount: 0, unreadCount: 0, working: false, watchedWorking: false });
   });
 });
+
+
+describe("recorded project coordinator identity", () => {
+  const member = (id, topic, extra = {}) => ({ id, topic, watched: true, unread_count: 0, ...extra });
+  const worker = member("worker", "Worker topic", { ordinal: 1, project_role: "worker" });
+  const laterPin = member("later-pin", "Recorded coordinator", { ordinal: 9, project_role: "coordinator" });
+  const row = (agents, extra = {}) => ({ projectKey: project.projectKey, entity_id: project.entity_id, agents, ...extra });
+
+  it("names the recorded coordinator even when its ordinal is later", () => {
+    const current = { ...project, projectRoster: { entity_id: project.entity_id, pinned_agent_id: laterPin.id,
+      agents: [worker, laterPin] } };
+    expect(projectAgentEntries([current], [row([worker, laterPin])])[0].name).toBe("Recorded coordinator");
+  });
+
+  it.each([null, "missing-pin"])("never infers a coordinator from a row with recorded pin %j", (pin) => {
+    expect(projectAgentEntries([project], [row([worker], { pinned_agent_id: pin })])[0].name).toBe("Build");
+  });
+
+  it.each([null, "worker", "coordinator"])("does not use ordinal as a pin when an agent has recorded role %j", (role) => {
+    const explicitRole = member("member", "Not a recorded pin", { ordinal: 1, project_role: role });
+    expect(projectAgentEntries([project], [row([explicitRole])])[0].name).toBe("Build");
+  });
+
+  it("keeps the first-agent fallback for legacy rows with no pin or role fields", () => {
+    const legacy = member("legacy-pin", "Legacy coordinator");
+    expect(projectAgentEntries([project], [row([legacy])])[0].name).toBe("Legacy coordinator");
+  });
+});

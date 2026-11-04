@@ -7,6 +7,17 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+const durable = vi.hoisted(() => ({ owns: false, wake: vi.fn(async () => []), release: vi.fn(), register: vi.fn() }));
+vi.mock("../src/core/scopedSyncRuntime.js", () => ({
+  scopedSyncOwns: () => durable.owns,
+  wakeScopedSync: (...args) => durable.wake(...args),
+}));
+vi.mock("../src/core/scopedSyncRegistry.js", () => ({
+  registerScopedSync: (...args) => { durable.register(...args); return durable.release; },
+  projectSyncScope: (projectId, filters = {}) => ({ kind: "project_tasks", project_id: projectId, filters }),
+  taskSyncScope: (taskId) => ({ kind: "task", task_id: taskId }),
+}));
+
 import { columns, comment, event, task } from "./trackerWireFixture.js";
 import { painted } from "./waits.js";
 import tasksGetFixture from "../../fixtures/api/v1/tasks.get.json";
@@ -138,6 +149,7 @@ const entries = () =>
 
 beforeEach(async () => {
   vi.resetModules();
+  durable.owns = false; durable.wake.mockClear(); durable.release.mockClear(); durable.register.mockClear();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   watchers = [];
@@ -1828,4 +1840,15 @@ describe("work-task review entry", () => {
     expect(host.querySelector('.task-work-review-hint')?.textContent).toBe("Request a review from @wire-facade");
     expect(host.querySelector('.task-work-review-hint a').getAttribute("href")).toBe("#/device/dev-1/project/proj-1/workspace/ws-1/changes");
   });
+});
+
+it("durable ownership registers detail and prevents the legacy detail writer", async () => {
+  durable.owns = true;
+  await mount();
+  expect(durable.register).toHaveBeenCalledWith(expect.objectContaining({ deviceId: "dev-1", projectId: "proj-1",
+    scope: { kind: "task", task_id: "task-1" } }));
+  expect(listed("tasks.get")).toHaveLength(0);
+  expect(durable.wake).toHaveBeenCalled();
+  page.dispose(); page = null;
+  expect(durable.release).toHaveBeenCalled();
 });

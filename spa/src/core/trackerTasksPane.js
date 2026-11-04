@@ -1,3 +1,5 @@
+import { registerScopedSync, projectSyncScope } from "./scopedSyncRegistry.js";
+import { scopedSyncOwns, wakeScopedSync } from "./scopedSyncRuntime.js";
 import { agentModelsFromFeed } from "./agentModelBadge.js";
 // The Tasks tab, mounted: the list and the board over one set of tasks, the
 // filters that narrow them, and the two presses that change something.
@@ -360,6 +362,7 @@ export function mountTasksPane(host, options) {
   /** The active wire read has its own cache record. It is separate from the
    *  project's whole list so a filtered answer can never empty the menus. */
   const queryParams = () => taskListParams(state.projectId, shownFilters());
+  let releaseSyncQuery = null;
   let queryUnsubscribe = null;
   let querySerial = 0;
   let queryLoaded = false;
@@ -402,11 +405,15 @@ export function mountTasksPane(host, options) {
   }
 
   function watchQuery() {
+    releaseSyncQuery?.();
     queryUnsubscribe?.();
     querySerial += 1;
     queryLoaded = false;
     const serial = querySerial;
     const params = queryParams();
+    const { project_id: _projectId, ...selected } = params;
+    releaseSyncQuery = registerScopedSync({ deviceId: state.deviceId, projectId: state.projectId,
+      scope: projectSyncScope(state.projectId, selected), queryParams: params });
     queryUnsubscribe = subscribeCache(tasksQueryAddress(state.deviceId, state.projectId, params), () => {
       void paintFromQuery(params, serial);
     });
@@ -512,6 +519,12 @@ export function mountTasksPane(host, options) {
     const filters = shownFilters();
     try {
       const params = taskListParams(state.projectId, filters);
+      const { project_id: _projectId, ...selected } = params;
+      const scope = projectSyncScope(state.projectId, selected);
+      if (scopedSyncOwns(state.deviceId, scope)) {
+        await wakeScopedSync(state.deviceId, (tracked) => JSON.stringify(tracked) === JSON.stringify(scope));
+        return;
+      }
       if (pagesTasks(state.deviceId)) await readListPages(params, filters);
       else await readWholeList(params, filters);
     } catch (error) {
@@ -526,7 +539,10 @@ export function mountTasksPane(host, options) {
 
   async function readWholeList(params, filters) {
     const session = deviceSession(state.deviceId);
-    const current = () => !state.disposed && deviceSession(state.deviceId) === session;
+    const { project_id: _projectId, ...selected } = params;
+    const scope = projectSyncScope(state.projectId, selected);
+    const current = () => !state.disposed && deviceSession(state.deviceId) === session
+      && !scopedSyncOwns(state.deviceId, scope);
     const contentRead = await captureTaskContentRead(tasksQueryAddress(state.deviceId, state.projectId, params), { revalidate: "full" });
     // One response can update two replicas; each full-body proof needs its
     // own canonical baseline captured before that same request is dispatched.
@@ -560,6 +576,8 @@ export function mountTasksPane(host, options) {
   async function readListPages(params, filters) {
     const { deviceId, projectId } = state;
     const session = deviceSession(deviceId);
+    const { project_id: _projectId, ...selected } = params;
+    const scope = projectSyncScope(projectId, selected);
     const addresses = [tasksQueryAddress(deviceId, projectId, params)];
     if (!narrowsTheRead(filters)) addresses.push(tasksAddress(deviceId, projectId));
     await pullTaskPages({
@@ -567,7 +585,8 @@ export function mountTasksPane(host, options) {
       deviceId,
       projectId,
       params,
-      active: () => !state.disposed && deviceSession(deviceId) === session,
+      active: () => !state.disposed && deviceSession(deviceId) === session
+        && !scopedSyncOwns(deviceId, scope),
       fold: async (stretch, page) => {
         const committed = await Promise.all([
           ...addresses.map((address) => foldTasksPage(address, stretch, () => state.columns)),
@@ -863,6 +882,7 @@ export function mountTasksPane(host, options) {
     },
     dispose() {
       state.disposed = true;
+      releaseSyncQuery?.();
       uiRecord.dispose();
       watcher.dispose();
       wholeListWatcher?.();

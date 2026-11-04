@@ -8,6 +8,17 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+const durable = vi.hoisted(() => ({ owns: false, wake: vi.fn(async () => []), release: vi.fn(), register: vi.fn() }));
+vi.mock("../src/core/scopedSyncRuntime.js", () => ({
+  scopedSyncOwns: () => durable.owns,
+  wakeScopedSync: (...args) => durable.wake(...args),
+}));
+vi.mock("../src/core/scopedSyncRegistry.js", () => ({
+  registerScopedSync: (...args) => { durable.register(...args); return durable.release; },
+  projectSyncScope: (projectId, filters = {}) => ({ kind: "project_tasks", project_id: projectId, filters }),
+  taskSyncScope: (taskId) => ({ kind: "task", task_id: taskId }),
+}));
+
 import { columns, task as wireTask } from "./trackerWireFixture.js";
 
 // Every pane in this file is mounted on proj-1; successful wire TaskViews
@@ -181,6 +192,7 @@ const cardsIn = (columnId) =>
 
 beforeEach(async () => {
   vi.resetModules();
+  durable.owns = false; durable.wake.mockClear(); durable.release.mockClear(); durable.register.mockClear();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   watchers = [];
@@ -1770,4 +1782,15 @@ describe("waiting assignment picker context (#564 integration)", () => {
     host.querySelector("[data-task-assign]").click();
     expect(openAssigneePicker.mock.calls.at(-1)[0]).toMatchObject({ deviceId: "dev-1", projectId: "proj-1" });
   });
+});
+
+it("durable ownership registers the query and prevents mounted legacy list writes", async () => {
+  durable.owns = true;
+  await mount();
+  expect(durable.register).toHaveBeenCalledWith(expect.objectContaining({ deviceId: "dev-1", projectId: "proj-1",
+    scope: expect.objectContaining({ kind: "project_tasks", project_id: "proj-1" }) }));
+  expect(listed("tasks.list")).toHaveLength(0);
+  expect(durable.wake).toHaveBeenCalled();
+  pane.dispose(); pane = null;
+  expect(durable.release).toHaveBeenCalled();
 });

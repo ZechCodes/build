@@ -1,3 +1,5 @@
+import { registerScopedSync, taskSyncScope } from "./scopedSyncRegistry.js";
+import { scopedSyncOwns, wakeScopedSync } from "./scopedSyncRuntime.js";
 // One task's page, mounted.
 //
 // Cache-first like every other detail surface: what `tasks.get` last answered
@@ -851,6 +853,10 @@ export function mountTaskPage(host, options) {
   }
 
   async function readTask() {
+    if (scopedSyncOwns(state.deviceId, taskSyncScope(state.taskId))) {
+      await wakeScopedSync(state.deviceId, (scope) => scope.kind === "task" && scope.task_id === state.taskId);
+      return;
+    }
     const demand = consumeTaskReadDemand();
     if (!demand) return;
     const authority = admitTaskReadOwner();
@@ -866,7 +872,8 @@ export function mountTaskPage(host, options) {
       if (state.disposed || !authority.accept()) return;
       // The pull is a writer. The subscription above owns the read and paint.
       await writeTaskRecord(state.deviceId, state.projectId, state.taskId, taskRecord(answer.task, answer.timeline), {
-        accept: (held) => !state.disposed && authority.accept() && checklist.acceptsRead(checklistBasis, held),
+        accept: (held) => !state.disposed && authority.accept() && checklist.acceptsRead(checklistBasis, held)
+          && !scopedSyncOwns(state.deviceId, taskSyncScope(state.taskId)),
         detailBasis, contentRead, onOrdinaryDeferred: () => deferTaskRead(authority),
       });
     } catch (error) {
@@ -1272,6 +1279,8 @@ export function mountTaskPage(host, options) {
     host, service: state.writeOperations, taskId: state.taskId, projectId: state.projectId,
     restoreDraft: restoreCommentDraft, retry: retryComment, onChange: paint,
   });
+  const releaseSyncTask = registerScopedSync({ deviceId: state.deviceId, projectId: state.projectId,
+    scope: taskSyncScope(state.taskId) });
   paint();
   void paintFromCache().then(refreshForMount);
   // No cadence: nothing in this client polls. An item that names this task
@@ -1298,6 +1307,7 @@ export function mountTaskPage(host, options) {
     feedMoved() { state.picker?.setOptions?.(assigneeOptions(groups())); paint(); reviewPage?.feedMoved(); },
     dispose() {
       state.disposed = true;
+      releaseSyncTask();
       stopHeadMeasurement();
       replyNavigation.dispose();
       checklist.dispose();

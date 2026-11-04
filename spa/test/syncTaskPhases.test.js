@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
+const scoped = vi.hoisted(() => ({ owns: false, wake: vi.fn(async () => []) }));
+vi.mock("../src/core/scopedSyncRuntime.js", () => ({
+  projectScopedSyncOwns: () => scoped.owns,
+  scopedSyncWriter: () => true,
+  wakeScopedSync: (...args) => scoped.wake(...args),
+}));
 let paging = true;
 
 const task = (number) => ({ id: `task-${number}`, number, updated_at: "2026-10-11T12:00:00Z" });
@@ -15,7 +21,7 @@ beforeEach(async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
-  paging = true;
+  paging = true; scoped.owns = false; scoped.wake.mockClear();
   const pages = await import("../src/core/trackerPages.js");
   vi.spyOn(pages, "pagesTasks").mockImplementation(() => paging);
   phases = await import("../src/core/syncTaskPhases.js");
@@ -128,4 +134,31 @@ describe("project tasks split around the inbox phase", () => {
     expect(ask).toHaveBeenCalledTimes(2);
     expect(readReviews).not.toHaveBeenCalled();
   });
+});
+
+describe("scoped task phase ownership", () => {
+  it("wakes durable recovery without legacy page writes for tracked projects", async () => {
+    scoped.owns = true;
+    const { pass, ask } = fixture();
+    await pass.first("p1");
+    await pass.rest("p1");
+    expect(ask.mock.calls.filter(([, method]) => method === "tasks.list")).toHaveLength(0);
+    expect(scoped.wake).toHaveBeenCalled();
+    expect(await trackerCache.readTasksRecord("dev-1", "p1")).toMatchObject({ tasks: [] });
+  });
+  it("keeps the page walk when durable recovery does not own the project", async () => {
+    const { pass, ask } = fixture();
+    await pass.rest("p1");
+    expect(ask.mock.calls.filter(([, method]) => method === "tasks.list")).toHaveLength(2);
+    expect(scoped.wake).not.toHaveBeenCalled();
+  });
+});
+
+it("retains custom cold board columns while scoped recovery owns membership", async () => {
+  scoped.owns = true;
+  const { pass, ask } = fixture({ "tasks.columns": () => ({ columns: [{ id: "custom", name: "Custom" }] }) });
+  await pass.first("p1");
+  expect(ask.mock.calls.filter(([, method]) => method === "tasks.columns")).toHaveLength(1);
+  expect(await trackerCache.readTasksRecord("dev-1", "p1")).toMatchObject({ tasks: [], columns: [{ id: "custom", name: "Custom" }] });
+  expect(ask.mock.calls.filter(([, method]) => method === "tasks.list")).toHaveLength(0);
 });

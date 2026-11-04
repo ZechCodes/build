@@ -37,6 +37,8 @@ import { commitPatchParams } from "./commitDiffTarget.js";
 // read it followed, so a read never writes over a record a push wrote after it
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
+import { captureScopedSync, projectScopedSyncOwns, reconcileScopedSyncRuntime, startScopedSyncRuntime,
+  stopScopedSyncRuntime, wakeScopedSync } from "./scopedSyncRuntime.js";
 import { refreshReadState } from "./readStateRepair.js";
 import { discoverRosterThreads, discoverSyncOwnership, emptySyncDiscovery, queueSuccessor, readsSyncGroup as readsGroup, requiredSuccessorGroups, syncReadGroup } from "./syncSuccessors.js";
 import { syncDiagnostics } from "./syncDiagnostics.js";
@@ -166,6 +168,7 @@ export {
 // ─── What this module holds ──────────────────────────────────────────────────
 
 let holdingLock = false;
+let holdingScopedLock = false;
 let releaseLock = null;
 let lockWait = null; // the bounded queue for the lock, while it is running
 let visibilityWired = false;
@@ -591,6 +594,7 @@ async function orderedSync(deviceId, turn) {
   diagnosticStage(turn, "held");
   await heldBeforeReading(context);
   if (!context.active()) return false;
+  const scopedRecovery = captureScopedSync(deviceId);
   const recovery = fileRecoveryFor(context, turn.session);
   const recoveryRevision = recovery.revision;
   context.fileRecovery = recovery;
@@ -622,6 +626,7 @@ async function orderedSync(deviceId, turn) {
   turn.phases = phases;
   turn.foreground = phases.foreground;
   const filesRecovered = await phases.run();
+  await scopedRecovery;
   // Detached ownership cleanup uses the same cache/session fences, without
   // keeping the completed pass's foreground planner alive.
   turn.phases = null;
@@ -961,6 +966,12 @@ const projectIds = (view) => (view.projects || []).map((project) => project.proj
  *  tracker at all refuses both and writes nothing, which is a cold Tasks tab
  *  and never an error the reader sees. */
 async function readTasksNow(context, projectId) {
+  if (projectScopedSyncOwns(context.deviceId, projectId)) {
+    await wakeScopedSync(context.deviceId, (scope) => scope.project_id === projectId);
+    return;
+  }
+  const owner = context;
+  context = { ...owner, active: () => owner.active() && !projectScopedSyncOwns(owner.deviceId, projectId) };
   if (pagesTasks(context.deviceId)) return readTaskPagesNow(context, projectId);
   const contentRead = await captureTaskContentRead(tasksAddress(context.deviceId, projectId), { revalidate: "full" });
   const answer = await ask(context, "tasks.list", { project_id: projectId }, "background", taskReadScope(context, projectId));
@@ -2471,6 +2482,9 @@ async function readGitReviews(context, entityId, row) {
 /** Task invalidations carry IDs only. Read the project list first so a new
  * PR summary can discover its metadata without probing ordinary tasks. */
 const applyTasks = async (context, projectId, tasks) => {
+  await wakeScopedSync(context.deviceId, (scope) => scope.project_id === projectId
+    || scope.kind === "task" && (tasks?.truncated || tasks?.task_ids?.includes(scope.task_id)));
+  if (!context.active()) return;
   await readTasks(context, projectId);
   if (context.active()) await readReviews(context, projectId, tasks?.truncated ? null : tasks?.task_ids || null);
 };
@@ -2495,6 +2509,7 @@ export const syncPushKinds = Object.freeze(APPLIERS.map(([kind]) => kind));
  *  job; every other tab reads the same database and hears the writes. Without a
  *  Locks API (jsdom, old browsers) this tab just syncs. */
 function acquireLock() {
+  const startedIn = lifetime;
   const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
   if (!locks) {
     takeLock();
@@ -2502,10 +2517,11 @@ function acquireLock() {
   }
   // Queued, but not for ever: a holder that has been frozen where it stands
   // cannot do the job and cannot hand the lock back (see LOCK_WAIT_MS).
-  lockWait = setTimeout(takeLock, LOCK_WAIT_MS);
+  lockWait = setTimeout(() => { if (startedIn === lifetime) takeLock(); }, LOCK_WAIT_MS);
   locks
     .request(SYNC_LOCK, () => {
-      takeLock();
+      if (startedIn !== lifetime) return;
+      takeLock(true);
       return new Promise((resolve) => {
         releaseLock = resolve;
       });
@@ -2518,10 +2534,12 @@ function acquireLock() {
 /** The lock is ours: whatever is already open gets its pass now. The grant can
  *  arrive long after `startCacheSync` — another tab held it — so the devices
  *  are considered here rather than at start. */
-function takeLock() {
+function takeLock(actualGrant = false) {
   clearTimeout(lockWait);
   lockWait = null;
   holdingLock = true;
+  holdingScopedLock ||= actualGrant;
+  reconcileScopedSyncRuntime();
   considerDevices();
 }
 
@@ -2553,11 +2571,21 @@ async function syncSessionOnce(deviceId, session) {
  *  was away is whatever a pass reads, so every open device gets one. */
 function onVisibilityChange() {
   if (!pageVisible() || !holdingLock) return;
-  for (const context of liveContexts()) void syncDevice(context.deviceId, "visibility");
+  for (const context of liveContexts()) {
+    void wakeScopedSync(context.deviceId).catch(() => {});
+    void syncDevice(context.deviceId, "visibility");
+  }
 }
 
 export function startCacheSync() {
   stopCacheSync();
+  startScopedSyncRuntime({ ownsLock: () => holdingScopedLock,
+    request: (deviceId, method, params, scope) => {
+      const context = syncContext(contextFor(deviceId));
+      const readScope = { deviceId, entityId: scope.project_id || scope.task_id, kind: "scoped-sync", sub: JSON.stringify(scope) };
+      return callWhileActive(context, method, params, requestPriorityFields("foreground"), readScope);
+    },
+  });
   stopCacheWatch = subscribeCache({}, (address) => {
     if (holdingLock && address.deviceId && address.entityId) noteEntityCacheChange(address);
   });
@@ -2586,6 +2614,8 @@ function disposeCacheWatches() {
 }
 
 export function stopCacheSync() {
+  holdingScopedLock = false;
+  stopScopedSyncRuntime();
   if (stopDeviceWatch) stopDeviceWatch();
   stopDeviceWatch = null;
   if (stopLandingWatch) stopLandingWatch();

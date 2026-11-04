@@ -7,11 +7,14 @@ vi.mock("../src/core/deviceContexts.js", () => ({
   onDeviceStateChanged: (fn) => { fake.changed = fn; return () => {}; },
 }));
 vi.mock("../src/core/changeEvents.js", () => ({
-  bridgeCapabilities: () => ({ sync: { device: false, projectTasks: true, task: true } }),
+  bridgeApiVersion: (deviceId) => fake.contexts.find((context) => context.deviceId === deviceId)?.apiVersion || "3.34.0",
+  bridgeCapabilities: (deviceId) => fake.contexts.find((context) => context.deviceId === deviceId)?.greeting?.capabilities,
   onBridgeGreeted: (fn) => { fake.greeted = fn; return () => {}; },
 }));
 vi.mock("../src/core/scopedSyncRegistry.js", () => ({
-  trackedSyncScopes: () => fake.scopes,
+  trackedSyncScopes: (deviceId) => fake.scopes.filter((entry) => !entry.deviceId || entry.deviceId === deviceId),
+  deviceSyncScope: () => ({ kind: "device" }),
+  registerScopedSync: (entry) => { fake.scopes.push(entry); return () => { fake.scopes = fake.scopes.filter((held) => held !== entry); }; },
   scopeIsTracked: (_deviceId, scope) => fake.scopes.some((entry) => JSON.stringify(entry.scope) === JSON.stringify(scope)),
   broadcastScopedSyncWake: (...args) => fake.broadcast(...args),
   subscribeScopedSyncWakes: (fn) => { fake.woken = fn; return () => {}; },
@@ -22,6 +25,7 @@ vi.mock("../src/core/scopedSyncEngine.js", () => ({ createScopedSyncEngine: (opt
   const engine = { options, track: vi.fn(), untrack: vi.fn(), dispose: vi.fn(), catchUp: vi.fn(async () => true), wake: vi.fn(async () => true) };
   fake.engines.push(engine); return engine;
 } }));
+vi.mock("../src/core/scopedDeviceSyncCache.js", () => ({ createScopedDeviceSyncCache: vi.fn(() => ({})) }));
 vi.mock("../src/core/scopedTaskSyncCache.js", () => ({ createScopedTaskSyncCache: vi.fn(() => ({})) }));
 vi.mock("../src/core/localCache.js", () => ({ subscribeCache: (_address, fn) => { fake.cacheChanged = fn; return () => {}; } }));
 vi.mock("../src/core/scopedProjectColumns.js", () => ({ refreshScopedProjectColumns: (...args) => fake.columns(...args) }));
@@ -32,7 +36,7 @@ beforeEach(async () => {
   vi.stubGlobal("navigator", { locks: { request: vi.fn() } });
   vi.resetModules(); fake.woken = null; fake.broadcast.mockClear(); fake.columns.mockClear(); fake.body.mockClear(); fake.lock = false; fake.engines = [];
   fake.scopes = [{ scope, projectId: "p1", key: "t1" }];
-  fake.contexts = [{ deviceId: "d1", session: {}, cacheScope: {}, active: () => true,
+  fake.contexts = [{ deviceId: "d1", apiVersion: "3.34.0", session: {}, cacheScope: {}, active: () => true,
     greeting: { epoch: "e1", current: () => true, capabilities: { sync: { device: false, task: true, projectTasks: true } } } }];
   runtime = await import("../src/core/scopedSyncRuntime.js");
 });
@@ -182,5 +186,67 @@ it("retains the held scope and store while a different mount represents the same
   fake.scopes = []; fake.scopeChanged();
   expect(engine.untrack).toHaveBeenCalledExactlyOnceWith(scope);
   expect(storeActive()).toBe(false);
+  runtime.stopScopedSyncRuntime();
+});
+
+
+it("registers the advertised paired device scope without requiring a mounted view", () => {
+  fake.lock = true; fake.scopes = [];
+  fake.contexts[0].greeting.capabilities.sync.device = true;
+  runtime.startScopedSyncRuntime({ ownsLock: () => fake.lock, request: vi.fn() });
+  expect(fake.engines[0].track).toHaveBeenCalledExactlyOnceWith({ kind: "device" });
+  expect(runtime.deviceScopedSyncOwns("d1")).toBe(true);
+  expect(runtime.deviceScopedSyncOwns("other-device")).toBe(false);
+  runtime.stopScopedSyncRuntime();
+  expect(fake.scopes).toEqual([]);
+});
+
+it.each([false, true])("changes device scope ownership across reconnect (initial capability %s)", (initial) => {
+  fake.lock = true; fake.scopes = [];
+  fake.contexts[0].greeting.capabilities.sync.device = initial;
+  runtime.startScopedSyncRuntime({ ownsLock: () => fake.lock, request: vi.fn() });
+  const engine = fake.engines[0];
+  expect(runtime.deviceScopedSyncOwns("d1")).toBe(initial);
+  expect(engine.track).toHaveBeenCalledTimes(Number(initial));
+  fake.contexts[0].session = {};
+  fake.contexts[0].greeting = { ...fake.contexts[0].greeting, epoch: "reconnected", capabilities: { sync: { device: !initial } } };
+  fake.greeted();
+  expect(runtime.deviceScopedSyncOwns("d1")).toBe(!initial);
+  if (initial) expect(engine.untrack).toHaveBeenCalledWith({ kind: "device" });
+  else expect(engine.track).toHaveBeenCalledExactlyOnceWith({ kind: "device" });
+  expect(fake.engines).toHaveLength(1);
+  runtime.stopScopedSyncRuntime();
+});
+
+it("leaves the legacy writer active when a device registration is outside the tracked cap", () => {
+  fake.lock = true; fake.contexts[0].greeting.capabilities.sync.device = true;
+  runtime.startScopedSyncRuntime({ ownsLock: () => fake.lock, request: vi.fn() });
+  fake.scopes = [];
+  expect(runtime.deviceScopedSyncOwns("d1")).toBe(false);
+  runtime.stopScopedSyncRuntime();
+});
+
+
+it.each([
+  ["3.33.0", true, false], ["3.34.0", true, true], ["3.34.0", false, false],
+])("requires complete device facts at wire %s with advertised capability %s", (version, capability, owns) => {
+  fake.lock = true; fake.scopes = []; fake.contexts[0].apiVersion = version;
+  fake.contexts[0].greeting.capabilities.sync.device = capability;
+  runtime.startScopedSyncRuntime({ ownsLock: () => fake.lock, request: vi.fn() });
+  expect(runtime.deviceScopedSyncOwns("d1")).toBe(owns);
+  expect(fake.engines[0].track).toHaveBeenCalledTimes(Number(owns));
+  runtime.stopScopedSyncRuntime();
+});
+
+it.each(["3.33.0", "3.34.0"])("changes device ownership when reconnect crosses the complete-facts boundary from %s", (version) => {
+  fake.lock = true; fake.scopes = []; fake.contexts[0].apiVersion = version;
+  fake.contexts[0].greeting.capabilities.sync.device = true;
+  runtime.startScopedSyncRuntime({ ownsLock: () => fake.lock, request: vi.fn() });
+  expect(runtime.deviceScopedSyncOwns("d1")).toBe(version === "3.34.0");
+  fake.contexts[0].session = {};
+  fake.contexts[0].apiVersion = version === "3.34.0" ? "3.33.0" : "3.34.0";
+  fake.contexts[0].greeting = { ...fake.contexts[0].greeting, epoch: "version-reconnect" };
+  fake.greeted();
+  expect(runtime.deviceScopedSyncOwns("d1")).toBe(version !== "3.34.0");
   runtime.stopScopedSyncRuntime();
 });

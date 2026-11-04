@@ -7,6 +7,8 @@
 // machine's own. The panel is handed one caller and the account's name for the
 // machine behind it, and asks nothing else about devices.
 
+import { pullDeviceProjection } from "../core/scopedDeviceReads.js";
+import { deviceScopedSyncOwns } from "../core/scopedSyncRuntime.js";
 import { esc } from "../core/text.js";
 import { isolationLabel } from "../core/isolation.js";
 import { openNewRepo } from "../sheets/newRepo.js";
@@ -53,7 +55,7 @@ async function copyProjectSettings(deviceId, projects, fence) {
   for (const project of projects) {
     const detail = projectSettingsAddress(deviceId, project.project_id);
     await mergeCachedAtomically(detail, () =>
-      !pushedSince(list, fence) && !pushedSince(detail, fence) ? project : null);
+      !deviceScopedSyncOwns(deviceId) && !pushedSince(list, fence) && !pushedSince(detail, fence) ? project : null);
   }
 }
 
@@ -76,12 +78,12 @@ export async function mountDeviceProjects(host, { callRpc, deviceId, deviceName,
   const refresh = async () => {
     try {
       const fence = pushFence();
-      await record.pull(async () => {
+      await pullDeviceProjection(deviceId, record, async () => {
         const { projects } = await callRpc("project.list");
         return projects;
       });
       const projects = (await readCached(deviceProjectsAddress(deviceId)))?.value || [];
-      await copyProjectSettings(deviceId, projects, fence);
+      if (!deviceScopedSyncOwns(deviceId)) await copyProjectSettings(deviceId, projects, fence);
     } catch (error) {
       if (list.textContent.includes("loading…")) list.innerHTML = `<div class="adderr">${esc(error.message)}</div>`;
     }

@@ -57,10 +57,11 @@ async fn device_sync_wire_http_uses_the_same_typed_scope_and_lease_contract() {
             .unwrap()
             .clone();
         let response = fixture.app.clone().oneshot(request).await.unwrap();
-        let (_, answer) = json_response(response).await;
+        let (status, answer) = json_response(response).await;
         flush(output).await;
-        assert_eq!(answer["ok"], valid, "{answer}");
         if valid {
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(answer["ok"], true, "{answer}");
             assert_eq!(answer["result"]["scope"]["kind"], "device", "{answer}");
             assert_eq!(answer["result"]["consistency"], "leased", "{answer}");
             assert!(answer["result"]["lease"]["id"].is_string(), "{answer}");
@@ -73,7 +74,12 @@ async fn device_sync_wire_http_uses_the_same_typed_scope_and_lease_contract() {
                 "{answer}"
             );
         } else {
+            assert_eq!(status, StatusCode::BAD_REQUEST);
             assert_eq!(answer["error_code"], "invalid_params", "{answer}");
+            assert!(
+                answer.get("result").is_none(),
+                "unknown scopes must not return device data"
+            );
         }
     }
 }

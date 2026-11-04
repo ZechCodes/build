@@ -3599,8 +3599,13 @@ The Files explorer shares directory upload and New folder actions across
 workspace sources, project sources and checkouts. `spa/src/core/filesUploads.js`
 mounts them from cached upload capabilities; `fileUploadRpc.js` checks the
 current greeting when starting a write. Their SVG actions appear on hover or
-keyboard focus; on coarse pointers `longPress.js` reveals one directory's
-actions after a stationary hold, preserving ordinary tap navigation.
+keyboard focus; right-click, Context Menu / Shift+F10, or a stationary touch hold opens
+`fileContextMenu.js`, reusing `longPress.js` and the shared menu chrome. File
+rows offer a binary-safe download through `fileDownload.js`; directory rows
+reuse the scoped upload picker and inline New directory flow. Downloads read
+complete files, continuing truncated reads through version-checked body pages
+or refusing incomplete results on older bridges. Folder downloads are not offered.
+Ordinary taps retain their navigation behavior.
 `fileUploads.js` owns an in-memory
 queue per device, streams at most two files with sequential acknowledged chunks,
 and keeps completed metadata in `ui-uploads` for 30 minutes. Directory drops

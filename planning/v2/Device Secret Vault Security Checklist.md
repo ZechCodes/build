@@ -17,7 +17,7 @@ wire admission or SPA delivery; those remain separate reviewed slices.
 | 7 | TTL begins on attach; null means no expiry. Every read checks absolute/monotonic deadlines and persisted clock highwater; observed expiry survives restart and rollback recovery. | TTL-boundary/null/restart tests; external attach phase-change clock tests; frozen-UTC and rollback monotonic-expiry regressions. |
 | 8 | Durable denial precedes unlink; cleanup failure never reopens access. Startup/periodic cleanup uses no app lock and removes orphans, expired stages and retired blobs. | `revoke_is_durable_before_failed_unlink_and_sweep_retries`, startup orphan/stage cleanup and `periodic_sweep_needs_no_app_lock_or_client`. |
 | 9 | Agent grants retire with reset/removal; Project grants survive their originating conversation and retire on project deletion. Changed device identity cannot reopen old grants. | Reset/removal/owner/project lifetime tests and device-change test; project retirement FULL-commits before external config removal. Release membership checks belong to slice B. |
-| 10 | Build backup/export/migration and updater rollback do not carry vault/key files; source/worktree roots cannot contain the vault. Foundation remains unadvertised. | Database backup, 59 targeted migration tests, config/source/updater isolation tests; unchanged RPC/version/capability surface; final Clippy/fmt/Semgrep/Gitleaks checks. |
+| 10 | Build backup/export/migration and updater rollback do not carry vault/key files; source/worktree roots cannot contain the vault. Foundation remains unadvertised. | Database backup, 107 targeted migration tests, config/source/updater isolation tests; unchanged RPC/version/capability surface; final Clippy/fmt/Semgrep/Gitleaks checks. |
 
 The focused regressions were observed failing before implementation. Final
 integrated commands, exit codes and frozen head are recorded on #1001 with
@@ -46,7 +46,7 @@ success:
 | Cargo-built lib test binary, `config::vault_tests` | 4 passed, no ignores | 0 |
 | Cargo-built lib test binary, `update::installer::tests::vault_paths` | 2 passed, no ignores | 0 |
 | `cargo test --test dev_channel` | 24 passed, no ignores | 0 |
-| Targeted migration Python modules | 59 passed, no skips | 0 |
+| Targeted migration Python modules | 107 passed, no skips | 0 |
 | Ruff on changed Python files | No findings | 0 |
 | `cargo clippy --all-targets -- -D warnings` | No warnings, no new ratchet annotations | 0 |
 | `cargo fmt --check` | Clean | 0 |
@@ -62,3 +62,19 @@ clearing leave the existing key untouched and secret access unavailable. The
 standalone filesystem tests also reject unsafe recovery paths and prove failed
 cleanup cannot replace a key. Final head and complete changed-file list are on
 #1001; the full suite remains the serial merge gate's responsibility.
+
+## Review follow-up — rollback exclusion
+
+The quick review found that rollback could move a newly created target vault
+into a `.retired-*` artifact or restore a vault-bearing backup. Both trees are
+now refused before rollback traversal, and the guard repeats at restore
+admission before any shared-remote edits or directory renames.
+
+Sixteen new tests failed before the fix (16 failed, 9 passed; exit 1). They
+cover target and backup directories, regular files, FIFOs, broken symlinks and
+entries inserted after preflight. They verify unchanged trees, manifests and
+synthetic remotes, no traversal and no retired artifact. The final five targeted
+migration/Git/CLI modules pass all 107 tests with no skips (exit 0); changed
+Python Ruff and diff checks pass (exit 0). Rust source is unchanged from the
+previous frozen review head, retaining its 95 passing targeted tests and clean
+Clippy/format checks. Final Semgrep/Gitleaks are repeated for the revised head.

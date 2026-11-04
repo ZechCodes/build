@@ -34,6 +34,12 @@ def no_symlinks(path, *, tree=False):
                 raise BuildctlError('migration tree contains a symlink')
 
 
+def refuse_vault(root, label):
+    # lexists sees even broken links and FIFOs without opening or walking them.
+    if os.path.lexists(Path(root) / 'secrets'):
+        raise BuildctlError(label + ' has a device vault; migration cannot move, copy or restore it')
+
+
 def copy_entry(relative):
     relative = Path(relative)
     if relative.is_absolute() or not relative.parts or '..' in relative.parts:
@@ -87,8 +93,11 @@ class Migrator:
     def refuse_target_vault(self):
         # An existing target must not be overlaid onto a different metadata DB
         # or moved into the migration's rollback backup, even under --force.
-        if os.path.lexists(self.target / 'secrets'):
-            raise BuildctlError('target has a device vault; migration cannot copy or back it up')
+        refuse_vault(self.target, 'target')
+
+    def refuse_rollback_vaults(self, backup):
+        self.refuse_target_vault()
+        refuse_vault(backup, 'rollback backup')
 
     def preflight(self, force):
         no_symlinks(self.source)
@@ -321,6 +330,7 @@ class Migrator:
 
     def rollback(self, backup):
         backup = Path(backup)
+        self.refuse_rollback_vaults(backup)
         no_symlinks(backup, tree=True)
         no_symlinks(self.target, tree=True)
         if backup.parent != self.target.parent or not backup.name.startswith(self.target.name + '.backup-'):
@@ -338,6 +348,9 @@ class Migrator:
             return self.restore(backup, metadata, manifest)
 
     def restore(self, backup, metadata, manifest):
+        # Repeat after rollback preflight and service checks, before remote
+        # edits or either rename: a vault can have appeared in either tree.
+        self.refuse_rollback_vaults(backup)
         if not backup.is_dir():
             raise BuildctlError('rollback state backup is missing')
         retired = self.target.with_name(self.target.name + '.retired-' + uuid.uuid4().hex)

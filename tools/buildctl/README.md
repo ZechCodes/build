@@ -169,6 +169,9 @@ Secret metadata in SQLite/history may survive migration or a database-only
 backup while its values remain unavailable. A target containing a `secrets/`
 entry is refused even with `--force`: migration cannot copy its vault into
 staging or retain it in a rollback backup alongside a replaced metadata DB.
+Rollback also refuses a `secrets/` entry in either its current target or its
+backup, before changing shared remotes or renaming either state tree. It checks
+again at restore admission, including entries created after rollback preflight.
 Missing referenced worktrees are a hard verification failure. Rehearsal reads
 the supplied snapshot and checks existence of shared worktree directories;
 it never edits shared repository configuration. Review receiver Git URLs in shared repositories also need

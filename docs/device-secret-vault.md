@@ -74,9 +74,13 @@ records as `key_lost` and makes old IDs return the same unavailable error. A
 new key can serve new secrets after that durable retirement; it never serves
 the old grants. The same policy covers corrupt regular keys. Unsafe filesystem
 entries or failed retirement keep secret access unavailable while the rest of
-the bridge remains usable. State migration excludes source vaults and refuses any existing target
-vault even with `--force`, so it cannot copy a key into staging or a rollback
-backup. Restored metadata can refer to unavailable values. User-created disk
+the bridge remains usable. State migration excludes source vaults and refuses
+any existing target vault even with `--force`, so it cannot copy a key into
+staging or a rollback backup. Rollback refuses a vault in both the current
+target and the retained backup before walking either tree. It checks again at
+restore admission before changing remotes or renaming state, so a vault created
+after preflight cannot be retained in a `.retired-*` artifact or restored from
+a backup. Restored metadata can refer to unavailable values. User-created disk
 snapshots are outside Build's exclusion. Unlink is logical deletion, not promised
 forensic erasure on SSDs; revoking a vault entry does not rotate an upstream
 credential. Authorized raw retrieval in later slices intentionally exposes the

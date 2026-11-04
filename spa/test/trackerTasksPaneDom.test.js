@@ -190,6 +190,57 @@ const columnNames = () => [...host.querySelectorAll(".task-column-head h3")].map
 const cardsIn = (columnId) =>
   [...host.querySelectorAll(`[data-column="${columnId}"] .task-card`)].map((card) => card.dataset.task);
 
+it.each(["initial mount", "view change"])("reports unread display hydration failure and paints the %s frame", async (when) => {
+  durable.owns = true;
+  call = vi.fn(() => new Promise(() => {}));
+  await cache.writeCached(trackerCache.tasksAddress("dev-1", "proj-1"),
+    trackerCache.tasksRecord([task({ id: "cached-hydration", title: "Cached hydration task" })], columns(), 100));
+  if (when === "initial mount") {
+    const { uiAddress, updateUiState } = await import("../src/core/localUiState.js");
+    await updateUiState(uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" }),
+      () => ({ view: "board" }));
+  } else {
+    await mount();
+    expect(titles()).toEqual(["Cached hydration task"]);
+  }
+  const failure = new Error("Unread display storage read failed");
+  const unhandled = [];
+  const noteUnhandled = (error) => { unhandled.push(error); };
+  process.on("unhandledRejection", noteUnhandled);
+  const read = cache.readCachedMany;
+  let failedRead = false;
+  let rejectHeld;
+  const held = new Promise((_, reject) => { rejectHeld = reject; });
+  const spy = vi.spyOn(cache, "readCachedMany").mockImplementation((addresses) => {
+    const expectedLength = when === "initial mount" ? 3 : 4;
+    if (!failedRead && addresses.length === expectedLength && addresses[0].kind === "task-content-generation") {
+      failedRead = true;
+      return when === "initial mount" ? Promise.reject(failure) : held;
+    }
+    return read(addresses);
+  });
+  try {
+    if (when === "initial mount") await mount();
+    else {
+      host.querySelector('[data-task-view="board"]').click();
+      await vi.waitFor(() => expect(failedRead).toBe(true));
+      await flush();
+      expect(titles()).toEqual(["Cached hydration task"]);
+      expect(columnNames()).toEqual([]);
+      rejectHeld(failure);
+      await flush();
+    }
+    expect(failedRead).toBe(true);
+    expect(unhandled).toEqual([]);
+    expect(notifyError).toHaveBeenCalledWith("Could not read this project's tasks", failure.message);
+    expect(columnNames()).toEqual(columns().map((column) => column.name));
+    expect(cardsIn("backlog")).toEqual(["cached-hydration"]);
+  } finally {
+    spy.mockRestore();
+    process.off("unhandledRejection", noteUnhandled);
+  }
+});
+
 beforeEach(async () => {
   vi.resetModules();
   durable.owns = false; durable.wake.mockClear(); durable.release.mockClear(); durable.register.mockClear();

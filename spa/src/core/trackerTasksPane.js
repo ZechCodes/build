@@ -358,7 +358,7 @@ export function mountTasksPane(host, options) {
     state.visibleCount = Number(saved.visibleCount) || TASK_PAGE_SIZE;
     if (priorView !== state.view) state.onViewChange?.(state.view);
     previewQuery();
-    void hydrateUnreadTasks().then(paint);
+    void hydrateUnreadTasks().catch(reportReadFailure).finally(paint);
     paint();
     watchQuery();
     void refresh();
@@ -537,6 +537,14 @@ export function mountTasksPane(host, options) {
     return listReads();
   }
 
+  function reportReadFailure(error) {
+    if (state.disposed) return;
+    // A lost wire keeps the cached frame; other failures use the pane's
+    // existing task-read notice.
+    if (reads.failed(error)) return;
+    notifyError("Could not read this project's tasks", messageOf(error));
+  }
+
   async function readList() {
     if (state.disposed) return;
     void remoteChoices.ensure();
@@ -552,12 +560,7 @@ export function mountTasksPane(host, options) {
       if (pagesTasks(state.deviceId)) await readListPages(params, filters);
       else await readWholeList(params, filters);
     } catch (error) {
-      if (state.disposed) return;
-      // The wire going away is not news about this project's tasks. With a
-      // list on screen the tab keeps it and waits; with nothing on screen it
-      // waits too, and says so if the read still fails once the machine is back.
-      if (reads.failed(error)) return;
-      notifyError("Could not read this project's tasks", messageOf(error));
+      reportReadFailure(error);
     }
   }
 

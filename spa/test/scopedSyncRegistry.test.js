@@ -4,6 +4,92 @@ const registries = [];
 function registry(options) { const value = createScopedSyncRegistry(options); registries.push(value); return value; }
 afterEach(() => { registries.splice(0).forEach((value) => value.dispose()); vi.useRealTimers(); });
 const task = (taskId, deviceId = "d") => ({ deviceId, scope: taskSyncScope(taskId), projectId: "p" });
+
+it.each(["constructor", "request", "presence"])("rolls back an idle registration when channel %s fails", (stage) => {
+  vi.useFakeTimers();
+  const failure = new Error(`${stage} failed`), channels = [];
+  let failing = true;
+  const createChannel = vi.fn(() => {
+    if (stage === "constructor" && failing) { failing = false; throw failure; }
+    const channel = { onmessage: null, close: vi.fn(), postMessage: vi.fn(({ type }) => {
+      if (failing && type === stage) { failing = false; throw failure; }
+    }) };
+    channels.push(channel); return channel;
+  });
+  const scopes = registry({ createChannel });
+  expect(() => scopes.register(task("failed"))).toThrow(failure);
+  expect(scopes.tracked("d")).toEqual([]);
+  expect(vi.getTimerCount()).toBe(0);
+  for (const channel of channels) {
+    expect(channel.onmessage).toBeNull();
+    expect(channel.close).toHaveBeenCalledOnce();
+  }
+  const release = scopes.register(task("retry"));
+  expect(scopes.tracked("d").map(({ scope }) => scope.task_id)).toEqual(["retry"]);
+  expect(vi.getTimerCount()).toBe(1);
+  release(); expect(vi.getTimerCount()).toBe(0);
+});
+
+it("restores capped demand and all observers after a registration listener throws", () => {
+  vi.useFakeTimers();
+  const channel = { onmessage: null, postMessage: vi.fn(), close: vi.fn() };
+  const scopes = registry({ createChannel: () => channel });
+  const first = vi.fn(() => scopes.tracked("d")), last = vi.fn(() => scopes.tracked("d"));
+  let failing = false;
+  const failure = new Error("scope listener failed");
+  scopes.subscribe(first);
+  scopes.subscribe(() => { if (failing) throw failure; });
+  scopes.subscribe(last);
+  const releases = Array.from({ length: MAX_TRACKED_SYNC_SCOPES }, (_, index) => scopes.register(task(`old-${index}`)));
+  const previous = scopes.tracked("d");
+  first.mockClear(); last.mockClear(); channel.postMessage.mockClear(); failing = true;
+  expect(() => scopes.register(task("changed-query"))).toThrow(failure);
+  expect(scopes.tracked("d")).toEqual(previous);
+  expect(first.mock.results.at(-1).value).toEqual(previous);
+  expect(last).toHaveReturnedWith(previous);
+  expect(channel.postMessage.mock.calls.at(-1)[0].scopes.map(({ scope }) => scope.task_id))
+    .toEqual(previous.map(({ scope }) => scope.task_id));
+  expect(vi.getTimerCount()).toBe(1);
+  expect(channel.onmessage).toEqual(expect.any(Function));
+  expect(channel.close).not.toHaveBeenCalled();
+  failing = false; releases.forEach((release) => release());
+  expect(scopes.tracked("d")).toEqual([]);
+});
+
+it("preserves existing local demand, remote leases and observer activation when presence publication throws", () => {
+  vi.useFakeTimers();
+  const channel = { onmessage: null, postMessage: vi.fn(), close: vi.fn() };
+  const scopes = registry({ createChannel: () => channel });
+  const stop = scopes.subscribe(vi.fn()), release = scopes.register(task("old-query"));
+  channel.onmessage({ data: { type: "presence", owner: "remote", scopes: [{ ...task("remote-query"),
+    id: "remote:1", key: JSON.stringify(["d", taskSyncScope("remote-query")]), opened: Date.now(), ordinal: 1 }] } });
+  const previous = scopes.tracked("d"), handler = channel.onmessage;
+  const failure = new Error("presence publication failed");
+  channel.postMessage.mockImplementationOnce(() => { throw failure; });
+  expect(() => scopes.register(task("changed-query"))).toThrow(failure);
+  expect(scopes.tracked("d")).toEqual(previous);
+  expect(channel.onmessage).toBe(handler);
+  expect(channel.close).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(1);
+  expect(channel.postMessage.mock.calls.at(-1)[0].scopes.map(({ scope }) => scope.task_id)).toEqual(["old-query"]);
+  release(); expect(scopes.tracked("d").map(({ scope }) => scope.task_id)).toEqual(["remote-query"]);
+  stop(); expect(vi.getTimerCount()).toBe(0);
+});
+
+it("rethrows the original registration failure after a newly opened channel also fails to close", () => {
+  vi.useFakeTimers();
+  const failure = new Error("request publication failed");
+  const channel = { onmessage: null, postMessage: vi.fn(() => { throw failure; }),
+    close: vi.fn(() => { throw new Error("cleanup close failed"); }) };
+  const scopes = registry({ createChannel: () => channel });
+  expect(() => scopes.register(task("failed"))).toThrow(failure);
+  expect(scopes.tracked("d")).toEqual([]);
+  expect(vi.getTimerCount()).toBe(0);
+  expect(channel.onmessage).toBeNull();
+  expect(channel.close).toHaveBeenCalledOnce();
+  expect(() => scopes.dispose()).not.toThrow();
+});
+
 it("canonicalizes normalized filters, order and exact task identities", () => {
   expect(projectSyncScope("p", { state: "open", labels: ["UI", "ui"], order: "number" }))
     .toEqual(projectSyncScope("p", { states: ["open"], label: "ui" }));

@@ -297,6 +297,68 @@ it("paints one engine-owned canonical query for Bug then bug mounts without a wh
   }
 });
 
+it.each(["Bug", "bug"])("paints a pre-upgrade raw Bug query offline for a saved %s selector without a whole list", async (label) => {
+  durable.owns = true;
+  const raw = { project_id: "proj-1", state: "open", label: "Bug" };
+  const canonical = { ...raw, label: "bug" };
+  await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", raw,
+    trackerCache.tasksRecord([task({ id: "legacy-bug", title: "Before upgrade cached Bug", labels: ["Bug"] })], columns(), 100));
+  const { uiAddress, updateUiState } = await import("../src/core/localUiState.js");
+  await updateUiState(uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" }),
+    () => ({ view: "list", filters: { state: "open", label } }));
+  await mount();
+  expect(titles()).toEqual(["Before upgrade cached Bug"]);
+  expect(call).not.toHaveBeenCalled();
+  expect(await cache.readCached(trackerCache.tasksAddress("dev-1", "proj-1"))).toBeUndefined();
+  expect(await trackerCache.readTasksQueryCached("dev-1", "proj-1", canonical)).toBeNull();
+  expect((await trackerCache.readTasksQueryCached("dev-1", "proj-1", raw)).value.read_order).toBe(100);
+});
+
+it.each([false, true])("keeps a newer canonical query over a matching pre-upgrade raw Bug record, empty=%s", async (empty) => {
+  durable.owns = true;
+  const raw = { project_id: "proj-1", state: "open", label: "Bug" }, canonical = { ...raw, label: "bug" };
+  await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", raw,
+    trackerCache.tasksRecord([task({ id: "old-bug", title: "Old raw Bug", labels: ["Bug"] })], columns(), 100));
+  await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", canonical,
+    trackerCache.tasksRecord(empty ? [] : [task({ id: "new-bug", title: "New canonical bug", labels: ["Bug"] })], columns(), 200));
+  const { uiAddress, updateUiState } = await import("../src/core/localUiState.js");
+  await updateUiState(uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" }),
+    () => ({ view: "list", filters: { state: "open", label: "Bug" } }));
+  await mount();
+  expect(titles()).toEqual(empty ? [] : ["New canonical bug"]);
+  expect((await trackerCache.readTasksQueryCached("dev-1", "proj-1", canonical)).value.read_order).toBe(200);
+  expect((await trackerCache.readTasksQueryCached("dev-1", "proj-1", raw)).value.read_order).toBe(100);
+  expect(call).not.toHaveBeenCalled();
+});
+
+it("lets a canonical publication overtake an in-flight pre-upgrade raw query fallback", async () => {
+  durable.owns = true;
+  const raw = { project_id: "proj-1", state: "open", label: "Bug" }, canonical = { ...raw, label: "bug" };
+  await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", raw,
+    trackerCache.tasksRecord([task({ id: "held-bug", title: "Held legacy Bug", labels: ["Bug"] })], columns(), 100));
+  const { uiAddress, updateUiState } = await import("../src/core/localUiState.js");
+  await updateUiState(uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" }),
+    () => ({ view: "list", filters: { state: "open", label: "Bug" } }));
+  let release, waiting = false;
+  const held = new Promise((resolve) => { release = resolve; });
+  const read = trackerCache.readTasksQueryCached;
+  const spy = vi.spyOn(trackerCache, "readTasksQueryCached").mockImplementation(async (deviceId, projectId, params) => {
+    const answer = await read(deviceId, projectId, params);
+    if (params.label === "Bug") { waiting = true; await held; }
+    return answer;
+  });
+  try {
+    await mount();
+    await vi.waitFor(() => expect(waiting).toBe(true));
+    await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", canonical,
+      trackerCache.tasksRecord([task({ id: "canonical-race", title: "Canonical overtook old cache", labels: ["Bug"] })], columns(), 200));
+    await vi.waitFor(() => expect(titles()).toEqual(["Canonical overtook old cache"]));
+    release(); await flush();
+    expect(titles()).toEqual(["Canonical overtook old cache"]);
+    expect(call).not.toHaveBeenCalled();
+  } finally { release(); spy.mockRestore(); }
+});
+
 it.each(["query", "whole list"])("continues after rejected display hydration from the %s subscription", async (source) => {
   durable.owns = true;
   call = vi.fn(() => new Promise(() => {}));

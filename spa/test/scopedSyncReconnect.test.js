@@ -174,6 +174,27 @@ it("snapshots when a reconnect's cursor was replaced outside this engine", async
   expect(snapshots()).toHaveLength(2);
 });
 
+it("retains a committed changes cursor when the opening ends before publication returns", async () => {
+  const store = fake.stores[0], publish = store.publish;
+  vi.spyOn(store, "publish").mockImplementationOnce(async (batch) => {
+    const committed = await publish(batch);
+    expect(committed).toBe(true);
+    // IndexedDB has committed C2, but the old request opening is gone before
+    // the engine receives that successful result.
+    fake.greeted = false; fake.context.session = null;
+    return committed;
+  });
+  fake.head = 2;
+  await runtime.wakeScopedSync(deviceId);
+  expect((await local.readCached(cursorAddress)).value.cursor).toBe("C2");
+  const before = fake.request.mock.calls.length;
+  fake.head = 3; nextOpening(); await capture();
+  expect(fake.request.mock.calls.slice(before).map(([, method]) => method)).toEqual(["sync.changes"]);
+  expect(fake.request.mock.calls[before][2].cursor).toBe("C2");
+  expect(snapshots()).toHaveLength(1);
+  expect(await ids()).toEqual(["task-3", "task-2", "task-1"]);
+});
+
 it("obeys bridge resync_required after a reconnect", async () => {
   fake.request.mockImplementationOnce(async () => ({ status: "resync_required", reason: "retention_expired", bridge_epoch: "e2" }));
   const before = fake.request.mock.calls.length;

@@ -58,9 +58,9 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
     const accept = () => accepts(entry, token);
     if (!accept()) return false;
     const committed = await entry.store.publish({ ...batch, accept });
-    if (!committed || !accept()) return false;
+    if (!committed) return false;
     entry.lastCursor = batch.removed ? null : batch.response.cursor;
-    return true;
+    return accept();
   }
 
   async function reset(entry, token, answer, capture, expectedCursor) {
@@ -71,9 +71,9 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
       return false;
     }
     const committed = await entry.store.reset({ capture, expectedCursor, accept });
-    if (!committed || !accept()) return false;
+    if (!committed) return false;
     entry.lastCursor = null;
-    return true;
+    return accept();
   }
 
   async function snapshot(entry, token, capture, expectedCursor) {

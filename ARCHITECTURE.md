@@ -4280,8 +4280,10 @@ gate attachment display.
   expiry running. Remote presence lasts ninety seconds so minute-spaced
   heartbeats from throttled hidden tabs retain their scope slots; explicit
   release remains immediate. The final release or unsubscribe stops that interval and
-  closes the owned channel; activation recreates it and requests peer presence. Followers relay named wake requests
-  to the holder. Definitions
+  closes the owned channel; activation recreates it and requests peer presence.
+  Failed mount acquisition rolls back its presence and newly started resources,
+  retaining the prior registration when a query replacement fails.
+  Followers relay named wake requests to the holder. Definitions
   use canonical filters and order; cursors never cross definitions. Current
   greetings independently gate `sync.projectTasks` and `sync.task`.
   `scopedSyncRuntime.js` starts `scopedSyncEngine.js` after a Web Lock grant
@@ -4313,6 +4315,7 @@ gate attachment display.
   or re-greet under the same runtime and lock tenure retains entries only while
   context, cache scope and bridge identity remain unchanged. The next request
   opening resumes only from this engine's own last committed cursor; an
+  opening ending after commit does not discard that committed position. An
   externally replaced position fails closed to a snapshot. A bridge-requested
   resync still snapshots that scope. Request openings separately fence replies,
   staged pages and publication/reset transactions to the current session and
@@ -4321,8 +4324,11 @@ gate attachment display.
   reuse cross-tab opening tokens, and wall clocks never prove continuity.
   Pane query cache keys share the scope's canonical label/status spelling,
   while RPCs keep the selected representative spelling. Equivalent filters
-  read one query record even after the first presenter closes. Page records
-  retain their originating wire params. UI-only saves retain the scope's
+  read one query record even after the first presenter closes. Query records
+  from older builds remain readable through equivalent raw query addresses
+  when no canonical record exists, preserving their original read order and
+  content origin without migrating or overwriting newer canonical data.
+  Page records retain their originating wire params. UI-only saves retain the scope's
   registration and cache subscription; a
   real query change acquires its next registration before releasing the old.
   Pushes wake this reader; reconnect, foreground return and a thirty-second

@@ -23,11 +23,21 @@ export function createScopedSyncRegistry({ channel: providedChannel, createChann
     return [...local.values(), ...[...remote.values()].flatMap((tab) => tab.scopes)];
   }
   const selected = () => cappedScopes(all());
-  function notify() {
+  function updateSignature() {
     const next = JSON.stringify(selected());
-    if (next === signature) return;
+    if (next === signature) return false;
     signature = next;
+    return true;
+  }
+  function notify() {
+    if (!updateSignature()) return;
     listeners.forEach((listener) => listener());
+  }
+  function restoreObservers() {
+    if (!updateSignature()) return;
+    for (const listener of listeners) {
+      try { listener(); } catch { /* Continue restoring observers after the original failure. */ }
+    }
   }
   function publish() {
     channel?.postMessage({ type: "presence", owner, scopes: [...local.values()] });
@@ -52,12 +62,12 @@ export function createScopedSyncRegistry({ channel: providedChannel, createChann
     channel.postMessage({ type: "request", owner });
   }
   function closeChannel() {
-    if (channel) {
-      channel.onmessage = null;
-      if (createChannel) channel.close();
-      channel = null;
-    }
+    const closing = channel;
+    channel = null;
     remote.clear();
+    if (!closing) return;
+    closing.onmessage = null;
+    if (createChannel) closing.close();
   }
   // Mounts advertise their presence; active runtime observers also need to
   // expire remote leases even when this tab has no mounted scope of its own.
@@ -75,6 +85,14 @@ export function createScopedSyncRegistry({ channel: providedChannel, createChann
     observers.add(listener); updateTimer();
     return () => { observers.delete(listener); updateTimer(); };
   }
+  function rollbackRegistration(id) {
+    local.delete(id);
+    // Retract demand that a peer or earlier listener may already have seen.
+    // Cleanup failures must not replace the registration's original error.
+    for (const restore of [publish, updateTimer, restoreObservers]) {
+      try { restore(); } catch { /* Attempt every rollback step, then rethrow the primary error. */ }
+    }
+  }
 
   return {
     register(registration) {
@@ -84,8 +102,13 @@ export function createScopedSyncRegistry({ channel: providedChannel, createChann
       const key = scopeKey(registration);
       const id = `${owner}:${++sequence}`;
       local.set(id, { ...withoutResumeIdentity(registration), opened: now(), ordinal: sequence, owner, id, key });
-      updateTimer();
-      publish(); notify();
+      try {
+        updateTimer();
+        publish(); notify();
+      } catch (error) {
+        rollbackRegistration(id);
+        throw error;
+      }
       return () => { local.delete(id); publish(); updateTimer(); notify(); };
     },
     tracked: (deviceId) => selected().filter((entry) => entry.deviceId === deviceId),

@@ -30,8 +30,9 @@ import {
   writeTasksQueryRecord,
   writeTasksRecord,
   writeTaskListRecords,
+  TRACKER_TASKS_QUERY_KIND,
 } from "./trackerCache.js";
-import { subscribeCache } from "./localCache.js";
+import { cachedSubKeys, subscribeCache } from "./localCache.js";
 import { foldTasksPage, pagesTasks, pullTaskPages } from "./trackerPages.js";
 import { nextTaskRead, noteWritten } from "./taskReadOrder.js";
 import { captureTaskContentRead, observeTaskContent, retireTaskContent } from "./taskContentAuthority.js";
@@ -76,6 +77,32 @@ export const TASK_PAGE_SIZE = 25;
 const VIEW_IDS = new Set([DASHBOARD_VIEW, LIST_VIEW, BOARD_VIEW]);
 const retireTaskRowHeader = (tasks, taskId) => (tasks || []).map((task) =>
   task.id === taskId ? retireTaskContent(task, "header") : task);
+const LEGACY_QUERY_FIELDS = new Set(["project_id", "state", "status", "label", "assignee"]);
+
+function legacyPaneQueryParams(sub, canonical) {
+  try {
+    if (sub === JSON.stringify(canonical)) return null;
+    const params = JSON.parse(sub);
+    if (Object.keys(params).some((key) => !LEGACY_QUERY_FIELDS.has(key))) return null;
+    return JSON.stringify(taskListCacheParams(params)) === JSON.stringify(canonical) ? params : null;
+  } catch { return null; }
+}
+
+async function readCachedPaneQuery(deviceId, projectId, params) {
+  const canonical = await readTasksQueryCached(deviceId, projectId, params);
+  if (canonical) return { cached: canonical, params };
+  // Read matching pre-canonical cache addresses without copying their bytes
+  // into a newer authority. Their read order and actual origin remain intact.
+  const subs = await cachedSubKeys(deviceId, projectId, TRACKER_TASKS_QUERY_KIND);
+  const aliases = subs.map((sub) => legacyPaneQueryParams(sub, params)).filter(Boolean);
+  const candidates = await Promise.all(aliases.map(async (alias) => ({ params: alias,
+    cached: await readTasksQueryCached(deviceId, projectId, alias) })));
+  const legacy = candidates.filter(({ cached }) => cached)
+    .sort((left, right) => listAskedAt(right.cached) - listAskedAt(left.cached))[0];
+  // A journal publication may have arrived while a legacy read was waiting.
+  const current = await readTasksQueryCached(deviceId, projectId, params);
+  return current ? { cached: current, params } : legacy;
+}
 
 export function mountTasksPane(host, options) {
   const initialView = VIEW_IDS.has(options.view) ? options.view : options.defaultView || DASHBOARD_VIEW;
@@ -390,8 +417,9 @@ export function mountTasksPane(host, options) {
   const currentQuery = (serial) => !state.disposed && serial === querySerial;
 
   async function paintFromQuery(params, serial = querySerial) {
-    const cached = await readTasksQueryCached(state.deviceId, state.projectId, params);
-    if (!currentQuery(serial) || !cached) return;
+    const query = await readCachedPaneQuery(state.deviceId, state.projectId, params);
+    if (!currentQuery(serial) || !query) return;
+    const { cached, params: cachedParams } = query;
     const record = cached.value;
     queryLoaded = true;
     state.queryAsked = listAskedAt(cached);
@@ -400,7 +428,7 @@ export function mountTasksPane(host, options) {
       : sortTasks(record.tasks);
     state.shown = kept(state.unscopedShown);
     state.displayAddress = wholeListIsNewer() ? tasksAddress(state.deviceId, state.projectId)
-      : tasksQueryAddress(state.deviceId, state.projectId, params);
+      : tasksQueryAddress(state.deviceId, state.projectId, cachedParams);
     await hydrateUnreadTasks();
     if (!currentQuery(serial)) return;
     details?.updateTasks(state.shown);
@@ -434,8 +462,9 @@ export function mountTasksPane(host, options) {
     querySerial += 1;
     queryLoaded = false;
     const serial = querySerial;
-    queryUnsubscribe = subscribeCache(tasksQueryAddress(state.deviceId, state.projectId, params), () => {
-      void paintFromQuery(params, serial);
+    const address = tasksQueryAddress(state.deviceId, state.projectId, params);
+    queryUnsubscribe = subscribeCache({ ...address, sub: undefined }, (changed) => {
+      if (!changed.sub || changed.sub === address.sub || legacyPaneQueryParams(changed.sub, params)) void paintFromQuery(params, serial);
     });
     void paintFromQuery(params, serial);
   }

@@ -38,6 +38,17 @@ export function revisionValue(record, incarnation) {
   return { revision: record.revision, incarnation, deleted: rowRemoved(record), stale: rowInvalidated(record) };
 }
 
+// A live keyset page can predate a detail reply without losing its captured
+// membership. Retain that membership through replay, except for entities
+// already known deleted at the page's revision or later.
+export function snapshotMembers(records, revisionOf, incarnation) {
+  return records.filter((record) => {
+    const held = revisionOf(record.key);
+    return !(held?.incarnation === incarnation && held.deleted
+      && BigInt(held.revision) >= BigInt(record.revision));
+  });
+}
+
 function selectedTask(held, record, options) {
   const incoming = rowTask(record);
   if (!incoming || incoming.id !== record.key) throw new Error("Invalid sync task identity");

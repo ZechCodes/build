@@ -204,13 +204,28 @@ it("removes membership on an invalidation with member false", async () => {
   expect(await ids()).toEqual([]);
 });
 
-it("retries a snapshot whose membership row was overtaken by another scope", async () => {
+it("publishes live snapshot membership while keeping newer bytes accepted by another scope", async () => {
   const writer = create();
-  await publish(writer, [record("task-1", "10")], { snapshot: true });
+  await publish(writer, [record("task-1", "10", { row: task("task-1", { title: "newer row" }) })], { snapshot: true });
   const closed = create({ ...scope, filters: { states: ["closed"] } });
-  expect(await publish(closed, [record("task-1", "9")], { snapshot: true })).toBe(false);
-  expect(await closed.readCursor()).toBeUndefined();
-  expect((await raw(summaries.summaryAddress(place, "task-1"))).task.id).toBe("task-1");
+  expect(await publish(closed, [record("task-1", "9", { row: task("task-1", { title: "older page" }) })], { snapshot: true })).toBe(true);
+  expect((await closed.readCursor()).cursor).toBe("opaque-cursor");
+  expect(await ids({ states: ["closed"] })).toEqual(["task-1"]);
+  expect((await raw(summaries.summaryAddress(place, "task-1"))).task.title).toBe("newer row");
+  expect((await raw(legacy({ project_id: projectId, states: ["closed"] }))).tasks[0].title).toBe("newer row");
+  // Replay after the first-page watermark repairs the historical membership.
+  await publish(closed, [record("task-1", "10", { member: false, row: task("task-1", { title: "newer row" }) })],
+    { expectedCursor: "opaque-cursor", response: response("replayed") });
+  expect(await ids({ states: ["closed"] })).toEqual([]);
+});
+
+it("excludes current tombstones from a live snapshot without refusing its other members", async () => {
+  const writer = create();
+  await publish(writer, [record("task-1", "10", { operation: "delete", row: null, member: false })], { snapshot: true });
+  const other = create({ ...scope, filters: { states: ["closed"] } });
+  expect(await publish(other, [record("task-1", "9"), record("task-2", "9")], { snapshot: true })).toBe(true);
+  expect(await ids({ states: ["closed"] })).toEqual(["task-2"]);
+  expect(await raw(summaries.summaryAddress(place, "task-1"))).toBeUndefined();
 });
 
 it("retains honest normalized uncertainty when a task head lacks unread counter authority", async () => {
@@ -234,4 +249,58 @@ it("evicts owning project cursors with their replicas so reopening snapshots ins
   expect(await publish(reopened, [record("task-1", "2")], { snapshot: true, response: response("reopened-snapshot") })).toBe(true);
   expect(await ids()).toEqual(["task-1"]);
   expect((await reopened.readCursor()).cursor).toBe("reopened-snapshot");
+});
+
+it("persists snapshot demand on invalidation through clean batches until snapshot publication", async () => {
+  const writer = create();
+  await publish(writer, [record("task-1")], { snapshot: true });
+  expect((await writer.readCursor()).snapshotRequired).toBe(false);
+  await publish(writer, [record("task-1", "2", { operation: "invalidate", row: null })],
+    { expectedCursor: "opaque-cursor", response: response("invalidated") });
+  expect((await writer.readCursor()).snapshotRequired).toBe(true);
+  await publish(writer, [], { expectedCursor: "invalidated", response: response("clean") });
+  expect((await writer.readCursor()).snapshotRequired).toBe(true);
+  await publish(writer, [record("task-1", "3")],
+    { snapshot: true, expectedCursor: "clean", response: response("snapshot") });
+  expect((await writer.readCursor()).snapshotRequired).toBe(false);
+});
+
+it("rolls back an already-issued cursor put when a later row put fails", async () => {
+  const writer = create();
+  await publish(writer, [record("task-1")], { snapshot: true });
+  const captured = await writer.capture();
+  const put = IDBObjectStore.prototype.put, written = [];
+  const refusal = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function(value, key) {
+    written.push(String(key));
+    if (String(key).includes("|tracker-summary|task-2")) throw new DOMException("late quota", "QuotaExceededError");
+    return put.call(this, value, key);
+  });
+  try {
+    expect(await writer.publish({ response: response("should-rollback"), records: [record("task-2", "2")],
+      expectedCursor: "opaque-cursor", capture: captured })).toBe(false);
+  } finally { refusal.mockRestore(); }
+  expect(written.findIndex((key) => key.includes("|sync-cursor|"))).toBeLessThan(written.findIndex((key) => key.includes("|tracker-summary|task-2")));
+  expect((await writer.readCursor()).cursor).toBe("opaque-cursor");
+  expect(await ids()).toEqual(["task-1"]);
+  expect(await raw(summaries.summaryAddress(place, "task-2"))).toBeUndefined();
+  expect(await publish(writer, [record("task-2", "2")],
+    { expectedCursor: "opaque-cursor", response: response("retry") })).toBe(true);
+  expect(await ids()).toEqual(["task-2", "task-1"]);
+});
+
+it.each([false, true])("preserves a tombstone against same-revision intra-batch upserts, reversed=%s", async (reversed) => {
+  const writer = create();
+  await publish(writer, [record("task-1", "1")], { snapshot: true });
+  const changes = [record("task-1", "2", { operation: "delete", member: false, row: null }), record("task-1", "2")];
+  await publish(writer, reversed ? changes.reverse() : changes,
+    { expectedCursor: "opaque-cursor", response: response("same-revision") });
+  expect(await ids()).toEqual([]);
+  expect(await raw(summaries.summaryAddress(place, "task-1"))).toBeUndefined();
+});
+
+it("applies server pending-selection metadata when no local mutation is pending", async () => {
+  const writer = create();
+  expect(await publish(writer, [record("task-1", "1", { selection: { pending_present: true } })], { snapshot: true })).toBe(true);
+  expect((await raw(summaries.summaryAddress(place, "task-1"))).task.title).toBe("task-1");
+  expect((await writer.readCursor()).cursor).toBe("opaque-cursor");
 });

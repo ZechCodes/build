@@ -6,7 +6,7 @@ import { taskMutationEpoch, taskMutationsPending } from "./taskMutationFence.js"
 import { summaryAddress, summaryQueryAddress } from "./taskSummaryCache.js";
 import { taskAddress, tasksQueryAddress } from "./trackerCache.js";
 import { currentRevision, isMembership, matchingMembership, membershipValue, removedDetail,
-  revisionAddress, revisionValue, scopeFilters, taskRecordValue } from "./scopedTaskSyncRecords.js";
+  revisionAddress, revisionValue, scopeFilters, snapshotMembers, taskRecordValue } from "./scopedTaskSyncRecords.js";
 
 // A project eviction removes its recovery position in the same range delete
 // as its replicas. Retaining that position after dropping content would make
@@ -26,10 +26,14 @@ function acceptsCapture(capture, context, active, deviceId) {
       && capture.contentRead.ticket[key] === context[key]);
 }
 
-function cursorValue(response, previous, bridgeIdentity, snapshot) {
+const snapshotDemand = (previous, records, snapshot) => !snapshot
+  && (previous?.snapshotRequired === true || records.some((record) => record.operation === "invalidate"));
+
+function cursorValue(response, previous, bridgeIdentity, snapshot, records) {
   const head = snapshot ? response.watermark : response.head;
   return { incarnation: response.incarnation, cursor: response.cursor, head,
     appliedHead: response.continuation ? previous?.appliedHead ?? null : head,
+    snapshotRequired: snapshotDemand(previous, records, snapshot),
     bridgeIdentity, bridge_epoch: response.bridge_epoch };
 }
 
@@ -56,7 +60,7 @@ function admittedRecords(records, get, place, incarnation) {
   const newest = new Map();
   for (const record of records) {
     const prior = newest.get(record.key) || get(revisionAddress(place, record.key))?.value;
-    if (currentRevision(prior, record, incarnation)) newest.set(record.key, { ...record, incarnation });
+    if (currentRevision(prior, record, incarnation)) newest.set(record.key, { ...record, ...revisionValue(record, incarnation) });
   }
   return [...newest.values()];
 }
@@ -72,9 +76,12 @@ function applyRows(addresses, held, records, options) {
       next.set(keyOf(address), taskRecordValue(get(address), record, { ...options, address }));
     }
   }
+  const revisionOf = (id) => next.get(keyOf(revisionAddress(options.place, id)))
+    || get(revisionAddress(options.place, id))?.value;
+  const members = options.snapshot ? snapshotMembers(records, revisionOf, options.response.incarnation) : selected;
   for (const address of addresses.filter(isMembership)) {
     const matches = matchingMembership(address, options.scope);
-    next.set(keyOf(address), membershipValue(get(address), selected,
+    next.set(keyOf(address), membershipValue(get(address), members,
       { ...options, address, matches, taskOf, snapshot: options.snapshot && matches, removed: options.removed && matches }));
   }
   return next;
@@ -85,8 +92,6 @@ function reducePublication(addresses, records, options, held, context) {
   if (!acceptsCapture(options.capture, context, options.active, options.place.deviceId)
     || tokenOf(previous) !== (options.expectedCursor ?? null)) return null;
   const cached = recordMap(addresses, held);
-  if (options.snapshot && records.some((record) => !currentRevision(
-    cached.get(keyOf(revisionAddress(options.place, record.key)))?.value, record, options.response.incarnation))) return null;
   const next = applyRows(addresses, cached, records, { ...options, context });
   if (options.removed && options.scope.kind === "task") {
     const detail = taskAddress(options.place.deviceId, options.place.projectId, options.scope.task_id);
@@ -94,7 +99,7 @@ function reducePublication(addresses, records, options, held, context) {
   }
   const values = addresses.map((address) => next.get(keyOf(address)) ?? null);
   values[0] = options.removed ? DELETE_CACHED_RECORD
-    : cursorValue(options.response, previous, options.bridgeIdentity, options.snapshot);
+    : cursorValue(options.response, previous, options.bridgeIdentity, options.snapshot, records);
   return { values, retire: options.removed };
 }
 

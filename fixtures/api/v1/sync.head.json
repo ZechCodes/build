@@ -6,7 +6,9 @@
       "kind": "project_tasks",
       "project_id": "proj-1",
       "filters": {
-        "states": ["open"],
+        "states": [
+          "open"
+        ],
         "watched": true
       },
       "order": "number"
@@ -19,7 +21,9 @@
       "kind": "project_tasks",
       "project_id": "proj-1",
       "filters": {
-        "states": ["open"],
+        "states": [
+          "open"
+        ],
         "watched": true
       },
       "order": "number"
@@ -29,13 +33,26 @@
     "retention_floor": "7",
     "bridge_epoch": "bridge-epoch-1"
   },
-  "errors": ["invalid_params", "not_found", "unavailable", "internal"],
+  "errors": [
+    "invalid_params",
+    "not_found",
+    "unavailable",
+    "internal"
+  ],
   "examples": [
     {
-      "params": {"scope": {"kind": "task", "task_id": "task-1"}},
+      "params": {
+        "scope": {
+          "kind": "task",
+          "task_id": "task-1"
+        }
+      },
       "result": {
         "status": "resync_required",
-        "scope": {"kind": "task", "task_id": "task-1"},
+        "scope": {
+          "kind": "task",
+          "task_id": "task-1"
+        },
         "incarnation": "sync-incarnation-2",
         "head": "0",
         "bridge_epoch": "bridge-epoch-2",
@@ -44,16 +61,40 @@
     },
     {
       "params": {
-        "scope": {"kind": "project_tasks", "project_id": "deleted-project"},
+        "scope": {
+          "kind": "project_tasks",
+          "project_id": "deleted-project"
+        },
         "cursor": "authenticated-deleted-scope-cursor"
       },
       "result": {
         "status": "resync_required",
-        "scope": {"kind": "project_tasks", "project_id": "deleted-project"},
+        "scope": {
+          "kind": "project_tasks",
+          "project_id": "deleted-project"
+        },
         "incarnation": "sync-incarnation-1",
         "head": "42",
         "bridge_epoch": "bridge-epoch-1",
         "reason": "scope_removed"
+      }
+    },
+    {
+      "since": "3.33.0",
+      "params": {
+        "scope": {
+          "kind": "device"
+        }
+      },
+      "result": {
+        "status": "ok",
+        "scope": {
+          "kind": "device"
+        },
+        "incarnation": "sync-incarnation-1",
+        "bridge_epoch": "bridge-epoch-1",
+        "head": "42",
+        "retention_floor": "7"
       }
     }
   ]

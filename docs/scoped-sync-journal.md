@@ -177,22 +177,13 @@ atomic replacement; use the explicit restore boundary. Live replacement,
 independently copying WAL/database files, and external SQL bypassing supported
 publication owners are outside this guarantee.
 
-## Remaining phases
+## Wire scopes
 
-C3 adds versioned device records,
-five-minute leases (16/store, four/opening) and pre-change dirty/reconciliation
-boundaries. Lease admission alone uses one short off-lock writer transaction;
-all pages use ReadPool. Failed marker persistence fails the action plainly;
-failed reconciliation refuses sync retryably. Existing swallowed attention-save
-errors remain unchanged apart from that new marker step.
-
-C4 registers `sync.head`, `sync.snapshot`, `sync.changes` as POST query resources
-(`/v1/sync/head-queries`, `/v1/sync/snapshot-queries`, `/v1/sync/changes-queries`),
-uses the generated manifest's operation count and advertises each scope only
-after its complete producer guard passes. It also supplies the large-fixture
-100 ms read evidence and measured write/lease-admission overhead. No performance
-claim or coverage claim follows from C1 alone.
-
+Wire 3.32 advertises `sync.projectTasks` and `sync.task`. Wire 3.33 adds
+`sync.device` after the producer coverage below. The existing `sync.head`,
+`sync.snapshot` and `sync.changes` POST query resources carry all three scopes;
+the HTTP operation count remains 153. The SPA recognizes the device capability
+without connecting a consumer; #997 owns that work.
 
 ## Device producer ownership (#995)
 

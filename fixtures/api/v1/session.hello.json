@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.32.0",
+    "api_version": "3.33.0",
     "ack_confirm_methods": [],
     "capabilities": [
       "agent.add",
@@ -131,6 +131,7 @@
       "sources.syncBase",
       "sources.syncBasePath",
       "sync.changes",
+      "sync.device",
       "sync.head",
       "sync.projectTasks",
       "sync.snapshot",

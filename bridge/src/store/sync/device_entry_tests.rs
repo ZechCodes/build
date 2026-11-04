@@ -436,3 +436,74 @@ fn device_followup_external_writer_lock_refuses_metadata_admission_without_chang
         .admit_device_lease("opening", "epoch", NOW)
         .unwrap();
 }
+
+#[tokio::test]
+async fn device_candidate_budget_yields_through_a_tombstone_prefix() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let writer = store.writer();
+    writer
+        .sync_transaction(|_, batch| {
+            for index in 0..2200 {
+                batch.upsert(
+                    Entity::new("candidate", &format!("{index:04}")),
+                    json!({"name":"temporary"}),
+                    &[Stream::device()],
+                );
+            }
+            batch.upsert(
+                Entity::new("candidate", "survivor"),
+                json!({"name":"live"}),
+                &[Stream::device()],
+            );
+            Ok(())
+        })
+        .unwrap();
+    writer
+        .sync_transaction(|_, batch| {
+            for index in 0..2200 {
+                batch.remove(
+                    Entity::new("candidate", &format!("{index:04}")),
+                    &[Stream::device()],
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+    let lease = writer
+        .admit_device_lease("candidate-budget", "epoch", NOW)
+        .unwrap();
+    let mut read = store.read_pool().acquire_sync().await;
+    let small = read
+        .read(|tx| tx.sync_device_snapshot(&lease.id, None, 1, "epoch", NOW))
+        .unwrap()
+        .unwrap();
+    assert!(small["records"].as_array().unwrap().is_empty());
+    assert_eq!(
+        small["next"]["first_seq"], "4",
+        "small pages have a proportional candidate budget"
+    );
+    let large = read
+        .read(|tx| tx.sync_device_snapshot(&lease.id, None, 500, "epoch", NOW))
+        .unwrap()
+        .unwrap();
+    assert!(large["records"].as_array().unwrap().is_empty());
+    assert_eq!(
+        large["next"]["first_seq"], "2000",
+        "a sparse prefix must yield before scanning history"
+    );
+    let rest = read
+        .read(|tx| {
+            tx.sync_device_snapshot(
+                &lease.id,
+                Some((2000, "candidate", "1999")),
+                500,
+                "epoch",
+                NOW,
+            )
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(rest["records"][0]["key"], "survivor");
+    assert!(rest.get("next").is_none());
+}

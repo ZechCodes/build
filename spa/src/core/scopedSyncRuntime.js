@@ -4,7 +4,7 @@ import { captureDeviceGreeting, liveContexts, onDeviceStateChanged } from "./dev
 import { bridgeCapabilities, onBridgeGreeted } from "./changeEvents.js";
 import { createScopedSyncEngine } from "./scopedSyncEngine.js";
 import { trackedSyncScopes, scopeIsTracked } from "./scopedSyncRegistry.js";
-import { subscribeScopedSyncScopes } from "./scopedSyncRegistry.js";
+import { broadcastScopedSyncWake, subscribeScopedSyncWakes, subscribeScopedSyncScopes } from "./scopedSyncRegistry.js";
 import { subscribeCache } from "./localCache.js";
 import { refreshScopedProjectColumns } from "./scopedProjectColumns.js";
 import { refreshScopedTaskBody } from "./scopedTaskBody.js";
@@ -12,8 +12,11 @@ import { createScopedTaskSyncCache } from "./scopedTaskSyncCache.js";
 
 const engines = new Map();
 const scopeDefinitions = {
-  project_tasks: { capability: "projectTasks", storeFor: createScopedTaskSyncCache },
-  task: { capability: "task", storeFor: createScopedTaskSyncCache },
+  project_tasks: { capability: "projectTasks", storeFor: createScopedTaskSyncCache,
+    namedBy: (entry, item) => entry.scope.project_id === item.entity_id && Boolean(item.tasks) },
+  task: { capability: "task", storeFor: createScopedTaskSyncCache,
+    namedBy: (entry, item) => entry.projectId === item.entity_id
+      && Boolean(item.tasks?.truncated || item.tasks?.task_ids?.includes(entry.scope.task_id)) },
 };
 const supported = (caps, scope) => caps?.sync?.[scopeDefinitions[scope.kind]?.capability] === true;
 let runtime = null;
@@ -121,21 +124,47 @@ export function captureScopedSync(deviceId) {
   }));
 }
 
-export function wakeScopedSync(deviceId, predicate = () => true) {
-  reconcileScopedSyncRuntime();
-  const held = engines.get(deviceId);
-  if (!held) return Promise.resolve([]);
+function wakeOwned(held, predicate) {
   return held.engine.wake(predicate).then(async (result) => {
     await Promise.all([...held.entries.values()].filter(({ scope }) => predicate(scope)).map((entry) => prepareScope(held, entry)));
     return result;
   });
 }
 
+function receiveWake({ deviceId, scopes }) {
+  reconcileScopedSyncRuntime();
+  const held = engines.get(deviceId);
+  if (!held) return;
+  const keys = new Set(scopes.map((scope) => JSON.stringify(scope)).filter((key) => held.entries.has(key)));
+  if (!keys.size) return;
+  return wakeOwned(held, (scope) => keys.has(JSON.stringify(scope))).catch(() => {});
+}
+
+export function wakeScopedSync(deviceId, predicate = () => true) {
+  reconcileScopedSyncRuntime();
+  const held = engines.get(deviceId);
+  if (held) return wakeOwned(held, predicate);
+  if (runtime && browserLockAvailable()) {
+    const scopes = trackedSyncScopes(deviceId).map((entry) => entry.scope)
+      .filter((scope) => supported(bridgeCapabilities(deviceId), scope) && predicate(scope));
+    if (scopes.length) broadcastScopedSyncWake(deviceId, scopes);
+  }
+  return Promise.resolve([]);
+}
+
+export function wakeScopedSyncChanges(deviceId, items) {
+  const keys = new Set(trackedSyncScopes(deviceId).filter((entry) =>
+    items.some((item) => scopeDefinitions[entry.scope.kind]?.namedBy(entry, item))).map((entry) => JSON.stringify(entry.scope)));
+  if (!keys.size) return Promise.resolve([]);
+  return wakeScopedSync(deviceId, (scope) => keys.has(JSON.stringify(scope)));
+}
+
 export function startScopedSyncRuntime(options) {
   stopScopedSyncRuntime();
+  if (!browserLockAvailable()) return;
   runtime = options;
   subscriptions = [subscribeScopedSyncScopes(reconcileScopedSyncRuntime), onDeviceStateChanged(reconcileScopedSyncRuntime),
-    onBridgeGreeted(reconcileScopedSyncRuntime), subscribeCache({}, cacheMoved)];
+    onBridgeGreeted(reconcileScopedSyncRuntime), subscribeCache({}, cacheMoved), subscribeScopedSyncWakes(receiveWake)];
   reconcileScopedSyncRuntime();
 }
 

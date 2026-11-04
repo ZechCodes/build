@@ -14,7 +14,7 @@ export function projectSyncScope(projectId, filters = {}) {
 const scopeKey = ({ deviceId, scope }) => JSON.stringify([deviceId, scope]);
 
 export function createScopedSyncRegistry({ channel, now = Date.now } = {}) {
-  const owner = randomToken(), local = new Map(), remote = new Map(), listeners = new Set();
+  const owner = randomToken(), local = new Map(), remote = new Map(), listeners = new Set(), wakeListeners = new Set();
   let sequence = 0, signature = "", disposed = false;
   const all = () => [...local.values(), ...[...remote.values()].flatMap((tab) => tab.scopes)];
   const selected = () => cappedScopes(all());
@@ -30,9 +30,15 @@ export function createScopedSyncRegistry({ channel, now = Date.now } = {}) {
   function receive({ data }) {
     if (disposed || !data?.owner || data.owner === owner) return;
     if (data.type === "request") { publish(); return; }
+    if (data.type === "wake") { receiveWake(data); return; }
     if (data.type !== "presence" || !Array.isArray(data.scopes)) return;
     remote.set(data.owner, { at: now(), scopes: data.scopes });
     notify();
+  }
+  function receiveWake(data) {
+    if (typeof data.deviceId !== "string" || !Array.isArray(data.scopes)) return;
+    const hint = { deviceId: data.deviceId, scopes: data.scopes.slice(0, MAX_TRACKED_SYNC_SCOPES) };
+    wakeListeners.forEach((listener) => listener(hint));
   }
   if (channel) channel.onmessage = receive;
   channel?.postMessage({ type: "request", owner });
@@ -51,9 +57,15 @@ export function createScopedSyncRegistry({ channel, now = Date.now } = {}) {
     },
     tracked: (deviceId) => selected().filter((entry) => entry.deviceId === deviceId),
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    wake(deviceId, scopes) {
+      if (disposed || !scopes.length) return;
+      publish();
+      channel?.postMessage({ type: "wake", owner, deviceId, scopes: scopes.slice(0, MAX_TRACKED_SYNC_SCOPES) });
+    },
+    subscribeWake(listener) { wakeListeners.add(listener); return () => wakeListeners.delete(listener); },
     dispose() {
       if (disposed) return;
-      local.clear(); publish(); disposed = true; clearInterval(timer); channel?.close(); listeners.clear();
+      local.clear(); publish(); disposed = true; clearInterval(timer); channel?.close(); listeners.clear(); wakeListeners.clear();
     },
   };
 }
@@ -75,3 +87,6 @@ export const registerScopedSync = (registration) => shared.register(registration
 export const trackedSyncScopes = (deviceId) => shared.tracked(deviceId);
 export const subscribeScopedSyncScopes = (listener) => shared.subscribe(listener);
 export const scopeIsTracked = (deviceId, scope) => shared.tracked(deviceId).some((entry) => JSON.stringify(entry.scope) === JSON.stringify(scope));
+
+export const broadcastScopedSyncWake = (deviceId, scopes) => shared.wake(deviceId, scopes);
+export const subscribeScopedSyncWakes = (listener) => shared.subscribeWake(listener);

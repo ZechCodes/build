@@ -2,8 +2,8 @@ import { commitPatchParams } from "./commitDiffTarget.js";
 // The cache's sync layer: the one reader of the wire.
 //
 // Every surface paints from the cache and subscribes to it. Nothing above this
-// module calls the bridge for a read, and nothing here runs on a timer. Two
-// things fill the cache:
+// module calls the bridge for a read. Advertised durable scopes delegate a
+// 30-second head check to the scoped engine. Two things fill the cache:
 //
 //   the ordered sync   a bounded pass, in a fixed order, when a session is
 //                      greeted, when one reconnects, and when the tab comes
@@ -38,7 +38,7 @@ import { commitPatchParams } from "./commitDiffTarget.js";
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
 import { captureScopedSync, projectScopedSyncOwns, reconcileScopedSyncRuntime, startScopedSyncRuntime,
-  stopScopedSyncRuntime, wakeScopedSync } from "./scopedSyncRuntime.js";
+  stopScopedSyncRuntime, wakeScopedSync, wakeScopedSyncChanges } from "./scopedSyncRuntime.js";
 import { refreshReadState } from "./readStateRepair.js";
 import { discoverRosterThreads, discoverSyncOwnership, emptySyncDiscovery, queueSuccessor, readsSyncGroup as readsGroup, requiredSuccessorGroups, syncReadGroup } from "./syncSuccessors.js";
 import { syncDiagnostics } from "./syncDiagnostics.js";
@@ -1831,7 +1831,8 @@ function deferPush(context, entityId, key, run, replaceable = true) {
 
 async function applyChanges(items, deviceId) {
   const context = syncContext(contextFor(deviceId));
-  if (!context || !holdingLock) return Promise.resolve();
+  if (!context) return Promise.resolve();
+  if (!holdingLock) return wakeScopedSyncChanges(deviceId, items);
   context.pushing = true;
   const queues = queuesFor(context);
   const applied = await queues.body.enqueueApplied(context, items);
@@ -2570,11 +2571,10 @@ async function syncSessionOnce(deviceId, session) {
 /** Coming back to the tab: everything the subscriptions could not say while it
  *  was away is whatever a pass reads, so every open device gets one. */
 function onVisibilityChange() {
-  if (!pageVisible() || !holdingLock) return;
-  for (const context of liveContexts()) {
-    void wakeScopedSync(context.deviceId).catch(() => {});
-    void syncDevice(context.deviceId, "visibility");
-  }
+  if (!pageVisible()) return;
+  for (const context of liveContexts()) void wakeScopedSync(context.deviceId).catch(() => {});
+  if (!holdingLock) return;
+  for (const context of liveContexts()) void syncDevice(context.deviceId, "visibility");
 }
 
 export function startCacheSync() {

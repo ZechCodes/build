@@ -49,3 +49,37 @@ it("notifies only membership changes, not heartbeats", async () => {
   await vi.advanceTimersByTimeAsync(5_000); expect(changed).toHaveBeenCalledTimes(1);
   close(); expect(changed).toHaveBeenCalledTimes(2); stop();
 });
+it("forwards scope wake hints to another tab without records or rebroadcast loops", () => {
+  const channels = [], sent = [];
+  const channel = () => { const c = { onmessage: null, postMessage(data) { sent.push(data);
+    channels.filter((other) => other !== c).forEach((other) => other.onmessage?.({ data: structuredClone(data) })); }, close() {} };
+    channels.push(c); return c; };
+  const holder = registry({ channel: channel() }), follower = registry({ channel: channel() });
+  follower.register(task("follower"));
+  const notified = vi.fn(), followerNotified = vi.fn();
+  holder.subscribeWake(notified); follower.subscribeWake(followerNotified);
+  sent.length = 0;
+  follower.wake("d", [taskSyncScope("follower")]);
+  expect(notified).toHaveBeenCalledExactlyOnceWith({ deviceId: "d", scopes: [taskSyncScope("follower")] });
+  expect(followerNotified).not.toHaveBeenCalled();
+  expect(sent.map((item) => item.type)).toEqual(["presence", "wake"]);
+  expect(sent[1]).toEqual({ type: "wake", owner: expect.any(String), deviceId: "d", scopes: [taskSyncScope("follower")] });
+});
+it("renews a frozen follower's expired presence before delivering its foreground wake", async () => {
+  vi.useFakeTimers();
+  const channels = [];
+  const channel = () => { const c = { onmessage: null, postMessage(data) {
+    channels.filter((other) => other !== c).forEach((other) => other.onmessage?.({ data: structuredClone(data) })); }, close() {} };
+    channels.push(c); return c; };
+  const holder = registry({ channel: channel() }), follower = registry({ channel: channel() });
+  follower.register(task("resumed"));
+  const send = channels[1].postMessage;
+  channels[1].postMessage = () => {};
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(holder.tracked("d")).toHaveLength(0);
+  channels[1].postMessage = send;
+  const seen = [];
+  holder.subscribeWake(() => seen.push(holder.tracked("d").map(({ scope }) => scope.task_id)));
+  follower.wake("d", [taskSyncScope("resumed")]);
+  expect(seen).toEqual([["resumed"]]);
+});

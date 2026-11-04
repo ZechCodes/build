@@ -1283,7 +1283,8 @@ export function mountTaskPage(host, options) {
     scope: taskSyncScope(state.taskId) });
   paint();
   void paintFromCache().then(refreshForMount);
-  // No cadence: nothing in this client polls. An item that names this task
+  // The view has no timer. Durable scopes use the engine's 30-second head
+  // checks; legacy reads follow pushes. An item that names this task
   // is what re-reads it, and the pass behind that (core/cacheSync.js) is the
   // whole of the safety net.
   const watcher = watchChanges({

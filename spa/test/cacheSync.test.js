@@ -61,6 +61,7 @@ let registeredWatchers = [];
 let projectWorkersSupported = false;
 const subscriptionHeldListeners = new Set();
 vi.mock("../src/core/changeEvents.js", () => ({
+  onBridgeGreeted: () => () => {},
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
   bridgeCapabilities: () => ({ agents: { projectWorkers: projectWorkersSupported }, changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] } }),
@@ -2615,4 +2616,18 @@ it("starts the greeting before publishing its pass or notifying ring listeners",
     expect(events[0]).toEqual(["greeting", false]);
     expect(events.findIndex(([kind]) => kind === "greeting")).toBeLessThan(events.findIndex(([kind]) => kind === "ring"));
   } finally { stop(); }
+});
+
+it("forwards foreground recovery immediately while another tab holds the sync lock", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn(async () => undefined) } });
+  const runtime = await import("../src/core/scopedSyncRuntime.js");
+  const wake = vi.spyOn(runtime, "wakeScopedSync").mockResolvedValue([]);
+  try {
+    await boot([branchItem()]);
+    wake.mockClear();
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    expect(wake).toHaveBeenCalledWith("dev-1");
+    expect(bridge.call).not.toHaveBeenCalled();
+  } finally { wake.mockRestore(); vi.unstubAllGlobals(); }
 });

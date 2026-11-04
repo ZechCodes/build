@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const fake = vi.hoisted(() => ({ contexts: [], scopes: [], lock: false, engines: [], scopeChanged: null,
-  changed: null, greeted: null, cacheChanged: null, columns: vi.fn(async () => true), body: vi.fn(async () => true) }));
+  woken: null, broadcast: vi.fn(), changed: null, greeted: null, cacheChanged: null, columns: vi.fn(async () => true), body: vi.fn(async () => true) }));
 vi.mock("../src/core/deviceContexts.js", () => ({
   liveContexts: () => fake.contexts,
   captureDeviceGreeting: (context) => context.greeting,
@@ -13,6 +13,8 @@ vi.mock("../src/core/changeEvents.js", () => ({
 vi.mock("../src/core/scopedSyncRegistry.js", () => ({
   trackedSyncScopes: () => fake.scopes,
   scopeIsTracked: (_deviceId, scope) => fake.scopes.some((entry) => JSON.stringify(entry.scope) === JSON.stringify(scope)),
+  broadcastScopedSyncWake: (...args) => fake.broadcast(...args),
+  subscribeScopedSyncWakes: (fn) => { fake.woken = fn; return () => {}; },
   subscribeScopedSyncScopes: (fn) => { fake.scopeChanged = fn; return () => {}; },
   projectSyncScope: (projectId, filters = {}) => ({ kind: "project_tasks", project_id: projectId, filters }),
 }));
@@ -28,7 +30,7 @@ let runtime;
 const scope = { kind: "task", task_id: "t1" };
 beforeEach(async () => {
   vi.stubGlobal("navigator", { locks: { request: vi.fn() } });
-  vi.resetModules(); fake.columns.mockClear(); fake.body.mockClear(); fake.lock = false; fake.engines = [];
+  vi.resetModules(); fake.woken = null; fake.broadcast.mockClear(); fake.columns.mockClear(); fake.body.mockClear(); fake.lock = false; fake.engines = [];
   fake.scopes = [{ scope, projectId: "p1", key: "t1" }];
   fake.contexts = [{ deviceId: "d1", session: {}, cacheScope: {}, active: () => true,
     greeting: { epoch: "e1", current: () => true, capabilities: { sync: { task: true, projectTasks: true } } } }];
@@ -105,5 +107,41 @@ it("prepares custom columns for a project first opened after the connection pass
   fake.scopes = [{ scope: project, projectId: "p2", key: "p2" }];
   fake.scopeChanged();
   await vi.waitFor(() => expect(fake.columns).toHaveBeenCalledWith(expect.objectContaining({ deviceId: "d1", projectId: "p2" })));
+  runtime.stopScopedSyncRuntime();
+});
+
+it("does not subscribe scoped services on the legacy no-Locks path", () => {
+  vi.stubGlobal("navigator", {});
+  fake.scopeChanged = null; fake.changed = null; fake.greeted = null; fake.cacheChanged = null;
+  runtime.startScopedSyncRuntime({ ownsLock: () => false, request: vi.fn() });
+  expect([fake.scopeChanged, fake.changed, fake.greeted, fake.cacheChanged]).toEqual([null, null, null, null]);
+  runtime.stopScopedSyncRuntime();
+});
+it("broadcasts matching tracked scope hints when this tab is a follower", async () => {
+  runtime.startScopedSyncRuntime({ ownsLock: () => false, request: vi.fn() });
+  await runtime.wakeScopedSync("d1", (scope) => scope.task_id === "t1");
+  expect(fake.broadcast).toHaveBeenCalledExactlyOnceWith("d1", [scope]);
+  expect(fake.engines).toHaveLength(0);
+  runtime.stopScopedSyncRuntime();
+});
+it("uses received hints only to wake owned tracked scopes without rebroadcasting", async () => {
+  fake.lock = true;
+  runtime.startScopedSyncRuntime({ ownsLock: () => fake.lock, request: vi.fn() });
+  const engine = fake.engines[0];
+  await fake.woken?.({ deviceId: "d1", scopes: [scope, { kind: "task", task_id: "other" }] });
+  expect(engine.wake).toHaveBeenCalledOnce();
+  const predicate = engine.wake.mock.calls[0][0];
+  expect(predicate(scope)).toBe(true);
+  expect(predicate({ kind: "task", task_id: "other" })).toBe(false);
+  expect(fake.broadcast).not.toHaveBeenCalled();
+  runtime.stopScopedSyncRuntime();
+});
+it("forwards only tracked scopes named by a follower's task push", async () => {
+  runtime.startScopedSyncRuntime({ ownsLock: () => false, request: vi.fn() });
+  await runtime.wakeScopedSyncChanges("d1", [{ entity_id: "p1", tasks: { task_ids: ["t1"] } }]);
+  expect(fake.broadcast).toHaveBeenCalledExactlyOnceWith("d1", [scope]);
+  fake.broadcast.mockClear();
+  await runtime.wakeScopedSyncChanges("d1", [{ entity_id: "other", tasks: { task_ids: ["t1"] } }]);
+  expect(fake.broadcast).not.toHaveBeenCalled();
   runtime.stopScopedSyncRuntime();
 });

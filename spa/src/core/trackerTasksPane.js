@@ -856,7 +856,8 @@ export function mountTasksPane(host, options) {
     void paintUserSession();
     void paintFromCache().then(() => refresh());
   });
-  // No cadence: nothing in this client polls. The tab hears that a task of
+  // The view has no timer. Durable scopes use the engine's 30-second head
+  // checks; legacy reads follow pushes. The tab hears that a task of
   // this project moved and reads the list again, and the pass behind it
   // (core/cacheSync.js) is the whole of the safety net.
   const watcher = watchChanges({

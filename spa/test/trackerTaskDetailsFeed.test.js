@@ -2,11 +2,23 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+const durable = vi.hoisted(() => ({ owns: false, wake: vi.fn(async () => []), release: vi.fn(), register: vi.fn() }));
+vi.mock("../src/core/scopedSyncRuntime.js", () => ({
+  scopedSyncOwns: () => durable.owns,
+  wakeScopedSync: (...args) => durable.wake(...args),
+}));
+vi.mock("../src/core/scopedSyncRegistry.js", () => ({
+  registerScopedSync: (...args) => { durable.register(...args); return durable.release; },
+  projectSyncScope: (projectId, filters = {}) => ({ kind: "project_tasks", project_id: projectId, filters }),
+  taskSyncScope: (taskId) => ({ kind: "task", task_id: taskId }),
+}));
+
 
 let createTrackerTaskDetailsFeed, taskRecord, readTaskRecord, writeTaskRecord;
 
 beforeEach(async () => {
   vi.resetModules();
+  durable.owns = false; durable.wake.mockClear(); durable.release.mockClear(); durable.register.mockClear();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   ({ createTrackerTaskDetailsFeed } = await import("../src/core/trackerTaskDetailsFeed.js"));
@@ -137,4 +149,14 @@ it("fences a pending detail feed read against a same-stamp saved assignment muta
     feed.dispose();
     clock.mockRestore();
   }
+});
+
+it("durable ownership prevents a second detail writer in the task feed", async () => {
+  durable.owns = true;
+  const callRpc = vi.fn(async () => ({ task: task("one", "2026-09-02T12:00:00Z"), timeline: [] }));
+  const feed = createTrackerTaskDetailsFeed({ deviceId: "dev", projectId: "project", callRpc });
+  await feed.updateTasks([task("one", "2026-09-02T12:00:00Z")]);
+  await vi.waitFor(() => expect(durable.wake).toHaveBeenCalled());
+  expect(callRpc).not.toHaveBeenCalled();
+  feed.dispose();
 });

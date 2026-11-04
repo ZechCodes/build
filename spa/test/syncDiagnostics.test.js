@@ -245,3 +245,11 @@ describe("sync timing recorder", () => {
     expect(d.report().items).toEqual({ queued: 0, settled: 0, unsettled: 0, retained: 0, droppedDetail: 0 });
   });
 });
+
+it.each(["project_tasks", "task"])("retains allowlisted durable scope kind %s", (kind) => {
+  const { diagnostics: d } = fixture();
+  d.ring(true);
+  const request = d.itemQueued("sync.head", kind);
+  d.itemSettled(request, "reply");
+  expect(d.report().periods[0].slowest[0]).toMatchObject({ verb: "sync.head", kind });
+});

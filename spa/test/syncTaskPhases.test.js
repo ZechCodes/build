@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
+const scoped = vi.hoisted(() => ({ owns: false, wake: vi.fn(async () => []) }));
+vi.mock("../src/core/scopedSyncRuntime.js", () => ({
+  projectScopedSyncOwns: () => scoped.owns,
+  scopedSyncWriter: () => true,
+  wakeScopedSync: (...args) => scoped.wake(...args),
+}));
 let paging = true;
 
 const task = (number) => ({ id: `task-${number}`, number, updated_at: "2026-10-11T12:00:00Z" });
@@ -15,7 +21,7 @@ beforeEach(async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
-  paging = true;
+  paging = true; scoped.owns = false; scoped.wake.mockClear();
   const pages = await import("../src/core/trackerPages.js");
   vi.spyOn(pages, "pagesTasks").mockImplementation(() => paging);
   phases = await import("../src/core/syncTaskPhases.js");
@@ -128,4 +134,72 @@ describe("project tasks split around the inbox phase", () => {
     expect(ask).toHaveBeenCalledTimes(2);
     expect(readReviews).not.toHaveBeenCalled();
   });
+});
+
+describe("scoped task phase ownership", () => {
+  it("wakes durable recovery without legacy page writes for the tracked unfiltered default-order query", async () => {
+    scoped.owns = true;
+    const { pass, ask } = fixture();
+    await pass.first("p1");
+    await pass.rest("p1");
+    expect(ask.mock.calls.filter(([, method]) => method === "tasks.list")).toHaveLength(0);
+    expect(scoped.wake).toHaveBeenCalled();
+    expect(await trackerCache.readTasksRecord("dev-1", "p1")).toBeNull();
+  });
+  it("keeps the page walk when durable recovery does not own the project", async () => {
+    const { pass, ask } = fixture();
+    await pass.rest("p1");
+    expect(ask.mock.calls.filter(([, method]) => method === "tasks.list")).toHaveLength(2);
+    expect(scoped.wake).not.toHaveBeenCalled();
+  });
+});
+
+it("retains custom cold board columns while scoped recovery owns membership", async () => {
+  scoped.owns = true;
+  const { pass, ask } = fixture({ "tasks.columns": () => ({ columns: [{ id: "custom", name: "Custom" }] }) });
+  await pass.first("p1");
+  expect(ask.mock.calls.filter(([, method]) => method === "tasks.columns")).toHaveLength(1);
+  expect(await trackerCache.readTasksRecord("dev-1", "p1")).toBeNull();
+  const { readProjectColumns } = await import("../src/core/projectColumnsCache.js");
+  expect(await readProjectColumns("dev-1", "p1")).toEqual([{ id: "custom", name: "Custom" }]);
+  expect(ask.mock.calls.filter(([, method]) => method === "tasks.list")).toHaveLength(0);
+});
+it("refreshes independent review metadata after scoped catch-up finishes", async () => {
+  scoped.owns = true;
+  const waking = gate();
+  scoped.wake.mockReturnValueOnce(waking.promise);
+  const { pass, context, ask, readReviews } = fixture();
+  const finishing = pass.rest("p1", "background");
+  await vi.waitFor(() => expect(scoped.wake).toHaveBeenCalled());
+  expect(readReviews).not.toHaveBeenCalled();
+  waking.release([]);
+  expect(await finishing).toBe(true);
+  expect(readReviews).toHaveBeenCalledExactlyOnceWith(context, "p1", "background");
+  expect(ask.mock.calls.filter(([, method]) => method === "tasks.list")).toHaveLength(0);
+});
+it("keeps refreshed columns published between the first task page and its continuation", async () => {
+  const local = await import("../src/core/localCache.js");
+  const address = trackerCache.tasksAddress("dev-1", "p1");
+  await local.writeCached(address, { tasks: [], read_order: 1, columns: [{ id: "backlog", name: "Old name" }] });
+  const { pass } = fixture();
+  await pass.first("p1");
+  const held = await trackerCache.readTasksRecord("dev-1", "p1");
+  const columns = [{ id: "custom", name: "New column" }, { id: "backlog", name: "Renamed" }];
+  await local.writeCached(address, { ...held, columns });
+  expect(await pass.rest("p1")).toBe(true);
+  expect((await trackerCache.readTasksRecord("dev-1", "p1")).columns).toEqual(columns);
+});
+
+
+it("uses columns-only support for a cold legacy pass without refetching metadata", async () => {
+  paging = false;
+  const local = await import("../src/core/localCache.js");
+  const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+  const columns = [{ id: "custom", name: "Cached metadata" }];
+  await local.writeCached(projectColumnsAddress("dev-1", "p1"), { columns, columns_read_order: 1 });
+  expect(await trackerCache.readTasksRecord("dev-1", "p1")).toBeNull();
+  const { pass, ask } = fixture();
+  await pass.first("p1");
+  expect(ask.mock.calls.filter(([, method]) => method === "tasks.columns")).toHaveLength(0);
+  expect((await trackerCache.readTasksRecord("dev-1", "p1")).columns).toEqual(columns);
 });

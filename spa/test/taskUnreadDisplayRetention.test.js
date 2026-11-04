@@ -317,6 +317,234 @@ async function blindRestorePriorLineage(title) {
 
 describe("D5 unmounted admitted lineage versus blind paint", () => {
 
+  it("keeps the current filter's badge without a notice when superseded hydration rejects", async () => {
+    await renderPersistAndLeave();
+    await tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId,
+      { project_id: scope.projectId, state: "open" },
+      tracker.tasksRecord([full({ title: "Superseded filter A" })], columns(), 100));
+    await tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId,
+      { project_id: scope.projectId, state: "open", status: "ready" },
+      tracker.tasksRecord([full({ title: "Current filter B" })], columns(), 101));
+    await cache.deleteCached([tracker.tasksAddress(scope.deviceId, scope.projectId)]);
+    const failure = new Error("Superseded unread display read failed");
+    const diagnostic = vi.spyOn(console, "info").mockImplementation(() => {});
+    const read = cache.readCachedMany;
+    let rejectHeld;
+    const held = new Promise((_, reject) => { rejectHeld = reject; });
+    let waiting = false;
+    vi.spyOn(cache, "readCachedMany").mockImplementation((addresses) => {
+      if (!waiting && addresses.length === 4 && addresses[0].kind === "task-content-generation"
+        && addresses[3].sub === JSON.stringify(["tracker-task", taskId])) {
+        waiting = true;
+        return held;
+      }
+      return read(addresses);
+    });
+    const { mountTasksPane } = await import("../src/core/trackerTasksPane.js");
+    pane = mountTasksPane(paneHost, { deviceId: scope.deviceId, projectId: scope.projectId,
+      projectKey: project.projectKey, projectName: project.name, defaultView: "list", callRpc: rpc,
+      catalog: () => ({ providers: [] }), feed: () => ({ items: [], workspaces: [] }) });
+    await vi.waitFor(() => expect(waiting).toBe(true), WAIT);
+    const status = paneHost.querySelector('[data-filter-menu="status"]');
+    status.querySelector(".fmenu-press").click();
+    await vi.waitFor(() => expect(status.querySelector('[data-value="ready"]')).not.toBeNull(), WAIT);
+    status.querySelector('[data-value="ready"]').click();
+    await vi.waitFor(() => expect(paneHost.querySelector(".task-title")?.textContent).toBe("Current filter B"), WAIT);
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+    expect(document.querySelector(".notice")).toBeNull();
+    rejectHeld(failure);
+    await vi.waitFor(() => expect(diagnostic).toHaveBeenCalledWith("Task unread display persistence unavailable", failure), WAIT);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.querySelector(".notice")).toBeNull();
+    expect(paneHost.querySelector(".task-title")?.textContent).toBe("Current filter B");
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+  });
+
+  it("does not resurrect a retired display when settlement republishes the previous consumer snapshot", async () => {
+    await renderPersistAndLeave();
+    const previous = await listedTask();
+    const { createTaskUnreadDisplayOwner } = await import("../src/core/taskUnreadDisplay.js");
+    let publishPrevious = false;
+    const owner = createTaskUnreadDisplayOwner({ scope, consumer: "tasks-pane", onChange: () => {
+      if (publishPrevious) owner.rendered(previous, null, 3, tracker.tasksAddress(scope.deviceId, scope.projectId));
+    } });
+    try {
+      await owner.updateTasks([previous]);
+      const unwatched = await admittedLineage(false, "te-15");
+      // followProject publishes its previous tasks synchronously from
+      // onChange, before its awaited updateTasks resumes and assigns next.
+      publishPrevious = true;
+      await owner.updateTasks([unwatched]);
+      publishPrevious = false;
+      const rewatched = await admittedLineage(true, "te-15");
+      await owner.updateTasks([rewatched]);
+      expect(owner.preview(rewatched, null)).toBe(0);
+    } finally {
+      owner.dispose();
+    }
+  });
+
+  it("keeps rows hidden when a note refresh supersedes a completed pane hydration", async () => {
+    await renderPersistAndLeave();
+    const blind = { ...await listedTask(), watch_started_after: "te-90" };
+    delete blind.unread_count;
+    expect(await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+      tracker.tasksRecord([blind], columns()))).toBe(true);
+    await blindRestorePriorLineage("Waiting for the latest owner hydration");
+    const read = cache.readCachedMany;
+    let releasePane, releaseRefresh;
+    const paneRead = new Promise((resolve) => { releasePane = resolve; });
+    const refreshRead = new Promise((resolve) => { releaseRefresh = resolve; });
+    let hydrations = 0;
+    vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+      const records = await read(addresses);
+      if (addresses.length === 4 && addresses[0].kind === "task-content-generation"
+        && addresses[3].sub === JSON.stringify(["tracker-task", taskId])) {
+        const hydration = ++hydrations;
+        if (hydration === 1) await paneRead;
+        if (hydration === 2) await refreshRead;
+      }
+      return records;
+    });
+    const { mountTasksPane } = await import("../src/core/trackerTasksPane.js");
+    pane = mountTasksPane(paneHost, { deviceId: scope.deviceId, projectId: scope.projectId,
+      projectKey: project.projectKey, projectName: project.name, defaultView: "list", callRpc: rpc,
+      catalog: () => ({ providers: [] }), feed: () => ({ items: [], workspaces: [] }) });
+    try {
+      await vi.waitFor(() => expect(hydrations).toBe(1), WAIT);
+      const { taskWatchIntentAddress } = await import("../src/core/taskReadOrder.js");
+      const noteAddress = taskWatchIntentAddress(scope, taskId);
+      await cache.writeCached(noteAddress, await value(noteAddress));
+      await vi.waitFor(() => expect(hydrations).toBe(2), WAIT);
+      releasePane();
+      const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+      await cache.writeCached(projectColumnsAddress(scope.deviceId, scope.projectId), {
+        columns: [{ id: "ready", name: "Latest owner pending" }], columns_read_order: Date.now(),
+      });
+      paneHost.querySelector('[data-filter-menu="status"] .fmenu-press').click();
+      await vi.waitFor(() => expect(paneHost.querySelector('[data-filter-menu="status"]').textContent)
+        .toContain("Latest owner pending"), WAIT);
+      expect(paneHost.querySelector(".task-title")).toBeNull();
+    } finally {
+      releasePane();
+      releaseRefresh();
+    }
+    await vi.waitFor(() => expect(paneHost.querySelector(".task-title")?.textContent)
+      .toBe("Waiting for the latest owner hydration"), WAIT);
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+  });
+
+  it("waits for retained unread display hydration before a metadata repaint exposes remounted rows", async () => {
+    await renderPersistAndLeave();
+    const blind = { ...await listedTask(), watch_started_after: "te-90" };
+    delete blind.unread_count;
+    expect(await tracker.writeTasksRecord(scope.deviceId, scope.projectId,
+      tracker.tasksRecord([blind], columns()))).toBe(true);
+    await blindRestorePriorLineage("Hydrating retained unread display");
+    const read = cache.readCachedMany;
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    let waiting = false;
+    vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+      const records = await read(addresses);
+      if (addresses.length === 4 && addresses[0].kind === "task-content-generation"
+        && addresses[3].sub === JSON.stringify(["tracker-task", taskId])) {
+        waiting = true;
+        await held;
+      }
+      return records;
+    });
+    const { mountTasksPane } = await import("../src/core/trackerTasksPane.js");
+    pane = mountTasksPane(paneHost, { deviceId: scope.deviceId, projectId: scope.projectId,
+      projectKey: project.projectKey, projectName: project.name, defaultView: "list", callRpc: rpc,
+      catalog: () => ({ providers: [] }), feed: () => ({ items: [], workspaces: [] }) });
+    try {
+      await vi.waitFor(() => expect(waiting).toBe(true), WAIT);
+      const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+      await cache.writeCached(projectColumnsAddress(scope.deviceId, scope.projectId), {
+        columns: [{ id: "ready", name: "Hydrated metadata" }], columns_read_order: Date.now(),
+      });
+      paneHost.querySelector('[data-filter-menu="status"] .fmenu-press').click();
+      await vi.waitFor(() => expect(paneHost.querySelector('[data-filter-menu="status"]').textContent)
+        .toContain("Hydrated metadata"), WAIT);
+      expect(paneHost.querySelector(".task-title")).toBeNull();
+    } finally {
+      release();
+    }
+    await vi.waitFor(() => expect(paneHost.querySelector(".task-title")?.textContent)
+      .toBe("Hydrating retained unread display"), WAIT);
+    expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+  });
+
+  it("paints the current query when an obsolete query's display hydration is still held", async () => {
+    await renderPersistAndLeave();
+    await tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId,
+      { project_id: scope.projectId, state: "open" }, tracker.tasksRecord([full()], columns(), 100));
+    await cache.deleteCached([tracker.tasksAddress(scope.deviceId, scope.projectId)]);
+    const read = cache.readCachedMany;
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    let hydrations = 0;
+    vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+      const records = await read(addresses);
+      if (addresses.length === 4 && addresses[0].kind === "task-content-generation"
+        && addresses[3].sub === JSON.stringify(["tracker-task", taskId])) {
+        hydrations += 1;
+        if (hydrations === 1) await held;
+      }
+      return records;
+    });
+    const { mountTasksPane } = await import("../src/core/trackerTasksPane.js");
+    pane = mountTasksPane(paneHost, { deviceId: scope.deviceId, projectId: scope.projectId,
+      projectKey: project.projectKey, projectName: project.name, defaultView: "list", callRpc: rpc,
+      catalog: () => ({ providers: [] }), feed: () => ({ items: [], workspaces: [] }) });
+    try {
+      await vi.waitFor(() => expect(hydrations).toBe(1), WAIT);
+      paneHost.querySelector('[data-task-view="board"]').click();
+      await vi.waitFor(() => expect(hydrations).toBeGreaterThan(1), WAIT);
+      await vi.waitFor(() => expect(paneHost.querySelector(".task-card-title")?.textContent)
+        .toBe("Before incomplete action"), WAIT);
+      expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+    } finally {
+      release();
+    }
+  });
+
+  it("paints an uncached local filter preview while an obsolete query's display hydration is held", async () => {
+    await seedSelectedInputs();
+    await mountPane();
+    const read = cache.readCachedMany;
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    let waiting = false;
+    vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+      const records = await read(addresses);
+      if (addresses.length === 4 && addresses[0].kind === "task-content-generation"
+        && addresses[3].sub === JSON.stringify(["tracker-task", taskId])) {
+        waiting = true;
+        await held;
+      }
+      return records;
+    });
+    try {
+      await tracker.writeTasksQueryRecord(scope.deviceId, scope.projectId,
+        { project_id: scope.projectId, state: "open" },
+        tracker.tasksRecord([full({ title: "Pending query display" })], columns(), 100));
+      await vi.waitFor(() => expect(waiting).toBe(true), WAIT);
+      expect(paneHost.querySelector(".task-title")?.textContent).toBe("Before incomplete action");
+      expect(paneHost.querySelector(".task-unread")?.textContent).toBe("3");
+      const status = paneHost.querySelector('[data-filter-menu="status"]');
+      status.querySelector(".fmenu-press").click();
+      await vi.waitFor(() => expect(status.querySelector('[data-value="done"]')).not.toBeNull(), WAIT);
+      status.querySelector('[data-value="done"]').click();
+      await vi.waitFor(() => expect(paneHost.querySelector(".task-title")).toBeNull(), WAIT);
+      expect(await tracker.readTasksQueryCached(scope.deviceId, scope.projectId,
+        { project_id: scope.projectId, state: "open", status: "done" })).toBeNull();
+    } finally {
+      release();
+    }
+  });
+
   it("retains rendered3 on remount after a blind-only rewrite without an admitted replacement", async () => {
     await renderPersistAndLeave();
     // Force an actual blind floor change, then restore the previous raw floor.

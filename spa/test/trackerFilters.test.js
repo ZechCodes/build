@@ -12,6 +12,7 @@ import {
   filterOptions,
   filtersAreSet,
   taskListParams,
+  taskListCacheParams,
   labelsOf,
   narrowsTheRead,
   sortTasks,
@@ -30,6 +31,19 @@ const task = (over = {}) => ({
 });
 
 describe("filters as tasks.list params", () => {
+  it("shares canonical cache identities while preserving selected wire spellings", () => {
+    const upper = { state: "open", status: "In Review", label: "Bug", assignee: "agent:AgentCase" };
+    const lower = { state: "open", status: "in_review", label: "bug", assignee: "agent:AgentCase" };
+    expect(taskListCacheParams(taskListParams("ProjectCase", upper))).toEqual(taskListCacheParams(taskListParams("ProjectCase", lower)));
+    expect(taskListCacheParams(taskListParams("ProjectCase", upper))).toEqual({ project_id: "ProjectCase", state: "open",
+      status: "in_review", label: "bug", assignee: { kind: "agent", agent_id: "AgentCase" } });
+    expect(taskListParams("ProjectCase", upper)).toEqual({ project_id: "ProjectCase", state: "open",
+      status: "In Review", label: "Bug", assignee: { kind: "agent", agent_id: "AgentCase" } });
+    expect(taskListParams("ProjectCase", { label: "API" }).label).toBe("API");
+    expect(taskListCacheParams(taskListParams("ProjectCase", { label: " ÄBUG " })).label).toBe(" Äbug ");
+    expect(upper.label).toBe("Bug");
+  });
+
   it("sends nothing but the project when nothing is narrowed", () => {
     expect(taskListParams("proj-1", NO_FILTERS)).toEqual({ project_id: "proj-1" });
     expect(taskListParams("proj-1")).toEqual({ project_id: "proj-1" });

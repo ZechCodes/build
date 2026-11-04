@@ -1,9 +1,12 @@
 // Task pages share one walk across the open project's first page and the
 // inbox phase. Both phases use the sync layer's task-read serialization;
 // pages still land, read back and fold through trackerPages' authority rules.
+import { readProjectColumns } from "./projectColumnsCache.js";
+import { projectScopedSyncOwns, scopedSyncWriter, wakeScopedSync } from "./scopedSyncRuntime.js";
 import { createTaskPagePull, foldTasksPage, pagesTasks } from "./trackerPages.js";
 import { captureTaskContentRead, observeTaskContent } from "./taskContentAuthority.js";
-import { readTasksRecord, tasksAddress, tasksRecord, writeTasksRecord } from "./trackerCache.js";
+import { tasksAddress, tasksRecord, writeTasksRecord } from "./trackerCache.js";
+import { refreshScopedProjectColumns } from "./scopedProjectColumns.js";
 import { writeListedUserSession } from "./userSessionCache.js";
 
 /** Continuations stay background even when the project's first page is shown. */
@@ -13,8 +16,8 @@ export const taskReadScope = (context, projectId, params = {}) => ({
 });
 
 async function projectColumns(context, projectId, ask, priority) {
-  const held = await readTasksRecord(context.deviceId, projectId);
-  if (held?.columns?.length) return held.columns;
+  const held = await readProjectColumns(context.deviceId, projectId);
+  if (held) return held;
   if (!context.active()) return [];
   return (await ask(context, "tasks.columns", { project_id: projectId }, priority, taskReadScope(context, projectId)))?.columns || [];
 }
@@ -23,7 +26,7 @@ async function foldPage(context, projectId, columns, stretch, page) {
   const value = await columns;
   if (!context.active()) return false;
   const [folded] = await Promise.all([
-    foldTasksPage(tasksAddress(context.deviceId, projectId), stretch, () => value),
+    foldTasksPage(tasksAddress(context.deviceId, projectId), stretch, (held) => held?.columns?.length ? held.columns : value),
     writeListedUserSession(context.deviceId, page),
   ]);
   return folded;
@@ -53,19 +56,30 @@ async function firstWithColumns(first, columns) {
   return reads[0].value;
 }
 
+const scopedProjectColumns = (context, projectId, ask, priority) => refreshScopedProjectColumns({
+  deviceId: context.deviceId, projectId, active: () => context.active() && scopedSyncWriter(),
+  callRpc: (method, params) => ask(context, method, params, priority, taskReadScope(context, projectId)),
+});
+
 function projectPhases(context, projectId, { ask, readReviews }) {
   let priority = "foreground";
   let pull = null;
   let firstPromise = null;
   let restPromise = null;
   const begin = () => {
-    const columns = projectColumns(context, projectId, ask, priority);
-    if (!pagesTasks(context.deviceId)) return firstWithColumns(wholeList(context, projectId, ask, columns, priority), columns);
+    if (projectScopedSyncOwns(context.deviceId, projectId)) {
+      return Promise.all([wakeScopedSync(context.deviceId, (scope) => scope.project_id === projectId),
+        scopedProjectColumns(context, projectId, ask, priority)]).then(() => true);
+    }
+    const owner = context;
+    const reading = { ...owner, active: () => owner.active() && !projectScopedSyncOwns(owner.deviceId, projectId) };
+    const columns = projectColumns(reading, projectId, ask, priority);
+    if (!pagesTasks(context.deviceId)) return firstWithColumns(wholeList(reading, projectId, ask, columns, priority), columns);
     pull = createTaskPagePull({
       deviceId: context.deviceId, projectId, params: { project_id: projectId },
-      active: () => context.active(),
+      active: reading.active,
       ask: (params) => ask(context, "tasks.list", params, priority, taskReadScope(context, projectId, params)),
-      fold: (stretch, page) => foldPage(context, projectId, columns, stretch, page),
+      fold: (stretch, page) => foldPage(reading, projectId, columns, stretch, page),
     });
     return firstWithColumns(pull.first(), columns);
   };

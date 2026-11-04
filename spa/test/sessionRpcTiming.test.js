@@ -93,3 +93,12 @@ it.each([null, 0])("records admission-cancel when background SQL admission expir
   expect(wire.sent).toHaveLength(1);
   expect(timing.itemStart).toHaveBeenCalledTimes(1);
 });
+
+it.each(["project_tasks", "task"])("attributes scoped sync reads to %s without retaining selectors", async (kind) => {
+  const { rpc } = setup();
+  const pending = rpc.call("sync.head", { scope: { kind, task_id: "private-task", project_id: "private-project" },
+    cursor: "private-cursor" }, { timeoutMs: 0 });
+  pending.catch(() => {});
+  expect(timing.itemQueued).toHaveBeenCalledWith("sync.head", kind);
+  expect(JSON.stringify(timing.itemQueued.mock.calls)).not.toContain("private");
+});

@@ -59,11 +59,13 @@ vi.mock("../src/app.js", () => ({ App }));
 
 let registeredWatchers = [];
 let projectWorkersSupported = false;
+let scopedSupported = false;
 const subscriptionHeldListeners = new Set();
 vi.mock("../src/core/changeEvents.js", () => ({
+  onBridgeGreeted: () => () => {},
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
-  bridgeCapabilities: () => ({ agents: { projectWorkers: projectWorkersSupported }, changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] } }),
+  bridgeCapabilities: () => ({ sync: { projectTasks: scopedSupported, task: scopedSupported }, agents: { projectWorkers: projectWorkersSupported }, changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] } }),
   // A stand-in bridge holds whatever it is asked to at once
   // (test/cacheSyncDelivery.test.js drives the real one).
   subscriptionsSettledFor: async () => {},
@@ -85,6 +87,9 @@ vi.mock("../src/core/changeEvents.js", () => ({
 const contexts = new Map();
 const stateListeners = new Set();
 vi.mock("../src/core/deviceContexts.js", () => ({
+  deviceContextIdentity: (deviceId) => deviceId,
+  captureDeviceGreeting: (context) => scopedSupported ? { epoch: "scoped-epoch",
+    capabilities: { sync: { projectTasks: true, task: true } }, current: () => contexts.get(context.deviceId) === context } : null,
   contextFor: (deviceId) => contexts.get(deviceId) || null,
   liveContexts: () => [...contexts.values()],
   onDeviceStateChanged: (fn) => {
@@ -162,6 +167,7 @@ beforeEach(async () => {
   delete globalThis.navigator?.locks;
   registeredWatchers = [];
   projectWorkersSupported = false;
+  scopedSupported = false;
   subscriptionHeldListeners.clear();
   stateListeners.clear();
   contexts.clear();
@@ -2615,4 +2621,218 @@ it("starts the greeting before publishing its pass or notifying ring listeners",
     expect(events[0]).toEqual(["greeting", false]);
     expect(events.findIndex(([kind]) => kind === "greeting")).toBeLessThan(events.findIndex(([kind]) => kind === "ring"));
   } finally { stop(); }
+});
+
+it("forwards foreground recovery immediately while another tab holds the sync lock", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn(async () => undefined) } });
+  const runtime = await import("../src/core/scopedSyncRuntime.js");
+  const wake = vi.spyOn(runtime, "wakeScopedSync").mockResolvedValue([]);
+  try {
+    await boot([branchItem()]);
+    wake.mockClear();
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    expect(wake).toHaveBeenCalledWith("dev-1");
+    expect(bridge.call).not.toHaveBeenCalled();
+  } finally { wake.mockRestore(); vi.unstubAllGlobals(); }
+});
+
+const scopedAnswer = (extra) => ({ status: "ok", incarnation: "scoped-incarnation", bridge_epoch: "scoped-epoch", ...extra });
+const configureScopedProject = (records = []) => {
+  scopedSupported = true;
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "scoped-cursor", records });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "scoped-cursor", changes: [] });
+};
+
+it.each(["connection", "push"])("finishes a held scope wake after switching from whole-list to filtered ownership (%s)", async (entry) => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  configureScopedProject();
+  const registry = await import("../src/core/scopedSyncRegistry.js");
+  const runtime = await import("../src/core/scopedSyncRuntime.js");
+  let releaseScope = registry.registerScopedSync({ deviceId: "dev-1", projectId: "p1", scope: registry.projectSyncScope("p1") });
+  let releaseWake, enteredWake;
+  const held = new Promise((resolve) => { releaseWake = resolve; });
+  const wakeHeld = new Promise((resolve) => { enteredWake = resolve; });
+  if (entry === "push") { sync.startCacheSync(); await passesSettled(sync, "dev-1"); }
+  const wake = runtime.wakeScopedSync;
+  let wakeCount = 0;
+  const delayed = vi.spyOn(runtime, "wakeScopedSync").mockImplementation(async (...args) => {
+    // applyTasks wakes once before entering the task queue. Hold its second
+    // wake, inside readTasksNow, so both entry paths really own the queue.
+    if (entry === "push" && ++wakeCount === 1) return wake(...args);
+    enteredWake();
+    await held;
+    return wake(...args);
+  });
+  try {
+    let pushed;
+    if (entry === "connection") sync.startCacheSync();
+    else pushed = registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([
+      { entity_id: "p1", tasks: { task_ids: ["wake-before-switch"] } },
+    ]);
+    await wakeHeld;
+    const connectionPass = entry === "connection" ? sync.passInFlight("dev-1") : sync.syncDevice("dev-1");
+    expect(connectionPass).not.toBeNull();
+    releaseScope();
+    releaseScope = registry.registerScopedSync({ deviceId: "dev-1", projectId: "p1",
+      scope: registry.projectSyncScope("p1", { state: "open" }), queryParams: { project_id: "p1", state: "open" } });
+    const captured = runtime.captureScopedSync("dev-1");
+    releaseWake();
+    let finished = false;
+    void Promise.all([pushed, connectionPass, captured]).then(() => { finished = true; });
+    await vi.waitFor(() => expect(finished, "connection pass and captured recovery must drain after filter switch").toBe(true));
+    const created = trackerTask({ id: "after-filter-switch", number: 8, state: "closed" });
+    script["tasks.list"] = () => ({ tasks: [created] });
+    await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([
+      { entity_id: "p1", tasks: { task_ids: [created.id] } },
+    ]);
+    await passesSettled(sync, "dev-1");
+    await vi.waitFor(async () => expect((await read("p1", "tracker-tasks"))?.value?.tasks?.map((task) => task.id)).toContain(created.id));
+  } finally { releaseWake(); releaseScope(); delayed.mockRestore(); vi.unstubAllGlobals(); }
+});
+
+it("publishes whole-list tasks across another tab's column refresh with independent runtimes and queues", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  configureScopedProject();
+  const trackerA = await import("../src/core/trackerCache.js");
+  const old = trackerTask({ id: "before-other-tab", state: "closed" });
+  const created = trackerTask({ id: "new-from-held-list", number: 9, state: "closed" });
+  await cache.writeCached(trackerA.tasksAddress("dev-1", "p1"), {
+    tasks: [old], read_order: 1, columns: [{ id: "backlog", name: "Old" }],
+  });
+  let releaseList, syncB, releaseScope;
+  const heldList = new Promise((resolve) => { releaseList = resolve; });
+  script["tasks.list"] = () => heldList;
+  try {
+    sync.startCacheSync();
+    await called(bridge.call, () => calls("tasks.list").length > 0);
+    // Independent module graphs model two tabs sharing only IndexedDB.
+    vi.resetModules();
+    syncB = await import("../src/core/cacheSync.js");
+    const registryB = await import("../src/core/scopedSyncRegistry.js");
+    const runtimeB = await import("../src/core/scopedSyncRuntime.js");
+    const trackerB = await import("../src/core/trackerCache.js");
+    const columns = [{ id: "backlog", name: "Renamed in tab B" }, { id: "new", name: "New" }];
+    script["tasks.columns"] = () => ({ columns });
+    // B has a mounted filtered query but no inbox project: only its scoped
+    // metadata writer can touch A's whole-list support in this interleaving.
+    script["project.list"] = () => ({ projects: [] });
+    releaseScope = registryB.registerScopedSync({ deviceId: "dev-1", projectId: "p1",
+      scope: registryB.projectSyncScope("p1", { state: "open" }), queryParams: { project_id: "p1", state: "open" } });
+    // A frozen holder never grants B the lock. B becomes an eligible writer
+    // through the same bounded timeout used in production.
+    navigator.locks.request.mockImplementation(() => new Promise(() => {}));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    syncB.startCacheSync();
+    await vi.advanceTimersByTimeAsync(syncB.LOCK_WAIT_MS);
+    await runtimeB.captureScopedSync("dev-1");
+    await vi.waitFor(async () => expect((await trackerB.readTasksRecord("dev-1", "p1"))?.columns).toEqual(columns));
+    expect(calls("tasks.list")).toHaveLength(1);
+    releaseList({ tasks: [old, created] });
+    await Promise.all([passesSettled(sync, "dev-1"), passesSettled(syncB, "dev-1")]);
+    const published = await trackerA.readTasksRecord("dev-1", "p1");
+    expect(published.tasks.map((task) => task.id)).toContain(created.id);
+    expect(published.columns).toEqual(columns);
+    expect((await read("p1", "tracker-tasks"))?.value?.columns).toEqual(columns);
+  } finally { releaseList({ tasks: [old, created] }); releaseScope?.(); syncB?.stopCacheSync(); vi.useRealTimers(); vi.unstubAllGlobals(); }
+});
+
+it("keeps the cold whole-project cache current when only the mounted open query is engine-owned", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  configureScopedProject();
+  const { mountTasksPane } = await import("../src/core/trackerTasksPane.js");
+  const registry = await import("../src/core/scopedSyncRegistry.js");
+  const host = document.createElement("div");
+  document.body.append(host);
+  const pane = mountTasksPane(host, { projectId: "p1", projectName: "Project", deviceId: "dev-1", projectKey: "dev-1|p1",
+    callRpc: (...args) => bridge.call(...args), feed: () => ({ workspaces: [], items: [] }),
+    catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }), navigate: vi.fn(), defaultView: "list" });
+  try {
+    expect((await read("p1", "tracker-tasks"))?.value).toBeUndefined();
+    await vi.waitFor(() => expect(registry.trackedSyncScopes("dev-1").some(({ scope }) =>
+      scope.kind === "project_tasks" && scope.filters.states?.includes("open"))).toBe(true));
+    await boot([]);
+    const created = trackerTask({ id: "new-closed-task", number: 7, state: "closed" });
+    script["tasks.list"] = () => ({ tasks: [created] });
+    await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([
+      { entity_id: "p1", tasks: { task_ids: [created.id] } },
+    ]);
+    await settle();
+    expect((await read("p1", "tracker-tasks"))?.value?.tasks?.map((task) => task.id)).toContain(created.id);
+    expect(calls("tasks.list").some(([, params]) => JSON.stringify(params) === JSON.stringify({ project_id: "p1" }))).toBe(true);
+  } finally { pane.dispose(); host.remove(); vi.unstubAllGlobals(); }
+});
+
+it("runs durable engine requests and commits a cursor after a frozen Web Lock holder times out", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn(async () => undefined) } });
+  configureScopedProject([{ kind: "task", key: "fallback-task", revision: "1", row: {
+    id: "fallback-task", project_id: "p1", number: 1, title: "Recovered after timeout", state: "open", watched: false,
+    updated_at: "2026-11-03T12:00:00Z" } }]);
+  const registry = await import("../src/core/scopedSyncRegistry.js");
+  const scope = registry.projectSyncScope("p1");
+  const release = registry.registerScopedSync({ deviceId: "dev-1", projectId: "p1", scope });
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    sync.startCacheSync();
+    await settle();
+    expect(calls("sync.snapshot")).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(sync.LOCK_WAIT_MS);
+    await settle();
+    expect(calls("sync.snapshot").length).toBeGreaterThan(0);
+    const { syncCursorAddress } = await import("../src/core/scopedTaskSyncCache.js");
+    await vi.waitFor(async () => expect((await cache.readCached(syncCursorAddress("dev-1", scope, "p1")))?.value?.cursor).toBe("scoped-cursor"));
+    expect((await read("p1", "tracker-tasks"))?.value?.tasks?.map((task) => task.id)).toContain("fallback-task");
+    await vi.waitFor(() => expect(sync.passInFlight("dev-1")).toBeNull());
+  } finally { release(); vi.useRealTimers(); vi.unstubAllGlobals(); }
+});
+it.each([false, true])("keeps refreshed scoped columns after a held legacy task walk finishes (paging=%s)", async (paging) => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  configureScopedProject();
+  const pages = await import("../src/core/trackerPages.js");
+  const paged = vi.spyOn(pages, "pagesTasks").mockReturnValue(paging);
+  const registry = await import("../src/core/scopedSyncRegistry.js");
+  const runtime = await import("../src/core/scopedSyncRuntime.js");
+  const task = trackerTask({ id: "held-closed-task", state: "closed" });
+  const created = trackerTask({ id: "created-during-legacy-read", number: 2, state: "closed" });
+  const columns = [{ id: "custom", name: "New column" }, { id: "backlog", name: "Renamed" }];
+  await cache.writeCached({ deviceId: "dev-1", entityId: "p1", kind: "tracker-tasks" }, {
+    tasks: [task], read_order: 1, columns: [{ id: "backlog", name: "Old name" }],
+  });
+  let releaseList, releaseScope;
+  const legacy = new Promise((resolve) => { releaseList = resolve; });
+  script["tasks.list"] = () => legacy;
+  script["tasks.columns"] = () => ({ columns });
+  try {
+    sync.startCacheSync();
+    await vi.waitFor(() => expect(calls("tasks.list").length).toBeGreaterThan(0));
+    releaseScope = registry.registerScopedSync({ deviceId: "dev-1", projectId: "p1",
+      scope: registry.projectSyncScope("p1", { state: "open" }), queryParams: { project_id: "p1", state: "open" } });
+    const recovery = runtime.captureScopedSync("dev-1");
+    await settle();
+    await vi.waitFor(() => expect(calls("tasks.columns").length).toBeGreaterThan(0));
+    releaseList({ tasks: [task, created] });
+    await Promise.all([recovery, passesSettled(sync, "dev-1")]);
+    expect((await read("p1", "tracker-tasks"))?.value?.tasks?.map((task) => task.id)).toContain(created.id);
+    expect((await read("p1", "tracker-tasks"))?.value?.columns).toEqual(columns);
+  } finally { releaseList({ tasks: [task, created] }); releaseScope?.(); paged.mockRestore(); vi.unstubAllGlobals(); }
+});
+
+
+it("uses columns-only support for a cold pushed task read without refetching metadata", async () => {
+  script["project.list"] = () => ({ projects: [] });
+  await boot([]);
+  const tracker = await import("../src/core/trackerCache.js");
+  const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+  const columns = [{ id: "custom", name: "Cached metadata" }];
+  await cache.writeCached(projectColumnsAddress("dev-1", "p1"), { columns, columns_read_order: 1 });
+  expect(await tracker.readTasksRecord("dev-1", "p1")).toBeNull();
+  const created = trackerTask({ id: "cold-project-task", number: 1 });
+  script["tasks.list"] = () => ({ tasks: [created] });
+  bridge.call.mockClear();
+  await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([
+    { entity_id: "p1", tasks: { task_ids: [created.id] } },
+  ]);
+  expect(calls("tasks.columns")).toHaveLength(0);
+  expect((await tracker.readTasksRecord("dev-1", "p1"))?.columns).toEqual(columns);
+  expect((await tracker.readTasksRecord("dev-1", "p1"))?.tasks.map((task) => task.id)).toEqual([created.id]);
 });

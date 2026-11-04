@@ -46,6 +46,20 @@ beforeEach(async () => {
 });
 
 describe("records", () => {
+  it("bounds cached sub-key reads at IndexedDB while preserving unlimited three-argument callers", async () => {
+    for (const sub of ["a", "b", "c", "d", "e"]) {
+      await cache.writeCached({ deviceId: "bounded", entityId: "project", kind: "queries", sub }, { sub });
+    }
+    const scan = vi.spyOn(IDBObjectStore.prototype, "getAllKeys");
+    try {
+      expect(await cache.cachedSubKeys("bounded", "project", "queries", 2)).toEqual(["a", "b"]);
+      expect(scan.mock.calls[0]).toHaveLength(2);
+      expect(scan.mock.calls[0][1]).toBe(2);
+      expect(await cache.cachedSubKeys("bounded", "project", "queries")).toEqual(["a", "b", "c", "d", "e"]);
+      expect(scan.mock.calls[1]).toHaveLength(1);
+    } finally { scan.mockRestore(); }
+  });
+
   it("reads feed dependencies atomically without bypassing captured-write guards or row observations", async () => {
     const address = { deviceId: "dev-1", entityId: "", kind: "feed" };
     const row = { deviceId: "dev-1", entityId: "run-1", kind: "row" };

@@ -4272,7 +4272,99 @@ gate attachment display.
   review reads still fetch uncapped patches and pages. Markers follow the
   newest twenty unpushed hashes and the workspace's eviction and expiry rules;
   failed reads without size evidence remain retryable.
-- **Reconnect catch-up.** The bridge starts a subscription empty and records a
+- **Durable task scope recovery.** `scopedSyncRegistry.js` describes mounted
+  project task queries and task details, sharing presence with the lock holder
+  across tabs and limiting each device to sixteen active scopes. Importing
+  the registry starts no timer or presence channel. Mounted registrations and
+  active runtime observers open the channel and keep presence and remote-lease
+  expiry running. Remote presence lasts ninety seconds so minute-spaced
+  heartbeats from throttled hidden tabs retain their scope slots; explicit
+  release remains immediate. The final release or unsubscribe stops that interval and
+  closes the owned channel; activation recreates it and requests peer presence.
+  Failed mount acquisition rolls back its presence and newly started resources,
+  retaining the prior registration when a query replacement fails.
+  Followers relay named wake requests to the holder. Definitions
+  use canonical filters and order; cursors never cross definitions. Current
+  greetings independently gate `sync.projectTasks` and `sync.task`.
+  `scopedSyncRuntime.js` starts `scopedSyncEngine.js` after a Web Lock grant
+  or the bounded lock-wait timeout. A timeout worker remains safe beside a
+  resumed holder because cursor comparisons and publication share the same
+  transaction. Browsers without Web Locks retain legacy task reads.
+  The engine stages snapshot pages before publication, then drains changes
+  from the snapshot's opaque cursor through each fixed-head continuation.
+  Every continuation keeps that run's original request cursor; the latest
+  committed cursor supplies only the transaction's comparison baseline.
+  Historical upserts carry the current entity projection, so a null current
+  row is applied as a tombstone even on an older upsert event. Invalidations
+  retain shared task bytes, mark them stale and remove membership only from
+  the affected scope when the task is no longer a member.
+  `scopedTaskSyncCache.js` commits rows, query membership, invalidations and
+  the cursor in one IndexedDB transaction, using task-content lifetime,
+  mutation and row-revision fences. Cursor resets affect one scope. The seen
+  head is separate from the fully applied head so an interrupted continuation
+  remains repairable. Invalidation records require a fresh snapshot on open,
+  including when the applied head matches. Cursors share their owning project's
+  eviction namespace. Live-keyset membership can publish while retaining newer
+  cached entity revisions, then replay repairs post-watermark membership.
+  New replica kinds use the existing records store and
+  preserve cached content without a schema upgrade.
+  Continuity belongs to the running lock holder's engine. A scope key that
+  stays in the live, lease-pruned tracked set keeps its engine entry even if
+  different tabs or mount identities present it. A key leaving that set is
+  untracked. New tracks, lock/tab handovers and reloads snapshot. A reconnect
+  or re-greet under the same runtime and lock tenure retains entries only while
+  context, cache scope and bridge identity remain unchanged. The next request
+  opening resumes only from this engine's own last committed cursor; an
+  opening ending after commit does not discard that committed position. An
+  older opening's late completion cannot replace a newer opening's position. An
+  externally replaced position fails closed to a snapshot. A bridge-requested
+  resync still snapshots that scope. Request openings separately fence replies,
+  staged pages and publication/reset transactions to the current session and
+  greeting, including a re-greet on the same session. Stored cursors continue
+  fencing atomic publication through expectedCursor. Tabs neither adopt nor
+  reuse cross-tab opening tokens, and wall clocks never prove continuity.
+  Pane query cache keys share the scope's canonical label/status spelling,
+  while RPCs keep the selected representative spelling. Equivalent filters
+  read one query record even after the first presenter closes. Query records
+  from older builds remain readable through equivalent raw query addresses
+  when no canonical record exists, preserving their original read order and
+  content origin without migrating or overwriting newer canonical data.
+  Each fallback scans at most thirty-two keys and reads at most eight matching
+  legacy records sequentially, choosing the newest valid record inside that
+  window. Records outside the window wait for the ordinary canonical fetch.
+  Page records retain their originating wire params. UI-only saves retain the scope's
+  registration and cache subscription; a
+  real query change acquires its next registration before releasing the old.
+  Pushes wake this reader; reconnect, foreground return and a thirty-second
+  `sync.head` interval repair missed notifications. Connection passes capture
+  finite open-scope recovery, while later pushes form separate trailing work.
+  Legacy task writers yield only the exact tracked query/detail. A filtered
+  task query leaves the legacy whole-project replica current; an unfiltered
+  default-order scope owns that replica itself. Named recovery triggers also
+  refresh project columns without advancing the task rows' read order. The
+  project-scoped `tracker-columns-order` record holds columns and their shared
+  ordering clock independently of task membership. Column refresh never writes
+  the task list or enters its queue, so a filter switch cannot wait on its own
+  task phase and a second tab cannot retire an in-flight list's baseline.
+  List readers overlay canonical columns onto real task lists in one cache
+  transaction; columns alone never manufacture an empty task list. List and
+  page publication merge current columns inside their publication transaction.
+  Column painters use an independent metadata reader and subscription, without
+  changing task catalogues; existing embedded list columns remain a fallback.
+  Metadata chrome can update during retained-unread hydration, while task
+  frames wait for the unread owner's latest read, including its note-change
+  refreshes. Settlement reports failures and notifies painters; pane cache
+  paths continue their details/catalogue publication after a handled failure.
+  Hydration rejections retain the original cause and identify superseded reads,
+  so an obsolete read cannot raise a user notice after a newer view has painted.
+  The owner rejects recordings during hydration or from an obsolete watch
+  snapshot, so a consumer's older frame cannot restore retired display history.
+  Legacy column helpers share that reader to avoid refetching cold metadata.
+  Task
+  heads contain summary and timeline data; an engine-owned detail reader
+  supplies body fields through their own task-content authority. Inbox and
+  directory recovery keep the ordered pass; no device scope is advertised.
+- **Legacy reconnect catch-up.** The bridge starts a subscription empty and records a
   change only for the subscriptions it holds when the change happens. So a pass
   takes its subscriptions out before it reads anything, and where the cache has
   something to show it waits (bounded) for the bridge to answer them. A device
@@ -4521,8 +4613,9 @@ gate attachment display.
   it, or one the page does not name that was written after the page was
   read, keeps its place. An older bridge is read whole, as before.
 
-No timer polls the bridge for data. The data timers are the device presence
-poll against skriftapp and the served-version check. The presence poll runs
+Durable tracked task scopes check `sync.head` every thirty seconds while
+connected. Other data timers are the device presence poll against skriftapp
+and the served-version check. The presence poll runs
 every 15 s in the app and every 3 s on the waiting screen, and every second
 after this page approves a device, until the cached list calls it online or
 90 s pass (`spa/src/core/pendingPairing.js`, #321). The transport has its own:

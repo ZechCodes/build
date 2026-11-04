@@ -1,3 +1,5 @@
+import { taskSyncScope } from "./scopedSyncRegistry.js";
+import { scopedSyncOwns, wakeScopedSync } from "./scopedSyncRuntime.js";
 // Cached task details for list and Dashboard attention. The list supplies the
 // task ids and their update stamps; the cache supplies the task and timeline.
 // Wire answers only write records. Cache announcements are the sole path by
@@ -108,11 +110,16 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
   }
 
   async function fetchDetail(id) {
+    if (scopedSyncOwns(deviceId, taskSyncScope(id))) {
+      await wakeScopedSync(deviceId, (scope) => scope.kind === "task" && scope.task_id === id);
+      return;
+    }
     if (!acceptsQueuedRead(id)) return;
     const version = versionOf(taskForRead(id));
     const context = contextFor(deviceId), identity = deviceContextIdentity(deviceId), session = deviceSession(deviceId);
     const acceptsOwner = () => !disposed && contextFor(deviceId) === context && deviceContextIdentity(deviceId) === identity
-      && deviceSession(deviceId) === session && (!context || context.active());
+      && deviceSession(deviceId) === session && (!context || context.active())
+      && !scopedSyncOwns(deviceId, taskSyncScope(id));
     try {
       const [detailBasis, contentRead] = await Promise.all([
         captureTaskDetailRead(deviceId, projectId, id),

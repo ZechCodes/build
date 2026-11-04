@@ -89,10 +89,12 @@ function reconcileDevice(context) {
   reconcileEntries(held, trackedSyncScopes(context.deviceId).filter(({ scope }) => supported(greeting.capabilities, scope)));
 }
 
-const prepareScope = (held, entry) => entry.scope.kind === "project_tasks"
-  ? refreshScopedProjectColumns({ deviceId: held.context.deviceId, projectId: entry.projectId,
-    active: held.active, callRpc: (method, params) => runtime.request(held.context.deviceId, method, params, entry.scope) })
-  : refreshBody(held, entry);
+function prepareScope(held, entry) {
+  if (entry.scope.kind !== "project_tasks") return refreshBody(held, entry);
+  const read = () => refreshScopedProjectColumns({ deviceId: held.context.deviceId, projectId: entry.projectId,
+    active: held.active, callRpc: (method, params) => runtime.request(held.context.deviceId, method, params, entry.scope) });
+  return runtime.prepareProject ? runtime.prepareProject(held.context.deviceId, entry.projectId, read) : read();
+}
 
 function refreshBody(held, entry) {
   if (entry.scope.kind !== "task" || !held.active()) return Promise.resolve(false);

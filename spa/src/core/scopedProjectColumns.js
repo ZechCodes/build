@@ -7,6 +7,7 @@ const hasColumns = (value) => Boolean(value?.columns?.length);
 const sameLifetime = (read, context) => ["storeGeneration", "scopeGeneration", "retirementEpoch"]
   .every((field) => read.ticket?.[field] && read.ticket[field] === context[field]);
 
+const unchangedColumns = (current, answer) => JSON.stringify(current?.value?.columns) === JSON.stringify(answer.columns);
 const columnsOrder = (record) => Number(record?.value?.columns_read_order) || 0;
 const supersededColumns = (current, clock, read) => Math.max(columnsOrder(current), columnsOrder(clock)) > read.readOrder;
 function withColumns(current, answer, readOrder) {
@@ -26,6 +27,7 @@ export async function refreshScopedProjectColumns({ deviceId, projectId, callRpc
   const clock = { ...address, kind: "tracker-columns-order" };
   return mergeTaskContentRecordsTogether(scope, [address, clock], ([current, order], context) => {
     if (!active() || !sameLifetime(contentRead, context) || supersededColumns(current, order, contentRead)) return null;
-    return { values: [withColumns(current, answer, contentRead.readOrder), { columns_read_order: contentRead.readOrder }] };
+    const value = unchangedColumns(current, answer) ? null : withColumns(current, answer, contentRead.readOrder);
+    return { values: [value, { columns_read_order: contentRead.readOrder }] };
   });
 }

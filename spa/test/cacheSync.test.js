@@ -2689,5 +2689,37 @@ it("runs durable engine requests and commits a cursor after a frozen Web Lock ho
     const { syncCursorAddress } = await import("../src/core/scopedTaskSyncCache.js");
     await vi.waitFor(async () => expect((await cache.readCached(syncCursorAddress("dev-1", scope, "p1")))?.value?.cursor).toBe("scoped-cursor"));
     expect((await read("p1", "tracker-tasks"))?.value?.tasks?.map((task) => task.id)).toContain("fallback-task");
+    await vi.waitFor(() => expect(sync.passInFlight("dev-1")).toBeNull());
   } finally { release(); vi.useRealTimers(); vi.unstubAllGlobals(); }
+});
+it.each([false, true])("keeps refreshed scoped columns after a held legacy task walk finishes (paging=%s)", async (paging) => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  configureScopedProject();
+  const pages = await import("../src/core/trackerPages.js");
+  const paged = vi.spyOn(pages, "pagesTasks").mockReturnValue(paging);
+  const registry = await import("../src/core/scopedSyncRegistry.js");
+  const runtime = await import("../src/core/scopedSyncRuntime.js");
+  const task = trackerTask({ id: "held-closed-task", state: "closed" });
+  const created = trackerTask({ id: "created-during-legacy-read", number: 2, state: "closed" });
+  const columns = [{ id: "custom", name: "New column" }, { id: "backlog", name: "Renamed" }];
+  await cache.writeCached({ deviceId: "dev-1", entityId: "p1", kind: "tracker-tasks" }, {
+    tasks: [task], read_order: 1, columns: [{ id: "backlog", name: "Old name" }],
+  });
+  let releaseList, releaseScope;
+  const legacy = new Promise((resolve) => { releaseList = resolve; });
+  script["tasks.list"] = () => legacy;
+  script["tasks.columns"] = () => ({ columns });
+  try {
+    sync.startCacheSync();
+    await vi.waitFor(() => expect(calls("tasks.list").length).toBeGreaterThan(0));
+    releaseScope = registry.registerScopedSync({ deviceId: "dev-1", projectId: "p1",
+      scope: registry.projectSyncScope("p1", { state: "open" }), queryParams: { project_id: "p1", state: "open" } });
+    const recovery = runtime.captureScopedSync("dev-1");
+    await settle();
+    expect(calls("tasks.columns")).toHaveLength(0);
+    releaseList({ tasks: [task, created] });
+    await Promise.all([recovery, passesSettled(sync, "dev-1")]);
+    expect((await read("p1", "tracker-tasks"))?.value?.tasks?.map((task) => task.id)).toContain(created.id);
+    expect((await read("p1", "tracker-tasks"))?.value?.columns).toEqual(columns);
+  } finally { releaseList({ tasks: [task, created] }); releaseScope?.(); paged.mockRestore(); vi.unstubAllGlobals(); }
 });

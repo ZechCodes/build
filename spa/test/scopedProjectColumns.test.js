@@ -76,3 +76,12 @@ it("retains the column ordering clock across a legacy whole-list replacement", a
   expect(await older).toBe(false);
   expect(await tracker.readTasksRecord("d1", "p1")).toEqual({ tasks: [task], read_order: 456, columns });
 });
+it("retains the task list write stamp when a column refresh returns identical metadata", async () => {
+  const address = tracker.tasksAddress("d1", "p1"), columns = [{ id: "ready", name: "Ready" }];
+  await cache.writeCached(address, { tasks: [{ id: "held-task" }], read_order: 123, columns });
+  const before = await cache.readCanonicalCached(address);
+  expect(await refreshScopedProjectColumns(options(async () => ({ columns })))).toBe(true);
+  const after = await cache.readCanonicalCached(address);
+  expect(cache.recordWriteOf(after)).toBe(cache.recordWriteOf(before));
+  expect(after.value).toEqual(before.value);
+});

@@ -175,3 +175,15 @@ it("refreshes independent review metadata after scoped catch-up finishes", async
   expect(readReviews).toHaveBeenCalledExactlyOnceWith(context, "p1", "background");
   expect(ask.mock.calls.filter(([, method]) => method === "tasks.list")).toHaveLength(0);
 });
+it("keeps refreshed columns published between the first task page and its continuation", async () => {
+  const local = await import("../src/core/localCache.js");
+  const address = trackerCache.tasksAddress("dev-1", "p1");
+  await local.writeCached(address, { tasks: [], read_order: 1, columns: [{ id: "backlog", name: "Old name" }] });
+  const { pass } = fixture();
+  await pass.first("p1");
+  const held = await trackerCache.readTasksRecord("dev-1", "p1");
+  const columns = [{ id: "custom", name: "New column" }, { id: "backlog", name: "Renamed" }];
+  await local.writeCached(address, { ...held, columns });
+  expect(await pass.rest("p1")).toBe(true);
+  expect((await trackerCache.readTasksRecord("dev-1", "p1")).columns).toEqual(columns);
+});

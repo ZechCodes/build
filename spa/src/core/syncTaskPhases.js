@@ -25,7 +25,7 @@ async function foldPage(context, projectId, columns, stretch, page) {
   const value = await columns;
   if (!context.active()) return false;
   const [folded] = await Promise.all([
-    foldTasksPage(tasksAddress(context.deviceId, projectId), stretch, () => value),
+    foldTasksPage(tasksAddress(context.deviceId, projectId), stretch, (held) => held?.columns?.length ? held.columns : value),
     writeListedUserSession(context.deviceId, page),
   ]);
   return folded;

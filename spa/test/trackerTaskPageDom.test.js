@@ -7,6 +7,17 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+const durable = vi.hoisted(() => ({ owns: false, wake: vi.fn(async () => []), release: vi.fn(), register: vi.fn() }));
+vi.mock("../src/core/scopedSyncRuntime.js", () => ({
+  scopedSyncOwns: () => durable.owns,
+  wakeScopedSync: (...args) => durable.wake(...args),
+}));
+vi.mock("../src/core/scopedSyncRegistry.js", () => ({
+  registerScopedSync: (...args) => { durable.register(...args); return durable.release; },
+  projectSyncScope: (projectId, filters = {}) => ({ kind: "project_tasks", project_id: projectId, filters }),
+  taskSyncScope: (taskId) => ({ kind: "task", task_id: taskId }),
+}));
+
 import { columns, comment, event, task } from "./trackerWireFixture.js";
 import { painted } from "./waits.js";
 import tasksGetFixture from "../../fixtures/api/v1/tasks.get.json";
@@ -138,6 +149,7 @@ const entries = () =>
 
 beforeEach(async () => {
   vi.resetModules();
+  durable.owns = false; durable.wake.mockClear(); durable.release.mockClear(); durable.register.mockClear();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   watchers = [];
@@ -1803,7 +1815,9 @@ describe("work-task review entry", () => {
     call = vi.fn(() => new Promise(() => {}));
     await mount();
     expect(host.querySelector('[data-work-task-review]')).toBeNull();
-    expect(observe.mock.calls.filter(([address]) => ["tracker-task", "tracker-tasks"].includes(address.kind) && !address.sub)).toHaveLength(0);
+    expect(observe.mock.calls.filter(([address]) => address.kind === "tracker-task" && !address.sub)).toHaveLength(0);
+    expect(observe.mock.calls.filter(([address]) => address.kind === "tracker-tasks").map(([address]) => address))
+      .toEqual([trackerCache.tasksAddress("dev-1", "proj-1")]);
     expect(scan.mock.calls.filter(([address]) => ["tracker-task", "tracker-tasks"].includes(address.kind))).toHaveLength(0);
     observe.mockRestore(); scan.mockRestore();
   });
@@ -1828,4 +1842,76 @@ describe("work-task review entry", () => {
     expect(host.querySelector('.task-work-review-hint')?.textContent).toBe("Request a review from @wire-facade");
     expect(host.querySelector('.task-work-review-hint a').getAttribute("href")).toBe("#/device/dev-1/project/proj-1/workspace/ws-1/changes");
   });
+});
+
+it("durable ownership registers detail and prevents the legacy detail writer", async () => {
+  durable.owns = true;
+  await mount();
+  expect(durable.register).toHaveBeenCalledWith(expect.objectContaining({ deviceId: "dev-1", projectId: "proj-1",
+    scope: { kind: "task", task_id: "task-1" } }));
+  expect(listed("tasks.get")).toHaveLength(0);
+  expect(durable.wake).toHaveBeenCalled();
+  page.dispose(); page = null;
+  expect(durable.release).toHaveBeenCalled();
+});
+it("repaints mounted task status choices from a columns-only cache publication", async () => {
+  await mount();
+  const labels = () => [...host.querySelectorAll("#task-status option")].map((option) => option.textContent);
+  expect(labels()).toContain("In progress");
+  call.mockClear();
+  const local = await import("../src/core/localCache.js");
+  const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+  await local.writeCached(projectColumnsAddress("dev-1", "proj-1"), {
+    columns: [{ id: "custom", name: "New column" }, { id: "in_progress", name: "Building" }], columns_read_order: Date.now(),
+  });
+  await vi.waitFor(() => expect(labels()).toEqual(["New column", "Building"]), { timeout: 5000 });
+  expect(host.querySelector("#task-status").value).toBe("in_progress");
+  expect(listed("tasks.get")).toHaveLength(0);
+});
+it("reads offline task status choices independently of a missing whole-list record", async () => {
+  durable.owns = true;
+  const local = await import("../src/core/localCache.js");
+  const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+  const whole = trackerCache.tasksAddress("dev-1", "proj-1");
+  await local.deleteCached([whole]);
+  await local.writeCached(trackerCache.taskAddress("dev-1", "proj-1", "task-1"), answerFor());
+  await local.writeCached(projectColumnsAddress("dev-1", "proj-1"), {
+    columns: [{ id: "in_progress", name: "Building" }], columns_read_order: 100,
+  });
+  await mount();
+  const labels = () => [...host.querySelectorAll("#task-status option")].map((option) => option.textContent);
+  expect(labels()).toEqual(["Building"]);
+  await local.writeCached(projectColumnsAddress("dev-1", "proj-1"), {
+    columns: [{ id: "custom", name: "New column" }, { id: "in_progress", name: "Updated" }], columns_read_order: 101,
+  });
+  await vi.waitFor(() => expect(labels()).toEqual(["New column", "Updated"]));
+  expect(await local.readCanonicalCached(whole)).toBeUndefined();
+  expect(call).not.toHaveBeenCalled();
+});
+it("observes late embedded project columns without replacing a cached task detail", async () => {
+  const local = await import("../src/core/localCache.js");
+  const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+  const whole = trackerCache.tasksAddress("dev-1", "proj-1");
+  const detailAddress = trackerCache.taskAddress("dev-1", "proj-1", "task-1");
+  const metadata = projectColumnsAddress("dev-1", "proj-1");
+  await local.deleteCached([whole, metadata]);
+  await local.writeCached(detailAddress, answerFor({ title: "Cached detail title", body: "Keep the detail body." }));
+  call = vi.fn(() => new Promise(() => {}));
+  await mount();
+  const labels = () => [...host.querySelectorAll("#task-status option")].map((option) => option.textContent);
+  expect(labels()).toEqual(["Backlog", "Ready", "In progress", "In review", "Done"]);
+  expect(await local.readCanonicalCached(whole)).toBeUndefined();
+  expect(await local.readCanonicalCached(metadata)).toBeUndefined();
+  const before = await local.readCanonicalCached(detailAddress);
+  call.mockClear();
+  await local.writeCached(whole, {
+    tasks: [task({ id: "task-1", project_id: "proj-1", title: "List replica title", body: "List replica body" })],
+    columns: [{ id: "custom", name: "New column" }, { id: "in_progress", name: "Building" }],
+  });
+  await vi.waitFor(() => expect(labels()).toEqual(["New column", "Building"]));
+  expect(host.querySelector(".task-page-title").textContent).toBe("Cached detail title");
+  expect(host.querySelector(".task-page-body").textContent).toContain("Keep the detail body.");
+  expect(await local.readCanonicalCached(detailAddress)).toEqual(before);
+  expect(await local.readCanonicalCached(metadata)).toBeUndefined();
+  expect(call).not.toHaveBeenCalled();
 });

@@ -1,3 +1,6 @@
+import { projectColumnsAddress, readProjectColumns } from "./projectColumnsCache.js";
+import { registerScopedSync, taskSyncScope } from "./scopedSyncRegistry.js";
+import { scopedSyncOwns, wakeScopedSync } from "./scopedSyncRuntime.js";
 // One task's page, mounted.
 //
 // Cache-first like every other detail surface: what `tasks.get` last answered
@@ -19,10 +22,10 @@ import {
   advanceTaskReadThrough,
   captureTaskDetailRead,
   taskAddress,
+  tasksAddress,
   taskRecord,
   taskRecordAt,
   readTaskRecord,
-  readTasksRecord,
   writeTaskRecord,
 } from "./trackerCache.js";
 import { readCached, readCachedMany, subscribeCache } from "./localCache.js";
@@ -687,10 +690,12 @@ export function mountTaskPage(host, options) {
   bindWatchControl();
   const stopWatchControlLifetime = onDeviceStateChanged(bindWatchControl);
 
+  let columnsReadSerial = 0;
   async function paintFromCache() {
-    const [cached, list, at, checklistSupported, waitingOnSupported] = await Promise.all([
+    const columnsSerial = ++columnsReadSerial;
+    const [cached, columns, at, checklistSupported, waitingOnSupported] = await Promise.all([
       readTaskRecord(state.deviceId, state.projectId, state.taskId),
-      readTasksRecord(state.deviceId, state.projectId),
+      readProjectColumns(state.deviceId, state.projectId),
       taskRecordAt(state.deviceId, state.projectId, state.taskId),
       readTaskChecklistSupport(state.deviceId),
       readTaskWaitingOnSupport(state.deviceId),
@@ -698,12 +703,23 @@ export function mountTaskPage(host, options) {
     if (state.disposed) return;
     state.checklistSupported = checklistSupported;
     state.waitingOnSupported = waitingOnSupported;
-    state.columns = columnsOf(list?.columns);
+    if (columnsSerial === columnsReadSerial) state.columns = columnsOf(columns);
     if (!cached?.task || state.task) return;
     take(cached, { live: false });
     reads.seen(at); // this copy is as old as the cache's stamp, not as old as now
     paint();
   }
+
+  async function paintColumnsFromCache() {
+    const serial = ++columnsReadSerial;
+    const columns = await readProjectColumns(state.deviceId, state.projectId);
+    if (state.disposed || serial !== columnsReadSerial) return;
+    state.columns = columnsOf(columns);
+    paint();
+  }
+  const onColumnsChanged = () => { void paintColumnsFromCache(); };
+  const columnsWatcher = subscribeCache(projectColumnsAddress(state.deviceId, state.projectId), onColumnsChanged);
+  const listColumnsWatcher = subscribeCache(tasksAddress(state.deviceId, state.projectId), onColumnsChanged);
 
   /** What a reference written on this page names is the shared index's
    *  answer (core/referenceIndex.js, #229): the project's task list, the
@@ -851,6 +867,10 @@ export function mountTaskPage(host, options) {
   }
 
   async function readTask() {
+    if (scopedSyncOwns(state.deviceId, taskSyncScope(state.taskId))) {
+      await wakeScopedSync(state.deviceId, (scope) => scope.kind === "task" && scope.task_id === state.taskId);
+      return;
+    }
     const demand = consumeTaskReadDemand();
     if (!demand) return;
     const authority = admitTaskReadOwner();
@@ -866,7 +886,8 @@ export function mountTaskPage(host, options) {
       if (state.disposed || !authority.accept()) return;
       // The pull is a writer. The subscription above owns the read and paint.
       await writeTaskRecord(state.deviceId, state.projectId, state.taskId, taskRecord(answer.task, answer.timeline), {
-        accept: (held) => !state.disposed && authority.accept() && checklist.acceptsRead(checklistBasis, held),
+        accept: (held) => !state.disposed && authority.accept() && checklist.acceptsRead(checklistBasis, held)
+          && !scopedSyncOwns(state.deviceId, taskSyncScope(state.taskId)),
         detailBasis, contentRead, onOrdinaryDeferred: () => deferTaskRead(authority),
       });
     } catch (error) {
@@ -1272,9 +1293,12 @@ export function mountTaskPage(host, options) {
     host, service: state.writeOperations, taskId: state.taskId, projectId: state.projectId,
     restoreDraft: restoreCommentDraft, retry: retryComment, onChange: paint,
   });
+  const releaseSyncTask = registerScopedSync({ deviceId: state.deviceId, projectId: state.projectId,
+    scope: taskSyncScope(state.taskId) });
   paint();
   void paintFromCache().then(refreshForMount);
-  // No cadence: nothing in this client polls. An item that names this task
+  // The view has no timer. Durable scopes use the engine's 30-second head
+  // checks; legacy reads follow pushes. An item that names this task
   // is what re-reads it, and the pass behind that (core/cacheSync.js) is the
   // whole of the safety net.
   const watcher = watchChanges({
@@ -1298,6 +1322,7 @@ export function mountTaskPage(host, options) {
     feedMoved() { state.picker?.setOptions?.(assigneeOptions(groups())); paint(); reviewPage?.feedMoved(); },
     dispose() {
       state.disposed = true;
+      releaseSyncTask();
       stopHeadMeasurement();
       replyNavigation.dispose();
       checklist.dispose();
@@ -1311,6 +1336,8 @@ export function mountTaskPage(host, options) {
       watcher.dispose();
       stopGreeting();
       taskWatcher?.();
+      columnsWatcher();
+      listColumnsWatcher();
       contentHeaderWatcher();
       stopWatchControl();
       stopWatchControlLifetime();

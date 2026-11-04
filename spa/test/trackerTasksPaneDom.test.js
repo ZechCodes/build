@@ -7,7 +7,18 @@
 // param rather than a pass over what happens to be in hand.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
+const durable = vi.hoisted(() => ({ owns: false, wake: vi.fn(async () => []), release: vi.fn(), register: vi.fn() }));
+vi.mock("../src/core/scopedSyncRuntime.js", () => ({
+  scopedSyncOwns: () => durable.owns,
+  wakeScopedSync: (...args) => durable.wake(...args),
+}));
+vi.mock("../src/core/scopedSyncRegistry.js", () => ({
+  registerScopedSync: (...args) => { durable.register(...args); return durable.release; },
+  projectSyncScope: (projectId, filters = {}) => ({ kind: "project_tasks", project_id: projectId, filters }),
+  taskSyncScope: (taskId) => ({ kind: "task", task_id: taskId }),
+}));
+
 import { columns, task as wireTask } from "./trackerWireFixture.js";
 
 // Every pane in this file is mounted on proj-1; successful wire TaskViews
@@ -179,8 +190,292 @@ const columnNames = () => [...host.querySelectorAll(".task-column-head h3")].map
 const cardsIn = (columnId) =>
   [...host.querySelectorAll(`[data-column="${columnId}"] .task-card`)].map((card) => card.dataset.task);
 
+it.each(["initial mount", "view change"])("reports unread display hydration failure and paints the %s frame", async (when) => {
+  durable.owns = true;
+  call = vi.fn(() => new Promise(() => {}));
+  await cache.writeCached(trackerCache.tasksAddress("dev-1", "proj-1"),
+    trackerCache.tasksRecord([task({ id: "cached-hydration", title: "Cached hydration task" })], columns(), 100));
+  if (when === "initial mount") {
+    const { uiAddress, updateUiState } = await import("../src/core/localUiState.js");
+    await updateUiState(uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" }),
+      () => ({ view: "board" }));
+  } else {
+    await mount();
+    expect(titles()).toEqual(["Cached hydration task"]);
+  }
+  const failure = new Error("Unread display storage read failed");
+  const unhandled = [];
+  const noteUnhandled = (error) => { unhandled.push(error); };
+  process.on("unhandledRejection", noteUnhandled);
+  const read = cache.readCachedMany;
+  let failedRead = false;
+  let rejectHeld;
+  const held = new Promise((_, reject) => { rejectHeld = reject; });
+  const spy = vi.spyOn(cache, "readCachedMany").mockImplementation((addresses) => {
+    const expectedLength = when === "initial mount" ? 3 : 4;
+    if (!failedRead && addresses.length === expectedLength && addresses[0].kind === "task-content-generation") {
+      failedRead = true;
+      return when === "initial mount" ? Promise.reject(failure) : held;
+    }
+    return read(addresses);
+  });
+  try {
+    if (when === "initial mount") await mount();
+    else {
+      host.querySelector('[data-task-view="board"]').click();
+      await vi.waitFor(() => expect(failedRead).toBe(true));
+      await flush();
+      expect(titles()).toEqual(["Cached hydration task"]);
+      expect(columnNames()).toEqual([]);
+      rejectHeld(failure);
+      await flush();
+    }
+    expect(failedRead).toBe(true);
+    expect(unhandled).toEqual([]);
+    expect(notifyError).toHaveBeenCalledWith("Could not read this project's tasks", failure.message);
+    expect(notifyError).toHaveBeenCalledTimes(1);
+    expect(columnNames()).toEqual(columns().map((column) => column.name));
+    expect(cardsIn("backlog")).toEqual(["cached-hydration"]);
+  } finally {
+    spy.mockRestore();
+    process.off("unhandledRejection", noteUnhandled);
+  }
+});
+
+it.each([false, true])("keeps selected wire spelling and canonical aggregate addresses for paged=%s", async (paged) => {
+  const pages = await import("../src/core/trackerPages.js");
+  const pageSupport = vi.spyOn(pages, "pagesTasks").mockReturnValue(paged);
+  const row = task({ id: "wire-alias-row", title: "Wire alias task", labels: ["API"] });
+  call.mockImplementation(async (method) => method === "tasks.list" ? { tasks: [row], next_cursor: null }
+    : method === "tasks.get" ? new Promise(() => {}) : {});
+  try {
+    await mount();
+    await chooseFilter("label", "API");
+    const canonical = { project_id: "proj-1", state: "open", label: "api" };
+    await vi.waitFor(async () => expect((await trackerCache.readTasksQueryRecord("dev-1", "proj-1", canonical))?.tasks
+      .map(({ id }) => id)).toEqual([row.id]));
+    expect(listed("tasks.list").some(([, params]) => params.label === "API")).toBe(true);
+    expect(await trackerCache.readTasksQueryCached("dev-1", "proj-1", { ...canonical, label: "API" })).toBeNull();
+    if (paged) {
+      const records = await cache.cachedAddresses({ deviceId: "dev-1", entityId: "proj-1", kind: "tracker-tasks-page" });
+      expect(records.some(({ sub }) => JSON.parse(sub).label === "API")).toBe(true);
+    }
+  } finally {
+    pageSupport.mockRestore();
+  }
+});
+
+it("paints one engine-owned canonical query for Bug then bug mounts without a whole list", async () => {
+  durable.owns = true;
+  const params = { project_id: "proj-1", state: "open", label: "bug" };
+  const { projectSyncScope } = await vi.importActual("../src/core/scopedSyncRegistry.js");
+  const scope = projectSyncScope("proj-1", { state: "open", label: "Bug" });
+  const { createScopedTaskSyncCache } = await import("../src/core/scopedTaskSyncCache.js");
+  const { createScopedSyncEngine } = await import("../src/core/scopedSyncEngine.js");
+  const { body: _body, attachments, ...row } = task({ id: "engine-alias-task", title: "Engine alias task", labels: ["Bug"], attachments: [] });
+  const request = vi.fn(async (method) => ({ status: "ok", incarnation: "i", bridge_epoch: "e",
+    ...(method === "sync.snapshot" ? { watermark: "1", cursor: "S", records: [{ kind: "task", key: row.id, revision: "1",
+      row: { ...row, attachment_count: attachments.length } }] } : { head: "1", cursor: "C", changes: [] }) }));
+  const store = createScopedTaskSyncCache({ deviceId: "dev-1", projectId: "proj-1", scope, queryParams: params, bridgeIdentity: "dev-1" });
+  const engine = createScopedSyncEngine({ request, storeFor: () => store, epoch: () => "e" });
+  const { uiAddress, updateUiState } = await import("../src/core/localUiState.js");
+  const address = uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" });
+  try {
+    engine.track(scope); expect(await engine.catchUp(scope)).toBe(true);
+    await updateUiState(address, () => ({ view: "list", filters: { state: "open", label: "Bug" } }));
+    await mount();
+    expect(titles()).toEqual(["Engine alias task"]);
+    pane.dispose(); pane = null; host.replaceChildren();
+    await updateUiState(address, () => ({ view: "list", filters: { state: "open", label: "bug" } }));
+    await mount();
+    expect(titles()).toEqual(["Engine alias task"]);
+    expect(await cache.readCached(trackerCache.tasksAddress("dev-1", "proj-1"))).toBeUndefined();
+    expect(durable.register.mock.calls.every(([entry]) => entry.queryParams.label === "bug")).toBe(true);
+    expect(call).not.toHaveBeenCalled();
+  } finally {
+    engine.dispose();
+  }
+});
+
+it.each(["Bug", "bug"])("paints a pre-upgrade raw Bug query offline for a saved %s selector without a whole list", async (label) => {
+  durable.owns = true;
+  const raw = { project_id: "proj-1", state: "open", label: "Bug" };
+  const canonical = { ...raw, label: "bug" };
+  await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", raw,
+    trackerCache.tasksRecord([task({ id: "legacy-bug", title: "Before upgrade cached Bug", labels: ["Bug"] })], columns(), 100));
+  const { uiAddress, updateUiState } = await import("../src/core/localUiState.js");
+  await updateUiState(uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" }),
+    () => ({ view: "list", filters: { state: "open", label } }));
+  await mount();
+  expect(titles()).toEqual(["Before upgrade cached Bug"]);
+  expect(call).not.toHaveBeenCalled();
+  expect(await cache.readCached(trackerCache.tasksAddress("dev-1", "proj-1"))).toBeUndefined();
+  expect(await trackerCache.readTasksQueryCached("dev-1", "proj-1", canonical)).toBeNull();
+  expect((await trackerCache.readTasksQueryCached("dev-1", "proj-1", raw)).value.read_order).toBe(100);
+});
+
+it.each([false, true])("keeps a newer canonical query over a matching pre-upgrade raw Bug record, empty=%s", async (empty) => {
+  durable.owns = true;
+  const raw = { project_id: "proj-1", state: "open", label: "Bug" }, canonical = { ...raw, label: "bug" };
+  await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", raw,
+    trackerCache.tasksRecord([task({ id: "old-bug", title: "Old raw Bug", labels: ["Bug"] })], columns(), 100));
+  await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", canonical,
+    trackerCache.tasksRecord(empty ? [] : [task({ id: "new-bug", title: "New canonical bug", labels: ["Bug"] })], columns(), 200));
+  const { uiAddress, updateUiState } = await import("../src/core/localUiState.js");
+  await updateUiState(uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" }),
+    () => ({ view: "list", filters: { state: "open", label: "Bug" } }));
+  await mount();
+  expect(titles()).toEqual(empty ? [] : ["New canonical bug"]);
+  expect((await trackerCache.readTasksQueryCached("dev-1", "proj-1", canonical)).value.read_order).toBe(200);
+  expect((await trackerCache.readTasksQueryCached("dev-1", "proj-1", raw)).value.read_order).toBe(100);
+  expect(call).not.toHaveBeenCalled();
+});
+
+it("lets a canonical publication overtake an in-flight pre-upgrade raw query fallback", async () => {
+  durable.owns = true;
+  const raw = { project_id: "proj-1", state: "open", label: "Bug" }, canonical = { ...raw, label: "bug" };
+  await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", raw,
+    trackerCache.tasksRecord([task({ id: "held-bug", title: "Held legacy Bug", labels: ["Bug"] })], columns(), 100));
+  const { uiAddress, updateUiState } = await import("../src/core/localUiState.js");
+  await updateUiState(uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" }),
+    () => ({ view: "list", filters: { state: "open", label: "Bug" } }));
+  let release, waiting = false;
+  const held = new Promise((resolve) => { release = resolve; });
+  const read = trackerCache.readTasksQueryCached;
+  const spy = vi.spyOn(trackerCache, "readTasksQueryCached").mockImplementation(async (deviceId, projectId, params) => {
+    const answer = await read(deviceId, projectId, params);
+    if (params.label === "Bug") { waiting = true; await held; }
+    return answer;
+  });
+  try {
+    await mount();
+    await vi.waitFor(() => expect(waiting).toBe(true));
+    await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", canonical,
+      trackerCache.tasksRecord([task({ id: "canonical-race", title: "Canonical overtook old cache", labels: ["Bug"] })], columns(), 200));
+    await vi.waitFor(() => expect(titles()).toEqual(["Canonical overtook old cache"]));
+    release(); await flush();
+    expect(titles()).toEqual(["Canonical overtook old cache"]);
+    expect(call).not.toHaveBeenCalled();
+  } finally { release(); spy.mockRestore(); }
+});
+
+it("bounds legacy fallback storage scans, record attempts and concurrency while selecting the newest valid in-window query", async () => {
+  durable.owns = true;
+  const canonical = { project_id: "proj-1", state: "open", label: "abcdef" };
+  for (let mask = 1; mask < 64; mask += 1) {
+    const label = [...canonical.label].map((letter, bit) => mask & 1 << bit ? letter.toUpperCase() : letter).join("");
+    await cache.writeCached(trackerCache.tasksQueryAddress("dev-1", "proj-1", { ...canonical, label }), { tasks: [] });
+  }
+  const keys = await cache.cachedSubKeys("dev-1", "proj-1", "tracker-tasks-query");
+  const ordered = keys.map((sub) => JSON.parse(sub));
+  for (const [index, params] of ordered.entries()) {
+    const rows = index === 4 ? "invalid list" : index === 6 ? [null]
+      : [task({ id: `budget-${index}`, title: `Legacy budget ${index}`, labels: [params.label], watched: false })];
+    await cache.writeCached(trackerCache.tasksQueryAddress("dev-1", "proj-1", params),
+      { tasks: rows, columns: columns(), read_order: index === 4 || index === 6 ? 100_000 : index < 8 ? index + 1 : 10_000 + index });
+  }
+  await mount();
+  const scans = [], attempts = [];
+  let active = 0, peak = 0;
+  const getAllKeys = IDBObjectStore.prototype.getAllKeys;
+  const scan = vi.spyOn(IDBObjectStore.prototype, "getAllKeys").mockImplementation(function(...args) {
+    const request = getAllKeys.apply(this, args);
+    if (String(args[0]?.lower).includes("|tracker-tasks-query|")) {
+      const seen = { count: args[1], results: null }; scans.push(seen);
+      request.addEventListener("success", () => { seen.results = request.result.length; });
+    }
+    return request;
+  });
+  const read = trackerCache.readTasksQueryCached;
+  const readAlias = vi.spyOn(trackerCache, "readTasksQueryCached").mockImplementation(async (deviceId, projectId, params) => {
+    if (params.label?.toLowerCase() !== canonical.label || params.label === canonical.label) return read(deviceId, projectId, params);
+    attempts.push(params); active += 1; peak = Math.max(peak, active);
+    try { await new Promise((resolve) => setTimeout(resolve, 5)); return await read(deviceId, projectId, params); }
+    finally { active -= 1; }
+  });
+  try {
+    const { uiAddress, updateUiState } = await import("../src/core/localUiState.js");
+    await updateUiState(uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" }),
+      () => ({ view: "list", filters: { state: "open", label: canonical.label } }));
+    await vi.waitFor(() => expect(attempts.length).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(active).toBe(0));
+    expect(scans).toEqual([{ count: 32, results: 32 }]);
+    expect(attempts).toEqual(ordered.slice(0, 8));
+    expect(peak).toBe(1);
+    await vi.waitFor(() => expect(titles()).toEqual(["Legacy budget 7"]));
+    expect(call).not.toHaveBeenCalled();
+  } finally { scan.mockRestore(); readAlias.mockRestore(); }
+});
+
+it("leaves legacy matches beyond the bounded key window for normal canonical recovery", async () => {
+  durable.owns = true;
+  const canonical = { project_id: "proj-1", state: "open", label: "zzz" };
+  for (let index = 0; index < 40; index += 1) {
+    await cache.writeCached(trackerCache.tasksQueryAddress("dev-1", "proj-1", { ...canonical, label: `A${String(index).padStart(3, "0")}` }), { tasks: [] });
+  }
+  await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", { ...canonical, label: "Zzz" },
+    trackerCache.tasksRecord([task({ id: "outside-window", title: "Outside the fallback window", labels: ["Zzz"] })], columns(), 5000));
+  await mount();
+  const { uiAddress, updateUiState } = await import("../src/core/localUiState.js");
+  await updateUiState(uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" }),
+    () => ({ view: "list", filters: { state: "open", label: canonical.label } }));
+  await flush();
+  expect(titles()).toEqual([]);
+  expect(notifyError).not.toHaveBeenCalled();
+  expect(durable.wake).toHaveBeenCalled();
+  await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", canonical,
+    trackerCache.tasksRecord([task({ id: "canonical-window", title: "Canonical recovery result", labels: ["Zzz"] })], columns(), 6000));
+  await vi.waitFor(() => expect(titles()).toEqual(["Canonical recovery result"]));
+});
+
+it.each(["query", "whole list"])("continues after rejected display hydration from the %s subscription", async (source) => {
+  durable.owns = true;
+  call = vi.fn(() => new Promise(() => {}));
+  await mount();
+  durable.wake.mockClear();
+  expect(titles()).toEqual([]);
+  const failure = new Error("Subscribed unread display read failed");
+  const unhandled = [];
+  const noteUnhandled = (error) => { unhandled.push(error); };
+  process.on("unhandledRejection", noteUnhandled);
+  const read = cache.readCachedMany;
+  let waiting = false;
+  let rejectHeld;
+  const held = new Promise((_, reject) => { rejectHeld = reject; });
+  const spy = vi.spyOn(cache, "readCachedMany").mockImplementation((addresses) => {
+    if (!waiting && addresses.length === 4 && addresses[0].kind === "task-content-generation") {
+      waiting = true;
+      return held;
+    }
+    return read(addresses);
+  });
+  try {
+    const record = trackerCache.tasksRecord([task({ id: "subscribed-hydration", title: "Subscribed cached task", labels: ["hydrated-label"] })], columns(), 100);
+    if (source === "query") await trackerCache.writeTasksQueryRecord("dev-1", "proj-1",
+      { project_id: "proj-1", state: "open" }, record);
+    else await cache.writeCached(trackerCache.tasksAddress("dev-1", "proj-1"), record);
+    await vi.waitFor(() => expect(waiting).toBe(true));
+    await flush();
+    expect(titles()).toEqual([]);
+    rejectHeld(failure);
+    await flush();
+    expect(unhandled).toEqual([]);
+    expect(notifyError).toHaveBeenCalledWith("Could not read this project's tasks", failure.message);
+    expect(notifyError).toHaveBeenCalledTimes(1);
+    expect(titles()).toEqual(["Subscribed cached task"]);
+    expect(durable.wake.mock.calls.some(([deviceId, accepts]) => deviceId === "dev-1"
+      && accepts({ kind: "task", task_id: "subscribed-hydration" }))).toBe(true);
+    await openMenu("label");
+    expect(menuLabels("label")).toContain("hydrated-label");
+  } finally {
+    spy.mockRestore();
+    process.off("unhandledRejection", noteUnhandled);
+  }
+});
+
 beforeEach(async () => {
   vi.resetModules();
+  durable.owns = false; durable.wake.mockClear(); durable.release.mockClear(); durable.register.mockClear();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   watchers = [];
@@ -1770,4 +2065,99 @@ describe("waiting assignment picker context (#564 integration)", () => {
     host.querySelector("[data-task-assign]").click();
     expect(openAssigneePicker.mock.calls.at(-1)[0]).toMatchObject({ deviceId: "dev-1", projectId: "proj-1" });
   });
+});
+
+it("durable ownership registers the query and prevents mounted legacy list writes", async () => {
+  durable.owns = true;
+  await mount();
+  expect(durable.register).toHaveBeenCalledWith(expect.objectContaining({ deviceId: "dev-1", projectId: "proj-1",
+    scope: expect.objectContaining({ kind: "project_tasks", project_id: "proj-1" }) }));
+  expect(listed("tasks.list")).toHaveLength(0);
+  expect(durable.wake).toHaveBeenCalled();
+  pane.dispose(); pane = null;
+  expect(durable.release).toHaveBeenCalled();
+});
+
+it.each(["group toggle", "show more", "dashboard tab"])("keeps the mounted durable query registered through a real %s UI-state save", async (interaction) => {
+  durable.owns = true;
+  const tasks = Array.from({ length: 30 }, (_, index) => task({ id: `persisted-${index}`, number: 30 - index, title: `Saved task ${index}` }));
+  await trackerCache.writeTasksRecord("dev-1", "proj-1", { tasks, columns: columns() });
+  call = vi.fn(() => new Promise(() => {}));
+  await mount({ view: interaction === "dashboard tab" ? "dashboard" : "list" });
+  const registrations = durable.register.mock.calls.length, releases = durable.release.mock.calls.length;
+  const { uiAddress } = await import("../src/core/localUiState.js");
+  const { readUiRecord } = await import("../src/core/localUiStore.js");
+  const address = uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" });
+  const controls = {
+    "group toggle": { selector: '[data-task-group-toggle="rest"]', saved: (value) => value.collapsedGroups.includes("rest") },
+    "show more": { selector: "[data-task-more]", saved: (value) => value.visibleCount === 50 },
+    "dashboard tab": { selector: '[data-dashboard-tab="active"]', saved: (value) => value.dashboardTab === "active" },
+  };
+  const control = controls[interaction];
+  expect(host.querySelector(control.selector)).not.toBeNull();
+  host.querySelector(control.selector).click();
+  await vi.waitFor(async () => expect(control.saved((await readUiRecord(address)).value)).toBe(true));
+  await flush();
+  expect(durable.register).toHaveBeenCalledTimes(registrations);
+  expect(durable.release).toHaveBeenCalledTimes(releases);
+});
+
+it("registers a changed durable query before releasing the previous mounted query", async () => {
+  durable.owns = true;
+  await mount();
+  const registrations = durable.register.mock.calls.length, releases = durable.release.mock.calls.length;
+  await chooseFilter("state", "closed");
+  expect(durable.register).toHaveBeenCalledTimes(registrations + 1);
+  expect(durable.release).toHaveBeenCalledTimes(releases + 1);
+  expect(durable.register.mock.invocationCallOrder.at(-1)).toBeLessThan(durable.release.mock.invocationCallOrder.at(-1));
+});
+it("repaints mounted board columns from a columns-only cache publication", async () => {
+  const held = task({ id: "held-board-task", status: "backlog" });
+  await trackerCache.writeTasksRecord("dev-1", "proj-1", { tasks: [held], columns: columns() });
+  call = vi.fn(() => new Promise(() => {}));
+  await mount({ view: "board" });
+  expect(columnNames()).toEqual(["Backlog", "Ready", "In progress", "In review", "Done"]);
+  call.mockClear();
+  const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+  await cache.writeCached(projectColumnsAddress("dev-1", "proj-1"), {
+    columns: [{ id: "custom", name: "New column" }, { id: "backlog", name: "Queued" }], columns_read_order: Date.now(),
+  });
+  await vi.waitFor(() => expect(columnNames()).toEqual(["New column", "Queued"]), { timeout: 5000 });
+  expect(cardsIn("backlog")).toEqual([held.id]);
+  expect(listed("tasks.list")).toHaveLength(0);
+});
+it("keeps an offline filtered catalogue through columns-only updates without a whole-list record", async () => {
+  durable.owns = true;
+  const bug = task({ id: "cached-bug", number: 8, title: "Cached bug", status: "backlog", labels: ["bug"] });
+  const docs = task({ id: "cached-docs", number: 7, title: "Cached docs", status: "backlog", labels: ["docs"] });
+  await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", { project_id: "proj-1", state: "open" },
+    trackerCache.tasksRecord([bug, docs], columns(), 100));
+  await mount();
+  expect(titles()).toEqual(["Cached bug", "Cached docs"]);
+  await openMenu("label");
+  expect(menuLabels("label")).toContain("bug");
+  menuPress("label").click();
+  await flush();
+  const whole = trackerCache.tasksAddress("dev-1", "proj-1");
+  expect(await cache.readCanonicalCached(whole)).toBeUndefined();
+  const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+  await cache.writeCached(projectColumnsAddress("dev-1", "proj-1"), {
+    columns: [{ id: "custom", name: "New column" }, { id: "backlog", name: "Queued" }], columns_read_order: Date.now(),
+  });
+  await openMenu("status");
+  await vi.waitFor(() => expect(menuLabels("status")).toContain("Queued"));
+  await openMenu("label");
+  expect(menuLabels("label")).toContain("bug");
+  expect(menuLabels("label")).toContain("docs");
+  host.querySelector('[data-task-view="board"]').click();
+  await flush();
+  expect(columnNames()).toEqual(["New column", "Queued"]);
+  expect(cardsIn("backlog")).toEqual([bug.id, docs.id]);
+  await chooseFilter("label", "bug");
+  expect(cardsIn("backlog")).toEqual([bug.id]);
+  host.querySelector('[data-task-view="list"]').click();
+  await flush();
+  expect(titles()).toEqual(["Cached bug"]);
+  expect(await cache.readCanonicalCached(whole)).toBeUndefined();
+  expect(call).not.toHaveBeenCalled();
 });

@@ -35,27 +35,49 @@ impl Vault {
     /// A pre-existing private directory never receives a replacement key,
     /// including after an interrupted initialization. Recovery is explicit.
     pub fn open(state_root: &Path, has_records: bool) -> Result<Self> {
-        let root = io(fs::open(
-            state_root,
-            READ_FLAGS | OFlags::DIRECTORY,
-            Mode::empty(),
-        ))?;
+        let root = open_state_root(state_root)?;
         let (directory, created) = open_directory(&root, has_records)?;
         let key = if created {
-            let key = StackByteArray::<32>::gen();
-            publish(&directory, KEY_NAME, key.as_slice(), true)?;
-            key
+            create_key(&directory)?
         } else {
             load_key(&directory)?
         };
+        Ok(Self::from_key(directory, key))
+    }
+
+    /// Stable, non-secret identifier for comparing the dedicated key with
+    /// durably persisted metadata. It is not an authorization credential.
+    pub fn key_id(&self) -> String {
+        self.key_id
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    /// Explicit destructive recovery after the grant-retirement barrier.
+    ///
+    /// The trusted caller MUST durably retire every existing grant before
+    /// calling this method, and prevent new admission until it completes.
+    /// This filesystem primitive cannot certify the database transaction.
+    /// Strict `open` never invokes recovery or replaces a missing/corrupt key.
+    /// An interrupted recovery can be retried after the same durable barrier.
+    pub fn reinitialize_after_retirement(state_root: &Path) -> Result<Self> {
+        let root = open_state_root(state_root)?;
+        let (directory, _) = open_directory(&root, false)?;
+        erase_retired_files(&directory)?;
+        let key = create_key(&directory)?;
+        Ok(Self::from_key(directory, key))
+    }
+
+    fn from_key(directory: File, key: StackByteArray<32>) -> Self {
         let digest = Sha256::digest(key.as_slice());
         let mut key_id = [0; KEY_ID_BYTES];
         key_id.copy_from_slice(&digest[..KEY_ID_BYTES]);
-        Ok(Self {
+        Self {
             directory,
             key,
             key_id,
-        })
+        }
     }
 
     pub fn write(&self, context: &SecretContext, value: &SecretValue) -> Result<()> {
@@ -128,18 +150,7 @@ impl Vault {
     /// Only the vault's generated blob and temporary-file namespaces are
     /// returned. Key files are never candidates for lifecycle deletion.
     pub fn entries(&self) -> Result<Vec<String>> {
-        validate_private(&self.directory, FileType::Directory, 0o700)?;
-        let mut entries = io(fs::Dir::read_from(&self.directory))?;
-        let mut names = Vec::new();
-        while let Some(entry) = entries.read() {
-            let entry = io(entry)?;
-            if let Ok(name) = entry.file_name().to_str() {
-                if validate_cleanup_name(name).is_ok() {
-                    names.push(name.to_owned());
-                }
-            }
-        }
-        Ok(names)
+        generated_entries(&self.directory)
     }
 
     fn cipher(&self) -> Result<Aes256Gcm> {
@@ -174,6 +185,60 @@ impl Vault {
             return Err(SecretError::Unavailable);
         }
         Ok(())
+    }
+}
+
+fn open_state_root(state_root: &Path) -> Result<OwnedFd> {
+    io(fs::open(
+        state_root,
+        READ_FLAGS | OFlags::DIRECTORY,
+        Mode::empty(),
+    ))
+}
+
+fn create_key(directory: &File) -> Result<StackByteArray<32>> {
+    let key = StackByteArray::<32>::gen();
+    publish(directory, KEY_NAME, key.as_slice(), true)?;
+    Ok(key)
+}
+
+fn generated_entries(directory: &File) -> Result<Vec<String>> {
+    validate_private(directory, FileType::Directory, 0o700)?;
+    let mut entries = io(fs::Dir::read_from(directory))?;
+    let mut names = Vec::new();
+    while let Some(entry) = entries.read() {
+        let entry = io(entry)?;
+        if let Ok(name) = entry.file_name().to_str() {
+            if validate_cleanup_name(name).is_ok() {
+                names.push(name.to_owned());
+            }
+        }
+    }
+    Ok(names)
+}
+
+fn erase_retired_files(directory: &File) -> Result<()> {
+    // Validate the key before changing anything. Recovery accepts damaged
+    // contents only in an owned, private, singly linked regular file (or absence).
+    // NONBLOCK and NOFOLLOW refuse FIFOs and links without opening targets.
+    match private_file(directory, KEY_NAME) {
+        Ok(_) => {}
+        Err(SecretError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    for name in generated_entries(directory)? {
+        unlink_retired_entry(directory, &name)?;
+    }
+    unlink_retired_entry(directory, KEY_NAME)?;
+    // All old names must be durably gone before the fresh key is published.
+    directory.sync_all()?;
+    Ok(())
+}
+
+fn unlink_retired_entry(directory: &File, name: &str) -> Result<()> {
+    match fs::unlinkat(directory, name, AtFlags::empty()) {
+        Ok(()) | Err(rustix::io::Errno::NOENT) => Ok(()),
+        Err(error) => Err(SecretError::Io(error.into())),
     }
 }
 
@@ -216,7 +281,7 @@ fn private_file(directory: &File, name: &str) -> Result<File> {
     Ok(file)
 }
 
-fn validate_private(file: &File, file_type: FileType, permissions: u32) -> Result<()> {
+fn validate_private(file: &File, file_type: FileType, permissions: fs::RawMode) -> Result<()> {
     let stat = io(fs::fstat(file))?;
     // SAFETY: geteuid has no arguments or memory preconditions.
     let owner = unsafe { libc::geteuid() };

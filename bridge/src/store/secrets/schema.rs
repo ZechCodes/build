@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS secret_records (
     attached_at INTEGER,
     expires_at INTEGER,
     revoked_at INTEGER,
+    revocation_reason TEXT CHECK (revocation_reason IS NULL OR revocation_reason IN ('key_lost','revoked','expired')),
     revision INTEGER NOT NULL CHECK (revision >= 1),
     message_operation_id TEXT,
     upload_request_id TEXT NOT NULL,
@@ -39,6 +40,12 @@ CREATE INDEX IF NOT EXISTS secrets_agent
     ON secret_records(grant_agent_id) WHERE grant_scope='agent' AND revoked_at IS NULL;
 CREATE INDEX IF NOT EXISTS secrets_project
     ON secret_records(grant_project_id) WHERE grant_scope='project' AND revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS secrets_unretired
+    ON secret_records(id) WHERE revoked_at IS NULL;
+CREATE TABLE IF NOT EXISTS secret_vault_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton=1),
+    active_key_id TEXT
+);
 CREATE TABLE IF NOT EXISTS secret_clock (
     singleton INTEGER PRIMARY KEY CHECK (singleton=1),
     high_water INTEGER NOT NULL CHECK (high_water >= 0),
@@ -50,3 +57,18 @@ CREATE TABLE IF NOT EXISTS secret_bindings (
     attached_at INTEGER NOT NULL
 );
 "#;
+
+/// Schema 24 was unadvertised before key-loss recovery was revised. Upgrade
+/// those same-version databases too; an absent identity is never adopted while
+/// unretired grants remain.
+pub(in crate::store) fn initialize(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(SCHEMA)?;
+    let columns = connection
+        .prepare("PRAGMA table_info(secret_records)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !columns.iter().any(|column| column == "revocation_reason") {
+        connection.execute_batch("ALTER TABLE secret_records ADD COLUMN revocation_reason TEXT CHECK (revocation_reason IS NULL OR revocation_reason IN ('key_lost','revoked','expired'))")?;
+    }
+    Ok(())
+}

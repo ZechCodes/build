@@ -155,6 +155,7 @@ mod tests {
             attached_at: None,
             expires_at: None,
             revoked_at: None,
+            revocation_reason: None,
             revision: 1,
             message_operation_id: None,
             upload_request_id: uuid::Uuid::new_v4().to_string(),

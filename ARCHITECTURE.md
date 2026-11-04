@@ -1171,8 +1171,12 @@ refuses a target with a vault, including forced rollback backups. Configuration,
 restored project/workspace roots and dynamic source admission also refuse trees
 that overlap the vault; persisted updater jobs are checked before any store
 backup or rollback. Restored references can therefore be unavailable; this
-foundation refuses daemon startup if their vault key is absent, pending explicit
-recovery or retirement. See [device vault storage and
+foundation keeps the daemon available if their vault key is missing or corrupt,
+first durably retiring affected grants as `key_lost`. An active key identifier
+in metadata detects same-length substitution. Explicit safe key rotation occurs
+only after retirement; old IDs remain unavailable and new IDs can use a fresh
+key. Failed retirement/cleanup closes secret access without substituting a key.
+Recovery logs one bounded count-only line. See [device vault storage and
 lifetime](docs/device-secret-vault.md) for the file format, limits and clock
 policy. Release authority/audit and sealed upload validation belong to the
 subsequent slices and must precede any external exposure.

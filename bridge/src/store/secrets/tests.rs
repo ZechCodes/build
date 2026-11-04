@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 const NOW: i64 = 1_800_000_000;
 
-fn record(creator: &str, grant: GrantScope) -> SecretRecord {
+pub(super) fn record(creator: &str, grant: GrantScope) -> SecretRecord {
     SecretRecord {
         context: SecretContext {
             id: format!("sec_{}", uuid::Uuid::new_v4()),
@@ -24,6 +24,7 @@ fn record(creator: &str, grant: GrantScope) -> SecretRecord {
         attached_at: None,
         expires_at: None,
         revoked_at: None,
+        revocation_reason: None,
         revision: 1,
         message_operation_id: None,
         upload_request_id: uuid::Uuid::new_v4().to_string(),
@@ -32,7 +33,7 @@ fn record(creator: &str, grant: GrantScope) -> SecretRecord {
     }
 }
 
-fn agent_grant() -> GrantScope {
+pub(super) fn agent_grant() -> GrantScope {
     GrantScope::Agent {
         agent_id: "synthetic-agent".into(),
         conversation_id: "synthetic-conversation".into(),
@@ -177,13 +178,21 @@ fn stage_boundary_and_ttl_overflow_refuse_without_partial_claim() {
     let first = record("synthetic-user", agent_grant());
     writer.secrets_stage(&first).unwrap();
     assert!(writer
-        .secrets_attach(&[first.context.id.clone()], "operation", NOW + 86400)
+        .secrets_attach(
+            std::slice::from_ref(&first.context.id),
+            "operation",
+            NOW + 86400
+        )
         .is_err());
     let mut second = record("synthetic-user", agent_grant());
     second.context.ttl_seconds = Some(i64::MAX);
     writer.secrets_stage(&second).unwrap();
     assert!(writer
-        .secrets_attach(&[second.context.id.clone()], "operation", NOW + 1)
+        .secrets_attach(
+            std::slice::from_ref(&second.context.id),
+            "operation",
+            NOW + 1
+        )
         .is_err());
     assert_eq!(
         writer

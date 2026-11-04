@@ -49,6 +49,7 @@ pub struct SecretRecord {
     pub attached_at: Option<i64>,
     pub expires_at: Option<i64>,
     pub revoked_at: Option<i64>,
+    pub revocation_reason: Option<String>,
     pub revision: i64,
     pub message_operation_id: Option<String>,
     pub upload_request_id: String,

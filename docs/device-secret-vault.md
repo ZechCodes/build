@@ -15,7 +15,14 @@ The directory is private (0700); key and encrypted files are private
 regular files (0600), accessed relative to a pinned directory descriptor with
 no-follow checks. The dedicated random 256-bit `vault.key` is independent of
 identity, transport and MCP keys. Missing, corrupt, insecure or substituted key
-files fail closed; existing state never triggers silent key regeneration.
+files fail closed. The metadata stores the active key identifier, so a changed
+32-byte key also fails closed. Startup durably retires affected grants with
+`key_lost`, preserving normal bridge operation. Only after every old grant is
+retired may explicit cleanup create/register a fresh random key; old contexts
+remain unavailable. An unknown key is never adopted, even after interrupted
+recovery with zero lifetime records. A single bounded startup diagnostic gives
+only the affected count. If retirement or safe cleanup fails, secret access
+stays unavailable and the key is not substituted for unretired grants.
 
 Each `sec_<canonical UUID>` file has a versioned header, vault key identifier,
 fresh random nonce, AES-256-GCM ciphertext and tag. A domain-separated canonical
@@ -62,10 +69,12 @@ internal composition/tests; calling it and posting a message in two independent
 commits is not a valid secret-bearing send.
 
 Build's database backup/export copies metadata only, excluding vault files and
-the key. In this foundation, daemon construction propagates vault-open failure:
-a restored database containing secret records requires explicit vault recovery
-or retirement before startup; it does not generate a new key. A later recovery
-interface can keep unrelated history available without enabling value reads. State migration excludes source vaults and refuses any existing target
+the key. Restoring metadata without the vault starts the daemon, retires old
+records as `key_lost` and makes old IDs return the same unavailable error. A
+new key can serve new secrets after that durable retirement; it never serves
+the old grants. The same policy covers corrupt regular keys. Unsafe filesystem
+entries or failed retirement keep secret access unavailable while the rest of
+the bridge remains usable. State migration excludes source vaults and refuses any existing target
 vault even with `--force`, so it cannot copy a key into staging or a rollback
 backup. Restored metadata can refer to unavailable values. User-created disk
 snapshots are outside Build's exclusion. Unlink is logical deletion, not promised

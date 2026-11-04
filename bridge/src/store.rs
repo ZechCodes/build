@@ -419,7 +419,7 @@ impl Store {
         retention::upgrade_thread_retention_indexes(&conn)?;
         retention::upgrade_agent_conversation_index(&conn)?;
         conn.execute_batch(SCHEMA)?;
-        conn.execute_batch(secrets::SCHEMA)?;
+        secrets::initialize(&conn)?;
         ensure_operation_receipt_columns(&conn)?;
         retention::ensure_upload_retention_columns(&conn)?;
         let journal_incarnation = mutations::initialize(&conn)?;

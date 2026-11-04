@@ -41,7 +41,7 @@ impl StoreWriter {
         }
         durable(self, |tx| {
             let _ = records::required(tx, id)?;
-            tx.execute("UPDATE secret_records SET revoked_at=?2,revision=revision+1 WHERE id=?1 AND revoked_at IS NULL", params![id,now])?;
+            tx.execute("UPDATE secret_records SET revoked_at=?2,revocation_reason='revoked',revision=revision+1 WHERE id=?1 AND revoked_at IS NULL", params![id,now])?;
             records::required(tx, id)
         })
     }
@@ -85,7 +85,10 @@ pub(super) fn observe_in(tx: &Transaction<'_>, now: i64) -> Result<()> {
     Ok(())
 }
 
-fn durable<T>(writer: &StoreWriter, work: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+pub(super) fn durable<T>(
+    writer: &StoreWriter,
+    work: impl FnOnce(&Transaction<'_>) -> Result<T>,
+) -> Result<T> {
     let mut connection = writer.connection();
     let previous: i64 = connection.pragma_query_value(None, "synchronous", |row| row.get(0))?;
     connection.pragma_update(None, "synchronous", "FULL")?;
@@ -113,6 +116,7 @@ fn validate_stage(record: &SecretRecord) -> Result<()> {
         && record.attached_at.is_none()
         && record.expires_at.is_none()
         && record.revoked_at.is_none()
+        && record.revocation_reason.is_none()
         && record.message_operation_id.is_none()
         && record.blob_present;
     let valid_digest = record.upload_digest.len() == 64

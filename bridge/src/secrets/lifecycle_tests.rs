@@ -67,7 +67,7 @@ fn stage(service: &SecretService, ttl: Option<i64>) -> SecretRecord {
 fn attach(service: &SecretService, record: &SecretRecord) {
     service
         .attach(
-            &[record.context.id.clone()],
+            std::slice::from_ref(&record.context.id),
             &format!("synthetic-message-{}", record.context.id),
         )
         .unwrap();
@@ -164,6 +164,8 @@ fn startup_sweeps_orphans_and_staged_expiry_without_touching_live_blobs() {
     service
         .inner
         .vault
+        .as_ref()
+        .unwrap()
         .write(
             &orphan,
             &SecretValue::new(b"synthetic-orphan".to_vec()).unwrap(),
@@ -226,11 +228,14 @@ fn missing_key_and_device_identity_change_fail_closed() {
     assert!(service.read(&record.context.id).is_err());
     drop(service);
     std::fs::remove_file(dir.path().join("secrets/vault.key")).unwrap();
-    assert!(
+    let recovered =
         SecretService::open_with_clock(dir.path(), "synthetic-device", store.writer(), clock)
-            .is_err()
-    );
-    assert!(!dir.path().join("secrets/vault.key").exists());
+            .unwrap();
+    assert!(matches!(
+        recovered.read(&record.context.id),
+        Err(SecretError::Unavailable)
+    ));
+    assert!(dir.path().join("secrets/vault.key").exists());
 }
 #[test]
 fn four_jobs_are_admitted_without_eviction() {
@@ -295,7 +300,10 @@ fn monotonic_stage_expiry_is_durable_across_restart_with_frozen_utc() {
         .mono
         .store(STAGED_LIFETIME_SECONDS as u64, Ordering::SeqCst);
     assert!(service
-        .attach(&[record.context.id.clone()], "synthetic-expired-stage")
+        .attach(
+            std::slice::from_ref(&record.context.id),
+            "synthetic-expired-stage"
+        )
         .is_err());
     drop(service);
     clock.mono.store(0, Ordering::SeqCst);
@@ -303,7 +311,10 @@ fn monotonic_stage_expiry_is_durable_across_restart_with_frozen_utc() {
         SecretService::open_with_clock(dir.path(), "synthetic-device", store.writer(), clock)
             .unwrap();
     assert!(service
-        .attach(&[record.context.id.clone()], "synthetic-expired-stage")
+        .attach(
+            std::slice::from_ref(&record.context.id),
+            "synthetic-expired-stage"
+        )
         .is_err());
 }
 
@@ -322,4 +333,111 @@ fn monotonic_expiry_during_rollback_remains_retired_after_clock_recovery() {
         SecretService::open_with_clock(dir.path(), "synthetic-device", store.writer(), clock)
             .unwrap();
     assert!(service.read(&record.context.id).is_err());
+}
+
+#[test]
+fn key_loss_recovers_storage_only_after_retiring_old_contexts() {
+    for corrupt in [false, true] {
+        let (dir, store, clock, service) = fixture();
+        let record = stage(&service, None);
+        attach(&service, &record);
+        let key = dir.path().join("secrets/vault.key");
+        let original = std::fs::read(&key).unwrap();
+        drop(service);
+        if corrupt {
+            std::fs::write(&key, [42u8; 32]).unwrap();
+        } else {
+            std::fs::remove_dir_all(dir.path().join("secrets")).unwrap();
+        }
+        let recovered =
+            SecretService::open_with_clock(dir.path(), "synthetic-device", store.writer(), clock)
+                .unwrap();
+        assert!(matches!(
+            recovered.read(&record.context.id),
+            Err(SecretError::Unavailable)
+        ));
+        let retired = store
+            .writer()
+            .secret_record(&record.context.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retired.revocation_reason.as_deref(), Some("key_lost"));
+        assert!(retired.revoked_at.is_some());
+        assert!(!retired.blob_present);
+        assert_ne!(std::fs::read(&key).unwrap(), original);
+        let new = stage(&recovered, None);
+        attach(&recovered, &new);
+        assert_eq!(
+            recovered.read(&new.context.id).unwrap().as_bytes(),
+            b"synthetic-value-only"
+        );
+        assert!(matches!(
+            recovered.read(&record.context.id),
+            Err(SecretError::Unavailable)
+        ));
+    }
+}
+
+#[test]
+fn retirement_failure_keeps_bad_key_and_all_secret_access_unavailable() {
+    let (dir, store, clock, service) = fixture();
+    let record = stage(&service, None);
+    attach(&service, &record);
+    let key = dir.path().join("secrets/vault.key");
+    drop(service);
+    std::fs::write(&key, b"synthetic damaged key").unwrap();
+    store.writer_for_test().execute_batch("CREATE TRIGGER synthetic_refuse_key_loss BEFORE UPDATE OF revoked_at ON secret_records BEGIN SELECT RAISE(ABORT,'synthetic retirement failure'); END;").unwrap();
+    let unavailable = SecretService::open_with_clock(
+        dir.path(),
+        "synthetic-device",
+        store.writer(),
+        clock.clone(),
+    )
+    .unwrap();
+    assert!(matches!(
+        unavailable.read(&record.context.id),
+        Err(SecretError::Unavailable)
+    ));
+    assert!(matches!(
+        unavailable.stage(
+            context(None),
+            SecretValue::new(b"synthetic".to_vec()).unwrap(),
+            uuid::Uuid::new_v4().to_string(),
+            "b".repeat(64)
+        ),
+        Err(SecretError::Unavailable)
+    ));
+    assert_eq!(std::fs::read(&key).unwrap(), b"synthetic damaged key");
+    assert!(store
+        .writer()
+        .secret_record(&record.context.id)
+        .unwrap()
+        .unwrap()
+        .revoked_at
+        .is_none());
+    drop(unavailable);
+    store
+        .writer_for_test()
+        .execute_batch("DROP TRIGGER synthetic_refuse_key_loss")
+        .unwrap();
+    let recovered =
+        SecretService::open_with_clock(dir.path(), "synthetic-device", store.writer(), clock)
+            .unwrap();
+    assert_eq!(
+        store
+            .writer()
+            .secret_record(&record.context.id)
+            .unwrap()
+            .unwrap()
+            .revocation_reason
+            .as_deref(),
+        Some("key_lost")
+    );
+    assert!(matches!(
+        recovered.read(&record.context.id),
+        Err(SecretError::Unavailable)
+    ));
+    let new = stage(&recovered, None);
+    attach(&recovered, &new);
+    assert!(recovered.read(&new.context.id).is_ok());
 }

@@ -4,7 +4,7 @@ use crate::secrets::{
 use crate::store::StoreWriter;
 use rusqlite::{Connection, OptionalExtension, Row};
 
-pub(super) const COLUMNS: &str = "id,device_id,creator,name,ttl_seconds,grant_scope,grant_agent_id,grant_conversation_id,grant_generation,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,stage_draft_id,created_at,attached_at,expires_at,revoked_at,revision,message_operation_id,upload_request_id,upload_digest,blob_present";
+pub(super) const COLUMNS: &str = "id,device_id,creator,name,ttl_seconds,grant_scope,grant_agent_id,grant_conversation_id,grant_generation,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,stage_draft_id,created_at,attached_at,expires_at,revoked_at,revision,message_operation_id,upload_request_id,upload_digest,blob_present,revocation_reason";
 
 impl StoreWriter {
     pub fn secret_record(&self, id: &str) -> Result<Option<SecretRecord>> {
@@ -27,7 +27,8 @@ impl StoreWriter {
         Ok(records)
     }
 
-    /// Tombstones also prevent creating a replacement key after every blob is gone.
+    /// Includes retained tombstones. Recovery authority instead comes from the
+    /// unretired-grant barrier and persisted active key identity.
     pub fn secrets_have_records(&self) -> Result<bool> {
         Ok(self.connection().query_row(
             "SELECT EXISTS(SELECT 1 FROM secret_records)",
@@ -98,6 +99,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<SecretRecord> {
         attached_at: row.get(15)?,
         expires_at: row.get(16)?,
         revoked_at: row.get(17)?,
+        revocation_reason: row.get(23)?,
         revision: row.get(18)?,
         message_operation_id: row.get(19)?,
         upload_request_id: row.get(20)?,
@@ -113,6 +115,7 @@ pub(super) fn required(connection: &Connection, id: &str) -> Result<SecretRecord
 
 fn validate_loaded(record: &SecretRecord) -> Result<()> {
     record.context.validate()?;
+    validate_revocation_reason(record)?;
     if record.created_at < 0 || record.revision < 1 || record.revoked_at.is_some_and(|at| at < 0) {
         return Err(SecretError::Unavailable);
     }
@@ -139,6 +142,17 @@ fn validate_loaded(record: &SecretRecord) -> Result<()> {
         .transpose()?;
     if record.expires_at != expected_expiry {
         return Err(SecretError::Unavailable);
+    }
+    Ok(())
+}
+
+fn validate_revocation_reason(record: &SecretRecord) -> Result<()> {
+    if let Some(reason) = &record.revocation_reason {
+        if record.revoked_at.is_none()
+            || !matches!(reason.as_str(), "key_lost" | "revoked" | "expired")
+        {
+            return Err(SecretError::Unavailable);
+        }
     }
     Ok(())
 }

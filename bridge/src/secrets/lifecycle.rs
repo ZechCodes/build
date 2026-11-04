@@ -13,7 +13,7 @@ struct Inner {
     state_root: PathBuf,
     device_id: String,
     writer: StoreWriter,
-    vault: Vault,
+    vault: Option<Vault>,
     state: Mutex<ClockState>,
     jobs: Arc<tokio::sync::Semaphore>,
 }
@@ -50,8 +50,9 @@ impl SecretService {
         if device_id.is_empty() || device_id.len() > 128 {
             return Err(SecretError::Invalid);
         }
-        let vault = Vault::open(state_root, writer.secrets_have_records()?)?;
         let highwater = writer.secret_clock_highwater()?;
+        let recovery_time = clock.wall_seconds().max(highwater).max(0);
+        let vault = super::recovery::open_vault(state_root, &writer, recovery_time)?;
         let service = Self {
             inner: Arc::new(Inner {
                 state_root: state_root.to_path_buf(),
@@ -68,6 +69,10 @@ impl SecretService {
 
     pub(crate) fn state_root(&self) -> &Path {
         &self.inner.state_root
+    }
+
+    fn vault(&self) -> Result<&Vault> {
+        self.inner.vault.as_ref().ok_or(SecretError::Unavailable)
     }
 
     fn state(&self) -> MutexGuard<'_, ClockState> {
@@ -92,6 +97,7 @@ impl SecretService {
         upload_request_id: String,
         upload_digest: String,
     ) -> Result<SecretRecord> {
+        let vault = self.vault()?;
         let _job = self.job()?;
         context.validate()?;
         if context.device_id != self.inner.device_id {
@@ -112,6 +118,7 @@ impl SecretService {
             attached_at: None,
             expires_at: None,
             revoked_at: None,
+            revocation_reason: None,
             revision: 1,
             message_operation_id: None,
             upload_request_id,
@@ -119,7 +126,7 @@ impl SecretService {
             blob_present: true,
         };
         self.inner.writer.secrets_stage_preflight(&record)?;
-        self.inner.vault.write(&record.context, &value)?;
+        vault.write(&record.context, &value)?;
         // A failed SQL commit deliberately leaves an inaccessible orphan. Only
         // the serialized sweeper removes it; no accepted value can be unlinked.
         self.inner.writer.secrets_stage(&record)?;
@@ -162,6 +169,7 @@ impl SecretService {
     }
 
     pub fn read(&self, id: &str) -> Result<SecretValue> {
+        let vault = self.vault()?;
         let _job = self.job()?;
         validate_id(id)?;
         let mut state = self.state();
@@ -182,7 +190,7 @@ impl SecretService {
         if observation.rollback && record.context.ttl_seconds.is_some() {
             return Err(SecretError::ClockRollback);
         }
-        self.inner.vault.read(&record.context)
+        vault.read(&record.context)
     }
 
     fn require_unexpired(
@@ -216,7 +224,10 @@ impl SecretService {
     }
 
     fn delete_record(&self, record: &SecretRecord, state: &mut ClockState) -> bool {
-        if self.inner.vault.delete(&record.context.id).is_err() {
+        let Ok(vault) = self.vault() else {
+            return false;
+        };
+        if vault.delete(&record.context.id).is_err() {
             return false;
         }
         if self
@@ -232,6 +243,9 @@ impl SecretService {
     }
 
     pub fn sweep(&self) -> Result<SweepReport> {
+        let Some(vault) = &self.inner.vault else {
+            return Ok(SweepReport::default());
+        };
         let mut state = self.state();
         let observation = state.observe(&self.inner.writer)?;
         let records = self.inner.writer.secret_records()?;
@@ -247,9 +261,9 @@ impl SecretService {
                 }
             }
         }
-        for entry in self.inner.vault.entries()? {
+        for entry in vault.entries()? {
             if !retained.contains(entry.as_str()) {
-                if self.inner.vault.delete_entry(&entry).is_ok() {
+                if vault.delete_entry(&entry).is_ok() {
                     report.deleted += 1;
                 } else {
                     report.failed += 1;

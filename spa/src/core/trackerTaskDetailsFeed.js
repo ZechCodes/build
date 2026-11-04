@@ -1,5 +1,5 @@
 import { taskSyncScope } from "./scopedSyncRegistry.js";
-import { scopedSyncOwns, wakeScopedSync } from "./scopedSyncRuntime.js";
+import { lazyViewReadsEnabled, scopedSyncOwns, wakeScopedSync } from "./scopedSyncRuntime.js";
 // Cached task details for list and Dashboard attention. The list supplies the
 // task ids and their update stamps; the cache supplies the task and timeline.
 // Wire answers only write records. Cache announcements are the sole path by
@@ -114,12 +114,13 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
       await wakeScopedSync(deviceId, (scope) => scope.kind === "task" && scope.task_id === id);
       return;
     }
+    if (lazyViewReadsEnabled(deviceId)) return;
     if (!acceptsQueuedRead(id)) return;
     const version = versionOf(taskForRead(id));
     const context = contextFor(deviceId), identity = deviceContextIdentity(deviceId), session = deviceSession(deviceId);
     const acceptsOwner = () => !disposed && contextFor(deviceId) === context && deviceContextIdentity(deviceId) === identity
       && deviceSession(deviceId) === session && (!context || context.active())
-      && !scopedSyncOwns(deviceId, taskSyncScope(id));
+      && !lazyViewReadsEnabled(deviceId) && !scopedSyncOwns(deviceId, taskSyncScope(id));
     try {
       const [detailBasis, contentRead] = await Promise.all([
         captureTaskDetailRead(deviceId, projectId, id),
@@ -187,7 +188,7 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
   });
 
   function queueIfBehind(id, detail) {
-    if (!callRpc) return;
+    if (!callRpc || lazyViewReadsEnabled(deviceId)) return;
     const task = listed.get(id);
     if (refreshRequested.has(id)) {
       pending.set(id, versionOf(taskForRead(id)));

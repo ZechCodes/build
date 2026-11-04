@@ -13,6 +13,10 @@ import { sessionAnswering } from "./deviceSessionFixture.js";
 /** The one bridge this file's device answers through: a test that hands over
  *  a new `call` is that bridge answering differently, not another machine. */
 const bridge = { call: null };
+const lazy = vi.hoisted(() => ({ enabled: false }));
+vi.mock("../src/core/scopedSyncRuntime.js", async (original) => ({
+  ...await original(), lazyViewReadsEnabled: () => lazy.enabled,
+}));
 /** What a bridge that carries watching says in its greeting. */
 const WATCHING_GREETING = Object.freeze({ api_version: "3.24.0", capabilities: ["tasks.watching"] });
 
@@ -263,6 +267,7 @@ const pushRow = async (row = payload) => {
 };
 
 beforeEach(async () => {
+  lazy.enabled = false;
   document.body.innerHTML = bodyHtml;
   // A standing panel has a viewport; jsdom otherwise measures it as hidden.
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {
@@ -1216,7 +1221,8 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(railHost().querySelector("#railinput")).not.toBeNull();
   });
 
-  it("recovers an unwatched workspace agent whose owner is absent from the board", async () => {
+  it.each([false, true])("paints and revalidates a cached unwatched conversation under lazy ownership (%s)", async (enabled) => {
+    lazy.enabled = enabled;
     await wipeCache();
     await wipeUiRecords();
     chatRepository.railView("workspace:ws-unwatched").chooseAgent("ag-1");
@@ -1237,6 +1243,7 @@ describe("the rail over a machine that is asked nothing", () => {
     await vi.waitFor(() => expect(headWho()).toBe(TOPICS["ag-1"]));
     expect(railHost().querySelector("#railinput")).not.toBeNull();
     expect(callsTo("workspace.get")).toHaveLength(0);
+    if (enabled) await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
   });
 
   it("paints the selected agent's cached watch value and follows a push", async () => {

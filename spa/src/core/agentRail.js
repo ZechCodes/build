@@ -108,6 +108,7 @@ import { createChatRepository } from "./chatRepository.js";
 import { createAgentRailContext } from "./agentRailContext.js";
 import { hashFromRoute, routeFromHash } from "./router.js";
 import { notifyThreadReaders, registerSyncThread, syncPaneShown, threadReaderIsHere } from "./syncVisibleScopes.js";
+import { lazyViewReadsEnabled } from "./scopedSyncRuntime.js";
 import { createRailWorkItem } from "./railWorkItem.js";
 import { forgetRevisionBodies, revisionContents } from "./revisionBodies.js";
 import { readCached, subscribeCache } from "./localCache.js";
@@ -2547,7 +2548,7 @@ function mountRailOnContext(host, context, swap) {
       watchedThreadKey = generationKey;
       if (address) unwatchThread = subscribeCache(address, () => void conversation.reread());
     }
-    if (await conversation.seed()) return;
+    if (await conversation.seed() && !lazyViewReadsEnabled(cacheIdentity()?.deviceId)) return;
     const identity = cacheIdentity();
     const askedKey = conversationGenerationKey(address);
     if (!identity || !address || !askedKey) return;

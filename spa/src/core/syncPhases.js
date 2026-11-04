@@ -82,6 +82,7 @@ function foregroundRosterJobs(state, route) {
 }
 
 function foregroundJobs(state) {
+  if (state.lazyReads?.()) return lazyForegroundJobs(state);
   const route = state.route();
   const routed = route.deviceId === state.context.deviceId;
   const jobs = routed ? [...foregroundRosterJobs(state, route), ...routedJobs(state, route)] : [];
@@ -95,6 +96,19 @@ function foregroundJobs(state) {
   if (foregroundTasks(state, route, routed)) {
     jobs.push({ key: keyOf(route.projectId, "tasks-first"), read: () => state.tasks.first(route.projectId) });
   }
+  return jobs;
+}
+
+function lazyForegroundJobs(state) {
+  const visible = visibleSyncThread(state.context.deviceId);
+  const agent = visible && state.pass.rows.get(visible.entityId)?.agents?.find((agent) => agent.id === visible.agentId);
+  const jobs = agent ? [threadJob(state, visible.entityId, agent, "foreground")] : [];
+  // Mounted panes own their fenced writes, including checkouts already named
+  // by the board. A URL alone is not demand for every tab in that checkout.
+  jobs.push(...visibleSyncReads(state.context.deviceId).map(({ key, read }) => ({
+    key: keyOf(key.entityId, key.kind, key.sub || ""),
+    read: () => Promise.resolve().then(() => read(state.context.active)).catch(() => null),
+  })));
   return jobs;
 }
 
@@ -137,6 +151,7 @@ const foregroundRequest = (state, scope) => scope?.deviceId === state.context.de
 
 async function takeJob(state, job) {
   if (!state.context.active() || state.done.has(job.key)) return;
+  if (state.lazyReads?.() && !foregroundJobs(state).some((visible) => visible.key === job.key)) return;
   // Returning to an in-flight scope joins its read and still waits for the
   // cache write; dispatch alone never makes a foreground requirement complete.
   if (state.pending.has(job.key)) return state.pending.get(job.key);
@@ -200,7 +215,7 @@ async function beforeBackgroundRead(state, scope) {
 async function readInboxThreads(state, entityId) {
   await drainBackgroundStreams({
     items: (state.pass.rows.get(entityId)?.agents || []).filter((agent) => readsThread(state, entityId, agent)),
-    active: state.context.active,
+    active: () => state.context.active() && !state.lazyReads?.(),
     read: async (agent) => {
       await state.foreground();
       await takeJob(state, threadJob(state, entityId, agent, "background"));
@@ -212,17 +227,19 @@ async function readInboxThreads(state, entityId) {
 async function readInbox(state) {
   for (const entityId of state.pass.order) {
     await state.foreground();
+    if (state.lazyReads?.()) return;
     await readInboxThreads(state, entityId);
   }
   for (const projectId of projectIds(state.view).filter((id) => entityReadsGroup(state, "tasks", id))) {
     await state.foreground();
-    if (!state.context.active()) return;
+    if (!state.context.active() || state.lazyReads?.()) return;
     state.done.add(keyOf(projectId, "tasks-first"));
     await state.tasks.rest(projectId);
   }
 }
 
 async function readBackgroundEntity(state, entityId) {
+  if (state.lazyReads?.()) return true;
   const paths = new Set(["", ...await cachedSubKeys(state.context.deviceId, entityId, "tree")]);
   for (const job of scopeJobs(state, entityId, "background", paths)) {
     await state.foreground();
@@ -234,6 +251,7 @@ async function readBackgroundEntity(state, entityId) {
 }
 
 async function readBackground(state) {
+  if (state.lazyReads?.()) return true;
   const reads = (state.sourceTerminalReads || []).filter(({ entityId }) => entityReadsGroup(state, "checkout", entityId)).map(({ entityId, read }) => async () => {
     await state.foreground();
     await takeJob(state, { key: keyOf(entityId, "terminals"), read });
@@ -264,6 +282,7 @@ export function createSyncPhases(options) {
     async run() {
       stage("foreground");
       await state.foreground();
+      if (state.lazyReads?.()) return true;
       stage("rosters");
       await Promise.all((state.projectRosterReads || []).filter((read) => entityReadsGroup(state, "rosters", read.entityId)).map((read) => takeJob(state, rosterJob(read))));
       stage("foreground");

@@ -2,9 +2,10 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-const durable = vi.hoisted(() => ({ owns: false, wake: vi.fn(async () => []), release: vi.fn(), register: vi.fn() }));
+const durable = vi.hoisted(() => ({ owns: false, lazy: false, wake: vi.fn(async () => []), release: vi.fn(), register: vi.fn() }));
 vi.mock("../src/core/scopedSyncRuntime.js", () => ({
   scopedSyncOwns: () => durable.owns,
+  lazyViewReadsEnabled: () => durable.lazy,
   wakeScopedSync: (...args) => durable.wake(...args),
 }));
 vi.mock("../src/core/scopedSyncRegistry.js", () => ({
@@ -18,11 +19,24 @@ let createTrackerTaskDetailsFeed, taskRecord, readTaskRecord, writeTaskRecord;
 
 beforeEach(async () => {
   vi.resetModules();
-  durable.owns = false; durable.wake.mockClear(); durable.release.mockClear(); durable.register.mockClear();
+  durable.owns = false; durable.lazy = false; durable.wake.mockClear(); durable.release.mockClear(); durable.register.mockClear();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   ({ createTrackerTaskDetailsFeed } = await import("../src/core/trackerTaskDetailsFeed.js"));
   ({ taskRecord, readTaskRecord, writeTaskRecord } = await import("../src/core/trackerCache.js"));
+});
+
+it("keeps cached task details while scoped summaries change without reading unopened timelines", async () => {
+  const saved = taskRecord(fullTask("one", "2026-09-01T12:00:00Z"), [{ id: "cached-comment" }]);
+  await writeTaskRecord("dev", "project", "one", saved);
+  durable.lazy = true;
+  const callRpc = vi.fn();
+  const feed = createTrackerTaskDetailsFeed({ deviceId: "dev", projectId: "project", callRpc });
+  await feed.updateTasks([task("one", "2026-09-02T12:00:00Z"), task("two", "2026-09-02T12:00:00Z")]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(feed.read().get("one")?.timeline).toEqual(saved.timeline);
+  expect(callRpc).not.toHaveBeenCalled();
+  feed.dispose();
 });
 
 const task = (id, updated_at) => ({ id, updated_at });

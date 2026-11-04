@@ -3,6 +3,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 const scoped = vi.hoisted(() => ({ owns: false, wake: vi.fn(async () => []) }));
 vi.mock("../src/core/scopedSyncRuntime.js", () => ({
+  lazyViewReadsEnabled: () => false,
   deviceScopedSyncOwns: () => false,
   projectScopedSyncOwns: () => scoped.owns,
   scopedSyncWriter: () => true,

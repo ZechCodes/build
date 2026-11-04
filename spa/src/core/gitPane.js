@@ -2223,7 +2223,7 @@ export function mountGitPane(
    * held records, then validates status on mount and board notifications.
    * The review plug checks its own key, which can move independently.
    */
-  const readsForItself = !cacheScope || !syncWalksCheckout(scope);
+  const readsForItself = !cacheScope || !syncWalksCheckout(scope, cacheScope.deviceId);
   const refreshSyncRecord = async (kind, store, active) => {
     const before = await cacheRecord(kind);
     if (!active()) return;

@@ -14,6 +14,7 @@ import { BODY_PAGE_BYTES, pageFromAnswer, textPagesOf } from "./bodyPages.js";
 import { withinBytes } from "./cacheLifetime.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { coordinatedRead, rpcReadKey } from "./readRequests.js";
+import { lazyViewReadsEnabled } from "./scopedSyncRuntime.js";
 
 /** The local-cache kind one file's body is stored under, sub-keyed by path. */
 export const FILE_DIFF_RECORD_KIND = "filediff";
@@ -183,7 +184,7 @@ export function createFileDiffs({
     more: (path) => bodies.more(path),
     sync: ({ status, openPaths = null }) => enqueue(() => fill(status, { openPaths })),
     warm: (status, { budget = GIT_DIFF_MAX_PATHS } = {}) =>
-      enqueue(() => fill(status, { openPaths: new Set(statusPaths(status)), budget })),
+      enqueue(() => lazyViewReadsEnabled(deviceId) ? 0 : fill(status, { openPaths: new Set(statusPaths(status)), budget })),
     dispose: () => {
       disposed = true;
       bodies.dispose();

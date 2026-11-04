@@ -1,3 +1,5 @@
+import { lazyViewReadsEnabled } from "./scopedSyncRuntime.js";
+
 // A workspace's repositories may contain identical paths and commit IDs.
 // Keep directory-local caches and drafts separate while sharing workspace events.
 export function directoryCacheId(scope) {
@@ -30,7 +32,8 @@ export const workspaceLayoutCacheId = (workspaceId) => `workspace:${JSON.stringi
  * directory, whose synthetic cache entity is not a board row. Nothing re-lists
  * a tree or re-reads a body for those, so a surface over one reads for itself.
  */
-export function syncWalksCheckout(scope) {
+export function syncWalksCheckout(scope, deviceId = null) {
+  if (deviceId && lazyViewReadsEnabled(deviceId)) return false;
   if (!scope) return false;
   if (scope.entity_id) return true;
   if (scope.workspace_id) return false;

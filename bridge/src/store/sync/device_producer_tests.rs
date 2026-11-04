@@ -1032,3 +1032,39 @@ fn device_followup_empty_conversation_reset_publishes_the_durable_generation() {
         "reset of an empty conversation still invalidates its generation"
     );
 }
+
+#[test]
+fn device_followup_backfill_links_retained_owners_with_an_empty_roster() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let mut run = run_record("retained-upgrade");
+    run.agents[0].thread.post_agent("retained answer", None, AT);
+    store.save_run(&run).unwrap();
+    run.agents.clear();
+    store.save_run(&run).unwrap();
+    {
+        let conn = store.writer_for_test();
+        conn.execute_batch("DELETE FROM device_owner_projects; DELETE FROM device_agent_facts; DELETE FROM device_retained_sessions; DELETE FROM meta WHERE key='device_backfill_position';
+            DELETE FROM sync_projection WHERE kind='owner_session'; DELETE FROM sync_projection_keys WHERE kind='owner_session';").unwrap();
+    }
+    drop(store);
+    let store = Store::new(directory.path()).unwrap();
+    let writer = store.writer();
+    let generation = writer
+        .mark_sync_dirty("registry", "lifecycle", NOW)
+        .unwrap();
+    let markers = writer.device_registry_markers().unwrap();
+    writer
+        .reconcile_device_registry(
+            generation,
+            &Default::default(),
+            &std::collections::BTreeMap::from([("/device-producers".into(), "registry-id".into())]),
+            &markers,
+        )
+        .unwrap();
+    assert_eq!(
+        projection(&store, "owner_session", &run.id)["project_id"],
+        "registry-id",
+        "an empty roster must not lose its retained owner directory facts"
+    );
+}

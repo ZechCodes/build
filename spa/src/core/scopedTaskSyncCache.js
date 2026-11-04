@@ -4,7 +4,7 @@ import { cachedAddresses, DELETE_CACHED_RECORD, readCanonicalCached } from "./lo
 import { captureTaskContentRead, mergeTaskContentRecordsTogether } from "./taskContentAuthority.js";
 import { taskMutationEpoch, taskMutationsPending } from "./taskMutationFence.js";
 import { summaryAddress, summaryQueryAddress } from "./taskSummaryCache.js";
-import { taskAddress, tasksQueryAddress } from "./trackerCache.js";
+import { taskAddress, tasksAddress, tasksQueryAddress } from "./trackerCache.js";
 import { currentRevision, isMembership, matchingMembership, membershipValue, removedDetail,
   revisionAddress, revisionValue, scopeFilters, snapshotMembers, taskRecordValue } from "./scopedTaskSyncRecords.js";
 
@@ -42,7 +42,8 @@ function primaryMemberships(place, scope, queryParams) {
   if (scope.kind !== "project_tasks") return [];
   const filters = scopeFilters(scope);
   return [summaryQueryAddress(place, filters), tasksQueryAddress(place.deviceId, place.projectId, queryParams ||
-    { project_id: place.projectId, ...scope.filters, ...(scope.order && scope.order !== "number" ? { order: scope.order } : {}) })];
+    { project_id: place.projectId, ...scope.filters, ...(scope.order && scope.order !== "number" ? { order: scope.order } : {}) }),
+    ...(Object.keys(filters).length === 0 ? [tasksAddress(place.deviceId, place.projectId)] : [])];
 }
 
 function publicationAddresses(place, scope, cursor, existing, records, queryParams) {

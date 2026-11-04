@@ -336,3 +336,23 @@ it("applies a historical upsert carrying the current tombstone before its later 
     { expectedCursor: "C42", response: response("C43", { head: "43" }) });
   expect(await writer.readCursor()).toMatchObject({ cursor: "C43", appliedHead: "43" });
 });
+
+it("populates a cold whole-project replica from an unfiltered default-order snapshot", async () => {
+  const writer = create({ kind: "project_tasks", project_id: projectId, filters: {}, order: "number" });
+  const whole = { deviceId, entityId: projectId, kind: "tracker-tasks" };
+  expect(await raw(whole)).toBeUndefined();
+  expect(await publish(writer, [{ kind: "task", key: "task-1", revision: "1", row: task("task-1") }], { snapshot: true })).toBe(true);
+  expect((await raw(whole)).tasks.map((task) => task.id)).toEqual(["task-1"]);
+  await publish(writer, [record("task-2", "2", { operation: "upsert" })],
+    { expectedCursor: "opaque-cursor", response: response("whole-changes") });
+  expect((await raw(whole)).tasks.map((task) => task.id)).toEqual(["task-2", "task-1"]);
+});
+
+it.each([
+  { filters: { states: ["open"] }, order: "number" },
+  { filters: {}, order: "priority" },
+])("does not create a whole-project replica for a different exact scope %j", async ({ filters, order }) => {
+  const writer = create({ kind: "project_tasks", project_id: projectId, filters, order });
+  await publish(writer, [{ kind: "task", key: "task-1", revision: "1", row: task("task-1") }], { snapshot: true });
+  expect(await raw({ deviceId, entityId: projectId, kind: "tracker-tasks" })).toBeUndefined();
+});

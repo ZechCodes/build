@@ -4304,12 +4304,15 @@ gate attachment display.
   cached entity revisions, then replay repairs post-watermark membership.
   New replica kinds use the existing records store and
   preserve cached content without a schema upgrade.
-  Continuous view registrations are named independently of sessions and lock
-  ownership. A fresh opening snapshots; a handover of the same registration
-  resumes its committed cursor. Asynchronous tab discovery converges each
-  continuously open scope on the earliest opening (token breaks ties). Tabs
-  adopt and carry that identity even when its originating tab closes; mount
-  recency remains separate for the active-scope cap.
+  Continuity belongs to the running lock holder's engine. A scope key that
+  stays in the live, lease-pruned tracked set keeps its engine entry even if
+  different tabs or mount identities present it. A key leaving that set is
+  untracked. Every new engine track snapshots, including lock takeover,
+  session handover and page reload; a persisted cursor never proves continuity.
+  A handover therefore costs one snapshot per scope. Stored cursors still
+  fence atomic publication through expectedCursor, and an already tracked
+  engine continues from its own committed batches. Tabs neither adopt nor
+  reuse cross-tab opening tokens, and wall clocks never prove continuity.
   Pushes wake this reader; reconnect, foreground return and a thirty-second
   `sync.head` interval repair missed notifications. Connection passes capture
   finite open-scope recovery, while later pushes form separate trailing work.

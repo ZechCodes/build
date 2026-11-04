@@ -20,10 +20,10 @@ beforeEach(async () => {
   queryAddress = summaryQueryAddress({ deviceId, projectId }, scope.filters);
 });
 afterEach(() => engines.splice(0).forEach((engine) => engine.dispose()));
-function fixture(request, registration) {
+function fixture(request) {
   const store = cacheModule.createScopedTaskSyncCache({ deviceId, projectId, scope, bridgeIdentity: deviceId });
   const engine = engineModule.createScopedSyncEngine({ request, storeFor: () => store, epoch: () => "e" });
-  engine.track(scope, registration ? { registration } : undefined); engines.push(engine); return { engine, store };
+  engine.track(scope); engines.push(engine); return { engine, store };
 }
 const ids = async () => (await local.readCached(queryAddress))?.value?.ids;
 
@@ -94,7 +94,7 @@ it("reopens an invalidated scope with a snapshot even though its cursor was dura
 });
 
 
-it("snapshots a freshly reopened view but resumes the same registration across handover", async () => {
+it("snapshots reopened and handed-over views without reusing persisted cursor origins or registration", async () => {
   let snapshots = 0;
   const rpc = vi.fn(async (method) => {
     if (method === "sync.snapshot") {
@@ -103,30 +103,40 @@ it("snapshots a freshly reopened view but resumes the same registration across h
     }
     return changes([]);
   });
-  const first = fixture(rpc, "opening-1");
+  const first = fixture(rpc);
   expect(await first.engine.catchUp(scope)).toBe(true);
   first.engine.untrack(scope);
-  first.engine.track(scope, { registration: "opening-2" });
+  first.engine.track(scope);
   expect(await first.engine.catchUp(scope)).toBe(true);
   expect(snapshots).toBe(2);
   expect(await ids()).toEqual(["task-2"]);
   first.engine.dispose();
-  const handedOver = fixture(rpc, "opening-2");
+  const { syncCursorAddress } = await import("../src/core/scopedTaskSyncCache.js");
+  const cursorAddress = syncCursorAddress(deviceId, scope, projectId);
+  const persisted = await local.readCached(cursorAddress);
+  await local.writeCached(cursorAddress, { ...persisted.value, registration: "opening-2" });
+  const before = rpc.mock.calls.length;
+  const handedOver = fixture(rpc);
   expect(await handedOver.engine.catchUp(scope)).toBe(true);
-  expect(snapshots).toBe(2);
-  expect(rpc.mock.calls.at(-1)).toMatchObject(["sync.changes", { cursor: "C4" }]);
+  expect(snapshots).toBe(3);
+  expect(rpc.mock.calls.slice(before).map(([method]) => method)).toEqual(["sync.snapshot", "sync.changes"]);
+  expect(rpc.mock.calls.at(-1)).toMatchObject(["sync.changes", { cursor: "S3" }]);
+  expect((await handedOver.store.readCursor()).registration).toBeUndefined();
 });
 
 it("keeps concurrent holder and timeout engines on committed cursor CAS without losing rows", async () => {
   const snapshotRecord = row("task-1", "1"); delete snapshotRecord.member;
   const seed = fixture(async (method) => method === "sync.snapshot" ? snapshot([snapshotRecord])
-    : wire({ head: "1", cursor: "S", changes: [] }), "continuous");
+    : wire({ head: "1", cursor: "S", changes: [] }));
   expect(await seed.engine.catchUp(scope)).toBe(true); seed.engine.dispose();
   const gates = {};
   const gate = (name) => new Promise((resolve) => { gates[name] = resolve; });
   const firstPage = wire({ head: "3", cursor: "C2", continuation: "fixed-origin-S", changes: [row("task-2", "2", { seq: "2", operation: "upsert" })] });
+  let racing = false;
   const request = (name) => vi.fn(async (method, params) => {
+    if (method === "sync.snapshot") return snapshot([snapshotRecord]);
     expect(method).toBe("sync.changes");
+    if (!racing) return wire({ head: "1", cursor: "S", changes: [] });
     // The real bridge binds continuation.origin to the initial request S.
     if (params.continuation) {
       if (params.cursor !== "S") throw Object.assign(new Error("MalformedCursor"), { code: "invalid_params" });
@@ -137,7 +147,11 @@ it("keeps concurrent holder and timeout engines on committed cursor CAS without 
     return wire({ head: "4", cursor: "C4", changes: [row("task-4", "4", { seq: "4", operation: "upsert" })] });
   });
   const holderRequest = request("holder"), timeoutRequest = request("timeout");
-  const holder = fixture(holderRequest, "continuous"), timeout = fixture(timeoutRequest, "continuous");
+  const holder = fixture(holderRequest), timeout = fixture(timeoutRequest);
+  expect(await holder.engine.catchUp(scope)).toBe(true);
+  expect(await timeout.engine.catchUp(scope)).toBe(true);
+  racing = true;
+  holderRequest.mockClear(); timeoutRequest.mockClear();
   const commits = [];
   for (const writer of [holder.store, timeout.store]) {
     const publish = writer.publish;

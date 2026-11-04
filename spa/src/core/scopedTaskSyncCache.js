@@ -30,12 +30,11 @@ function acceptsCapture(capture, context, active, deviceId) {
 const snapshotDemand = (previous, records, snapshot) => !snapshot
   && (previous?.snapshotRequired === true || records.some((record) => record.operation === "invalidate"));
 
-function cursorValue(response, previous, bridgeIdentity, snapshot, records, registration) {
+function cursorValue(response, previous, bridgeIdentity, snapshot, records) {
   const head = snapshot ? response.watermark : response.head;
   return { incarnation: response.incarnation, cursor: response.cursor, head,
     appliedHead: response.continuation ? previous?.appliedHead ?? null : head,
     snapshotRequired: snapshotDemand(previous, records, snapshot),
-    registration: registration ?? previous?.registration,
     bridgeIdentity, bridge_epoch: response.bridge_epoch };
 }
 
@@ -104,7 +103,7 @@ function reducePublication(addresses, records, options, held, context) {
   }
   const values = addresses.map((address) => next.get(keyOf(address)) ?? null);
   values[0] = options.removed ? DELETE_CACHED_RECORD
-    : cursorValue(options.response, previous, options.bridgeIdentity, options.snapshot, records, options.registration);
+    : cursorValue(options.response, previous, options.bridgeIdentity, options.snapshot, records);
   return { values, retire: options.removed };
 }
 

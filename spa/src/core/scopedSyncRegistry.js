@@ -16,12 +16,11 @@ const scopeKey = ({ deviceId, scope }) => JSON.stringify([deviceId, scope]);
 export function createScopedSyncRegistry({ channel: providedChannel, createChannel, now = Date.now } = {}) {
   const owner = randomToken(), local = new Map(), remote = new Map(), listeners = new Set(), wakeListeners = new Set();
   let sequence = 0, signature = "", disposed = false, timer = null, channel = null;
-  const all = () => [...local.values(), ...[...remote.values()].flatMap((tab) => tab.scopes)];
-  function selected() {
+  function all() {
     for (const [id, tab] of remote) if (now() - tab.at >= PRESENCE_LEASE_MS) remote.delete(id);
-    const registrations = all(), winners = winningOpenings(registrations);
-    return cappedScopes(registrations).map((entry) => ({ ...entry, ...winners.get(entry.key) }));
+    return [...local.values(), ...[...remote.values()].flatMap((tab) => tab.scopes)];
   }
+  const selected = () => cappedScopes(all());
   function notify() {
     const next = JSON.stringify(selected());
     if (next === signature) return;
@@ -36,19 +35,8 @@ export function createScopedSyncRegistry({ channel: providedChannel, createChann
     if (data.type === "request") { publish(); return; }
     if (data.type === "wake") { receiveWake(data); return; }
     if (data.type !== "presence" || !Array.isArray(data.scopes)) return;
-    remote.set(data.owner, { at: now(), scopes: data.scopes });
-    adoptOpenings();
+    remote.set(data.owner, { at: now(), scopes: data.scopes.map(withoutResumeIdentity) });
     notify();
-  }
-  function adoptOpenings() {
-    const winners = winningOpenings(all());
-    let changed = false;
-    for (const [id, entry] of local) {
-      const winner = winners.get(entry.key);
-      if (!winner || sameOpening(entry, winner)) continue;
-      local.set(id, { ...entry, ...winner }); changed = true;
-    }
-    if (changed) publish();
   }
   function receiveWake(data) {
     if (typeof data.deviceId !== "string" || !Array.isArray(data.scopes)) return;
@@ -89,13 +77,11 @@ export function createScopedSyncRegistry({ channel: providedChannel, createChann
   return {
     register(registration) {
       if (disposed) return () => {};
-      // Duplicate mounts belong to one continuous opening. A new opening
-      // after the final release must not inherit the previous cursor proof.
+      // Mount ids describe scheduling demand, never cursor authority. The
+      // engine snapshots whenever a scope becomes newly tracked there.
       const key = scopeKey(registration);
-      const opening = selected().find((entry) => entry.key === key), opened = now();
       const id = `${owner}:${++sequence}`;
-      local.set(id, { ...registration, registration: opening?.registration || randomToken(),
-        registrationOpened: opening?.registrationOpened ?? opened, opened, ordinal: sequence, owner, id, key });
+      local.set(id, { ...withoutResumeIdentity(registration), opened: now(), ordinal: sequence, owner, id, key });
       updateTimer();
       publish(); notify();
       return () => { local.delete(id); publish(); updateTimer(); notify(); };
@@ -115,27 +101,10 @@ export function createScopedSyncRegistry({ channel: providedChannel, createChann
   };
 }
 
-const sameOpening = (entry, winner) => entry.registration === winner.registration
-  && entry.registrationOpened === winner.registrationOpened;
-const earlierOpening = (candidate, held) => !held || candidate.registrationOpened < held.registrationOpened
-  || candidate.registrationOpened === held.registrationOpened && candidate.registration < held.registration;
-
-function openingIdentity(entry) {
-  const registrationOpened = entry.registrationOpened ?? entry.opened;
-  return typeof entry.registration === "string" && Number.isFinite(registrationOpened)
-    ? { registration: entry.registration, registrationOpened } : null;
-}
-
-// Presence is asynchronous: two tabs can open before hearing each other.
-// Carry the earliest opening through every surviving local duplicate. Its
-// identity time is separate from `opened`, which still orders the tracking cap.
-function winningOpenings(registrations) {
-  const winners = new Map();
-  for (const entry of registrations) {
-    const candidate = openingIdentity(entry);
-    if (candidate && earlierOpening(candidate, winners.get(entry.key))) winners.set(entry.key, candidate);
-  }
-  return winners;
+// Older open tabs may still advertise the retired token metadata. It is not
+// part of scheduling presence and cannot authorize replay in another tab.
+function withoutResumeIdentity({ registration: _token, registrationOpened: _opened, ...presence }) {
+  return presence;
 }
 
 function cappedScopes(registrations) {

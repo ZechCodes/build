@@ -86,14 +86,17 @@ it("renews a frozen follower's expired presence before delivering its foreground
 });
 
 
-it("keeps a continuous registration across duplicate mounts and renews it after last close", () => {
+it("uses independent local mount ids without cursor-authority tokens", () => {
   const scopes = registry(); const closeFirst = scopes.register(task("a"));
-  const registration = scopes.tracked("d")[0].registration;
-  expect(registration).toBeTruthy();
+  const first = scopes.tracked("d")[0];
+  expect(first).not.toHaveProperty("registration");
+  expect(first).not.toHaveProperty("registrationOpened");
   const closeSecond = scopes.register(task("a")); closeFirst();
-  expect(scopes.tracked("d")[0].registration).toBe(registration);
+  const second = scopes.tracked("d")[0];
+  expect(second.id).not.toBe(first.id);
+  expect(second.key).toBe(first.key);
   closeSecond(); scopes.register(task("a"));
-  expect(scopes.tracked("d")[0].registration).not.toBe(registration);
+  expect(scopes.tracked("d")[0].id).not.toBe(second.id);
 });
 
 it("starts presence on the first local mount and stops it on the final release", () => {
@@ -186,84 +189,90 @@ function asynchronousChannels() {
       await Promise.resolve(); pending.shift()();
     }
   };
-  return { createChannel, flush, sent };
+  const inject = (data) => {
+    for (const channel of channels) {
+      const copy = structuredClone(data);
+      pending.push(() => { if (channels.has(channel)) channel.onmessage?.({ data: copy }); });
+    }
+  };
+  return { createChannel, flush, sent, inject };
 }
 
-it.each([
-  ["fresh", "first"], ["fresh", "second"], ["idle", "first"], ["idle", "second"],
-])("converges asynchronous %s tab openings on the earliest registration when %s tab closes first", async (activation, closesFirst) => {
+it("treats delayed asynchronous legacy presence as scheduling metadata without adopting or rebroadcasting its token", async () => {
   vi.useFakeTimers();
   const bus = asynchronousChannels(); let clock = 100;
-  const holder = registry({ createChannel: bus.createChannel, now: () => clock }); holder.subscribe(vi.fn());
   const first = registry({ createChannel: bus.createChannel, now: () => clock });
   const second = registry({ createChannel: bus.createChannel, now: () => clock });
   const closeFirst = first.register(task("shared"));
   const original = first.tracked("d")[0];
-  if (activation === "idle") {
-    const stop = second.subscribe(vi.fn()); await bus.flush(); stop();
-  }
   clock = 200;
   const closeSecond = second.register(task("shared"));
-  clock = 201;
-  const closeDuplicate = second.register(task("shared"));
+  const secondMount = second.tracked("d")[0];
   await bus.flush();
-  expect(first.tracked("d")[0].registration).toBe(original.registration);
-  expect(second.tracked("d")[0].registration).toBe(original.registration);
-  expect(holder.tracked("d")[0].registration).toBe(original.registration);
-  if (closesFirst === "first") {
-    closeFirst(); await bus.flush();
-    expect(second.tracked("d")[0].registration).toBe(original.registration);
-    expect(holder.tracked("d")[0].registration).toBe(original.registration);
-    closeSecond(); await bus.flush();
-    expect(second.tracked("d")[0].registration).toBe(original.registration);
-    closeDuplicate();
-  } else {
-    closeSecond(); await bus.flush();
-    expect(second.tracked("d")[0].registration).toBe(original.registration);
-    closeDuplicate(); await bus.flush();
-    expect(first.tracked("d")[0].registration).toBe(original.registration);
-    expect(holder.tracked("d")[0].registration).toBe(original.registration);
-    closeFirst();
+  const beforeLegacy = bus.sent.length;
+  bus.inject({ type: "presence", owner: original.owner,
+    scopes: [{ ...original, registration: "legacy-resume-token", registrationOpened: -100 }] });
+  await bus.flush();
+  expect(bus.sent).toHaveLength(beforeLegacy);
+  for (const entry of [...first.tracked("d"), ...second.tracked("d")]) {
+    expect(entry).not.toHaveProperty("registration");
+    expect(entry).not.toHaveProperty("registrationOpened");
   }
-  await bus.flush();
-  expect(first.tracked("d")).toEqual([]); expect(second.tracked("d")).toEqual([]);
-  clock = 300;
-  const closeReopened = second.register(task("shared")); await bus.flush();
-  expect(second.tracked("d")[0].registration).not.toBe(original.registration);
-  closeReopened(); await bus.flush();
+  closeFirst(); await bus.flush();
+  expect(second.tracked("d")[0]).toMatchObject({ id: secondMount.id, key: secondMount.key, opened: 200 });
+  closeSecond(); await bus.flush();
+  const closeReopened = second.register(task("shared"));
+  expect(second.tracked("d")[0].id).not.toBe(secondMount.id);
+  expect(second.tracked("d")[0]).not.toHaveProperty("registration");
+  closeReopened();
 });
 
-it("breaks simultaneous asynchronous opening ties by registration token and preserves the winner after its tab closes", async () => {
+it("prunes expired legacy presence before local lookup and does not reuse its authority when it arrives late", () => {
   vi.useFakeTimers();
-  const bus = asynchronousChannels();
-  const first = registry({ createChannel: bus.createChannel, now: () => 100 });
-  const second = registry({ createChannel: bus.createChannel, now: () => 100 });
-  const closeFirst = first.register(task("shared")), firstToken = first.tracked("d")[0].registration;
-  const closeSecond = second.register(task("shared")), secondToken = second.tracked("d")[0].registration;
-  const winner = [firstToken, secondToken].sort()[0];
-  await bus.flush();
-  expect(first.tracked("d")[0].registration).toBe(winner);
-  expect(second.tracked("d")[0].registration).toBe(winner);
-  if (winner === firstToken) { closeFirst(); await bus.flush(); expect(second.tracked("d")[0].registration).toBe(winner); closeSecond(); }
-  else { closeSecond(); await bus.flush(); expect(first.tracked("d")[0].registration).toBe(winner); closeFirst(); }
-  await bus.flush();
+  let clock = 0;
+  const channel = { onmessage: null, postMessage: vi.fn(), close: vi.fn() };
+  const scopes = registry({ channel, now: () => clock });
+  scopes.subscribe(vi.fn());
+  const legacy = { type: "presence", owner: "legacy-tab", scopes: [{ ...task("shared"),
+    id: "legacy-tab:1", owner: "legacy-tab", key: JSON.stringify(["d", taskSyncScope("shared")]),
+    opened: -1, ordinal: 1, registration: "expired-token", registrationOpened: -1 }] };
+  channel.onmessage({ data: legacy });
+  expect(scopes.tracked("d")).toHaveLength(1);
+  expect(scopes.tracked("d")[0]).not.toHaveProperty("registration");
+  expect(scopes.tracked("d")[0]).not.toHaveProperty("registrationOpened");
+  clock = 16_000;
+  expect(scopes.tracked("d")).toEqual([]);
+  scopes.register(task("shared"));
+  const local = scopes.tracked("d")[0], sentBefore = channel.postMessage.mock.calls.length;
+  channel.onmessage({ data: legacy });
+  expect(channel.postMessage).toHaveBeenCalledTimes(sentBefore);
+  expect(scopes.tracked("d")[0]).toMatchObject({ id: local.id, key: local.key, opened: 16_000 });
+  expect(scopes.tracked("d")[0]).not.toHaveProperty("registration");
+  expect(scopes.tracked("d")[0]).not.toHaveProperty("registrationOpened");
 });
 
-it("adopts original opening metadata without aging a recently mounted scope out of the cap or echoing unchanged presence", async () => {
+it("keeps backwards-clock mount metadata independent from asynchronous remote cursor tokens", async () => {
   vi.useFakeTimers();
-  const bus = asynchronousChannels(); let clock = 1;
+  const bus = asynchronousChannels(); let clock = 100;
   const first = registry({ createChannel: bus.createChannel, now: () => clock });
   const second = registry({ createChannel: bus.createChannel, now: () => clock });
-  first.register(task("shared")); const original = first.tracked("d")[0];
-  for (let index = 0; index < MAX_TRACKED_SYNC_SCOPES; index += 1) {
-    clock = index + 2; second.register(task(`other-${index}`));
-  }
-  clock = 100; second.register(task("shared"));
+  const closeFirst = first.register(task("shared"));
+  const original = first.tracked("d")[0];
+  clock = -100;
+  const closeSecond = second.register(task("shared"));
+  const local = second.tracked("d")[0];
   await bus.flush();
-  expect(second.tracked("d")).toHaveLength(MAX_TRACKED_SYNC_SCOPES);
-  expect(second.tracked("d").find(({ scope }) => scope.task_id === "shared"))
-    .toMatchObject({ registration: original.registration, registrationOpened: 1, opened: 100 });
-  const sentBefore = bus.sent.length;
-  first.wake("d", [taskSyncScope("shared")]); await bus.flush();
-  expect(bus.sent.length - sentBefore).toBe(2);
+  bus.inject({ type: "presence", owner: original.owner,
+    scopes: [{ ...original, registration: "old-clock-token", registrationOpened: -1000 }] });
+  await bus.flush();
+  closeFirst(); await bus.flush();
+  expect(second.tracked("d")[0]).toMatchObject({ id: local.id, key: local.key, opened: -100 });
+  expect(second.tracked("d")[0]).not.toHaveProperty("registration");
+  expect(second.tracked("d")[0]).not.toHaveProperty("registrationOpened");
+  for (const { scopes } of bus.sent.filter(({ type }) => type === "presence")) {
+    for (const entry of scopes) {
+      expect(entry).not.toHaveProperty("registration"); expect(entry).not.toHaveProperty("registrationOpened");
+    }
+  }
+  closeSecond(); await bus.flush();
 });

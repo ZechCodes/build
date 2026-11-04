@@ -47,7 +47,7 @@ describe("scoped sync runtime ownership", () => {
     fake.lock = true;
     runtime.startScopedSyncRuntime({ ownsLock: () => fake.lock, request: vi.fn() });
     const engine = fake.engines[0];
-    expect(engine.track).toHaveBeenCalledWith(scope, { registration: undefined });
+    expect(engine.track).toHaveBeenCalledWith(scope);
     expect(engine.options.active()).toBe(true);
     await runtime.captureScopedSync("d1");
     expect(engine.catchUp).toHaveBeenCalledWith(scope);
@@ -168,13 +168,19 @@ it.each(["reconnect", "foreground", "task push"])("prepares project columns on %
   runtime.stopScopedSyncRuntime();
 });
 
-it("passes continuous opening identity to the engine and replaces a fresh registration", () => {
-  fake.lock = true; fake.scopes[0].registration = "opening-1";
+it("retains the held scope and store while a different mount represents the same live key", async () => {
+  fake.lock = true; fake.scopes[0].id = "mount-1"; fake.scopes[0].registration = "opening-1";
   runtime.startScopedSyncRuntime({ ownsLock: () => fake.lock, request: vi.fn() });
   const engine = fake.engines[0];
-  expect(engine.track).toHaveBeenCalledWith(scope, { registration: "opening-1" });
-  fake.scopes = [{ ...fake.scopes[0], registration: "opening-2" }]; fake.scopeChanged();
-  expect(engine.untrack).toHaveBeenCalledWith(scope);
-  expect(engine.track).toHaveBeenLastCalledWith(scope, { registration: "opening-2" });
+  engine.options.storeFor(scope);
+  const { createScopedTaskSyncCache } = await import("../src/core/scopedTaskSyncCache.js");
+  const storeActive = createScopedTaskSyncCache.mock.calls.at(-1)[0].active;
+  fake.scopes = [{ ...fake.scopes[0], id: "mount-2", registration: "opening-2" }]; fake.scopeChanged();
+  expect(engine.untrack).not.toHaveBeenCalled();
+  expect(engine.track).toHaveBeenCalledExactlyOnceWith(scope);
+  expect(storeActive()).toBe(true);
+  fake.scopes = []; fake.scopeChanged();
+  expect(engine.untrack).toHaveBeenCalledExactlyOnceWith(scope);
+  expect(storeActive()).toBe(false);
   runtime.stopScopedSyncRuntime();
 });

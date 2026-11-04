@@ -9,8 +9,7 @@ const pageParams = (page) => page ? { page } : {};
 const cursorParams = (held) => held?.cursor ? { cursor: held.cursor } : {};
 const caughtUp = (held, answer) => Boolean(held?.cursor && !held.snapshotRequired
   && held.incarnation === answer.incarnation && held.appliedHead === answer.head);
-const needsSnapshot = (entry, held) => entry.fresh || held?.snapshotRequired
-  || entry.registration !== undefined && held?.registration !== entry.registration;
+const needsSnapshot = (entry, held) => entry.fresh || held?.snapshotRequired;
 function publishedSnapshot(entry, first, committed) {
   if (!committed) return null;
   entry.fresh = false;
@@ -24,11 +23,10 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
   const timer = setInterval(() => { void checkHeads(); }, SYNC_HEAD_INTERVAL_MS);
   timer.unref?.();
 
-  function track(scope, { registration, resume = false } = {}) {
+  function track(scope) {
     const key = identity(scope);
     if (scopes.has(key)) return;
-    scopes.set(key, { scope, store: storeFor(scope), running: null, trailing: null, registration,
-      fresh: registration === undefined && !resume });
+    scopes.set(key, { scope, store: storeFor(scope), running: null, trailing: null, fresh: true });
   }
   const stands = (entry) => current() && scopes.get(identity(entry.scope)) === entry;
 
@@ -66,8 +64,7 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
       page = answer.next_page;
     } while (page);
     if (!stands(entry)) return null;
-    const committed = await entry.store.publish({ response: first, records, capture, expectedCursor,
-      snapshot: true, registration: entry.registration });
+    const committed = await entry.store.publish({ response: first, records, capture, expectedCursor, snapshot: true });
     return publishedSnapshot(entry, first, committed);
   }
 
@@ -80,7 +77,7 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
       if (answer.status === "resync_required") return { resync: answer, capture, cursor };
       if (answer.status !== "ok" || !stands(entry)) return false;
       if (!await entry.store.publish({ response: answer, records: answer.changes, capture,
-        expectedCursor: cursor, registration: entry.registration })) return false;
+        expectedCursor: cursor })) return false;
       if (answer.continuation && answer.cursor === cursor) return false;
       cursor = answer.cursor;
       continuation = answer.continuation;
@@ -121,6 +118,7 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
   };
 
   async function check(entry) {
+    if (entry.fresh) return recover(entry);
     const held = await entry.store.readCursor();
     const capture = await entry.store.capture();
     const answer = await read(entry, "sync.head", cursorParams(held));

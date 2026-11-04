@@ -19,8 +19,6 @@ const scopeDefinitions = {
       && Boolean(item.tasks?.truncated || item.tasks?.task_ids?.includes(entry.scope.task_id)) },
 };
 const supported = (caps, scope) => caps?.sync?.[scopeDefinitions[scope.kind]?.capability] === true;
-const registrationOf = (entry) => entry.registration || entry.id;
-const sameRegistration = (left, right) => Boolean(left && right && registrationOf(left) === registrationOf(right));
 let runtime = null;
 let subscriptions = [];
 
@@ -54,17 +52,19 @@ function scopeStore(context, entries, scope, active) {
   const key = JSON.stringify(scope), entry = entries.get(key);
   return scopeDefinitions[scope.kind].storeFor({ deviceId: context.deviceId, scope,
     projectId: entry?.projectId, queryParams: entry?.queryParams, bridgeIdentity: context.deviceId,
-    active: () => active() && sameRegistration(entry, entries.get(key)) });
+    active: () => active() && entries.get(key) === entry });
 }
 
 function reconcileEntries(held, entries) {
   const next = new Map(entries.map((entry) => [JSON.stringify(entry.scope), entry]));
-  for (const [key, entry] of held.entries) if (!sameRegistration(entry, next.get(key))) held.engine.untrack(entry.scope);
-  const added = entries.filter((entry) => !sameRegistration(held.entries.get(JSON.stringify(entry.scope)), entry));
-  held.entries.clear();
-  for (const [key, entry] of next) held.entries.set(key, entry);
-  for (const entry of added) {
-    held.engine.track(entry.scope, { registration: registrationOf(entry) });
+  for (const [key, entry] of held.entries) if (!next.has(key)) {
+    held.engine.untrack(entry.scope);
+    held.entries.delete(key);
+  }
+  for (const [key, entry] of next) {
+    if (held.entries.has(key)) continue;
+    held.entries.set(key, entry);
+    held.engine.track(entry.scope);
     void Promise.all([held.engine.catchUp(entry.scope), prepareScope(held, entry)]).catch(() => {});
   }
 }

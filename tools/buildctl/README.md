@@ -162,8 +162,13 @@ review receivers, task state and attachments, resume rosters and local harness
 sessions. It uses SQLite's online backup API, rewrites prod state paths, verifies
 table counts/record IDs, worktree references and attachment hashes, and retains
 a backup for rollback. Logs, builds, deployments, rollouts, backups and project
-scratch are excluded, except exact database-referenced project scratch directories
+scratch and the device-local `secrets/` vault (key and encrypted values) are
+excluded, except exact database-referenced project scratch directories
 whose names match `<Project>-<12hex>`; those referenced directories are copied.
+Secret metadata in SQLite/history may survive migration or a database-only
+backup while its values remain unavailable. A target containing a `secrets/`
+entry is refused even with `--force`: migration cannot copy its vault into
+staging or retain it in a rollback backup alongside a replaced metadata DB.
 Missing referenced worktrees are a hard verification failure. Rehearsal reads
 the supplied snapshot and checks existence of shared worktree directories;
 it never edits shared repository configuration. Review receiver Git URLs in shared repositories also need

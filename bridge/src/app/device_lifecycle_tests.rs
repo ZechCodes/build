@@ -30,6 +30,99 @@ fn dirty_generation(root: &std::path::Path) -> i64 {
         .unwrap()
 }
 
+fn observation_workspace(app: &mut AppState, name: &str) -> crate::workspace::Workspace {
+    let created = app.dispatch("workspace.create", &json!({"project_id":"proj-1","name":name})).unwrap();
+    let workspace = app.workspaces.get(created["workspace_id"].as_str().unwrap()).unwrap().clone();
+    let repository = git2::Repository::init(&workspace.directories[0].path).unwrap();
+    repository.set_head("refs/heads/before").unwrap();
+    let signature = git2::Signature::now("Fixture", "fixture@example.test").unwrap();
+    let tree_id = repository.index().unwrap().write_tree().unwrap();
+    let tree = repository.find_tree(tree_id).unwrap();
+    let commit_id = repository.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[]).unwrap();
+    repository.branch("after", &repository.find_commit(commit_id).unwrap(), false).unwrap();
+    workspace
+}
+
+fn block_workspace_manifest(workspace: &crate::workspace::Workspace) -> std::path::PathBuf {
+    let manifest=workspace.root.join(crate::workspace::MANIFEST_FILE);
+    let backup=workspace.root.join("manifest.saved");
+    std::fs::rename(&manifest,&backup).unwrap();
+    std::fs::create_dir(&manifest).unwrap();
+    backup
+}
+fn restore_workspace_manifest(workspace: &crate::workspace::Workspace, backup: &std::path::Path) {
+    let manifest=workspace.root.join(crate::workspace::MANIFEST_FILE);
+    std::fs::remove_dir(&manifest).unwrap();
+    std::fs::rename(backup,manifest).unwrap();
+}
+
+#[tokio::test]
+async fn lifecycle_observation_failed_manifest_does_not_starve_later_workspace_or_fence_reads() {
+    let (root,mut app,store)=fixture();
+    let pair=[observation_workspace(&mut app,"first"),observation_workspace(&mut app,"second")];
+    app.refresh_workspace_snapshot_observations();
+    app.initialize_snapshot_projection();
+    app.initialize_read_context();
+    for workspace in &pair {
+        git2::Repository::open(&workspace.directories[0].path).unwrap().set_head("refs/heads/after").unwrap();
+    }
+    // Select the first candidate from the actual pass, independent of HashMap order.
+    let observations=app.workspaces.observe_local_capabilities();
+    assert_eq!(observations.len(),2);
+    let failed=&observations[0];
+    let healthy=&observations[1];
+    let backup=block_workspace_manifest(failed);
+    let failed_key=format!("{}/{}",failed.id,failed.directories[0].id);
+    let healthy_key=format!("{}/{}",healthy.id,healthy.directories[0].id);
+    for _ in 0..3 {
+        app.refresh_workspace_snapshot_observations();
+        assert_eq!(row(root.path(),"workspace_directory",&healthy_key).unwrap()["branch"],"after","a failed first manifest must not starve the later workspace's branch publication");
+        assert!(store.writer().device_registry_generation().unwrap().is_none(),"a partial refresh must settle");
+        let page=lease_page(&app,&store,"failed-manifest",None,500).await;
+        let failed_row=page["records"].as_array().unwrap().iter().find(|record|record["kind"]=="workspace_directory" && record["key"]==failed_key).unwrap();
+        assert_eq!(failed_row["row"]["branch"],"before","reads keep the failed workspace's last committed observation");
+        assert_eq!(app.workspaces.get(&failed.id).unwrap().directories[0].branch.as_deref(),Some("before"));
+    }
+    restore_workspace_manifest(failed,&backup);
+    app.refresh_workspace_snapshot_observations();
+    assert_eq!(row(root.path(),"workspace_directory",&failed_key).unwrap()["branch"],"after","the uncommitted observation is retried after the manifest recovers");
+    assert_registry_ready(&store);
+}
+
+#[tokio::test]
+async fn lifecycle_observation_failed_reopen_does_not_starve_later_workspace_or_fence_reads() {
+    let (root,mut app,store)=fixture();
+    let pair=[observation_workspace(&mut app,"first-finished"),observation_workspace(&mut app,"second-finished")];
+    app.refresh_workspace_snapshot_observations();
+    for original in &pair {
+        let mut workspace=app.workspaces.get(&original.id).unwrap().clone();
+        workspace.status=crate::workspace::WorkspaceStatus::Finished;
+        workspace.archived_at=Some("2026-01-01T00:00:00Z".into());
+        workspace.directories[0].finished_head=None;
+        std::fs::write(workspace.root.join(crate::workspace::MANIFEST_FILE),serde_json::to_vec(&workspace).unwrap()).unwrap();
+    }
+    app.workspaces.reload().unwrap();
+    app.initialize_snapshot_projection();
+    app.initialize_read_context();
+    let observations=app.workspaces.observe_finished_local();
+    assert_eq!(observations.len(),2);
+    let failed=app.workspaces.get(&observations[0]).unwrap().clone();
+    let healthy=app.workspaces.get(&observations[1]).unwrap().clone();
+    let backup=block_workspace_manifest(&failed);
+    for _ in 0..3 {
+        app.refresh_workspace_snapshot_observations();
+        assert_eq!(row(root.path(),"workspace",&healthy.id).unwrap()["status"],"ready","a failed first reopen must not starve the later workspace");
+        assert!(store.writer().device_registry_generation().unwrap().is_none());
+        let page=lease_page(&app,&store,"failed-reopen",None,500).await;
+        let failed_row=page["records"].as_array().unwrap().iter().find(|record|record["kind"]=="workspace" && record["key"]==failed.id).unwrap();
+        assert_eq!(failed_row["row"]["status"],"finished","failed reopen must preserve committed status in reads");
+    }
+    restore_workspace_manifest(&failed,&backup);
+    app.refresh_workspace_snapshot_observations();
+    assert_eq!(row(root.path(),"workspace",&failed.id).unwrap()["status"],"ready");
+    assert_registry_ready(&store);
+}
+
 fn assert_registry_ready(store: &crate::store::Store) {
     assert!(store
         .writer()

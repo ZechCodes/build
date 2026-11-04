@@ -1098,3 +1098,48 @@ fn device_followup_backfill_links_retained_owners_with_an_empty_roster() {
         "an empty roster must not lose its retained owner directory facts"
     );
 }
+
+#[test]
+fn device_missing_facts_fences_scope_without_aborting_pruning_and_repairs_atomically() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let mut run = run_record("facts-repair");
+    for index in 0..150 {
+        run.agents[0]
+            .thread
+            .post_agent(format!("message {index}"), None, AT);
+    }
+    store.save_run(&run).unwrap();
+    let id = run.agents[0].id.clone();
+    store
+        .writer_for_test()
+        .execute("DELETE FROM device_agent_facts WHERE agent_id=?1", [&id])
+        .unwrap();
+    let pruned = store
+        .prune_conversation_batch(
+            &id,
+            crate::store::RetentionPolicy::default(),
+            "2026-11-24T12:00:00Z",
+        )
+        .expect("derived device facts cannot block canonical pruning");
+    assert!(pruned.items_deleted > 0);
+    assert!(
+        matches!(store.writer().admit_device_lease("repair","epoch",NOW),Err(crate::store::sync::SyncError::Unavailable(ref reason)) if reason=="sync_reconciling")
+    );
+    store.writer_for_test().execute_batch("CREATE TRIGGER reject_device_repair BEFORE INSERT ON sync_journal WHEN NEW.entity_kind='agent' BEGIN SELECT RAISE(ABORT,'synthetic repair publication failure'); END;").unwrap();
+    assert!(store.save_run(&run).is_err());
+    assert!(matches!(
+        store.writer().admit_device_lease("repair", "epoch", NOW),
+        Err(crate::store::sync::SyncError::Unavailable(_))
+    ));
+    store
+        .writer_for_test()
+        .execute_batch("DROP TRIGGER reject_device_repair;")
+        .unwrap();
+    store.save_run(&run).unwrap();
+    store
+        .writer()
+        .admit_device_lease("repair", "epoch", NOW)
+        .expect("owned source publication repairs the facts and fence together");
+    assert_eq!(projection(&store, "agent", &id)["owner_id"], run.id);
+}

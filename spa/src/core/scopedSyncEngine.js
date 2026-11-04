@@ -7,6 +7,7 @@ const MAX_SNAPSHOT_PAGES = 1000;
 const identity = (scope) => JSON.stringify(scope);
 const pageParams = (page) => page ? { page } : {};
 const cursorParams = (held) => held?.cursor ? { cursor: held.cursor } : {};
+const cursorOf = (held) => held?.cursor ?? null;
 const caughtUp = (held, answer) => Boolean(held?.cursor && !held.snapshotRequired
   && held.incarnation === answer.incarnation && held.appliedHead === answer.head);
 const needsSnapshot = (entry, held) => entry.fresh || held?.snapshotRequired;
@@ -16,8 +17,9 @@ function publishedSnapshot(entry, first, committed) {
   return { cursor: first.cursor };
 }
 
-export function createScopedSyncEngine({ request, storeFor, active = () => true, epoch = () => null }) {
+export function createScopedSyncEngine({ request, storeFor, active = () => true, epoch = () => null, captureRequest }) {
   const scopes = new Map();
+  const opening = captureRequest || epochOpenings(epoch);
   let disposed = false;
   const current = () => !disposed && active();
   const timer = setInterval(() => { void checkHeads(); }, SYNC_HEAD_INTERVAL_MS);
@@ -26,33 +28,59 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
   function track(scope) {
     const key = identity(scope);
     if (scopes.has(key)) return;
-    scopes.set(key, { scope, store: storeFor(scope), running: null, trailing: null, fresh: true });
+    scopes.set(key, { scope, store: storeFor(scope), running: null, trailing: null, fresh: true,
+      opening: null, validateCursor: false, lastCursor: null });
   }
   const stands = (entry) => current() && scopes.get(identity(entry.scope)) === entry;
+  // A scope can outlive its transport; each operation belongs to exactly
+  // one accepted session/hello opening through its publication transaction.
+  const accepts = (entry, token) => stands(entry) && entry.opening === token && token.current();
 
-  async function read(entry, method, params) {
-    if (!stands(entry)) return null;
-    const capturedEpoch = epoch();
+  function takeOpening(entry) {
+    const token = opening();
+    if (!token?.current()) return null;
+    if (entry.opening !== token) {
+      entry.validateCursor = !entry.fresh;
+      entry.opening = token;
+    }
+    return token;
+  }
+
+  async function read(entry, token, method, params) {
+    if (!accepts(entry, token)) return null;
     const answer = await request(method, { scope: entry.scope, ...params });
-    if (!stands(entry) || epoch() !== capturedEpoch) return null;
-    if (capturedEpoch && answer?.bridge_epoch !== capturedEpoch) return null;
+    if (!accepts(entry, token)) return null;
+    if (token.epoch && answer?.bridge_epoch !== token.epoch) return null;
     return answer;
   }
 
-  async function reset(entry, answer, capture, expectedCursor) {
-    if (!stands(entry)) return false;
-    if (answer.reason === "scope_removed") {
-      await entry.store.publish({ response: answer, records: [], capture, expectedCursor, removed: true });
-      return false;
-    }
-    return entry.store.reset({ capture, expectedCursor });
+  async function publish(entry, token, batch) {
+    const accept = () => accepts(entry, token);
+    if (!accept()) return false;
+    const committed = await entry.store.publish({ ...batch, accept });
+    if (!committed || !accept()) return false;
+    entry.lastCursor = batch.removed ? null : batch.response.cursor;
+    return true;
   }
 
-  async function snapshot(entry, capture, expectedCursor) {
+  async function reset(entry, token, answer, capture, expectedCursor) {
+    const accept = () => accepts(entry, token);
+    if (!accept()) return false;
+    if (answer.reason === "scope_removed") {
+      await publish(entry, token, { response: answer, records: [], capture, expectedCursor, removed: true });
+      return false;
+    }
+    const committed = await entry.store.reset({ capture, expectedCursor, accept });
+    if (!committed || !accept()) return false;
+    entry.lastCursor = null;
+    return true;
+  }
+
+  async function snapshot(entry, token, capture, expectedCursor) {
     let page, first, pages = 0;
     const records = [];
     do {
-      const answer = await read(entry, "sync.snapshot", pageParams(page));
+      const answer = await read(entry, token, "sync.snapshot", pageParams(page));
       pages += 1;
       if (!answer) return null;
       if (answer.status === "resync_required") return { resync: answer };
@@ -63,20 +91,19 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
       if (snapshotExceeded(records, answer, page, pages)) return null;
       page = answer.next_page;
     } while (page);
-    if (!stands(entry)) return null;
-    const committed = await entry.store.publish({ response: first, records, capture, expectedCursor, snapshot: true });
+    const committed = await publish(entry, token, { response: first, records, capture, expectedCursor, snapshot: true });
     return publishedSnapshot(entry, first, committed);
   }
 
-  async function changes(entry, origin) {
+  async function changes(entry, token, origin) {
     let cursor = origin, continuation;
     do {
       const capture = await entry.store.capture();
-      const answer = await read(entry, "sync.changes", { cursor: origin, ...(continuation ? { continuation } : {}) });
+      const answer = await read(entry, token, "sync.changes", { cursor: origin, ...(continuation ? { continuation } : {}) });
       if (!answer) return false;
       if (answer.status === "resync_required") return { resync: answer, capture, cursor };
-      if (answer.status !== "ok" || !stands(entry)) return false;
-      if (!await entry.store.publish({ response: answer, records: answer.changes, capture,
+      if (answer.status !== "ok") return false;
+      if (!await publish(entry, token, { response: answer, records: answer.changes, capture,
         expectedCursor: cursor })) return false;
       if (answer.continuation && answer.cursor === cursor) return false;
       cursor = answer.cursor;
@@ -85,60 +112,68 @@ export function createScopedSyncEngine({ request, storeFor, active = () => true,
     return true;
   }
 
-  async function recover(entry) {
-    for (let attempt = 0; attempt < MAX_RESTARTS && stands(entry); attempt += 1) {
+  async function recover(entry, token) {
+    for (let attempt = 0; attempt < MAX_RESTARTS && accepts(entry, token); attempt += 1) {
       const held = await entry.store.readCursor();
-      const result = await recoverOnce(entry, held);
+      if (!accepts(entry, token)) return false;
+      validatePosition(entry, held);
+      const result = await recoverOnce(entry, token, held);
       if (!result?.resync) return result;
-      if (!await reset(entry, result.resync, result.capture, result.cursor)) return false;
+      if (!await reset(entry, token, result.resync, result.capture, result.cursor)) return false;
     }
     return false;
   }
 
-  async function recoverOnce(entry, held) {
-    if (held?.cursor && !needsSnapshot(entry, held)) return changes(entry, held.cursor);
+  async function recoverOnce(entry, token, held) {
+    if (held?.cursor && !needsSnapshot(entry, held)) return changes(entry, token, held.cursor);
     const capture = await entry.store.capture();
-    const cursor = held?.cursor ?? null;
-    const result = await snapshot(entry, capture, cursor);
+    const cursor = cursorOf(held);
+    const result = await snapshot(entry, token, capture, cursor);
     if (!result) return false;
-    return result.resync ? { ...result, capture, cursor } : changes(entry, result.cursor);
+    return result.resync ? { ...result, capture, cursor } : changes(entry, token, result.cursor);
   }
 
   function run(entry, operation) {
     if (!stands(entry)) return Promise.resolve(false);
-    if (entry.running) return entry.running;
-    const running = Promise.resolve().then(operation).catch(() => false);
+    const token = takeOpening(entry);
+    if (!token) return Promise.resolve(false);
+    if (entry.running?.token === token) return entry.running.promise;
+    const running = { token, promise: Promise.resolve().then(() => operation(token)).catch(() => false) };
     entry.running = running;
-    void running.finally(() => { if (entry.running === running) entry.running = null; });
-    return running;
+    void running.promise.finally(() => { if (entry.running === running) entry.running = null; });
+    return running.promise;
   }
   const catchUp = (scope) => {
     const entry = scopes.get(identity(scope));
-    return entry ? run(entry, () => recover(entry)) : Promise.resolve(false);
+    return entry ? run(entry, (token) => recover(entry, token)) : Promise.resolve(false);
   };
 
-  async function check(entry) {
-    if (entry.fresh) return recover(entry);
+  async function check(entry, token) {
+    if (entry.fresh || entry.validateCursor) return recover(entry, token);
     const held = await entry.store.readCursor();
     const capture = await entry.store.capture();
-    const answer = await read(entry, "sync.head", cursorParams(held));
+    const answer = await read(entry, token, "sync.head", cursorParams(held));
     if (!answer) return false;
     if (answer.status === "resync_required") {
-      if (!await reset(entry, answer, capture, held?.cursor ?? null)) return false;
-      return recover(entry);
+      if (!await reset(entry, token, answer, capture, cursorOf(held))) return false;
+      return recover(entry, token);
     }
     if (answer.status !== "ok") return false;
-    return caughtUp(held, answer) && !needsSnapshot(entry, held) ? true : recover(entry);
+    return caughtUp(held, answer) && !needsSnapshot(entry, held) ? true : recover(entry, token);
   }
-  const checkHeads = () => Promise.all([...scopes.values()].map((entry) => run(entry, () => check(entry))));
+  const checkHeads = () => Promise.all([...scopes.values()].map((entry) => run(entry, (token) => check(entry, token))));
 
   function wakeOne(entry) {
-    if (!entry.running) return catchUp(entry.scope);
-    entry.trailing ||= entry.running.then(() => {
-      entry.trailing = null;
-      return catchUp(entry.scope);
-    });
-    return entry.trailing;
+    const token = takeOpening(entry);
+    if (!token || entry.running?.token !== token) return catchUp(entry.scope);
+    if (entry.trailing?.token !== token) {
+      const trailing = { token, promise: entry.running.promise.then(() => {
+        if (entry.trailing === trailing) entry.trailing = null;
+        return accepts(entry, token) ? catchUp(entry.scope) : false;
+      }) };
+      entry.trailing = trailing;
+    }
+    return entry.trailing.promise;
   }
   const wake = (predicate = () => true) => Promise.all([...scopes.values()]
     .filter((entry) => predicate(entry.scope)).map(wakeOne));
@@ -154,3 +189,20 @@ const sameSnapshot = (first, answer) => first.incarnation === answer.incarnation
   && first.bridge_epoch === answer.bridge_epoch;
 const snapshotExceeded = (records, answer, page, pages) => records.length > MAX_SNAPSHOT_RECORDS
   || Boolean(page && answer.next_page === page) || Boolean(answer.next_page && pages >= MAX_SNAPSHOT_PAGES);
+
+function validatePosition(entry, held) {
+  if (!entry.validateCursor) return;
+  // Reconnect continuity needs this engine's committed position. Within an
+  // unchanged opening, competing writers can still retry from shared CAS.
+  if (cursorOf(held) !== entry.lastCursor) entry.fresh = true;
+  entry.validateCursor = false;
+}
+
+function epochOpenings(epoch) {
+  let token;
+  return () => {
+    const captured = epoch();
+    if (!token || token.epoch !== captured) token = { epoch: captured, current: () => epoch() === captured };
+    return token;
+  };
+}

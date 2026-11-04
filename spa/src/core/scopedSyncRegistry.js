@@ -5,7 +5,9 @@ import { randomToken } from "./idbRecords.js";
 
 export const MAX_TRACKED_SYNC_SCOPES = 16;
 const PRESENCE_INTERVAL_MS = 5_000;
-const PRESENCE_LEASE_MS = 15_000;
+// Hidden tabs can batch timer work into sixty-second heartbeats. Give a
+// continuously mounted follower a grace window before retiring its scopes.
+export const SCOPED_SYNC_PRESENCE_LEASE_MS = 90_000;
 export const taskSyncScope = (taskId) => ({ kind: "task", task_id: taskId });
 export function projectSyncScope(projectId, filters = {}) {
   const { order = "number", ...selected } = canonicalSummaryFilters(filters);
@@ -17,7 +19,7 @@ export function createScopedSyncRegistry({ channel: providedChannel, createChann
   const owner = randomToken(), local = new Map(), remote = new Map(), listeners = new Set(), wakeListeners = new Set();
   let sequence = 0, signature = "", disposed = false, timer = null, channel = null;
   function all() {
-    for (const [id, tab] of remote) if (now() - tab.at >= PRESENCE_LEASE_MS) remote.delete(id);
+    for (const [id, tab] of remote) if (now() - tab.at >= SCOPED_SYNC_PRESENCE_LEASE_MS) remote.delete(id);
     return [...local.values(), ...[...remote.values()].flatMap((tab) => tab.scopes)];
   }
   const selected = () => cappedScopes(all());

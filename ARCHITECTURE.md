@@ -4277,7 +4277,9 @@ gate attachment display.
   across tabs and limiting each device to sixteen active scopes. Importing
   the registry starts no timer or presence channel. Mounted registrations and
   active runtime observers open the channel and keep presence and remote-lease
-  expiry running. The final release or unsubscribe stops that interval and
+  expiry running. Remote presence lasts ninety seconds so minute-spaced
+  heartbeats from throttled hidden tabs retain their scope slots; explicit
+  release remains immediate. The final release or unsubscribe stops that interval and
   closes the owned channel; activation recreates it and requests peer presence. Followers relay named wake requests
   to the holder. Definitions
   use canonical filters and order; cursors never cross definitions. Current
@@ -4307,12 +4309,22 @@ gate attachment display.
   Continuity belongs to the running lock holder's engine. A scope key that
   stays in the live, lease-pruned tracked set keeps its engine entry even if
   different tabs or mount identities present it. A key leaving that set is
-  untracked. Every new engine track snapshots, including lock takeover,
-  session handover and page reload; a persisted cursor never proves continuity.
-  A handover therefore costs one snapshot per scope. Stored cursors still
-  fence atomic publication through expectedCursor, and an already tracked
-  engine continues from its own committed batches. Tabs neither adopt nor
+  untracked. New tracks, lock/tab handovers and reloads snapshot. A reconnect
+  or re-greet under the same runtime and lock tenure retains entries only while
+  context, cache scope and bridge identity remain unchanged. The next request
+  opening resumes only from this engine's own last committed cursor; an
+  externally replaced position fails closed to a snapshot. A bridge-requested
+  resync still snapshots that scope. Request openings separately fence replies,
+  staged pages and publication/reset transactions to the current session and
+  greeting, including a re-greet on the same session. Stored cursors continue
+  fencing atomic publication through expectedCursor. Tabs neither adopt nor
   reuse cross-tab opening tokens, and wall clocks never prove continuity.
+  Pane query cache keys share the scope's canonical label/status spelling,
+  while RPCs keep the selected representative spelling. Equivalent filters
+  read one query record even after the first presenter closes. Page records
+  retain their originating wire params. UI-only saves retain the scope's
+  registration and cache subscription; a
+  real query change acquires its next registration before releasing the old.
   Pushes wake this reader; reconnect, foreground return and a thirty-second
   `sync.head` interval repair missed notifications. Connection passes capture
   finite open-scope recovery, while later pushes form separate trailing work.

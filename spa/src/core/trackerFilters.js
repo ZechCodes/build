@@ -21,6 +21,7 @@
 
 import { UNASSIGNED, assigneeFromKey, assigneeKey, columnsOf } from "./trackerModel.js";
 import { taskHasUndeliveredAssignment } from "./trackerTaskReadiness.js";
+import { canonicalSummaryFilters } from "./taskSummaryQuery.js";
 
 /**
  * What one filter holds, always as a list.
@@ -81,7 +82,7 @@ function assigneeParam(value) {
  *  than sent empty: the verb reads an absent param as "do not narrow on this",
  *  and an empty string is not that. */
 export function taskListParams(projectId, filters = {}) {
-  const params = { project_id: projectId };
+  const params = {};
   const state = onlyOne(filters.state);
   const status = onlyOne(filters.status);
   const label = onlyOne(filters.label);
@@ -90,7 +91,20 @@ export function taskListParams(projectId, filters = {}) {
   if (label) params.label = label;
   const assignee = assigneeParam(onlyOne(filters.assignee));
   if (assignee !== undefined) params.assignee = assignee;
-  return params;
+  return { project_id: projectId, ...params };
+}
+
+/** Equivalent wire selectors share a cache query, while RPCs retain the
+ * representative spelling selected by the user. Keep the scalar shape used
+ * by legacy query readers and mutations. */
+export function taskListCacheParams(params) {
+  const { project_id: projectId, ...filters } = params;
+  const canonical = canonicalSummaryFilters(filters);
+  const selected = { project_id: projectId };
+  for (const [scalar, plural] of [["state", "states"], ["status", "statuses"], ["label", "labels"], ["assignee", "assignees"]]) {
+    if (canonical[plural]?.length) selected[scalar] = canonical[plural][0];
+  }
+  return selected;
 }
 
 function assigneeMatches(task, want) {

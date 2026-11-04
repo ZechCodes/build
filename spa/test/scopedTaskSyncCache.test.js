@@ -28,6 +28,30 @@ beforeEach(async () => {
   mutations = await import("../src/core/taskMutationFence.js");
 });
 
+it.each(["publish", "reset"])("fences an expired request opening inside the %s transaction", async (operation) => {
+  const writer = create();
+  await publish(writer, [record("task-1")], { snapshot: true });
+  const captured = await writer.capture();
+  const authority = await import("../src/core/taskContentAuthority.js");
+  const merge = authority.mergeTaskContentRecordsTogether;
+  let current = true, entered = false;
+  const transaction = vi.spyOn(authority, "mergeTaskContentRecordsTogether").mockImplementation((place, addresses, reduce, options) =>
+    merge(place, addresses, (held, context) => {
+      entered = true; current = false;
+      return reduce(held, context);
+    }, options));
+  try {
+    const request = { capture: captured, expectedCursor: "opaque-cursor", accept: () => current };
+    const committed = operation === "reset" ? await writer.reset(request)
+      : await writer.publish({ ...request, response: response("obsolete"), records: [record("task-2", "2")] });
+    expect(entered).toBe(true);
+    expect(committed).toBe(false);
+  } finally { transaction.mockRestore(); }
+  expect((await writer.readCursor()).cursor).toBe("opaque-cursor");
+  expect(await ids()).toEqual(["task-1"]);
+  expect(await raw(summaries.summaryAddress(place, "task-2"))).toBeUndefined();
+});
+
 it("publishes a complete snapshot membership and its opaque cursor together", async () => {
   const writer = create();
   expect(await publish(writer, [record("task-1"), record("task-2")], { snapshot: true })).toBe(true);

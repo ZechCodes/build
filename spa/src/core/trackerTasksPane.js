@@ -43,6 +43,7 @@ import {
   filterTasks,
   filterOptions,
   taskListParams,
+  taskListCacheParams,
   narrowsTheRead,
   sortTasks,
 } from "./trackerFilters.js";
@@ -370,8 +371,9 @@ export function mountTasksPane(host, options) {
 
   /** The active wire read has its own cache record. It is separate from the
    *  project's whole list so a filtered answer can never empty the menus. */
-  const queryParams = () => taskListParams(state.projectId, shownFilters());
+  const queryParams = () => taskListCacheParams(taskListParams(state.projectId, shownFilters()));
   let releaseSyncQuery = null;
+  let watchedQueryIdentity = null;
   let queryUnsubscribe = null;
   let querySerial = 0;
   let queryLoaded = false;
@@ -414,15 +416,24 @@ export function mountTasksPane(host, options) {
   }
 
   function watchQuery() {
-    releaseSyncQuery?.();
+    const params = queryParams();
+    const identity = JSON.stringify(params);
+    if (identity === watchedQueryIdentity) {
+      // A view change can need the cached query again while an earlier
+      // unread-display hydration is still waiting to establish its catalogue.
+      void paintFromQuery(params);
+      return;
+    }
+    const { project_id: _projectId, ...selected } = params;
+    const previousRelease = releaseSyncQuery;
+    releaseSyncQuery = registerScopedSync({ deviceId: state.deviceId, projectId: state.projectId,
+      scope: projectSyncScope(state.projectId, selected), queryParams: params });
+    watchedQueryIdentity = identity;
+    previousRelease?.();
     queryUnsubscribe?.();
     querySerial += 1;
     queryLoaded = false;
     const serial = querySerial;
-    const params = queryParams();
-    const { project_id: _projectId, ...selected } = params;
-    releaseSyncQuery = registerScopedSync({ deviceId: state.deviceId, projectId: state.projectId,
-      scope: projectSyncScope(state.projectId, selected), queryParams: params });
     queryUnsubscribe = subscribeCache(tasksQueryAddress(state.deviceId, state.projectId, params), () => {
       void paintFromQuery(params, serial);
     });
@@ -562,11 +573,12 @@ export function mountTasksPane(host, options) {
 
   async function readWholeList(params, filters) {
     const session = deviceSession(state.deviceId);
+    const cachedParams = taskListCacheParams(params);
     const { project_id: _projectId, ...selected } = params;
     const scope = projectSyncScope(state.projectId, selected);
     const current = () => !state.disposed && deviceSession(state.deviceId) === session
       && !scopedSyncOwns(state.deviceId, scope);
-    const contentRead = await captureTaskContentRead(tasksQueryAddress(state.deviceId, state.projectId, params), { revalidate: "full" });
+    const contentRead = await captureTaskContentRead(tasksQueryAddress(state.deviceId, state.projectId, cachedParams), { revalidate: "full" });
     // One response can update two replicas; each full-body proof needs its
     // own canonical baseline captured before that same request is dispatched.
     const wholeRead = narrowsTheRead(filters) ? null
@@ -578,7 +590,7 @@ export function mountTasksPane(host, options) {
     const record = tasksRecord(observed, state.columns, contentRead.readOrder);
     // The fetch is a writer only. The matching cache announcement above is
     // what re-reads this record and repaints the pane.
-    const entries = [{ address: tasksQueryAddress(state.deviceId, state.projectId, params), record, contentRead }];
+    const entries = [{ address: tasksQueryAddress(state.deviceId, state.projectId, cachedParams), record, contentRead }];
     // Both absence proofs see the same pre-publication scope. Removing a row
     // from one replica must not retire the sibling response's captured ticket.
     if (wholeRead) {
@@ -598,10 +610,11 @@ export function mountTasksPane(host, options) {
    *  session's read (#119) walks the list again. */
   async function readListPages(params, filters) {
     const { deviceId, projectId } = state;
+    const cachedParams = taskListCacheParams(params);
     const session = deviceSession(deviceId);
     const { project_id: _projectId, ...selected } = params;
     const scope = projectSyncScope(projectId, selected);
-    const addresses = [tasksQueryAddress(deviceId, projectId, params)];
+    const addresses = [tasksQueryAddress(deviceId, projectId, cachedParams)];
     if (!narrowsTheRead(filters)) addresses.push(tasksAddress(deviceId, projectId));
     await pullTaskPages({
       ask: (asked) => state.callRpc("tasks.list", asked),

@@ -242,6 +242,61 @@ it.each(["initial mount", "view change"])("reports unread display hydration fail
   }
 });
 
+it.each([false, true])("keeps selected wire spelling and canonical aggregate addresses for paged=%s", async (paged) => {
+  const pages = await import("../src/core/trackerPages.js");
+  const pageSupport = vi.spyOn(pages, "pagesTasks").mockReturnValue(paged);
+  const row = task({ id: "wire-alias-row", title: "Wire alias task", labels: ["API"] });
+  call.mockImplementation(async (method) => method === "tasks.list" ? { tasks: [row], next_cursor: null }
+    : method === "tasks.get" ? new Promise(() => {}) : {});
+  try {
+    await mount();
+    await chooseFilter("label", "API");
+    const canonical = { project_id: "proj-1", state: "open", label: "api" };
+    await vi.waitFor(async () => expect((await trackerCache.readTasksQueryRecord("dev-1", "proj-1", canonical))?.tasks
+      .map(({ id }) => id)).toEqual([row.id]));
+    expect(listed("tasks.list").some(([, params]) => params.label === "API")).toBe(true);
+    expect(await trackerCache.readTasksQueryCached("dev-1", "proj-1", { ...canonical, label: "API" })).toBeNull();
+    if (paged) {
+      const records = await cache.cachedAddresses({ deviceId: "dev-1", entityId: "proj-1", kind: "tracker-tasks-page" });
+      expect(records.some(({ sub }) => JSON.parse(sub).label === "API")).toBe(true);
+    }
+  } finally {
+    pageSupport.mockRestore();
+  }
+});
+
+it("paints one engine-owned canonical query for Bug then bug mounts without a whole list", async () => {
+  durable.owns = true;
+  const params = { project_id: "proj-1", state: "open", label: "bug" };
+  const { projectSyncScope } = await vi.importActual("../src/core/scopedSyncRegistry.js");
+  const scope = projectSyncScope("proj-1", { state: "open", label: "Bug" });
+  const { createScopedTaskSyncCache } = await import("../src/core/scopedTaskSyncCache.js");
+  const { createScopedSyncEngine } = await import("../src/core/scopedSyncEngine.js");
+  const { body: _body, attachments, ...row } = task({ id: "engine-alias-task", title: "Engine alias task", labels: ["Bug"], attachments: [] });
+  const request = vi.fn(async (method) => ({ status: "ok", incarnation: "i", bridge_epoch: "e",
+    ...(method === "sync.snapshot" ? { watermark: "1", cursor: "S", records: [{ kind: "task", key: row.id, revision: "1",
+      row: { ...row, attachment_count: attachments.length } }] } : { head: "1", cursor: "C", changes: [] }) }));
+  const store = createScopedTaskSyncCache({ deviceId: "dev-1", projectId: "proj-1", scope, queryParams: params, bridgeIdentity: "dev-1" });
+  const engine = createScopedSyncEngine({ request, storeFor: () => store, epoch: () => "e" });
+  const { uiAddress, updateUiState } = await import("../src/core/localUiState.js");
+  const address = uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" });
+  try {
+    engine.track(scope); expect(await engine.catchUp(scope)).toBe(true);
+    await updateUiState(address, () => ({ view: "list", filters: { state: "open", label: "Bug" } }));
+    await mount();
+    expect(titles()).toEqual(["Engine alias task"]);
+    pane.dispose(); pane = null; host.replaceChildren();
+    await updateUiState(address, () => ({ view: "list", filters: { state: "open", label: "bug" } }));
+    await mount();
+    expect(titles()).toEqual(["Engine alias task"]);
+    expect(await cache.readCached(trackerCache.tasksAddress("dev-1", "proj-1"))).toBeUndefined();
+    expect(durable.register.mock.calls.every(([entry]) => entry.queryParams.label === "bug")).toBe(true);
+    expect(call).not.toHaveBeenCalled();
+  } finally {
+    engine.dispose();
+  }
+});
+
 it.each(["query", "whole list"])("continues after rejected display hydration from the %s subscription", async (source) => {
   durable.owns = true;
   call = vi.fn(() => new Promise(() => {}));
@@ -1890,6 +1945,40 @@ it("durable ownership registers the query and prevents mounted legacy list write
   expect(durable.wake).toHaveBeenCalled();
   pane.dispose(); pane = null;
   expect(durable.release).toHaveBeenCalled();
+});
+
+it.each(["group toggle", "show more", "dashboard tab"])("keeps the mounted durable query registered through a real %s UI-state save", async (interaction) => {
+  durable.owns = true;
+  const tasks = Array.from({ length: 30 }, (_, index) => task({ id: `persisted-${index}`, number: 30 - index, title: `Saved task ${index}` }));
+  await trackerCache.writeTasksRecord("dev-1", "proj-1", { tasks, columns: columns() });
+  call = vi.fn(() => new Promise(() => {}));
+  await mount({ view: interaction === "dashboard tab" ? "dashboard" : "list" });
+  const registrations = durable.register.mock.calls.length, releases = durable.release.mock.calls.length;
+  const { uiAddress } = await import("../src/core/localUiState.js");
+  const { readUiRecord } = await import("../src/core/localUiStore.js");
+  const address = uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" });
+  const controls = {
+    "group toggle": { selector: '[data-task-group-toggle="rest"]', saved: (value) => value.collapsedGroups.includes("rest") },
+    "show more": { selector: "[data-task-more]", saved: (value) => value.visibleCount === 50 },
+    "dashboard tab": { selector: '[data-dashboard-tab="active"]', saved: (value) => value.dashboardTab === "active" },
+  };
+  const control = controls[interaction];
+  expect(host.querySelector(control.selector)).not.toBeNull();
+  host.querySelector(control.selector).click();
+  await vi.waitFor(async () => expect(control.saved((await readUiRecord(address)).value)).toBe(true));
+  await flush();
+  expect(durable.register).toHaveBeenCalledTimes(registrations);
+  expect(durable.release).toHaveBeenCalledTimes(releases);
+});
+
+it("registers a changed durable query before releasing the previous mounted query", async () => {
+  durable.owns = true;
+  await mount();
+  const registrations = durable.register.mock.calls.length, releases = durable.release.mock.calls.length;
+  await chooseFilter("state", "closed");
+  expect(durable.register).toHaveBeenCalledTimes(registrations + 1);
+  expect(durable.release).toHaveBeenCalledTimes(releases + 1);
+  expect(durable.register.mock.invocationCallOrder.at(-1)).toBeLessThan(durable.release.mock.invocationCallOrder.at(-1));
 });
 it("repaints mounted board columns from a columns-only cache publication", async () => {
   const held = task({ id: "held-board-task", status: "backlog" });

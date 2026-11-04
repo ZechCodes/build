@@ -57,7 +57,7 @@ describe("scoped sync runtime ownership", () => {
     expect(engine.dispose).toHaveBeenCalledOnce();
     runtime.stopScopedSyncRuntime();
   });
-  it("retires old epoch engines and stops checking closed scopes", () => {
+  it("retains the holder engine across greeting epochs and stops checking closed scopes", () => {
     fake.lock = true;
     runtime.startScopedSyncRuntime({ ownsLock: () => fake.lock, request: vi.fn() });
     const engine = fake.engines[0];
@@ -66,7 +66,7 @@ describe("scoped sync runtime ownership", () => {
     expect(engine.untrack).toHaveBeenCalledWith(scope);
     fake.contexts[0].greeting = { ...fake.contexts[0].greeting, epoch: "e2" };
     fake.greeted("d1");
-    expect(engine.dispose).toHaveBeenCalledOnce();
+    expect(engine.dispose).not.toHaveBeenCalled();
     runtime.stopScopedSyncRuntime();
   });
 });

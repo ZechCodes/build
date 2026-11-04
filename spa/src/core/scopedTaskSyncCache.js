@@ -93,7 +93,7 @@ function applyRows(addresses, held, records, options) {
 
 function reducePublication(addresses, records, options, held, context) {
   const previous = held[0]?.value;
-  if (!acceptsCapture(options.capture, context, options.active, options.place.deviceId)
+  if (!options.accept() || !acceptsCapture(options.capture, context, options.active, options.place.deviceId)
     || tokenOf(previous) !== (options.expectedCursor ?? null)) return null;
   const cached = recordMap(addresses, held);
   const next = applyRows(addresses, cached, records, { ...options, context });
@@ -116,18 +116,18 @@ export function createScopedTaskSyncCache({ deviceId, scope, projectId, bridgeId
     const contentRead = await captureTaskContentRead(place, { revalidate: "summary" });
     return { contentRead, mutationEpoch, pending };
   };
-  const publish = async ({ records = [], ...publication }) => {
+  const publish = async ({ records = [], accept = () => true, ...publication }) => {
     const existing = await cachedAddresses({ deviceId, entityId: place.projectId });
     const addresses = publicationAddresses(place, scope, cursor, existing, records, queryParams);
-    const options = { ...publication, place, scope, bridgeIdentity, active };
+    const options = { ...publication, place, scope, bridgeIdentity, active, accept };
     return mergeTaskContentRecordsTogether(place, addresses,
       (held, context) => reducePublication(addresses, records, options, held, context),
       { watchTaskIds: records.map((record) => record.key) });
   };
-  const reset = async ({ capture: captured, expectedCursor } = {}) => {
+  const reset = async ({ capture: captured, expectedCursor, accept = () => true } = {}) => {
     let admitted = false, committed = false;
     await mergeTaskContentRecordsTogether(place, [cursor], ([held], context) => {
-      admitted = acceptsCapture(captured, context, active, deviceId) && tokenOf(held?.value) === (expectedCursor ?? null);
+      admitted = accept() && acceptsCapture(captured, context, active, deviceId) && tokenOf(held?.value) === (expectedCursor ?? null);
       return admitted ? { values: [DELETE_CACHED_RECORD] } : null;
     }, { onCommit: () => { committed = admitted; } });
     return committed;

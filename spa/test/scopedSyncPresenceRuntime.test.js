@@ -110,7 +110,7 @@ it("ignores smaller opening clocks and expired legacy identities while the key r
   queue("X", [entry("X", 100)]); await deliver();
   fake.clock = 5000;
   queue("Y", [entry("Y", 1, "smaller-legacy-token")]); await deliver();
-  fake.clock = 16000;
+  fake.clock = 91000;
   queue("Y", [entry("Y", 1, "smaller-legacy-token")]); await deliver();
   expect(fake.registry.tracked("d")).toHaveLength(1);
   expect(fake.registry.tracked("d")[0].owner).toBe("Y");
@@ -118,13 +118,12 @@ it("ignores smaller opening clocks and expired legacy identities while the key r
   expect(fake.stores[0].options.active()).toBe(true);
 });
 
-it.each(["holder", "session", "reload"])("snapshots a persisted scope on every new %s engine", async (transition) => {
+it.each(["holder", "reload"])("snapshots a persisted scope on every new %s engine", async (transition) => {
   queue("X", [entry("X")]); await deliver();
   const before = fake.request.mock.calls.length;
   if (transition === "holder") {
     fake.lock = false; runtime.reconcileScopedSyncRuntime(); fake.lock = true;
-  } else if (transition === "session") fake.context.session = {};
-  else { runtime.stopScopedSyncRuntime(); begin(); queue("X", [entry("X")]); await deliver(); }
+  } else { runtime.stopScopedSyncRuntime(); begin(); queue("X", [entry("X")]); await deliver(); }
   await runtime.captureScopedSync("d");
   expect(snapshots()).toHaveLength(2);
   const requests = fake.request.mock.calls.slice(before);

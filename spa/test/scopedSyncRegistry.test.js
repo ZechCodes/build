@@ -42,7 +42,7 @@ it("answers a new holder's presence request and expires vanished tab registratio
   const second = registry({ channel: channel() }); second.subscribe(vi.fn()); expect(second.tracked("d")).toHaveLength(1);
   // A crashed tab cannot announce release or refresh its lease.
   const owner = channels[0]; owner.postMessage = () => {};
-  await vi.advanceTimersByTimeAsync(20_000); expect(second.tracked("d")).toHaveLength(0);
+  await vi.advanceTimersByTimeAsync(95_000); expect(second.tracked("d")).toHaveLength(0);
 });
 it("notifies only membership changes, not heartbeats", async () => {
   vi.useFakeTimers(); const scopes = registry(); const changed = vi.fn(); const stop = scopes.subscribe(changed);
@@ -76,7 +76,7 @@ it("renews a frozen follower's expired presence before delivering its foreground
   follower.register(task("resumed"));
   const send = channels[1].postMessage;
   channels[1].postMessage = () => {};
-  await vi.advanceTimersByTimeAsync(20_000);
+  await vi.advanceTimersByTimeAsync(95_000);
   expect(holder.tracked("d")).toHaveLength(0);
   channels[1].postMessage = send;
   const seen = [];
@@ -119,7 +119,7 @@ it("keeps remote lease expiry running for observers without a local mount", asyn
     id: "remote:1", key: JSON.stringify(["d", taskSyncScope("remote")]), opened: Date.now(), ordinal: 1 }] } });
   expect(scopes.tracked("d")).toHaveLength(1);
   changed.mockClear();
-  await vi.advanceTimersByTimeAsync(15_000);
+  await vi.advanceTimersByTimeAsync(90_000);
   expect(scopes.tracked("d")).toHaveLength(0);
   expect(changed).toHaveBeenCalledOnce();
   stop(); expect(vi.getTimerCount()).toBe(0);
@@ -240,13 +240,13 @@ it("prunes expired legacy presence before local lookup and does not reuse its au
   expect(scopes.tracked("d")).toHaveLength(1);
   expect(scopes.tracked("d")[0]).not.toHaveProperty("registration");
   expect(scopes.tracked("d")[0]).not.toHaveProperty("registrationOpened");
-  clock = 16_000;
+  clock = 91_000;
   expect(scopes.tracked("d")).toEqual([]);
   scopes.register(task("shared"));
   const local = scopes.tracked("d")[0], sentBefore = channel.postMessage.mock.calls.length;
   channel.onmessage({ data: legacy });
   expect(channel.postMessage).toHaveBeenCalledTimes(sentBefore);
-  expect(scopes.tracked("d")[0]).toMatchObject({ id: local.id, key: local.key, opened: 16_000 });
+  expect(scopes.tracked("d")[0]).toMatchObject({ id: local.id, key: local.key, opened: 91_000 });
   expect(scopes.tracked("d")[0]).not.toHaveProperty("registration");
   expect(scopes.tracked("d")[0]).not.toHaveProperty("registrationOpened");
 });

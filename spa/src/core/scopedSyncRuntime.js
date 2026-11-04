@@ -34,17 +34,24 @@ function retire(deviceId) {
 }
 
 function createOwner(context, greeting) {
-  const owner = runtime, session = context.session, cacheScope = context.cacheScope;
-  let state;
+  const owner = runtime, cacheScope = context.cacheScope, bridgeIdentity = context.deviceId;
+  let state, requestOpening;
   const active = () => runtime === owner && owner.ownsLock() && context.active()
-    && context.session === session && context.cacheScope === cacheScope && greeting.current()
-    && engines.get(context.deviceId) === state;
+    && context.cacheScope === cacheScope && context.deviceId === bridgeIdentity && engines.get(bridgeIdentity) === state;
+  const captureRequest = () => {
+    if (requestOpening?.current()) return requestOpening;
+    const accepted = captureDeviceGreeting(context), session = context.session;
+    if (!accepted || !session) return null;
+    requestOpening = { epoch: accepted.epoch,
+      current: () => active() && context.session === session && accepted.current() };
+    return requestOpening;
+  };
   const entries = new Map();
-  const engine = createScopedSyncEngine({ active, epoch: () => greeting.epoch,
+  const engine = createScopedSyncEngine({ active, captureRequest,
     request: (method, params) => owner.request(context.deviceId, method, params, params.scope),
     storeFor: (scope) => scopeStore(context, entries, scope, active),
   });
-  state = { context, session, cacheScope, greeting, engine, entries, active, bodies: new Map() };
+  state = { context, cacheScope, greeting, engine, entries, active, captureRequest, opening: null, bodies: new Map() };
   return state;
 }
 
@@ -71,41 +78,64 @@ function reconcileEntries(held, entries) {
 
 export function reconcileScopedSyncRuntime() {
   if (!runtime) return;
-  const contexts = browserLockAvailable() && runtime.ownsLock() ? liveContexts() : [];
+  const contexts = browserLockAvailable() && runtime.ownsLock() ? ownedContexts() : [];
   const live = new Set(contexts.map((context) => context.deviceId));
   for (const deviceId of engines.keys()) if (!live.has(deviceId)) retire(deviceId);
   for (const context of contexts) reconcileDevice(context);
 }
 
+function ownedContexts() {
+  const retained = [...engines.values()].filter((held) => held.active()).map((held) => held.context);
+  return [...new Map([...retained, ...liveContexts()].map((context) => [context.deviceId, context])).values()];
+}
+
 function reconcileDevice(context) {
   const greeting = captureDeviceGreeting(context);
-  if (!greeting) { retire(context.deviceId); return; }
   let held = engines.get(context.deviceId);
-  if (held && (held.context !== context || held.greeting.epoch !== greeting.epoch || !held.active())) { retire(context.deviceId); held = null; }
+  if (held && (held.context !== context || !held.active())) { retire(context.deviceId); held = null; }
   if (!held) {
+    if (!greeting) return;
     held = createOwner(context, greeting);
     engines.set(context.deviceId, held);
   }
-  reconcileEntries(held, trackedSyncScopes(context.deviceId).filter(({ scope }) => supported(greeting.capabilities, scope)));
+  if (greeting) held.greeting = greeting;
+  const opening = held.captureRequest(), previous = held.opening;
+  if (opening) held.opening = opening;
+  reconcileEntries(held, trackedSyncScopes(context.deviceId).filter(({ scope }) => supported(held.greeting.capabilities, scope)));
+  refreshOpening(held, opening, previous);
+}
+
+function refreshOpening(held, opening, previous) {
+  if (opening && previous && opening !== previous) {
+    held.bodies.clear();
+    for (const entry of held.entries.values()) {
+      void Promise.all([held.engine.catchUp(entry.scope), prepareScope(held, entry)]).catch(() => {});
+    }
+  }
 }
 
 function prepareScope(held, entry) {
   if (entry.scope.kind !== "project_tasks") return refreshBody(held, entry);
+  const token = held.captureRequest();
+  if (!token) return Promise.resolve(false);
   return refreshScopedProjectColumns({ deviceId: held.context.deviceId, projectId: entry.projectId,
-    active: held.active, callRpc: (method, params) => runtime.request(held.context.deviceId, method, params, entry.scope) });
+    active: () => held.active() && token.current(), callRpc: (method, params) => runtime.request(held.context.deviceId, method, params, entry.scope) });
 }
 
 function refreshBody(held, entry) {
   if (entry.scope.kind !== "task" || !held.active()) return Promise.resolve(false);
+  const token = held.captureRequest();
+  if (!token) return Promise.resolve(false);
   const taskId = entry.scope.task_id;
   const pending = held.bodies.get(taskId);
   if (pending) { pending.again = true; return pending.promise; }
   const state = { again: false };
   state.promise = refreshScopedTaskBody({ deviceId: held.context.deviceId, projectId: entry.projectId, taskId,
-    active: () => held.active() && held.entries.has(JSON.stringify(entry.scope)), callRpc: (method, params) => runtime.request(held.context.deviceId, method, params, entry.scope),
+    active: () => held.active() && token.current() && held.entries.get(JSON.stringify(entry.scope)) === entry,
+    callRpc: (method, params) => runtime.request(held.context.deviceId, method, params, entry.scope),
   }).catch(() => false).finally(() => {
-    held.bodies.delete(taskId);
-    if (state.again && held.active()) void refreshBody(held, entry);
+    if (held.bodies.get(taskId) === state) held.bodies.delete(taskId);
+    if (state.again && held.active() && token.current()) void refreshBody(held, entry);
   });
   held.bodies.set(taskId, state);
   return state.promise;

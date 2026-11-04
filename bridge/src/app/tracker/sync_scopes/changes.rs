@@ -179,7 +179,11 @@ impl TaskSyncScope {
             let base = match cache.entry(event.entity.clone()) {
                 std::collections::btree_map::Entry::Occupied(row) => row.into_mut(),
                 std::collections::btree_map::Entry::Vacant(row) => {
-                    row.insert(if self.is_device() {read.sync_device_record(&event.entity.kind,&event.entity.key)?} else {self.record(read, &event.entity.key)?})
+                    row.insert(if self.is_device() {
+                        read.sync_device_record(&event.entity.kind, &event.entity.key)?
+                    } else {
+                        self.record(read, &event.entity.key)?
+                    })
                 }
             };
             let mut record = base.clone();

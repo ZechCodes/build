@@ -18,8 +18,14 @@ pub(in crate::store) fn install(conn: &Connection) -> Result<(), StoreError> {
 }
 
 pub(in crate::store) fn touch_agent(conn: &Connection, id: &str) -> Result<(), StoreError> {
-    let installed:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name='sync_device_agent_touches')",[],|row|row.get(0))?;
-    if !installed {return Ok(());}
+    let installed: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name='sync_device_agent_touches')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !installed {
+        return Ok(());
+    }
     conn.prepare_cached("INSERT OR IGNORE INTO temp.sync_device_agent_touches VALUES(?1)")?
         .execute([id])?;
     Ok(())
@@ -64,7 +70,7 @@ pub(in crate::store) fn collect(
             identity_projection(tx, &id)?,
         )?;
     }
-    super::device_families::collect(tx,batch)?;
+    super::device_families::collect(tx, batch)?;
     tx.execute("DELETE FROM temp.sync_device_agent_touches", [])?;
     Ok(())
 }
@@ -99,7 +105,7 @@ fn agent_projections(
     let Some((owner, raw)) = stored else {
         return Ok(None);
     };
-    let raw=raw.ok_or_else(||super::invalid("device agent facts are incomplete"))?;
+    let raw = raw.ok_or_else(|| super::invalid("device agent facts are incomplete"))?;
     let agent: super::device_facts::AgentFacts =
         serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
             path: format!("agents/{id}").into(),
@@ -119,19 +125,38 @@ fn agent_projections(
         .unwrap_or_default();
     let conversation = agent.conversation_id().to_string();
     let read = attention.cursor_for(&agent.id);
-    let current=super::device_thread::generation(conn,&conversation)?;
+    let current = super::device_thread::generation(conn, &conversation)?;
     let last_row:Option<(i64,Option<String>)>=conn.prepare_cached("SELECT sequence,summary FROM device_summary_items WHERE conversation_id=?1 AND generation=?2 ORDER BY sequence DESC LIMIT 1")?.query_row(rusqlite::params![conversation,current],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-    let last=last_row.as_ref().map_or(0,|row|row.0);
-    let last_summary=last_row.and_then(|row|row.1);
+    let last = last_row.as_ref().map_or(0, |row| row.0);
+    let last_summary = last_row.and_then(|row| row.1);
     let own:i64=conn.prepare_cached("SELECT sequence FROM device_summary_items WHERE conversation_id=?1 AND generation=?2 AND own=1 ORDER BY sequence DESC LIMIT 1")?.query_row(rusqlite::params![conversation,current],|row|row.get(0)).optional()?.unwrap_or(0);
-    let floor=read.max(agent.watch_started_after);
-    let unread=if agent.watched && !attention.muted {super::device_thread::unread(conn,&conversation,floor)?} else {0};
-    let reason:Option<String>=if unread>0 {conn.prepare_cached("SELECT reason FROM device_summary_items WHERE conversation_id=?1 AND generation=?2 AND attention=1 AND sequence>?3 ORDER BY sequence DESC LIMIT 1")?.query_row(rusqlite::params![conversation,current,i64::try_from(floor).unwrap_or(i64::MAX)],|row|row.get(0)).optional()?} else {None};
+    let floor = read.max(agent.watch_started_after);
+    let unread = if agent.watched && !attention.muted {
+        super::device_thread::unread(conn, &conversation, floor)?
+    } else {
+        0
+    };
+    let reason: Option<String> = if unread > 0 {
+        conn.prepare_cached("SELECT reason FROM device_summary_items WHERE conversation_id=?1 AND generation=?2 AND attention=1 AND sequence>?3 ORDER BY sequence DESC LIMIT 1")?.query_row(rusqlite::params![conversation,current,i64::try_from(floor).unwrap_or(i64::MAX)],|row|row.get(0)).optional()?
+    } else {
+        None
+    };
     let session=conn.prepare_cached("SELECT session_started_ms,last_activity_ms FROM device_conversation_sessions WHERE conversation_id=?1")?.query_row([&conversation],|row|Ok((row.get::<_,Option<i64>>(0)?,row.get::<_,Option<i64>>(1)?))).optional()?.unwrap_or((None,None));
     let thread:Option<(String,String)>=conn.prepare_cached("SELECT json_extract(record,'$.thread_id'),json_extract(record,'$.thread_generation_revision') FROM device_agent_facts WHERE agent_id=?1")?.query_row([&conversation],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-    let pending=pending(conn,&conversation)?;
+    let pending = pending(conn, &conversation)?;
     let project_path = owner_project_path(conn, &owner)?;
-    let project_id=project_path.as_deref().map(|path|conn.query_row("SELECT project_id FROM device_project_ids WHERE path=?1",[path],|row|row.get::<_,String>(0)).optional()).transpose()?.flatten();
+    let project_id = project_path
+        .as_deref()
+        .map(|path| {
+            conn.query_row(
+                "SELECT project_id FROM device_project_ids WHERE path=?1",
+                [path],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+        })
+        .transpose()?
+        .flatten();
     let workspace_id:Option<String>=conn.prepare_cached("SELECT w.workspace_id FROM device_owner_projects o JOIN device_workspace_roots w ON w.root=o.workspace_path WHERE o.owner_id=?1")?.query_row([&owner],|row|row.get(0)).optional()?;
     let provider = agent.choice.provider.wire_id();
     let agent_row = json!({
@@ -187,33 +212,62 @@ fn agent_projections(
     Ok(Some((agent_row, conversation_row)))
 }
 
-pub(super) fn owner_project_path(conn:&Connection,owner:&str)->Result<Option<String>,StoreError> {
-    Ok(conn.prepare_cached("SELECT project_path FROM device_owner_projects WHERE owner_id=?1")?.query_row([owner],|row|row.get(0)).optional()?)
+pub(super) fn owner_project_path(
+    conn: &Connection,
+    owner: &str,
+) -> Result<Option<String>, StoreError> {
+    Ok(conn
+        .prepare_cached("SELECT project_path FROM device_owner_projects WHERE owner_id=?1")?
+        .query_row([owner], |row| row.get(0))
+        .optional()?)
 }
 
-pub(in crate::store) fn touch_conversation(conn:&Connection,id:&str)->Result<(),StoreError> {
-    let installed:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name='sync_device_agent_touches')",[],|row|row.get(0))?;
-    if !installed {return Ok(());}
-    touch_agent(conn,id)?;
+pub(in crate::store) fn touch_conversation(conn: &Connection, id: &str) -> Result<(), StoreError> {
+    let installed: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE name='sync_device_agent_touches')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !installed {
+        return Ok(());
+    }
+    touch_agent(conn, id)?;
     conn.execute("INSERT OR IGNORE INTO temp.sync_device_agent_touches
         SELECT id FROM agents WHERE CASE WHEN json_valid(record) THEN json_extract(record,'$.conversation_id') END=?1",[id])?;
     Ok(())
 }
 
-pub(in crate::store) fn touch_project(conn:&Connection,path:&str)->Result<(),StoreError> {
+pub(in crate::store) fn touch_project(conn: &Connection, path: &str) -> Result<(), StoreError> {
     conn.execute("INSERT OR IGNORE INTO temp.sync_device_agent_touches SELECT a.id FROM agents a JOIN device_owner_projects o ON o.owner_id=a.owner_id WHERE o.project_path=?1",[path])?;
-    let owners=conn.prepare("SELECT owner_id FROM device_owner_projects WHERE project_path=?1")?.query_map([path],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
-    for owner in owners {super::device_families::touch_retained(conn,"owner",&owner)?;}
-    let archives=conn.prepare("SELECT id FROM device_archive_projects WHERE project_path=?1")?.query_map([path],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
-    for id in archives {super::device_families::touch_archive(conn,&id)?;}
-    let ids=conn.prepare("SELECT task_id FROM tracker_task_summaries WHERE project_key=?1")?.query_map([path],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
-    for id in ids {super::touch_task(conn,&id,false)?;}
+    let owners = conn
+        .prepare("SELECT owner_id FROM device_owner_projects WHERE project_path=?1")?
+        .query_map([path], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for owner in owners {
+        super::device_families::touch_retained(conn, "owner", &owner)?;
+    }
+    let archives = conn
+        .prepare("SELECT id FROM device_archive_projects WHERE project_path=?1")?
+        .query_map([path], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for id in archives {
+        super::device_families::touch_archive(conn, &id)?;
+    }
+    let ids = conn
+        .prepare("SELECT task_id FROM tracker_task_summaries WHERE project_key=?1")?
+        .query_map([path], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for id in ids {
+        super::touch_task(conn, &id, false)?;
+    }
     Ok(())
 }
 
-fn pending(conn:&Connection,id:&str)->Result<bool,StoreError> {
+fn pending(conn: &Connection, id: &str) -> Result<bool, StoreError> {
     let legacy=format!("SELECT EXISTS(SELECT 1 FROM thread_items INDEXED BY thread_items_pending_delivery WHERE agent_id=?1 AND message=1 AND {})",crate::store::schema::RETENTION_PENDING_ITEM_SQL);
-    let pending:bool=conn.query_row(&legacy,[id],|row|row.get(0))?;
-    if pending {return Ok(true);}
+    let pending: bool = conn.query_row(&legacy, [id], |row| row.get(0))?;
+    if pending {
+        return Ok(true);
+    }
     Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE conversation_id=?1 AND status IN ('queued','claimed','uncertain'))",[id],|row|row.get(0))?)
 }

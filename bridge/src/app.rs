@@ -15,9 +15,9 @@ mod board;
 mod board_index;
 mod captures;
 mod config;
+mod device_lifecycle;
 #[cfg(test)]
 mod device_lifecycle_tests;
-mod device_lifecycle;
 mod facts;
 mod fs;
 mod git;

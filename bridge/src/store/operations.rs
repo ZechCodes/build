@@ -195,7 +195,11 @@ impl Store {
                 .max()
                 .unwrap_or_else(|| agent.thread.last_sequence());
             for item in &agent.thread.items {
-                super::sync::before_device_item(tx, conversation_id, i64::try_from(item.sequence()).unwrap_or(i64::MAX))?;
+                super::sync::before_device_item(
+                    tx,
+                    conversation_id,
+                    i64::try_from(item.sequence()).unwrap_or(i64::MAX),
+                )?;
                 tx.execute(
                     "UPDATE thread_items SET item = ?3, updated_sequence = ?4 \
                      WHERE agent_id = ?1 AND sequence = ?2",
@@ -362,9 +366,13 @@ impl Store {
                     now_rfc3339()
                 ],
             )?;
-            if changed==1 {
-                let conversation:String=tx.query_row("SELECT conversation_id FROM operations WHERE operation_id=?1",[operation_id],|row|row.get(0))?;
-                super::sync::touch_device_conversation(tx,&conversation)?;
+            if changed == 1 {
+                let conversation: String = tx.query_row(
+                    "SELECT conversation_id FROM operations WHERE operation_id=?1",
+                    [operation_id],
+                    |row| row.get(0),
+                )?;
+                super::sync::touch_device_conversation(tx, &conversation)?;
             }
             Ok(changed == 1)
         })
@@ -526,7 +534,7 @@ pub(super) fn insert_operation(
             now,
         ],
     )?;
-    super::sync::touch_device_conversation(tx,&receipt.conversation_id)?;
+    super::sync::touch_device_conversation(tx, &receipt.conversation_id)?;
     Ok(())
 }
 

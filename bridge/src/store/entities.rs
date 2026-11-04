@@ -1212,7 +1212,12 @@ pub(super) fn write_run(
             serde_json::to_string(&skeleton).expect("a run always serializes")
         ],
     )?;
-    super::sync::seed_device_owner(tx, &record.id, &record.project_path, Some(&record.worktree_path))?;
+    super::sync::seed_device_owner(
+        tx,
+        &record.id,
+        &record.project_path,
+        Some(&record.worktree_path),
+    )?;
     super::task_summaries::owner_refresh(tx, &record.id)
 }
 

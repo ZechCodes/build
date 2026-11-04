@@ -30,7 +30,7 @@ impl ReadTransaction<'_> {
         purpose: &str,
         data: T,
     ) -> Result<String, SyncError> {
-        super::device::ensure_scope_ready(self.connection(),scope)?;
+        super::device::ensure_scope_ready(self.connection(), scope)?;
         let (incarnation, key) = schema::identity(self.connection())?;
         let payload = Payload {
             version: 1,
@@ -58,7 +58,7 @@ impl ReadTransaction<'_> {
         purpose: &str,
         token: &str,
     ) -> Result<Continuation<T>, SyncError> {
-        super::device::ensure_scope_ready(self.connection(),scope)?;
+        super::device::ensure_scope_ready(self.connection(), scope)?;
         if token.len() > token_bound(purpose) {
             return Err(SyncError::MalformedCursor);
         }
@@ -72,7 +72,7 @@ impl ReadTransaction<'_> {
         let payload: Payload<T> =
             serde_json::from_slice(&bytes).map_err(|_| SyncError::MalformedCursor)?;
         validate(&payload, purpose, &tag)?;
-        super::device::ensure_scope_ready(self.connection(),scope)?;
+        super::device::ensure_scope_ready(self.connection(), scope)?;
         let (incarnation, key) = schema::identity(self.connection())?;
         validate_binding_shape(&payload.binding, scope)?;
         if incarnation == payload.incarnation {
@@ -124,4 +124,10 @@ fn validate<T>(payload: &Payload<T>, purpose: &str, tag: &[u8]) -> Result<(), Sy
     Ok(())
 }
 
-fn token_bound(purpose:&str)->usize {if purpose=="device_snapshot" {65536} else {2048}}
+fn token_bound(purpose: &str) -> usize {
+    if purpose == "device_snapshot" {
+        65536
+    } else {
+        2048
+    }
+}

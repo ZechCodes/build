@@ -99,7 +99,10 @@ fn scoped_sync_wire_advertises_complete_device_projection() {
         device["scope"] = serde_json::json!({"kind":"device"});
         handler.parse_params(&device).unwrap();
         device["scope"] = serde_json::json!({"kind":"unknown_device"});
-        assert!(handler.parse_params(&device).is_err(), "unknown scopes must stay closed");
+        assert!(
+            handler.parse_params(&device).is_err(),
+            "unknown scopes must stay closed"
+        );
     }
     let snapshot = read_json(&fixtures_root().join("v1/sync.snapshot.json"));
     assert_eq!(

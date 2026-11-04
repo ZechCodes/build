@@ -1,5 +1,4 @@
-//! Durable scoped recovery reads. Only the task-backed scopes are on the wire;
-//! the unfinished device projection has no variant, method path or capability.
+//! Durable scoped recovery reads, including finite leased device snapshots.
 
 use super::Handler;
 use crate::api::ApiError;
@@ -27,8 +26,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
     ]
 }
 
-/// The closed set of scopes whose producer coverage is complete in this
-/// release. A `device` request therefore fails parameter decoding plainly.
+/// The closed set of supported scopes. Capability names gate client use.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum Scope {
@@ -164,7 +162,10 @@ pub struct Selection {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct SnapshotLease {pub id:String,pub expires_at_ms:i64}
+pub struct SnapshotLease {
+    pub id: String,
+    pub expires_at_ms: i64,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]

@@ -1,12 +1,11 @@
 # Scoped sync journal
 
-This is the bridge implementation for #892. C1 installs storage, transactional
-publication, cursor validation, a ReadPool head reader and bounded retention
-maintenance. C2 connects task producers and pure task recovery reads. These
-internal interfaces do **not** advertise a scope capability or register a public
-sync RPC. C3 connects device producers; C4 registers the wire methods, fixtures
-and POST query resources. Existing
-read/write replies, subscriptions and pushes keep their existing behavior.
+This is the bridge implementation for #892 and #995. The journal owns
+transactional publication, cursor validation, ReadPool recovery and bounded
+retention maintenance. Task recovery ships in wire 3.32; #995 completes the
+device producers and leased recovery described below. The typed sync methods
+also have POST query resources. Existing read/write replies, subscriptions and
+pushes keep their existing behavior.
 
 The approved plan and rulings are on #892. No SPA consumer or #925 retained
 task-selection service is implemented here.
@@ -48,8 +47,9 @@ alone does not prove atomicity.
 Only committed summary-visible fields participate. Partial/streaming item
 updates and ephemeral runtime facts must never enter a batch. Agent `working`,
 running/liveness `state` and liveness-derived `available` keep their existing
-push protocols. C3 must prove these producer boundaries with a streaming fixture;
-the C1 accumulator test alone is not producer-coverage evidence.
+push protocols. The committed-conversation amplification regression pins these
+producer boundaries with a streaming fixture; accumulator coverage alone does
+not establish producer coverage.
 
 The journal and source share the store's existing WAL durability settings.
 This preserves their process-crash atomicity without changing user-write ack

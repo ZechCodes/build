@@ -1022,13 +1022,18 @@ impl AppState {
     /// moves rows, which ride their own items.
     pub(in crate::app) fn note_board_lists_changed(&self, lists: crate::changes::BoardLists) {
         if lists.projects || lists.workspaces {
-            if let Err(error)=self.mark_device_lifecycle_dirty() {eprintln!("device sync registry observation: {error}");}
+            if let Err(error) = self.mark_device_lifecycle_dirty() {
+                eprintln!("device sync registry observation: {error}");
+            }
         }
         self.settle_device_lifecycle();
         self.note_board_lists_while_reconciling(lists);
     }
 
-    pub(in crate::app) fn note_board_lists_while_reconciling(&self, lists: crate::changes::BoardLists) {
+    pub(in crate::app) fn note_board_lists_while_reconciling(
+        &self,
+        lists: crate::changes::BoardLists,
+    ) {
         self.publish_read_metadata();
         self.changes.note_board_lists(lists);
         // An entity may have arrived with a checkout or left with one: the

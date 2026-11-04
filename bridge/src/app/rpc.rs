@@ -686,11 +686,23 @@ impl AppState {
             } else {
                 #[cfg(test)]
                 {
-                    _timer.sample_read_work(|| reads.call_for_opening(frame, connection, &sender.opening().diagnostic_id().to_string(), sender.bridge_epoch()))
+                    _timer.sample_read_work(|| {
+                        reads.call_for_opening(
+                            frame,
+                            connection,
+                            &sender.opening().diagnostic_id().to_string(),
+                            sender.bridge_epoch(),
+                        )
+                    })
                 }
                 #[cfg(not(test))]
                 {
-                    reads.call_for_opening(frame, connection, &sender.opening().diagnostic_id().to_string(), sender.bridge_epoch())
+                    reads.call_for_opening(
+                        frame,
+                        connection,
+                        &sender.opening().diagnostic_id().to_string(),
+                        sender.bridge_epoch(),
+                    )
                 }
             }
         })

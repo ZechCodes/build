@@ -15,7 +15,9 @@ use crate::app::AppState;
 impl AppState {
     /// Load every parked project whose folder is back, and answer their ids.
     pub(in crate::app) fn revive_parked_projects(&mut self) -> Vec<String> {
-        if self.projects.parked().is_empty() {return Vec::new();}
+        if self.projects.parked().is_empty() {
+            return Vec::new();
+        }
         if let Err(error) = self.mark_device_lifecycle_dirty() {
             eprintln!("device sync project revival: {error}");
             return Vec::new();

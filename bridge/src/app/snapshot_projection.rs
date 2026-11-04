@@ -70,7 +70,7 @@ impl AppState {
         if self.snapshot_observations.ready {
             return;
         }
-        if let Err(error)=self.initialize_device_lifecycle() {
+        if let Err(error) = self.initialize_device_lifecycle() {
             eprintln!("device sync startup: {error}");
             return;
         }

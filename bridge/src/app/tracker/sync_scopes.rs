@@ -30,14 +30,16 @@ pub struct TaskSyncScope {
 }
 
 impl TaskSyncScope {
-    pub fn device()->Self {
-        let mut recovery=Self::task("","","");
-        recovery.scope=Scope::new(Stream::device(),json!({"kind":"device"}));
-        recovery.definition=json!({"kind":"device"});
-        recovery.task=None;
+    pub fn device() -> Self {
+        let mut recovery = Self::task("", "", "");
+        recovery.scope = Scope::new(Stream::device(), json!({"kind":"device"}));
+        recovery.definition = json!({"kind":"device"});
+        recovery.task = None;
         recovery
     }
-    fn is_device(&self)->bool {self.scope.stream().kind==crate::store::sync::StreamKind::Device}
+    fn is_device(&self) -> bool {
+        self.scope.stream().kind == crate::store::sync::StreamKind::Device
+    }
 
     pub fn project(project_id: &str, project_key: &str, filters: &Value) -> Result<Self, String> {
         validate_fields(filters)?;

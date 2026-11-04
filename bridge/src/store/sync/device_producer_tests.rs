@@ -12,6 +12,60 @@ use std::collections::{HashMap, HashSet};
 const NOW: i64 = 1_800_000_000_000;
 const AT: &str = "2026-01-01T00:00:00Z";
 
+thread_local! {static ATTENTION_DEVICE_TOUCHES:std::cell::Cell<usize>=const{std::cell::Cell::new(0)};}
+fn attention_device_touches(event: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Profile(statement, _) = event {
+        if statement.sql().contains("INSERT OR IGNORE INTO temp.sync_device_agent_touches") {
+            ATTENTION_DEVICE_TOUCHES.with(|count|count.set(count.get()+1));
+        }
+    }
+}
+fn journal_head(store: &Store) -> i64 {
+    store.writer_for_test().query_row("SELECT head FROM sync_state", [], |row|row.get(0)).unwrap()
+}
+fn assert_only_agent_journaled(store: &Store, after: i64, id: &str) {
+    let conn = store.writer_for_test();
+    let keys = conn.prepare("SELECT entity_key FROM sync_journal WHERE seq>?1").unwrap()
+        .query_map([after], |row| row.get::<_,String>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+    assert!(!keys.is_empty(), "an actual attention transition must publish");
+    assert!(keys.iter().all(|key|key==id), "unrelated owner was projected: {keys:?}");
+}
+
+#[test]
+fn device_fix_round_attention_unchanged_save_journals_nothing_and_only_changed_owners_are_touched() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let mut first = run_record("attention-first");
+    let mut second = run_record("attention-second");
+    for run in [&mut first, &mut second] {
+        run.agents[0].thread.post_agent("answer", None, AT);
+        store.save_run(run).unwrap();
+    }
+    let live = HashSet::from([first.id.clone(), second.id.clone()]);
+    let mut attention = HashMap::from([(first.id.clone(),Attention::default()),(second.id.clone(),Attention::default())]);
+    store.save_attention(&attention, &live).unwrap();
+    let before = journal_head(&store);
+    ATTENTION_DEVICE_TOUCHES.with(|count|count.set(0));
+    store.writer_for_test().trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE, Some(attention_device_touches));
+    store.save_attention(&attention, &live).unwrap();
+    store.writer_for_test().trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    assert_eq!(journal_head(&store), before, "unchanged save must not append");
+    assert_eq!(ATTENTION_DEVICE_TOUCHES.with(|count|count.get()),0,"unchanged save must not re-project every owner behind journal deduplication");
+    attention.get_mut(&first.id).unwrap().read_through(&first.agents[0].id, 1);
+    store.save_attention(&attention, &live).unwrap();
+    assert_only_agent_journaled(&store, before, &first.agents[0].id);
+    let before = journal_head(&store);
+    attention.remove(&first.id);
+    store.save_attention(&attention, &live).unwrap();
+    assert_only_agent_journaled(&store, before, &first.agents[0].id);
+    let before = journal_head(&store);
+    let mut added = Attention::default();
+    added.read_through(&first.agents[0].id, 1);
+    attention.insert(first.id.clone(), added);
+    store.save_attention(&attention, &live).unwrap();
+    assert_only_agent_journaled(&store, before, &first.agents[0].id);
+}
+
 fn run_record(id: &str) -> PersistedRun {
     PersistedRun {
         id: id.into(),

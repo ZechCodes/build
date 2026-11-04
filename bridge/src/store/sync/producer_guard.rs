@@ -66,6 +66,10 @@ fn mutation_tables(raw: &str) -> (BTreeSet<String>, bool) {
             }
         }
     }
+    classify_inline_meta(&mut tables, &words);
+    (tables, dynamic)
+}
+fn classify_inline_meta(tables: &mut BTreeSet<String>, words: &[String]) {
     if tables.contains("meta") {
         for family in NAMED_META {
             if words.iter().any(|word| word == family) {
@@ -73,7 +77,6 @@ fn mutation_tables(raw: &str) -> (BTreeSet<String>, bool) {
             }
         }
     }
-    (tables, dynamic)
 }
 struct BodyVisitor<'a> {
     body: Body,

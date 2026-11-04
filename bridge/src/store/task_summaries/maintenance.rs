@@ -76,6 +76,7 @@ pub(crate) fn task_written(conn: &Connection, task: &Task) -> Result<(), StoreEr
 }
 
 pub(super) fn task_written_unchecked(conn: &Connection, task: &Task) -> Result<(), StoreError> {
+    super::super::sync::touch_task(conn, &task.id, false)?;
     query_sources::task_written(conn, task)?;
     let number = i64::try_from(task.number).unwrap_or(i64::MAX);
     let record = compact_task(task).to_string();
@@ -124,6 +125,7 @@ pub(crate) fn task_remove(conn: &Connection, id: &str) -> Result<(), StoreError>
     if !ready(conn)? {
         return Ok(());
     }
+    super::super::sync::touch_task(conn, id, false)?;
     task_dependents_refresh(conn, id)?;
     query_projection::remove(conn, id)?;
     keyed(
@@ -155,6 +157,7 @@ pub(crate) fn task_dependents_refresh(conn: &Connection, id: &str) -> Result<(),
         .query_map([id], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     for dependent in ids {
+        super::super::sync::touch_task(conn, &dependent, false)?;
         keyed(conn, &statements().dependencies, &dependent)?;
         query_projection::refresh(conn, &dependent)?;
     }
@@ -163,6 +166,7 @@ pub(crate) fn task_dependents_refresh(conn: &Connection, id: &str) -> Result<(),
 
 pub(crate) fn metadata_refresh(conn: &Connection, id: &str) -> Result<(), StoreError> {
     if ready(conn)? {
+        super::super::sync::touch_task(conn, id, false)?;
         keyed(conn, &statements().metadata, id)?;
         query_sources::metadata_refresh(conn, id)?;
         sql::refresh_choices(conn, id)?;
@@ -174,6 +178,7 @@ pub(crate) fn metadata_refresh(conn: &Connection, id: &str) -> Result<(), StoreE
 
 pub(crate) fn dependency_refresh(conn: &Connection, id: &str) -> Result<(), StoreError> {
     if ready(conn)? {
+        super::super::sync::touch_task(conn, id, false)?;
         keyed(conn, &statements().dependencies, id)?;
         query_projection::refresh(conn, id)?;
     }
@@ -195,6 +200,7 @@ pub(crate) fn history_append(
     if !ready(conn)? {
         return Ok(());
     }
+    super::super::sync::touch_task(conn, task_id, true)?;
     let replace: bool = conn
         .prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM tracker_task_summary_facts WHERE task_id=?1 AND id=?2)",
@@ -223,6 +229,7 @@ pub(crate) fn history_repair(conn: &Connection, task_id: &str) -> Result<(), Sto
     if !ready(conn)? {
         return Ok(());
     }
+    super::super::sync::touch_task(conn, task_id, false)?;
     keyed(
         conn,
         "DELETE FROM tracker_task_summary_facts WHERE task_id=?1",

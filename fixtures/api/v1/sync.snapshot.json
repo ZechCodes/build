@@ -1,0 +1,67 @@
+{
+  "method": "sync.snapshot",
+  "since": "3.32.0",
+  "params": {
+    "scope": {"kind": "task", "task_id": "task-1"},
+    "limit": 100
+  },
+  "result": {
+    "status": "ok",
+    "scope": {"kind": "task", "task_id": "task-1"},
+    "incarnation": "sync-incarnation-1",
+    "watermark": "42",
+    "cursor": "signed-watermark-cursor",
+    "bridge_epoch": "bridge-epoch-1",
+    "consistency": "single_read",
+    "records": [
+      {
+        "kind": "task_head",
+        "key": "task-1",
+        "revision": "42",
+        "row": {
+          "task": {
+            "id": "task-1",
+            "assignee": {"kind": "", "agent_id": "Actual\u0000suffix"}
+          },
+          "timeline": [],
+          "has_more": false
+        },
+        "selection": {"pending_present": true}
+      }
+    ]
+  },
+  "errors": ["invalid_params", "not_found", "unavailable", "internal"],
+  "note": "The NUL fixture pins canonical pending presence and opaque actor bytes independently of the clipped display kind.",
+  "examples": [
+    {
+      "params": {
+        "scope": {"kind": "project_tasks", "project_id": "proj-1"},
+        "limit": 25,
+        "page": "signed-keyset-page"
+      },
+      "result": {
+        "status": "resync_required",
+        "scope": {"kind": "project_tasks", "project_id": "proj-1"},
+        "incarnation": "sync-incarnation-1",
+        "head": "42",
+        "bridge_epoch": "bridge-epoch-1",
+        "reason": "retention_expired"
+      }
+    },
+    {
+      "params": {
+        "scope": {"kind": "project_tasks", "project_id": "deleted-project"},
+        "limit": 25,
+        "page": "authenticated-deleted-scope-page"
+      },
+      "result": {
+        "status": "resync_required",
+        "scope": {"kind": "project_tasks", "project_id": "deleted-project"},
+        "incarnation": "sync-incarnation-1",
+        "head": "42",
+        "bridge_epoch": "bridge-epoch-1",
+        "reason": "scope_removed"
+      }
+    }
+  ]
+}

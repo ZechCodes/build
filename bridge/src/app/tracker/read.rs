@@ -5,10 +5,14 @@ use crate::session_summary::UserSession;
 use crate::store::{TaskFilter, TaskSeek};
 use crate::tracker::{Task, TimelineEntry};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 #[derive(Clone, Default)]
 pub(in crate::app) struct TaskReadContext {
     pub(super) project_paths: imbl::OrdMap<String, String>,
+    project_ids: Arc<BTreeMap<String, String>>,
+    sync_project_paths: imbl::OrdMap<String, String>,
     pub(super) identities: super::read_identities::TaskIdentityContext,
     user_session: UserSession,
 }
@@ -19,6 +23,12 @@ pub(in crate::app) struct TaskReadFence {
     project_path: String,
 }
 
+pub(in crate::app) enum TaskSyncAdmission {
+    Active(super::sync_scopes::TaskSyncScope, TaskReadFence),
+    Removed(super::sync_scopes::TaskSyncScope, String),
+    Unavailable(String),
+}
+
 impl TaskReadFence {
     pub(in crate::app) fn project_id(&self) -> &str {
         &self.project_id
@@ -26,26 +36,37 @@ impl TaskReadFence {
 }
 
 impl AppState {
+    fn task_project_maps(&self) -> (imbl::OrdMap<String, String>, Arc<BTreeMap<String, String>>) {
+        let paths: imbl::OrdMap<String, String> = self
+            .projects
+            .iter()
+            .map(|project| (project.id.clone(), project.repo_path.display().to_string()))
+            .collect();
+        let ids = paths
+            .iter()
+            .map(|(id, path)| (path.clone(), id.clone()))
+            .collect();
+        (paths, Arc::new(ids))
+    }
+
     /// Mixed observations need project admission only, without identity path probes.
     pub(in crate::app) fn task_scope_read_context(&self) -> TaskReadContext {
+        let (project_paths, project_ids) = self.task_project_maps();
         TaskReadContext {
-            project_paths: self
-                .projects
-                .iter()
-                .map(|project| (project.id.clone(), project.repo_path.display().to_string()))
-                .collect(),
+            sync_project_paths: project_paths.clone(),
+            project_paths,
+            project_ids,
             identities: Default::default(),
             user_session: self.user_session,
         }
     }
     /// Producer-only capture. Path aliases are resolved here, never by a read.
     pub(in crate::app) fn task_read_context(&self) -> TaskReadContext {
+        let (project_paths, project_ids) = self.task_project_maps();
         TaskReadContext {
-            project_paths: self
-                .projects
-                .iter()
-                .map(|project| (project.id.clone(), project.repo_path.display().to_string()))
-                .collect(),
+            sync_project_paths: project_paths.clone(),
+            project_paths,
+            project_ids,
             identities: self.task_identity_context(),
             user_session: self.user_session,
         }
@@ -53,6 +74,86 @@ impl AppState {
 }
 
 impl TaskReadContext {
+    pub(in crate::app) fn sync_scope(
+        &self,
+        source: &impl TaskReadSource,
+        asked: &crate::api::v1::sync::Scope,
+    ) -> Result<TaskSyncAdmission, String> {
+        match asked {
+            crate::api::v1::sync::Scope::ProjectTasks {
+                project_id,
+                filters,
+                order,
+            } => {
+                let mut query = serde_json::to_value(filters.clone().unwrap_or_default())
+                    .map_err(|error| error.to_string())?;
+                if let Some(order) = order {
+                    query["order"] = serde_json::to_value(order).map_err(|e| e.to_string())?;
+                }
+                let project_path = self
+                    .sync_project_paths
+                    .get(project_id)
+                    .cloned()
+                    .unwrap_or_default();
+                let scope =
+                    super::sync_scopes::TaskSyncScope::project(project_id, &project_path, &query)?
+                        .with_project_ids(Arc::clone(&self.project_ids));
+                if self.project_paths.contains_key(project_id) {
+                    Ok(TaskSyncAdmission::Active(
+                        scope,
+                        TaskReadFence {
+                            project_id: project_id.clone(),
+                            project_path,
+                        },
+                    ))
+                } else {
+                    Ok(TaskSyncAdmission::Removed(
+                        scope,
+                        format!("unknown project_id: {project_id}"),
+                    ))
+                }
+            }
+            crate::api::v1::sync::Scope::Task { task_id } => {
+                let Some((project_path, summary_project)) =
+                    source.task_project_authority(task_id).stored()?
+                else {
+                    return Ok(TaskSyncAdmission::Removed(
+                        super::sync_scopes::TaskSyncScope::task(task_id, "", "")
+                            .with_project_ids(Arc::clone(&self.project_ids)),
+                        format!("unknown task_id: {task_id}"),
+                    ));
+                };
+                let Some(project_id) = self.project_ids.get(&project_path).cloned() else {
+                    return Ok(TaskSyncAdmission::Removed(
+                        super::sync_scopes::TaskSyncScope::task(task_id, "", "")
+                            .with_project_ids(Arc::clone(&self.project_ids)),
+                        format!("unknown task_id: {task_id}"),
+                    ));
+                };
+                let Some(summary_project) = summary_project else {
+                    return Ok(TaskSyncAdmission::Unavailable(
+                        "task projection is incomplete".into(),
+                    ));
+                };
+                if summary_project != project_path {
+                    return Ok(TaskSyncAdmission::Unavailable(
+                        "task projection does not match canonical authority".into(),
+                    ));
+                }
+                let scope =
+                    super::sync_scopes::TaskSyncScope::task(task_id, &project_id, &project_path)
+                        .with_project_ids(Arc::clone(&self.project_ids));
+                Ok(TaskSyncAdmission::Active(
+                    scope,
+                    TaskReadFence {
+                        project_id,
+                        project_path,
+                    },
+                ))
+            }
+        }
+    }
+
     pub(in crate::app) fn set_user_session(&mut self, session: UserSession) {
         self.user_session = session;
     }
@@ -60,10 +161,14 @@ impl TaskReadContext {
     pub(in crate::app) fn update_scope_project(&mut self, id: &str, path: Option<String>) {
         match path {
             Some(path) => {
-                self.project_paths.insert(id.into(), path);
+                self.project_paths.insert(id.into(), path.clone());
+                self.sync_project_paths.insert(id.into(), path.clone());
+                Arc::make_mut(&mut self.project_ids).insert(path, id.into());
             }
             None => {
-                self.project_paths.remove(id);
+                if let Some(path) = self.project_paths.remove(id) {
+                    Arc::make_mut(&mut self.project_ids).remove(&path);
+                }
             }
         }
     }
@@ -75,6 +180,7 @@ impl TaskReadContext {
         app: &AppState,
         published: Option<(&str, bool)>,
     ) {
+        self.retain_sync_projects(previous);
         self.identities
             .retain_live_owners(&previous.identities, app, published);
     }
@@ -85,12 +191,21 @@ impl TaskReadContext {
         app: &AppState,
         owners: &std::collections::HashSet<String>,
     ) {
+        self.retain_sync_projects(previous);
         self.identities
             .retain_saved_owners(&previous.identities, app, owners);
     }
 
     pub(in crate::app) fn forget_live_owner(&mut self, owner: &str) {
         self.identities.forget_live_owner(owner);
+    }
+
+    fn retain_sync_projects(&mut self, previous: &Self) {
+        for (id, path) in &previous.sync_project_paths {
+            if !self.sync_project_paths.contains_key(id) {
+                self.sync_project_paths.insert(id.clone(), path.clone());
+            }
+        }
     }
 
     pub(in crate::app) fn validate_scope(

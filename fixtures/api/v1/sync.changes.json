@@ -1,0 +1,66 @@
+{
+  "method": "sync.changes",
+  "since": "3.32.0",
+  "params": {
+    "scope": {"kind": "project_tasks", "project_id": "proj-1"},
+    "cursor": "signed-applied-cursor",
+    "limit": 100
+  },
+  "result": {
+    "status": "ok",
+    "scope": {
+      "kind": "project_tasks",
+      "project_id": "proj-1",
+      "filters": {},
+      "order": "number"
+    },
+    "incarnation": "sync-incarnation-1",
+    "head": "45",
+    "cursor": "signed-sequence-45",
+    "bridge_epoch": "bridge-epoch-1",
+    "changes": [
+      {
+        "seq": "43",
+        "kind": "task",
+        "key": "task-1",
+        "operation": "delete",
+        "revision": "43",
+        "member": false,
+        "row": null,
+        "selection": {"pending_present": false}
+      }
+    ],
+    "continuation": "signed-fixed-head-continuation"
+  },
+  "errors": ["invalid_params", "not_found", "unavailable", "internal"],
+  "examples": [
+    {
+      "params": {
+        "scope": {"kind": "task", "task_id": "task-1"},
+        "cursor": "signed-applied-cursor"
+      },
+      "result": {
+        "status": "resync_required",
+        "scope": {"kind": "task", "task_id": "task-1"},
+        "incarnation": "sync-incarnation-1",
+        "head": "900",
+        "bridge_epoch": "bridge-epoch-1",
+        "reason": "over_budget"
+      }
+    },
+    {
+      "params": {
+        "scope": {"kind": "task", "task_id": "deleted-task"},
+        "cursor": "authenticated-deleted-scope-cursor"
+      },
+      "result": {
+        "status": "resync_required",
+        "scope": {"kind": "task", "task_id": "deleted-task"},
+        "incarnation": "sync-incarnation-1",
+        "head": "42",
+        "bridge_epoch": "bridge-epoch-1",
+        "reason": "scope_removed"
+      }
+    }
+  ]
+}

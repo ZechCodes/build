@@ -95,6 +95,7 @@ pub use reviews::verdict_delivery::{
 pub(crate) use reviews::{RevisionDispatch, RevisionFailureNotice};
 mod schema;
 mod source_sync;
+pub mod sync;
 mod task_observation;
 mod task_rename;
 mod task_summaries;
@@ -137,6 +138,8 @@ pub use tracker::{TaskFilter, TaskSeek, TaskStretch};
 /// Things that can go wrong reading or writing the store.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error("sync journal: {0}")]
+    SyncInvalid(String),
     #[error("invalid task summary data: {0}")]
     TaskSummaryInvalid(String),
     #[error("invalid retention policy: {0}")]
@@ -285,7 +288,8 @@ pub enum StoreError {
 /// 19 adds durable conversation retention boundaries.
 /// 20 adds transactional task summary projections.
 /// 21 adds durable review verdict and revision delivery journals.
-pub const SCHEMA_VERSION: i64 = 21;
+/// 22 adds the separate scoped sync journal and retained stream floors.
+pub const SCHEMA_VERSION: i64 = 22;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -331,7 +335,17 @@ impl Store {
     /// Fails rather than degrading: a store that cannot be opened is a daemon
     /// that would silently orphan every worktree it cannot see.
     pub fn new(dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
-        let dir = dir.into();
+        Self::open(dir.into(), false)
+    }
+
+    /// Cold restore boundary. All handles to the previous database must be
+    /// closed before restoring its files. Use this for in-place restores,
+    /// which cannot be distinguished from an intact restart by file identity.
+    pub fn new_after_restore(dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
+        Self::open(dir.into(), true)
+    }
+
+    fn open(dir: PathBuf, restored: bool) -> Result<Self, StoreError> {
         std::fs::create_dir_all(&dir).map_err(|cause| StoreError::Unopenable {
             path: dir.clone(),
             cause: cause.to_string(),
@@ -365,6 +379,9 @@ impl Store {
                 });
             }
         }
+        // Refuse partial sync state before any migration, repair, pragma or
+        // metadata update can modify the database we were asked to inspect.
+        sync::validate_startup(&conn)?;
         // WAL is what makes an append cheap: the reader keeps reading while the
         // writer commits, and a commit appends to the log instead of rewriting
         // the page it touched. `synchronous = NORMAL` under WAL fsyncs at
@@ -426,6 +443,7 @@ impl Store {
         }
         tracker::initialize_list_key(&conn)?;
         let summaries_initialized = task_summaries::initialize(&mut conn)?;
+        sync::initialize(&mut conn, &dir.join(DB_FILE), restored)?;
         maintenance::configure_incremental_vacuum(&conn)?;
         if summaries_initialized {
             task_summaries::mark_complete(&mut conn)?;

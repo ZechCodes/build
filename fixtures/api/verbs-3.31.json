@@ -1,6 +1,6 @@
 {
-  "api_version": "3.30.0",
-  "commit": "b478192d",
+  "api_version": "3.31.0",
+  "commit": "a424c627",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -338,6 +338,7 @@
     "tasks.review.retryDelivery",
     "tasks.review.since",
     "tasks.review.snapshot",
+    "tasks.review.snapshotRetired",
     "tasks.review.update",
     "tasks.review.verdictDelivery",
     "tasks.reviewComments",

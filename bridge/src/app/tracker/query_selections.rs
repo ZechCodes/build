@@ -68,6 +68,19 @@ impl QuerySelections {
     pub fn matches_row(&self, row: &Value) -> bool {
         self.filter.done_since.is_none() || row["status"] == "done"
     }
+    pub fn needs_index_match(&self) -> bool {
+        self.filter.watched.is_some()
+            || self.filter.unfinished.is_some()
+            || self.filter.blocked.is_some()
+            || self.filter.held.is_some()
+            || self.filter.undelivered.is_some()
+            || self.filter.attention_rule.is_some()
+            || self.filter.linked_workspace_id.is_some()
+            || self.filter.tracker_agent_id.is_some()
+            || self.filter.exclude_review_mode.is_some()
+            || self.filter.done_since.is_some()
+            || self.filter.exclude_assignee.is_some()
+    }
     pub fn provenance(&self) -> Value {
         json!({"linked_workspace_id":self.filter.linked_workspace_id,"tracker_agent_id":self.filter.tracker_agent_id})
     }
@@ -135,5 +148,11 @@ mod tests {
             selected.filter.exclude_assignee,
             lower.filter.exclude_assignee
         );
+        assert!(!QuerySelections::parse(&json!({}))
+            .unwrap()
+            .needs_index_match());
+        assert!(QuerySelections::parse(&json!({"watched":true}))
+            .unwrap()
+            .needs_index_match());
     }
 }

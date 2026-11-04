@@ -684,7 +684,14 @@ impl AppState {
             ) {
                 mutations.call(sender, frame, connection)
             } else {
-                reads.call(frame, connection)
+                #[cfg(test)]
+                {
+                    _timer.sample_read_work(|| reads.call(frame, connection))
+                }
+                #[cfg(not(test))]
+                {
+                    reads.call(frame, connection)
+                }
             }
         })
         .with_snapshot_reads(move |frame| snapshots.call(frame))

@@ -16,6 +16,9 @@ mod agent_files;
 mod aggregates;
 mod attachments;
 mod bounded_pages;
+pub(crate) mod sync_scopes;
+#[cfg(test)]
+mod sync_tests;
 pub(in crate::app) use attachments::read_task_attachment;
 mod closure_context;
 mod comments;
@@ -46,7 +49,7 @@ mod read_identities;
 mod read_source;
 #[cfg(test)]
 pub(in crate::app) use push::news_phrase;
-pub(in crate::app) use read::{TaskReadContext, TaskReadFence};
+pub(in crate::app) use read::{TaskReadContext, TaskReadFence, TaskSyncAdmission};
 mod query_selections;
 mod refs;
 mod reminder;

@@ -41,6 +41,7 @@ pub struct ReadConnection {
     connection: Option<Connection>,
     pool: Arc<Pool>,
     permit: Option<OwnedSemaphorePermit>,
+    class_permit: Option<OwnedSemaphorePermit>,
     #[cfg(test)]
     observer: Option<TransactionObserver>,
 }
@@ -132,9 +133,19 @@ impl ReadPool {
             connection: Some(connection),
             pool: self.inner.clone(),
             permit: Some(permit),
+            class_permit: None,
             #[cfg(test)]
             observer: None,
         }
+    }
+
+    /// Recovery traffic has its own bounded query class and retains that
+    /// permit for the whole borrowed SQL snapshot.
+    pub(crate) async fn acquire_sync_connection(&self) -> ReadConnection {
+        let class = self.acquire_class(ReadClass::SyncRecovery).await;
+        let mut connection = self.acquire().await;
+        connection.class_permit = Some(class);
+        connection
     }
 }
 
@@ -143,6 +154,11 @@ type TransactionObserver =
     Box<dyn Fn(std::time::Duration, std::time::Duration, std::time::Duration) + Send>;
 
 impl ReadConnection {
+    pub(crate) fn retain_class_permit(&mut self, permit: OwnedSemaphorePermit) {
+        debug_assert!(self.class_permit.is_none());
+        self.class_permit = Some(permit);
+    }
+
     /// Test-only transaction boundaries; absent from the daemon and its stats.
     #[cfg(test)]
     pub(crate) fn observe_transactions(

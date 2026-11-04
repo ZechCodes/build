@@ -69,6 +69,52 @@ fn api_version_is_what_versions_json_calls_current() {
 }
 
 #[test]
+fn scoped_sync_wire_is_additive_and_device_stays_unadvertised() {
+    assert_eq!(API_VERSION, "3.32.0");
+    let methods: BTreeSet<_> = v1::methods().iter().map(|(name, _)| *name).collect();
+    for method in ["sync.head", "sync.snapshot", "sync.changes"] {
+        assert!(methods.contains(method), "missing typed {method}");
+    }
+    let advertised: BTreeSet<_> = capabilities(false).into_iter().collect();
+    assert!(advertised.contains("sync.projectTasks"));
+    assert!(advertised.contains("sync.task"));
+    assert!(!advertised.contains("sync.device"));
+
+    for method in ["sync.head", "sync.snapshot", "sync.changes"] {
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        let handler = &v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap()
+            .1;
+        for example in fixture["examples"].as_array().unwrap() {
+            handler.parse_params(&example["params"]).unwrap();
+            assert_eq!(
+                handler.round_trip_result(&example["result"]).unwrap(),
+                example["result"],
+                "{method}: resync fixture"
+            );
+        }
+        let mut device = fixture["params"].clone();
+        device["scope"] = serde_json::json!({"kind":"device"});
+        let error = handler.parse_params(&device).unwrap_err();
+        assert!(
+            error.contains("unknown variant `device`"),
+            "{method}: {error}"
+        );
+    }
+    let snapshot = read_json(&fixtures_root().join("v1/sync.snapshot.json"));
+    assert_eq!(
+        snapshot["result"]["records"][0]["selection"]["pending_present"],
+        true
+    );
+    assert_eq!(
+        snapshot["result"]["records"][0]["row"]["task"]["assignee"]["agent_id"],
+        "Actual\0suffix"
+    );
+}
+
+#[test]
 fn bounded_task_reads_are_additive_and_independently_advertised() {
     let advertised = capabilities(false);
     assert!(advertised.contains(&"tasks.listSummaries"));
@@ -369,7 +415,7 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.31.0");
+    assert_eq!(API_VERSION, "3.32.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -525,7 +571,7 @@ fn the_harness_inventory_is_announced_with_its_push() {
 #[test]
 fn pull_requests_announce_their_mutations_and_keep_legacy_reads() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.31.0");
+    assert_eq!(API_VERSION, "3.32.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
@@ -902,8 +948,10 @@ fn every_v1_verb_refuses_a_param_its_shape_does_not_declare() {
         let refused = handler
             .parse_params(&params)
             .expect_err(&format!("{method}: an undeclared param was swallowed"));
+        let names_unknown = refused.contains("unknown param: undeclared_by_any_verb")
+            || (refused.contains("unknown field") && refused.contains("`undeclared_by_any_verb`"));
         assert!(
-            refused.contains("unknown param: undeclared_by_any_verb"),
+            names_unknown,
             "{method}: the refusal names the param it did not know: {refused}"
         );
     }
@@ -1481,7 +1529,7 @@ fn thread_page_activity_mode_is_typed_and_optional() {
 
 #[test]
 fn lean_activity_is_announced_with_newest_item_and_exact_digest() {
-    assert_eq!(API_VERSION, "3.31.0");
+    assert_eq!(API_VERSION, "3.32.0");
     assert!(capabilities(false).contains(&"threads.leanActivity"));
     let fixture = read_json(&fixtures_root().join("v1/thread.page.json"));
     assert_eq!(fixture["lean_activity"]["since"], "3.20.0");
@@ -1664,7 +1712,7 @@ fn project_source_changes_are_announced_with_a_scope_and_an_item() {
 /// accepts. The legacy shape is the pinned coordinator alone.
 #[test]
 fn project_workers_are_announced_with_their_roster_read_and_purposes() {
-    assert_eq!(API_VERSION, "3.31.0");
+    assert_eq!(API_VERSION, "3.32.0");
     let advertised = capabilities(false);
     assert!(advertised.contains(&"agents.projectWorkers"));
     assert!(advertised.contains(&"agent.list"));
@@ -1752,7 +1800,7 @@ fn sync_base_path_precondition_is_announced_and_typed() {
 /// echoes the client's id.
 #[test]
 fn project_worker_assignment_is_announced_with_its_kind_and_operation_id() {
-    assert_eq!(API_VERSION, "3.31.0");
+    assert_eq!(API_VERSION, "3.32.0");
     assert!(capabilities(false).contains(&"tasks.assignProjectAgent"));
     let assign = read_json(&fixtures_root().join("v1/tasks.assign.json"));
     let example = &assign["project_agent_assignment"];
@@ -2250,7 +2298,7 @@ fn review_service_notice_markers_are_additive_read_only_wire_fields() {
 
 #[test]
 fn snapshot_retirement_announces_legacy_summary_marker() {
-    assert_eq!(API_VERSION, "3.31.0");
+    assert_eq!(API_VERSION, "3.32.0");
     assert!(capabilities(false).contains(&"tasks.review.snapshotRetired"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
     assert_eq!(greeting["result"]["api_version"], API_VERSION);
@@ -2260,7 +2308,7 @@ fn snapshot_retirement_announces_legacy_summary_marker() {
         .iter()
         .any(|value| value == "tasks.review.snapshotRetired"));
     let fixture = read_json(&fixtures_root().join("v1/tasks.list.json"));
-    assert_eq!(fixture["legacy_reviews"]["since"], API_VERSION);
+    assert_eq!(fixture["legacy_reviews"]["since"], "3.31.0");
     let result = &fixture["legacy_reviews"]["result"];
     let parsed: v1::tasks::TaskSummaries = serde_json::from_value(result.clone()).unwrap();
     assert_eq!(serde_json::to_value(parsed).unwrap(), *result);
@@ -2272,7 +2320,7 @@ fn snapshot_retirement_announces_legacy_summary_marker() {
 fn workspace_legacy_review_markers_survive_typed_serialization() {
     for method in ["workspace.get", "workspace.list"] {
         let fixture = read_json(&fixtures_root().join(format!("v1/{method}.json")));
-        assert_eq!(fixture["legacy_reviews"]["since"], API_VERSION);
+        assert_eq!(fixture["legacy_reviews"]["since"], "3.31.0");
         assert_eq!(
             fixture["legacy_reviews"]["capability"],
             "tasks.review.snapshotRetired"

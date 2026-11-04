@@ -110,6 +110,7 @@ describe("adapter selection", () => {
       errors: { codes: true },
       diffs: { perFile: true },
       bodies: { pages: false, mediaRawPages: false },
+      sync: { projectTasks: false, task: false },
       reviews: { snapshotRetired: false, reject: false, author: false, verdictDelivery: false, retryDelivery: false, commits: false, commit: false, since: false, anchorCommit: false, forTask: false, taskChoices: false, linkedTaskChoices: false, get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
       tasks: { attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, listSummaries: false, filterChoices: false, counts: false, lookup: false, listWatched: false, listAttention: false, listLinkedWorkspace: false, listTracked: false, listReviewMode: false, listOrder: false, listReadiness: false, listExcludeAssignee: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
@@ -158,6 +159,13 @@ describe("adapter selection", () => {
 });
 
 describe("named capabilities", () => {
+  it("gates each durable sync scope by its exact advertised name", () => {
+    const flags = (capabilities) => v1.capabilitiesOf({ api_version: "3.32.0", capabilities }).sync;
+    expect(flags(["sync.projectTasks", "sync.task"])).toEqual({ projectTasks: true, task: true });
+    expect(flags(["sync.device"])).toEqual({ projectTasks: false, task: false });
+    expect(flags(["sync.head", "sync.snapshot", "sync.changes"])).toEqual({ projectTasks: false, task: false });
+  });
+
   it("gates attachment chunks and raw media pages by their announced names", () => {
     const offered = selectAdapter({ api_version: "3.24.0", capabilities: ["thread.attachmentChunks", "fs.mediaRawPages"] })
       .create(async () => ({})).capabilities;

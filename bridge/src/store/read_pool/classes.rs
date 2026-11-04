@@ -15,9 +15,10 @@ pub(crate) enum ReadClass {
     Comment,
     ReviewSummary,
     ReviewContents,
+    SyncRecovery,
 }
 
-const CLASSES: usize = ReadClass::ReviewContents as usize + 1;
+const CLASSES: usize = ReadClass::SyncRecovery as usize + 1;
 // Three task pages plus two task details and two history reads leave at least
 // one SQL reader for other classes. This is not a reservation against all types.
 const READS_PER_CLASS: usize = READ_CONNECTIONS / 4;
@@ -41,6 +42,13 @@ impl ReadQuotas {
 }
 
 impl ReadPool {
+    pub(crate) fn try_acquire_class(&self, class: ReadClass) -> Option<OwnedSemaphorePermit> {
+        self.inner.classes.0[class as usize]
+            .clone()
+            .try_acquire_owned()
+            .ok()
+    }
+
     /// Waiters stay outside SQL capacity until their class is admitted. The
     /// owned permit follows the SQL job across cancellation and blocking work.
     pub(crate) async fn acquire_class(&self, class: ReadClass) -> OwnedSemaphorePermit {

@@ -70,7 +70,8 @@ use std::collections::BTreeSet;
 /// 3.29.0 adds durable work-task links when requesting a workspace review (#971).
 /// 3.30.0 adds author, deciding reject and durable verdict delivery (#972).
 /// 3.31.0 retires snapshot writes and adds the compact legacy-review marker (#974).
-pub const API_VERSION: &str = "3.31.0";
+/// 3.32.0 adds bounded durable recovery for project task lists and opened tasks (#892).
+pub const API_VERSION: &str = "3.32.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -99,7 +100,9 @@ pub const QA_METHODS: &[&str] = &["stream.events", "stream.start", "stream.state
 /// Cross-verb wire features whose availability cannot be expressed by a
 /// single method name. The SPA consumes a subset as shape and behavior gates.
 pub const FEATURE_CAPABILITIES: &[&str] = &[
-    "thread.retention", // Since 3.25.0: inclusive generation-scoped history floors (#836).
+    "sync.projectTasks", // Since 3.32.0: durable filtered project task recovery (#892).
+    "sync.task",         // Since 3.32.0: durable opened-task head recovery (#892).
+    "thread.retention",  // Since 3.25.0: inclusive generation-scoped history floors (#836).
     "bridge.epoch", // Since 3.24.0: authenticated process epochs and journal incarnation (#739).
     "unread.watchScoped", // Since 3.19.0: watched-only unread after the persisted watch baseline (#474).
     "agents.createdBy",   // Since 3.1.0: created_by on an agent's digest (#216).
@@ -248,6 +251,11 @@ pub enum ApiError {
         message: String,
         details: Option<Value>,
     },
+    /// A transient projection gap; same stable code, but safe to retry.
+    RetryableUnavailable {
+        message: String,
+        details: Option<Value>,
+    },
     /// A queue is full; the only retryable refusal.
     Busy {
         message: String,
@@ -331,6 +339,13 @@ impl ApiError {
         }
     }
 
+    pub fn retryable_unavailable(message: impl Into<String>) -> ApiError {
+        ApiError::RetryableUnavailable {
+            message: message.into(),
+            details: None,
+        }
+    }
+
     pub fn busy(message: impl Into<String>) -> ApiError {
         ApiError::Busy {
             message: message.into(),
@@ -363,7 +378,7 @@ impl ApiError {
             ApiError::Conflict { .. } => "conflict",
             ApiError::StaleVersion { .. } => "stale_version",
             ApiError::StaleBody { .. } => "stale_body",
-            ApiError::Unavailable { .. } => "unavailable",
+            ApiError::Unavailable { .. } | ApiError::RetryableUnavailable { .. } => "unavailable",
             ApiError::Busy { .. } => "busy",
             ApiError::UnsupportedVersion { .. } => "unsupported_version",
             ApiError::Internal { .. } => "internal",
@@ -372,7 +387,10 @@ impl ApiError {
 
     /// Whether the same request could succeed if sent again.
     pub fn retryable(&self) -> bool {
-        matches!(self, ApiError::Busy { .. })
+        matches!(
+            self,
+            ApiError::Busy { .. } | ApiError::RetryableUnavailable { .. }
+        )
     }
 
     fn parts(&self) -> (&str, Option<&Value>) {
@@ -386,6 +404,7 @@ impl ApiError {
             | ApiError::StaleVersion { message, details }
             | ApiError::StaleBody { message, details }
             | ApiError::Unavailable { message, details }
+            | ApiError::RetryableUnavailable { message, details }
             | ApiError::Busy { message, details }
             | ApiError::UnsupportedVersion { message, details }
             | ApiError::Internal { message, details } => (message, details.as_ref()),

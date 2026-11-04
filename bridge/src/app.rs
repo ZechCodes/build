@@ -273,6 +273,7 @@ use conversations::{
     with_post_receipt, AgentSender, ReadReport,
 };
 pub use conversations::{ATTACHMENT_MAX_BYTES, LATEST_THREAD_ITEMS};
+pub use tracker::sync_scopes::TaskSyncScope;
 pub use tracker::{AGENT_ATTACHMENT_MAX_BYTES, ATTACHMENT_READ_CHUNK_BYTES};
 
 /// Shared application state behind the relay handler.

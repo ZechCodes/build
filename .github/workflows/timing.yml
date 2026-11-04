@@ -8,6 +8,8 @@ name: Bridge timing tests
 # (src/app/tests/runtime/lock_hold_busy.rs), busy_mcp_lists_finish_within_100ms,
 # busy_activity_publication_finishes_within_budget (lock_hold_busy/activity.rs),
 # the three focused six_mcp_reads comparisons in lock_hold_busy/mcp_reads.rs,
+# large_recovery_reads_finish_under_100ms_while_the_app_lock_is_held
+# (src/app/tracker/sync_tests.rs),
 # bounded_reads_carrier_max_and_p99_with_both_locks_held
 # (tests/bounded_task_carrier_perf.rs), and
 # stalled_stream_leaves_push_latency_p50_p95
@@ -117,6 +119,7 @@ jobs:
           six_mcp_reads_without_writers
           six_mcp_reads_with_busy_writers
           six_mcp_reads_with_busy_writers_and_task_lists
+          large_recovery_reads_finish_under_100ms_while_the_app_lock_is_held
           stalled_stream_leaves_push_latency_p50_p95
 
   bounded-task-carrier:

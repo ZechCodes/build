@@ -54,6 +54,7 @@ pub mod harnesses;
 pub mod lifecycle;
 pub mod push;
 pub mod reviews;
+pub mod sync;
 pub mod tasks;
 pub mod thread;
 pub mod updates;
@@ -409,7 +410,7 @@ pub fn call_context_typed<P: DeserializeOwned + Serialize, R: Serialize>(
 }
 
 /// Every family's table, in one place.
-fn families() -> [&'static [(&'static str, Handler)]; 13] {
+fn families() -> [&'static [(&'static str, Handler)]; 14] {
     [
         board::methods(),
         changes::methods(),
@@ -419,6 +420,7 @@ fn families() -> [&'static [(&'static str, Handler)]; 13] {
         harnesses::methods(),
         tasks::methods(),
         reviews::methods(),
+        sync::methods(),
         lifecycle::methods(),
         push::methods(),
         updates::methods(),

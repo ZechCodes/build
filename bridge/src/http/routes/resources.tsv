@@ -83,6 +83,9 @@ run.request_changes	POST	/v1/runs/{run_id}/change-requests
 session.hello	POST	/v1/session-greetings
 settings.get	GET	/v1/settings
 settings.set	PATCH	/v1/settings
+sync.changes	POST	/v1/sync/change-queries
+sync.head	POST	/v1/sync/head-queries
+sync.snapshot	POST	/v1/sync/snapshot-queries
 task.doc	POST	/v1/planning-tasks/{task_id}/document-queries
 task.get	POST	/v1/planning-tasks/{task_id}/detail-queries
 task.stage_diff	POST	/v1/planning-tasks/{task_id}/stages/{stage_id}/diff-queries

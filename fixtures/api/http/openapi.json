@@ -12160,7 +12160,7 @@
                       "id": "example",
                       "ok": true,
                       "result": {
-                        "api_version": "3.31.0",
+                        "api_version": "3.32.0",
                         "ack_confirm_methods": [],
                         "capabilities": [
                           "agent.add",
@@ -12287,6 +12287,11 @@
                           "settings.workspaceLifecycle",
                           "sources.syncBase",
                           "sources.syncBasePath",
+                          "sync.changes",
+                          "sync.head",
+                          "sync.projectTasks",
+                          "sync.snapshot",
+                          "sync.task",
                           "task.doc",
                           "task.get",
                           "task.stage_diff",
@@ -12951,6 +12956,432 @@
                             }
                           }
                         }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Http400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Http405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Http426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          }
+        }
+      }
+    },
+    "/v1/sync/change-queries": {
+      "post": {
+        "operationId": "sync_changes",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/session"
+          },
+          {
+            "$ref": "#/components/parameters/subscription"
+          },
+          {
+            "$ref": "#/components/parameters/requestId"
+          },
+          {
+            "$ref": "#/components/parameters/priority"
+          },
+          {
+            "$ref": "#/components/parameters/operationId"
+          },
+          {
+            "$ref": "#/components/parameters/after"
+          }
+        ],
+        "description": "Maps only to sync.changes. Remaining JSON fields retain their existing semantics. Registered v1 parameters, including unknown fields, are validated by the existing typed registry. Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method! and v1_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
+        "x-build-method": "sync.changes",
+        "x-build-contract": {
+          "source": "bridge/src/api/v1/sync.rs",
+          "params": "ChangesParams",
+          "result": "ChangesResult",
+          "fixture": "fixtures/api/v1/sync.changes.json"
+        },
+        "x-build-request-max-bytes": 1048576,
+        "x-build-response-max-bytes": 8388608,
+        "x-build-requires-events": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "x-build-schema-complete": false
+              },
+              "example": {
+                "scope": {
+                  "kind": "project_tasks",
+                  "project_id": "proj-1"
+                },
+                "cursor": "signed-applied-cursor",
+                "limit": 100
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Final existing wire reply, including typed success/error outcome. No blanket durable acknowledgement or retry promise.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reply"
+                },
+                "examples": {
+                  "wire": {
+                    "value": {
+                      "id": "example",
+                      "ok": true,
+                      "result": {
+                        "status": "ok",
+                        "scope": {
+                          "kind": "project_tasks",
+                          "project_id": "proj-1",
+                          "filters": {},
+                          "order": "number"
+                        },
+                        "incarnation": "sync-incarnation-1",
+                        "head": "45",
+                        "cursor": "signed-sequence-45",
+                        "bridge_epoch": "bridge-epoch-1",
+                        "changes": [
+                          {
+                            "seq": "43",
+                            "kind": "task",
+                            "key": "task-1",
+                            "operation": "delete",
+                            "revision": "43",
+                            "member": false,
+                            "row": null,
+                            "selection": {
+                              "pending_present": false
+                            }
+                          }
+                        ],
+                        "continuation": "signed-fixed-head-continuation"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Http400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Http405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Http426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          }
+        }
+      }
+    },
+    "/v1/sync/head-queries": {
+      "post": {
+        "operationId": "sync_head",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/session"
+          },
+          {
+            "$ref": "#/components/parameters/subscription"
+          },
+          {
+            "$ref": "#/components/parameters/requestId"
+          },
+          {
+            "$ref": "#/components/parameters/priority"
+          },
+          {
+            "$ref": "#/components/parameters/operationId"
+          },
+          {
+            "$ref": "#/components/parameters/after"
+          }
+        ],
+        "description": "Maps only to sync.head. Remaining JSON fields retain their existing semantics. Registered v1 parameters, including unknown fields, are validated by the existing typed registry. Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method! and v1_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
+        "x-build-method": "sync.head",
+        "x-build-contract": {
+          "source": "bridge/src/api/v1/sync.rs",
+          "params": "HeadParams",
+          "result": "HeadResult",
+          "fixture": "fixtures/api/v1/sync.head.json"
+        },
+        "x-build-request-max-bytes": 1048576,
+        "x-build-response-max-bytes": 8388608,
+        "x-build-requires-events": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "x-build-schema-complete": false
+              },
+              "example": {
+                "scope": {
+                  "kind": "project_tasks",
+                  "project_id": "proj-1",
+                  "filters": {
+                    "states": [
+                      "open"
+                    ],
+                    "watched": true
+                  },
+                  "order": "number"
+                },
+                "cursor": "signed-applied-cursor"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Final existing wire reply, including typed success/error outcome. No blanket durable acknowledgement or retry promise.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reply"
+                },
+                "examples": {
+                  "wire": {
+                    "value": {
+                      "id": "example",
+                      "ok": true,
+                      "result": {
+                        "status": "ok",
+                        "scope": {
+                          "kind": "project_tasks",
+                          "project_id": "proj-1",
+                          "filters": {
+                            "states": [
+                              "open"
+                            ],
+                            "watched": true
+                          },
+                          "order": "number"
+                        },
+                        "incarnation": "sync-incarnation-1",
+                        "head": "42",
+                        "retention_floor": "7",
+                        "bridge_epoch": "bridge-epoch-1"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Http400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Http405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Http426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          }
+        }
+      }
+    },
+    "/v1/sync/snapshot-queries": {
+      "post": {
+        "operationId": "sync_snapshot",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/session"
+          },
+          {
+            "$ref": "#/components/parameters/subscription"
+          },
+          {
+            "$ref": "#/components/parameters/requestId"
+          },
+          {
+            "$ref": "#/components/parameters/priority"
+          },
+          {
+            "$ref": "#/components/parameters/operationId"
+          },
+          {
+            "$ref": "#/components/parameters/after"
+          }
+        ],
+        "description": "Maps only to sync.snapshot. Remaining JSON fields retain their existing semantics. Registered v1 parameters, including unknown fields, are validated by the existing typed registry. Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method! and v1_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
+        "x-build-method": "sync.snapshot",
+        "x-build-contract": {
+          "source": "bridge/src/api/v1/sync.rs",
+          "params": "SnapshotParams",
+          "result": "SnapshotResult",
+          "fixture": "fixtures/api/v1/sync.snapshot.json"
+        },
+        "x-build-request-max-bytes": 1048576,
+        "x-build-response-max-bytes": 8388608,
+        "x-build-requires-events": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "x-build-schema-complete": false
+              },
+              "example": {
+                "scope": {
+                  "kind": "task",
+                  "task_id": "task-1"
+                },
+                "limit": 100
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Final existing wire reply, including typed success/error outcome. No blanket durable acknowledgement or retry promise.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reply"
+                },
+                "examples": {
+                  "wire": {
+                    "value": {
+                      "id": "example",
+                      "ok": true,
+                      "result": {
+                        "status": "ok",
+                        "scope": {
+                          "kind": "task",
+                          "task_id": "task-1"
+                        },
+                        "incarnation": "sync-incarnation-1",
+                        "watermark": "42",
+                        "cursor": "signed-watermark-cursor",
+                        "bridge_epoch": "bridge-epoch-1",
+                        "consistency": "single_read",
+                        "records": [
+                          {
+                            "kind": "task_head",
+                            "key": "task-1",
+                            "revision": "42",
+                            "row": {
+                              "task": {
+                                "id": "task-1",
+                                "assignee": {
+                                  "kind": "",
+                                  "agent_id": "Actual\u0000suffix"
+                                }
+                              },
+                              "timeline": [],
+                              "has_more": false
+                            },
+                            "selection": {
+                              "pending_present": true
+                            }
+                          }
+                        ]
                       }
                     }
                   }

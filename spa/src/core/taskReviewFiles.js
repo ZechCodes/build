@@ -4,6 +4,7 @@ import "./taskReviewFiles.css";
 import { cacheFileBody } from "./cacheLifetime.js";
 import { pageFromAnswer } from "./bodyPages.js";
 import { mountFileTree } from "./fileTree.js";
+import { chooseFilePushKind, directoryPageParams, fileTouchedByHint, normalizedDirectoryHint } from "./directoryPages.js";
 import { mountFileTabs } from "./fileTabs.js";
 import { fileBodyReading, isMediaPath } from "./fileViewer.js";
 import { mountPagedFile, sourceLinesPainter, wholeBytesPainter } from "./pagedFileView.js";
@@ -11,7 +12,8 @@ import { langForPath } from "./highlight.js";
 import { markdownHtml } from "./markdown.js";
 import { attachMediaSource, createMediaBody, releaseMediaSource } from "./mediaBlob.js";
 import { readCached, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
-import { watchChanges } from "./changeEvents.js";
+import { onBridgeGreeted, watchChanges } from "./changeEvents.js";
+import { syncPaneShown } from "./syncVisibleScopes.js";
 import { esc } from "./text.js";
 import { decodeBase64Text, mediaPreviewHtml, previewModeFor, sourcePreviewHtml } from "./filePreview.js";
 import { isDotenvPath, maskDotenvLine, SPOILER_DOTS } from "./secrets.js";
@@ -138,10 +140,10 @@ export function mountTaskReviewFiles(host, options) {
 
   const setTreeFailure = (message) => void writeCached(treeFailureAddress, { message });
   const setFileFailure = (name, message) => void writeCached(fileFailureAddress(name), { message });
-  const listDirectory = (name) => {
+  const listDirectory = (name, continuation) => {
     if (sourceUnavailable) throw new Error("Source unavailable");
     return live
-      ? callRpc("fs.tree", liveParams(workspaceId, directory, name))
+      ? callRpc("fs.tree", { ...liveParams(workspaceId, directory, name), ...directoryPageParams(deviceId, continuation) })
       : callRpc("tasks.review.diff", readParams(taskId, snapshot, directory, "tree", name));
   };
   const readFile = (name, range) => {
@@ -305,8 +307,8 @@ export function mountTaskReviewFiles(host, options) {
     stateAddress: address("ui-task-review-files", "expanded"),
     readsForItself: () => live,
     keepHeldOnError: true, keepReadingPlace,
-    listDirectory: async (name) => {
-      try { const listing = await listDirectory(name); setTreeFailure(""); return listing; }
+    listDirectory: async (name, continuation) => {
+      try { const listing = await listDirectory(name, continuation); setTreeFailure(""); return listing; }
       catch (error) { setTreeFailure(readError(error)); throw error; }
     },
     finePointer: () => window.matchMedia?.("(pointer: fine)").matches === true,
@@ -346,13 +348,15 @@ export function mountTaskReviewFiles(host, options) {
 
   const refreshLive = () => {
     if (disposed) return;
+    if (chooseFilePushKind(deviceId) === "files.hints") {
+      void tree.invalidate({ paths: [], truncated: true });
+      if (selected && syncPaneShown(host)) void refreshFile(selected);
+      return;
+    }
     tree.relist();
     if (selected) void refreshFile(selected);
   };
-  const liveWatcher = live ? watchChanges({
-    deviceId, entity: workspaceId, kinds: ["files"], mode: "realtime",
-    refresh: refreshLive,
-    onChanges: (items) => {
+  const legacyLiveChanges = (items) => {
       if (items.some((item) => !("files" in item))) return refreshLive();
       const files = items.filter((item) => !item.source_id || item.source_id === directory.id)
         .map((item) => item.files).filter((item) => item && (!item.source_id || item.source_id === directory.id));
@@ -361,8 +365,23 @@ export function mountTaskReviewFiles(host, options) {
       const paths = files.flatMap((item) => item.paths);
       if (paths.length || files.some((item) => item.root)) tree.relist(paths);
       if (selected && paths.includes(selected)) void refreshFile(selected);
-    },
-  }) : null;
+  };
+  const liveChanges = (items) => {
+    if (chooseFilePushKind(deviceId) !== "files.hints") return legacyLiveChanges(items);
+    const hint = normalizedDirectoryHint(items.find((item) => item.files)?.files);
+    void tree.invalidate(hint);
+    if (selected && syncPaneShown(host) && fileTouchedByHint(selected, hint)) void refreshFile(selected);
+  };
+  let liveWatcher = null;
+  const bindLiveWatcher = () => {
+    liveWatcher?.dispose();
+    if (!live) return;
+    const target = chooseFilePushKind(deviceId) === "files.hints"
+      ? { entity: null, kinds: ["state"] } : { entity: workspaceId, kinds: ["files"] };
+    liveWatcher = watchChanges({ deviceId, ...target, mode: "realtime", refresh: refreshLive, onChanges: liveChanges });
+  };
+  const stopLiveGreeting = onBridgeGreeted((changed) => { if (changed === deviceId) bindLiveWatcher(); });
+  bindLiveWatcher();
 
   const reveal = async (target) => {
     if (!safePath(target?.path) || disposed) return false;
@@ -402,6 +421,7 @@ export function mountTaskReviewFiles(host, options) {
       unwatchTreeFailure();
       unwatchFileFailure();
       liveWatcher?.dispose();
+      stopLiveGreeting();
       preview.removeEventListener("click", onPreviewClick);
       host.querySelector(".trf-tabs").removeEventListener("click", onTabSelection, true);
       paged?.dispose();

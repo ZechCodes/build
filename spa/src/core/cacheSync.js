@@ -58,6 +58,7 @@ import { trailingRead } from "./trailingRead.js";
 import { combinePushItems, createPushQueue } from "./pushQueue.js";
 import { subscribeThreadReaders, subscribeSyncReads, visibleSyncThread, visibleSyncReads } from "./syncVisibleScopes.js";
 import { createSyncPhases } from "./syncPhases.js";
+import { applyDirectoryHint } from "./directoryPages.js";
 import { createBackgroundStreams } from "./syncBackgroundStreams.js";
 import { createTaskPhases, taskReadScope } from "./syncTaskPhases.js";
 import { createTaskReadQueue } from "./serialTaskReads.js";
@@ -2395,7 +2396,9 @@ async function pullWhatTheGitItemCouldNotCarry(context, entityId, git, row) {
  *  the list was truncated, because a truncated list means "refetch the tree",
  *  not "these paths". */
 async function applyFiles(context, entityId, files) {
-  if (lazyViewReadsEnabled(context.deviceId)) return refreshOpenReads(context, entityId, ["tree", "file"]);
+  if (lazyViewReadsEnabled(context.deviceId)) return applyDirectoryHint({
+    deviceId: context.deviceId, entityId, files, active: context.active,
+  });
   return applyLegacyFiles(context, entityId, files);
 }
 

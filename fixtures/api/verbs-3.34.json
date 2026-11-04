@@ -1,6 +1,6 @@
 {
-  "api_version": "3.33.0",
-  "commit": "d8864450",
+  "api_version": "3.34.0",
+  "commit": "e1c4b21f",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",

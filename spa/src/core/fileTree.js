@@ -17,8 +17,9 @@
 
 import { mergeCachedRecordsTogether, readCached, recordWriteOf, subscribeCache } from "./localCache.js";
 import { watchUiState } from "./localUiState.js";
-import { ancestorsOf, fileTreeHtml, treeEdge, treeKeyMove, visibleTreeRows } from "./fileTreeModel.js";
+import { ancestorsOf, fileTreeHtml, parentPath, treeEdge, treeKeyMove, visibleTreeRows } from "./fileTreeModel.js";
 import { registerSyncRead, registerSyncTree, syncPaneShown } from "./syncVisibleScopes.js";
+import { appendDirectoryPage, directoryListing, directoryTouchedByHint, normalizedDirectoryHint } from "./directoryPages.js";
 
 const heldRecord = (address) => (address ? readCached(address) : Promise.resolve(undefined));
 const alwaysActive = () => true;
@@ -67,7 +68,7 @@ const markRows = (listEl, openPath, cursorPath) => {
  *
  * Returns { ready, setOpenPath, reveal, relist, dispose }.
  */
-export function mountFileTree(listEl, { listingAddress, stateAddress = null, readsForItself, listDirectory, finePointer, onOpen, baseDepth = 0, onEdge = null, keepHeldOnError = false, keepReadingPlace = (paint) => paint() }) {
+export function mountFileTree(listEl, { listingAddress, stateAddress = null, readsForItself, listDirectory, finePointer, onOpen, baseDepth = 0, onEdge = null, keepHeldOnError = false, keepReadingPlace = (paint) => paint(), watchDirectory = () => null }) {
   let disposed = false;
   const listings = new Map();
   let expanded = new Set();
@@ -76,8 +77,13 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
   let rows = [];
   const watches = new Map(); // shown directory → unwatch
   const requests = new Map(); // shown directory → the read its paints still speak for
+  const paging = new Map();
 
-  const focusCursor = () => rowsIn(listEl).find((row) => row.dataset.path === cursorPath)?.focus();
+  const focusCursor = (options) => {
+    const row = rowsIn(listEl).find((candidate) => candidate.dataset.path === cursorPath);
+    if (options) row?.focus(options);
+    else row?.focus();
+  };
 
   const paint = () => keepReadingPlace(() => {
     if (disposed) return;
@@ -86,9 +92,11 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
       return;
     }
     const hadFocus = listEl.contains(document.activeElement);
+    const scrollTop = listEl.scrollTop;
     rows = visibleTreeRows(listings, expanded, "", baseDepth);
     listEl.innerHTML = fileTreeHtml(rows, { openPath, cursorPath });
-    if (hadFocus) focusCursor();
+    listEl.scrollTop = scrollTop;
+    if (hadFocus) focusCursor({ preventScroll: true });
   });
 
   const shown = (dir) => !dir || (expanded.has(dir) && reachable(expanded, dir));
@@ -109,12 +117,12 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     if (stillListing(dir, request) && held) takeListing(dir, held);
   };
 
-  const askMachine = async (dir) => {
+  const askMachine = async (dir, cursor = null) => {
     try {
-      const answer = await listDirectory(dir);
-      return { path: answer?.path || dir, entries: answer?.entries || [] };
+      const answer = cursor ? await listDirectory(dir, { cursor }) : await listDirectory(dir);
+      return directoryListing(answer, dir);
     } catch (error) {
-      return { error: error?.message || "error" };
+      return { error: error?.message || "error", error_code: error?.code || error?.error_code };
     }
   };
 
@@ -125,21 +133,29 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     if (!quiet && (!keepHeldOnError || !listings.has(dir))) takeListing(dir, listing);
   };
 
-  const listFromMachine = async (dir, request, previousAt, quiet = false, active = alwaysActive) => {
+  const recoverRefusedCursor = async (dir, previousWrite, active, listing) => {
+    if (listing.error_code !== "invalid_params") return false;
+    if (!syncPaneShown(listEl) || !active()) return true;
+    const held = await heldRecord(listingAddress(dir));
+    if (recordWriteOf(held) === previousWrite) await load(dir, true, active);
+    return true;
+  };
+
+  const listFromMachine = async (dir, request, previousWrite, quiet = false, active = alwaysActive, cursor = null) => {
     if (!stillListing(dir, request, active)) return;
-    const listing = await askMachine(dir);
+    const listing = await askMachine(dir, cursor);
     if (!stillListing(dir, request, active)) return;
     const address = listingAddress(dir);
     // An error is this mount's news, not the directory's: it never replaces a record.
     if (listing.error) {
+      if (cursor && await recoverRefusedCursor(dir, previousWrite, active, listing)) return;
       showListingError(dir, listing, quiet);
       return;
     }
-    if (!address) return takeListing(dir, listing);
-    const current = await heldRecord(address);
-    if (!stillListing(dir, request, active) || current?.at !== previousAt) return;
+    if (!address) return takeListing(dir, appendDirectoryPage(listings.get(dir), listing, cursor));
     await mergeCachedRecordsTogether([address], ([record]) => [
-      stillListing(dir, request, active) && recordWriteOf(record) === recordWriteOf(current) ? listing : null,
+      stillListing(dir, request, active) && recordWriteOf(record) === previousWrite
+        ? appendDirectoryPage(record?.value, listing, cursor) : null,
     ]);
   };
 
@@ -163,15 +179,40 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     if (!stillListing(dir, request, active)) return;
     if (record?.value) {
       takeListing(dir, record.value);
-      if (!force && !readsForItself()) return;
+      if (!force && !readsForItself() && !record.value.stale) return;
     }
-    await listFromMachine(dir, request, record?.at, force, active);
+    await listFromMachine(dir, request, recordWriteOf(record), force, active);
   };
 
+  const readMore = async (dir) => {
+    const cursor = listings.get(dir)?.next_cursor;
+    if (!cursor || !shown(dir)) return;
+    const request = beginListing(dir);
+    const record = await heldRecord(listingAddress(dir));
+    if (record && record.value?.next_cursor !== cursor) return;
+    await listFromMachine(dir, request, recordWriteOf(record), true, alwaysActive, cursor);
+  };
+  const more = (dir) => {
+    if (paging.has(dir)) return paging.get(dir);
+    const pending = readMore(dir).finally(() => { if (paging.get(dir) === pending) paging.delete(dir); });
+    paging.set(dir, pending);
+    return pending;
+  };
+
+  const hintDirectories = (files) => {
+    if (!files.truncated) return ["", ...expanded].filter(shown).filter((dir) => directoryTouchedByHint(dir, files));
+    const selected = cursorPath ? parentPath(cursorPath) : "";
+    return [listings.has(selected) && shown(selected) ? selected : ""];
+  };
+  const refreshShown = (active = alwaysActive, { files } = {}) => {
+    const directories = files ? hintDirectories(normalizedDirectoryHint(files)) : ["", ...expanded].filter(shown);
+    return Promise.all(directories.map((dir) => load(dir, true, active)));
+  };
   const unregisterSyncRead = registerSyncRead(
-    () => listingAddress(""), (active) => Promise.all(["", ...expanded].filter(shown).map((dir) => load(dir, true, active))),
+    () => listingAddress(""), refreshShown,
     () => !disposed && syncPaneShown(listEl),
   );
+  const directoryWatcher = watchDirectory(() => !disposed && syncPaneShown(listEl));
 
   const stop = (dir) => {
     watches.get(dir)?.();
@@ -228,6 +269,8 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
   const rowOf = (event) => event.target.closest?.(".frow[data-path]");
 
   const onClick = (event) => {
+    const continuation = event.target.closest?.("[data-tree-more]");
+    if (continuation) { void more(continuation.dataset.treeMore); return; }
     const row = rowOf(event);
     if (!row) return;
     setCursor(row.dataset.path);
@@ -240,6 +283,7 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
   };
 
   const onKeyDown = (event) => {
+    if (event.target.closest?.("[data-tree-more]")) return;
     const edge = onEdge && treeEdge(rows, cursorPath, event.key);
     if (edge) {
       event.preventDefault();
@@ -266,6 +310,8 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
 
   return {
     ready,
+    more,
+    invalidate: (files) => syncPaneShown(listEl) ? refreshShown(alwaysActive, { files }) : Promise.resolve(),
     /** The file in the preview: highlighted wherever its row is drawn, and
      *  where the keyboard selection moves to. */
     setOpenPath(path) {
@@ -302,6 +348,7 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
       disposed = true;
       unregisterSyncTree();
       unregisterSyncRead();
+      directoryWatcher?.dispose();
       [...watches.keys()].forEach(stop);
       record?.dispose();
       listEl.removeEventListener("click", onClick);

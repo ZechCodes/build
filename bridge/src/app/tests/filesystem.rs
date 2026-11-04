@@ -2,6 +2,120 @@ use super::*;
 use crate::app::fs::{FS_MEDIA_READ_MAX_BYTES, MOVED_SOURCE};
 use base64::Engine as _;
 
+fn paged_tree_fixture() -> (tempfile::TempDir, PathBuf, AppState, String) {
+    let (dir, repo) = init_repo();
+    let state = AppState::new(
+        repo.clone(),
+        dir.path().join("wt"),
+        "main",
+        true,
+        "/synthetic/tree.sock",
+    );
+    let project = state.project_at(0).id.clone();
+    (dir, repo, state, project)
+}
+
+#[test]
+fn fs_tree_paged_is_opt_in_and_bounds_pages() {
+    let (_dir, repo, mut state, project) = paged_tree_fixture();
+    for index in 0..250 {
+        std::fs::write(repo.join(format!("entry-{index:03}")), "synthetic").unwrap();
+    }
+    let legacy = state.handle(req("fs.tree", json!({"project_id":project})));
+    assert_eq!(legacy["result"].as_object().unwrap().len(), 2);
+    assert_eq!(legacy["result"]["entries"].as_array().unwrap().len(), 251);
+    let first = state.handle(req("fs.tree", json!({"project_id":project,"paged":true})));
+    assert_eq!(first["ok"], true, "{first}");
+    assert_eq!(first["result"]["entries"].as_array().unwrap().len(), 100);
+    assert_eq!(first["result"]["has_more"], true);
+    assert!(first["result"]["next_cursor"].is_string());
+    eprintln!("directory pages entries=251 legacy_bytes={} first_page_entries=100 first_page_bytes={} legacy_rpc=1 first_page_rpc=1",
+        serde_json::to_vec(&legacy["result"]).unwrap().len(), serde_json::to_vec(&first["result"]).unwrap().len());
+    for limit in [0, 201] {
+        let rejected = state.handle(req(
+            "fs.tree",
+            json!({"project_id":project,"paged":true,"limit":limit}),
+        ));
+        assert_eq!(rejected["ok"], false, "{rejected}");
+    }
+}
+
+#[test]
+fn fs_tree_paged_keyset_keeps_ties_stable_across_insertions_and_deletions() {
+    let (_dir, repo, mut state, project) = paged_tree_fixture();
+    std::fs::remove_file(repo.join("README.md")).unwrap();
+    for name in ["Zoo", "alpha"] {
+        std::fs::create_dir(repo.join(name)).unwrap();
+    }
+    for name in ["a", "A", "b", "z"] {
+        std::fs::write(repo.join(name), "synthetic").unwrap();
+    }
+    let first = state.handle(req(
+        "fs.tree",
+        json!({"project_id":project,"paged":true,"limit":3}),
+    ));
+    assert_eq!(first["ok"], true, "{first}");
+    let names = |response: &Value| {
+        response["result"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&first), ["alpha", "Zoo", "A"]);
+    std::fs::remove_dir(repo.join("alpha")).unwrap();
+    std::fs::write(repo.join("0-before-cursor"), "synthetic").unwrap();
+    std::fs::write(repo.join("c"), "synthetic").unwrap();
+    let second = state.handle(req("fs.tree", json!({"project_id":project,"paged":true,"limit":3,"cursor":first["result"]["next_cursor"]})));
+    assert_eq!(second["ok"], true, "{second}");
+    assert_eq!(names(&second), ["a", "b", "c"]);
+    let third = state.handle(req("fs.tree", json!({"project_id":project,"paged":true,"limit":3,"cursor":second["result"]["next_cursor"]})));
+    assert_eq!(names(&third), ["z"]);
+    assert_eq!(third["result"]["has_more"], false);
+    assert!(third["result"]["next_cursor"].is_null());
+}
+
+#[test]
+fn fs_tree_paged_rejects_foreign_malformed_and_replaced_directory_cursors() {
+    let (_dir, repo, mut state, project) = paged_tree_fixture();
+    std::fs::create_dir(repo.join("one")).unwrap();
+    std::fs::create_dir(repo.join("two")).unwrap();
+    for name in ["a", "b"] {
+        std::fs::write(repo.join("one").join(name), "synthetic").unwrap();
+    }
+    let first = state.handle(req(
+        "fs.tree",
+        json!({"project_id":project,"path":"one","paged":true,"limit":1}),
+    ));
+    let cursor = first["result"]["next_cursor"].clone();
+    assert!(cursor.is_string(), "{first}");
+    for (path, cursor) in [("two", cursor.clone()), ("one", json!("malformed"))] {
+        let answer = state.handle(req(
+            "fs.tree",
+            json!({"project_id":project,"path":path,"paged":true,"cursor":cursor}),
+        ));
+        assert_eq!(answer["ok"], false, "{answer}");
+        assert_eq!(answer["error_code"], "invalid_params", "{answer}");
+    }
+    std::fs::rename(repo.join("one"), repo.join("retired")).unwrap();
+    std::fs::create_dir(repo.join("one")).unwrap();
+    let replaced = state.handle(req(
+        "fs.tree",
+        json!({"project_id":project,"path":"one","paged":true,"cursor":cursor}),
+    ));
+    assert_eq!(replaced["ok"], false, "{replaced}");
+    assert_eq!(replaced["error_code"], "invalid_params", "{replaced}");
+    let unopted = state.handle(req(
+        "fs.tree",
+        json!({"project_id":project,"path":"one","cursor":"unexpected"}),
+    ));
+    assert_eq!(
+        unopted["ok"], false,
+        "cursor cannot silently fall back: {unopted}"
+    );
+}
+
 /// Add a git worktree Build did not create, at `dir/name` on `branch`, cut
 /// from `repo`'s current HEAD — the raw material of adoption tests.
 pub(in crate::app::tests) fn add_external_worktree(

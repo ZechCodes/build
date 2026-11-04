@@ -10,9 +10,9 @@ let bridgeAdapter, bridgeCapabilities, changeEventsArmed, greetBridge, resetChan
 const NONE = {
   writes: { epoch: false, ackConfirmMethods: [] },
   term: { projectSources: false },
-  changes: { subscriptions: false, kinds: [], projectSources: false },
+  changes: { subscriptions: false, filesHints: false, kinds: [], projectSources: false },
   git: { projectSources: false },
-  fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
+  fs: { treePaged: false, projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
   requests: { priority: false },
   rtc: { clientLanCache: false },
   errors: { codes: false },
@@ -21,7 +21,7 @@ const NONE = {
   reviews: { snapshotRetired: false, reject: false, author: false, verdictDelivery: false, retryDelivery: false, get: false, snapshot: false, diff: false, commits: false, commit: false, since: false, anchorCommit: false, complete: false, act: false, comments: false,
       forTask: false, taskChoices: false, linkedTaskChoices: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
-  tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
+  tasks: { timelinePaged: false, attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
   compaction: { harnessThresholds: false },
   conversations: { settings: false, reset: false },
   github: { repos: false },
@@ -79,10 +79,10 @@ describe("the adapter a greeting selects", () => {
       writes: { epoch: false, ackConfirmMethods: [] },
       // The kinds ride through as the greeting states them, so a caller can ask
       // whether this bridge carries the one it is about to subscribe to.
-      changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"], projectSources: false },
+      changes: { subscriptions: true, filesHints: false, kinds: ["state", "thread", "git", "files"], projectSources: false },
       git: { projectSources: false, showPaths: false },
       term: { projectSources: false },
-      fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
+      fs: { treePaged: false, projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
       requests: { priority: true },
       rtc: { clientLanCache: false },
       errors: { codes: true },
@@ -93,7 +93,7 @@ describe("the adapter a greeting selects", () => {
       forTask: false, taskChoices: false, linkedTaskChoices: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
       // A greeting that names no task feature carries none of them.
-      tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, listSummaries: false, filterChoices: false, counts: false, lookup: false, listWatched: false, listAttention: false, listLinkedWorkspace: false, listTracked: false, listReviewMode: false, listOrder: false, listReadiness: false, listExcludeAssignee: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
+      tasks: { timelinePaged: false, attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, listSummaries: false, filterChoices: false, counts: false, lookup: false, listWatched: false, listAttention: false, listLinkedWorkspace: false, listTracked: false, listReviewMode: false, listOrder: false, listReadiness: false, listExcludeAssignee: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
       compaction: { harnessThresholds: false },
       conversations: { settings: false, reset: false },
       github: { repos: false },

@@ -56,7 +56,8 @@ import { closeSplitMenusWithin, mountSplitButton } from "./splitButton.js";
 import { mountChangesComposer } from "./changesComposer.js";
 import { commitPaths, createReviewMarks } from "./reviewMarks.js";
 import { toggleSecretSpoiler } from "./secrets.js";
-import { watchChanges } from "./changeEvents.js";
+import { onBridgeGreeted, watchChanges } from "./changeEvents.js";
+import { chooseFilePushKind } from "./directoryPages.js";
 import { writeDirectoryGit } from "./directoryGitCache.js";
 import { cachedSubKeys, mergeCached, mergeCachedRecordsTogether, readCached, readCachedMany, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
 import { COMMIT_PATCH_MAX_BYTES, PATCH_RECORD_KIND } from "./cacheThresholds.js";
@@ -88,6 +89,8 @@ import { App } from "../appState.js";
 import { commitPatchParams, createCommitDiffTarget, filteredCommitPatchKey } from "./commitDiffTarget.js";
 const projectSourceWatchScope = (scope) => scope.project_id && scope.source_id && scope.source_path
   ? { kind: "project_source", project_id: scope.project_id, source_id: scope.source_id, source_path: scope.source_path } : undefined;
+const needsLegacySourceWatch = (scope, capabilities) => Boolean(projectSourceWatchScope(scope))
+  && !(capabilities.changes?.projectSources && capabilities.changes?.filesHints);
 const alwaysActive = () => true;
 const workspaceDiffKeyFields = (ifDiffKey, address, before) =>
   ifDiffKey && (!address || before?.value) ? { if_diff_key: ifDiffKey } : {};
@@ -2223,7 +2226,7 @@ export function mountGitPane(
    * held records, then validates status on mount and board notifications.
    * The review plug checks its own key, which can move independently.
    */
-  const readsForItself = !cacheScope || !syncWalksCheckout(scope, cacheScope.deviceId);
+  const readsForItself = () => !cacheScope || !syncWalksCheckout(scope, cacheScope.deviceId);
   const refreshSyncRecord = async (kind, store, active) => {
     const before = await cacheRecord(kind);
     if (!active()) return;
@@ -2258,7 +2261,7 @@ export function mountGitPane(
     if (disposed) return;
     if (held) paintRecords(held);
     const missing = ["status", "log"].filter((kind) => !held?.[kind] || held[kind].stale);
-    if (readsForItself && held?.status) {
+    if (readsForItself() && held?.status) {
       await forceRefresh(["status"], true);
       if (!held.log) await forceRefresh(["log"]);
     } else if (missing.length) await forceRefresh(missing);
@@ -2305,8 +2308,13 @@ export function mountGitPane(
   });
   void Promise.all([draftRecord?.ready, uiRecord?.ready]).then(standUp);
   const unwatchRecords = watchRecords();
-  const checkoutWatcher = readsForItself
-    ? watchChanges({
+  let checkoutWatcher = null;
+  const bindCheckoutWatcher = () => {
+    checkoutWatcher?.dispose();
+    checkoutWatcher = null;
+    if (disposed || !readsForItself()) return;
+    const capabilities = bridgeCapabilities(cacheScope?.deviceId);
+    checkoutWatcher = watchChanges({
         refresh: refreshCheckout,
         onChanges: async (items) => {
           if (scope.project_id && scope.source_path) await applyProjectSourceChanges(items, cacheScope?.deviceId);
@@ -2316,15 +2324,19 @@ export function mountGitPane(
         scope: projectSourceWatchScope(scope),
         // Storage and RPC identity remain source/location-qualified. Older
         // bridges announce this checkout through board state instead.
-        legacyBoardFallback: Boolean(projectSourceWatchScope(scope)),
+        legacyBoardFallback: needsLegacySourceWatch(scope, capabilities),
         entity: watchedEntity,
         // Focus tier. A checkout the bridge names no entity for watches the
         // board — where `state` is all there is, and the manager trims the ask
         // to it.
-        kinds: ["state", "git", "files"],
+        kinds: ["state", "git", chooseFilePushKind(cacheScope?.deviceId)],
         mode: "realtime",
-      })
-    : null;
+      });
+  };
+  bindCheckoutWatcher();
+  const stopCheckoutGreeting = onBridgeGreeted((deviceId) => {
+    if (deviceId === cacheScope?.deviceId) bindCheckoutWatcher();
+  });
   const editedTimeWatcher = watchEditedTimes(container);
 
   const hidePane = () => {
@@ -2386,6 +2398,7 @@ export function mountGitPane(
       stopCommitMeasurement();
       stopToolbarMeasurement();
       unwatchRecords?.();
+      stopCheckoutGreeting();
       checkoutWatcher?.dispose();
       disarmTimer();
       editedTimeWatcher.dispose();

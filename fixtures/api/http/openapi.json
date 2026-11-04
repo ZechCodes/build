@@ -12160,7 +12160,7 @@
                       "id": "example",
                       "ok": true,
                       "result": {
-                        "api_version": "3.34.0",
+                        "api_version": "3.35.0",
                         "ack_confirm_methods": [],
                         "capabilities": [
                           "agent.add",
@@ -12192,6 +12192,7 @@
                           "capture.get",
                           "capture.reroute",
                           "changes.bodies",
+                          "changes.filesHints",
                           "changes.projectSources",
                           "changes.refusedKinds",
                           "changes.subscribe",
@@ -12217,6 +12218,7 @@
                           "fs.projectSources",
                           "fs.read",
                           "fs.tree",
+                          "fs.treePaged",
                           "fs.uploadAbort",
                           "fs.uploadBegin",
                           "fs.uploadChunk",
@@ -12357,6 +12359,7 @@
                           "tasks.review.update",
                           "tasks.review.verdictDelivery",
                           "tasks.reviewComments",
+                          "tasks.timelinePaged",
                           "tasks.unreadCounts",
                           "tasks.unwatch",
                           "tasks.update",
@@ -13373,10 +13376,14 @@
                                 "assignee": {
                                   "kind": "",
                                   "agent_id": "Actual\u0000suffix"
-                                }
+                                },
+                                "last_reviewed_snapshot_id": null
                               },
                               "timeline": [],
-                              "has_more": false
+                              "has_more": false,
+                              "next_cursor": null,
+                              "timeline_incarnation": "synthetic-task-history-incarnation",
+                              "timeline_read_through": null
                             },
                             "selection": {
                               "pending_present": true
@@ -15688,7 +15695,7 @@
         "x-build-method": "tasks.get",
         "x-build-contract": {
           "source": "bridge/src/api/v1/tasks.rs",
-          "params": "TaskIdParams",
+          "params": "TasksGetParams",
           "result": "TaskDetail",
           "fixture": "fixtures/api/v1/tasks.get.json"
         },

@@ -67,6 +67,7 @@ impl Store {
             // when two asynchronous stamps reach SQLite in reverse order.
             current.last_interaction_at = Some(last.to_owned());
             current.resume_at = resume.map(str::to_owned);
+            super::sync::touch_device_owner(transaction, owner)?;
             transaction.execute(
                 "INSERT INTO attention (entity_id, record) VALUES (?1, ?2) \
                  ON CONFLICT(entity_id) DO UPDATE SET record = excluded.record",

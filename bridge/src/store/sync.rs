@@ -10,13 +10,19 @@ mod device;
 pub(in crate::store) use device::stage as stage_device;
 pub use device::{DeviceLease, DEVICE_LEASES_PER_OPENING, DEVICE_LEASE_TTL_MS};
 mod device_producers;
+mod device_backfill;
+mod device_thread;
+pub(in crate::store) use device_thread::{before_item as before_device_item, reset as reset_device_conversation};
 pub(in crate::store) use device_producers::{
     touch_agent as touch_device_agent, touch_owner as touch_device_owner,
+    touch_conversation as touch_device_conversation, touch_project as touch_device_project,
 };
 mod journal;
+mod lifecycle;
 mod reads;
 mod recovery_reads;
 mod retention;
+mod retention_install;
 mod schema;
 mod task_publication;
 pub(super) use device_producers::collect as collect_device;

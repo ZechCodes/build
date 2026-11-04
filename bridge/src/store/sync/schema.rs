@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS sync_leases (
  epoch TEXT NOT NULL,seq INTEGER NOT NULL,expires_at_ms INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS sync_leases_expiry ON sync_leases(expires_at_ms,id);
 CREATE INDEX IF NOT EXISTS sync_leases_seq ON sync_leases(seq);
+CREATE INDEX IF NOT EXISTS sync_leases_current ON sync_leases(incarnation,epoch,expires_at_ms);
+CREATE INDEX IF NOT EXISTS sync_leases_opening ON sync_leases(incarnation,epoch,opening,expires_at_ms);
 CREATE TABLE IF NOT EXISTS sync_dirty (
  kind TEXT NOT NULL,key TEXT NOT NULL,generation INTEGER NOT NULL,marked_at_ms INTEGER NOT NULL,
  PRIMARY KEY(kind,key)) WITHOUT ROWID;
@@ -115,9 +117,14 @@ pub(in crate::store) fn initialize(
     }
     put(&tx, "sync_schema", DEFINITION)?;
     put(&tx, "sync_file_binding", &binding)?;
+    tx.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('device_dirty_generation',
+        CAST((SELECT COALESCE(MAX(generation),0) FROM sync_dirty) AS TEXT))", [])?;
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS device_project_ids(path TEXT PRIMARY KEY, project_id TEXT NOT NULL) WITHOUT ROWID;")?;
     tx.commit()?;
+    super::retention_install::install(conn)?;
     super::task_publication::install(conn)?;
     super::device_producers::install(conn)?;
+    super::device_backfill::install(conn)?;
     Ok(())
 }
 

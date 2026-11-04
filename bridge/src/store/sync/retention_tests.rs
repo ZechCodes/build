@@ -207,3 +207,22 @@ fn blocked_tombstone_prefix_yields_and_resumes_without_skipping_later_candidates
         "negative control: leased tombstones remain protected"
     );
 }
+
+#[test]
+fn device_followup_gc_lease_seek_does_not_walk_an_expired_prefix() {
+    use std::cell::Cell;
+    thread_local!{static LEASE_STEPS:Cell<u64>=const{Cell::new(0)};}
+    fn trace(event:rusqlite::trace::TraceEvent<'_>) {
+        if let rusqlite::trace::TraceEvent::Profile(statement,_)=event {
+            let sql=statement.sql();
+            if sql.contains("SELECT MAX(projection_pressure_floor") {LEASE_STEPS.with(|steps|steps.set(statement.get_status(rusqlite::StatementStatus::VmStep) as u64));}
+        }
+    }
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();
+    {let conn=store.writer_for_test();conn.execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<5000) INSERT INTO sync_leases SELECT CAST(x AS TEXT),'s','o','i','e',x,0 FROM n",[]).unwrap();
+    conn.execute("INSERT INTO sync_leases VALUES('active','s','o','i','e',5001,?1)",[NOW+100]).unwrap();
+    conn.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,Some(trace));}
+    store.writer().sync_gc_batch(NOW).unwrap();
+    let steps=LEASE_STEPS.with(Cell::get);
+    assert!(steps>0 && steps<200,"oldest lease seek walked expired history: {steps}");
+}

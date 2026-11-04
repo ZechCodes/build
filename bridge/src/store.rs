@@ -289,7 +289,7 @@ pub enum StoreError {
 /// 20 adds transactional task summary projections.
 /// 21 adds durable review verdict and revision delivery journals.
 /// 22 adds the separate scoped sync journal and retained stream floors.
-pub const SCHEMA_VERSION: i64 = 22;
+pub const SCHEMA_VERSION: i64 = 23;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.

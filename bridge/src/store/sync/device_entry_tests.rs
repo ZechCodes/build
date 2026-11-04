@@ -113,3 +113,54 @@ async fn device_page_budget_is_one_mib_and_oversized_rows_refuse_explicitly() {
     assert_eq!(oversized["reason"], "over_budget");
     assert!(oversized.get("records").is_none());
 }
+
+#[tokio::test]
+async fn device_expiry_check_is_after_all_snapshot_sql() {
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let writer = store.writer();
+    let generation = writer.mark_sync_dirty("project", "one", NOW).unwrap();
+    writer.reconcile_sync_dirty("project", "one", generation, Some(json!({"name":"one"})), NOW).unwrap();
+    let lease = writer.admit_device_lease("opening", "epoch", NOW).unwrap();
+    store.writer_for_test().execute_batch("ALTER TABLE sync_projection_keys RENAME TO expiry_keys;
+        CREATE VIEW sync_projection_keys AS SELECT kind,key,device_scan_clock(first_seq) AS first_seq FROM expiry_keys;").unwrap();
+    let checked = Arc::new(AtomicBool::new(false));
+    let mut read = store.read_pool().acquire_sync().await;
+    let result = read.read(|tx| {
+        let observed = Arc::clone(&checked);
+        tx.connection().create_scalar_function("device_scan_clock", 1, rusqlite::functions::FunctionFlags::SQLITE_UTF8, move |context| {
+            if observed.load(Ordering::SeqCst) {
+                return Err(rusqlite::Error::UserFunctionError(Box::new(std::io::Error::other("SQL after final expiry check"))));
+            }
+            context.get::<i64>(0)
+        }).unwrap();
+        tx.sync_device_snapshot_observed(&lease.id,"epoch",NOW,|| {checked.store(true,Ordering::SeqCst); NOW})
+    }).unwrap();
+    assert!(result.is_ok(), "expiry recheck must follow lookahead and response assembly: {result:?}");
+    assert!(checked.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn device_followup_long_device_positions_remain_bounded_and_task_positions_stay_small() {
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();
+    let mut read=store.read_pool().acquire_sync().await;
+    read.read(|tx| {
+        let scope=Scope::new(Stream::device(),json!({"kind":"device"}));
+        let position=json!({"key":"\0".repeat(4096)});
+        let token=tx.sync_encode_continuation(&scope,"device_snapshot",&position).expect("legal device keys must fit their bounded page token");
+        assert!(token.len()<=65536);
+        let decoded:Continuation<serde_json::Value>=tx.sync_decode_continuation(&scope,"device_snapshot",&token).unwrap();
+        assert!(matches!(decoded,Continuation::Current(value) if value==position));
+        assert!(tx.sync_encode_continuation(&scope,"snapshot",&position).is_err());
+    }).unwrap();
+}
+
+#[test]
+fn device_followup_pressure_invalidated_leases_allow_replacement_after_gc() {
+    let directory=tempfile::tempdir().unwrap();let store=Store::new(directory.path()).unwrap();
+    for _ in 0..DEVICE_LEASES_PER_OPENING {store.writer().admit_device_lease("opening","epoch",NOW).unwrap();}
+    store.writer_for_test().execute("UPDATE sync_state SET head=1,projection_pressure_floor=1",[]).unwrap();
+    for _ in 0..DEVICE_LEASES_PER_OPENING {store.writer().admit_device_lease("opening","epoch",NOW).expect("invalidated leases do not consume quota");}
+    assert!(store.writer().admit_device_lease("opening","epoch",NOW).is_err());
+}

@@ -22,13 +22,15 @@ impl StoreWriter {
     pub fn mark_sync_dirty(&self, kind: &str, key: &str, now: i64) -> Result<i64, SyncError> {
         validate_identity(kind, key)?;
         self.transaction(|tx| {
-            tx.prepare_cached(
-                "INSERT INTO sync_dirty(kind,key,generation,marked_at_ms) VALUES(?1,?2,1,?3)
-                 ON CONFLICT(kind,key) DO UPDATE SET generation=generation+1,marked_at_ms=?3
-                 RETURNING generation",
-            )?
-            .query_row(params![kind, key, now], |row| row.get(0))
-            .map_err(StoreError::from)
+            let generation: i64 = tx.query_row(
+                "UPDATE meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)
+                 WHERE key='device_dirty_generation' AND CAST(value AS INTEGER)<9223372036854775807
+                 RETURNING CAST(value AS INTEGER)", [], |row| row.get(0))?;
+            tx.execute(
+                "INSERT INTO sync_dirty(kind,key,generation,marked_at_ms) VALUES(?1,?2,?3,?4)
+                 ON CONFLICT(kind,key) DO UPDATE SET generation=?3,marked_at_ms=?4",
+                params![kind,key,generation,now])?;
+            Ok(generation)
         })
         .map_err(SyncError::from)
     }
@@ -83,32 +85,23 @@ impl StoreWriter {
         }
         let mut connection = self.connection();
         let tx = connection.transaction()?;
-        let dirty: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_dirty)", [], |row| {
-            row.get(0)
-        })?;
-        if dirty {
-            return Err(SyncError::Unavailable("sync_reconciling".into()));
-        }
-        let active: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM sync_leases WHERE expires_at_ms>?1",
-            [now],
-            |row| row.get(0),
-        )?;
-        let for_opening: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM sync_leases WHERE opening=?1 AND expires_at_ms>?2",
-            params![opening, now],
-            |row| row.get(0),
-        )?;
-        if active >= DEVICE_LEASES_PER_STORE as i64
-            || for_opening >= DEVICE_LEASES_PER_OPENING as i64
-        {
-            return Err(SyncError::Unavailable("device lease quota exceeded".into()));
+        ensure_ready(&tx)?;
+        let retained:i64=tx.query_row("SELECT retained_version_bytes FROM sync_state WHERE id=1",[],|row|row.get(0))?;
+        if retained>super::retention::MAX_RETAINED_VERSION_BYTES {
+            return Err(SyncError::Unavailable("device snapshot retention pressure".into()));
         }
         let (head, incarnation): (i64, String) = tx.query_row(
             "SELECT s.head,m.value FROM sync_state s JOIN meta m ON m.key='sync_incarnation' WHERE s.id=1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
+            [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let active: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM sync_leases WHERE incarnation=?1 AND epoch=?2 AND expires_at_ms>?3",
+            params![incarnation,epoch,now], |row| row.get(0))?;
+        let for_opening: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM sync_leases WHERE incarnation=?1 AND epoch=?2 AND opening=?3 AND expires_at_ms>?4",
+            params![incarnation,epoch,opening,now], |row| row.get(0))?;
+        if active >= DEVICE_LEASES_PER_STORE as i64 || for_opening >= DEVICE_LEASES_PER_OPENING as i64 {
+            return Err(SyncError::Unavailable("device lease quota exceeded".into()));
+        }
         let id = uuid::Uuid::new_v4().to_string();
         let expires_at_ms = now.saturating_add(DEVICE_LEASE_TTL_MS);
         tx.execute(
@@ -137,7 +130,7 @@ impl ReadTransaction<'_> {
     pub fn sync_device_snapshot(
         &self,
         lease_id: &str,
-        after: Option<(&str, &str)>,
+        after: Option<(i64, &str, &str)>,
         limit: usize,
         epoch: &str,
         now: i64,
@@ -151,7 +144,7 @@ impl ReadTransaction<'_> {
     pub fn sync_device_snapshot_with_recheck(
         &self,
         lease_id: &str,
-        after: Option<(&str, &str)>,
+        after: Option<(i64, &str, &str)>,
         limit: usize,
         epoch: &str,
         now: i64,
@@ -160,92 +153,98 @@ impl ReadTransaction<'_> {
         self.sync_device_snapshot_inner(lease_id, after, limit, epoch, now, || recheck_now)
     }
 
+    #[cfg(test)]
+    pub fn sync_device_snapshot_observed(
+        &self, lease: &str, epoch: &str, now: i64, recheck: impl FnOnce() -> i64,
+    ) -> Result<Value, SyncError> {
+        self.sync_device_snapshot_inner(lease, None, 1, epoch, now, recheck)
+    }
+
     fn sync_device_snapshot_inner(
         &self,
         lease_id: &str,
-        after: Option<(&str, &str)>,
+        after: Option<(i64, &str, &str)>,
         limit: usize,
         epoch: &str,
         now: i64,
         recheck_now: impl FnOnce() -> i64,
     ) -> Result<Value, SyncError> {
+        ensure_ready(self.connection())?;
         if !(1..=500).contains(&limit) {
-            return Err(SyncError::InvalidRequest(
-                "snapshot limit must be 1 to 500".into(),
-            ));
+            return Err(SyncError::InvalidRequest("snapshot limit must be 1 to 500".into()));
         }
-        let lease: Option<(String, String, i64, i64)> = self
-            .connection()
-            .prepare_cached(
-                "SELECT incarnation,epoch,seq,expires_at_ms FROM sync_leases
-                 WHERE id=?1 AND scope_digest=?2",
-            )?
-            .query_row(params![lease_id, device_scope().digest()], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })
-            .optional()?;
-        let current_incarnation: String = self.connection().query_row(
-            "SELECT value FROM meta WHERE key='sync_incarnation'",
-            [],
-            |row| row.get(0),
-        )?;
-        let Some((incarnation, lease_epoch, watermark, expires)) = lease else {
-            return Ok(resync(&current_incarnation, epoch));
-        };
-        if incarnation != current_incarnation || lease_epoch != epoch || expires <= now {
-            return Ok(resync(&current_incarnation, epoch));
+        let incarnation: String = self.connection().query_row(
+            "SELECT value FROM meta WHERE key='sync_incarnation'", [], |row| row.get(0))?;
+        let lease: Option<(String,String,i64,i64)> = self.connection().query_row(
+            "SELECT incarnation,epoch,seq,expires_at_ms FROM sync_leases WHERE id=?1 AND scope_digest=?2",
+            params![lease_id,device_scope().digest()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?;
+        let Some((lease_incarnation,lease_epoch,watermark,expires))=lease else {return Ok(resync(&incarnation,epoch));};
+        if lease_incarnation!=incarnation || lease_epoch!=epoch || expires<=now {
+            return Ok(resync(&incarnation,epoch));
         }
-        let (after_kind, after_key) = after.unwrap_or(("", ""));
-        let scan = (4 * limit + 1).min(2001);
-        let keys = self
-            .connection()
-            .prepare_cached(
-                "SELECT kind,key FROM sync_projection_keys
-                 WHERE first_seq<=?1 AND (kind>?2 OR (kind=?2 AND key>?3))
-                 ORDER BY kind,key LIMIT ?4",
-            )?
-            .query_map(
-                params![watermark, after_kind, after_key, scan as i64],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut records = Vec::new();
-        let mut last = None;
-        for (kind, key) in keys {
-            if records.len() == limit {
-                break;
-            }
-            if let Some((revision, deleted, raw)) = projection_at(self, &kind, &key, watermark)? {
-                if !deleted {
-                    let row: Value = serde_json::from_str(raw.as_deref().ok_or_else(|| {
-                        SyncError::Unavailable("missing device projection row".into())
-                    })?)
-                    .map_err(|_| SyncError::Unavailable("invalid device projection row".into()))?;
-                    records.push(json!({"kind":kind,"key":key,"revision":super::Sequence::new(revision)?,"row":row}));
-                }
-            }
-            last = Some((kind, key));
+        let pressure_floor:i64=self.connection().query_row("SELECT projection_pressure_floor FROM sync_state WHERE id=1",[],|row|row.get(0))?;
+        if watermark<pressure_floor {return Ok(over_budget(&incarnation,epoch));}
+        let Some((records,next))=self.device_page(after,limit,watermark)? else {return Ok(over_budget(&incarnation,epoch));};
+        let mut answer=json!({"status":"ok","incarnation":incarnation,"watermark":super::Sequence::new(watermark)?,"bridge_epoch":epoch,"consistency":"leased","lease":{"id":lease_id,"expires_at_ms":expires},"records":records});
+        if let Some((seq,kind,key))=next {answer["next"]=json!({"first_seq":super::Sequence::new(seq)?,"kind":kind,"key":key});}
+        // Includes envelope construction and serialization, after every SQL seek.
+        if serde_json::to_vec(&answer).map_err(|_|SyncError::Unavailable("invalid device page".into()))?.len()>super::MAX_RECOVERY_BYTES {
+            return Ok(over_budget(&incarnation,epoch));
         }
-        // Revalidate the finite lease inside the same read snapshot just before
-        // constructing the answer; no transaction survives this request.
-        if expires <= recheck_now() || lease_epoch != epoch {
-            return Ok(resync(&current_incarnation, epoch));
-        }
-        let mut answer = json!({"status":"ok","incarnation":incarnation,"watermark":super::Sequence::new(watermark)?,"bridge_epoch":epoch,"consistency":"leased","lease":{"id":lease_id,"expires_at_ms":expires},"records":records});
-        if let Some((kind, key)) = last {
-            let more: bool = self.connection().query_row(
-                "SELECT EXISTS(SELECT 1 FROM sync_projection_keys
-                 WHERE first_seq<=?1 AND (kind>?2 OR (kind=?2 AND key>?3)))",
-                params![watermark, kind, key],
-                |row| row.get(0),
-            )?;
-            if more {
-                answer["next"] = json!({"kind":kind,"key":key});
-            }
-        }
+        if expires<=recheck_now() {return Ok(resync(&incarnation,epoch));}
         Ok(answer)
     }
+
+    fn device_page(&self,after:Option<(i64,&str,&str)>,limit:usize,watermark:i64)->Result<Option<DevicePage>,SyncError> {
+        let (seq,kind,key)=after.unwrap_or((0,"",""));
+        if seq<0 || seq>watermark {return Err(SyncError::MalformedCursor);}
+        let cap=(4*limit).min(2000);
+        let keys=self.connection().prepare_cached(
+            "SELECT first_seq,kind,key FROM sync_projection_keys
+             WHERE (first_seq,kind,key)>(?1,?2,?3) AND first_seq<=?4
+             ORDER BY first_seq,kind,key LIMIT ?5")?
+            .query_map(params![seq,kind,key,watermark,(cap+1) as i64],|row|Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
+        let mut records=Vec::new();
+        let mut bytes=0;
+        let mut processed=0;
+        let mut last=None;
+        for (seq,kind,key) in keys.iter().take(cap) {
+            if records.len()==limit {break;}
+            if let Some(record)=self.device_record_at(kind,key,watermark)? {
+                let size=serde_json::to_vec(&record).map_err(|_|SyncError::Unavailable("invalid device record".into()))?.len()+1;
+                if bytes+size>super::MAX_RECOVERY_BYTES-16384 {break;}
+                if record["row"].is_null() {return Ok(None);}
+                bytes+=size;
+                records.push(record);
+            }
+            processed+=1;
+            last=Some((*seq,kind.clone(),key.clone()));
+        }
+        if processed==0 && !keys.is_empty() {return Ok(None);}
+        let next=if processed<keys.len() {last} else {None};
+        Ok(Some((records,next)))
+    }
+
+    fn device_record_at(&self,kind:&str,key:&str,watermark:i64)->Result<Option<Value>,SyncError> {
+        let Some((revision,deleted,raw))=projection_at(self,kind,key,watermark)? else {return Ok(None);};
+        if deleted {return Ok(None);}
+        let row=raw.map(|raw|serde_json::from_str::<Value>(&raw).map_err(|_|SyncError::Unavailable("invalid device projection row".into()))).transpose()?.unwrap_or(Value::Null);
+        Ok(Some(json!({"kind":kind,"key":key,"revision":super::Sequence::new(revision)?,"row":row})))
+    }
+
+    pub fn sync_device_record(&self,kind:&str,key:&str)->Result<Value,SyncError> {
+        ensure_ready(self.connection())?;
+        validate_identity(kind,key)?;
+        let (revision,deleted,raw)=projection_at(self,kind,key,i64::MAX)?.ok_or_else(||SyncError::Unavailable("missing device projection row".into()))?;
+        let row=if deleted {Value::Null} else {
+            serde_json::from_str(raw.as_deref().ok_or_else(||SyncError::Unavailable("device record exceeds byte budget".into()))?).map_err(|_|SyncError::Unavailable("invalid device record".into()))?
+        };
+        Ok(json!({"kind":kind,"key":key,"revision":super::Sequence::new(revision)?,"row":row,"member":!deleted}))
+    }
 }
+
+type DeviceKey=(i64,String,String);
+type DevicePage=(Vec<Value>,Option<DeviceKey>);
 
 fn projection_at(
     read: &ReadTransaction<'_>,
@@ -256,7 +255,7 @@ fn projection_at(
     let current = read
         .connection()
         .prepare_cached(
-            "SELECT from_seq,deleted,record FROM sync_projection
+            "SELECT from_seq,deleted,CASE WHEN length(CAST(record AS BLOB))<=65536 THEN record END FROM sync_projection
              WHERE kind=?1 AND key=?2 AND from_seq<=?3",
         )?
         .query_row(params![kind, key, watermark], |row| {
@@ -269,7 +268,7 @@ fn projection_at(
     Ok(read
         .connection()
         .prepare_cached(
-            "SELECT from_seq,deleted,record FROM sync_projection_versions
+            "SELECT from_seq,deleted,CASE WHEN length(CAST(record AS BLOB))<=65536 THEN record END FROM sync_projection_versions
              WHERE kind=?1 AND key=?2 AND from_seq<=?3 AND to_seq>?3
              ORDER BY from_seq DESC LIMIT 1",
         )?
@@ -312,6 +311,7 @@ pub(super) fn apply_projection(
                 previous_bytes
             ],
         )?;
+        super::retention::retain_version(tx, previous_bytes, seq)?;
     } else {
         tx.execute(
             "INSERT INTO sync_projection_keys(kind,key,first_seq) VALUES(?1,?2,?3)",
@@ -375,4 +375,20 @@ fn validate_identity(kind: &str, key: &str) -> Result<(), SyncError> {
 
 fn resync(incarnation: &str, epoch: &str) -> Value {
     json!({"status":"resync_required","incarnation":incarnation,"bridge_epoch":epoch,"reason":"lease_expired"})
+}
+
+/// Scope-local fence: unrelated task streams remain available during registry work.
+pub(super) fn ensure_scope_ready(conn: &rusqlite::Connection, scope: &Scope) -> Result<(), SyncError> {
+    if scope.stream().kind == super::StreamKind::Device { ensure_ready(conn)?; }
+    Ok(())
+}
+
+pub(super) fn ensure_ready(conn: &rusqlite::Connection) -> Result<(), SyncError> {
+    let dirty: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sync_dirty)", [], |row| row.get(0))?;
+    if dirty { return Err(SyncError::Unavailable("sync_reconciling".into())); }
+    Ok(())
+}
+
+fn over_budget(incarnation:&str,epoch:&str)->Value {
+    json!({"status":"resync_required","incarnation":incarnation,"bridge_epoch":epoch,"reason":"over_budget"})
 }

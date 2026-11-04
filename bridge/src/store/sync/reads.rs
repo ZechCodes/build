@@ -77,6 +77,7 @@ impl ReadTransaction<'_> {
         epoch: &str,
         now: i64,
     ) -> Result<HeadResult, SyncError> {
+        super::device::ensure_scope_ready(self.connection(), scope)?;
         let conn = self.connection();
         let (incarnation, key) = schema::identity(conn)?;
         let (head, baseline): (i64, i64) =
@@ -112,6 +113,7 @@ impl ReadTransaction<'_> {
     }
 
     pub fn sync_cursor(&self, scope: &Scope, sequence: Sequence) -> Result<String, SyncError> {
+        super::device::ensure_scope_ready(self.connection(), scope)?;
         let (incarnation, key) = schema::identity(self.connection())?;
         Ok(cursor::encode(&incarnation, &key, scope, sequence))
     }

@@ -112,6 +112,8 @@ testing = []
 release-portable = ["git2/vendored-libgit2", "git2/vendored-openssl"]
 
 [dev-dependencies]
+# Test-only SQLite statement/VM accounting for bounded device producer work.
+rusqlite = { version = "0.40.2", features = ["trace"] }
 bytes = "1"
 build-bridge = { path = ".", features = ["testing"] }
 tempfile = "3"

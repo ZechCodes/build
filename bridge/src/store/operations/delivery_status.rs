@@ -137,6 +137,7 @@ fn write_status(
 ) -> Result<CommittedThreadItems, StoreError> {
     let sequence = agent.thread.last_sequence();
     for item in &agent.thread.items {
+        crate::store::sync::before_device_item(tx, conversation, sql_sequence(item.sequence()))?;
         tx.execute("UPDATE thread_items SET item = ?3, updated_sequence = ?4 WHERE agent_id = ?1 AND sequence = ?2",
             params![conversation, sql_sequence(item.sequence()), serde_json::to_string(item).expect("a thread item always serializes"), sql_sequence(item.latest_sequence())])?;
     }

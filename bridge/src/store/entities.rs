@@ -484,6 +484,7 @@ impl Store {
             // Copy and delete in this transaction so replay sees either both
             // the old conversation or its retained message times.
             retain_agent_message_times(tx, owner_id, gone)?;
+            super::sync::reset_device_conversation(tx, gone)?;
             tx.execute("DELETE FROM thread_items WHERE agent_id = ?1", [gone])?;
             tx.execute("DELETE FROM agents WHERE id = ?1", [gone])?;
             super::task_summaries::identity_remove(tx, gone)?;
@@ -553,6 +554,7 @@ impl Store {
                 if previous == Some(updated) {
                     continue;
                 }
+                super::sync::before_device_item(tx, &agent.id, sequence)?;
                 upsert_item.execute(rusqlite::params![
                     agent.id,
                     sequence,
@@ -569,6 +571,7 @@ impl Store {
             // what is left over is deleted rather than left behind to reappear
             // on the next load.
             for orphan in stored.keys() {
+                super::sync::before_device_item(tx, &agent.id, *orphan)?;
                 delete_item.execute(rusqlite::params![agent.id, orphan])?;
             }
         }
@@ -1075,7 +1078,7 @@ impl Store {
     }
 }
 
-fn device_capture(record: &crate::capture::Capture) -> serde_json::Value {
+pub(super) fn device_capture(record: &crate::capture::Capture) -> serde_json::Value {
     let title = record.text.chars().take(256).collect::<String>();
     serde_json::json!({
         "id":record.id,
@@ -1213,6 +1216,7 @@ fn remove_owner_identities(tx: &rusqlite::Transaction, owner: &str) -> Result<()
         .query_map([owner], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     for id in ids {
+        super::sync::reset_device_conversation(tx, &id)?;
         super::task_summaries::identity_remove(tx, &id)?;
     }
     Ok(())

@@ -34,6 +34,7 @@ impl ReadTransaction<'_> {
         scope: &Scope,
         token: &str,
     ) -> Result<CursorSequence, SyncError> {
+        super::device::ensure_scope_ready(self.connection(), scope)?;
         let (incarnation, key) = schema::identity(self.connection())?;
         match cursor::decode(token, &incarnation, &key, scope)? {
             cursor::Position::Retained(seq) => Ok(CursorSequence::Current(seq)),
@@ -62,6 +63,7 @@ impl ReadTransaction<'_> {
         head: Sequence,
         limit: usize,
     ) -> Result<Vec<Event>, SyncError> {
+        super::device::ensure_scope_ready(self.connection(), scope)?;
         let stream = scope.stream();
         let rows=self.connection().prepare("SELECT j.seq,j.entity_kind,j.entity_key,j.operation FROM sync_routes r JOIN sync_journal j ON j.seq=r.seq WHERE r.stream_kind=?1 AND r.stream_key=?2 AND r.seq>?3 AND r.seq<=?4 ORDER BY r.seq LIMIT ?5")?
             .query_map(params![stream.kind.as_str(),stream.key,after.get(),head.get(),limit.min(MAX_RECOVERY_EVENTS+1) as i64],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<Result<Vec<_>,_>>()?;

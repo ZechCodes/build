@@ -85,9 +85,18 @@ it("refreshes only compaction fields in device-owned project settings", async ()
   await writeCached(addr, current);
   const policy = { compaction_thresholds: { codex: 100 }, compaction: { effective: {} } };
   const call = vi.fn(async () => ({ projects: [{ project_id: "project", name: "Older directory", path: "/synthetic/older", ...policy }] }));
-  await refreshCompactionCaches({ ...context(call), capabilities: { ...capabilities, sync: { device: true } } },
+  await refreshCompactionCaches({ ...context(call), apiVersion: "3.34.0", capabilities: { ...capabilities, sync: { device: true } } },
     { scope: "project", owner_id: "project" });
   expect((await readCached(addr)).value).toEqual({ ...current, ...policy });
+});
+
+it("keeps the legacy project settings refresh on device wire 3.33", async () => {
+  const addr = address("project-settings", "project");
+  await writeCached(addr, { project_id: "project", name: "Held directory" });
+  const incoming = { project_id: "project", name: "Legacy directory", compaction_thresholds: { codex: 100 } };
+  await refreshCompactionCaches({ ...context(async () => ({ projects: [incoming] })), apiVersion: "3.33.0",
+    capabilities: { ...capabilities, sync: { device: true } } }, { scope: "project", owner_id: "project" });
+  expect((await readCached(addr)).value).toEqual(incoming);
 });
 
 it("a newer cache write or retired greeting fences an in-flight observation", async () => {

@@ -338,3 +338,33 @@ fn assert_hooks(hooks: &BTreeMap<String, BTreeSet<String>>, owner: &str, require
         assert!(calls.contains(*hook), "{owner} lost its {hook} boundary");
     }
 }
+
+
+fn fixture_inventory(source: &str) -> Inventory {
+    let mut inventory=Inventory{file:"fixture.rs".into(),constants:BTreeMap::new(),writers:BTreeSet::new(),hooks:BTreeMap::new()};
+    inventory.visit_file(&syn::parse_file(source).unwrap());
+    inventory
+}
+#[test]
+fn device_followup_inventory_covers_operation_receipt_mutations() {
+    let inventory=fixture_inventory(r#"fn receipt(){ tx.execute("UPDATE operations SET status='delivered'",[]); }"#);
+    assert!(inventory.writers.contains("fixture.rs::receipt -> operations"));
+}
+#[test]
+fn device_followup_inventory_covers_named_meta_but_excludes_unrelated_metadata() {
+    let inventory=fixture_inventory(r#"
+        fn session(){ tx.execute("INSERT INTO meta(key,value) VALUES('user_session','{}')",[]); }
+        fn lifecycle(){ tx.execute("UPDATE meta SET value='{}' WHERE key='workspace_lifecycle'",[]); }
+        fn unrelated(){ tx.execute("UPDATE meta SET value='{}' WHERE key='idle_digest_sent'",[]); }
+    "#);
+    assert_eq!(inventory.writers,BTreeSet::from([
+        "fixture.rs::session -> meta:user_session".into(),
+        "fixture.rs::lifecycle -> meta:workspace_lifecycle".into(),
+    ]));
+}
+#[test]
+#[should_panic(expected="lost its collect_device boundary")]
+fn device_followup_inventory_rejects_a_missing_device_finalizer() {
+    let inventory=fixture_inventory("fn owner(){collect_tasks();publish();commit();}");
+    assert_hooks(&inventory.hooks,"fixture.rs::owner",&["collect_device"]);
+}

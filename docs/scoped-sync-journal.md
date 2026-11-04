@@ -192,3 +192,73 @@ uses the generated manifest's operation count and advertises each scope only
 after its complete producer guard passes. It also supplies the large-fixture
 100 ms read evidence and measured write/lease-admission overhead. No performance
 claim or coverage claim follows from C1 alone.
+
+
+## Device producer ownership (#995)
+
+Device recovery uses materialized, durable summaries. The sole SQL writer
+collects explicit touches and publishes final rows in the source transaction;
+failed publication rolls the source back. Registry owners first persist a dirty
+generation, then change memory/manifests/configuration, then reconcile an owned
+authoritative snapshot. Deferred filesystem work retains that fence through its
+last write-back. A failed marker prevents the effect; a failed reconciliation
+leaves device reads retryably unavailable. Generation comparison clears only
+the markers captured for that reconciliation.
+
+| Record family | Publication owner | Semantic regression / negative control |
+|---|---|---|
+| `project`, `project_source` | App project/config mutators → `device_lifecycle` reconciliation | `lifecycle_project_sources_publish_registry_ids_and_only_durable_fields`; marker-failure refusal and restart-before/after-marker tests |
+| `workspace`, `workspace_directory`, `badge` | Workspace lifecycle, adoption, reopen and capability refresh → the same fenced registry snapshot | `lifecycle_reconcile_tombstones_deleted_registry_members_without_runtime_badges`; deferred settlement, prepared delivery, failed reopen and background refresh tests |
+| `agent`, `identity`, `inbox_conversation` | `write_agents`, attention, canonical item delta/reset and operation receipt hooks → `collect_device` | roster deletion, canonical aliases, summary/status/still-working, delivery/terminal attention, pending-only receipts, watch floor/muting, empty reset and hot historical-metadata tests |
+| `inbox_task` | Existing task summary publication owner (including review, dependency and delivery metadata) | `task_capture_and_user_session_writers_publish_device_rows_and_deletions`; existing task publication/rollback and predicate fixtures |
+| `inbox_capture` | Capture save/delete in `sync_transaction` | Same task/capture/session regression; capture body is excluded |
+| `user_session` | Both session writers stage the actual committed meta value | Same task/capture/session regression; delayed-presence conditional-save tests |
+| `archived_worktree` | Archive save → explicit family touch; startup backfill | `device_followup_archived_worktree_and_workspace_lifecycle_publish_durable_rows` |
+| `workspace_lifecycle` | Canonical lifecycle meta save + bounded durable-field projection and absent-member tombstones | Same lifecycle-family regression; measured liveness/holds do not enter records |
+| `owner_session`, `project_session` | Retain-agent and retain-owner transactions read maintained session points before deletion; project clear removes retained summary | `device_followup_retained_summaries_use_saved_facts_after_owner_history_is_removed`; short/long transcript SQL statement/VM cost comparison |
+
+Registry project ids are resolved through a durable path-to-registry-id map.
+Workspace links resolve owner root facts through the registry root map; a run's
+owner id is not a workspace id. Missing mappings produce null links. Registry
+mapping changes touch affected owners through indexes. Agent facts contain only
+bounded directory fields and exact thread-generation identity, avoiding decoding
+historical agent sessions/revisions on hot publication. Display text is clipped
+before fingerprinting; opaque ids remain exact. Working state, availability,
+active process/terminal counts and filesystem liveness remain outside records.
+
+Unread attention is an incremental Fenwick counter over committed item deltas.
+Summary/own-message/attention watermarks use indexed sparse item facts, excluding
+progress/status/still-working output. Reset advances a generation in constant
+writer work, with old-generation rows reclaimed by the bounded maintenance
+worker. Retained session hooks read maintained points; they neither rescan nor
+reuse the legacy timestamp-copy scans in the two canonical retention methods.
+The legacy methods otherwise retain their existing behavior.
+
+Startup backfill persists its phase and keyset after at most 128 source rows.
+It completes compact facts before projecting aliases, and finishes all SQL-owned
+families before lease admission. Interruption after a committed chunk resumes
+from that cursor. Canonical transcript indexing is unchanged; sparse device
+indexes begin empty and fill with those bounded chunks.
+
+Device snapshots freeze a five-minute lease watermark. Admission is a short,
+off-app-lock writer transaction that refuses an occupied writer immediately;
+page reads use the recovery ReadPool. The quotas count only current-epoch,
+current-incarnation leases (four/opening, sixteen/store), and admission prunes a
+bounded invalid prefix. Every device read, including continuation helpers,
+checks durable dirtiness. Snapshot pages seek `(first_seq, kind, key)` below the
+frozen watermark, inspect at most 2,000 candidates plus one lookahead, and keep
+the complete encoded reply within 1 MiB. A row payload over 64 KiB requests an
+explicit reset. Lease expiry is checked again after SQL, assembly and encoding.
+Device page continuations allow a bounded 64 KiB token for escaped opaque keys;
+other continuation purposes retain the smaller bound.
+
+Copy-on-write history accounts for record bytes, identity and version metadata,
+including tombstones. Publication checks the 64 MiB retained-version limit
+before retaining another version; pressure advances the durable lease fence
+instead. Old leases then request recovery. Cleanup uses indexed seeks and the
+shared 128-row maintenance budget, including generation garbage and accounting.
+Tombstone scans retain a keyset cursor and revisit previously protected rows
+when history becomes collectible.
+
+These device hooks do not connect a SPA consumer. Capability recognition and
+contract fixtures belong here; consumer synchronization is #997.

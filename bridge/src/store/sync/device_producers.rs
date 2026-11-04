@@ -239,6 +239,7 @@ pub(in crate::store) fn touch_conversation(conn: &Connection, id: &str) -> Resul
 }
 
 pub(in crate::store) fn touch_project(conn: &Connection, path: &str) -> Result<(), StoreError> {
+    super::device_sessions::project_mapping_changed(conn, path)?;
     conn.prepare_cached("INSERT OR IGNORE INTO temp.sync_device_agent_touches SELECT a.id FROM agents a JOIN device_owner_projects o ON o.owner_id=a.owner_id WHERE o.project_path=?1")?.execute([path])?;
     let owners = conn
         .prepare_cached("SELECT owner_id FROM device_owner_projects WHERE project_path=?1")?

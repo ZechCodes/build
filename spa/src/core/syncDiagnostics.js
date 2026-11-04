@@ -11,7 +11,7 @@ const VERBS = new Set([
   "thread.list", "thread.get", "thread.page", "thread.read", "conversation.get", "conversation.list",
   "messages.list", "messages.get", "tasks.review.list", "tasks.review.get", "tasks.review.diff",
 ]);
-const KINDS = new Set(["rpc", "board", "projects", "workspaces", "agents", "tasks", "tasks-first", "tasks-rest", "project_tasks", "task",
+const KINDS = new Set(["rpc", "board", "projects", "workspaces", "agents", "tasks", "tasks-first", "tasks-rest", "project_tasks", "task", "device",
   "terminals", "status", "log", "unpushed", "tree", "file", "patch", "diff", "thread", "reviews", "row", "feed"]);
 const SUCCESSOR_REASONS = new Set(["mutation", "read-state", "visibility", "connection", "subscription-inbox", "subscription-background"]);
 const OUTCOMES = new Set(["reply", "path-timeout", "answer-timeout", "admission-cancel"]);

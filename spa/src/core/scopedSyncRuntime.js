@@ -1,31 +1,38 @@
 // Runtime joins mounted registrations to the lock holder or a bounded-timeout
 // worker. Cursor compare-and-swap protects competing recovery publications.
 import { captureDeviceGreeting, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
-import { bridgeCapabilities, onBridgeGreeted } from "./changeEvents.js";
+import { bridgeApiVersion, bridgeCapabilities, onBridgeGreeted } from "./changeEvents.js";
+import { supportsDeviceSync } from "./deviceSyncSupport.js";
 import { createScopedSyncEngine } from "./scopedSyncEngine.js";
-import { projectSyncScope, trackedSyncScopes, scopeIsTracked } from "./scopedSyncRegistry.js";
+import { deviceSyncScope, registerScopedSync, projectSyncScope, trackedSyncScopes, scopeIsTracked } from "./scopedSyncRegistry.js";
 import { broadcastScopedSyncWake, subscribeScopedSyncWakes, subscribeScopedSyncScopes } from "./scopedSyncRegistry.js";
 import { subscribeCache } from "./localCache.js";
 import { refreshScopedProjectColumns } from "./scopedProjectColumns.js";
 import { refreshScopedTaskBody } from "./scopedTaskBody.js";
+import { createScopedDeviceSyncCache } from "./scopedDeviceSyncCache.js";
 import { createScopedTaskSyncCache } from "./scopedTaskSyncCache.js";
 
 const engines = new Map();
 const scopeDefinitions = {
+  device: { capability: "device", storeFor: createScopedDeviceSyncCache, namedBy: () => true },
   project_tasks: { capability: "projectTasks", storeFor: createScopedTaskSyncCache,
     namedBy: (entry, item) => entry.scope.project_id === item.entity_id && Boolean(item.tasks) },
   task: { capability: "task", storeFor: createScopedTaskSyncCache,
     namedBy: (entry, item) => entry.projectId === item.entity_id
       && Boolean(item.tasks?.truncated || item.tasks?.task_ids?.includes(entry.scope.task_id)) },
 };
-const supported = (caps, scope) => caps?.sync?.[scopeDefinitions[scope.kind]?.capability] === true;
+const supported = (caps, scope, deviceId) => caps?.sync?.[scopeDefinitions[scope.kind]?.capability] === true
+  && (scope.kind !== "device" || supportsDeviceSync(caps, bridgeApiVersion(deviceId)));
 let runtime = null;
 let subscriptions = [];
+const deviceRegistrations = new Map();
+let reconciling = false;
 
 const browserLockAvailable = () => typeof globalThis.navigator?.locks?.request === "function";
 export const scopedSyncWriter = () => Boolean(browserLockAvailable() && runtime?.ownsLock());
-export const scopedSyncOwns = (deviceId, scope) => browserLockAvailable() && supported(bridgeCapabilities(deviceId), scope)
+export const scopedSyncOwns = (deviceId, scope) => browserLockAvailable() && supported(bridgeCapabilities(deviceId), scope, deviceId)
   && scopeIsTracked(deviceId, scope);
+export const deviceScopedSyncOwns = (deviceId) => scopedSyncOwns(deviceId, deviceSyncScope());
 export const projectScopedSyncOwns = (deviceId, projectId) => scopedSyncOwns(deviceId, projectSyncScope(projectId));
 
 function retire(deviceId) {
@@ -47,7 +54,7 @@ function createOwner(context, greeting) {
     return requestOpening;
   };
   const entries = new Map();
-  const engine = createScopedSyncEngine({ active, captureRequest,
+  const engine = createScopedSyncEngine({ active, captureRequest, onError: (error) => owner.onError?.(error),
     request: (method, params) => owner.request(context.deviceId, method, params, params.scope),
     storeFor: (scope) => scopeStore(context, entries, scope, active),
   });
@@ -77,11 +84,29 @@ function reconcileEntries(held, entries) {
 }
 
 export function reconcileScopedSyncRuntime() {
-  if (!runtime) return;
-  const contexts = browserLockAvailable() && runtime.ownsLock() ? ownedContexts() : [];
-  const live = new Set(contexts.map((context) => context.deviceId));
-  for (const deviceId of engines.keys()) if (!live.has(deviceId)) retire(deviceId);
-  for (const context of contexts) reconcileDevice(context);
+  if (!runtime || reconciling) return;
+  reconciling = true;
+  try {
+    reconcileDeviceRegistrations();
+    const contexts = browserLockAvailable() && runtime.ownsLock() ? ownedContexts() : [];
+    const live = new Set(contexts.map((context) => context.deviceId));
+    for (const deviceId of engines.keys()) if (!live.has(deviceId)) retire(deviceId);
+    for (const context of contexts) reconcileDevice(context);
+  } finally { reconciling = false; }
+}
+
+// Device bootstrap is demand in the same bounded registry as mounted scopes.
+// A scope evicted by the cap immediately returns its records to legacy reads.
+function reconcileDeviceRegistrations() {
+  const desired = new Set(liveContexts().filter((context) =>
+    supported(bridgeCapabilities(context.deviceId), deviceSyncScope(), context.deviceId)).map((context) => context.deviceId));
+  for (const [deviceId, release] of deviceRegistrations) if (!desired.has(deviceId)) {
+    deviceRegistrations.delete(deviceId);
+    release();
+  }
+  for (const deviceId of desired) if (!deviceRegistrations.has(deviceId)) {
+    deviceRegistrations.set(deviceId, registerScopedSync({ deviceId, scope: deviceSyncScope() }));
+  }
 }
 
 function ownedContexts() {
@@ -101,7 +126,7 @@ function reconcileDevice(context) {
   if (greeting) held.greeting = greeting;
   const opening = held.captureRequest(), previous = held.opening;
   if (opening) held.opening = opening;
-  reconcileEntries(held, trackedSyncScopes(context.deviceId).filter(({ scope }) => supported(held.greeting.capabilities, scope)));
+  reconcileEntries(held, trackedSyncScopes(context.deviceId).filter(({ scope }) => supported(held.greeting.capabilities, scope, context.deviceId)));
   refreshOpening(held, opening, previous);
 }
 
@@ -183,7 +208,7 @@ export function wakeScopedSync(deviceId, predicate = () => true) {
   if (held) return wakeOwned(held, predicate);
   if (runtime && browserLockAvailable()) {
     const scopes = trackedSyncScopes(deviceId).map((entry) => entry.scope)
-      .filter((scope) => supported(bridgeCapabilities(deviceId), scope) && predicate(scope));
+      .filter((scope) => supported(bridgeCapabilities(deviceId), scope, deviceId) && predicate(scope));
     if (scopes.length) broadcastScopedSyncWake(deviceId, scopes);
   }
   return Promise.resolve([]);
@@ -210,4 +235,6 @@ export function stopScopedSyncRuntime() {
   for (const unsubscribe of subscriptions) unsubscribe();
   subscriptions = [];
   for (const deviceId of engines.keys()) retire(deviceId);
+  for (const release of deviceRegistrations.values()) release();
+  deviceRegistrations.clear();
 }

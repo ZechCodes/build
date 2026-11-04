@@ -263,6 +263,21 @@ describe("the manual route", () => {
   });
 });
 
+describe("branches observed beside device-owned inbox rows", () => {
+  it("offers the exact runtime run branch without offering runs with no owned inbox row", () => {
+    const items = [{ kind: "branch", deviceId: "device-a", project_id: "p1", run_id: "run-1" }];
+    const runs = [
+      { deviceId: "device-b", project_id: "p1", run_id: "run-1", branch: "wrong-device" },
+      { deviceId: "device-a", project_id: "p2", run_id: "run-1", branch: "wrong-project" },
+      { deviceId: "device-a", project_id: "p1", run_id: "run-1", branch: "exact-runtime-name" },
+      { deviceId: "device-a", project_id: "p1", run_id: "run-2", branch: "not-in-inbox" },
+    ];
+    expect(branchOptions(items, "p1", runs)).toEqual(["exact-runtime-name"]);
+    expect(branchOptions(items, "p2", runs)).toEqual([]);
+    expect(items[0]).not.toHaveProperty("branch");
+  });
+});
+
 describe("the branches a project already has", () => {
   it("lists them once each, in order, and only for the project asked about", () => {
     const items = [

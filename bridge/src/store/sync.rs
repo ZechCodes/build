@@ -9,14 +9,18 @@ pub use continuations::Continuation;
 mod device;
 pub(in crate::store) use device::stage as stage_device;
 pub use device::{DeviceLease, DEVICE_LEASES_PER_OPENING, DEVICE_LEASE_TTL_MS};
+mod device_334_cleanup;
 mod device_backfill;
 mod device_facts;
 mod device_families;
 mod device_producers;
+mod device_session_backfill;
+pub(in crate::store) use device_sessions::reset as reset_device_sessions;
+mod device_sessions;
 mod device_thread;
 pub(in crate::store) use device_facts::{
     forget_agent as device_facts_forget_agent, seed_agent as seed_device_agent,
-    seed_owner as seed_device_owner,
+    seed_owner as seed_device_owner, seed_pin as seed_device_pin,
 };
 pub(in crate::store) use device_families::{
     clear_project as clear_device_project, forget_owner as forget_device_owner,
@@ -293,3 +297,6 @@ mod tests;
 
 #[cfg(test)]
 mod device_entry_tests;
+
+#[cfg(test)]
+mod device_session_tests;

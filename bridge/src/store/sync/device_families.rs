@@ -9,7 +9,7 @@ pub(super) fn install(conn: &Connection) -> Result<(), StoreError> {
         CREATE INDEX IF NOT EXISTS device_archives_project ON device_archive_projects(project_path,id);
         CREATE TABLE IF NOT EXISTS device_retained_sessions(kind TEXT NOT NULL,key TEXT NOT NULL,last_activity_ms INTEGER NOT NULL,PRIMARY KEY(kind,key)) WITHOUT ROWID;
         CREATE TEMP TABLE device_family_touches(kind TEXT NOT NULL,key TEXT NOT NULL,PRIMARY KEY(kind,key)) WITHOUT ROWID;")?;
-    Ok(())
+    super::device_sessions::install(conn)
 }
 fn installed(conn: &Connection) -> Result<bool, StoreError> {
     Ok(conn
@@ -169,6 +169,7 @@ pub(in crate::store) fn forget_owner(conn: &Connection, owner: &str) -> Result<(
             .execute([owner])?;
         touch_retained(conn, "owner", owner)?;
         super::device_facts::forget_owner(conn, owner)?;
+        super::device_sessions::forget_owner(conn, owner)?;
     }
     Ok(())
 }
@@ -178,6 +179,7 @@ pub(in crate::store) fn clear_project(conn: &Connection, id: &str) -> Result<(),
             "DELETE FROM device_retained_sessions WHERE kind='project' AND key=?1",
         )?
         .execute([id])?;
+        super::device_sessions::clear_project(conn, id)?;
         touch_retained(conn, "project", id)?;
     }
     Ok(())
@@ -194,12 +196,11 @@ fn stage_retained(
         )?
         .query_row(params![kind, key], |row| row.get(0))
         .optional()?;
-    let row=at.map(|at|->Result<Value,StoreError>{
-        if kind=="project" {return Ok(json!({"project_id":key,"retained_last_activity_ms":at}));}
-        let links:Option<(Option<String>,Option<String>)>=tx.prepare_cached("SELECT p.project_id,w.workspace_id FROM device_owner_projects o LEFT JOIN device_project_ids p ON p.path=o.project_path LEFT JOIN device_workspace_roots w ON w.root=o.workspace_path WHERE o.owner_id=?1")?.query_row([key],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-        let (project,workspace)=links.unwrap_or((None,None));
-        Ok(json!({"owner_id":key,"project_id":project,"workspace_id":workspace,"retained_last_activity_ms":at}))
-    }).transpose()?;
+    let row = if kind == "project" {
+        project_session(tx, key, at)?
+    } else {
+        owner_session(tx, key, at)?
+    };
     super::stage_device(
         tx,
         batch,
@@ -213,4 +214,43 @@ fn stage_retained(
         ),
         row,
     )
+}
+
+fn project_session(
+    conn: &Connection,
+    key: &str,
+    retained: Option<i64>,
+) -> Result<Option<Value>, StoreError> {
+    let path = super::device_sessions::project_key(conn, key)?;
+    let summary = super::device_sessions::summary(conn, "project", &path)?;
+    let live: bool = conn
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM device_owner_projects WHERE project_path=?1)")?
+        .query_row([&path], |row| row.get(0))?;
+    if summary.is_none() && retained.is_none() && !live {
+        return Ok(None);
+    }
+    let summary = summary.unwrap_or_default();
+    Ok(Some(
+        json!({"project_id":key,"retained_last_activity_ms":retained,"session_started_ms":summary.session_started_ms,"last_activity_ms":summary.last_activity_ms}),
+    ))
+}
+fn owner_session(
+    conn: &Connection,
+    key: &str,
+    retained: Option<i64>,
+) -> Result<Option<Value>, StoreError> {
+    let links:Option<(Option<String>,Option<String>)>=conn.prepare_cached("SELECT p.project_id,w.workspace_id FROM device_owner_projects o LEFT JOIN device_project_ids p ON p.path=o.project_path LEFT JOIN device_workspace_roots w ON w.root=o.workspace_path WHERE o.owner_id=?1")?.query_row([key],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+    let pin: Option<Option<String>> = conn
+        .prepare_cached("SELECT pinned_agent_id FROM device_owner_pins WHERE owner_id=?1")?
+        .query_row([key], |row| row.get(0))
+        .optional()?;
+    let summary = super::device_sessions::summary(conn, "owner", key)?;
+    if links.is_none() && pin.is_none() && summary.is_none() && retained.is_none() {
+        return Ok(None);
+    }
+    let (project, workspace) = links.unwrap_or((None, None));
+    let summary = summary.unwrap_or_default();
+    Ok(Some(
+        json!({"owner_id":key,"project_id":project,"workspace_id":workspace,"pinned_agent_id":pin.flatten(),"retained_last_activity_ms":retained,"session_started_ms":summary.session_started_ms,"last_activity_ms":summary.last_activity_ms}),
+    ))
 }

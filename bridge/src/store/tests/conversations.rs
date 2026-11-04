@@ -231,11 +231,18 @@ fn project_history_survives_each_run_delete_until_explicit_project_clear() {
 /// The canonical append still writes only one item plus its agent and run.
 /// Device sync adds a fixed journal/projection budget, independent of history.
 #[test]
-fn appending_one_message_writes_one_row_however_long_the_conversation_is() {
+fn device_334_appending_one_message_writes_one_row_however_long_the_conversation_is() {
     let mut short_cost = None;
     for length in [1, 60, 4096] {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        store
+            .writer_for_test()
+            .execute(
+                "INSERT INTO device_project_ids VALUES('/repo','budget-project')",
+                [],
+            )
+            .unwrap();
         let mut record = run_record("run-1", None, NOW);
         for n in 0..length {
             record.agents[0]
@@ -245,7 +252,9 @@ fn appending_one_message_writes_one_row_however_long_the_conversation_is() {
         store.save_run(&record).expect("the first save writes");
         let before = store.total_changes();
         let cost = write_cost::WriteCost::start(&store);
-        record.agents[0].thread.post_user("one more", None, NOW);
+        record.agents[0]
+            .thread
+            .post_user("one more", None, "2026-08-21T10:00:00.001Z");
         store.save_run(&record).expect("the append saves");
         let rows = cost.rows();
         let written = store.total_changes() - before;
@@ -274,26 +283,31 @@ fn appending_one_message_writes_one_row_however_long_the_conversation_is() {
             None,
             "unchanged owner facts: {rows:?}"
         );
-        // Each append updates the agent and inbox device rows: two journal
-        // events, routes, stream heads, revisions, current rows and COW versions.
-        // Three sync_state updates account for the two retained versions and
-        // the batch head. TEMP touches cost insert+delete; one summary item is
-        // indexed for bounded unread/last-message projection. None is per item
-        // already in the transcript. Pin each table, including unknown writes.
+        // Wire 3.34: advancing a real timestamp changes the conversation and
+        // two compact pooled summaries (owner and project), each once. Four
+        // device rows publish: agent, inbox conversation, owner session and
+        // project session. Their four COW versions plus the batch head cost
+        // five sync_state writes. Family touches cost insert+delete per pool.
+        // No write depends on the retained transcript's length. Pin every
+        // table, including newly introduced writes; same-time appends below
+        // prove that unchanged pooled facts incur no extra write/publication.
         let expected: std::collections::BTreeMap<String, u64> = [
             ("agents", 1),
             ("implementations", 1),
             ("thread_items", 1),
             ("device_item_touches", 2),
             ("device_summary_items", 1),
+            ("device_conversation_sessions", 1),
+            ("device_pooled_sessions", 2),
+            ("device_family_touches", 4),
             ("sync_device_agent_touches", 2),
-            ("sync_journal", 2),
-            ("sync_routes", 2),
-            ("sync_stream_state", 2),
-            ("sync_revisions", 2),
-            ("sync_projection", 2),
-            ("sync_projection_versions", 2),
-            ("sync_state", 3),
+            ("sync_journal", 4),
+            ("sync_routes", 4),
+            ("sync_stream_state", 4),
+            ("sync_revisions", 4),
+            ("sync_projection", 4),
+            ("sync_projection_versions", 4),
+            ("sync_state", 5),
         ]
         .into_iter()
         .map(|(table, rows)| (table.to_owned(), rows))
@@ -311,6 +325,27 @@ fn appending_one_message_writes_one_row_however_long_the_conversation_is() {
         } else {
             short_cost = Some(rows);
         }
+        let quiet = write_cost::WriteCost::start(&store);
+        record.agents[0]
+            .thread
+            .post_user("same timestamp", None, "2026-08-21T10:00:00.001Z");
+        store.save_run(&record).unwrap();
+        let unchanged = quiet.rows();
+        assert_eq!(
+            unchanged.get("device_pooled_sessions"),
+            None,
+            "unchanged pooled timestamps: {unchanged:?}"
+        );
+        assert_eq!(
+            unchanged.get("device_family_touches"),
+            None,
+            "unchanged family publications: {unchanged:?}"
+        );
+        assert_eq!(
+            unchanged.get("sync_journal"),
+            Some(&2),
+            "only agent/inbox content changed: {unchanged:?}"
+        );
         // Loading intentionally returns only the resident tail. Verify the
         // durable conversation separately so the long fixture exercises all
         // stored rows without weakening the tail-loading contract.
@@ -322,10 +357,10 @@ fn appending_one_message_writes_one_row_however_long_the_conversation_is() {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(stored as usize, length + 1);
+        assert_eq!(stored as usize, length + 2);
         assert_eq!(
             reload_run(&store, "run-1").agents[0].thread.items.len(),
-            (length + 1).min(RESIDENT_CONVERSATION_TAIL)
+            (length + 2).min(RESIDENT_CONVERSATION_TAIL)
         );
     }
 }

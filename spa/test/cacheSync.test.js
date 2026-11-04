@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { called, passesSettled } from "./waits.js";
 import { task as trackerTask } from "./trackerWireFixture.js";
+import { deviceRecords, projectOwnerRecords } from "./fixtures/deviceSync.js";
 
 const ago = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
@@ -60,12 +61,15 @@ vi.mock("../src/app.js", () => ({ App }));
 let registeredWatchers = [];
 let projectWorkersSupported = false;
 let scopedSupported = false;
+let deviceScopedSupported = false;
+let deviceWireVersion = "3.34.0";
 const subscriptionHeldListeners = new Set();
 vi.mock("../src/core/changeEvents.js", () => ({
   onBridgeGreeted: () => () => {},
+  bridgeApiVersion: () => deviceWireVersion,
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
-  bridgeCapabilities: () => ({ sync: { device: false, projectTasks: scopedSupported, task: scopedSupported }, agents: { projectWorkers: projectWorkersSupported }, changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] } }),
+  bridgeCapabilities: () => ({ sync: { device: deviceScopedSupported, projectTasks: scopedSupported, task: scopedSupported }, agents: { projectWorkers: projectWorkersSupported }, changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] } }),
   // A stand-in bridge holds whatever it is asked to at once
   // (test/cacheSyncDelivery.test.js drives the real one).
   subscriptionsSettledFor: async () => {},
@@ -88,8 +92,8 @@ const contexts = new Map();
 const stateListeners = new Set();
 vi.mock("../src/core/deviceContexts.js", () => ({
   deviceContextIdentity: (deviceId) => deviceId,
-  captureDeviceGreeting: (context) => scopedSupported ? { epoch: "scoped-epoch",
-    capabilities: { sync: { device: false, projectTasks: true, task: true } }, current: () => contexts.get(context.deviceId) === context } : null,
+  captureDeviceGreeting: (context) => scopedSupported || deviceScopedSupported ? { epoch: "scoped-epoch",
+    capabilities: { sync: { device: deviceScopedSupported, projectTasks: scopedSupported, task: scopedSupported } }, current: () => contexts.get(context.deviceId) === context } : null,
   contextFor: (deviceId) => contexts.get(deviceId) || null,
   liveContexts: () => [...contexts.values()],
   onDeviceStateChanged: (fn) => {
@@ -168,6 +172,8 @@ beforeEach(async () => {
   registeredWatchers = [];
   projectWorkersSupported = false;
   scopedSupported = false;
+  deviceScopedSupported = false;
+  deviceWireVersion = "3.34.0";
   subscriptionHeldListeners.clear();
   stateListeners.clear();
   contexts.clear();
@@ -2835,4 +2841,458 @@ it("uses columns-only support for a cold pushed task read without refetching met
   expect(calls("tasks.columns")).toHaveLength(0);
   expect((await tracker.readTasksRecord("dev-1", "p1"))?.columns).toEqual(columns);
   expect((await tracker.readTasksRecord("dev-1", "p1"))?.tasks.map((task) => task.id)).toEqual([created.id]);
+});
+
+
+const projectDeviceRecords = () => [deviceRecords().find((record) => record.kind === "project"), ...projectOwnerRecords()];
+const expectedDeviceWorker = {
+  id: "worker", owner_id: "project-owner", project_id: "proj-1", workspace_id: null,
+  conversation_id: "worker", thread_id: "thread-worker", thread_generation_revision: "1", ordinal: 1,
+  provider: "codex", model: "synthetic-model", effort: "medium", watched: true, choice_revision: 1,
+  created_at: "2026-11-01T12:00:00Z", title: "Worker", topic: "Worker", name: "Worker", created_by: null,
+  read_through_sequence: "0", watch_started_after: "0", last_sequence: "5", unread_count: 2, unread_reason: "reply", project_role: "worker",
+};
+const expectedDeviceProjectRoster = { entity_id: "project-owner", pinned_agent_id: "coordinator", agents: [
+  expectedDeviceWorker,
+  { ...expectedDeviceWorker, id: "coordinator", conversation_id: "coordinator", thread_id: "thread-coordinator", ordinal: 3,
+    title: "Coordinator", topic: "Coordinator", name: "Coordinator", project_role: "coordinator" },
+] };
+
+
+it.each([
+  ["3.34.0", false, false], ["3.33.0", true, false], ["3.34.0", true, true],
+])("selects exactly one device list and roster writer (wire %s, sync.device=%s)", async (version, capable, owned) => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = capable; deviceWireVersion = version;
+  projectWorkersSupported = true;
+  const records = projectDeviceRecords();
+  const listedProject = { ...records[0].row, entity_id: "project-owner", run_id: "project-owner" };
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  script["project.list"] = () => ({ projects: [listedProject] });
+  const roster = { entity_id: "project-owner", pinned_agent_id: "coordinator", agents: [
+    { id: "worker", ordinal: 1, project_role: "worker" },
+    { id: "coordinator", ordinal: 3, project_role: "coordinator" },
+  ] };
+  script["agent.list"] = () => roster;
+  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, [listedProject]);
+  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, []);
+  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [], projects: [listedProject], workspaces: [] });
+  await cache.writeCached({ deviceId: "dev-1", entityId: "project-owner", kind: "project-agents" }, roster);
+  try {
+    sync.startCacheSync();
+    await passesSettled(sync, "dev-1");
+    expect(calls("sync.snapshot").filter(([, params]) => params.scope.kind === "device").length > 0).toBe(owned);
+    for (const method of ["project.list", "workspace.list", "agent.list"]) {
+      expect(calls(method).length > 0, method).toBe(!owned);
+    }
+    expect(calls("board.list").length).toBeGreaterThan(0);
+    const published = (await read("project-owner", "project-agents")).value;
+    expect(published).toEqual(owned ? expectedDeviceProjectRoster : roster);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+
+it.each([false, true])("switches device and legacy list ownership on reconnect (initial sync.device=%s)", async (initial) => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = initial;
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records: [] });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  try {
+    sync.startCacheSync();
+    await passesSettled(sync, "dev-1");
+    expect(calls("board.list").length > 0).toBe(true);
+    bridge.call.mockClear();
+    deviceScopedSupported = !initial;
+    registerDevice("dev-1");
+    for (const changed of stateListeners) changed();
+    await passesSettled(sync, "dev-1");
+    for (const method of ["project.list", "workspace.list"]) {
+      expect(calls(method).length > 0, method).toBe(initial);
+    }
+    expect(calls("board.list").length).toBeGreaterThan(0);
+    expect(calls("sync.snapshot").filter(([, params]) => params.scope.kind === "device").length > 0).toBe(!initial);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("wakes the device engine for legacy state pushes while preserving its cached row and ownership", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true;
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records: [] });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  const row = branchItem({ title: "Cached engine row", agents: [] });
+  await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "row" }, row);
+  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, []);
+  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, []);
+  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [row], projects: [], workspaces: [] });
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    const before = await read("run-1", "row");
+    bridge.call.mockClear();
+    await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([
+      { entity_id: "run-1", state: { ...row, title: "Stale legacy row" } },
+      { entity_id: "board", state: { projects: [{ project_id: "legacy-only" }], removed: ["run-1"] } },
+    ]);
+    await settle();
+    expect(await read("run-1", "row")).toEqual(before);
+    expect((await read("", "projects")).value).toEqual([]);
+    expect(calls("sync.changes").some(([, params]) => params.scope.kind === "device")).toBe(true);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+
+it("enriches only existing engine rows with runtime state without replacing durable names, reads or membership", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true; projectWorkersSupported = true;
+  const records = projectDeviceRecords().map((record) => record.kind === "agent"
+    ? { ...record, row: { ...record.row, read_through_sequence: "9", last_sequence: "9", unread_count: 0 } } : record);
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    const row = (await read("project-owner", "row")).value;
+    const roster = (await read("project-owner", "project-agents")).value;
+    expect(row).toBeDefined(); expect(roster).toBeDefined();
+    const state = { ...row, title: "Legacy title", working: true, stat: { files_changed: 3, insertions: 8, deletions: 1 }, agents: row.agents.map((agent) => ({ ...agent,
+      name: "Legacy agent", topic: "Legacy topic", read_through_sequence: "1", unread_count: 8, working: true,
+    })).concat({ id: "legacy-only", working: true }) };
+    await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([
+      { entity_id: "project-owner", state }, { entity_id: "legacy-new-owner", state: { ...state, entity_id: "legacy-new-owner" } },
+    ]);
+    await settle();
+    const written = (await read("project-owner", "row")).value;
+    expect(written).toEqual({ ...row, working: true, stat: state.stat, agents: row.agents.map((agent) => ({ ...agent, working: true })) });
+    expect(await read("legacy-new-owner", "row")).toBeUndefined();
+    expect((await read("", "feed")).value.items).toMatchObject([written]);
+    const observed = new Set(row.agents.map((agent) => agent.id));
+    expect((await read("project-owner", "project-agents")).value).toEqual({ ...roster, working: true, stat: state.stat,
+      agents: roster.agents.map((agent) => observed.has(agent.id) ? { ...agent, working: true } : agent) });
+  } finally { vi.unstubAllGlobals(); }
+});
+
+
+it.each(["3.33.0", "3.34.0"])("restores the whole legacy pass when reconnect crosses wire compatibility from %s", async (version) => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true; deviceWireVersion = version; projectWorkersSupported = true;
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records: [] });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  script["project.list"] = () => ({ projects: [projectList] });
+  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, [projectList]);
+  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, []);
+  await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [], projects: [projectList], workspaces: [] });
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    bridge.call.mockClear();
+    deviceWireVersion = version === "3.34.0" ? "3.33.0" : "3.34.0";
+    registerDevice("dev-1"); for (const changed of stateListeners) changed();
+    await passesSettled(sync, "dev-1");
+    for (const method of ["project.list", "workspace.list", "agent.list"]) {
+      expect(calls(method).length > 0, method).toBe(version === "3.34.0");
+    }
+    expect(calls("board.list").length).toBeGreaterThan(0);
+    expect(calls("sync.snapshot").filter(([, params]) => params.scope.kind === "device").length > 0).toBe(version === "3.33.0");
+  } finally { vi.unstubAllGlobals(); }
+});
+
+
+it("enriches cached workspace liveness without overwriting engine lifecycle facts or directory ownership", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true;
+  const records = deviceRecords().filter((record) => ["project", "workspace", "workspace_lifecycle", "owner_session", "project_session"].includes(record.kind));
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    const workspace = (await read("", "workspaces")).value.find((row) => row.id === "workspace-1");
+    expect(workspace).toBeDefined();
+    await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([{ entity_id: "board", state: { workspaces: [
+      { ...workspace, name: "Legacy workspace", lifecycle: { size_bytes: 999, pruned_bytes: 999, idle: true, reclaimable: true, holds: ["dirty"], dirty_files: 3 } },
+      { id: "legacy-only-workspace", name: "Legacy only" },
+    ] } }]);
+    await settle();
+    const expected = [{ ...workspace, lifecycle: { ...workspace.lifecycle, idle: true, reclaimable: true, holds: ["dirty"], dirty_files: 3 } }];
+    expect((await read("", "workspaces")).value).toEqual(expected);
+    expect((await read("", "feed")).value.workspaces).toEqual(expected);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+
+it.each([
+  ["3.34.0", true], ["3.33.0", true], ["3.34.0", false],
+])("thread session tips yield both their writes and push marks to the device scope (wire %s, advertised %s)", async (version, advertised) => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = advertised; deviceWireVersion = version;
+  const owned = advertised && version === "3.34.0";
+  const initial = deviceRecords().filter((record) => ["project", "workspace", "owner_session", "project_session"].includes(record.kind));
+  const project = initial.find((record) => record.kind === "project").row;
+  const workspace = initial.find((record) => record.kind === "workspace").row;
+  const owner = initial.find((record) => record.kind === "owner_session").row;
+  const projectSession = initial.find((record) => record.kind === "project_session").row;
+  script["project.list"] = () => ({ projects: [{ ...project, ...projectSession }] });
+  script["workspace.list"] = () => ({ workspaces: [{ ...workspace, entity_id: owner.owner_id,
+    session_started_ms: owner.session_started_ms, last_activity_ms: owner.last_activity_ms }] });
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-tip-cursor", records: initial });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-tip-cursor", changes: [] });
+  sync.startCacheSync(); await passesSettled(sync, "dev-1");
+  await cache.writeCached({ deviceId: "dev-1", entityId: "owner-1", kind: "thread", sub: "agent-1" }, {
+    thread_id: "thread-1", thread_generation_revision: 1, deliveredSequence: 1, items: [], total: 1,
+  });
+  const before = { projects: await read("", "projects"), workspaces: await read("", "workspaces") };
+  let entered, release;
+  const requested = new Promise((resolve) => { entered = resolve; });
+  const response = new Promise((resolve) => { release = resolve; });
+  const nextSession = { session_started_ms: owner.session_started_ms + 1_500, last_activity_ms: owner.last_activity_ms + 2_000 };
+  const changes = initial.filter((record) => record.kind !== "workspace").map((record, index) => ({
+    ...record, revision: String(index + 2), seq: String(index + 2), operation: "upsert",
+    row: record.kind === "project" ? { ...record.row, name: "Device publication from the same push" } : { ...record.row, ...nextSession },
+  }));
+  const catchup = scopedAnswer({ head: "4", cursor: "device-tip-next", changes });
+  if (owned) script["sync.changes"] = () => { entered(); return response; };
+  const generations = await import("../src/core/conversationReset.js");
+  const reconcile = generations.reconcileConversationGeneration;
+  const generation = vi.spyOn(generations, "reconcileConversationGeneration").mockImplementation(async (options) => {
+    // Reproduce the production ordering deterministically: the engine has
+    // captured its fence and sent sync.changes before this push's tip lands.
+    if (owned && options.entityId === "owner-1") await requested;
+    return reconcile(options);
+  });
+  const fences = await import("../src/core/pushFence.js");
+  const marks = vi.spyOn(fences, "notePush");
+  const tipSession = { session_started_ms: owner.session_started_ms, last_activity_ms: owner.last_activity_ms + 1_000 };
+  const tip = { agent_id: "agent-1", conversation_id: "agent-1", thread_id: "thread-1", thread_generation_revision: 1,
+    project_id: "proj-1", workspace_id: "workspace-1", project_session: tipSession, workspace_session: tipSession,
+    since_sequence: 1, last_sequence: 2, items: [{ type: "message",
+      data: { id: "tip-message", sequence: 2, role: "agent", body: "Synthetic message", created_at: "2026-11-01T12:00:01Z" } }] };
+  bridge.call.mockClear();
+  try {
+    const pushed = registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([
+      { entity_id: "owner-1", thread: [tip] },
+    ]);
+    if (owned) await requested;
+    await pushed;
+    expect((await read("owner-1", "thread", "agent-1")).value).toMatchObject({
+      thread_id: "thread-1", thread_generation_revision: 1, deliveredSequence: 2,
+    });
+    const rootMarks = marks.mock.calls.filter(([address]) => address.entityId === "" && ["projects", "workspaces"].includes(address.kind));
+    if (owned) {
+      expect(rootMarks).toEqual([]);
+      expect(await read("", "projects")).toEqual(before.projects);
+      expect(await read("", "workspaces")).toEqual(before.workspaces);
+      release(catchup);
+      await vi.waitFor(async () => {
+        const projects = (await read("", "projects")).value;
+        const workspaces = (await read("", "workspaces")).value;
+        expect(projects.find((row) => row.id === "proj-1")).toMatchObject({ name: "Device publication from the same push", ...nextSession });
+        expect(workspaces.find((row) => row.id === "workspace-1")).toMatchObject(nextSession);
+      }, { timeout: 5_000 });
+      expect(calls("sync.changes")).toHaveLength(1);
+      expect(calls("sync.head")).toHaveLength(0);
+    } else {
+      expect(rootMarks.map(([address]) => address.kind).sort()).toEqual(["projects", "workspaces"]);
+      expect((await read("", "projects")).value.find((row) => row.id === "proj-1")).toMatchObject(tipSession);
+      expect((await read("", "workspaces")).value.find((row) => row.id === "workspace-1")).toMatchObject(tipSession);
+      expect(calls("sync.changes")).toHaveLength(0);
+    }
+  } finally { release(catchup); generation.mockRestore(); marks.mockRestore(); vi.unstubAllGlobals(); }
+});
+
+
+const runtimeBoardObservation = (label) => ({
+  pending: [{ entity_id: "pending-worktree", project_id: "proj-1", project: "Synthetic project", title: label,
+    branch: "creating-branch", state: "creating", checkout_id: "pending-worktree", implements: null, isolation: "worktree", pending_seconds: 3 }],
+  external_worktrees: [{ worktree_id: "external-worktree", project_id: "proj-1", path: "/synthetic/external", branch: "outside",
+    base_branch: "dev", isolation: "worktree", adoptable: true, agent_working: false, can_finish: false }],
+  plans: [{ plan_id: "legacy-plan", project_id: "proj-1", goal: label, state: "drafting", needs_attention: false }],
+  runs: [{ run_id: "legacy-run", project_id: "proj-1", goal: label, state: "review", base_branch: "dev", base_sha: "synthetic-base-sha" }],
+});
+const stampedRuntimeRows = (rows) => rows.map((row) => ({ ...row, deviceId: "dev-1", projectKey: "dev-1/proj-1" }));
+const expectRuntimeBoard = (feed, observation) => {
+  expect(feed.pending).toEqual(stampedRuntimeRows(observation.pending));
+  expect(feed.externalWorktrees).toEqual(stampedRuntimeRows(observation.external_worktrees));
+  expect(feed.plans).toEqual(stampedRuntimeRows(observation.plans));
+  expect(feed.runs).toEqual(stampedRuntimeRows(observation.runs));
+};
+
+it.each(["connection", "reconnect", "visibility"])("reads only runtime board collections on the existing owned %s trigger", async (trigger) => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true; projectWorkersSupported = true;
+  const records = projectDeviceRecords();
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  let observation = runtimeBoardObservation("First runtime observation");
+  script["board.list"] = () => ({ ...observation, items: [{ kind: "capture", capture_id: "legacy-only" }],
+    projects: [{ project_id: "legacy-project" }], workspaces: [{ id: "legacy-workspace" }] });
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    expect(calls("board.list")).toHaveLength(1);
+    expectRuntimeBoard((await read("", "feed")).value, observation);
+    const owned = { projects: await read("", "projects"), workspaces: await read("", "workspaces"),
+      row: await read("project-owner", "row"), roster: await read("project-owner", "project-agents") };
+    bridge.call.mockClear();
+    observation = runtimeBoardObservation("Next runtime observation");
+    if (trigger === "connection") await sync.syncDevice("dev-1", "connection");
+    if (trigger === "reconnect") { registerDevice("dev-1"); for (const changed of stateListeners) changed(); }
+    if (trigger === "visibility") document.dispatchEvent(new Event("visibilitychange"));
+    await passesSettled(sync, "dev-1");
+    expect(calls("board.list")).toHaveLength(1);
+    expectRuntimeBoard((await read("", "feed")).value, observation);
+    expect((await read("", "projects")).value).toEqual(owned.projects.value);
+    expect((await read("", "workspaces")).value).toEqual(owned.workspaces.value);
+    expect((await read("project-owner", "row")).value).toEqual(owned.row.value);
+    expect((await read("project-owner", "project-agents")).value).toEqual(owned.roster.value);
+    expect((await read("", "feed")).value.items.some((row) => row.capture_id === "legacy-only")).toBe(false);
+    for (const method of ["project.list", "workspace.list", "agent.list"]) expect(calls(method), method).toHaveLength(0);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("owned board pushes replace only present runtime collections and explicit empties clear them", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true;
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records: projectDeviceRecords() });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    const before = { projects: await read("", "projects"), workspaces: await read("", "workspaces"),
+      row: await read("project-owner", "row"), roster: await read("project-owner", "project-agents") };
+    const observation = runtimeBoardObservation("Pushed runtime observation");
+    const inbox = registeredWatchers.find((watcher) => watcher.id === "s-inbox");
+    await inbox.onChanges([{ entity_id: "board", state: { ...observation, items: [], projects: [], workspaces: [] } }]);
+    await settle();
+    expectRuntimeBoard((await read("", "feed")).value, observation);
+    await inbox.onChanges([{ entity_id: "board", state: { pending: [] } }]); await settle();
+    const partial = (await read("", "feed")).value;
+    expectRuntimeBoard(partial, { ...observation, pending: [] });
+    await inbox.onChanges([{ entity_id: "board", state: { plans: [], runs: [], external_worktrees: [] } }]); await settle();
+    expectRuntimeBoard((await read("", "feed")).value, { pending: [], plans: [], runs: [], external_worktrees: [] });
+    expect((await read("", "projects")).value).toEqual(before.projects.value);
+    expect((await read("", "workspaces")).value).toEqual(before.workspaces.value);
+    expect((await read("project-owner", "row")).value).toEqual(before.row.value);
+    expect((await read("project-owner", "project-agents")).value).toEqual(before.roster.value);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("retries a device publication raced by a runtime board observation without a head check", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true;
+  const records = projectDeviceRecords();
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  let entered, release;
+  const requested = new Promise((resolve) => { entered = resolve; });
+  const held = new Promise((resolve) => { release = resolve; });
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    const changes = [{ ...records[0], row: { ...records[0].row, name: "Caught-up device project" }, operation: "upsert", seq: "2", revision: "2" }];
+    const answer = scopedAnswer({ head: "2", cursor: "device-next", changes });
+    script["sync.changes"] = () => { entered(); return held; };
+    bridge.call.mockClear();
+    const { captureScopedSync } = await import("../src/core/scopedSyncRuntime.js");
+    const recovering = captureScopedSync("dev-1"); await requested;
+    const observation = runtimeBoardObservation("Runtime observation during capture");
+    const { enrichDeviceRuntimeBoard } = await import("../src/core/scopedDeviceRuntime.js");
+    // Call the actual cache writer without another wake, so only the existing
+    // bounded retry can repair this publication's stale capture.
+    await enrichDeviceRuntimeBoard("dev-1", observation, () => true);
+    script["sync.changes"] = () => answer;
+    release(answer); await recovering;
+    await vi.waitFor(async () => {
+      expectRuntimeBoard((await read("", "feed")).value, observation);
+      expect((await read("", "projects")).value[0].name).toBe("Caught-up device project");
+    }, { timeout: 5_000 });
+    expect(calls("sync.changes").length).toBeGreaterThan(1);
+    expect(calls("sync.head")).toHaveLength(0);
+  } finally { release(scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] })); vi.unstubAllGlobals(); }
+});
+
+
+it("refreshes runtime board collections after an owned revision-only board push", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true;
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records: projectDeviceRecords() });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  let observation = runtimeBoardObservation("Before board revision");
+  script["board.list"] = () => observation;
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1"); bridge.call.mockClear();
+    observation = runtimeBoardObservation("After board revision");
+    await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([{ entity_id: "board", state: { revision: 10 } }]);
+    await settle();
+    expect(calls("board.list")).toHaveLength(1);
+    expectRuntimeBoard((await read("", "feed")).value, observation);
+    for (const method of ["project.list", "workspace.list", "agent.list"]) expect(calls(method), method).toHaveLength(0);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+
+it("runtime run bodies cannot replace device roster generations or acknowledged read marks", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true; projectWorkersSupported = true;
+  const records = projectDeviceRecords().map((record) => record.kind === "agent" ? { ...record, row: { ...record.row,
+    thread_generation_revision: "2", read_through_sequence: "5", unread_count: 0, unread_reason: null } } : record);
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    const stale = { ...runtimeBoardObservation("Durable run body").runs[0], run_id: "project-owner",
+      pinned_agent_id: "worker", session_started_ms: 1, last_activity_ms: 2, unread_count: 2,
+      agents: [{ ...expectedDeviceWorker, thread_generation_revision: "1", read_through_sequence: "0" }],
+      thread: { id: "stale-thread", thread_id: "stale-thread", generation_revision: "1", item_count: 3, last_sequence: "3" } };
+    await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([{ entity_id: "board", state: { runs: [stale] } }]);
+    await settle();
+    const record = await read("", "feed");
+    const { cachedFeedView } = await import("../src/core/cachedRows.js");
+    const { withCacheFreshness } = await import("../src/core/cacheFreshness.js");
+    const { freshestRosters } = await import("../src/core/inboxRoster.js");
+    const { projectAgentEntries } = await import("../src/core/inboxProjectAgent.js");
+    const { rememberProjectAgentsSupport } = await import("../src/core/projectAgentsCache.js");
+    await rememberProjectAgentsSupport("dev-1", { agents: { projectWorkers: true } });
+    const view = await cachedFeedView("dev-1");
+    const runs = record.value.runs.map((row) => withCacheFreshness(row, record));
+    const roster = freshestRosters([...view.items, ...runs])("dev-1/proj-1", "project-owner");
+    const readFacts = (agents) => agents.map((agent) => ({ id: agent.id, generation: agent.thread_generation_revision,
+      read: agent.read_through_sequence, unread: agent.unread_count }));
+    // The owner row is pinned-only; the separate project roster is complete.
+    expect(readFacts(roster.agents)).toEqual([{ id: "coordinator", generation: "2", read: "5", unread: 0 }]);
+    expect(readFacts(view.projects[0].projectRoster.agents)).toEqual([
+      { id: "worker", generation: "2", read: "5", unread: 0 }, { id: "coordinator", generation: "2", read: "5", unread: 0 },
+    ]);
+    expect(projectAgentEntries(view.projects, view.items, runs)[0].unreadCount).toBe(0);
+    expect(record.value.runs[0]).toEqual({ run_id: "project-owner", project_id: "proj-1", goal: "Durable run body", state: "review",
+      base_branch: "dev", base_sha: "synthetic-base-sha",
+      deviceId: "dev-1", projectKey: "dev-1/proj-1" });
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("normalizes absent runtime collections on a full owned board read while keeping partial push omissions", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true;
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records: projectDeviceRecords() });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  let observation = runtimeBoardObservation("Old runtime body");
+  script["board.list"] = () => observation;
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    observation = { items: [], runs: [], external_worktrees: [], pending: [] };
+    await sync.syncDevice("dev-1", "connection"); await passesSettled(sync, "dev-1");
+    expectRuntimeBoard((await read("", "feed")).value, { pending: [], external_worktrees: [], plans: [], runs: [] });
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("refreshes existing workspace runtime summaries from the owned board read without replacing directory fields", async () => {
+  vi.stubGlobal("navigator", { locks: { request: vi.fn((_name, grant) => Promise.resolve(grant())) } });
+  deviceScopedSupported = true;
+  script["sync.snapshot"] = () => scopedAnswer({ watermark: "1", cursor: "device-cursor", records: deviceRecords() });
+  script["sync.changes"] = () => scopedAnswer({ head: "1", cursor: "device-cursor", changes: [] });
+  let summaries = [];
+  script["board.list"] = () => ({ items: [], runs: [], pending: [], external_worktrees: [], workspace_summaries: summaries });
+  try {
+    sync.startCacheSync(); await passesSettled(sync, "dev-1");
+    const before = (await read("", "workspaces")).value[0];
+    summaries = [{ workspace_id: "workspace-1", work_summary: { total: 3, running: 1 }, can_finish: true, finish_blockers: [] },
+      { workspace_id: "legacy-only", work_summary: { total: 7 }, can_finish: true }];
+    await sync.syncDevice("dev-1", "connection"); await passesSettled(sync, "dev-1");
+    const expected = { ...before, work_summary: summaries[0].work_summary, can_finish: true, finish_blockers: [] };
+    expect((await read("", "workspaces")).value).toEqual([expected]);
+    expect((await read("", "feed")).value.workspaces).toEqual([expected]);
+  } finally { vi.unstubAllGlobals(); }
 });

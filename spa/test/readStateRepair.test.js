@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { refreshReadState } from "../src/core/readStateRepair.js";
+import { mergeReadRoster, refreshReadState } from "../src/core/readStateRepair.js";
 import { notePush, forgetPushes } from "../src/core/pushFence.js";
 import { readCached, wipeCache, writeCached } from "../src/core/localCache.js";
 
@@ -115,4 +115,18 @@ it("does not request project-worker rosters for ordinary workspace read marks", 
   const call = vi.fn();
   await repairReadOwner({ ...context(call), capabilities: { agents: { projectWorkers: true } } }, "owner");
   expect(call).not.toHaveBeenCalled();
+});
+
+it("repairs the same generation across device decimals and legacy numeric digests", () => {
+  const held = row(10), incoming = row(12);
+  Object.assign(held.agents[0], { thread_generation_revision: "1", read_through_sequence: "10" });
+  incoming.agents[0].thread_generation_revision = 1;
+  expect(mergeReadRoster(held, incoming, true)?.agents[0].read_through_sequence).toBe(12);
+});
+
+it("compares device read cursors exactly beyond the safe integer boundary", () => {
+  const held = row(12), incoming = row(10);
+  held.agents[0].read_through_sequence = "9007199254740993";
+  incoming.agents[0].read_through_sequence = "9007199254740992";
+  expect(mergeReadRoster(held, incoming)).toBeNull();
 });

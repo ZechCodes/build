@@ -8,6 +8,7 @@ const PRESENCE_INTERVAL_MS = 5_000;
 // Hidden tabs can batch timer work into sixty-second heartbeats. Give a
 // continuously mounted follower a grace window before retiring its scopes.
 export const SCOPED_SYNC_PRESENCE_LEASE_MS = 90_000;
+export const deviceSyncScope = () => ({ kind: "device" });
 export const taskSyncScope = (taskId) => ({ kind: "task", task_id: taskId });
 export function projectSyncScope(projectId, filters = {}) {
   const { order = "number", ...selected } = canonicalSummaryFilters(filters);

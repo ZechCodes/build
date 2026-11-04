@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bubbleHtml } from "../src/core/agentRail.js";
+import { railBubbles, railEntity } from "../src/core/agentRailModel.js";
 import { createRailBubbleTooltip, positionRailBubbleTooltip } from "../src/core/railBubbleTooltip.js";
 
 afterEach(() => {
@@ -179,5 +180,34 @@ describe("conversation bubble tooltip", () => {
     expect(button.getAttribute("aria-describedby")).not.toBe(secondId);
     first.dispose();
     second.dispose();
+  });
+});
+
+
+describe("the workspace strip's recorded project coordinator", () => {
+  const worker = { id: "worker", ordinal: 1, topic: "Worker topic", name: "Worker name", project_role: null,
+    provider: "codex", watched: true, unread_count: 0 };
+  const showProjectBubble = (row) => {
+    const entity = railEntity(row, "project");
+    const model = railBubbles({ kind: "workspace", agents: [], projectAgent: { name: "Project label", ...entity } })[0];
+    const host = document.createElement("div"); host.innerHTML = bubbleHtml(model); document.body.appendChild(host);
+    const tooltip = createRailBubbleTooltip(); tooltip.wire(host.firstElementChild);
+    host.firstElementChild.dispatchEvent(new Event("pointerenter"));
+    const text = document.querySelector(".rail-bubble-tooltip").textContent;
+    tooltip.dispose(); return text;
+  };
+
+  it.each([null, "missing-pin"])("never paints a worker as coordinator for recorded pin %j", (pin) => {
+    const text = showProjectBubble({ entity_id: "project-owner", pinned_agent_id: pin, agents: [worker] });
+    expect(text).toContain("Project agent");
+    expect(text).not.toContain("Worker topic");
+    expect(text).not.toContain("Worker name");
+  });
+
+  it("paints the later ordinal recorded pin instead of the first worker", () => {
+    const pin = { ...worker, id: "pin", ordinal: 9, name: "Recorded pin", topic: "Coordinator work", project_role: "coordinator" };
+    const text = showProjectBubble({ entity_id: "project-owner", pinned_agent_id: "pin", agents: [worker, pin] });
+    expect(text).toContain("Recorded pin"); expect(text).toContain("Coordinator work");
+    expect(text).not.toContain("Worker topic");
   });
 });

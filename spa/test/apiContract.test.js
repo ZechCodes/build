@@ -28,6 +28,23 @@ const eventExamples = fixtures
   .flatMap(({ name, body }) => body.events.map((event, index) => ({ where: `${name}[${index}]`, event })));
 
 describe("the v1 adapter against fixtures/api/v1", () => {
+  it("pins wire 3.34 device roster and pooled directory session facts", () => {
+    expect(versions.current).toBe("3.34.0");
+    const snapshot = methodFixtures.find(({ body }) => body.method === "sync.snapshot").body;
+    const example = snapshot.examples.find((entry) => entry.since === "3.34.0");
+    expect(example.params.scope).toEqual({ kind: "device" });
+    const records = example.result.records;
+    expect(records.filter((record) => record.kind === "agent").every((record) => !Object.hasOwn(record.row, "project_role"))).toBe(true);
+    expect(records.find((record) => record.kind === "identity").row).toMatchObject({ agent_id: "agent-2", project_role: "coordinator" });
+    expect(records.find((record) => record.kind === "owner_session").row).toMatchObject({
+      owner_id: "owner-1", pinned_agent_id: "agent-2", session_started_ms: 1800000000000, last_activity_ms: 1800000060000,
+    });
+    expect(records.find((record) => record.kind === "project_session").row).toMatchObject({
+      project_id: "proj-1", session_started_ms: 1800000000000, last_activity_ms: 1800000060000,
+    });
+    expect(v1.parseResult("sync.snapshot", example.result)).toEqual(example.result);
+  });
+
   it("announces terminal source selectors independently of Git and Files", () => {
     const greeting = methodFixtures.find(({ body }) => body.method === "session.hello").body;
     expect(greeting.result.capabilities).toContain("term.projectSources");

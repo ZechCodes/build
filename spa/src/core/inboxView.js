@@ -26,6 +26,7 @@ import {
   captureEntries,
   dismissParamsOf,
   entryKeyOf,
+  inboxEntries,
   inboxEmptyHtml,
   inboxRowHtml,
   mergePendingRows,
@@ -191,8 +192,27 @@ function publishAttentionCount(rows = railRows()) {
  * the inbox's anchor order on both faces. */
 function workRows(rows) {
   const taskUnread = watchedTasks?.taskUnread() || NO_TASK_UNREAD;
-  return navigationUnreadEntries({ projects, workspaces, items: rows, runs, taskUnread }).sort(byAnchor);
+  const entries = navigationUnreadEntries({ projects, workspaces, items: rows, runs, taskUnread });
+  return [...entries, ...pendingOperationEntries(entries)].sort(byAnchor);
 }
+
+const operationMatchesEntry = (operation, entry) => operation.deviceId === entry.deviceId
+  && operation.projectKey === entry.projectKey
+  && [entry.entityId, entry.workspaceId].filter(Boolean).some((id) => id === operation.entity_id || id === operation.checkout_id);
+
+/** A real lifecycle verb has a row even before its workspace exists. These
+ * placeholders carry no agent roster or unread authority. Standing workspace
+ * and project rows already show their matched operation, so remain one row. */
+function pendingOperationEntries(entries) {
+  const pending = pendingLifecycle.filter((operation) => !entries.some((entry) => operationMatchesEntry(operation, entry)));
+  return inboxEntries({ items: mergePendingRows([], pending) }).entries.map(scopedPendingEntry);
+}
+
+// Only appended operation placeholders need this key: checkout path hashes can
+// coincide across paired devices. Their entity and eventual route stay intact.
+const scopedPendingEntry = (entry) => ({ ...entry,
+  key: `pending:${JSON.stringify([entry.deviceId, entry.projectKey || entry.projectId, entry.entityId])}`,
+});
 
 /** The one name a row has, which is what the reconciler matches rows by. */
 const keyOf = (entry) => entry.key;
@@ -297,7 +317,7 @@ function rowUi(showProject) {
     ...picker,
     // The branches that project already has, off the same feed rows the
     // compose panel offers: one source for "which branches are there".
-    rerouteBranches: branchOptions(destinations.items, picker.rerouteBranchProject),
+    rerouteBranches: branchOptions(destinations.items, picker.rerouteBranchProject, destinations.runs),
     showProject,
     folded: new Set(),
     // The block holding the branch or task the route stands on. A capture's

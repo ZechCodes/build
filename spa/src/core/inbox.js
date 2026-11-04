@@ -91,6 +91,10 @@ export const workspaceEntryKey = (workspace) => `workspace:${workspace.workspace
 
 const workspaceEntityId = (workspace) => workspace.entity_id || workspace.run_id || null;
 
+const withPendingOperation = (entry, activity) => activity.pending
+  ? { ...entry, pending: activity.pending, facts: entryFactsText(activity), working: true }
+  : entry;
+
 function toWorkspaceEntry(workspace, projectNames, conversation, nowMs) {
   const activity = conversation || { working: workspace.status === "active" };
   // The workspace list carries the conversation owner independently of the
@@ -102,7 +106,7 @@ function toWorkspaceEntry(workspace, projectNames, conversation, nowMs) {
   // folder, listed so it can be opened. There is no work to summarize and
   // nothing for Done to remove, so the row says what it is instead.
   const adopted = workspace.managed === false && !entityId;
-  return {
+  return withPendingOperation({
     key: workspaceEntryKey(workspace),
     kind: "workspace",
     workspaceId: workspace.id,
@@ -140,7 +144,7 @@ function toWorkspaceEntry(workspace, projectNames, conversation, nowMs) {
     facts: adopted ? adoptedCheckoutFacts(workspace) : workspaceFacts(workspace),
     route: workspaceRoute(workspace),
     ...sessionTimes(workspace, nowMs),
-  };
+  }, activity);
 }
 
 /** Every device's workspaces as rows, ordered together by the inbox anchor. A
@@ -195,7 +199,7 @@ function withRosterTallies(entry, agents, taskUnread) {
   return {
     ...entry,
     runningCount,
-    working: runningCount > 0,
+    working: !!entry.pending || runningCount > 0,
     // A folded project summarizes watched agents only; the workspace's own
     // dot and running count still describe every agent working in it.
     watchedWorking: watchedAgentsRunning(agents),
@@ -203,7 +207,7 @@ function withRosterTallies(entry, agents, taskUnread) {
     unreadCount,
     descendantUnread,
     state: entryState({ unread: unreadCount > 0 || descendantUnread, working: runningCount > 0 }),
-    facts: `${entry.facts} · ${runningCount} running`,
+    facts: entry.pending ? entry.facts : `${entry.facts} · ${runningCount} running`,
   };
 }
 
@@ -321,11 +325,20 @@ const pendingItem = (row) => ({
  * is the row and the placeholder is gone.
  *
  */
+function samePendingScope(item, operation) {
+  if ((item.deviceId || null) !== (operation.deviceId || null)) return false;
+  if (item.projectKey && operation.projectKey) return item.projectKey === operation.projectKey;
+  if (item.project_id && operation.project_id) return item.project_id === operation.project_id;
+  // Older callers supplied neither device stamp. Retain their original merge
+  // when no project facts conflict; a stamped row never claims unknown scope.
+  return !item.deviceId && !operation.deviceId;
+}
+
 export function mergePendingRows(items = [], pending = []) {
   const rows = [...(items || [])];
   const cardOf = (row) => (item) => {
     const id = entityIdOf(item);
-    return id !== null && (id === row.entity_id || id === row.checkout_id);
+    return samePendingScope(item, row) && id !== null && (id === row.entity_id || id === row.checkout_id);
   };
   for (const row of pending || []) {
     const standing = rows.findIndex(cardOf(row));
@@ -480,7 +493,7 @@ export function captureStatusText(entry) {
   if (entry.captureState === "routed" && entry.routedTo) {
     return `→ ${entry.routedTo.project} as ${entry.routedTo.kind}`;
   }
-  if (entry.question) return "Waiting for your answer";
+  if (entry.question || entry.needsAnswer) return "Waiting for your answer";
   if (entry.progress) return entry.progress;
   return CAPTURE_STATUS[entry.captureState] || "";
 }
@@ -515,6 +528,8 @@ function toCaptureEntry(item) {
     working: !!item.working,
     reason: question || (item.unread_reason === "routing_failed" ? "Routing failed" : ""),
     question,
+    // Device summaries carry the wait fact; capture.get owns question text.
+    needsAnswer: item.needs_answer === true,
     progress: item.progress || "",
     routedTo: routing ? { project: item.project || item.project_id, kind: routing.kind } : null,
     unreadCount: item.unread_count || 0,

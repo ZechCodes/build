@@ -246,7 +246,7 @@ describe("sync timing recorder", () => {
   });
 });
 
-it.each(["project_tasks", "task"])("retains allowlisted durable scope kind %s", (kind) => {
+it.each(["project_tasks", "task", "device"])("retains allowlisted durable scope kind %s", (kind) => {
   const { diagnostics: d } = fixture();
   d.ring(true);
   const request = d.itemQueued("sync.head", kind);

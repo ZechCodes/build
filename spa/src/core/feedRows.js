@@ -8,6 +8,8 @@
 
 import { subscribeFeed } from "./taskFeed.js";
 import { subscribeCache } from "./localCache.js";
+import { branchRowsIn } from "./feedMerge.js";
+export { branchRowsIn } from "./feedMerge.js";
 import { deviceFeedHeld, deviceFeedView } from "./deviceContexts.js";
 
 /** The record kinds a machine's board is written in: the whole list, which a
@@ -100,8 +102,8 @@ export function deviceFeedNow(deviceId) {
 /** That machine's row for one branch of one of its projects, or null when the
  *  slice carries none. */
 export const branchRowIn = (snapshot, projectId, branch) =>
-  (snapshot?.items || []).find(
-    (item) => item.kind === "branch" && item.project_id === projectId && item.branch === branch,
+  branchRowsIn(snapshot).find(
+    (item) => item.project_id === projectId && item.branch === branch,
   ) || null;
 
 /** The live run body the board carries beside its rows — the goal, the state,

@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-const DEFINITION: &str = "sync-journal-2";
+const DEFINITION: &str = "sync-journal-3";
 const TABLES: &str = "
 CREATE TABLE IF NOT EXISTS sync_state (
  id INTEGER PRIMARY KEY CHECK(id=1), head INTEGER NOT NULL DEFAULT 0,
@@ -115,6 +115,12 @@ pub(in crate::store) fn initialize(
         // No new cursor can acknowledge history from before this rebuild.
         tx.execute("UPDATE sync_state SET baseline=head,floor=head", [])?;
     }
+    // A supported rollback may run an older writer against these additive
+    // tables. Only a definition change invalidates the new fact coverage;
+    // ordinary reopen/file restoration retains compact pruned boundaries.
+    if !pristine && definition.as_deref() != Some(DEFINITION) {
+        super::device_334_cleanup::prepare(&tx)?;
+    }
     put(&tx, "sync_schema", DEFINITION)?;
     put(&tx, "sync_file_binding", &binding)?;
     tx.execute(
@@ -127,8 +133,13 @@ pub(in crate::store) fn initialize(
     super::retention_install::install(conn)?;
     super::task_publication::install(conn)?;
     super::device_producers::install(conn)?;
+    // Store::open creates its writer/read pool only after this bounded drain
+    // and the fact bootstraps complete, so no mutator observes partial pools.
+    super::device_334_cleanup::drain(conn)?;
     super::device_backfill::install(conn)?;
+    super::device_facts::upgrade_pins(conn)?;
     super::device_facts::repair_missing(conn)?;
+    super::device_session_backfill::upgrade(conn)?;
     Ok(())
 }
 

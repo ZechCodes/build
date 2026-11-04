@@ -14,12 +14,13 @@ let cache, agents;
 
 beforeEach(async () => {
   vi.resetModules();
+  vi.stubGlobal("navigator", { locks: { request() {} } });
   globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange;
   fake.owners.clear(); fake.wake.mockReset();
   cache = await import("../src/core/localCache.js");
   agents = await import("../src/core/projectAgentsCache.js");
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 const address = () => agents.projectAgentsAddress(deviceId, entityId);
 const heldRoster = async () => (await cache.readCached(address()))?.value;
@@ -53,11 +54,11 @@ it.each([
   }
 });
 
-it("refuses an in-flight legacy roster after the exact device scope takes ownership", async () => {
+it.each([false, true])("refuses an in-flight legacy roster after the exact device scope takes ownership (initial device capability %s)", async (advertised) => {
   const before = roster("Cached pin"); await cache.writeCached(address(), before);
   let release;
   const afterWrite = vi.fn(), call = vi.fn(() => new Promise((resolve) => { release = resolve; }));
-  const pending = agents.syncProjectAgents({ deviceId, entityId, capabilities, call, afterWrite });
+  const pending = agents.syncProjectAgents({ deviceId, entityId, capabilities: { ...capabilities, sync: { device: advertised } }, call, afterWrite });
   await vi.waitFor(() => expect(release).toBeTypeOf("function"));
   fake.owners.add(deviceId); release(roster("Stale legacy pin"));
   await pending;

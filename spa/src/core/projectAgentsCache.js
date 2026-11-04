@@ -1,5 +1,4 @@
 import { pushFence, pushedSince } from "./pushFence.js";
-import { deviceScopedSyncOwns, wakeScopedSync } from "./scopedSyncRuntime.js";
 import { cachedWriteOf, captureCachedRecord, isCachedWrite, mergeCachedAtomically, mergeCachedRecordsTogether, readCached, readCachedMany } from "./localCache.js";
 
 export const PROJECT_AGENTS_KIND = "project-agents";
@@ -49,12 +48,24 @@ let requestOrder = 0;
 const SYNC_DEFAULTS = { active: () => true, afterWrite: async () => {} };
 const workerRosterAvailable = (capabilities) => (typeof capabilities === "function" ? capabilities() : capabilities)?.agents?.projectWorkers === true;
 const callerActive = (options) => options.active() && workerRosterAvailable(options.capabilities);
-const readerActive = (options) => callerActive(options) && !deviceScopedSyncOwns(options.deviceId);
+const readerActive = (options) => callerActive(options) && !options.scoped.owns();
+
+const unownedRoster = { owns: () => false };
+
+// Reading cache helpers never loads connection services. Browser workers need
+// live ownership callbacks so a legacy request can lose authority on upgrade.
+async function rosterAuthority(deviceId) {
+  if (typeof globalThis.navigator?.locks?.request !== "function") return unownedRoster;
+  const { deviceScopedSyncOwns, wakeScopedSync } = await import("./scopedSyncRuntime.js");
+  return { owns: () => deviceScopedSyncOwns(deviceId),
+    wake: () => wakeScopedSync(deviceId, (scope) => scope.kind === "device") };
+}
 
 export async function syncProjectAgents(options) {
-  const request = { ...SYNC_DEFAULTS, ...options, fence: pushFence(), order: ++requestOrder };
+  const request = { ...SYNC_DEFAULTS, ...options, fence: pushFence(), order: ++requestOrder, scoped: unownedRoster };
   if (!request.entityId || !callerActive(request)) return;
-  if (deviceScopedSyncOwns(request.deviceId)) return confirmScopedRoster(request);
+  request.scoped = await rosterAuthority(request.deviceId);
+  if (request.scoped.owns()) return confirmScopedRoster(request);
   const key = JSON.stringify([request.deviceId, request.entityId]);
   if (!request.background) return readImmediateRoster(key, request);
   const running = reads.get(key);
@@ -75,10 +86,11 @@ export async function syncProjectAgents(options) {
 // User writes and read-state repair confirm through the same exact device
 // owner as the ordered pass; they never restore a second full-roster writer.
 async function confirmScopedRoster(request) {
-  const recovered = await wakeScopedSync(request.deviceId, (scope) => scope.kind === "device");
-  if (!recovered.some(Boolean) || !callerActive(request) || !deviceScopedSyncOwns(request.deviceId)) return;
+  if (!callerActive(request)) return;
+  const recovered = await request.scoped.wake();
+  if (!recovered.some(Boolean) || !callerActive(request) || !request.scoped.owns()) return;
   const roster = (await readCached(projectAgentsAddress(request.deviceId, request.entityId)))?.value;
-  if (callerActive(request) && deviceScopedSyncOwns(request.deviceId) && validProjectRoster(roster, request.entityId)) {
+  if (callerActive(request) && request.scoped.owns() && validProjectRoster(roster, request.entityId)) {
     await request.afterWrite(roster);
   }
 }

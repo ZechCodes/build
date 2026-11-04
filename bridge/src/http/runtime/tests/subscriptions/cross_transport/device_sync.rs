@@ -33,7 +33,12 @@ async fn device_sync_wire_http_uses_the_same_typed_scope_and_lease_contract() {
             now,
         )
         .unwrap();
-    let fixture = Fixture::new(AppState::handler(app.shared()));
+    // This transport contract needs an uncontended writer. AppState::shared
+    // also starts unrelated maintenance/delivery writers; admission correctly
+    // refuses those instead of waiting. The handler still performs startup
+    // projection and read-context initialization for this isolated app.
+    let state = std::sync::Arc::new(std::sync::Mutex::new(app));
+    let fixture = Fixture::new(AppState::handler(state));
     let client = fixture.http_client("device-sync-family").await;
     for (body, valid) in [
         (r#"{"scope":{"kind":"device"},"limit":100}"#, true),

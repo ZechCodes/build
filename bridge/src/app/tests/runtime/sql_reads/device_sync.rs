@@ -42,6 +42,7 @@ async fn device_roundtrip(deadline: Duration, fixture_rows: usize) {
         })
         .unwrap();
     let state = app.shared();
+    let samples = state.lock().unwrap().frame_clock.capture_phases();
     let transport = crate::transport::generate_transport_keypair();
     let intake = FrameIntake::new(AppState::handler(Arc::clone(&state)), transport.clone());
     let mut wire = ChannelWire::open();
@@ -72,6 +73,16 @@ async fn device_roundtrip(deadline: Duration, fixture_rows: usize) {
     eprintln!(
         "device wire snapshot rows={fixture_rows} elapsed_us={}",
         snapshot_elapsed.as_micros()
+    );
+    let phases = samples.snapshot();
+    eprintln!("device snapshot phases={phases}");
+    assert_eq!(
+        phases["sync.snapshot"]["device.lease_writer_hold"]["count"],
+        1
+    );
+    assert_eq!(
+        phases["sync.snapshot"]["frame.held"]["sum_ms"], 0.0,
+        "device recovery must not hold the app mutex"
     );
     assert_eq!(answer["ok"], true, "{answer}");
     assert_eq!(answer["result"]["consistency"], "leased", "{answer}");

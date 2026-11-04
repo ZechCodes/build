@@ -22,6 +22,7 @@ import {
   advanceTaskReadThrough,
   captureTaskDetailRead,
   taskAddress,
+  tasksAddress,
   taskRecord,
   taskRecordAt,
   readTaskRecord,
@@ -716,9 +717,9 @@ export function mountTaskPage(host, options) {
     state.columns = columnsOf(columns);
     paint();
   }
-  const columnsWatcher = subscribeCache(projectColumnsAddress(state.deviceId, state.projectId), () => {
-    void paintColumnsFromCache();
-  });
+  const onColumnsChanged = () => { void paintColumnsFromCache(); };
+  const columnsWatcher = subscribeCache(projectColumnsAddress(state.deviceId, state.projectId), onColumnsChanged);
+  const listColumnsWatcher = subscribeCache(tasksAddress(state.deviceId, state.projectId), onColumnsChanged);
 
   /** What a reference written on this page names is the shared index's
    *  answer (core/referenceIndex.js, #229): the project's task list, the
@@ -1336,6 +1337,7 @@ export function mountTaskPage(host, options) {
       stopGreeting();
       taskWatcher?.();
       columnsWatcher();
+      listColumnsWatcher();
       contentHeaderWatcher();
       stopWatchControl();
       stopWatchControlLifetime();

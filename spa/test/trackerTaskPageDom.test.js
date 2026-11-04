@@ -1815,7 +1815,9 @@ describe("work-task review entry", () => {
     call = vi.fn(() => new Promise(() => {}));
     await mount();
     expect(host.querySelector('[data-work-task-review]')).toBeNull();
-    expect(observe.mock.calls.filter(([address]) => ["tracker-task", "tracker-tasks"].includes(address.kind) && !address.sub)).toHaveLength(0);
+    expect(observe.mock.calls.filter(([address]) => address.kind === "tracker-task" && !address.sub)).toHaveLength(0);
+    expect(observe.mock.calls.filter(([address]) => address.kind === "tracker-tasks").map(([address]) => address))
+      .toEqual([trackerCache.tasksAddress("dev-1", "proj-1")]);
     expect(scan.mock.calls.filter(([address]) => ["tracker-task", "tracker-tasks"].includes(address.kind))).toHaveLength(0);
     observe.mockRestore(); scan.mockRestore();
   });
@@ -1884,5 +1886,32 @@ it("reads offline task status choices independently of a missing whole-list reco
   });
   await vi.waitFor(() => expect(labels()).toEqual(["New column", "Updated"]));
   expect(await local.readCanonicalCached(whole)).toBeUndefined();
+  expect(call).not.toHaveBeenCalled();
+});
+it("observes late embedded project columns without replacing a cached task detail", async () => {
+  const local = await import("../src/core/localCache.js");
+  const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+  const whole = trackerCache.tasksAddress("dev-1", "proj-1");
+  const detailAddress = trackerCache.taskAddress("dev-1", "proj-1", "task-1");
+  const metadata = projectColumnsAddress("dev-1", "proj-1");
+  await local.deleteCached([whole, metadata]);
+  await local.writeCached(detailAddress, answerFor({ title: "Cached detail title", body: "Keep the detail body." }));
+  call = vi.fn(() => new Promise(() => {}));
+  await mount();
+  const labels = () => [...host.querySelectorAll("#task-status option")].map((option) => option.textContent);
+  expect(labels()).toEqual(["Backlog", "Ready", "In progress", "In review", "Done"]);
+  expect(await local.readCanonicalCached(whole)).toBeUndefined();
+  expect(await local.readCanonicalCached(metadata)).toBeUndefined();
+  const before = await local.readCanonicalCached(detailAddress);
+  call.mockClear();
+  await local.writeCached(whole, {
+    tasks: [task({ id: "task-1", project_id: "proj-1", title: "List replica title", body: "List replica body" })],
+    columns: [{ id: "custom", name: "New column" }, { id: "in_progress", name: "Building" }],
+  });
+  await vi.waitFor(() => expect(labels()).toEqual(["New column", "Building"]));
+  expect(host.querySelector(".task-page-title").textContent).toBe("Cached detail title");
+  expect(host.querySelector(".task-page-body").textContent).toContain("Keep the detail body.");
+  expect(await local.readCanonicalCached(detailAddress)).toEqual(before);
+  expect(await local.readCanonicalCached(metadata)).toBeUndefined();
   expect(call).not.toHaveBeenCalled();
 });

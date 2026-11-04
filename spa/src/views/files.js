@@ -97,7 +97,7 @@ function previewBodyHtml(path, file, showSource) {
     if (mode === "binary" || mode === "toolarge") return sizePlaceholder(mode, file.size);
     return `${sourcePreviewHtml(path, decodeBase64Text(file.content_b64))}${truncNotice}`;
   }
-  if (mode === "markdown") return `<div class="plan">${markdownHtml(decodeBase64Text(file.content_b64))}</div>${truncNotice}`;
+  if (mode === "markdown") return `<div class="plan markdown">${markdownHtml(decodeBase64Text(file.content_b64))}</div>${truncNotice}`;
   if (mode === "html") return `<iframe class="fhtml" sandbox="" src="data:text/html;base64,${file.content_b64}"></iframe>`;
   if (mode === "svg") return '<img class="fimg" alt="">';
   if (mode === "image") return '<img class="fimg" alt="" style="max-width:100%">';

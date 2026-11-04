@@ -4,7 +4,6 @@ import { entityIdOf } from "./entityId.js";
 import { trailingRead } from "./trailingRead.js";
 import { notePush } from "./pushFence.js";
 import { cachedAddresses, captureCachedRecord, mergeCachedRecordsTogether, readCachedMany, recordWriteOf } from "./localCache.js";
-import { bridgeApiVersion } from "./changeEvents.js";
 import { supportsDeviceSync } from "./deviceSyncSupport.js";
 
 const scopes = new Set(["device", "project", "workspace", "conversation"]);
@@ -143,7 +142,7 @@ export async function refreshCompactionCaches(context, event) {
   const addresses = affectedAddresses(context.deviceId, await cachedAddresses({ deviceId: context.deviceId }), events);
   const records = await readCachedMany(addresses);
   const jobs = new Map();
-  const deviceSync = supportsDeviceSync(context.capabilities, context.apiVersion || bridgeApiVersion(context.deviceId));
+  const deviceSync = supportsDeviceSync(context.capabilities, context.apiVersion || "0.0.0");
   addresses.forEach((address, index) => {
     markDependencies(address, records[index]?.value);
     settingsJobs(jobs, address, deviceSync);

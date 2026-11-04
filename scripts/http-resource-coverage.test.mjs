@@ -244,14 +244,15 @@ const sourceFingerprintParts = {
   // #997 cacheSync.js:754,2608: scope ownership gates existing reads; scoped requests keep the same sync.head/snapshot/changes dispatch.
   "core/cacheSync.js": ["833682a7", "ecdab8e6", "edbff9c9", "48de5d38", "c25bd817", "c7ad151f", "65748530", "80cbb4e7"],
   "core/captureDecisionView.js": ["f9f42a7d", "d94162aa", "5aea82e5", "85e6bcb2", "73ffce61", "2ac99214", "8b78b55f", "30a7a61a"],
-  "core/changeEvents.js": ["31e123e5", "fc5c2562", "3328faa8", "3edc1018", "0ded97a7", "dd6f3430", "0ba3c6fa", "e1685e73"],
+  // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
+  "core/changeEvents.js": ["5b082d0b", "2ed9b187", "214c16ae", "1500d5f0", "43734602", "ae810be0", "ad7fd196", "1d5703a6"],
   "core/changesComments.js": ["7a5e0b06", "c47bf122", "ac5370b8", "debd8dc8", "388227b8", "f9ea1623", "d413134a", "635a2a7d"],
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],
   "core/chatChoiceController.js": ["d257b6c5", "f32d9067", "226af14c", "bd8ec71e", "718bf188", "1e994ef1", "66edcceb", "4499fa61"],
   "core/chatRepository.js": ["a7331089", "a8f626b3", "3c5700e5", "e726dfbe", "7aeb4d75", "59d71243", "6bb28ca2", "6e0dd982"],
-  // #997 compactionCache.js:58: device-owned directory fields survive policy refreshes; existing job.method expansion is unchanged.
-  "core/compactionCache.js": ["4b707e62", "758692d9", "b54a8add", "18fac54a", "d7fa4d1b", "e69567ee", "5d27705e", "d9ad98c5"],
+  // #997 compactionCache.js:57: use captured version authority without importing connection state into cache helpers.
+  "core/compactionCache.js": ["4e4482a7", "24057b98", "0a358b45", "3beeb686", "8c8c7388", "79aecece", "7b4cc21b", "75595548"],
   "core/compose.js": ["012665e7", "87915aea", "9314f63c", "7b036438", "70ec846e", "09d98f92", "e8746b91", "051b004e"],
   "core/composeView.js": ["b560ac00", "27513049", "482b025b", "79f330a5", "44f3a97f", "f2c88efa", "2f36708b", "a8951245"],
   "core/consoleModel.js": ["4feba529", "663ba471", "6fe6e2a1", "3eb66e5c", "815545f8", "f70a5b48", "a6248d75", "94d9ed20"],
@@ -283,8 +284,8 @@ const sourceFingerprintParts = {
   "core/pathProbe.js": ["1518fd69", "692eec10", "f8018014", "c81c6ee1", "4edda84e", "efee05d6", "472437de", "73c96fea"],
   "core/peerIceQueue.js": ["0cd05f87", "5def0e05", "b95fd35a", "3498571e", "7a93f83e", "8da1d594", "8022f75f", "0870be3b"],
   "core/peerLink.js": ["07cce688", "624c9a99", "9dd6a3d4", "77c8ff8f", "5a325998", "0a67eee0", "a0793c5f", "d8d0e597"],
-  // #997 projectAgentsCache.js:54: owned roster confirmation wakes the engine; agent.list remains the legacy fallback.
-  "core/projectAgentsCache.js": ["2dabdb04", "5096843a", "d4617906", "291b82f7", "6736171b", "433270e4", "d2b39a81", "ea0ff840"],
+  // #997 projectAgentsCache.js:57: load runtime authority only for Web Locks reads; live callbacks fence upgrades without import side effects.
+  "core/projectAgentsCache.js": ["a7c5f4b5", "321ecafb", "b30fd292", "07302c6b", "1f62638a", "c16708ff", "94bfaa24", "4e46db17"],
   "core/projectAgentSetting.js": ["cf7d410a", "f3bc1eb4", "1b4e7833", "9dc4cf50", "23b01280", "01636e27", "72e8edb1", "e4a7e379"],
   "core/projectChangesRpc.js": ["613fe381", "59f4a3a4", "08a518ed", "4e535261", "21ca4a58", "5e5011d9", "c0acd52e", "bb8e5014"],
   "core/projectConsole.js": ["b44678cc", "4c2dbc2a", "188695a2", "307b4883", "4d4fb733", "091622af", "3c648066", "9d1e32bb"],

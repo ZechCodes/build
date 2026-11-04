@@ -160,3 +160,42 @@ fn device_followup_background_capability_refresh_publishes_without_a_list_note()
     app.refresh_workspace_snapshot_observations();
     assert_eq!(row(root.path(),"workspace_directory",&format!("{}/{}",workspace.id,directory.id)).unwrap()["is_git"],true);
 }
+
+#[test]
+fn device_followup_long_workspace_names_do_not_poison_device_recovery() {
+    let (root,mut app,store)=fixture();
+    let name="workspace".repeat(20_000);
+    let workspace=app.workspaces.begin("proj-1",&name,&[]).unwrap();
+    app.workspace_set_locked(&json!({"workspace_id":workspace.id,"locked":true})).unwrap();
+    let summary=row(root.path(),"workspace",&workspace.id).expect("an oversized display label still has a bounded summary");
+    assert!(summary["name"].as_str().unwrap().chars().count()<=256);
+    assert_eq!(app.workspaces.get(&workspace.id).unwrap().name,name);
+    store.writer().admit_device_lease("opening","epoch",i64::MAX/2).unwrap();
+}
+
+#[test]
+fn device_followup_agent_workspace_id_uses_the_registry_directory_identity() {
+    let (root,mut app,store)=fixture();
+    let created=app.dispatch("workspace.create",&json!({"project_id":"proj-1","name":"directory-id"})).unwrap();
+    let workspace_id=created["workspace_id"].as_str().unwrap();
+    let conversation=app.workspace_ensure_conversation(&json!({"workspace_id":workspace_id})).unwrap();
+    let owner=conversation["entity_id"].as_str().unwrap();
+    let agent_id:String=store.writer_for_test().query_row("SELECT id FROM agents WHERE owner_id=?1",[owner],|row|row.get(0)).unwrap();
+    let agent=row(root.path(),"agent",&agent_id).unwrap();
+    assert_eq!(agent["workspace_id"],workspace_id,"a conversation owner id is distinct from its workspace id");
+    assert_eq!(agent["project_id"],"proj-1");
+}
+
+#[tokio::test]
+async fn device_followup_startup_marker_failure_cannot_expose_stale_device_rows() {
+    let (_root,mut app,store)=fixture();
+    let generation=store.writer().mark_sync_dirty("project","stale",1).unwrap();
+    store.writer().reconcile_sync_dirty("project","stale",generation,Some(json!({"id":"stale"})),1).unwrap();
+    store.fail_next_write();app.initialize_snapshot_projection();app.initialize_read_context();
+    let service=app.read_service();let connection=store.read_pool().acquire_sync_connection().await;
+    let frame=crate::transport::Frame{session_id:"synthetic".into(),message_id:"one".into(),frame_type:"data".into(),sender:"client".into(),created_at:"2026-01-01T00:00:00Z".into(),payload:json!({"id":1,"method":"sync.snapshot","params":{"scope":{"kind":"device"}}})};
+    let response=service.call_for_opening(frame,Some(connection),"opening","epoch");
+    assert_eq!(response["ok"],false,"{response}");
+    assert_eq!(response["retryable"],true,"{response}");
+    assert!(response["error"].as_str().unwrap().contains("sync_reconciling"),"{response}");
+}

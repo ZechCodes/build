@@ -1,4 +1,5 @@
 use crate::agent::AgentRoster;
+use crate::store::sync::GC_ROWS;
 use crate::attention::Attention;
 use crate::capture::Capture;
 use crate::models::ModelChoice;
@@ -375,6 +376,7 @@ fn device_summary_ignores_status_progress_and_still_working() {
     let after = projection(&store,"inbox_conversation",&id);
     assert_ne!(after,before,"negative control: handback must change summary");
     assert_eq!(after["last_message_summary"],"durable answer");
+    assert_eq!(after["unread_reason"],"agent_message");
     assert_eq!(after["last_activity_ms"],1_767_236_400_000_i64);
     assert_eq!(after["session_started_ms"],1_767_225_600_000_i64);
     assert_eq!(after["unread_count"],1);
@@ -422,7 +424,7 @@ fn device_unread_counters_are_incremental_and_last_summary_uses_indexed_seek() {
     attention.read_through(&id,1);
     store.save_attention(&HashMap::from([(run.id.clone(),attention)]),&HashSet::from([run.id.clone()])).unwrap();
     assert_eq!(projection(&store,"inbox_conversation",&id)["unread_count"],1);
-    let plan:String=store.writer_for_test().query_row("EXPLAIN QUERY PLAN SELECT sequence,item FROM thread_items INDEXED BY device_thread_summary WHERE agent_id=?1 AND (attention=1 OR (message=1 AND COALESCE(json_extract(item,'$.data.still_working'),0)=0)) ORDER BY sequence DESC LIMIT 1",[&id],|row|row.get(3)).unwrap();
+    let plan:String=store.writer_for_test().query_row("EXPLAIN QUERY PLAN SELECT sequence,summary FROM device_summary_items WHERE conversation_id=?1 AND generation=0 ORDER BY sequence DESC LIMIT 1",[&id],|row|row.get(3)).unwrap();
     assert!(plan.contains("SEARCH"),"{plan}");
     run.agents[0].thread.items.clear();
     store.save_run(&run).unwrap();
@@ -589,7 +591,7 @@ fn device_followup_retained_summaries_use_saved_facts_after_owner_history_is_rem
     run.agents[0].thread.post_agent("last answer",None,AT);store.save_run(&run).unwrap();
     let last=projection(&store,"inbox_conversation",&run.agents[0].id)["last_activity_ms"].clone();
     run.agents.clear();store.save_run(&run).unwrap();
-    assert_eq!(projection(&store,"workspace_session",&run.id)["retained_last_activity_ms"],last);
+    assert_eq!(projection(&store,"owner_session",&run.id)["retained_last_activity_ms"],last);
     store.delete_run_retaining_inbox_messages(&run.id,"proj-registry").unwrap();
     assert_eq!(projection(&store,"project_session","proj-registry")["retained_last_activity_ms"],last);
     drop(store);let store=Store::new(directory.path()).unwrap();

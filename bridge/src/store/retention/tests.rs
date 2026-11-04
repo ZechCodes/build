@@ -4,8 +4,16 @@ use tempfile::TempDir;
 fn fixture(messages: usize) -> (TempDir, Store) {
     let dir = TempDir::new().unwrap();
     let store = Store::new(dir.path()).unwrap();
+    let mut agent = crate::agent::Agent::new(
+        "a",
+        "owner",
+        crate::models::ModelChoice::default(),
+        1,
+        "2026-10-23T12:00:00Z",
+    );
+    agent.thread.id = "t".into();
     store.in_transaction(|tx| {
-        tx.execute("INSERT INTO agents VALUES ('a', 'owner', 1, '{\"thread\":{\"id\":\"t\"}}')", [])?;
+        tx.execute("INSERT INTO agents VALUES ('a', 'owner', 1, ?1)", [serde_json::to_string(&agent).unwrap()])?;
         for n in 1..=messages {
             let item = serde_json::json!({"type":"message","data":{"created_at":"2026-10-23T12:00:00Z", "role":"assistant"}});
             tx.execute("INSERT INTO thread_items(agent_id,sequence,updated_sequence,message,item) VALUES ('a',?1,?1,1,?2)", rusqlite::params![n as i64, item.to_string()])?;

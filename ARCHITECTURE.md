@@ -4272,7 +4272,7 @@ gate attachment display.
   review reads still fetch uncapped patches and pages. Markers follow the
   newest twenty unpushed hashes and the workspace's eviction and expiry rules;
   failed reads without size evidence remain retryable.
-- **Durable task scope recovery.** `scopedSyncRegistry.js` describes mounted
+- **Durable scope recovery.** `scopedSyncRegistry.js` describes mounted
   project task queries and task details, sharing presence with the lock holder
   across tabs and limiting each device to sixteen active scopes. Importing
   the registry starts no timer or presence channel. Mounted registrations and
@@ -4362,8 +4362,24 @@ gate attachment display.
   Legacy column helpers share that reader to avoid refetching cold metadata.
   Task
   heads contain summary and timeline data; an engine-owned detail reader
-  supplies body fields through their own task-content authority. Inbox and
-  directory recovery keep the ordered pass; no device scope is advertised.
+  supplies body fields through their own task-content authority.
+  With `sync.device` and wire 3.34 or later, the paired device also occupies
+  one bounded registry slot. `scopedDeviceSyncCache.js` atomically publishes
+  its cursor and the ordinary inbox, directory, roster and session caches;
+  views continue to read those caches. Legacy readers yield only for that
+  exact tracked device scope, including mounted directory and roster refreshes.
+  Wire 3.33 and older retain the legacy pass. Runtime observations and policy
+  refreshes update only fields excluded from the durable projection.
+  The explicit owner pin comes from `owner_session`; roles come from
+  `identity`. Missing pins never promote a worker by roster position. Live
+  owner and project session fields match the bridge list snapshots, including
+  unwatched activity. Device publication retains accepted read marks, checks
+  pending mutations and shared task generations, and rejects captures whose
+  cache records changed. Historical events use current membership when
+  applying tombstones, so an old delete cannot remove a recreated record.
+  Retryable `sync_reconciling` refusals retain cached paint without a notice
+  and retry with bounded backoff outside captured connection recovery. A
+  persistent ordinary failure reaches the existing error callback.
 - **Legacy reconnect catch-up.** The bridge starts a subscription empty and records a
   change only for the subscriptions it holds when the change happens. So a pass
   takes its subscriptions out before it reads anything, and where the cache has

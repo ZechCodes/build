@@ -256,8 +256,17 @@ async fn agent_and_conversation_writers_publish_current_rows_and_roster_deletion
         rows.iter()
             .map(|row| row["kind"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["agent", "identity", "inbox_conversation"]
+        ["agent", "identity", "inbox_conversation", "owner_session"]
     );
+    // Wire3.34 publishes the recorded owner pin even before any activity.
+    let owner = rows
+        .iter()
+        .find(|row| row["kind"] == "owner_session")
+        .unwrap();
+    assert_eq!(owner["key"], run.id);
+    for field in ["pinned_agent_id", "session_started_ms", "last_activity_ms"] {
+        assert!(owner["row"][field].is_null(), "{field}");
+    }
     let agent = rows.iter().find(|row| row["kind"] == "agent").unwrap();
     assert_eq!(agent["key"], agent_id);
     assert_eq!(agent["row"]["owner_id"], "run-one");
@@ -304,14 +313,22 @@ async fn agent_and_conversation_writers_publish_current_rows_and_roster_deletion
     store.save_run(&run).unwrap();
     let retained = device_rows(&store).await;
     assert_eq!(
-        retained.len(),
-        1,
-        "only the durable retained session may survive roster deletion"
+        retained
+            .iter()
+            .map(|row| row["kind"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["owner_session", "project_session"],
+        "roster deletion preserves owner and project pooled activity"
     );
-    assert_eq!(retained[0]["kind"], "owner_session");
     assert_eq!(retained[0]["row"]["owner_id"], run.id);
     assert_eq!(retained[0]["row"]["project_id"], "proj-registry");
     assert!(retained[0]["row"]["retained_last_activity_ms"].is_i64());
+    let activity = crate::session_summary::message_millis(AT).unwrap();
+    for row in &retained {
+        assert_eq!(row["row"]["session_started_ms"], activity);
+        assert_eq!(row["row"]["last_activity_ms"], activity);
+    }
+    assert_eq!(retained[1]["key"], "proj-registry");
     let deletes: i64 = store
         .writer_for_test()
         .query_row(
@@ -346,13 +363,35 @@ fn committed_conversation_items_have_linear_or_better_journal_amplification() {
         "an unchanged roster save must add no device entries"
     );
 
+    // The first message creates one owner activity fact in wire3.34. There
+    // is no registry mapping here, so no project_session row is published.
+    let before_first = journal_head(&store);
+    run.agents[0].thread.post_user("first activity", None, AT);
+    store.save_run(&run).unwrap();
+    let first: Vec<String> = store
+        .writer_for_test()
+        .prepare("SELECT entity_kind FROM sync_journal WHERE seq>?1 ORDER BY entity_kind")
+        .unwrap()
+        .query_map([before_first], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(first, ["agent", "inbox_conversation", "owner_session"]);
+    let baseline = journal_head(&store);
     const COMMITTED: i64 = 32;
+    let mut previous = baseline;
     let started = std::time::Instant::now();
     for index in 0..COMMITTED {
         run.agents[0]
             .thread
             .post_user(format!("committed {index}"), None, AT);
         store.save_run(&run).unwrap();
+        let current = journal_head(&store);
+        assert!(
+            current - previous <= 2,
+            "same-time append {index} republished pooled activity"
+        );
+        previous = current;
     }
     eprintln!(
         "device committed writes={COMMITTED} elapsed_us={} mean_us={}",
@@ -369,6 +408,19 @@ fn committed_conversation_items_have_linear_or_better_journal_amplification() {
     assert!(
         added <= 2 * COMMITTED,
         "{COMMITTED} committed items added {added} journal entries"
+    );
+
+    let owner_updates: i64 = store
+        .writer_for_test()
+        .query_row(
+            "SELECT COUNT(*) FROM sync_journal WHERE seq>?1 AND entity_kind='owner_session'",
+            [baseline],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        owner_updates, 0,
+        "unchanged pooled timestamps publish nothing"
     );
 
     let mut batched = run_record("run-batched-amplification");
@@ -390,10 +442,12 @@ fn committed_conversation_items_have_linear_or_better_journal_amplification() {
         })
         .unwrap()
         - before_batch;
-    assert!(
-        batch_added <= 2,
-        "one transaction with {COMMITTED} items added {batch_added} entries"
+    assert_eq!(
+        batch_added, 3,
+        "the batch publishes agent, inbox, and exactly one first owner activity fact"
     );
+    let batch_owner_updates: i64 = store.writer_for_test().query_row("SELECT COUNT(*) FROM sync_journal WHERE seq>?1 AND entity_kind='owner_session' AND entity_key=?2",rusqlite::params![before_batch,batched.id],|row|row.get(0)).unwrap();
+    assert_eq!(batch_owner_updates, 1);
 }
 
 #[test]

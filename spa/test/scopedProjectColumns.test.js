@@ -43,5 +43,36 @@ it("refreshes cached columns after rename, addition and reordering while preserv
   const callRpc = vi.fn(async () => ({ columns }));
   await refreshScopedProjectColumns(options(callRpc));
   expect(callRpc).toHaveBeenCalledExactlyOnceWith("tasks.columns", { project_id: "p1" });
-  expect(await tracker.readTasksRecord("d1", "p1")).toEqual({ tasks: [held], read_order: 123, columns });
+  expect(await tracker.readTasksRecord("d1", "p1")).toMatchObject({ tasks: [held], read_order: 123, columns });
+});
+it("keeps newer columns when an older concurrent metadata reply lands last", async () => {
+  const address = tracker.tasksAddress("d1", "p1"), task = { id: "held-task" };
+  await cache.writeCached(address, { tasks: [task], read_order: 123, columns: [{ id: "ready", name: "Ready" }] });
+  let releaseOlder;
+  const olderRpc = vi.fn(() => new Promise((resolve) => { releaseOlder = resolve; }));
+  const older = refreshScopedProjectColumns(options(olderRpc));
+  await vi.waitFor(() => expect(olderRpc).toHaveBeenCalled());
+  const columns = [{ id: "custom", name: "Custom" }, { id: "ready", name: "Renamed" }];
+  expect(await refreshScopedProjectColumns(options(async () => ({ columns })))).toBe(true);
+  const newer = await tracker.readTasksRecord("d1", "p1");
+  releaseOlder({ columns: [{ id: "ready", name: "Old name" }] });
+  expect(await older).toBe(false);
+  expect(await tracker.readTasksRecord("d1", "p1")).toEqual(newer);
+  expect(newer).toMatchObject({ tasks: [task], read_order: 123, columns });
+  expect(newer.columns_read_order).toBeGreaterThan(123);
+});
+it("retains the column ordering clock across a legacy whole-list replacement", async () => {
+  const address = tracker.tasksAddress("d1", "p1"), task = { id: "held-task" };
+  let releaseOlder;
+  const olderRpc = vi.fn(() => new Promise((resolve) => { releaseOlder = resolve; }));
+  const older = refreshScopedProjectColumns(options(olderRpc));
+  await vi.waitFor(() => expect(olderRpc).toHaveBeenCalled());
+  const columns = [{ id: "custom", name: "Latest columns" }];
+  expect(await refreshScopedProjectColumns(options(async () => ({ columns })))).toBe(true);
+  // Legacy task-list publication replaces the list value without the helper's
+  // metadata field; it must not erase independently committed column authority.
+  await cache.writeCached(address, { tasks: [task], read_order: 456, columns });
+  releaseOlder({ columns: [{ id: "old", name: "Obsolete columns" }] });
+  expect(await older).toBe(false);
+  expect(await tracker.readTasksRecord("d1", "p1")).toEqual({ tasks: [task], read_order: 456, columns });
 });

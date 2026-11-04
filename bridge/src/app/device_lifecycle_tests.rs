@@ -94,6 +94,8 @@ async fn lifecycle_observation_failed_reopen_does_not_starve_later_workspace_or_
     let (root,mut app,store)=fixture();
     let pair=[observation_workspace(&mut app,"first-finished"),observation_workspace(&mut app,"second-finished")];
     app.refresh_workspace_snapshot_observations();
+    app.initialize_snapshot_projection();
+    app.initialize_read_context();
     for original in &pair {
         let mut workspace=app.workspaces.get(&original.id).unwrap().clone();
         workspace.status=crate::workspace::WorkspaceStatus::Finished;
@@ -102,8 +104,8 @@ async fn lifecycle_observation_failed_reopen_does_not_starve_later_workspace_or_
         std::fs::write(workspace.root.join(crate::workspace::MANIFEST_FILE),serde_json::to_vec(&workspace).unwrap()).unwrap();
     }
     app.workspaces.reload().unwrap();
-    app.initialize_snapshot_projection();
-    app.initialize_read_context();
+    // Startup itself refreshes workspaces, so install stale proofs afterwards.
+    app.initialize_device_lifecycle().unwrap();
     let observations=app.workspaces.observe_finished_local();
     assert_eq!(observations.len(),2);
     let failed=app.workspaces.get(&observations[0]).unwrap().clone();

@@ -78,6 +78,8 @@ const VIEW_IDS = new Set([DASHBOARD_VIEW, LIST_VIEW, BOARD_VIEW]);
 const retireTaskRowHeader = (tasks, taskId) => (tasks || []).map((task) =>
   task.id === taskId ? retireTaskContent(task, "header") : task);
 const LEGACY_QUERY_FIELDS = new Set(["project_id", "state", "status", "label", "assignee"]);
+const LEGACY_QUERY_KEY_LIMIT = 32;
+const LEGACY_QUERY_RECORD_LIMIT = 8;
 
 function legacyPaneQueryParams(sub, canonical) {
   try {
@@ -88,17 +90,29 @@ function legacyPaneQueryParams(sub, canonical) {
   } catch { return null; }
 }
 
+const validLegacyPaneQuery = (cached) => Array.isArray(cached?.value?.tasks)
+  && cached.value.tasks.every((task) => typeof task?.id === "string" && task.id.length > 0);
+
+async function readLegacyPaneQueries(deviceId, projectId, aliases) {
+  let newest;
+  for (const params of aliases.slice(0, LEGACY_QUERY_RECORD_LIMIT)) {
+    const cached = await readTasksQueryCached(deviceId, projectId, params);
+    if (!validLegacyPaneQuery(cached)) continue;
+    if (!newest || listAskedAt(cached) > listAskedAt(newest.cached)) newest = { cached, params };
+  }
+  return newest;
+}
+
 async function readCachedPaneQuery(deviceId, projectId, params) {
   const canonical = await readTasksQueryCached(deviceId, projectId, params);
   if (canonical) return { cached: canonical, params };
   // Read matching pre-canonical cache addresses without copying their bytes
   // into a newer authority. Their read order and actual origin remain intact.
-  const subs = await cachedSubKeys(deviceId, projectId, TRACKER_TASKS_QUERY_KIND);
+  // The fallback window bounds both storage enumeration and deserialization:
+  // at most 32 keys and eight matching record attempts, read one at a time.
+  const subs = await cachedSubKeys(deviceId, projectId, TRACKER_TASKS_QUERY_KIND, LEGACY_QUERY_KEY_LIMIT);
   const aliases = subs.map((sub) => legacyPaneQueryParams(sub, params)).filter(Boolean);
-  const candidates = await Promise.all(aliases.map(async (alias) => ({ params: alias,
-    cached: await readTasksQueryCached(deviceId, projectId, alias) })));
-  const legacy = candidates.filter(({ cached }) => cached)
-    .sort((left, right) => listAskedAt(right.cached) - listAskedAt(left.cached))[0];
+  const legacy = await readLegacyPaneQueries(deviceId, projectId, aliases);
   // A journal publication may have arrived while a legacy read was waiting.
   const current = await readTasksQueryCached(deviceId, projectId, params);
   return current ? { cached: current, params } : legacy;

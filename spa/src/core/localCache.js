@@ -673,10 +673,12 @@ export async function cachedEntityIds(deviceId) {
 }
 
 /** The sub-keys one entity holds under one kind — for the sync layer, whose
- *  question is "which conversations were ever warmed here". */
-export async function cachedSubKeys(deviceId, entityId, kind) {
+ *  question is "which conversations were ever warmed here". Optional count
+ *  limits enumeration inside IndexedDB; omitted, the complete set is read. */
+export async function cachedSubKeys(deviceId, entityId, kind, count) {
   const prefix = `${encodeURIComponent(deviceId)}|${encodeURIComponent(entityId)}|${encodeURIComponent(kind)}|`;
-  const keys = (await inStore("readonly", (store) => store.getAllKeys(prefixRange(prefix)))) || [];
+  const keys = (await inStore("readonly", (store) => count === undefined
+    ? store.getAllKeys(prefixRange(prefix)) : store.getAllKeys(prefixRange(prefix), count))) || [];
   return keys.map((key) => decodeURIComponent(String(key).slice(prefix.length)));
 }
 

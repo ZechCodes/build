@@ -195,6 +195,56 @@ it("retains a committed changes cursor when the opening ends before publication 
   expect(await ids()).toEqual(["task-3", "task-2", "task-1"]);
 });
 
+it.each(["publish", "reset"])("keeps the newer opening's position after a late successful %s return", async (method) => {
+  const store = fake.stores[0], operation = store[method], committed = deferred(), held = deferred();
+  vi.spyOn(store, method).mockImplementationOnce(async (options) => {
+    const saved = await operation(options);
+    expect(saved).toBe(true);
+    committed.resolve();
+    await held.promise;
+    return saved;
+  });
+  if (method === "reset") fake.request.mockImplementationOnce(async () => ({
+    status: "resync_required", reason: "retention_expired", bridge_epoch: "e1",
+  }));
+  fake.head = 2;
+  const old = runtime.wakeScopedSync(deviceId);
+  await committed.promise;
+  expect((await local.readCached(cursorAddress))?.value.cursor).toBe(method === "publish" ? "C2" : undefined);
+  fake.head = 3; nextOpening(); await capture();
+  expect((await local.readCached(cursorAddress)).value.cursor).toBe("C3");
+  const snapshotCount = snapshots().length;
+  held.resolve(); await old;
+  const before = fake.request.mock.calls.length;
+  fake.head = 4; nextOpening(); await capture();
+  expect(fake.request.mock.calls.slice(before).map(([, name]) => name)).toEqual(["sync.changes"]);
+  expect(fake.request.mock.calls[before][2].cursor).toBe("C3");
+  expect(snapshots()).toHaveLength(snapshotCount);
+  expect(await ids()).toEqual(["task-4", "task-3", "task-2", "task-1"]);
+});
+
+it("cannot authorize an externally restored cursor with a late successful old-opening return", async () => {
+  const store = fake.stores[0], publish = store.publish, committed = deferred(), held = deferred();
+  vi.spyOn(store, "publish").mockImplementationOnce(async (batch) => {
+    const saved = await publish(batch);
+    expect(saved).toBe(true);
+    committed.resolve(); await held.promise;
+    return saved;
+  });
+  fake.head = 2;
+  const old = runtime.wakeScopedSync(deviceId);
+  await committed.promise;
+  const older = await local.readCached(cursorAddress);
+  fake.head = 3; nextOpening(); await capture();
+  expect((await local.readCached(cursorAddress)).value.cursor).toBe("C3");
+  await local.writeCached(cursorAddress, older.value);
+  held.resolve(); await old;
+  const before = fake.request.mock.calls.length;
+  fake.head = 4; nextOpening(); await capture();
+  expect(fake.request.mock.calls[before][1]).toBe("sync.snapshot");
+  expect(fake.request.mock.calls.slice(before).some(([, , params]) => params.cursor === "C2")).toBe(false);
+});
+
 it("obeys bridge resync_required after a reconnect", async () => {
   fake.request.mockImplementationOnce(async () => ({ status: "resync_required", reason: "retention_expired", bridge_epoch: "e2" }));
   const before = fake.request.mock.calls.length;

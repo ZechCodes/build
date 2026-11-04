@@ -4316,6 +4316,7 @@ gate attachment display.
   context, cache scope and bridge identity remain unchanged. The next request
   opening resumes only from this engine's own last committed cursor; an
   opening ending after commit does not discard that committed position. An
+  older opening's late completion cannot replace a newer opening's position. An
   externally replaced position fails closed to a snapshot. A bridge-requested
   resync still snapshots that scope. Request openings separately fence replies,
   staged pages and publication/reset transactions to the current session and
@@ -4328,6 +4329,9 @@ gate attachment display.
   from older builds remain readable through equivalent raw query addresses
   when no canonical record exists, preserving their original read order and
   content origin without migrating or overwriting newer canonical data.
+  Each fallback scans at most thirty-two keys and reads at most eight matching
+  legacy records sequentially, choosing the newest valid record inside that
+  window. Records outside the window wait for the ordinary canonical fetch.
   Page records retain their originating wire params. UI-only saves retain the scope's
   registration and cache subscription; a
   real query change acquires its next registration before releasing the old.

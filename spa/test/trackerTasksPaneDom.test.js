@@ -7,7 +7,7 @@
 // param rather than a pass over what happens to be in hand.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 const durable = vi.hoisted(() => ({ owns: false, wake: vi.fn(async () => []), release: vi.fn(), register: vi.fn() }));
 vi.mock("../src/core/scopedSyncRuntime.js", () => ({
   scopedSyncOwns: () => durable.owns,
@@ -357,6 +357,75 @@ it("lets a canonical publication overtake an in-flight pre-upgrade raw query fal
     expect(titles()).toEqual(["Canonical overtook old cache"]);
     expect(call).not.toHaveBeenCalled();
   } finally { release(); spy.mockRestore(); }
+});
+
+it("bounds legacy fallback storage scans, record attempts and concurrency while selecting the newest valid in-window query", async () => {
+  durable.owns = true;
+  const canonical = { project_id: "proj-1", state: "open", label: "abcdef" };
+  for (let mask = 1; mask < 64; mask += 1) {
+    const label = [...canonical.label].map((letter, bit) => mask & 1 << bit ? letter.toUpperCase() : letter).join("");
+    await cache.writeCached(trackerCache.tasksQueryAddress("dev-1", "proj-1", { ...canonical, label }), { tasks: [] });
+  }
+  const keys = await cache.cachedSubKeys("dev-1", "proj-1", "tracker-tasks-query");
+  const ordered = keys.map((sub) => JSON.parse(sub));
+  for (const [index, params] of ordered.entries()) {
+    const rows = index === 4 ? "invalid list" : index === 6 ? [null]
+      : [task({ id: `budget-${index}`, title: `Legacy budget ${index}`, labels: [params.label], watched: false })];
+    await cache.writeCached(trackerCache.tasksQueryAddress("dev-1", "proj-1", params),
+      { tasks: rows, columns: columns(), read_order: index === 4 || index === 6 ? 100_000 : index < 8 ? index + 1 : 10_000 + index });
+  }
+  await mount();
+  const scans = [], attempts = [];
+  let active = 0, peak = 0;
+  const getAllKeys = IDBObjectStore.prototype.getAllKeys;
+  const scan = vi.spyOn(IDBObjectStore.prototype, "getAllKeys").mockImplementation(function(...args) {
+    const request = getAllKeys.apply(this, args);
+    if (String(args[0]?.lower).includes("|tracker-tasks-query|")) {
+      const seen = { count: args[1], results: null }; scans.push(seen);
+      request.addEventListener("success", () => { seen.results = request.result.length; });
+    }
+    return request;
+  });
+  const read = trackerCache.readTasksQueryCached;
+  const readAlias = vi.spyOn(trackerCache, "readTasksQueryCached").mockImplementation(async (deviceId, projectId, params) => {
+    if (params.label?.toLowerCase() !== canonical.label || params.label === canonical.label) return read(deviceId, projectId, params);
+    attempts.push(params); active += 1; peak = Math.max(peak, active);
+    try { await new Promise((resolve) => setTimeout(resolve, 5)); return await read(deviceId, projectId, params); }
+    finally { active -= 1; }
+  });
+  try {
+    const { uiAddress, updateUiState } = await import("../src/core/localUiState.js");
+    await updateUiState(uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" }),
+      () => ({ view: "list", filters: { state: "open", label: canonical.label } }));
+    await vi.waitFor(() => expect(attempts.length).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(active).toBe(0));
+    expect(scans).toEqual([{ count: 32, results: 32 }]);
+    expect(attempts).toEqual(ordered.slice(0, 8));
+    expect(peak).toBe(1);
+    await vi.waitFor(() => expect(titles()).toEqual(["Legacy budget 7"]));
+    expect(call).not.toHaveBeenCalled();
+  } finally { scan.mockRestore(); readAlias.mockRestore(); }
+});
+
+it("leaves legacy matches beyond the bounded key window for normal canonical recovery", async () => {
+  durable.owns = true;
+  const canonical = { project_id: "proj-1", state: "open", label: "zzz" };
+  for (let index = 0; index < 40; index += 1) {
+    await cache.writeCached(trackerCache.tasksQueryAddress("dev-1", "proj-1", { ...canonical, label: `A${String(index).padStart(3, "0")}` }), { tasks: [] });
+  }
+  await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", { ...canonical, label: "Zzz" },
+    trackerCache.tasksRecord([task({ id: "outside-window", title: "Outside the fallback window", labels: ["Zzz"] })], columns(), 5000));
+  await mount();
+  const { uiAddress, updateUiState } = await import("../src/core/localUiState.js");
+  await updateUiState(uiAddress({ deviceId: "dev-1", entityId: "proj-1", view: `tasks:${PROJECT_KEY}`, kind: "filters" }),
+    () => ({ view: "list", filters: { state: "open", label: canonical.label } }));
+  await flush();
+  expect(titles()).toEqual([]);
+  expect(notifyError).not.toHaveBeenCalled();
+  expect(durable.wake).toHaveBeenCalled();
+  await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", canonical,
+    trackerCache.tasksRecord([task({ id: "canonical-window", title: "Canonical recovery result", labels: ["Zzz"] })], columns(), 6000));
+  await vi.waitFor(() => expect(titles()).toEqual(["Canonical recovery result"]));
 });
 
 it.each(["query", "whole list"])("continues after rejected display hydration from the %s subscription", async (source) => {

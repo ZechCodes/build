@@ -4314,10 +4314,13 @@ gate attachment display.
   ordering clock independently of task membership. Column refresh never writes
   the task list or enters its queue, so a filter switch cannot wait on its own
   task phase and a second tab cannot retire an in-flight list's baseline.
-  List readers overlay canonical columns in one cache transaction; list and
-  page publication merge those columns inside their publication transaction.
-  Column painters subscribe to that separate record. Existing list columns
-  remain a fallback until the first metadata refresh. Task
+  List readers overlay canonical columns onto real task lists in one cache
+  transaction; columns alone never manufacture an empty task list. List and
+  page publication merge current columns inside their publication transaction.
+  Column painters use an independent metadata reader and subscription, without
+  changing task catalogues; existing embedded list columns remain a fallback.
+  Legacy column helpers share that reader to avoid refetching cold metadata.
+  Task
   heads contain summary and timeline data; an engine-owned detail reader
   supplies body fields through their own task-content authority. Inbox and
   directory recovery keep the ordered pass; no device scope is advertised.

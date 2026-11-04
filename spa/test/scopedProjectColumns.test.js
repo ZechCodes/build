@@ -101,9 +101,22 @@ it("keeps a task-content baseline unchanged when another writer changes columns"
   expect(projected.value).toMatchObject({ tasks: [{ id: "held-task" }], read_order: 123, columns });
 });
 
-it("renders columns-only cold support without claiming a task-list observation", async () => {
+it("keeps task-list readers cold when only project columns exist", async () => {
   const columns = [{ id: "custom", name: "Changed" }];
   expect(await refreshScopedProjectColumns(options(async () => ({ columns })))).toBe(true);
   expect(await cache.readCanonicalCached(tracker.tasksAddress("d1", "p1"))).toBeUndefined();
-  expect(await tracker.readTasksCached("d1", "p1")).toMatchObject({ at: 0, value: { tasks: [], read_order: -1, columns } });
+  expect(await tracker.readTasksRecord("d1", "p1")).toBeNull();
+  expect(await tracker.readTasksCached("d1", "p1")).toBeNull();
+});
+
+
+it("reads display columns independently and falls back to a real list's embedded columns", async () => {
+  const { readProjectColumns, projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+  expect(await readProjectColumns("d1", "p1")).toBeNull();
+  const embedded = [{ id: "old", name: "Embedded" }];
+  await cache.writeCached(tracker.tasksAddress("d1", "p1"), { tasks: [], columns: embedded });
+  expect(await readProjectColumns("d1", "p1")).toEqual(embedded);
+  const columns = [{ id: "new", name: "Canonical" }];
+  await cache.writeCached(projectColumnsAddress("d1", "p1"), { columns, columns_read_order: 1 });
+  expect(await readProjectColumns("d1", "p1")).toEqual(columns);
 });

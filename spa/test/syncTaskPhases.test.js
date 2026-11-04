@@ -144,7 +144,7 @@ describe("scoped task phase ownership", () => {
     await pass.rest("p1");
     expect(ask.mock.calls.filter(([, method]) => method === "tasks.list")).toHaveLength(0);
     expect(scoped.wake).toHaveBeenCalled();
-    expect(await trackerCache.readTasksRecord("dev-1", "p1")).toMatchObject({ tasks: [] });
+    expect(await trackerCache.readTasksRecord("dev-1", "p1")).toBeNull();
   });
   it("keeps the page walk when durable recovery does not own the project", async () => {
     const { pass, ask } = fixture();
@@ -159,7 +159,9 @@ it("retains custom cold board columns while scoped recovery owns membership", as
   const { pass, ask } = fixture({ "tasks.columns": () => ({ columns: [{ id: "custom", name: "Custom" }] }) });
   await pass.first("p1");
   expect(ask.mock.calls.filter(([, method]) => method === "tasks.columns")).toHaveLength(1);
-  expect(await trackerCache.readTasksRecord("dev-1", "p1")).toMatchObject({ tasks: [], columns: [{ id: "custom", name: "Custom" }] });
+  expect(await trackerCache.readTasksRecord("dev-1", "p1")).toBeNull();
+  const { readProjectColumns } = await import("../src/core/projectColumnsCache.js");
+  expect(await readProjectColumns("dev-1", "p1")).toEqual([{ id: "custom", name: "Custom" }]);
   expect(ask.mock.calls.filter(([, method]) => method === "tasks.list")).toHaveLength(0);
 });
 it("refreshes independent review metadata after scoped catch-up finishes", async () => {
@@ -185,5 +187,19 @@ it("keeps refreshed columns published between the first task page and its contin
   const columns = [{ id: "custom", name: "New column" }, { id: "backlog", name: "Renamed" }];
   await local.writeCached(address, { ...held, columns });
   expect(await pass.rest("p1")).toBe(true);
+  expect((await trackerCache.readTasksRecord("dev-1", "p1")).columns).toEqual(columns);
+});
+
+
+it("uses columns-only support for a cold legacy pass without refetching metadata", async () => {
+  paging = false;
+  const local = await import("../src/core/localCache.js");
+  const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+  const columns = [{ id: "custom", name: "Cached metadata" }];
+  await local.writeCached(projectColumnsAddress("dev-1", "p1"), { columns, columns_read_order: 1 });
+  expect(await trackerCache.readTasksRecord("dev-1", "p1")).toBeNull();
+  const { pass, ask } = fixture();
+  await pass.first("p1");
+  expect(ask.mock.calls.filter(([, method]) => method === "tasks.columns")).toHaveLength(0);
   expect((await trackerCache.readTasksRecord("dev-1", "p1")).columns).toEqual(columns);
 });

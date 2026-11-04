@@ -1809,3 +1809,38 @@ it("repaints mounted board columns from a columns-only cache publication", async
   expect(cardsIn("backlog")).toEqual([held.id]);
   expect(listed("tasks.list")).toHaveLength(0);
 });
+it("keeps an offline filtered catalogue through columns-only updates without a whole-list record", async () => {
+  durable.owns = true;
+  const bug = task({ id: "cached-bug", number: 8, title: "Cached bug", status: "backlog", labels: ["bug"] });
+  const docs = task({ id: "cached-docs", number: 7, title: "Cached docs", status: "backlog", labels: ["docs"] });
+  await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", { project_id: "proj-1", state: "open" },
+    trackerCache.tasksRecord([bug, docs], columns(), 100));
+  await mount();
+  expect(titles()).toEqual(["Cached bug", "Cached docs"]);
+  await openMenu("label");
+  expect(menuLabels("label")).toContain("bug");
+  menuPress("label").click();
+  await flush();
+  const whole = trackerCache.tasksAddress("dev-1", "proj-1");
+  expect(await cache.readCanonicalCached(whole)).toBeUndefined();
+  const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+  await cache.writeCached(projectColumnsAddress("dev-1", "proj-1"), {
+    columns: [{ id: "custom", name: "New column" }, { id: "backlog", name: "Queued" }], columns_read_order: Date.now(),
+  });
+  await openMenu("status");
+  await vi.waitFor(() => expect(menuLabels("status")).toContain("Queued"));
+  await openMenu("label");
+  expect(menuLabels("label")).toContain("bug");
+  expect(menuLabels("label")).toContain("docs");
+  host.querySelector('[data-task-view="board"]').click();
+  await flush();
+  expect(columnNames()).toEqual(["New column", "Queued"]);
+  expect(cardsIn("backlog")).toEqual([bug.id, docs.id]);
+  await chooseFilter("label", "bug");
+  expect(cardsIn("backlog")).toEqual([bug.id]);
+  host.querySelector('[data-task-view="list"]').click();
+  await flush();
+  expect(titles()).toEqual(["Cached bug"]);
+  expect(await cache.readCanonicalCached(whole)).toBeUndefined();
+  expect(call).not.toHaveBeenCalled();
+});

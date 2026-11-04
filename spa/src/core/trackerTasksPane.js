@@ -1,4 +1,4 @@
-import { projectColumnsAddress } from "./projectColumnsCache.js";
+import { projectColumnsAddress, readProjectColumns } from "./projectColumnsCache.js";
 import { registerScopedSync, projectSyncScope } from "./scopedSyncRegistry.js";
 import { scopedSyncOwns, wakeScopedSync } from "./scopedSyncRuntime.js";
 import { agentModelsFromFeed } from "./agentModelBadge.js";
@@ -431,7 +431,6 @@ export function mountTasksPane(host, options) {
     const { at, value: record } = cached;
     state.unscoped = sortTasks(record.tasks);
     state.all = kept(state.unscoped);
-    state.columns = columnsOf(record.columns);
     state.wholeAsked = listAskedAt(cached);
     if (!queryLoaded || wholeListIsNewer()) {
       state.unscopedShown = filterTasks(state.unscoped, shownFilters());
@@ -445,11 +444,20 @@ export function mountTasksPane(host, options) {
     paint();
   }
 
+  let columnsReadSerial = 0;
+  async function paintColumnsFromCache() {
+    const serial = ++columnsReadSerial;
+    const columns = await readProjectColumns(state.deviceId, state.projectId);
+    if (state.disposed || serial !== columnsReadSerial) return;
+    state.columns = columnsOf(columns);
+    paint();
+  }
   const wholeListWatcher = subscribeCache(tasksAddress(state.deviceId, state.projectId), () => {
     void paintFromCache();
+    void paintColumnsFromCache();
   });
   const columnsWatcher = subscribeCache(projectColumnsAddress(state.deviceId, state.projectId), () => {
-    void paintFromCache();
+    void paintColumnsFromCache();
   });
 
   async function paintUserSession() {
@@ -858,7 +866,7 @@ export function mountTasksPane(host, options) {
     paint();
     watchQuery();
     void paintUserSession();
-    void paintFromCache().then(() => refresh());
+    void Promise.all([paintFromCache(), paintColumnsFromCache()]).then(() => refresh());
   });
   // The view has no timer. Durable scopes use the engine's 30-second head
   // checks; legacy reads follow pushes. The tab hears that a task of

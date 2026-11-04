@@ -2816,3 +2816,23 @@ it.each([false, true])("keeps refreshed scoped columns after a held legacy task 
     expect((await read("p1", "tracker-tasks"))?.value?.columns).toEqual(columns);
   } finally { releaseList({ tasks: [task, created] }); releaseScope?.(); paged.mockRestore(); vi.unstubAllGlobals(); }
 });
+
+
+it("uses columns-only support for a cold pushed task read without refetching metadata", async () => {
+  script["project.list"] = () => ({ projects: [] });
+  await boot([]);
+  const tracker = await import("../src/core/trackerCache.js");
+  const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+  const columns = [{ id: "custom", name: "Cached metadata" }];
+  await cache.writeCached(projectColumnsAddress("dev-1", "p1"), { columns, columns_read_order: 1 });
+  expect(await tracker.readTasksRecord("dev-1", "p1")).toBeNull();
+  const created = trackerTask({ id: "cold-project-task", number: 1 });
+  script["tasks.list"] = () => ({ tasks: [created] });
+  bridge.call.mockClear();
+  await registeredWatchers.find((watcher) => watcher.id === "s-inbox").onChanges([
+    { entity_id: "p1", tasks: { task_ids: [created.id] } },
+  ]);
+  expect(calls("tasks.columns")).toHaveLength(0);
+  expect((await tracker.readTasksRecord("dev-1", "p1"))?.columns).toEqual(columns);
+  expect((await tracker.readTasksRecord("dev-1", "p1"))?.tasks.map((task) => task.id)).toEqual([created.id]);
+});

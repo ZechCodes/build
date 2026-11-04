@@ -1,10 +1,11 @@
 // Task pages share one walk across the open project's first page and the
 // inbox phase. Both phases use the sync layer's task-read serialization;
 // pages still land, read back and fold through trackerPages' authority rules.
+import { readProjectColumns } from "./projectColumnsCache.js";
 import { projectScopedSyncOwns, scopedSyncWriter, wakeScopedSync } from "./scopedSyncRuntime.js";
 import { createTaskPagePull, foldTasksPage, pagesTasks } from "./trackerPages.js";
 import { captureTaskContentRead, observeTaskContent } from "./taskContentAuthority.js";
-import { readTasksRecord, tasksAddress, tasksRecord, writeTasksRecord } from "./trackerCache.js";
+import { tasksAddress, tasksRecord, writeTasksRecord } from "./trackerCache.js";
 import { refreshScopedProjectColumns } from "./scopedProjectColumns.js";
 import { writeListedUserSession } from "./userSessionCache.js";
 
@@ -15,8 +16,8 @@ export const taskReadScope = (context, projectId, params = {}) => ({
 });
 
 async function projectColumns(context, projectId, ask, priority) {
-  const held = await readTasksRecord(context.deviceId, projectId);
-  if (held?.columns?.length) return held.columns;
+  const held = await readProjectColumns(context.deviceId, projectId);
+  if (held) return held;
   if (!context.active()) return [];
   return (await ask(context, "tasks.columns", { project_id: projectId }, priority, taskReadScope(context, projectId)))?.columns || [];
 }

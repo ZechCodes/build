@@ -1,4 +1,4 @@
-import { projectColumnsAddress } from "./projectColumnsCache.js";
+import { projectColumnsAddress, readProjectColumns } from "./projectColumnsCache.js";
 import { registerScopedSync, taskSyncScope } from "./scopedSyncRegistry.js";
 import { scopedSyncOwns, wakeScopedSync } from "./scopedSyncRuntime.js";
 // One task's page, mounted.
@@ -25,7 +25,6 @@ import {
   taskRecord,
   taskRecordAt,
   readTaskRecord,
-  readTasksRecord,
   writeTaskRecord,
 } from "./trackerCache.js";
 import { readCached, readCachedMany, subscribeCache } from "./localCache.js";
@@ -693,9 +692,9 @@ export function mountTaskPage(host, options) {
   let columnsReadSerial = 0;
   async function paintFromCache() {
     const columnsSerial = ++columnsReadSerial;
-    const [cached, list, at, checklistSupported, waitingOnSupported] = await Promise.all([
+    const [cached, columns, at, checklistSupported, waitingOnSupported] = await Promise.all([
       readTaskRecord(state.deviceId, state.projectId, state.taskId),
-      readTasksRecord(state.deviceId, state.projectId),
+      readProjectColumns(state.deviceId, state.projectId),
       taskRecordAt(state.deviceId, state.projectId, state.taskId),
       readTaskChecklistSupport(state.deviceId),
       readTaskWaitingOnSupport(state.deviceId),
@@ -703,7 +702,7 @@ export function mountTaskPage(host, options) {
     if (state.disposed) return;
     state.checklistSupported = checklistSupported;
     state.waitingOnSupported = waitingOnSupported;
-    if (columnsSerial === columnsReadSerial) state.columns = columnsOf(list?.columns);
+    if (columnsSerial === columnsReadSerial) state.columns = columnsOf(columns);
     if (!cached?.task || state.task) return;
     take(cached, { live: false });
     reads.seen(at); // this copy is as old as the cache's stamp, not as old as now
@@ -712,9 +711,9 @@ export function mountTaskPage(host, options) {
 
   async function paintColumnsFromCache() {
     const serial = ++columnsReadSerial;
-    const list = await readTasksRecord(state.deviceId, state.projectId);
+    const columns = await readProjectColumns(state.deviceId, state.projectId);
     if (state.disposed || serial !== columnsReadSerial) return;
-    state.columns = columnsOf(list?.columns);
+    state.columns = columnsOf(columns);
     paint();
   }
   const columnsWatcher = subscribeCache(projectColumnsAddress(state.deviceId, state.projectId), () => {

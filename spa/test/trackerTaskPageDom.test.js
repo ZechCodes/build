@@ -1866,3 +1866,23 @@ it("repaints mounted task status choices from a columns-only cache publication",
   expect(host.querySelector("#task-status").value).toBe("in_progress");
   expect(listed("tasks.get")).toHaveLength(0);
 });
+it("reads offline task status choices independently of a missing whole-list record", async () => {
+  durable.owns = true;
+  const local = await import("../src/core/localCache.js");
+  const { projectColumnsAddress } = await import("../src/core/projectColumnsCache.js");
+  const whole = trackerCache.tasksAddress("dev-1", "proj-1");
+  await local.deleteCached([whole]);
+  await local.writeCached(trackerCache.taskAddress("dev-1", "proj-1", "task-1"), answerFor());
+  await local.writeCached(projectColumnsAddress("dev-1", "proj-1"), {
+    columns: [{ id: "in_progress", name: "Building" }], columns_read_order: 100,
+  });
+  await mount();
+  const labels = () => [...host.querySelectorAll("#task-status option")].map((option) => option.textContent);
+  expect(labels()).toEqual(["Building"]);
+  await local.writeCached(projectColumnsAddress("dev-1", "proj-1"), {
+    columns: [{ id: "custom", name: "New column" }, { id: "in_progress", name: "Updated" }], columns_read_order: 101,
+  });
+  await vi.waitFor(() => expect(labels()).toEqual(["New column", "Updated"]));
+  expect(await local.readCanonicalCached(whole)).toBeUndefined();
+  expect(call).not.toHaveBeenCalled();
+});

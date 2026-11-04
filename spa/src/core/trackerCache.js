@@ -423,9 +423,8 @@ async function readListCached(address) {
 export async function readTasksCached(deviceId, projectId) {
   const [record, columns] = await readCachedMany([tasksAddress(deviceId, projectId), projectColumnsAddress(deviceId, projectId)]);
   const value = record?.value, metadata = columns?.value;
-  if (!value && !Array.isArray(metadata?.columns)) return null;
-  const list = value || { tasks: [], read_order: -1 };
-  return { at: record?.at || 0, value: withProjectColumns(list, metadata) };
+  if (!value) return null;
+  return { at: record.at || 0, value: withProjectColumns(value, metadata) };
 }
 
 export const readTasksQueryCached = (deviceId, projectId, params) =>

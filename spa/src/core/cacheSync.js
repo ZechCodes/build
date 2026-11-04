@@ -1,3 +1,4 @@
+import { readProjectColumns } from "./projectColumnsCache.js";
 import { commitPatchParams } from "./commitDiffTarget.js";
 // The cache's sync layer: the one reader of the wire.
 //
@@ -988,8 +989,8 @@ async function readTasksNow(context, projectId) {
 
 /** The columns the cache holds for a project, or the bridge's the first time. */
 async function projectColumns(context, projectId) {
-  const held = await readTasksRecord(context.deviceId, projectId);
-  if (held?.columns?.length) return held.columns;
+  const held = await readProjectColumns(context.deviceId, projectId);
+  if (held) return held;
   return (await ask(context, "tasks.columns", { project_id: projectId }, "background", taskReadScope(context, projectId)))?.columns || [];
 }
 

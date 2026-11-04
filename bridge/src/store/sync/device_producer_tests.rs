@@ -346,3 +346,122 @@ fn implemented_device_sql_writers_have_common_transactional_hooks() {
     let task = include_str!("task_publication.rs");
     assert!(task.contains("Entity::new(\"inbox_task\", &id)"));
 }
+
+
+fn projection(store: &Store, kind: &str, id: &str) -> serde_json::Value {
+    let raw: String = store.writer_for_test().query_row(
+        "SELECT record FROM sync_projection WHERE kind=?1 AND key=?2 AND deleted=0",
+        rusqlite::params![kind,id], |row| row.get(0)).unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
+
+#[test]
+fn device_summary_ignores_status_progress_and_still_working() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let mut run = run_record("summary-stability");
+    run.agents[0].thread.post_user("durable question",None, AT);
+    store.save_run(&run).unwrap();
+    let id = run.agents[0].id.clone();
+    let before = projection(&store,"inbox_conversation",&id);
+    run.agents[0].thread.post_agent_progress("progress",None,"2026-01-01T01:00:00Z");
+    run.agents[0].thread.push_event(crate::thread::ThreadEventKind::ToolUse, Some("work".into()),None,None,"2026-01-01T02:00:00Z");
+    store.save_run(&run).unwrap();
+    assert_eq!(projection(&store,"inbox_conversation",&id),before,"ephemeral work changed summary");
+    run.agents[0].thread.post_agent("durable answer",None,"2026-01-01T03:00:00Z");
+    store.save_run(&run).unwrap();
+    let after = projection(&store,"inbox_conversation",&id);
+    assert_ne!(after,before,"negative control: handback must change summary");
+    assert_eq!(after["last_message_summary"],"durable answer");
+    assert_eq!(after["last_activity_ms"],1_767_236_400_000_i64);
+    assert_eq!(after["session_started_ms"],1_767_225_600_000_i64);
+    assert_eq!(after["unread_count"],1);
+}
+
+#[test]
+fn device_canonical_thread_changes_reach_every_alias_and_reset_transactionally() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let mut run = run_record("canonical");
+    let canonical = run.agents[0].id.clone();
+    store.save_run(&run).unwrap();
+    let mut alias = run_record("alias");
+    alias.agents[0].conversation_id=Some(canonical.clone());
+    let alias_id=alias.agents[0].id.clone();
+    store.save_run(&alias).unwrap();
+    let before=projection(&store,"inbox_conversation",&alias_id);
+    run.agents[0].thread.post_agent("answer",None,AT);
+    store.save_run(&run).unwrap();
+    assert_eq!(projection(&store,"inbox_conversation",&alias_id)["unread_count"],1);
+    assert_ne!(projection(&store,"inbox_conversation",&alias_id),before);
+    let mut unrelated=run_record("unrelated");
+    store.save_run(&unrelated).unwrap();
+    let quiet=projection(&store,"inbox_conversation",&alias_id);
+    unrelated.agents[0].thread.post_user("unrelated",None,AT);
+    store.save_run(&unrelated).unwrap();
+    assert_eq!(projection(&store,"inbox_conversation",&alias_id),quiet,"negative control: unrelated transcript leaked");
+    run.agents[0].thread=crate::thread::Thread::new(&canonical);
+    store.reset_conversation(&canonical,&run.agents,&HashMap::new(),&HashSet::from([run.id.clone()])).unwrap();
+    assert_eq!(projection(&store,"inbox_conversation",&alias_id)["unread_count"],0);
+}
+
+#[test]
+fn device_unread_counters_are_incremental_and_last_summary_uses_indexed_seek() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let mut run=run_record("counter");
+    run.agents[0].thread.post_agent("first",None,AT);
+    run.agents[0].thread.post_agent("second",None,AT);
+    store.save_run(&run).unwrap();
+    let id=run.agents[0].id.clone();
+    let nodes:i64=store.writer_for_test().query_row("SELECT COUNT(*) FROM device_attention_counts",[],|row|row.get(0)).unwrap();
+    assert!(nodes>0);
+    let mut attention=Attention::default();
+    attention.read_through(&id,1);
+    store.save_attention(&HashMap::from([(run.id.clone(),attention)]),&HashSet::from([run.id.clone()])).unwrap();
+    assert_eq!(projection(&store,"inbox_conversation",&id)["unread_count"],1);
+    let plan:String=store.writer_for_test().query_row("EXPLAIN QUERY PLAN SELECT sequence,item FROM thread_items INDEXED BY device_thread_summary WHERE agent_id=?1 AND (attention=1 OR (message=1 AND COALESCE(json_extract(item,'$.data.still_working'),0)=0)) ORDER BY sequence DESC LIMIT 1",[&id],|row|row.get(3)).unwrap();
+    assert!(plan.contains("SEARCH"),"{plan}");
+    run.agents[0].thread.items.clear();
+    store.save_run(&run).unwrap();
+    assert_eq!(projection(&store,"inbox_conversation",&id)["unread_count"],0,"negative control: deleting attention must subtract");
+}
+
+#[test]
+fn device_upgrade_backfills_existing_sql_sources_before_leases() {
+    let directory=tempfile::tempdir().unwrap();
+    let store=Store::new(directory.path()).unwrap();
+    let run=run_record("old-sql");
+    store.save_run(&run).unwrap();
+    {
+        let conn=store.writer_for_test();
+        conn.execute("DELETE FROM sync_projection",[]).unwrap();
+        conn.execute("DELETE FROM sync_projection_keys",[]).unwrap();
+        conn.execute("DELETE FROM meta WHERE key LIKE 'device_backfill%'",[]).unwrap();
+    }
+    drop(store);
+    let reopened=Store::new(directory.path()).unwrap();
+    assert_eq!(projection(&reopened,"agent",&run.agents[0].id)["id"],run.agents[0].id);
+    assert!(reopened.writer().admit_device_lease("upgrade","epoch",NOW).is_ok());
+    let head:i64=reopened.writer_for_test().query_row("SELECT head FROM sync_state",[],|row|row.get(0)).unwrap();
+    drop(reopened);
+    let unchanged=Store::new(directory.path()).unwrap();
+    assert_eq!(unchanged.writer_for_test().query_row("SELECT head FROM sync_state",[],|row|row.get::<_,i64>(0)).unwrap(),head,"negative control: completed backfill must be quiet");
+}
+
+#[test]
+fn device_delivery_ack_and_terminal_attention_publish_durable_summary_changes() {
+    let directory=tempfile::tempdir().unwrap();
+    let store=Store::new(directory.path()).unwrap();
+    let mut run=run_record("delivery");
+    run.agents[0].thread.post_user("queued question",None,AT);
+    let id=run.agents[0].id.clone();
+    store.save_run(&run).unwrap();
+    assert_eq!(projection(&store,"inbox_conversation",&id)["pending"],true);
+    store.set_legacy_delivery_status(&id,1,1,crate::thread::MessageDeliveryStatus::Sent).unwrap();
+    assert_eq!(projection(&store,"inbox_conversation",&id)["pending"],false);
+    store.acknowledge_native_legacy_messages(&id,1,1,"2026-01-01T00:01:00Z").unwrap();
+    assert_eq!(projection(&store,"inbox_conversation",&id)["pending"],false,"negative control: seen messages do not become pending");
+    store.save_terminal_interaction(&run.id,"2026-01-01T01:00:00Z",Some(AT),true,None).unwrap();
+    assert_eq!(projection(&store,"inbox_conversation",&id)["last_interaction_at"],"2026-01-01T01:00:00Z");
+}

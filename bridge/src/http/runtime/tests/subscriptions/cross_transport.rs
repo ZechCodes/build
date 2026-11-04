@@ -8,6 +8,7 @@ use std::time::Duration;
 mod admission;
 mod cancellation;
 mod drain;
+mod device_sync;
 mod fixture;
 mod load;
 mod reaping;

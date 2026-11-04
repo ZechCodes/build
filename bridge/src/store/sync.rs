@@ -271,3 +271,6 @@ mod startup_tests;
 mod task_producer_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod device_entry_tests;

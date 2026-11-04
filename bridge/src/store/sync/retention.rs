@@ -166,3 +166,7 @@ fn gc(tx: &Transaction<'_>, now: i64) -> Result<GcProgress, StoreError> {
     )?;
     Ok(progress)
 }
+
+#[cfg(test)]
+#[path = "retention_tests.rs"]
+mod tests;

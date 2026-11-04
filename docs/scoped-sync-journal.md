@@ -272,6 +272,18 @@ activity updates the owner and project pools and publishes their changed
 facts; unchanged summaries add no publication. The append tests pin both the
 per-table budget and its independence from retained history length.
 
+The `sync-journal-3` definition supports a binary rollback on the same store.
+An older definition invalidates only the new pin and pooled-session coverage;
+bounded, resumable cleanup and replay rebuild those facts from canonical data
+while preserving unrelated transcript backfill. The definition change also
+rotates the global sync incarnation: existing `project_tasks`, `task` and
+`device` cursors request a one-time resnapshot. An ordinary current-definition
+reopen preserves cursors and performs no coverage rebuild. Startup completes
+the rebuild before admitting readers or writers; incomplete coverage refuses
+device reads with retryable `sync_reconciling`, including existing page leases.
+The reverse project lookup has a covering index without additional append
+row writes.
+
 Copy-on-write history accounts for record bytes, identity and version metadata,
 including tombstones. Publication checks the 64 MiB retained-version limit
 before retaining another version; pressure advances the durable lease fence

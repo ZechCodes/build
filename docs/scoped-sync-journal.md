@@ -273,3 +273,7 @@ claims: reads, watches and unrelated git work do not delay reconciliation. A
 registry job releases its hold before final settlement, including handoffs to
 another registry stage. Attention saves compare old and new live domain records
 and re-project only added, removed or changed owners.
+Workspace persist and reopen errors are isolated to the failing workspace. Its
+reads retain the last committed registry state until a later refresh succeeds;
+other observations still publish and the pass settles the lifecycle marker.
+Failure to persist the pre-effect marker stops the pass before those writes.

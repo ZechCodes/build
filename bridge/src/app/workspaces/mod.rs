@@ -376,12 +376,17 @@ impl AppState {
         }
         self.mark_device_lifecycle_dirty()?;
         for workspace in capabilities {
-            self.workspaces.apply_local_capabilities(workspace)?;
+            let id = workspace.id.clone();
+            if let Err(error) = self.workspaces.apply_local_capabilities(workspace) {
+                eprintln!("device sync workspace refresh {id}: {error}");
+            }
         }
         // Capabilities can reveal a new repository in a finished directory.
         // Re-observe after applying them; the marker already covers this pass.
         for id in self.workspaces.observe_finished_local() {
-            self.workspaces.reopen(&id)?;
+            if let Err(error) = self.workspaces.reopen(&id) {
+                eprintln!("device sync workspace reopen {id}: {error}");
+            }
         }
         Ok(())
     }

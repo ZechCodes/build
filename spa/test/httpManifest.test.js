@@ -10,7 +10,8 @@ describe("reviewed REST manifest consumption", () => {
     expect(createHash("sha256").update(bytes).digest("hex")).toBe("4069a7f03574f870c2de796d1a6486dc24edc01c86974b7460053fee1c6da996");
     expect(createHttpRoutes(manifest).operationIds()).toEqual(manifest.transport.operation_ids);
     expect(createHttpRoutes(manifest).operationIds()).toContain("tasks_review_retryDelivery");
-    // Retirement removes agent tools; RPC routes stay for old clients' coded refusals.
+    // Wire 3.34 changes device result rows, not route placement or operation IDs.
+    // The reviewed manifest byte hash and count stay unchanged; OpenAPI refreshes hello.
     expect(manifest.operations).toHaveLength(153);
     for (const operation of ["tasks_review_snapshot", "tasks_review_act", "tasks_review_complete", "sync_head", "sync_snapshot", "sync_changes"]) {
       expect(createHttpRoutes(manifest).operationIds()).toContain(operation);

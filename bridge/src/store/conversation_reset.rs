@@ -60,6 +60,10 @@ impl Store {
                 tx.execute("INSERT INTO attention (entity_id, record) VALUES (?1, ?2) ON CONFLICT(entity_id) DO UPDATE SET record = ?2",
                     rusqlite::params![owner, serde_json::to_string(record).expect("attention serializes")])?;
             }
+            let mut owners:HashSet<String>=agents.iter().map(|agent|agent.owner_id.clone()).chain(summary_owners.iter().cloned()).collect();
+            let canonical=tx.prepare_cached("SELECT owner_id FROM agents WHERE id=?1")?.query_map([conversation_id],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
+            owners.extend(canonical);
+            super::sync::reset_device_sessions(tx,&owners)?;
             Ok(())
         })
     }

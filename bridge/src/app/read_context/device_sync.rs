@@ -258,3 +258,14 @@ fn device_error(error: SyncError) -> ApiError {
         other => super::sync_error(other),
     }
 }
+
+#[cfg(test)]
+mod device_334_tests {
+    use super::*;
+    #[test]
+    fn device_334_pending_coverage_retains_existing_retryable_fence_classification() {
+        let error = device_error(SyncError::Unavailable("sync_reconciling".into()));
+        assert!(error.retryable());
+        assert_eq!(error.message(), "sync_reconciling");
+    }
+}

@@ -1,3 +1,4 @@
+import { pullDeviceProjection } from "../core/scopedDeviceReads.js";
 import { scopedCompactionEditorHtml, mountScopedCompactionEditor } from "../core/scopedCompactionEditor.js";
 import { $ } from "../dom.js";
 import { notifyError } from "../core/notify.js";
@@ -227,7 +228,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     displayedDraft = { edits: saved.edits ?? {}, source: saved.source };
   }, { debounceMs: 180 });
   void readSupport();
-  void record.pull(async () => {
+  void pullDeviceProjection(deviceId, record, async () => {
     const listed = await callRpc("project.list");
     const project = (listed.projects || []).find((candidate) => candidate.project_id === projectId);
     if (!project) throw new Error("This project is no longer registered on this device.");

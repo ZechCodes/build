@@ -98,8 +98,8 @@ fn stale_epoch_and_incarnation_leases_do_not_consume_opening_quota() {
 }
 
 #[test]
-fn device_schema_is_version_23() {
-    assert_eq!(crate::store::SCHEMA_VERSION, 23);
+fn device_schema_is_version_24() {
+    assert_eq!(crate::store::SCHEMA_VERSION, 24);
 }
 
 #[tokio::test]
@@ -506,4 +506,101 @@ async fn device_candidate_budget_yields_through_a_tombstone_prefix() {
         .unwrap();
     assert_eq!(rest["records"][0]["key"], "survivor");
     assert!(rest.get("next").is_none());
+}
+
+#[tokio::test]
+async fn device_334_pending_coverage_fences_reads_continuations_and_lease_admission() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let scope = Scope::new(Stream::device(), json!({"kind":"device"}));
+    let lease = store
+        .writer()
+        .admit_device_lease("opening", "epoch", NOW)
+        .unwrap();
+    let mut read = store.read_pool().acquire_sync().await;
+    let token = read
+        .read(|tx| tx.sync_encode_continuation(&scope, "device_snapshot", json!({"position":1})))
+        .unwrap()
+        .unwrap();
+    store
+        .writer_for_test()
+        .execute(
+            "INSERT INTO meta(key,value) VALUES('device_334_cleanup_position','{}')",
+            [],
+        )
+        .unwrap();
+    read.read(|tx| {
+        let refused = |result: Result<(), SyncError>| assert!(matches!(result, Err(SyncError::Unavailable(ref reason)) if reason=="sync_reconciling"));
+        refused(tx.sync_head(&scope, None, "epoch", NOW).map(|_| ()));
+        refused(tx.sync_events(&scope, Sequence::ZERO, Sequence::ZERO, 1).map(|_| ()));
+        refused(tx.sync_device_snapshot(&lease.id, None, 1, "epoch", NOW).map(|_| ()));
+        refused(tx.sync_encode_continuation(&scope, "device_snapshot", json!({"position":1})).map(|_| ()));
+        refused(tx.sync_decode_continuation::<serde_json::Value>(&scope, "device_snapshot", &token).map(|_| ()));
+        let task = Scope::new(Stream::task("task-synthetic"), json!({"kind":"task","task_id":"task-synthetic"}));
+        tx.sync_head(&task, None, "epoch", NOW).unwrap();
+    }).unwrap();
+    for _ in 0..20 {
+        assert!(
+            matches!(store.writer().admit_device_lease("opening", "epoch", NOW), Err(SyncError::Unavailable(ref reason)) if reason=="sync_reconciling")
+        );
+    }
+    let leases: i64 = store
+        .writer_for_test()
+        .query_row("SELECT COUNT(*) FROM sync_leases", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(leases, 1, "fenced retries cannot consume lease quota");
+    store
+        .writer_for_test()
+        .execute(
+            "DELETE FROM meta WHERE key='device_334_cleanup_position'",
+            [],
+        )
+        .unwrap();
+    store
+        .writer()
+        .admit_device_lease("opening", "epoch", NOW)
+        .unwrap();
+}
+
+#[test]
+fn device_334_incomplete_coverage_fences_admission_without_cleanup_marker() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    for (key, incomplete, complete) in [
+        (
+            "device_owner_facts_334_position",
+            r#"{"key":"","done":false}"#,
+            r#"{"key":"","done":true}"#,
+        ),
+        (
+            "device_sessions_334_position",
+            r#"{"phase":2,"key":"","seq":0,"at":0,"source":0}"#,
+            r#"{"phase":6,"key":"","seq":0,"at":0,"source":0}"#,
+        ),
+    ] {
+        store
+            .writer_for_test()
+            .execute("UPDATE meta SET value=?2 WHERE key=?1", [key, incomplete])
+            .unwrap();
+        assert!(
+            matches!(store.writer().admit_device_lease("opening", "epoch", NOW), Err(SyncError::Unavailable(ref reason)) if reason=="sync_reconciling"),
+            "incomplete coverage must fence device reads: {key}"
+        );
+        store
+            .writer_for_test()
+            .execute("DELETE FROM meta WHERE key=?1", [key])
+            .unwrap();
+        assert!(
+            matches!(store.writer().admit_device_lease("opening", "epoch", NOW), Err(SyncError::Unavailable(ref reason)) if reason=="sync_reconciling"),
+            "missing coverage must fence device reads: {key}"
+        );
+        store
+            .writer_for_test()
+            .execute("INSERT INTO meta VALUES(?1,?2)", [key, complete])
+            .unwrap();
+    }
+    store
+        .writer()
+        .admit_device_lease("opening", "epoch", NOW)
+        .unwrap();
 }

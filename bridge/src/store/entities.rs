@@ -973,11 +973,11 @@ impl Store {
     pub fn clear_retained_project_messages(&self, project_id: &str) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
             super::secrets::retire_project_in(tx, project_id)?;
-            super::sync::clear_device_project(tx, project_id)?;
             tx.execute(
                 "DELETE FROM inbox_retained_messages WHERE project_id = ?1",
                 [project_id],
             )?;
+            super::sync::clear_device_project(tx, project_id)?;
             Ok(())
         })
     }
@@ -1216,6 +1216,7 @@ pub(super) fn write_task(
         ],
     )?;
     super::sync::seed_device_owner(tx, &record.id, &record.project_path, None)?;
+    super::sync::seed_device_pin(tx, &record.id, None)?;
     super::task_summaries::owner_refresh(tx, &record.id)
 }
 
@@ -1244,6 +1245,7 @@ pub(super) fn write_run(
         &record.project_path,
         Some(&record.worktree_path),
     )?;
+    super::sync::seed_device_pin(tx, &record.id, record.pinned_agent_id.as_deref())?;
     super::task_summaries::owner_refresh(tx, &record.id)
 }
 

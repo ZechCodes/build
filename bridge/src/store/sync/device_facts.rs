@@ -101,11 +101,48 @@ fn display(text: &Option<String>) -> Option<String> {
 }
 pub(super) fn install(conn: &Connection) -> Result<(), StoreError> {
     conn.execute_batch("CREATE TABLE IF NOT EXISTS device_agent_facts(agent_id TEXT PRIMARY KEY,record TEXT NOT NULL) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS device_owner_pins(owner_id TEXT PRIMARY KEY,pinned_agent_id TEXT) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS device_owner_projects(owner_id TEXT PRIMARY KEY,project_path TEXT NOT NULL,workspace_path TEXT) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS device_owners_project ON device_owner_projects(project_path,owner_id);
         CREATE INDEX IF NOT EXISTS device_owners_workspace ON device_owner_projects(workspace_path,owner_id);
         CREATE TABLE IF NOT EXISTS device_workspace_roots(root TEXT PRIMARY KEY,workspace_id TEXT NOT NULL) WITHOUT ROWID;")?;
     Ok(())
+}
+
+/// The recorded pin is owner authority, independent of roster order and role
+/// hints. A save publishes this beside both changed identity rows atomically.
+pub(in crate::store) fn seed_pin(
+    conn: &Connection,
+    owner: &str,
+    pin: Option<&str>,
+) -> Result<(), StoreError> {
+    if !pins_installed(conn)? {
+        return Ok(());
+    }
+    let changed = conn.prepare_cached("INSERT INTO device_owner_pins VALUES(?1,?2) ON CONFLICT(owner_id) DO UPDATE SET pinned_agent_id=?2 WHERE pinned_agent_id IS NOT excluded.pinned_agent_id")?
+        .execute(params![owner,pin])?;
+    if changed > 0 {
+        super::device_families::touch_retained(conn, "owner", owner)?;
+    }
+    Ok(())
+}
+
+fn pins_installed(conn: &Connection) -> Result<bool, StoreError> {
+    Ok(conn
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='device_owner_pins')",
+        )?
+        .query_row([], |row| row.get(0))?)
+}
+
+fn backfill_pin(conn: &Connection, owner: &str) -> Result<(), StoreError> {
+    let pin: Option<Option<String>> = conn
+        .prepare_cached(
+            "SELECT json_extract(record,'$.pinned_agent_id') FROM implementations WHERE id=?1",
+        )?
+        .query_row([owner], |row| row.get(0))
+        .optional()?;
+    seed_pin(conn, owner, pin.flatten().as_deref())
 }
 fn installed(conn: &Connection) -> Result<bool, StoreError> {
     Ok(conn
@@ -181,7 +218,7 @@ pub(super) fn backfill_owner(conn: &Connection, id: &str) -> Result<(), StoreErr
             seed_owner(conn, id, &project, workspace.as_deref())?;
         }
     }
-    Ok(())
+    backfill_pin(conn, id)
 }
 pub(in crate::store) fn forget_agent(conn: &Connection, id: &str) -> Result<(), StoreError> {
     if installed(conn)? {
@@ -195,6 +232,61 @@ pub(in crate::store) fn forget_owner(conn: &Connection, id: &str) -> Result<(), 
     if installed(conn)? {
         conn.prepare_cached("DELETE FROM device_owner_projects WHERE owner_id=?1")?
             .execute([id])?;
+        if pins_installed(conn)? {
+            conn.prepare_cached("DELETE FROM device_owner_pins WHERE owner_id=?1")?
+                .execute([id])?;
+        }
     }
     Ok(())
+}
+
+#[derive(Default, Deserialize, Serialize)]
+struct PinUpgradePosition {
+    key: String,
+    done: bool,
+}
+
+/// Upgrade 3.33 owners without restarting transcript backfill. Each committed
+/// chunk reads at most 128 compact owner skeletons, including empty rosters.
+pub(super) fn upgrade_pins(conn: &mut Connection) -> Result<(), StoreError> {
+    loop {
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='device_owner_facts_334_position'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut position: PinUpgradePosition = raw
+            .map(|raw| {
+                serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
+                    path: "device_owner_facts_334_position".into(),
+                    source,
+                })
+            })
+            .transpose()?
+            .unwrap_or_default();
+        if position.done {
+            return Ok(());
+        }
+        let tx = conn.transaction()?;
+        let owners = tx
+            .prepare_cached("SELECT id FROM implementations WHERE id>?1 ORDER BY id LIMIT 128")?
+            .query_map([&position.key], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for owner in &owners {
+            backfill_owner(&tx, owner)?;
+        }
+        let mut batch = super::PublicationBatch::default();
+        super::device_producers::collect(&tx, &mut batch)?;
+        batch.publish(&tx, super::now_ms())?;
+        if let Some(owner) = owners.last() {
+            position.key = owner.clone();
+        } else {
+            position.done = true;
+        }
+        tx.execute("INSERT INTO meta(key,value) VALUES('device_owner_facts_334_position',?1) ON CONFLICT(key) DO UPDATE SET value=?1",
+            [serde_json::to_string(&position).expect("pin upgrade position")])?;
+        tx.commit()?;
+    }
 }

@@ -265,9 +265,13 @@ export const projectInitial = (name) => (String(name || "").trim().slice(0, 1) |
  * none open, while they watch none of them; `projectAgentOnTheStrip` says when
  * the strip carries it at all.
  */
-export const projectPin = (agents, pinnedAgentId) => pinnedAgentId
-  ? agents.find((agent) => agent.id === pinnedAgentId)
-  : agents.find((agent) => agent.project_role === "coordinator") || (agents.length === 1 ? agents[0] : undefined);
+export function projectPin(agents, pinnedAgentId) {
+  if (pinnedAgentId !== undefined) return agents.find((agent) => agent.id === pinnedAgentId);
+  const coordinator = agents.find((agent) => agent.project_role === "coordinator");
+  // A recorded null role does not make a lone worker the coordinator. Older
+  // rows without role or pin fields keep their historical single-agent rule.
+  return coordinator || (agents.length === 1 && !Object.hasOwn(agents[0], "project_role") ? agents[0] : undefined);
+}
 
 const projectBubbleTooltip = (pin, unwatched) => {
   const facts = pin ? agentBubbleTooltip(pin, "Project agent") : {
@@ -277,7 +281,7 @@ const projectBubbleTooltip = (pin, unwatched) => {
   return { ...facts, watch: unwatched ? "Not watching" : "" };
 };
 
-export function projectAgentBubble({ name = "", entityId = null, agents = [], active = false, openAgentId = null, pinnedAgentId = null } = {}) {
+export function projectAgentBubble({ name = "", entityId = null, agents = [], active = false, openAgentId = null, pinnedAgentId } = {}) {
   const unwatched = projectAgentMarked(agents, active, openAgentId);
   return {
     type: "project",
@@ -326,23 +330,26 @@ export function projectAgentBubble({ name = "", entityId = null, agents = [], ac
  * agent this is. `projectName` is what that initial is cut from.
  */
 const BUBBLE_DEFAULTS = { agents: [], selectedId: null, selectedKind: "agent", kind: "branch", chatCapable: true,
-  canAdd: null, projectAgent: null, projectName: undefined, pinnedAgentId: null };
+  canAdd: null, projectAgent: null, projectName: undefined, pinnedAgentId: undefined };
 export function railBubbles(given = {}) {
   const options = { ...BUBBLE_DEFAULTS, ...given };
-  if (options.kind === "project" && options.pinnedAgentId) return projectWorkerBubbles(options);
+  if (recordedProjectMembers(options)) return projectWorkerBubbles(options);
   const own = ownBubbles(options);
   return options.projectAgent ? underTheProject(own, options.projectAgent) : own;
 }
 
+const recordedProjectMembers = ({ kind, pinnedAgentId, agents }) => kind === "project"
+  && (pinnedAgentId !== undefined || agents.some((agent) => Object.hasOwn(agent, "project_role")) && !projectPin(agents));
+
 /** A project owner has one persisted pin and ordinary workers on that same owner. */
 function projectWorkerBubbles({ agents, selectedId, selectedKind, canAdd, projectName, pinnedAgentId }) {
   const pin = agents.find((agent) => agent.id === pinnedAgentId);
-  if (!pin) return [];
-  const pinned = ownBubbles({ agents: [pin], selectedId, selectedKind, kind: "project", canAdd: false, projectName, alwaysVisible: true, pinnedAgentId });
+  const pinned = pin ? ownBubbles({ agents: [pin], selectedId, selectedKind, kind: "project", canAdd: false,
+    projectName, alwaysVisible: true, pinnedAgentId }) : [];
   const workers = agents.filter((agent) => agent.id !== pinnedAgentId);
   const owned = workers.length ? ownBubbles({ agents: workers, selectedId, selectedKind, kind: "workspace", canAdd: false }) : [];
   if (canAdd) owned.push(addBubble("project", selectedKind));
-  return [...pinned, RAIL_SEPARATOR_ENTRY, ...owned];
+  return pin ? [...pinned, RAIL_SEPARATOR_ENTRY, ...owned] : owned;
 }
 
 const addBubble = (kind, selectedKind) => ({
@@ -393,7 +400,7 @@ const onTheStrip = (agent, selectedId, selectedKind) =>
 const UNWATCHED_TIP = "Not watching";
 
 /** The bubbles of the work item the rail is standing on, and nothing else. */
-function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAdd, projectName, alwaysVisible = false, pinnedAgentId = null }) {
+function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAdd, projectName, alwaysVisible = false, pinnedAgentId }) {
   const onProjectPage = kind === "project";
   const projectPinId = projectPin(agents, pinnedAgentId)?.id;
   const face = (pattern) => (onProjectPage ? projectFace(projectName) : { label: "", pattern });
@@ -608,7 +615,7 @@ const projectEntity = (row, agents) => ({
   worktreeId: null,
   adoptable: false,
   canAdd: !!row.pinned_agent_id,
-  pinnedAgentId: row.pinned_agent_id || null,
+  pinnedAgentId: row.pinned_agent_id,
   projectWorkersSupported: row.projectWorkersSupported,
   chatCapable: true,
   executionContext: row.execution_context || null,

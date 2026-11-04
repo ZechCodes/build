@@ -8,8 +8,13 @@ import { syncProjectAgents } from "./projectAgentsCache.js";
 const ROW_FIELDS = ["needs_attention", "unread", "unread_count", "unread_reason", "attention"];
 const AGENT_FIELDS = ["unread_count", "unread_reason", "read_through_sequence"];
 const BOARD_FIELDS = ["items", "runs", "plans", "external_worktrees", "externalWorktrees"];
+// Device journal sequences are decimal strings; compatibility digests carry
+// numbers. Compare exact sequence values without rounding a journal integer.
+const sequenceOf = (value) => typeof value === "string" && /^\d+$/.test(value)
+  || Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : null;
+const generationOf = (value) => sequenceOf(value)?.toString() ?? value;
 const rosterIdentity = (row) => JSON.stringify((row.agents || []).map((agent) =>
-  [agent.id, agent.conversation_id, agent.thread_id, agent.thread_generation_revision]));
+  [agent.id, agent.conversation_id, agent.thread_id, generationOf(agent.thread_generation_revision)]));
 
 function mergeFields(held, incoming, fields) {
   const next = { ...held };
@@ -19,10 +24,11 @@ function mergeFields(held, incoming, fields) {
 
 /** List digests may repair badges but cannot replace Detail or a generation. */
 const cursorComparable = (held, incoming) => held.agents?.length > 0 && held.agents.every((agent, index) =>
-  Number.isFinite(agent.read_through_sequence) && Number.isFinite(incoming.agents[index].read_through_sequence));
-const cursorRegresses = (held, incoming) => (held.agents || []).some((agent, index) =>
-  Number.isFinite(agent.read_through_sequence) && Number.isFinite(incoming.agents[index].read_through_sequence)
-    && incoming.agents[index].read_through_sequence < agent.read_through_sequence);
+  sequenceOf(agent.read_through_sequence) !== null && sequenceOf(incoming.agents[index].read_through_sequence) !== null);
+const cursorRegresses = (held, incoming) => (held.agents || []).some((agent, index) => {
+  const before = sequenceOf(agent.read_through_sequence), next = sequenceOf(incoming.agents[index].read_through_sequence);
+  return before !== null && next !== null && next < before;
+});
 
 export function mergeReadRoster(held, incoming, requireComparable = false) {
   if (!held || !incoming || rosterIdentity(held) !== rosterIdentity(incoming)) return null;

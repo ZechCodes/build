@@ -256,8 +256,17 @@ async fn agent_and_conversation_writers_publish_current_rows_and_roster_deletion
         rows.iter()
             .map(|row| row["kind"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["agent", "identity", "inbox_conversation"]
+        ["agent", "identity", "inbox_conversation", "owner_session"]
     );
+    // Wire3.34 publishes the recorded owner pin even before any activity.
+    let owner = rows
+        .iter()
+        .find(|row| row["kind"] == "owner_session")
+        .unwrap();
+    assert_eq!(owner["key"], run.id);
+    for field in ["pinned_agent_id", "session_started_ms", "last_activity_ms"] {
+        assert!(owner["row"][field].is_null(), "{field}");
+    }
     let agent = rows.iter().find(|row| row["kind"] == "agent").unwrap();
     assert_eq!(agent["key"], agent_id);
     assert_eq!(agent["row"]["owner_id"], "run-one");
@@ -304,14 +313,22 @@ async fn agent_and_conversation_writers_publish_current_rows_and_roster_deletion
     store.save_run(&run).unwrap();
     let retained = device_rows(&store).await;
     assert_eq!(
-        retained.len(),
-        1,
-        "only the durable retained session may survive roster deletion"
+        retained
+            .iter()
+            .map(|row| row["kind"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["owner_session", "project_session"],
+        "roster deletion preserves owner and project pooled activity"
     );
-    assert_eq!(retained[0]["kind"], "owner_session");
     assert_eq!(retained[0]["row"]["owner_id"], run.id);
     assert_eq!(retained[0]["row"]["project_id"], "proj-registry");
     assert!(retained[0]["row"]["retained_last_activity_ms"].is_i64());
+    let activity = crate::session_summary::message_millis(AT).unwrap();
+    for row in &retained {
+        assert_eq!(row["row"]["session_started_ms"], activity);
+        assert_eq!(row["row"]["last_activity_ms"], activity);
+    }
+    assert_eq!(retained[1]["key"], "proj-registry");
     let deletes: i64 = store
         .writer_for_test()
         .query_row(
@@ -346,13 +363,35 @@ fn committed_conversation_items_have_linear_or_better_journal_amplification() {
         "an unchanged roster save must add no device entries"
     );
 
+    // The first message creates one owner activity fact in wire3.34. There
+    // is no registry mapping here, so no project_session row is published.
+    let before_first = journal_head(&store);
+    run.agents[0].thread.post_user("first activity", None, AT);
+    store.save_run(&run).unwrap();
+    let first: Vec<String> = store
+        .writer_for_test()
+        .prepare("SELECT entity_kind FROM sync_journal WHERE seq>?1 ORDER BY entity_kind")
+        .unwrap()
+        .query_map([before_first], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(first, ["agent", "inbox_conversation", "owner_session"]);
+    let baseline = journal_head(&store);
     const COMMITTED: i64 = 32;
+    let mut previous = baseline;
     let started = std::time::Instant::now();
     for index in 0..COMMITTED {
         run.agents[0]
             .thread
             .post_user(format!("committed {index}"), None, AT);
         store.save_run(&run).unwrap();
+        let current = journal_head(&store);
+        assert!(
+            current - previous <= 2,
+            "same-time append {index} republished pooled activity"
+        );
+        previous = current;
     }
     eprintln!(
         "device committed writes={COMMITTED} elapsed_us={} mean_us={}",
@@ -369,6 +408,19 @@ fn committed_conversation_items_have_linear_or_better_journal_amplification() {
     assert!(
         added <= 2 * COMMITTED,
         "{COMMITTED} committed items added {added} journal entries"
+    );
+
+    let owner_updates: i64 = store
+        .writer_for_test()
+        .query_row(
+            "SELECT COUNT(*) FROM sync_journal WHERE seq>?1 AND entity_kind='owner_session'",
+            [baseline],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        owner_updates, 0,
+        "unchanged pooled timestamps publish nothing"
     );
 
     let mut batched = run_record("run-batched-amplification");
@@ -390,10 +442,12 @@ fn committed_conversation_items_have_linear_or_better_journal_amplification() {
         })
         .unwrap()
         - before_batch;
-    assert!(
-        batch_added <= 2,
-        "one transaction with {COMMITTED} items added {batch_added} entries"
+    assert_eq!(
+        batch_added, 3,
+        "the batch publishes agent, inbox, and exactly one first owner activity fact"
     );
+    let batch_owner_updates: i64 = store.writer_for_test().query_row("SELECT COUNT(*) FROM sync_journal WHERE seq>?1 AND entity_kind='owner_session' AND entity_key=?2",rusqlite::params![before_batch,batched.id],|row|row.get(0)).unwrap();
+    assert_eq!(batch_owner_updates, 1);
 }
 
 #[test]
@@ -1383,5 +1437,314 @@ fn device_missing_facts_startup_repair_chunks_resume_after_publication_failure()
     assert_eq!(
         projection(&store, "agent", "repair-129")["id"],
         "repair-129"
+    );
+}
+
+#[test]
+fn device_334_pin_republishes_later_ordinal_roles_and_owner_pin_atomically() {
+    use crate::project_roster::ProjectRole;
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let mut run = run_record("pin-334");
+    let mut later =
+        AgentRoster::with_first("later-334", ModelChoice::default(), AT).agents()[0].clone();
+    later.ordinal = 2;
+    later.project_role = Some(ProjectRole::Worker);
+    run.agents[0].project_role = Some(ProjectRole::Coordinator);
+    run.pinned_agent_id = Some(run.agents[0].id.clone());
+    run.agents.push(later);
+    store.save_run(&run).unwrap();
+    let before = journal_head(&store);
+    run.agents[0].project_role = Some(ProjectRole::Worker);
+    run.agents[1].project_role = Some(ProjectRole::Coordinator);
+    run.pinned_agent_id = Some(run.agents[1].id.clone());
+    store.save_run(&run).unwrap();
+    assert_eq!(
+        projection(&store, "identity", &run.agents[0].id)["project_role"],
+        "worker"
+    );
+    assert_eq!(
+        projection(&store, "identity", &run.agents[1].id)["project_role"],
+        "coordinator"
+    );
+    assert_eq!(
+        projection(&store, "owner_session", &run.id)["pinned_agent_id"],
+        run.agents[1].id
+    );
+    let changed: Vec<(String, String)> = store
+        .writer_for_test()
+        .prepare("SELECT entity_kind,entity_key FROM sync_journal WHERE seq>?1")
+        .unwrap()
+        .query_map([before], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for entity in [
+        ("identity", run.agents[0].id.as_str()),
+        ("identity", run.agents[1].id.as_str()),
+        ("owner_session", run.id.as_str()),
+    ] {
+        assert!(
+            changed.contains(&(entity.0.into(), entity.1.into())),
+            "missing publication: {changed:?}"
+        );
+    }
+    store.writer_for_test().execute_batch("CREATE TRIGGER reject_334_pin BEFORE INSERT ON sync_journal WHEN NEW.entity_kind='owner_session' BEGIN SELECT RAISE(ABORT,'synthetic pin refusal'); END;").unwrap();
+    run.pinned_agent_id = Some(run.agents[0].id.clone());
+    run.agents[0].project_role = Some(ProjectRole::Coordinator);
+    run.agents[1].project_role = Some(ProjectRole::Worker);
+    assert!(store.save_run(&run).is_err());
+    assert_eq!(
+        projection(&store, "identity", &run.agents[1].id)["project_role"],
+        "coordinator"
+    );
+    assert_eq!(
+        projection(&store, "owner_session", &run.id)["pinned_agent_id"],
+        run.agents[1].id
+    );
+}
+
+#[test]
+fn device_334_pin_keeps_missing_recorded_pin_and_null_roles_without_inference() {
+    use crate::project_roster::ProjectRole;
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let mut run = run_record("missing-pin-334");
+    run.pinned_agent_id = Some("recorded-but-absent".into());
+    run.agents[0].project_role = Some(ProjectRole::Worker);
+    store.save_run(&run).unwrap();
+    assert_eq!(
+        projection(&store, "owner_session", &run.id)["pinned_agent_id"],
+        "recorded-but-absent"
+    );
+    assert_eq!(
+        projection(&store, "identity", &run.agents[0].id)["project_role"],
+        "worker"
+    );
+    run.agents[0].project_role = None;
+    run.pinned_agent_id = None;
+    store.save_run(&run).unwrap();
+    let identity = projection(&store, "identity", &run.agents[0].id);
+    assert!(identity.as_object().unwrap().contains_key("project_role"));
+    assert!(identity["project_role"].is_null());
+}
+
+#[test]
+fn device_334_pin_upgrade_reprojects_saved_roles_and_pins_without_agent_save() {
+    use crate::project_roster::ProjectRole;
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    let mut run = run_record("upgrade-pin-334");
+    run.agents[0].project_role = Some(ProjectRole::Coordinator);
+    run.pinned_agent_id = Some(run.agents[0].id.clone());
+    store.save_run(&run).unwrap();
+    {
+        let conn = store.writer_for_test();
+        conn.execute(
+            "DELETE FROM meta WHERE key='device_owner_facts_334_position'",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch("DROP TABLE IF EXISTS device_owner_pins;")
+            .unwrap();
+    }
+    drop(store);
+    let store = Store::new(directory.path()).unwrap();
+    assert_eq!(
+        projection(&store, "identity", &run.agents[0].id)["project_role"],
+        "coordinator"
+    );
+    assert_eq!(
+        projection(&store, "owner_session", &run.id)["pinned_agent_id"],
+        run.agents[0].id
+    );
+}
+
+// Exercise the existing 3.33 writer contract on the same database: it knows
+// canonical agents and per-conversation projections, but has no new pin/pool
+// coverage hooks. No installed bridge or alternate daemon is started.
+fn save_with_333_device_hooks(path: &std::path::Path, run: &PersistedRun) {
+    use rusqlite::OptionalExtension;
+    let mut conn = rusqlite::Connection::open(path.join("build.db")).unwrap();
+    super::device_producers::install(&conn).unwrap();
+    let tx = conn.transaction().unwrap();
+    let definition: String = tx
+        .query_row(
+            "SELECT value FROM meta WHERE key='sync_schema'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    if definition != "sync-journal-2" {
+        tx.execute(
+            "UPDATE meta SET value=?1 WHERE key='sync_incarnation'",
+            [uuid::Uuid::new_v4().to_string()],
+        )
+        .unwrap();
+        tx.execute("UPDATE sync_state SET baseline=head,floor=head", [])
+            .unwrap();
+    }
+    tx.execute(
+        "UPDATE meta SET value='sync-journal-2' WHERE key='sync_schema'",
+        [],
+    )
+    .unwrap();
+    let mut owner = run.clone();
+    owner.agents.clear();
+    tx.execute(
+        "UPDATE implementations SET record=?2 WHERE id=?1",
+        rusqlite::params![run.id, serde_json::to_string(&owner).unwrap()],
+    )
+    .unwrap();
+    for agent in &run.agents {
+        let mut skeleton = agent.clone();
+        let items = std::mem::take(&mut skeleton.thread.items);
+        tx.execute(
+            "UPDATE agents SET record=?2 WHERE id=?1",
+            rusqlite::params![agent.id, serde_json::to_string(&skeleton).unwrap()],
+        )
+        .unwrap();
+        super::device_facts::seed_agent(&tx, &run.id, agent).unwrap();
+        crate::store::task_summaries::identity_refresh(&tx, &agent.id).unwrap();
+        for item in items {
+            let sequence = item.sequence() as i64;
+            let exists: Option<i64> = tx
+                .query_row(
+                    "SELECT sequence FROM thread_items WHERE agent_id=?1 AND sequence=?2",
+                    rusqlite::params![agent.id, sequence],
+                    |row| row.get(0),
+                )
+                .optional()
+                .unwrap();
+            if exists.is_some() {
+                continue;
+            }
+            let raw = serde_json::to_string(&item).unwrap();
+            tx.execute("INSERT INTO thread_items(agent_id,sequence,updated_sequence,attention,message,tool_call,activity,handoff,item) VALUES(?1,?2,?3,1,1,0,0,0,?4)",rusqlite::params![agent.id,sequence,item.latest_sequence() as i64,raw]).unwrap();
+            // This unchanged index hook explicitly skips the new pool observer.
+            super::device_thread::backfill_item(&tx, &agent.id, sequence, &(1, true, false, raw))
+                .unwrap();
+        }
+        super::device_producers::touch_agent(&tx, &agent.id).unwrap();
+    }
+    let mut batch = super::PublicationBatch::default();
+    super::device_producers::collect(&tx, &mut batch).unwrap();
+    batch.publish(&tx, super::now_ms()).unwrap();
+    tx.commit().unwrap();
+}
+
+#[test]
+fn device_334_rollback_old_writer_invalidates_completed_pin_and_pool_coverage() {
+    use crate::project_roster::ProjectRole;
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::new(directory.path()).unwrap();
+    store
+        .writer_for_test()
+        .execute(
+            "INSERT INTO device_project_ids VALUES('/device-producers','rollback-project-334')",
+            [],
+        )
+        .unwrap();
+    let mut run = run_record("rollback-owner-334");
+    let mut later = AgentRoster::with_first("rollback-later-334", ModelChoice::default(), AT)
+        .agents()[0]
+        .clone();
+    later.owner_id = run.id.clone();
+    later.ordinal = 2;
+    later.project_role = Some(ProjectRole::Worker);
+    run.agents[0].project_role = Some(ProjectRole::Coordinator);
+    run.agents[0].thread.post_agent("before rollback", None, AT);
+    run.pinned_agent_id = Some(run.agents[0].id.clone());
+    run.agents.push(later);
+    store.save_run(&run).unwrap();
+    let original_pin = run.agents[0].id.clone();
+    let original_time = projection(&store, "owner_session", &run.id)["last_activity_ms"].clone();
+    drop(store);
+    run.pinned_agent_id = Some(run.agents[1].id.clone());
+    run.agents[0].project_role = Some(ProjectRole::Worker);
+    run.agents[1].project_role = Some(ProjectRole::Coordinator);
+    let at = "2026-01-02T00:00:00Z";
+    run.agents[1]
+        .thread
+        .post_agent("written by old bridge", None, at);
+    save_with_333_device_hooks(directory.path(), &run);
+    {
+        let conn = rusqlite::Connection::open(directory.path().join("build.db")).unwrap();
+        let held_pin: String = conn
+            .query_row(
+                "SELECT pinned_agent_id FROM device_owner_pins WHERE owner_id=?1",
+                [&run.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            held_pin, original_pin,
+            "old writer must leave the new pin table stale"
+        );
+        let held_time: i64 = conn
+            .query_row(
+                "SELECT last_activity_ms FROM device_pooled_sessions WHERE kind='owner' AND key=?1",
+                [&run.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(serde_json::json!(held_time), original_time);
+        let done: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='device_owner_facts_334_position'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&done).unwrap()["done"],
+            true
+        );
+        let done: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='device_sessions_334_position'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&done).unwrap()["phase"],
+            6
+        );
+    }
+    let current = Store::new(directory.path()).unwrap();
+    assert_eq!(
+        projection(&current, "owner_session", &run.id)["pinned_agent_id"],
+        run.agents[1].id
+    );
+    let expected = crate::session_summary::message_millis(at).unwrap();
+    for (kind, key) in [
+        ("owner_session", run.id.as_str()),
+        ("project_session", "rollback-project-334"),
+    ] {
+        let row = projection(&current, kind, key);
+        assert_eq!(row["session_started_ms"], expected, "{kind}");
+        assert_eq!(row["last_activity_ms"], expected, "{kind}");
+    }
+    let definition: String = current
+        .writer_for_test()
+        .query_row(
+            "SELECT value FROM meta WHERE key='sync_schema'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(definition, "sync-journal-3");
+    // A normal same-definition reopen must not clear or attempt to rebuild
+    // already covered facts. These triggers turn an accidental rebuild red.
+    current.writer_for_test().execute_batch("CREATE TRIGGER reject_normal_pin_rebuild BEFORE INSERT ON device_owner_pins BEGIN SELECT RAISE(ABORT,'unexpected normal pin rebuild'); END;
+        CREATE TRIGGER reject_normal_pool_rebuild BEFORE INSERT ON device_pooled_sessions BEGIN SELECT RAISE(ABORT,'unexpected normal pool rebuild'); END;
+        CREATE TRIGGER reject_normal_pin_clear BEFORE DELETE ON device_owner_pins BEGIN SELECT RAISE(ABORT,'unexpected normal pin clear'); END;
+        CREATE TRIGGER reject_normal_pool_clear BEFORE DELETE ON device_pooled_sessions BEGIN SELECT RAISE(ABORT,'unexpected normal pool clear'); END;").unwrap();
+    drop(current);
+    let reopened = Store::new(directory.path()).unwrap();
+    assert_eq!(
+        projection(&reopened, "owner_session", &run.id)["last_activity_ms"],
+        expected
     );
 }

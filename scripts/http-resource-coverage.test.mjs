@@ -241,17 +241,23 @@ const sourceFingerprintParts = {
   "core/bridgeEpoch.js": ["e04a0a11", "6535b020", "abcac20c", "972a554f", "8d51fbb9", "6ef07fd8", "16062ed0", "9cd4d213"],
   "core/bridgeUpdatePanel.js": ["f9b19cc7", "4abdfc5a", "d159194d", "49ee91ed", "d39ab2e7", "15a6a80f", "0cb51530", "623ca8e5"],
   "core/bridgeUpdates.js": ["279cb932", "0495aa46", "c347f93b", "10a492d5", "8d29b0a9", "e9309a9a", "91de7993", "e5f40ad3"],
-  "core/cacheSync.js": ["ddf03f00", "201f9ba1", "18cd9f3b", "7d5ba158", "1f1b968f", "a601e4d6", "11d6efbc", "21a4cbc2"],
-  "core/captureDecisionView.js": ["f9f42a7d", "d94162aa", "5aea82e5", "85e6bcb2", "73ffce61", "2ac99214", "8b78b55f", "30a7a61a"],
-  "core/changeEvents.js": ["31e123e5", "fc5c2562", "3328faa8", "3edc1018", "0ded97a7", "dd6f3430", "0ba3c6fa", "e1685e73"],
+  // #997 runtime-board cacheSync.js:754,783,1978: existing board.list also refreshes only runtime collections; durable scope/tip writers stay gated, no new method.
+  "core/cacheSync.js": ["24a41972", "f87eaf04", "bc3bc284", "60325be4", "9a1bd33d", "553a4d21", "15307094", "68d954de"],
+  // #997 runtime-board captureDecisionView.js:142: branch choices join cached runtime run bodies; existing RPC and mutation dispatch unchanged.
+  "core/captureDecisionView.js": ["15299f0a", "f1762e74", "8af22269", "0f16e798", "ccf8e367", "d2d759e2", "554ce8fc", "002692f1"],
+  // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
+  "core/changeEvents.js": ["5b082d0b", "2ed9b187", "214c16ae", "1500d5f0", "43734602", "ae810be0", "ad7fd196", "1d5703a6"],
   "core/changesComments.js": ["7a5e0b06", "c47bf122", "ac5370b8", "debd8dc8", "388227b8", "f9ea1623", "d413134a", "635a2a7d"],
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],
   "core/chatChoiceController.js": ["d257b6c5", "f32d9067", "226af14c", "bd8ec71e", "718bf188", "1e994ef1", "66edcceb", "4499fa61"],
   "core/chatRepository.js": ["a7331089", "a8f626b3", "3c5700e5", "e726dfbe", "7aeb4d75", "59d71243", "6bb28ca2", "6e0dd982"],
-  "core/compactionCache.js": ["041bfd3e", "820024de", "ec19e3f6", "c7ce04ad", "4adecae6", "5f78a182", "d12f13cb", "89e82556"],
-  "core/compose.js": ["012665e7", "87915aea", "9314f63c", "7b036438", "70ec846e", "09d98f92", "e8746b91", "051b004e"],
-  "core/composeView.js": ["b560ac00", "27513049", "482b025b", "79f330a5", "44f3a97f", "f2c88efa", "2f36708b", "a8951245"],
+  // #997 compactionCache.js:57: use captured version authority without importing connection state into cache helpers.
+  "core/compactionCache.js": ["4e4482a7", "24057b98", "0a358b45", "3beeb686", "8c8c7388", "79aecece", "7b4cc21b", "75595548"],
+  // #997 runtime-board compose.js:236: branch options join scoped cached runs; producer method maps and RPC arguments unchanged.
+  "core/compose.js": ["04ba4233", "c03d8a65", "2fb7e1a0", "33dd7876", "b9eebdbe", "8f295ce8", "d3407278", "65247a74"],
+  // #997 runtime-board composeView.js:274: branch choices use cached runtime runs; RPC and mutation dispatch unchanged.
+  "core/composeView.js": ["c23f86ee", "e1c3714c", "7d01aa7b", "6178100a", "291f1c3e", "44eed077", "6f4dedc9", "a52c7553"],
   "core/consoleModel.js": ["4feba529", "663ba471", "6fe6e2a1", "3eb66e5c", "815545f8", "f70a5b48", "a6248d75", "94d9ed20"],
   "core/conversationCompaction.js": ["4e076445", "2fd7fb1d", "1ca9681e", "b39ea814", "01d5b9f9", "26f91118", "a52788ca", "54220e9e"],
   "core/conversationDetail.js": ["a54ac9f8", "f54c61d4", "cea363a5", "b098964f", "16ecc016", "490b853d", "76d94602", "ad5a773a"],
@@ -272,7 +278,8 @@ const sourceFingerprintParts = {
   "core/inboxCaptures.js": ["48a7f5fb", "b2132a83", "5901fb31", "4fb0c5ae", "97005297", "2d0b9db6", "be2c3e6d", "1271b663"],
   "core/inboxDevices.js": ["f9a293e4", "dff4b2b4", "f5fc7940", "f5c1f48d", "a66a5718", "238826a6", "e3dc6b9f", "4060a79e"],
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
-  "core/inboxView.js": ["14bb4bec", "80dab237", "c54f914a", "aa1e22fb", "7e38c2f9", "70a2abb0", "0d245427", "39d10d67"],
+  // #997 runtime-board inboxView.js:193,206,320: scoped pending display and cached branch choices; existing RPC and mutation dispatch unchanged.
+  "core/inboxView.js": ["73e318f8", "d3681787", "0ff602b2", "03923c2e", "8ac8746f", "13fd8ee3", "d314907b", "c5aa4b97"],
   "core/isolation.js": ["1b646651", "086eea7f", "b0a97d6f", "8993ed77", "7e6e246e", "4110fbc2", "7defb076", "77f79221"],
   "core/markdownFences.js": ["10057396", "68214f4d", "d193015e", "2552698e", "c48313df", "6df2e223", "7e3bc837", "2805a4bb"],
   "core/modelCatalog.js": ["c293ea11", "fff0969f", "7852c8cd", "0c252f82", "fe666159", "95919417", "25a661ec", "c93fd9b4"],
@@ -281,7 +288,8 @@ const sourceFingerprintParts = {
   "core/pathProbe.js": ["1518fd69", "692eec10", "f8018014", "c81c6ee1", "4edda84e", "efee05d6", "472437de", "73c96fea"],
   "core/peerIceQueue.js": ["0cd05f87", "5def0e05", "b95fd35a", "3498571e", "7a93f83e", "8da1d594", "8022f75f", "0870be3b"],
   "core/peerLink.js": ["07cce688", "624c9a99", "9dd6a3d4", "77c8ff8f", "5a325998", "0a67eee0", "a0793c5f", "d8d0e597"],
-  "core/projectAgentsCache.js": ["692ce6e6", "29188041", "a638ab36", "772487e7", "397715fe", "dba4c0f5", "4e938ee8", "6bbdb7ff"],
+  // #997 projectAgentsCache.js:57: load runtime authority only for Web Locks reads; live callbacks fence upgrades without import side effects.
+  "core/projectAgentsCache.js": ["a7c5f4b5", "321ecafb", "b30fd292", "07302c6b", "1f62638a", "c16708ff", "94bfaa24", "4e46db17"],
   "core/projectAgentSetting.js": ["cf7d410a", "f3bc1eb4", "1b4e7833", "9dc4cf50", "23b01280", "01636e27", "72e8edb1", "e4a7e379"],
   "core/projectChangesRpc.js": ["613fe381", "59f4a3a4", "08a518ed", "4e535261", "21ca4a58", "5e5011d9", "c0acd52e", "bb8e5014"],
   "core/projectConsole.js": ["b44678cc", "4c2dbc2a", "188695a2", "307b4883", "4d4fb733", "091622af", "3c648066", "9d1e32bb"],
@@ -289,23 +297,28 @@ const sourceFingerprintParts = {
   "core/projectTerminalRpc.js": ["b391c6dc", "aa385e26", "aadfb8b8", "f6ef5cc9", "9a8e7a79", "d9d757bb", "cdd1356c", "867cadea"],
   "core/pushKeySync.js": ["ecd9373a", "3f2dd8cb", "af448d18", "1098ca18", "ef83c7bb", "923a9c90", "b5d5f042", "9ac75438"],
   "core/railMode.js": ["9a3738d3", "e4361bdf", "fef94f86", "f803203f", "efbe6cbf", "8513e3f7", "5fc7602c", "dd4e5e6b"],
-  "core/readStateRepair.js": ["cf9c2d3b", "411a9904", "c9edb8e9", "33ae46f6", "d879a630", "a802c545", "b665fb8c", "44cb7422"],
+  // #997 readStateRepair.js:96: decimal read repair retains existing board.list and project-roster confirmation methods.
+  "core/readStateRepair.js": ["c374e7a6", "23e8215a", "1c4a16b5", "337a4bf2", "32babbcc", "246bfc57", "68c3cdfc", "5e916be7"],
   "core/revisionBodies.js": ["60606411", "ec3a6f2c", "7c923581", "f22c39cd", "43dd8a04", "69ff5c40", "e4e490cb", "e3119193"],
   "core/rtcTerminalLink.js": ["9e8a6c70", "266666d9", "45b2f045", "4f29f5fc", "6293c562", "d2f0ed25", "15a05fd6", "a43dd438"],
   "core/scopedCompactionEditor.js": ["b5d366f5", "90a2be6a", "b5c01379", "ccad5198", "7298a4cf", "bdcbdc88", "2e022cd4", "847d6330"],
   "core/scopedProjectColumns.js": ["050be4f1", "7bc93888", "92cfb0a6", "eec46373", "f5b4c3f8", "22bbd079", "a8a0081b", "cf9db94a"],
-  "core/scopedSyncDiagnostics.js": ["7dd4e0cf", "8e66ed24", "26fd1b4a", "14536a2a", "0a96f671", "dce00906", "ae5c3582", "266128ed"],
-  "core/scopedSyncEngine.js": ["401be0de", "7caff31b", "4be2a474", "defaf7a1", "ea9f3525", "901ecc1d", "c501c654", "b2486318"],
+  // #997 scopedSyncDiagnostics.js:4: device is a closed diagnostic label, never a resource selector.
+  "core/scopedSyncDiagnostics.js": ["6cc8fdb6", "b09c4e34", "fe7d1304", "b21f55d1", "28d9740b", "71c566cd", "db179dcd", "ef3bd1bf"],
+  // #997 review scopedSyncEngine.js:62,147: declined publications retry bounded recovery through the same three sync queries; no new dispatch site.
+  "core/scopedSyncEngine.js": ["2f3ab7a1", "b5bad14b", "d4f774c0", "dbbec9c6", "124d8d1d", "05076d00", "a441b99d", "2b2a333e"],
   "core/scopedTaskBody.js": ["fbd220c8", "7cabb3dd", "a35b1c7d", "7cd87534", "580ab9d7", "2a59e4bf", "58203468", "541df08c"],
   "core/session.js": ["3d180500", "f13f38ec", "64d5d01d", "ec44e3c7", "ef80b3cc", "85470f82", "ad7080e1", "69c47137"],
   "core/sessionRpc.js": ["5d583ef2", "0faaf478", "09fbf975", "ab15af9f", "a78fd5f8", "fc4bab2e", "49d4ef64", "4e13ad2d"],
   "core/sessionSwitch.js": ["dc232a71", "5b006195", "d7910b8e", "8c59e611", "a36dd264", "8bbcfcc8", "0d8739f3", "371accc7"],
   "core/shell.js": ["c9e2a17e", "6ae389f1", "e7a60035", "dfc83868", "dc85c17d", "564daa9f", "9b3e097b", "391bcd33"],
   "core/sqlReadCredits.js": ["478e10b0", "a7cc8726", "f6afcc2e", "0fce6bea", "9e9f7103", "6526a077", "04fdc4d4", "253ca538"],
-  "core/syncDiagnostics.js": ["ddccfc9a", "6e78c4d6", "81b0c68b", "a596488e", "0d600340", "7a44fdc8", "f351eef6", "3781baa9"],
+  // #997 syncDiagnostics.js:14: the device label extends diagnostics only; RPC verb inventory is unchanged.
+  "core/syncDiagnostics.js": ["699d4595", "41400002", "6be4a4de", "45c68a8d", "f59ab913", "b68f7991", "936cad7b", "48ee7871"],
   "core/syncLists.js": ["e44aee99", "346eb027", "1e6486f1", "dac9a7ac", "9acdd7b8", "1c4a00f4", "ce196d01", "e22f5292"],
   "core/syncSuccessors.js": ["8f215712", "252114ce", "b5f282bf", "3b818ded", "2bfe5a52", "60ced14f", "965e228e", "9af31a83"],
-  "core/syncTaskPhases.js": ["353855f1", "ca51bb89", "d04cfa45", "92401d65", "e3190e17", "ac3b45d3", "d81ce410", "8383dd12"],
+  // #997 syncTaskPhases.js:25: task pages keep existing reads while session publication yields to the device owner.
+  "core/syncTaskPhases.js": ["594c72ca", "cff8fa97", "cce40760", "49a7754d", "5eab461d", "41cd2789", "92bf5cfb", "0d28ab42"],
   "core/taskAggregateReads.js": ["145d7d37", "d5b65ef2", "fca15f4d", "c61a586c", "f62233a0", "b8b309eb", "4a69f9d4", "8575b030"],
   "core/taskAttachmentBodies.js": ["7acfa90a", "4413c7df", "89207db8", "07fa4c16", "b21cc95f", "dc3bf412", "eb0c14de", "671d3006"],
   "core/taskChecklist.js": ["405a6444", "8132e330", "6ff6c056", "a1e71101", "3bdd9028", "a42eae55", "d6ebaf5b", "952f8a34"],
@@ -358,15 +371,18 @@ const sourceFingerprintParts = {
   "push.js": ["c7a3eb27", "240e0a4d", "3e314aee", "369bea39", "25bf83e0", "f105e41a", "0e4ed716", "4e53028b"],
   "sheets/browser.js": ["e226c6fb", "9689c6bc", "39ba311b", "335481c7", "f444e696", "36c5c8b6", "013588ec", "bd2a4dbe"],
   "sheets/newRepo.js": ["e1addf8b", "abc706f6", "ca74fa24", "7e1f3208", "aae3d460", "37157135", "21e46d2f", "f187cdfa"],
-  "sheets/projectSettings.js": ["5ea93508", "d579d760", "280011a4", "f367e8b4", "13b0ab4a", "d38e0d88", "085f46f6", "d1d0f084"],
+  // #997 projectSettings.js:232: the existing project.list loader delegates to owned device recovery.
+  "sheets/projectSettings.js": ["1e7423ec", "47cd628d", "c76970e7", "fca5da5f", "c623809c", "c51769ab", "1b172bb1", "906737ee"],
   "sheets/projectSources.js": ["f9eb9e2b", "9c526294", "46090552", "02740c7a", "25e0f849", "8162d486", "fd90c590", "05524d9d"],
   "sheets/sourceSyncControls.js": ["a0c9eb24", "846213e3", "1cc5b961", "8058d449", "6a46f577", "2b154112", "724dc4e5", "6041f096"],
-  "sheets/workspaceSettings.js": ["c93299a4", "e2bfaee7", "3ec925d9", "8b28443f", "66536bf7", "d383d411", "73912a76", "9f6d63ef"],
+  // #997 workspaceSettings.js:292: the existing project.list catalog loader delegates to owned device recovery.
+  "sheets/workspaceSettings.js": ["5cc470f0", "7f95fc28", "02c7bfb0", "478c4510", "e33b5183", "1e6be057", "6928f74b", "82185347"],
   "terminal/manager.js": ["4027a8b0", "af931af9", "3d71d687", "c930e06b", "bd55b938", "ad0db4da", "e20dc150", "60ed795b"],
   "terminal/session.js": ["ce4e3036", "ac5b84b3", "ae7583e9", "2b940e62", "4dfe75b7", "d77a06e7", "dfda65ca", "8c8ede4e"],
   "views/archive.js": ["6f4a7962", "88f34292", "73eafead", "5dc6229b", "5b040b7a", "09baf137", "8cbbce83", "6c83d400"],
   "views/branchView.js": ["bd60fcf4", "7c212e82", "4972bdd1", "5b4a3563", "54913179", "782e8a54", "ea8d0a73", "30816a7d"],
-  "views/deviceProjects.js": ["e91b4c08", "ccb3430d", "4a15da85", "4d787a64", "3ab0ef2c", "ebe5c184", "86d32e0b", "aa25418a"],
+  // #997 deviceProjects.js:82: the existing project.list loader delegates to owned device recovery.
+  "views/deviceProjects.js": ["8ff87af9", "bead4587", "20c4bc9d", "89c548aa", "9a137b45", "4cb5741b", "880a3013", "429a0844"],
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
   "views/files.js": ["06be3768", "e7119790", "efdf9d19", "1f24d56e", "0105300d", "78661f62", "dffa8c08", "d92269a8"],
   "views/projectChanges.js": ["e195b594", "3a7689fe", "14bfc899", "18ada18d", "ab36cd52", "ad96ba97", "a877c4da", "c9c3b78f"],

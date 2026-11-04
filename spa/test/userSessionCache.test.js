@@ -5,7 +5,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
-const { readUserSession, userSessionOf, writeUserSession } = await import("../src/core/userSessionCache.js");
+const { readUserSession, userSessionOf, writeUserSession, writeListedUserSession } = await import("../src/core/userSessionCache.js");
 
 const answer = (last, over = {}) => ({
   project_id: "proj-1",
@@ -49,4 +49,31 @@ it("checks answer authority when the queued cache merge runs", async () => {
 
   expect(await writing).toBe(false);
   expect(await readUserSession("dev-4")).toBeNull();
+});
+
+
+it.each([false, true])("fences an ordered session publication when device ownership changes (removal=%s)", async (removal) => {
+  const deviceId = `device-session-fence-${removal}`;
+  await writeUserSession(deviceId, answer(20));
+  let authorized = true;
+  const writing = writeListedUserSession(deviceId, removal ? { tasks: [] } : answer(30), () => authorized);
+  authorized = false;
+  expect(await writing).toBe(false);
+  expect((await readUserSession(deviceId)).last_activity_ms).toBe(20);
+});
+
+
+it.each([false, true])("keeps engine session facts while an ordered task reply supplies only its runtime clock (has session=%s)", async (hasSession) => {
+  const deviceId = `device-clock-${hasSession}`;
+  await writeUserSession(deviceId, answer(20));
+  const incoming = hasSession ? answer(10, { now_ms: 2_000 }) : { tasks: [] };
+  await writeListedUserSession(deviceId, incoming, () => true, () => true);
+  expect(await readUserSession(deviceId)).toEqual(answer(20, hasSession ? { now_ms: 2_000 } : {}).user_session);
+});
+
+
+it("still deletes a listed session absent from an old bridge's task reply", async () => {
+  await writeUserSession("old-bridge-removal", answer(20));
+  expect(await writeListedUserSession("old-bridge-removal", { tasks: [] })).toBe(true);
+  expect(await readUserSession("old-bridge-removal")).toBeNull();
 });

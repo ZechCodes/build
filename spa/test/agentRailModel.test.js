@@ -853,3 +853,27 @@ describe("an agent running through the agents in its panel", () => {
     expect(agentCanInterrupt({ ...waiting, can_interrupt: true })).toBe(false);
   });
 });
+
+
+describe("recorded project pin availability", () => {
+  it.each([null, "missing-pin", undefined])("keeps surviving workers visible without coordinator styling for pin %j", (pinnedAgentId) => {
+    const agents = [agent({ id: "worker-1", ordinal: 1, project_role: null }),
+      agent({ id: "worker-2", ordinal: 2, project_role: "worker" })];
+    const bubbles = railBubbles({ kind: "project", projectName: "Build", agents, pinnedAgentId, canAdd: false });
+    expect(bubbles.map((bubble) => [bubble.type, bubble.id])).toEqual([["agent", "worker-1"], ["agent", "worker-2"]]);
+    expect(bubbles.every((bubble) => !bubble.project && bubble.tooltip.purpose !== "Project agent")).toBe(true);
+  });
+
+  const worker = agent({ id: "worker", ordinal: 1, topic: "Worker work", project_role: null });
+  it("does not infer a pin from explicit null, a missing member or a persisted null role", () => {
+    expect(projectPin([worker], null)).toBeUndefined();
+    expect(projectPin([worker], "missing-pin")).toBeUndefined();
+    expect(projectPin([worker])).toBeUndefined();
+    expect(projectPin([{ ...worker, project_role: "coordinator" }], null)).toBeUndefined();
+  });
+  it("retains legacy pin selection only when the pin field and role metadata are absent", () => {
+    const legacy = agent({ id: "legacy" });
+    expect(projectPin([legacy])).toBe(legacy);
+    expect(railEntity({ entity_id: "legacy-owner", agents: [legacy] }, "project").pinnedAgentId).toBeUndefined();
+  });
+});

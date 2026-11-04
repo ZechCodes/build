@@ -39,8 +39,9 @@ import { commitPatchParams } from "./commitDiffTarget.js";
 // read it followed, so a read never writes over a record a push wrote after it
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
-import { captureScopedSync, projectScopedSyncOwns, reconcileScopedSyncRuntime, startScopedSyncRuntime,
+import { captureScopedSync, deviceScopedSyncOwns, projectScopedSyncOwns, reconcileScopedSyncRuntime, startScopedSyncRuntime,
   stopScopedSyncRuntime, wakeScopedSync, wakeScopedSyncChanges } from "./scopedSyncRuntime.js";
+import { enrichDeviceRuntimeState, enrichDeviceRuntimeBoard, hasDeviceRuntimeCollections } from "./scopedDeviceRuntime.js";
 import { refreshReadState } from "./readStateRepair.js";
 import { discoverRosterThreads, discoverSyncOwnership, emptySyncDiscovery, queueSuccessor, readsSyncGroup as readsGroup, requiredSuccessorGroups, syncReadGroup } from "./syncSuccessors.js";
 import { syncDiagnostics } from "./syncDiagnostics.js";
@@ -597,6 +598,7 @@ async function orderedSync(deviceId, turn) {
   await heldBeforeReading(context);
   if (!context.active()) return false;
   const scopedRecovery = captureScopedSync(deviceId);
+  if (deviceScopedSyncOwns(deviceId)) await scopedRecovery;
   const recovery = fileRecoveryFor(context, turn.session);
   const recoveryRevision = recovery.revision;
   context.fileRecovery = recovery;
@@ -646,7 +648,7 @@ async function finishOrderedSync({ context, turn, view, lists, passStartedAt, fe
   recovery, recoveryRevision, diffRecovery, filesRecovered }) {
   const { deviceId } = context;
   diagnosticStage(turn, "cleanup");
-  if (readsGroup(turn, "lists")) {
+  if (readsGroup(turn, "lists") && !deviceScopedSyncOwns(deviceId)) {
     await evictRowsThatAreOver(context, view, fence);
     await dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence);
   }
@@ -655,7 +657,7 @@ async function finishOrderedSync({ context, turn, view, lists, passStartedAt, fe
   diagnosticStage(turn, "route");
   await refollowRoute(deviceId);
   // Detached draft pruning retains the same ownership/session fences.
-  if (readsGroup(turn, "lists")) void pruneReadDrafts(context, lists.before, lists.ownership).catch(() => {});
+  if (readsGroup(turn, "lists") && !deviceScopedSyncOwns(deviceId)) void pruneReadDrafts(context, lists.before, lists.ownership).catch(() => {});
   return true;
 }
 
@@ -750,6 +752,14 @@ async function heldSyncLists(context) {
  *  any workspace has been read. A device whose bridge does not serve
  *  workspaces still has a board. */
 async function readLists(context, fence) {
+  if (deviceScopedSyncOwns(context.deviceId)) {
+    await readDeviceRuntimeBoard(context);
+    return await heldSyncLists(context) || {
+      view: liveFeedSnapshot({}, {}, {}, context.deviceId), sourceTerminalReads: await projectTerminalReads(context),
+    };
+  }
+  const owner = context;
+  context = { ...owner, active: () => owner.active() && !deviceScopedSyncOwns(owner.deviceId) };
   const observations = await Promise.all(["projects", "workspaces"].map((kind) =>
     sessionListObservation(addressOf(context, "", kind), kind)));
   const reading = { ...context, sessionListObservations: Object.fromEntries(["projects", "workspaces"].map((kind, index) => [kind, observations[index]])) };
@@ -770,6 +780,17 @@ async function readLists(context, fence) {
   return lists;
 }
 
+// board.list still owns process-local lifecycle rows and legacy body lookups;
+// device recovery owns items, directories, rosters and pooled session facts.
+async function readDeviceRuntimeBoard(context, priority = "foreground") {
+  const fence = pushFence();
+  const board = await ask(context, "board.list", {}, priority, addressOf(context, "", "feed"));
+  if (!board || !context.active()) return;
+  await writeUsageLimits(context.deviceId, board.usage_limits);
+  await enrichDeviceRuntimeBoard(context.deviceId, { pending: [], external_worktrees: [], plans: [], runs: [], ...board },
+    () => context.active() && deviceScopedSyncOwns(context.deviceId), { fence });
+}
+
 async function landOwnershipList(context, kind, rows, before, fence) {
   const stamp = kind === "projects" ? stampProject : stampWorkspace;
   const incoming = rows.map((row) => stamp(row, context.deviceId));
@@ -781,7 +802,9 @@ async function landOwnershipList(context, kind, rows, before, fence) {
 /** Complete rosters have their own cache; board summaries remain pinned-only. */
 async function refreshProjectAgents(context, projects, entityId = null, afterWrite = async () => {}) {
   const capabilities = bridgeCapabilities(context.deviceId);
-  if (!capabilities.agents?.projectWorkers) return;
+  if (!capabilities.agents?.projectWorkers || deviceScopedSyncOwns(context.deviceId)) return;
+  const owner = context;
+  context = { ...owner, active: () => owner.active() && !deviceScopedSyncOwns(owner.deviceId) };
   const owners = projects || await heldValue(context, "", "projects") || [];
   await Promise.all(owners.filter((project) => !entityId || (project.entity_id || project.run_id) === entityId)
     .map((project) => syncProjectAgents({ deviceId: context.deviceId, background: true,
@@ -798,7 +821,7 @@ async function refreshProjectAgents(context, projects, entityId = null, afterWri
 /** Roster jobs join the planner before sending. Their cache writes expand the
  * current pass, so workers discovered on boot receive histories in this pass. */
 function projectRosterReads(context, view, pass, discovery) {
-  if (!bridgeCapabilities(context.deviceId).agents?.projectWorkers) return [];
+  if (!bridgeCapabilities(context.deviceId).agents?.projectWorkers || deviceScopedSyncOwns(context.deviceId)) return [];
   return view.projects.map((project, index) => ({
     entityId: project.entity_id || project.run_id,
     projectId: project.project_id || project.id,
@@ -983,7 +1006,7 @@ async function readTasksNow(context, projectId) {
   const observed = (answer.tasks || []).map((task) => observeTaskContent(task, { contentRead, coverage: "full" }));
   await Promise.all([
     writeTasksRecord(context.deviceId, projectId, tasksRecord(observed, columns, contentRead.readOrder), { accept: () => context.active(), contentRead }),
-    writeListedUserSession(context.deviceId, answer),
+    writeListedUserSession(context.deviceId, answer, () => context.active(), () => deviceScopedSyncOwns(context.deviceId)),
   ]);
 }
 
@@ -1012,7 +1035,7 @@ async function readTaskPagesNow(context, projectId) {
       if (!context.active()) return false;
       const [folded] = await Promise.all([
         foldTasksPage(tasksAddress(deviceId, projectId), stretch, (held) => held?.columns?.length ? held.columns : columns),
-        writeListedUserSession(deviceId, page),
+        writeListedUserSession(deviceId, page, () => context.active(), () => deviceScopedSyncOwns(deviceId)),
       ]);
       return folded;
     },
@@ -1835,6 +1858,7 @@ async function applyChanges(items, deviceId) {
   const context = syncContext(contextFor(deviceId));
   if (!context) return Promise.resolve();
   if (!holdingLock) return wakeScopedSyncChanges(deviceId, items);
+  void wakeScopedSyncChanges(deviceId, items).catch(() => {});
   context.pushing = true;
   const queues = queuesFor(context);
   const applied = await queues.body.enqueueApplied(context, items);
@@ -1858,12 +1882,19 @@ async function applyItem(context, item) {
   return applyEntityBodies(context, entityId, item);
 }
 
+async function applyDeviceState(context, entityId, state, metadataContext) {
+  if (!deviceScopedSyncOwns(context.deviceId)) return applyState(context, entityId, state, metadataContext);
+  await enrichDeviceRuntimeState(context.deviceId, entityId, state, () => context.active() && deviceScopedSyncOwns(context.deviceId));
+  const held = await heldValue(context, entityId, "row");
+  if (context.active() && deviceScopedSyncOwns(context.deviceId)) await writeSurfaces(context, entityId, held?.agents);
+}
+
 async function applyEntityBodies(context, entityId, item) {
   const scoped = whileOnBoard(context, entityId, pushFence());
   // Publish conversation bodies before state and expensive invalidation reads.
   if (item.thread) await applyThreadItem(scoped, entityId, item.thread);
   if (!scoped.active()) return;
-  if (item.state) await applyState(scoped, entityId, item.state, context);
+  if (item.state) await applyDeviceState(scoped, entityId, item.state, context);
   if (!scoped.active()) return;
   if (item.terminals) await applyTerminals(scoped, entityId, item.terminals);
   enqueuePushRemainder(scoped, item);
@@ -1945,6 +1976,19 @@ async function applySourceDiff(context, entityId, diff, source) {
  *  moved. An entity that finished, was deleted, or was cleared away appears in
  *  `removed`, and everything it had goes at once — its data and its row. */
 async function applyBoard(context, state) {
+  if (deviceScopedSyncOwns(context.deviceId)) {
+    await writeUsageLimits(context.deviceId, state.usage_limits);
+    await enrichDeviceRuntimeBoard(context.deviceId, state,
+      () => context.active() && deviceScopedSyncOwns(context.deviceId), { pushed: true });
+    // Current board invalidations normally carry only their revision. Carried
+    // runtime arrays are partial observations and never need a replacement pull.
+    if (Object.hasOwn(state, "revision") && !hasDeviceRuntimeCollections(state)) {
+      deferPush(context, "board", "board-runtime", () => readDeviceRuntimeBoard(context, "background"));
+    }
+    return;
+  }
+  const owner = context;
+  context = { ...owner, active: () => owner.active() && !deviceScopedSyncOwns(owner.deviceId) };
   notePushedLists(context, state);
   const before = {};
   const previousSources = state.projects ? projectTerminalScopes(await heldValue(context, "", "projects")) : null;
@@ -2070,6 +2114,8 @@ const isFeedRow = (state) => typeof state?.kind === "string" && state.kind !== "
 /** `state`: the feed row exactly as `board.list` carries it. A row whose work
  *  is over takes the workspace's data with it — nobody is coming back to it. */
 async function applyState(context, entityId, state, metadataContext = context) {
+  const owner = context;
+  context = { ...owner, active: () => owner.active() && !deviceScopedSyncOwns(owner.deviceId) };
   if (!isFeedRow(state)) return;
   const fence = pushFence();
   const review = state.review_summary && { projectId: state.project_id, ids: [state.review_summary.task_id] };
@@ -2131,16 +2177,18 @@ const tipRunsOnFromRecord = (tip, held) =>
 /** A thread tip carries the summaries changed by its message. Project agent
  * tips update only the project; workspace tips update both owning records. */
 async function applySessionTip(context, entityId, tip) {
+  const active = () => context.active() && !deviceScopedSyncOwns(context.deviceId);
+  if (!active()) return;
   const options = {
     threadAddress: agentThreadAddress(context, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id }),
     threadId: tip.thread_id, conversationId: tipKey(tip), threadGenerationRevision: tip.thread_generation_revision,
-    active: context.active,
+    active,
   };
   for (const [kind, id, session] of [
     ["workspaces", tip.workspace_id, tip.workspace_session],
     ["projects", tip.project_id, tip.project_session],
   ]) {
-    if (!context.active()) return;
+    if (!active()) return;
     if (!id) continue;
     if (options.threadGenerationRevision) notePush(addressOf(context, "", kind));
     await updateSessionSummary(addressOf(context, "", kind), kind, id, session, options);
@@ -2581,7 +2629,7 @@ function onVisibilityChange() {
 
 export function startCacheSync() {
   stopCacheSync();
-  startScopedSyncRuntime({ ownsLock: () => scopedWriterEligible,
+  startScopedSyncRuntime({ ownsLock: () => scopedWriterEligible, onError: pushError,
     request: (deviceId, method, params, scope) => {
       const context = syncContext(contextFor(deviceId));
       const readScope = { deviceId, entityId: scope.project_id || scope.task_id, kind: "scoped-sync", sub: JSON.stringify(scope) };

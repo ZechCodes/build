@@ -1,3 +1,4 @@
+import { pullDeviceProjection } from "../core/scopedDeviceReads.js";
 import { scopedCompactionEditorHtml, mountScopedCompactionEditor } from "../core/scopedCompactionEditor.js";
 // The cog at the right of the view-area toolbar: what this workspace is
 // called, what its agents start on, and the one way to take it away.
@@ -287,7 +288,7 @@ function mountDirectories(workspace, { callRpc, current, deviceId, draft, saveDr
         project = value;
         paint();
       });
-      void projectRecord.pull(async () => {
+      void pullDeviceProjection(deviceId, projectRecord, async () => {
         const listed = await callRpc("project.list");
         return (listed.projects || []).find((candidate) => candidate.project_id === sourceProjectId) || null;
       }).catch(() => {});

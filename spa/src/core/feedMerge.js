@@ -13,6 +13,7 @@
 // merge itself.
 
 import { deviceKey, workspaceKey } from "./deviceKey.js";
+import { entityIdOf } from "./entityId.js";
 
 /** Where each collection comes from on the wire. The redesigned feed is one row
  *  per work item; the legacy collections below still ship, and still feed what
@@ -200,4 +201,15 @@ export function deviceView(feed, deviceId) {
   if (!feed) return EMPTY_VIEW;
   if (!feed.devices) return feed;
   return feed.devices[deviceId] || EMPTY_VIEW;
+}
+
+/** Device items establish membership; live run bodies supply the observed
+ * branch name. Joining never promotes a runtime-only run into the inbox. */
+export function branchRowsIn(snapshot) {
+  return (snapshot?.items || []).filter((row) => row.kind === "branch").map((row) => {
+    const owner = row.run_id || row.entity_id;
+    const run = owner && (snapshot.runs || []).find((candidate) => entityIdOf(candidate) === owner
+      && candidate.project_id === row.project_id && candidate.deviceId === row.deviceId);
+    return run && Object.hasOwn(run, "branch") ? { ...row, branch: run.branch } : row;
+  });
 }

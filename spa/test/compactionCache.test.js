@@ -79,6 +79,42 @@ it("refreshes held settings and agent observations from authority, retaining oth
   expect(call).toHaveBeenCalledWith("agent.list", { entity_id: "owner", include_project_workers: true });
 });
 
+it("refreshes only compaction fields in device-owned project settings", async () => {
+  const addr = address("project-settings", "project");
+  const current = { project_id: "project", name: "Current directory", path: "/synthetic/current", sources: [{ id: "source-current" }] };
+  await writeCached(addr, current);
+  const policy = { compaction_thresholds: { codex: 100 }, compaction: { effective: {} } };
+  const call = vi.fn(async () => ({ projects: [{ project_id: "project", name: "Older directory", path: "/synthetic/older", ...policy }] }));
+  await refreshCompactionCaches({ ...context(call), apiVersion: "3.34.0", capabilities: { ...capabilities, sync: { device: true } } },
+    { scope: "project", owner_id: "project" });
+  expect((await readCached(addr)).value).toEqual({ ...current, ...policy });
+});
+
+it("keeps the legacy project settings refresh on device wire 3.33", async () => {
+  const addr = address("project-settings", "project");
+  await writeCached(addr, { project_id: "project", name: "Held directory" });
+  const incoming = { project_id: "project", name: "Legacy directory", compaction_thresholds: { codex: 100 } };
+  await refreshCompactionCaches({ ...context(async () => ({ projects: [incoming] })), apiVersion: "3.33.0",
+    capabilities: { ...capabilities, sync: { device: true } } }, { scope: "project", owner_id: "project" });
+  expect((await readCached(addr)).value).toEqual(incoming);
+});
+
+it.each(["3.33.0", "3.34.0"])("uses the accepted %s greeting for compaction directory ownership", async (apiVersion) => {
+  const { greetBridge, dispatchChangeEvent, resetChangeEvents } = await import("../src/core/changeEvents.js");
+  resetChangeEvents();
+  const addr = address("project-settings", "project");
+  await writeCached(addr, { project_id: "project", name: "Engine directory" });
+  const call = vi.fn(async (method) => method === "session.hello"
+    ? { api_version: apiVersion, capabilities: [capability, "sync.device"] }
+    : { projects: [{ project_id: "project", name: "Legacy directory", compaction_thresholds: { codex: 100 } }] });
+  try {
+    await greetBridge(call, { deviceId: "device" });
+    dispatchChangeEvent({ type: "compaction.changed", scope: "project", owner_id: "project" }, "device");
+    await vi.waitFor(async () => expect((await readCached(addr)).value.compaction_thresholds?.codex).toBe(100));
+    expect((await readCached(addr)).value.name).toBe(apiVersion === "3.34.0" ? "Engine directory" : "Legacy directory");
+  } finally { resetChangeEvents(); }
+});
+
 it("a newer cache write or retired greeting fences an in-flight observation", async () => {
   const addr = address("row", "owner");
   await writeCached(addr, { agents: [{ id: "agent", compaction: observation }] });

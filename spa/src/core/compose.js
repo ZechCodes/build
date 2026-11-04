@@ -12,6 +12,7 @@
 
 import { esc } from "./text.js";
 import { fieldTraits } from "./fieldTraits.js";
+import { branchRowsIn } from "./feedMerge.js";
 
 /** Where captures wait out an offline device. Browser-scoped, like every other
  *  thing this client keeps for itself. */
@@ -232,8 +233,8 @@ export function composeBoxHtml({ value = "", placeholder, note = "", error = "",
 // it makes is the same kind of thing a routed capture makes.
 
 /** The branches a project already has, once each, as the panel offers them. */
-export function branchOptions(items, projectId) {
-  const names = (items || [])
+export function branchOptions(items, projectId, runs = []) {
+  const names = branchRowsIn({ items, runs })
     .filter((row) => row.kind === "branch" && row.project_id === projectId && row.branch)
     .map((row) => row.branch);
   return [...new Set(names)];

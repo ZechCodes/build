@@ -829,7 +829,7 @@ function refreshCompactionOn(deviceId, event) {
   const state = bridgeFor(deviceId);
   const adapter = state?.adapter;
   if (!adapter?.capabilities.compaction?.harnessThresholds) return;
-  void invalidateCompactionCaches({ deviceId, call: adapter.call, capabilities: adapter.capabilities,
+  void invalidateCompactionCaches({ deviceId, call: adapter.call, capabilities: adapter.capabilities, apiVersion: state.apiVersion,
     active: () => state.current() && bridgeFor(deviceId)?.adapter === adapter }, event);
 }
 

@@ -4,6 +4,7 @@ import { entityIdOf } from "./entityId.js";
 import { trailingRead } from "./trailingRead.js";
 import { notePush } from "./pushFence.js";
 import { cachedAddresses, captureCachedRecord, mergeCachedRecordsTogether, readCachedMany, recordWriteOf } from "./localCache.js";
+import { supportsDeviceSync } from "./deviceSyncSupport.js";
 
 const scopes = new Set(["device", "project", "workspace", "conversation"]);
 const kinds = new Set(["settings", "project-settings", "workspace-settings", "row", "project-agents", "feed", "projects", "device-projects", "workspaces"]);
@@ -53,21 +54,26 @@ function projectFields(row, projects) {
   return fresh ? { ...row, ...fieldsOf(fresh, settingsFields) } : row;
 }
 
-function projectJobs(jobs, address) {
+function projectSettingsValue(held, projects, projectId, deviceSync) {
+  if (deviceSync) return projectFields(held || { project_id: projectId }, projects);
+  return projects.find((row) => row.project_id === projectId) || null;
+}
+
+function projectJobs(jobs, address, deviceSync) {
   if (!["project-settings", "projects", "device-projects", "feed"].includes(address.kind)) return;
   addJob(jobs, "project.list", {}, address, (held, answer) => {
     if (!Array.isArray(answer?.projects)) return null;
-    if (address.kind === "project-settings") return answer.projects.find((row) => row.project_id === address.entityId) || null;
+    if (address.kind === "project-settings") return projectSettingsValue(held, answer.projects, address.entityId, deviceSync);
     if (Array.isArray(held)) return held.map((row) => projectFields(row, answer.projects));
     return { ...held, projects: (held?.projects || []).map((row) => projectFields(row, answer.projects)) };
   });
 }
 
-function settingsJobs(jobs, address) {
+function settingsJobs(jobs, address, deviceSync) {
   if (address.kind === "settings") addJob(jobs, "settings.get", {}, address, (_held, answer) => answer);
   if (address.kind === "workspace-settings") addJob(jobs, "workspace.get", { workspace_id: address.entityId }, address,
     (_held, answer) => answer?.workspace_id === address.entityId ? answer : null);
-  projectJobs(jobs, address);
+  projectJobs(jobs, address, deviceSync);
   if (!["workspaces", "feed"].includes(address.kind)) return;
   addJob(jobs, "workspace.list", {}, address, (held, answer) => {
     if (!Array.isArray(answer?.workspaces)) return null;
@@ -136,9 +142,10 @@ export async function refreshCompactionCaches(context, event) {
   const addresses = affectedAddresses(context.deviceId, await cachedAddresses({ deviceId: context.deviceId }), events);
   const records = await readCachedMany(addresses);
   const jobs = new Map();
+  const deviceSync = supportsDeviceSync(context.capabilities, context.apiVersion || "0.0.0");
   addresses.forEach((address, index) => {
     markDependencies(address, records[index]?.value);
-    settingsJobs(jobs, address);
+    settingsJobs(jobs, address, deviceSync);
     agentJobs(jobs, address, records[index]?.value, context.capabilities);
   });
   for (const job of jobs.values()) {

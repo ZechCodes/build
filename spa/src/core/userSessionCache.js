@@ -9,7 +9,7 @@
 // Dashboard tells whether the user was away at that moment
 // (core/trackerDashboardModel.js). Nothing here reads this device's clock.
 
-import { deleteCached, mergeCachedAtomically, readCached } from "./localCache.js";
+import { DELETE_CACHED_RECORD, mergeCachedAtomically, mergeCachedRecordsTogether, readCached } from "./localCache.js";
 import { standingOf } from "./trackerDashboardModel.js";
 
 export const USER_SESSION_KIND = "user-session";
@@ -66,12 +66,24 @@ export function writeUserSession(deviceId, answer, accept = () => true) {
  *  dropped with it. The Dashboard reads a held session as the bridge carrying
  *  Done since you left (core/trackerTasksPane.js); a stale one would cut
  *  Done off at a time rows without `done_at` cannot answer to (#104 review). */
-export async function writeListedUserSession(deviceId, answer) {
+function sessionClock(held, session) {
+  if (!held || !Number.isFinite(session?.now_ms) || (held.now_ms ?? -Infinity) >= session.now_ms) return null;
+  return { ...held, now_ms: session.now_ms };
+}
+
+function listedSessionValue(held, session, clockOnly) {
+  // Device rows own durable session facts; tasks.list still observes the
+  // bridge's current clock, which the device projection deliberately omits.
+  if (clockOnly) return sessionClock(held, session);
+  if (session) return newer(held, session) ? session : null;
+  return held ? DELETE_CACHED_RECORD : null;
+}
+
+export async function writeListedUserSession(deviceId, answer, accept = () => true, clockOnly = () => false) {
   if (!answer) return false;
-  if (userSessionOf(answer)) return writeUserSession(deviceId, answer);
-  if (!(await readCached(userSessionAddress(deviceId)))) return false;
-  await deleteCached([userSessionAddress(deviceId)]);
-  return true;
+  const session = userSessionOf(answer);
+  return mergeCachedRecordsTogether([userSessionAddress(deviceId)], ([held]) =>
+    accept() ? [listedSessionValue(held?.value, session, clockOnly())] : null);
 }
 
 export async function readUserSession(deviceId) {

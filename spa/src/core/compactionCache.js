@@ -53,21 +53,23 @@ function projectFields(row, projects) {
   return fresh ? { ...row, ...fieldsOf(fresh, settingsFields) } : row;
 }
 
-function projectJobs(jobs, address) {
+function projectJobs(jobs, address, capabilities) {
   if (!["project-settings", "projects", "device-projects", "feed"].includes(address.kind)) return;
   addJob(jobs, "project.list", {}, address, (held, answer) => {
     if (!Array.isArray(answer?.projects)) return null;
-    if (address.kind === "project-settings") return answer.projects.find((row) => row.project_id === address.entityId) || null;
+    if (address.kind === "project-settings") return capabilities.sync?.device
+      ? projectFields(held || { project_id: address.entityId }, answer.projects)
+      : answer.projects.find((row) => row.project_id === address.entityId) || null;
     if (Array.isArray(held)) return held.map((row) => projectFields(row, answer.projects));
     return { ...held, projects: (held?.projects || []).map((row) => projectFields(row, answer.projects)) };
   });
 }
 
-function settingsJobs(jobs, address) {
+function settingsJobs(jobs, address, capabilities) {
   if (address.kind === "settings") addJob(jobs, "settings.get", {}, address, (_held, answer) => answer);
   if (address.kind === "workspace-settings") addJob(jobs, "workspace.get", { workspace_id: address.entityId }, address,
     (_held, answer) => answer?.workspace_id === address.entityId ? answer : null);
-  projectJobs(jobs, address);
+  projectJobs(jobs, address, capabilities);
   if (!["workspaces", "feed"].includes(address.kind)) return;
   addJob(jobs, "workspace.list", {}, address, (held, answer) => {
     if (!Array.isArray(answer?.workspaces)) return null;
@@ -138,7 +140,7 @@ export async function refreshCompactionCaches(context, event) {
   const jobs = new Map();
   addresses.forEach((address, index) => {
     markDependencies(address, records[index]?.value);
-    settingsJobs(jobs, address);
+    settingsJobs(jobs, address, context.capabilities);
     agentJobs(jobs, address, records[index]?.value, context.capabilities);
   });
   for (const job of jobs.values()) {

@@ -1,6 +1,5 @@
 // Columns are project metadata, independent of a journal query's membership.
 // Updating them must never make an old whole-list replica look newly read.
-import { readCanonicalCached } from "./localCache.js";
 import { captureTaskContentRead, mergeTaskContentRecordsTogether } from "./taskContentAuthority.js";
 import { tasksAddress } from "./trackerCache.js";
 
@@ -9,9 +8,8 @@ const sameLifetime = (read, context) => ["storeGeneration", "scopeGeneration", "
   .every((field) => read.ticket?.[field] && read.ticket[field] === context[field]);
 
 export async function refreshScopedProjectColumns({ deviceId, projectId, callRpc, active }) {
+  if (!active()) return false;
   const address = tasksAddress(deviceId, projectId);
-  const held = await readCanonicalCached(address);
-  if (!active() || hasColumns(held?.value)) return false;
   const scope = { deviceId, projectId };
   const contentRead = await captureTaskContentRead(scope, { revalidate: "summary" });
   if (!active()) return false;

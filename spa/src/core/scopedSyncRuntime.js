@@ -1,9 +1,9 @@
-// Runtime ownership joins mounted scope registrations to the one actual sync
-// lock holder. Followers keep their caches and registrations without writing.
+// Runtime joins mounted registrations to the lock holder or a bounded-timeout
+// worker. Cursor compare-and-swap protects competing recovery publications.
 import { captureDeviceGreeting, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
 import { bridgeCapabilities, onBridgeGreeted } from "./changeEvents.js";
 import { createScopedSyncEngine } from "./scopedSyncEngine.js";
-import { trackedSyncScopes, scopeIsTracked } from "./scopedSyncRegistry.js";
+import { projectSyncScope, trackedSyncScopes, scopeIsTracked } from "./scopedSyncRegistry.js";
 import { broadcastScopedSyncWake, subscribeScopedSyncWakes, subscribeScopedSyncScopes } from "./scopedSyncRegistry.js";
 import { subscribeCache } from "./localCache.js";
 import { refreshScopedProjectColumns } from "./scopedProjectColumns.js";
@@ -26,8 +26,7 @@ const browserLockAvailable = () => typeof globalThis.navigator?.locks?.request =
 export const scopedSyncWriter = () => Boolean(browserLockAvailable() && runtime?.ownsLock());
 export const scopedSyncOwns = (deviceId, scope) => browserLockAvailable() && supported(bridgeCapabilities(deviceId), scope)
   && scopeIsTracked(deviceId, scope);
-export const projectScopedSyncOwns = (deviceId, projectId) => trackedSyncScopes(deviceId).some(({ scope }) =>
-  scope.kind === "project_tasks" && scope.project_id === projectId && scopedSyncOwns(deviceId, scope));
+export const projectScopedSyncOwns = (deviceId, projectId) => scopedSyncOwns(deviceId, projectSyncScope(projectId));
 
 function retire(deviceId) {
   engines.get(deviceId)?.engine.dispose();

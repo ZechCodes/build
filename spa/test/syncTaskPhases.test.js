@@ -137,7 +137,7 @@ describe("project tasks split around the inbox phase", () => {
 });
 
 describe("scoped task phase ownership", () => {
-  it("wakes durable recovery without legacy page writes for tracked projects", async () => {
+  it("wakes durable recovery without legacy page writes for the tracked unfiltered default-order query", async () => {
     scoped.owns = true;
     const { pass, ask } = fixture();
     await pass.first("p1");

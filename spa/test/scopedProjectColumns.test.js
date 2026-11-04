@@ -34,3 +34,14 @@ describe("scoped project columns metadata", () => {
       columns: [{ id: "custom", name: "Custom" }] });
   });
 });
+
+it("refreshes cached columns after rename, addition and reordering while preserving task membership", async () => {
+  const address = tracker.tasksAddress("d1", "p1"), held = { id: "held-task" };
+  await cache.writeCached(address, { tasks: [held], read_order: 123,
+    columns: [{ id: "ready", name: "Ready" }, { id: "backlog", name: "Backlog" }] });
+  const columns = [{ id: "backlog", name: "Queued" }, { id: "custom", name: "Custom" }, { id: "ready", name: "Ready" }];
+  const callRpc = vi.fn(async () => ({ columns }));
+  await refreshScopedProjectColumns(options(callRpc));
+  expect(callRpc).toHaveBeenCalledExactlyOnceWith("tasks.columns", { project_id: "p1" });
+  expect(await tracker.readTasksRecord("d1", "p1")).toEqual({ tasks: [held], read_order: 123, columns });
+});

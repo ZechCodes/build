@@ -12,8 +12,9 @@ import { commitPatchParams } from "./commitDiffTarget.js";
 //   the pushes         three subscriptions per device carry bodies, and this
 //                      module writes them where the views are already looking.
 //
-// One tab per browser holds the sync lock and does all of it; every other tab
-// reads the same database and hears the writes (core/localCache.js).
+// The sync lock selects the usual writer. A bounded timeout admits recovery
+// beside a frozen holder; atomic cursor comparisons protect competing workers.
+// Every tab reads the same database and hears writes (core/localCache.js).
 //
 // Everything here is fire-and-forget against the cache and forgiving of the
 // wire: a failed read is a cold record, never an error the user sees.
@@ -168,7 +169,7 @@ export {
 // ─── What this module holds ──────────────────────────────────────────────────
 
 let holdingLock = false;
-let holdingScopedLock = false;
+let scopedWriterEligible = false;
 let releaseLock = null;
 let lockWait = null; // the bounded queue for the lock, while it is running
 let visibilityWired = false;
@@ -2518,7 +2519,7 @@ function acquireLock() {
   }
   // Queued, but not for ever: a holder that has been frozen where it stands
   // cannot do the job and cannot hand the lock back (see LOCK_WAIT_MS).
-  lockWait = setTimeout(() => { if (startedIn === lifetime) takeLock(); }, LOCK_WAIT_MS);
+  lockWait = setTimeout(() => { if (startedIn === lifetime) takeLock(true); }, LOCK_WAIT_MS);
   locks
     .request(SYNC_LOCK, () => {
       if (startedIn !== lifetime) return;
@@ -2532,14 +2533,14 @@ function acquireLock() {
     });
 }
 
-/** The lock is ours: whatever is already open gets its pass now. The grant can
- *  arrive long after `startCacheSync` — another tab held it — so the devices
- *  are considered here rather than at start. */
-function takeLock(actualGrant = false) {
+/** A grant or bounded timeout admits this worker. The grant can arrive long
+ *  after startup; a timed-out worker uses transactional cursor comparisons
+ *  if the previous holder resumes. Old browsers retain their legacy pass. */
+function takeLock(scopedEligible = false) {
   clearTimeout(lockWait);
   lockWait = null;
   holdingLock = true;
-  holdingScopedLock ||= actualGrant;
+  scopedWriterEligible ||= scopedEligible;
   reconcileScopedSyncRuntime();
   considerDevices();
 }
@@ -2579,7 +2580,7 @@ function onVisibilityChange() {
 
 export function startCacheSync() {
   stopCacheSync();
-  startScopedSyncRuntime({ ownsLock: () => holdingScopedLock,
+  startScopedSyncRuntime({ ownsLock: () => scopedWriterEligible,
     request: (deviceId, method, params, scope) => {
       const context = syncContext(contextFor(deviceId));
       const readScope = { deviceId, entityId: scope.project_id || scope.task_id, kind: "scoped-sync", sub: JSON.stringify(scope) };
@@ -2614,7 +2615,7 @@ function disposeCacheWatches() {
 }
 
 export function stopCacheSync() {
-  holdingScopedLock = false;
+  scopedWriterEligible = false;
   stopScopedSyncRuntime();
   if (stopDeviceWatch) stopDeviceWatch();
   stopDeviceWatch = null;

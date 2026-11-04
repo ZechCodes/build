@@ -16,7 +16,7 @@ vi.mock("../src/core/scopedSyncRegistry.js", () => ({
   broadcastScopedSyncWake: (...args) => fake.broadcast(...args),
   subscribeScopedSyncWakes: (fn) => { fake.woken = fn; return () => {}; },
   subscribeScopedSyncScopes: (fn) => { fake.scopeChanged = fn; return () => {}; },
-  projectSyncScope: (projectId, filters = {}) => ({ kind: "project_tasks", project_id: projectId, filters }),
+  projectSyncScope: (projectId, filters = {}) => ({ kind: "project_tasks", project_id: projectId, filters, order: "number" }),
 }));
 vi.mock("../src/core/scopedSyncEngine.js", () => ({ createScopedSyncEngine: (options) => {
   const engine = { options, track: vi.fn(), untrack: vi.fn(), dispose: vi.fn(), catchUp: vi.fn(async () => true), wake: vi.fn(async () => true) };
@@ -37,7 +37,7 @@ beforeEach(async () => {
   runtime = await import("../src/core/scopedSyncRuntime.js");
 });
 describe("scoped sync runtime ownership", () => {
-  it("does not create an engine for the legacy lock timeout fallback", () => {
+  it("waits for grant or bounded timeout eligibility before creating an engine", () => {
     runtime.startScopedSyncRuntime({ ownsLock: () => fake.lock, request: vi.fn() });
     expect(fake.engines).toHaveLength(0);
     expect(runtime.scopedSyncOwns("d1", scope)).toBe(true);
@@ -143,5 +143,27 @@ it("forwards only tracked scopes named by a follower's task push", async () => {
   fake.broadcast.mockClear();
   await runtime.wakeScopedSyncChanges("d1", [{ entity_id: "other", tasks: { task_ids: ["t1"] } }]);
   expect(fake.broadcast).not.toHaveBeenCalled();
+  runtime.stopScopedSyncRuntime();
+});
+
+it.each([
+  [{ states: ["open"] }, "number", false],
+  [{}, "priority", false],
+  [{}, "number", true],
+])("yields whole-project legacy reads only to the exact default-order scope (%j, %s)", (filters, order, owns) => {
+  fake.scopes = [{ scope: { kind: "project_tasks", project_id: "p1", filters, order }, projectId: "p1", key: "query" }];
+  expect(runtime.projectScopedSyncOwns("d1", "p1")).toBe(owns);
+});
+
+it.each(["reconnect", "foreground", "task push"])("prepares project columns on %s recovery", async (trigger) => {
+  fake.lock = true;
+  const projectScope = { kind: "project_tasks", project_id: "p1", filters: {}, order: "number" };
+  fake.scopes = [{ scope: projectScope, projectId: "p1", key: "project" }];
+  runtime.startScopedSyncRuntime({ ownsLock: () => fake.lock, request: vi.fn() });
+  fake.columns.mockClear();
+  if (trigger === "reconnect") { fake.contexts[0].session = {}; fake.changed(); }
+  if (trigger === "foreground") await runtime.wakeScopedSync("d1");
+  if (trigger === "task push") await runtime.wakeScopedSyncChanges("d1", [{ entity_id: "p1", tasks: { task_ids: ["task-2"] } }]);
+  expect(fake.columns).toHaveBeenCalledWith(expect.objectContaining({ deviceId: "d1", projectId: "p1" }));
   runtime.stopScopedSyncRuntime();
 });

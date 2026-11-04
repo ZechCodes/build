@@ -92,7 +92,7 @@ function writeDirectories(rows, writer, deviceId) {
     writer.set(deviceRoot(deviceId, "project-settings", record.key), DELETE_CACHED_RECORD);
   }
   const fullOwners = deviceOwners(rows, held, deviceId);
-  const rosters = deviceProjectRosters(rows, fullOwners);
+  const rosters = deviceProjectRosters(rows, fullOwners, held);
   const owners = deviceListedOwners(fullOwners, rosters);
   for (const [owner, row] of owners) {
     writer.set(deviceRoot(deviceId, "row", owner), row);
@@ -100,8 +100,18 @@ function writeDirectories(rows, writer, deviceId) {
   for (const [owner, roster] of rosters) {
     writer.set(deviceRoot(deviceId, "project-agents", owner), { ...held("project-agents", owner), ...roster });
   }
+  removeUnclassifiedOwners(rows, fullOwners, rosters, writer, deviceId);
   removeDeletedOwners(rows, owners, rosters, writer, deviceId);
   writer.set(deviceRoot(deviceId, "feed"), deviceFeed(rows, owners, directories, held, deviceId));
+}
+
+function removeUnclassifiedOwners(rows, owners, rosters, writer, deviceId) {
+  for (const record of rows.values()) {
+    const owner = sourceRow(record)?.owner_id;
+    if (!owner) continue;
+    if (!owners.has(owner)) writer.set(deviceRoot(deviceId, "row", owner), DELETE_CACHED_RECORD);
+    if (!rosters.has(owner)) writer.set(deviceRoot(deviceId, "project-agents", owner), DELETE_CACHED_RECORD);
+  }
 }
 
 function removeDeletedOwners(rows, owners, rosters, writer, deviceId) {

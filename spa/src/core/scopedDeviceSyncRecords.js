@@ -30,7 +30,6 @@ function agentProjection(agent, conversation, identity, previous) {
 }
 
 const ownerIdOf = (agents, field, id) => agents.find((agent) => agent[field] === id)?.owner_id;
-const projectOwner = (agents, id) => agents.find((agent) => agent.project_id === id && !agent.workspace_id)?.owner_id;
 const mergeList = (held, incoming, deleted, idOf) => {
   const next = new Map((held || []).filter((row) => !deleted.has(idOf(row))).map((row) => [idOf(row), row]));
   for (const row of incoming) next.set(idOf(row), { ...next.get(idOf(row)), ...row });
@@ -38,15 +37,38 @@ const mergeList = (held, incoming, deleted, idOf) => {
 };
 const deletedKeys = (rows, kind) => new Set([...rows.values()].filter((entry) => entry.kind === kind && entry.deleted).map((entry) => entry.key));
 
+function projectOwners(rows, held) {
+  const retired = deletedKeys(rows, "owner_session");
+  const selected = heldProjectOwners(held("projects"), retired);
+  const identities = new Map(valuesOf(rows, "identity").map((row) => [row.agent_id, row]));
+  for (const agent of valuesOf(rows, "agent")) {
+    if (agent.project_id && !retired.has(agent.owner_id)
+      && ["coordinator", "worker"].includes(identities.get(agent.id)?.project_role)) selected.set(agent.project_id, agent.owner_id);
+  }
+  for (const owner of valuesOf(rows, "owner_session")) {
+    if (owner.project_id && typeof owner.pinned_agent_id === "string") selected.set(owner.project_id, owner.owner_id);
+  }
+  return selected;
+}
+
+function heldProjectOwners(projects = [], retired) {
+  const selected = new Map();
+  for (const project of projects) {
+    const owner = project.entity_id || project.run_id;
+    if (owner && !retired.has(owner)) selected.set(project.id || project.project_id, owner);
+  }
+  return selected;
+}
+
 export function deviceDirectories(rows, held, deviceId) {
   const agents = valuesOf(rows, "agent"), sources = valuesOf(rows, "project_source"), directories = valuesOf(rows, "workspace_directory");
   const lifecycles = new Map(valuesOf(rows, "workspace_lifecycle").map((row) => [row.workspace_id, row]));
   const projectSessions = new Map(valuesOf(rows, "project_session").map((row) => [row.project_id, row]));
   const ownerRows = valuesOf(rows, "owner_session");
   const ownerSessions = new Map(ownerRows.filter((row) => row.workspace_id).map((row) => [row.workspace_id, row]));
+  const projectOwnersById = projectOwners(rows, held);
   const projects = valuesOf(rows, "project").map((project) => stampProject({ ...project,
-    ...sessionProjection(projectSessions.get(project.project_id)), entity_id: projectOwner(agents, project.project_id)
-      || ownerRows.find((owner) => owner.project_id === project.project_id && !owner.workspace_id)?.owner_id || project.entity_id,
+    ...sessionProjection(projectSessions.get(project.project_id)), entity_id: projectOwnersById.get(project.project_id) ?? null,
     sources: sources.filter((source) => source.project_id === project.project_id) }, deviceId));
   const workspaces = valuesOf(rows, "workspace").map((workspace) => stampWorkspace({ ...workspace,
     ...sessionProjection(ownerSessions.get(workspace.id)),
@@ -85,10 +107,10 @@ function oldAgent(held, ownerId, id) {
   return rosterAgent ? preserveConversationRead(rowAgent, rosterAgent) : rowAgent;
 }
 
-function ownerRow(owner, agents, conversations, session, held, deviceId) {
+function ownerRow(owner, agents, conversations, session, held, deviceId, projectOwnerIds) {
   const previous = held("row", owner), first = agents[0] || session;
   const summaries = agents.map((agent) => conversations.get(agent.id)).filter(Boolean);
-  return stampRow({ ...previous, kind: first.workspace_id ? "branch" : "project", entity_id: owner,
+  return stampRow({ ...previous, kind: ownerKind(owner, first, previous, projectOwnerIds), entity_id: owner,
     run_id: owner, project_id: first.project_id, workspace_id: first.workspace_id,
     agents, ...ownerAttention(agents),
     muted: summaries.length > 0 && summaries.every((row) => row.muted),
@@ -96,6 +118,14 @@ function ownerRow(owner, agents, conversations, session, held, deviceId) {
     pending: summaries.some((row) => row.pending),
     ...conversationActivity(previous, summaries),
   }, deviceId);
+}
+
+function ownerKind(owner, first, previous, projectOwnerIds) {
+  if (projectOwnerIds.has(owner)) return "project";
+  if (first.workspace_id) return "branch";
+  // A null workspace link is also normal for legacy plan/run owners. Keep a
+  // known non-project kind; missing registry linkage never establishes one.
+  return previous?.kind && previous.kind !== "project" ? previous.kind : undefined;
 }
 
 function ownerAttention(agents) {
@@ -116,6 +146,7 @@ export function deviceOwners(rows, held, deviceId) {
   const identities = new Map(valuesOf(rows, "identity").map((row) => [row.agent_id, row]));
   const sessions = new Map(valuesOf(rows, "owner_session").map((row) => [row.owner_id, row]));
   const retired = deletedKeys(rows, "owner_session");
+  const projectOwnerIds = new Set(projectOwners(rows, held).values());
   const owners = new Map();
   for (const agent of valuesOf(rows, "agent")) {
     if (retired.has(agent.owner_id)) continue;
@@ -127,10 +158,13 @@ export function deviceOwners(rows, held, deviceId) {
   for (const agents of owners.values()) agents.sort((a, b) => a.ordinal - b.ordinal || a.id.localeCompare(b.id));
   return new Map([...owners].map(([owner, agents]) => {
     const session = sessions.get(owner);
-    const row = ownerRow(owner, agents, conversations, session, held, deviceId);
+    const row = ownerRow(owner, agents, conversations, session, held, deviceId, projectOwnerIds);
+    // Unlinked legacy owners have no active rail consumer; retain raw facts
+    // until a registered workspace, project authority or held kind identifies them.
+    if (!row.kind) return null;
     Object.assign(row, sessionProjection(session));
     return [owner, row];
-  }));
+  }).filter(Boolean));
 }
 
 export function deviceListedOwners(owners, rosters) {
@@ -144,19 +178,15 @@ export function deviceListedOwners(owners, rosters) {
   }));
 }
 
-export function deviceProjectRosters(rows, owners) {
+export function deviceProjectRosters(rows, owners, held) {
   const sessions = new Map(valuesOf(rows, "owner_session").map((row) => [row.owner_id, row]));
+  const projectOwnerIds = new Set(projectOwners(rows, held).values());
   const rosters = new Map();
   for (const [owner, row] of owners) {
-    if (row.workspace_id) continue;
+    if (!projectOwnerIds.has(owner)) continue;
     // The explicit pin and identity role are independent persisted facts;
     // neither a roster's order nor a missing agent can establish a coordinator.
     rosters.set(owner, { entity_id: owner, pinned_agent_id: sessions.get(owner)?.pinned_agent_id ?? null, agents: row.agents });
-  }
-  for (const [owner, session] of sessions) {
-    if (!session.workspace_id && session.project_id && !rosters.has(owner)) {
-      rosters.set(owner, { entity_id: owner, pinned_agent_id: session.pinned_agent_id, agents: [] });
-    }
   }
   return rosters;
 }

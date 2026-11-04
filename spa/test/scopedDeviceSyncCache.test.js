@@ -87,6 +87,37 @@ it("null roles remain null even when an owner has an explicit pin", async () => 
   expect((await raw("project-agents", "project-owner")).agents.map((agent) => agent.project_role)).toEqual([null, null]);
 });
 
+const legacyUnlinkedOwner = () => {
+  const records = projectOwnerRecords({ pin: null, roles: false }).filter((record) => record.key !== "coordinator");
+  return records.map((record) => {
+    const row = { ...record.row, owner_id: "legacy-owner" };
+    if (record.kind === "agent") Object.assign(row, { id: "legacy-agent", conversation_id: "legacy-agent" });
+    if (record.kind === "identity") Object.assign(row, { agent_id: "legacy-agent" });
+    return deviceRecord(record.kind, record.kind === "owner_session" ? "legacy-owner" : "legacy-agent", row);
+  });
+};
+
+it.each(["coordinator", null])("an unrelated null-workspace legacy owner cannot steal a project owner proven by pin=%s or roles", async (pin) => {
+  const writer = create();
+  await cache.writeCached(address("project-agents", "legacy-owner"), { entity_id: "legacy-owner", pinned_agent_id: null, agents: [] });
+  await publish(writer, [...deviceRecords(), ...legacyUnlinkedOwner(), ...projectOwnerRecords({ pin })], { snapshot: true });
+  expect((await raw("projects"))[0].entity_id).toBe("project-owner");
+  expect(await raw("project-agents", "legacy-owner")).toBeUndefined();
+  expect(await raw("project-agents", "project-owner")).toMatchObject({ pinned_agent_id: pin });
+  expect(await raw("row", "legacy-owner")).toBeUndefined();
+});
+
+it("an unresolved legacy null-role project keeps its held directory owner without promoting unrelated owners", async () => {
+  const writer = create();
+  await cache.writeCached(address("projects"), [{ id: "proj-1", project_id: "proj-1", entity_id: "project-owner" }]);
+  await cache.writeCached(address("row", "legacy-owner"), { kind: "plan", entity_id: "legacy-owner", agents: [] });
+  await publish(writer, [...deviceRecords(), ...legacyUnlinkedOwner(), ...projectOwnerRecords({ pin: null, roles: false })], { snapshot: true });
+  expect((await raw("projects"))[0].entity_id).toBe("project-owner");
+  expect(await raw("project-agents", "project-owner")).toMatchObject({ pinned_agent_id: null });
+  expect(await raw("project-agents", "legacy-owner")).toBeUndefined();
+  expect((await raw("row", "legacy-owner")).kind).toBe("plan");
+});
+
 it("a live owner session with no agent keeps its exact conversation anchor until its tombstone", async () => {
   const writer = create();
   const owner = projectOwnerRecords({ pin: "missing-agent" }).find((record) => record.kind === "owner_session");

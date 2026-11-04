@@ -17,7 +17,7 @@ export function deviceRecords() {
     record("user_session", "current", { session_started_ms: 1793534400000, last_activity_ms: 1793534400000, previous_session_ended_ms: null }),
     record("archived_worktree", "archive-1", { id: "archive-1", project_id: "proj-1", name: "Synthetic archive", path: "/synthetic/archive", branch: "finished", head_sha: "synthetic-head", action: "delete", status: "archived", archived_at: "2026-11-01T12:00:00Z" }),
     record("workspace_lifecycle", "workspace-1", { workspace_id: "workspace-1", pruned_bytes: 100, pruned_at_ms: 1793534400000, noticed_at_ms: null, size_bytes: 200, size_measured_at_ms: 1793534400000 }),
-    record("owner_session", "owner-1", { owner_id: "owner-1", project_id: "proj-1", workspace_id: "workspace-1", pinned_agent_id: "agent-1", session_started_ms: 1793534400000, last_activity_ms: 1793534400000, retained_last_activity_ms: 1793534300000 }),
+    record("owner_session", "owner-1", { owner_id: "owner-1", project_id: "proj-1", workspace_id: "workspace-1", pinned_agent_id: null, session_started_ms: 1793534400000, last_activity_ms: 1793534400000, retained_last_activity_ms: 1793534300000 }),
     record("project_session", "proj-1", { project_id: "proj-1", session_started_ms: 1793534400000, last_activity_ms: 1793534400000, retained_last_activity_ms: 1793534300000 }),
   ];
 }

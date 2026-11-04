@@ -105,6 +105,7 @@ impl AppState {
             call: Box::new(job),
             params: Value::Null,
             invalidates: true,
+            registry_change: true,
             #[cfg(test)]
             gate: None,
         })));

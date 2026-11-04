@@ -295,6 +295,8 @@ pub struct AppState {
     source_moves: projects::SourceMoves,
     /// Deferred filesystem work claimed under the mutex and not yet applied.
     active_deferred_filesystem_jobs: usize,
+    /// Only jobs that can publish project/workspace registry changes fence sync.
+    active_device_registry_jobs: usize,
     worktrees_root: std::path::PathBuf,
     /// Durable multi-source workspaces plus adopted legacy Git-root checkouts.
     workspaces: crate::workspace::WorkspaceRegistry,
@@ -699,6 +701,7 @@ impl AppState {
             device_lifecycle_dirty: std::cell::Cell::new(false),
             source_moves: projects::SourceMoves::default(),
             active_deferred_filesystem_jobs: 0,
+            active_device_registry_jobs: 0,
             worktrees_root,
             workspaces,
             projects_dir: default_projects_dir(),

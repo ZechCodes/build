@@ -104,6 +104,13 @@ impl DeferredDone {
 }
 
 impl DeferredWork {
+    pub(in crate::app) fn changes_device_registry(&self) -> bool {
+        match self {
+            Self::Lifecycle(_) => true,
+            Self::Git(git) => git.registry_change,
+            Self::Read(_) | Self::Watch(_) | Self::External(_) => false,
+        }
+    }
     /// The lock-free phase. Consumes the work so nothing can run it twice.
     pub(in crate::app) fn run(self) -> DeferredOutcome {
         match self {
@@ -673,6 +680,13 @@ impl AppState {
         done: DeferredDone,
     ) -> Result<Value, String> {
         self.active_deferred_filesystem_jobs -= 1;
+        if match &done.outcome {
+            DeferredOutcome::Lifecycle(_) => true,
+            DeferredOutcome::Git { git, .. } => git.registry_change,
+            DeferredOutcome::Read(_) | DeferredOutcome::Watch(_) => false,
+        } {
+            self.active_device_registry_jobs -= 1;
+        }
         self.device_lifecycle_holds += 1;
         let DeferredDone {
             outcome: done,
@@ -781,6 +795,9 @@ impl AppState {
         // Claim before either the relay or MCP drain releases the mutex.
         // All variants can observe filesystem state that deletion would remove.
         self.active_deferred_filesystem_jobs += 1;
+        if work.changes_device_registry() {
+            self.active_device_registry_jobs += 1;
+        }
         Some(DeferredJob { work, check })
     }
 

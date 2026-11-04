@@ -102,6 +102,7 @@ impl AppState {
             }),
             params: params.clone(),
             invalidates: false,
+            registry_change: true,
             #[cfg(test)]
             gate: None,
         })));

@@ -18,8 +18,11 @@ impl AppState {
     pub(in crate::app) fn reconcile_device_lifecycle(&self) -> Result<(), String> {
         if !self.device_lifecycle_dirty.get()
             || self.device_lifecycle_holds > 0
-            || self.deferred_work.is_some()
-            || self.active_deferred_filesystem_jobs > 0
+            || self
+                .deferred_work
+                .as_ref()
+                .is_some_and(super::DeferredWork::changes_device_registry)
+            || self.active_device_registry_jobs > 0
             || self.project_deletion_in_progress
         {
             return Ok(());

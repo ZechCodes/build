@@ -356,17 +356,30 @@ impl AppState {
     }
 
     pub(in crate::app) fn refresh_workspace_snapshot_observations(&mut self) {
-        if let Err(error) = self.mark_device_lifecycle_dirty() {
-            eprintln!("device sync workspace refresh: {error}");
-            return;
-        }
         self.device_lifecycle_holds += 1;
         self.adopt_legacy_workspaces();
-        self.workspaces.refresh_local_capabilities();
-        self.workspaces.refresh_finished_local();
+        if let Err(error) = self.apply_workspace_snapshot_observations() {
+            eprintln!("device sync workspace refresh: {error}");
+        }
         self.publish_read_metadata();
         self.device_lifecycle_holds -= 1;
         self.settle_device_lifecycle();
+    }
+
+    fn apply_workspace_snapshot_observations(&mut self) -> Result<(), String> {
+        let capabilities = self.workspaces.observe_local_capabilities();
+        let finished = self.workspaces.observe_finished_local();
+        if capabilities.is_empty() && finished.is_empty() {
+            return Ok(());
+        }
+        self.mark_device_lifecycle_dirty()?;
+        for workspace in capabilities {
+            self.workspaces.apply_local_capabilities(workspace)?;
+        }
+        for id in finished {
+            self.workspaces.reopen(&id)?;
+        }
+        Ok(())
     }
 
     pub(in crate::app) fn workspace_list_snapshot(&self, params: &Value) -> Result<Value, String> {
@@ -841,6 +854,7 @@ impl AppState {
             }),
             params: params.clone(),
             invalidates: true,
+            registry_change: true,
             #[cfg(test)]
             gate: None,
         })));
@@ -1081,6 +1095,7 @@ impl AppState {
             }),
             params: params.clone(),
             invalidates: true,
+            registry_change: true,
             #[cfg(test)]
             gate: None,
         })));
@@ -1183,10 +1198,6 @@ impl AppState {
     }
 
     fn adopt_legacy_workspaces(&mut self) {
-        if let Err(error) = self.mark_device_lifecycle_dirty() {
-            eprintln!("device sync workspace adoption: {error}");
-            return;
-        }
         self.device_lifecycle_holds += 1;
         let primary = self
             .projects
@@ -1209,8 +1220,7 @@ impl AppState {
             .collect::<Vec<_>>();
         for (project_id, name, path, source_id, is_git) in primary {
             let id = format!("legacy-{project_id}");
-            self.workspaces
-                .adopt_root(&project_id, id, name, path, source_id, is_git);
+            self.adopt_observed_root(&project_id, id, name, path, source_id, is_git);
         }
         // A durable workspace may use a run-shaped entity solely as its
         // conversation owner. Such owners deliberately have no Git base branch;
@@ -1261,12 +1271,39 @@ impl AppState {
             })
             .collect::<Vec<_>>();
         for (project_id, id, name, path, source_id) in runs {
-            self.workspaces
-                .adopt_root(&project_id, id, name, path, source_id, true);
+            self.adopt_observed_root(&project_id, id, name, path, source_id, true);
         }
         self.adopt_external_git_worktrees();
         self.device_lifecycle_holds -= 1;
         self.settle_device_lifecycle();
+    }
+
+    fn adopt_observed_root(
+        &mut self,
+        project_id: &str,
+        id: String,
+        name: String,
+        path: PathBuf,
+        source_id: String,
+        is_git: bool,
+    ) {
+        if self.workspaces.get(&id).is_some() {
+            return;
+        }
+        let workspace = WorkspaceRegistry::prepare_root_adoption(
+            self.workspaces.root(),
+            project_id,
+            id,
+            name,
+            path,
+            source_id,
+            is_git,
+        );
+        if let Err(error) = self.mark_device_lifecycle_dirty() {
+            eprintln!("device sync workspace adoption: {error}");
+            return;
+        }
+        self.workspaces.install_prepared_root_adoption(workspace);
     }
 
     /// Read only Git's local worktree registry. This deliberately avoids the
@@ -1316,7 +1353,7 @@ impl AppState {
                     continue;
                 }
                 let id = crate::worktree::external_worktree_id(path);
-                self.workspaces.adopt_root(
+                self.adopt_observed_root(
                     &project_id,
                     id,
                     name.clone(),
@@ -1363,6 +1400,10 @@ impl AppState {
         for id in stale {
             // Absence or an inspection error is not confirmed deletion;
             // keep durable policy for a checkout that may return.
+            if let Err(error) = self.mark_device_lifecycle_dirty() {
+                eprintln!("device sync workspace removal: {error}");
+                continue;
+            }
             self.workspaces.forget(&id);
         }
     }

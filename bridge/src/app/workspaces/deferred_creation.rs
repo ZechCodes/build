@@ -44,6 +44,7 @@ impl AppState {
             }),
             params: Value::Null,
             invalidates: true,
+            registry_change: true,
             #[cfg(test)]
             gate: None,
         })

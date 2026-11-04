@@ -20,13 +20,26 @@ fn fixture() -> (tempfile::TempDir, AppState, crate::store::Store) {
 }
 
 fn dirty_generation(root: &std::path::Path) -> i64 {
-    rusqlite::Connection::open(root.join("store/build.db")).unwrap()
-        .query_row("SELECT CAST(value AS INTEGER) FROM meta WHERE key='device_dirty_generation'", [], |row|row.get(0)).unwrap()
+    rusqlite::Connection::open(root.join("store/build.db"))
+        .unwrap()
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM meta WHERE key='device_dirty_generation'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
 }
 
 fn assert_registry_ready(store: &crate::store::Store) {
-    assert!(store.writer().device_registry_generation().unwrap().is_none());
-    store.writer().admit_device_lease("observations", "epoch", i64::MAX / 2).unwrap();
+    assert!(store
+        .writer()
+        .device_registry_generation()
+        .unwrap()
+        .is_none());
+    store
+        .writer()
+        .admit_device_lease("observations", "epoch", i64::MAX / 2)
+        .unwrap();
 }
 
 #[test]
@@ -39,8 +52,13 @@ fn lifecycle_observation_read_job_does_not_fence_or_write_an_unchanged_registry(
     assert_eq!(app.active_deferred_filesystem_jobs, 1);
     app.refresh_workspace_snapshot_observations();
     assert_registry_ready(&store);
-    assert_eq!(dirty_generation(root.path()), before, "read-only refresh must not pre-mark then clear");
-    app.apply_deferred("project.list", &json!({}), read.run()).unwrap();
+    assert_eq!(
+        dirty_generation(root.path()),
+        before,
+        "read-only refresh must not pre-mark then clear"
+    );
+    app.apply_deferred("project.list", &json!({}), read.run())
+        .unwrap();
     assert_eq!(app.active_deferred_filesystem_jobs, 0);
 }
 
@@ -58,7 +76,12 @@ fn lifecycle_observation_unchanged_ticks_do_not_advance_dirty_generation() {
 #[test]
 fn lifecycle_observation_branch_change_marks_before_manifest_and_publishes_then_settles() {
     let (root, mut app, store) = fixture();
-    let created = app.dispatch("workspace.create", &json!({"project_id":"proj-1","name":"branch-observation"})).unwrap();
+    let created = app
+        .dispatch(
+            "workspace.create",
+            &json!({"project_id":"proj-1","name":"branch-observation"}),
+        )
+        .unwrap();
     let id = created["workspace_id"].as_str().unwrap();
     let workspace = app.workspaces.get(id).unwrap().clone();
     let directory = &workspace.directories[0];
@@ -66,8 +89,16 @@ fn lifecycle_observation_branch_change_marks_before_manifest_and_publishes_then_
     let signature = git2::Signature::now("Fixture", "fixture@example.test").unwrap();
     let tree_id = repository.index().unwrap().write_tree().unwrap();
     let tree = repository.find_tree(tree_id).unwrap();
-    let commit_id = repository.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[]).unwrap();
-    repository.branch("observed-branch", &repository.find_commit(commit_id).unwrap(), false).unwrap();
+    let commit_id = repository
+        .commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+        .unwrap();
+    repository
+        .branch(
+            "observed-branch",
+            &repository.find_commit(commit_id).unwrap(),
+            false,
+        )
+        .unwrap();
     app.refresh_workspace_snapshot_observations();
     let before = dirty_generation(root.path());
     let manifest = workspace.root.join(crate::workspace::MANIFEST_FILE);
@@ -75,10 +106,22 @@ fn lifecycle_observation_branch_change_marks_before_manifest_and_publishes_then_
     repository.set_head("refs/heads/observed-branch").unwrap();
     store.fail_next_write();
     app.refresh_workspace_snapshot_observations();
-    assert_eq!(std::fs::read(&manifest).unwrap(), original, "a marker failure must prevent manifest writes");
+    assert_eq!(
+        std::fs::read(&manifest).unwrap(),
+        original,
+        "a marker failure must prevent manifest writes"
+    );
     app.refresh_workspace_snapshot_observations();
     assert!(dirty_generation(root.path()) > before);
-    assert_eq!(row(root.path(), "workspace_directory", &format!("{id}/{}", directory.id)).unwrap()["branch"], "observed-branch");
+    assert_eq!(
+        row(
+            root.path(),
+            "workspace_directory",
+            &format!("{id}/{}", directory.id)
+        )
+        .unwrap()["branch"],
+        "observed-branch"
+    );
     assert_registry_ready(&store);
 }
 
@@ -91,7 +134,8 @@ fn lifecycle_observation_unrelated_git_job_does_not_hold_an_existing_marker() {
     app.mark_device_lifecycle_dirty().unwrap();
     app.settle_device_lifecycle();
     assert_registry_ready(&store);
-    app.apply_deferred("fs.fixture", &json!({}), job.run()).unwrap();
+    app.apply_deferred("fs.fixture", &json!({}), job.run())
+        .unwrap();
     assert_eq!(app.active_deferred_filesystem_jobs, 0);
 }
 
@@ -105,12 +149,23 @@ fn lifecycle_observation_registry_job_settles_while_unrelated_read_remains_taken
     let (answer, job) = app.dispatch_deferring("workspace.create", &params);
     answer.unwrap();
     let job = job.unwrap();
-    assert!(store.writer().device_registry_generation().unwrap().is_some());
-    assert!(store.writer().admit_device_lease("observations", "epoch", i64::MAX / 2).is_err());
-    assert!(matches!(app.apply_deferred_stage("workspace.create", &params, job.run()), DeferredNext::Answered(Ok(_))));
+    assert!(store
+        .writer()
+        .device_registry_generation()
+        .unwrap()
+        .is_some());
+    assert!(store
+        .writer()
+        .admit_device_lease("observations", "epoch", i64::MAX / 2)
+        .is_err());
+    assert!(matches!(
+        app.apply_deferred_stage("workspace.create", &params, job.run()),
+        DeferredNext::Answered(Ok(_))
+    ));
     assert_eq!(app.active_deferred_filesystem_jobs, 1);
     assert_registry_ready(&store);
-    app.apply_deferred("project.list", &json!({}), read.run()).unwrap();
+    app.apply_deferred("project.list", &json!({}), read.run())
+        .unwrap();
     assert_eq!(app.active_deferred_filesystem_jobs, 0);
 }
 

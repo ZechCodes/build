@@ -158,6 +158,7 @@ impl AppState {
             }),
             params: json!({"workspace_id": workspace_id}),
             invalidates: true,
+            registry_change: true,
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
         })));

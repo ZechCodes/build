@@ -175,6 +175,7 @@ impl AppState {
             call: Box::new(job),
             params: Value::Null,
             invalidates: true,
+            registry_change: true,
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
         })));

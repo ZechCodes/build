@@ -628,6 +628,7 @@ impl AppState {
         params: &Value,
         invalidates: bool,
     ) -> Value {
+        let registry_change = invalidates && scope.changes_device_registry();
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(ScopedGitCall {
                 scope,
@@ -637,6 +638,7 @@ impl AppState {
             }),
             params: params.clone(),
             invalidates,
+            registry_change,
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
         })));

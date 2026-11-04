@@ -486,7 +486,17 @@ impl WorkspaceRegistry {
     }
 
     pub fn refresh_local_capabilities(&mut self) {
-        for workspace in self.workspaces.values_mut() {
+        for workspace in self.observe_local_capabilities() {
+            if let Err(error) = self.apply_local_capabilities(workspace) {
+                eprintln!("refresh workspace: {error}");
+            }
+        }
+    }
+
+    /// Capture local observations without changing memory or manifests.
+    pub(crate) fn observe_local_capabilities(&self) -> Vec<Workspace> {
+        let mut observations = Vec::new();
+        for mut workspace in self.workspaces.values().cloned() {
             let mut changed = false;
             for directory in &mut workspace.directories {
                 let Ok(repository) = git2::Repository::open_ext(
@@ -505,27 +515,35 @@ impl WorkspaceRegistry {
                 directory.branch = branch;
             }
             if changed {
-                self.observation_changes.mark(workspace.id.clone());
-                if workspace.managed {
-                    if let Err(error) = persist(workspace) {
-                        eprintln!("refresh workspace {}: {error}", workspace.id);
-                    }
-                }
+                observations.push(workspace);
             }
         }
+        observations
+    }
+
+    pub(crate) fn apply_local_capabilities(&mut self, workspace: Workspace) -> Result<(), String> {
+        if workspace.managed {
+            persist(&workspace)?;
+        }
+        self.install_workspace(workspace);
+        Ok(())
     }
 
     /// Reopen a finished workspace when local state no longer matches the
     /// commit proof captured by Finish. No network access is performed here.
     pub fn refresh_finished_local(&mut self) {
-        let finished = self
-            .workspaces
+        for id in self.observe_finished_local() {
+            if let Err(error) = self.reopen(&id) {
+                eprintln!("refresh finished workspace {id}: {error}");
+            }
+        }
+    }
+
+    pub(crate) fn observe_finished_local(&self) -> Vec<String> {
+        self.workspaces
             .values()
             .filter(|workspace| workspace.status == WorkspaceStatus::Finished)
-            .map(|workspace| workspace.id.clone())
-            .collect::<Vec<_>>();
-        for id in finished {
-            let stale = self.workspaces.get(&id).is_some_and(|workspace| {
+            .filter(|workspace| {
                 workspace.directories.iter().any(|directory| {
                     if !directory.path.is_dir() {
                         return true;
@@ -539,13 +557,9 @@ impl WorkspaceRegistry {
                         || dirty.is_err()
                         || dirty.is_ok_and(|status| !status.is_empty())
                 })
-            });
-            if stale {
-                if let Err(error) = self.reopen(&id) {
-                    eprintln!("refresh finished workspace {id}: {error}");
-                }
-            }
-        }
+            })
+            .map(|workspace| workspace.id.clone())
+            .collect()
     }
 
     /// Reserve and persist a workspace before any expensive copy starts.

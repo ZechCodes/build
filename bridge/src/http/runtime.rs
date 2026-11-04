@@ -1763,11 +1763,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{deleted}");
-        for (index, (scope, cursor)) in [project_scope, task_scope]
-            .into_iter()
-            .zip(cursors)
-            .enumerate()
-        {
+        for (scope, cursor) in [project_scope, task_scope].into_iter().zip(cursors) {
             let (status, changes) = resource_json(
                 &app,
                 "POST",
@@ -1777,14 +1773,9 @@ mod tests {
             )
             .await;
             assert_eq!(status, StatusCode::OK, "{changes}");
-            if index == 0 {
-                assert_eq!(changes["result"]["status"], "resync_required", "{changes}");
-                assert_eq!(changes["result"]["reason"], "scope_removed", "{changes}");
-                assert!(changes["result"].get("changes").is_none());
-            } else {
-                assert_eq!(changes["error_code"], "unavailable", "{changes}");
-                assert_eq!(changes["retryable"], true, "{changes}");
-            }
+            assert_eq!(changes["result"]["status"], "resync_required", "{changes}");
+            assert_eq!(changes["result"]["reason"], "scope_removed", "{changes}");
+            assert!(changes["result"].get("changes").is_none());
         }
     }
 

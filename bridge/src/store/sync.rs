@@ -25,6 +25,8 @@ pub const MAX_RECOVERY_BYTES: usize = 1024 * 1024;
 pub(super) use schema::{initialize, validate_startup};
 
 use super::StoreError;
+use aws_lc_rs::hmac;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -112,6 +114,8 @@ impl Stream {
 pub struct Scope {
     stream: Stream,
     digest: String,
+    binding_path: Option<String>,
+    requires_path_binding: bool,
 }
 impl Scope {
     pub fn new(stream: Stream, normalized_definition: Value) -> Self {
@@ -126,11 +130,17 @@ impl Scope {
         Self {
             stream,
             digest: format!("{:x}", Sha256::digest(bytes.as_bytes())),
+            binding_path: None,
+            requires_path_binding: false,
         }
     }
     /// Route with a local durable key while authenticating only the stable
     /// wire identity supplied by the client.
-    pub fn wire_bound(stream: Stream, normalized_definition: Value) -> Self {
+    pub fn wire_bound(
+        stream: Stream,
+        normalized_definition: Value,
+        binding_path: Option<&str>,
+    ) -> Self {
         let bytes = json!([
             "sync-scope",
             1,
@@ -142,7 +152,20 @@ impl Scope {
         Self {
             stream,
             digest: format!("{:x}", Sha256::digest(bytes.as_bytes())),
+            binding_path: binding_path.map(str::to_owned),
+            requires_path_binding: true,
         }
+    }
+    pub(super) fn path_binding(&self, key: &[u8]) -> Option<String> {
+        self.binding_path.as_ref().map(|path| {
+            let key = hmac::Key::new(hmac::HMAC_SHA256, key);
+            let mut input = b"project-path\0".to_vec();
+            input.extend_from_slice(path.as_bytes());
+            URL_SAFE_NO_PAD.encode(hmac::sign(&key, &input).as_ref())
+        })
+    }
+    pub(super) fn path_binding_required(&self) -> bool {
+        self.requires_path_binding
     }
     pub fn digest(&self) -> &str {
         &self.digest

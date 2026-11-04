@@ -12,11 +12,14 @@ struct Payload<T> {
     purpose: String,
     incarnation: String,
     scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    binding: Option<String>,
     data: T,
 }
 
 pub enum Continuation<T> {
     Current(T),
+    Rebound(T),
     Foreign(T),
 }
 
@@ -33,6 +36,7 @@ impl ReadTransaction<'_> {
             purpose: purpose.into(),
             incarnation,
             scope: scope.digest().into(),
+            binding: scope.path_binding(&key),
             data,
         };
         let bytes = serde_json::to_vec(&payload).map_err(|_| SyncError::MalformedCursor)?;
@@ -67,6 +71,7 @@ impl ReadTransaction<'_> {
             serde_json::from_slice(&bytes).map_err(|_| SyncError::MalformedCursor)?;
         validate(&payload, purpose, &tag)?;
         let (incarnation, key) = schema::identity(self.connection())?;
+        validate_binding_shape(&payload.binding, scope)?;
         if incarnation == payload.incarnation {
             hmac::verify(&hmac::Key::new(hmac::HMAC_SHA256, &key), &bytes, &tag)
                 .map_err(|_| SyncError::MalformedCursor)?;
@@ -77,8 +82,24 @@ impl ReadTransaction<'_> {
         if incarnation != payload.incarnation {
             return Ok(Continuation::Foreign(payload.data));
         }
+        if let Some(expected) = scope.path_binding(&key) {
+            if payload.binding.as_deref() != Some(expected.as_str()) {
+                return Ok(Continuation::Rebound(payload.data));
+            }
+        }
         Ok(Continuation::Current(payload.data))
     }
+}
+
+fn validate_binding_shape(binding: &Option<String>, scope: &Scope) -> Result<(), SyncError> {
+    if binding.is_some() != scope.path_binding_required()
+        || binding
+            .as_ref()
+            .is_some_and(|binding| binding.len() != 43 || URL_SAFE_NO_PAD.decode(binding).is_err())
+    {
+        return Err(SyncError::MalformedCursor);
+    }
+    Ok(())
 }
 
 fn validate<T>(payload: &Payload<T>, purpose: &str, tag: &[u8]) -> Result<(), SyncError> {

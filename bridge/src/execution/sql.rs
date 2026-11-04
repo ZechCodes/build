@@ -578,23 +578,22 @@ async fn coordinate_sql(queue: Arc<Queue>, handler: FrameHandler) {
             class_permit = Some(permit);
             allow_sync = true;
         }
+        let Some(executor_permit) = while_live(&queue, None, executors.acquire()).await else {
+            continue;
+        };
+        let mut connection = match &pool {
+            Some(pool) => match connection_while_waiting(&queue, pool, allow_sync).await {
+                Some(connection) => Some(connection),
+                None => continue,
+            },
+            None => None,
+        };
         let Some(work) = queue.take_eligible(allow_sync) else {
             continue;
         };
         let work_is_sync = work.job.frame.payload["method"]
             .as_str()
             .is_some_and(|method| method.starts_with("sync."));
-        let Some(executor_permit) = while_live(&queue, Some(&work), executors.acquire()).await
-        else {
-            continue;
-        };
-        let mut connection = match &pool {
-            Some(pool) => match while_live(&queue, Some(&work), pool.acquire()).await {
-                Some(connection) => Some(connection),
-                None => continue,
-            },
-            None => None,
-        };
         if work_is_sync {
             if let (Some(connection), Some(class_permit)) =
                 (connection.as_mut(), class_permit.take())
@@ -611,6 +610,31 @@ async fn coordinate_sql(queue: Arc<Queue>, handler: FrameHandler) {
         let _ = executors
             .submit(executor_permit, move || work.run(&handler, connection))
             .await;
+    }
+}
+
+async fn connection_while_waiting(
+    queue: &Queue,
+    pool: &ReadPool,
+    allow_sync: bool,
+) -> Option<ReadConnection> {
+    let acquiring = pool.acquire();
+    tokio::pin!(acquiring);
+    loop {
+        let changed = queue.changed.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        {
+            let mut waiting = queue.waiting.lock().unwrap();
+            waiting.prune();
+            if waiting.closed || !waiting.has_eligible(allow_sync) {
+                return None;
+            }
+        }
+        tokio::select! {
+            connection = &mut acquiring => return Some(connection),
+            _ = changed => {},
+        }
     }
 }
 

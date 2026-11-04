@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 
 pub enum CursorSequence {
     Current(Sequence),
+    Rebound(Sequence),
     Foreign,
 }
 
@@ -36,6 +37,7 @@ impl ReadTransaction<'_> {
         let (incarnation, key) = schema::identity(self.connection())?;
         match cursor::decode(token, &incarnation, &key, scope)? {
             cursor::Position::Retained(seq) => Ok(CursorSequence::Current(seq)),
+            cursor::Position::Rebound(seq) => Ok(CursorSequence::Rebound(seq)),
             cursor::Position::Foreign => Ok(CursorSequence::Foreign),
         }
     }
@@ -43,6 +45,7 @@ impl ReadTransaction<'_> {
     pub fn sync_sequence(&self, scope: &Scope, token: &str) -> Result<Sequence, SyncError> {
         match self.sync_cursor_sequence(scope, token)? {
             CursorSequence::Current(seq) => Ok(seq),
+            CursorSequence::Rebound(_) => Err(SyncError::ScopeMismatch),
             CursorSequence::Foreign => Err(SyncError::MalformedCursor),
         }
     }

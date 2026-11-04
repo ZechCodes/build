@@ -123,6 +123,13 @@ impl TaskReadContext {
                         format!("unknown task_id: {task_id}"),
                     ));
                 };
+                let Some(project_id) = self.project_ids.get(&project_path).cloned() else {
+                    return Ok(TaskSyncAdmission::Removed(
+                        super::sync_scopes::TaskSyncScope::task(task_id, "", "")
+                            .with_project_ids(Arc::clone(&self.project_ids)),
+                        format!("unknown task_id: {task_id}"),
+                    ));
+                };
                 let Some(summary_project) = summary_project else {
                     return Ok(TaskSyncAdmission::Unavailable(
                         "task projection is incomplete".into(),
@@ -133,11 +140,6 @@ impl TaskReadContext {
                         "task projection does not match canonical authority".into(),
                     ));
                 }
-                let Some(project_id) = self.project_ids.get(&project_path).cloned() else {
-                    return Ok(TaskSyncAdmission::Unavailable(
-                        "task canonical project is not registered".into(),
-                    ));
-                };
                 let scope =
                     super::sync_scopes::TaskSyncScope::task(task_id, &project_id, &project_path)
                         .with_project_ids(Arc::clone(&self.project_ids));

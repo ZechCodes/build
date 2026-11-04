@@ -38,6 +38,10 @@ impl TaskSyncScope {
                 page.validate()?;
                 ResyncReason::IncarnationChanged
             }
+            Continuation::Rebound(page) => {
+                page.validate()?;
+                ResyncReason::ScopeRemoved
+            }
             Continuation::Current(page) => {
                 page.validate()?;
                 if page.watermark > head.head {
@@ -122,6 +126,10 @@ impl TaskSyncScope {
             Continuation::Foreign(page) => {
                 page.validate()?;
                 Ok(Err(self.resync(&head, ResyncReason::IncarnationChanged)))
+            }
+            Continuation::Rebound(page) => {
+                page.validate()?;
+                Ok(Err(self.resync(&head, ResyncReason::ScopeRemoved)))
             }
             Continuation::Current(page) => {
                 page.validate()?;

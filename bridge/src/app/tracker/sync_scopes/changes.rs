@@ -42,6 +42,7 @@ impl TaskSyncScope {
         let origin = match read.sync_cursor_sequence(&self.scope, cursor)? {
             CursorSequence::Foreign => None,
             CursorSequence::Current(origin) => Some(origin),
+            CursorSequence::Rebound(origin) => Some(origin),
         };
         let mut foreign = origin.is_none();
         let mut run_head = None;
@@ -56,6 +57,10 @@ impl TaskSyncScope {
                     if origin.is_some_and(|origin| run.origin != origin) {
                         return Err(SyncError::MalformedCursor);
                     }
+                    run_head = Some(run.head);
+                }
+                Continuation::Rebound(run) => {
+                    run.bytes()?;
                     run_head = Some(run.head);
                 }
             }
@@ -94,6 +99,7 @@ impl TaskSyncScope {
         };
         let origin = match read.sync_cursor_sequence(&self.scope, cursor)? {
             CursorSequence::Current(origin) => origin,
+            CursorSequence::Rebound(_) => return Ok(self.resync(&head, ResyncReason::ScopeRemoved)),
             CursorSequence::Foreign => {
                 return Ok(self.resync(&head, ResyncReason::IncarnationChanged))
             }
@@ -207,6 +213,10 @@ impl TaskSyncScope {
             Continuation::Foreign(run) => {
                 run.bytes()?;
                 Ok(Err(self.resync(head, ResyncReason::IncarnationChanged)))
+            }
+            Continuation::Rebound(run) => {
+                run.bytes()?;
+                Ok(Err(self.resync(head, ResyncReason::ScopeRemoved)))
             }
             Continuation::Current(run) => {
                 run.bytes()?;

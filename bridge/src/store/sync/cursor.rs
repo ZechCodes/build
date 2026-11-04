@@ -13,11 +13,14 @@ struct Payload {
     purpose: String,
     incarnation: String,
     scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    binding: Option<String>,
     sequence: Sequence,
 }
 
 pub(super) enum Position {
     Retained(Sequence),
+    Rebound(Sequence),
     Foreign,
 }
 
@@ -27,6 +30,7 @@ pub(super) fn encode(incarnation: &str, key: &[u8], scope: &Scope, sequence: Seq
         purpose: "resume".into(),
         incarnation: incarnation.into(),
         scope: scope.digest().into(),
+        binding: scope.path_binding(key),
         sequence,
     };
     let bytes = serde_json::to_vec(&payload).expect("cursor fields serialize");
@@ -61,16 +65,33 @@ pub(super) fn decode(
     let payload: Payload =
         serde_json::from_slice(&bytes).map_err(|_| SyncError::MalformedCursor)?;
     validate_structure(&payload, &signature)?;
+    validate_binding_shape(&payload.binding, scope)?;
     // A foreign store has a different secret. Recognizing its well-formed
     // incarnation can only request a reset; it never grants cursor progress.
     if payload.incarnation != incarnation {
         validate_scope(&payload.scope, scope)?;
         return Ok(Position::Foreign);
     }
-    let key = hmac::Key::new(hmac::HMAC_SHA256, key);
-    hmac::verify(&key, &bytes, &signature).map_err(|_| SyncError::MalformedCursor)?;
+    let signing_key = hmac::Key::new(hmac::HMAC_SHA256, key);
+    hmac::verify(&signing_key, &bytes, &signature).map_err(|_| SyncError::MalformedCursor)?;
     validate_scope(&payload.scope, scope)?;
+    if let Some(expected) = scope.path_binding(key) {
+        if payload.binding.as_deref() != Some(expected.as_str()) {
+            return Ok(Position::Rebound(payload.sequence));
+        }
+    }
     Ok(Position::Retained(payload.sequence))
+}
+
+fn validate_binding_shape(binding: &Option<String>, scope: &Scope) -> Result<(), SyncError> {
+    if binding.is_some() != scope.path_binding_required()
+        || binding
+            .as_ref()
+            .is_some_and(|binding| binding.len() != 43 || URL_SAFE_NO_PAD.decode(binding).is_err())
+    {
+        return Err(SyncError::MalformedCursor);
+    }
+    Ok(())
 }
 
 fn validate_scope(digest: &str, scope: &Scope) -> Result<(), SyncError> {

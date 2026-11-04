@@ -120,6 +120,7 @@ impl ReadTransaction<'_> {
 fn validate_cursor(head: Head, position: cursor::Position) -> Result<HeadResult, SyncError> {
     match position {
         cursor::Position::Foreign => Ok(head.resync(ResyncReason::IncarnationChanged)),
+        cursor::Position::Rebound(_) => Ok(head.resync(ResyncReason::ScopeRemoved)),
         cursor::Position::Retained(sequence) if sequence > head.head => {
             Err(SyncError::FutureCursor)
         }

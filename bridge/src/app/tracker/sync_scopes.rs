@@ -35,7 +35,11 @@ impl TaskSyncScope {
         let selected = TaskSelections::parse(filters)?;
         let query = QuerySelections::parse(filters)?;
         let normalized = json!([project_id, selected.canonical(), query.canonical()]);
-        let scope = Scope::wire_bound(Stream::project(project_key), normalized);
+        let scope = Scope::wire_bound(
+            Stream::project(project_key),
+            normalized,
+            (!project_key.is_empty()).then_some(project_key),
+        );
         let mut canonical = serde_json::to_value(&query.filter).map_err(|e| e.to_string())?;
         canonical
             .as_object_mut()
@@ -62,7 +66,11 @@ impl TaskSyncScope {
     pub fn task(task_id: &str, project_id: &str, project_key: &str) -> Self {
         let definition = json!({"kind":"task","task_id":task_id});
         Self {
-            scope: Scope::new(Stream::task(task_id), definition.clone()),
+            scope: Scope::wire_bound(
+                Stream::task(task_id),
+                json!([task_id]),
+                (!project_key.is_empty()).then_some(project_key),
+            ),
             definition,
             project: project_key.into(),
             project_ids: Arc::new(BTreeMap::from([(project_key.into(), project_id.into())])),
@@ -117,6 +125,7 @@ impl TaskSyncScope {
         };
         let reason = match position {
             crate::store::sync::CursorSequence::Foreign => ResyncReason::IncarnationChanged,
+            crate::store::sync::CursorSequence::Rebound(_) => ResyncReason::ScopeRemoved,
             crate::store::sync::CursorSequence::Current(sequence) => {
                 if sequence > head.head {
                     return Err(SyncError::FutureCursor);

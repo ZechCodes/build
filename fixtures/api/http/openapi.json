@@ -12160,7 +12160,7 @@
                       "id": "example",
                       "ok": true,
                       "result": {
-                        "api_version": "3.33.0",
+                        "api_version": "3.34.0",
                         "ack_confirm_methods": [],
                         "capabilities": [
                           "agent.add",

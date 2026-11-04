@@ -1,3 +1,4 @@
+# Wire 3.34 adds device roster/session row fields to existing sync query replies; routes remain the same 153 operations.
 # Explicit HTTP resource catalogue. method<TAB>verb<TAB>path. No wildcard methods.
 agent.add	POST	/v1/entities/{entity_id}/agents
 agent.choose	PATCH	/v1/entities/{entity_id}/agents/{agent_id}/model

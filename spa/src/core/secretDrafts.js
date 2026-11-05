@@ -57,7 +57,7 @@ function assertBindings({ recipient, capabilities, deviceTransportPublicKey, cal
 }
 
 function clearLiveValue(input) {
-  input.value = "";
+  try { input.value = ""; } catch { /* A caller may freeze its submission record. */ }
   try { input.clearValue?.(); } catch { /* The modal owns its live field. */ }
 }
 

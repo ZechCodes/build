@@ -117,6 +117,7 @@ mod tests {
         use crate::models::{AgentProvider, ModelChoice};
         use crate::orchestrator::SpawnOptions;
         let root = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
         let context =
             HarnessContext::resolved(root.path().join("mcp.sock"), root.path().to_path_buf())
                 .unwrap();
@@ -124,7 +125,7 @@ mod tests {
             let options = SpawnOptions {
                 owner_id: "agent-fixture".into(),
                 mcp_session_token: "separate-mcp-token".into(),
-                cwd: root.path().to_path_buf(),
+                cwd: repo.path().to_path_buf(),
                 ..SpawnOptions::default()
             };
             let spec = harness_for(provider)

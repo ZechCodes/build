@@ -10,11 +10,28 @@ fn reported(path: &Path) -> String {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if let Ok(text) = std::fs::read_to_string(path) {
-            return text;
+            if let Some(report) = text.strip_suffix("BUILD_ENV_REPORT_COMPLETE\n") {
+                return report.to_owned();
+            }
         }
         std::thread::sleep(Duration::from_millis(10));
     }
     panic!("shell child never reported its launch environment");
+}
+
+#[test]
+fn carrier_report_waits_for_the_completion_sentinel() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("report");
+    std::fs::write(&path, "partial").unwrap();
+    let writer_path = path.clone();
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::write(writer_path, "complete\nBUILD_ENV_REPORT_COMPLETE\n").unwrap();
+    });
+    let result = reported(&path);
+    writer.join().unwrap();
+    assert_eq!(result, "complete\n");
 }
 
 fn shell_child(spec: &mut HarnessSpec, out: &Path) {
@@ -23,7 +40,7 @@ fn shell_child(spec: &mut HarnessSpec, out: &Path) {
     spec.args = vec![
         "-c".into(),
         format!(
-            "/bin/sh -c 'printf \"%s\\n\" \"${{BRIDGE_SECRET_TOKEN-unset}}\" \"${{BRIDGE_SECRET_BRIDGE-unset}}\" \"${{BRIDGE_SECRET_FUTURE-unset}}\" \"$PATH\"' > '{}'; exec cat >/dev/null",
+            "/bin/sh -c 'printf \"%s\\n\" \"${{BRIDGE_SECRET_TOKEN-unset}}\" \"${{BRIDGE_SECRET_BRIDGE-unset}}\" \"${{BRIDGE_SECRET_FUTURE-unset}}\" \"$PATH\"; printf \"BUILD_ENV_REPORT_COMPLETE\\n\"' > '{}'; exec cat >/dev/null",
             out.display()
         ),
     ];

@@ -133,3 +133,37 @@ CLOEXEC lock descriptors after the parent's close. The serial run passes all
 191 with no skips. Runtime lock contention safely disables optional authority
 or delays stale cleanup; it does not block Codex startup. The parallel run is
 retained as evidence, rather than counted as passing.
+
+
+## Parallel-admission follow-up
+
+The previous serial-only qualification was insufficient for the default-parallel
+gate. Admission now holds an in-process mutex through publication, waits up to
+one second for cross-process flock contention, and explicitly unlocks before
+closing the close-on-exec descriptor. Owned profile/metadata acquisition uses a
+separate process mutex and the same bounded waiting; sweep liveness checks stay
+nonblocking. The retained-descriptor, concurrent-wait and bounded-timeout
+regressions failed on 0ecf81024 and pass with this implementation.
+
+Carrier reports now include a completion sentinel; the reader waits for the
+sentinel rather than accepting an empty or partial file. Its regression failed
+against the old reader. Eight simultaneous Codex launches share one registry
+and verify the expected capability in each actual fixture process. The paused
+fork regression runs in an isolated child so it does not retain other tests'
+leases. No tests are removed or ignored.
+
+Cleanup checks the exact inode immediately before unlinkat via the held parent
+fd. The remaining check-to-unlink replacement window is explicitly accepted
+within the same-user trust boundary; Linux has no conditional unlink-by-inode.
+Pre-check replacements remain preserved. No quarantine rename is performed.
+See `docs/device-secret-release.md` and the coordinator's decision on #1004.
+
+Final follow-up qualification: five consecutive default-parallel runs each
+passed196/196, zero failed/ignored (980 executions, including all original191
+cases plus five new regressions). RUST_TEST_THREADS was unset and no thread
+count option was supplied. Each run includes eight simultaneous actual Codex
+fixture spawns with the expected capability. All-target clippy-Dwarnings, fmt,
+Semgrep51rules/5changedRustfiles and diff checks passed. TDD red/green and the
+five complete run logs accompany the task evidence. The previous parallel
+caveat is superseded by this proof. Commands ran nice-n10 with scratch temp and
+Cargo target directories; gitleaks gates the single follow-up push.

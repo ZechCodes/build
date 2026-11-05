@@ -163,7 +163,7 @@ fn install(mut spec: HarnessSpec, home: &Path) -> io::Result<HarnessSpec> {
     )?
     .into();
     let published: io::Result<_> = (|| {
-        lock(&file)?;
+        registry::lock_owned_file(&file)?;
         // The durable registry owns the exact staged inode before any authority
         // bytes are written. A crash cannot leave an unregistered capability.
         let registration = registry.record(home, &directory, &file_name, &file, Some(&pending))?;

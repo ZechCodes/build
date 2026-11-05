@@ -142,8 +142,11 @@ replacing an existing entry. Records contain configured home, exact final and
 pending names, file/parent device and inode IDs and owner UID; never a capability
 or retrieved value. The registry lives at `<harness-state>/secret-profiles`,
 with at most 4,096 records of at most 16 KiB each. Serialized admission prunes
-stale entries at the limit; live locks are retained. Registry exhaustion degrades
-secret setup rather than agent startup.
+stale entries at the limit; live locks are retained. Concurrent admissions wait
+behind an in-process mutex, then retry the close-on-exec file lock for up to
+one second; release explicitly unlocks before close, including across sibling
+forks. Registry exhaustion or a lock held beyond the deadline degrades secret
+setup rather than agent startup.
 
 Session end removes exact matching entries through the held directory handle
 and retires the record. Startup enumerates only the Build-private registry,
@@ -151,7 +154,14 @@ opens each recorded configured home normally (following the user's own links),
 checks parent dev/ino, and uses no-follow fstatat plus exact file dev/ino before
 unlinkat. A missing, replaced or moved target drops only the record. No user
 Codex home is enumerated or pattern-deleted; unregistered files remain untouched.
-Live profiles retain advisory locks. User config, auth and history stay in place.
+The identity check occurs immediately before unlinkat, relative to the held
+parent fd. There is a remaining check-to-unlink window: Linux provides no atomic
+unlink conditioned on an inode. A same-user process replacing that exact name
+inside this window may have its replacement removed. This is accepted within
+the same-user trust boundary: “Securing the machine is up to the user.” Build
+never follows an entry symlink, and a replacement observed before the check is
+left alone. Live profiles retain advisory locks. User config, auth and history
+stay in place.
 Registered crash leftovers are removed on a later sweep if identities still
 match. Retired session capabilities remain dead even if a user moved the file
 or permissions prevent deletion.

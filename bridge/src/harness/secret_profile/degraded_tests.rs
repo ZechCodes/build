@@ -9,7 +9,9 @@ const CLI: &str = r#"#!/usr/bin/env python3
 import json, os, pathlib, sys, time
 if '--fixture-agent' in sys.argv:
     marker = 'unsafe' if any(key.startswith('BRIDGE_SECRET_') for key in os.environ) else 'safe'
-    pathlib.Path(os.environ['FIXTURE_ENV_REPORT']).write_text(marker)
+    if os.environ.get('BRIDGE_SECRET_TOKEN') == 'private-fixture-capability':
+        marker = 'enabled'
+    pathlib.Path(os.environ['FIXTURE_ENV_REPORT']).write_text(marker + '\ncomplete\n')
     sys.stdin.read()
     sys.exit(0)
 home = pathlib.Path(os.environ['CODEX_HOME'])
@@ -114,12 +116,14 @@ fn fixture(root: &Path, mode: &str, provider: AgentProvider) -> (HarnessSpec, Pa
     )
 }
 
-fn await_report(root: &Path) {
+fn await_report(root: &Path, expected: &str) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if let Ok(report) = std::fs::read_to_string(root.join("agent-report")) {
-            assert_eq!(report, "safe");
-            return;
+            if let Some(report) = report.strip_suffix("\ncomplete\n") {
+                assert_eq!(report, expected);
+                return;
+            }
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -127,9 +131,13 @@ fn await_report(root: &Path) {
 }
 
 fn spawn_ordinary(spec: &HarnessSpec, root: &Path, provider: AgentProvider) {
+    spawn_reported(spec, root, provider, "safe");
+}
+
+fn spawn_reported(spec: &HarnessSpec, root: &Path, provider: AgentProvider, expected: &str) {
     if provider == AgentProvider::CodexAppServer {
         crate::harness::codex_app_server::with_spawned_process_for_test(spec, root, || {
-            await_report(root)
+            await_report(root, expected)
         });
     } else {
         let session = crate::pty::PtySession::spawn(
@@ -143,7 +151,7 @@ fn spawn_ordinary(spec: &HarnessSpec, root: &Path, provider: AgentProvider) {
             },
         )
         .unwrap();
-        await_report(root);
+        await_report(root, expected);
         session.end();
     }
 }
@@ -258,4 +266,30 @@ async fn registry_failure_disables_secrets_without_blocking_the_ordinary_tui() {
         "user-owned file must remain"
     );
     spawn_ordinary(&ready, root.path(), AgentProvider::Codex);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_codex_spawns_retain_every_secret_capability() {
+    let root = tempfile::tempdir().unwrap();
+    let registry = root.path().join("shared-registry");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let mut workers = Vec::new();
+    for index in 0..8 {
+        let work = root.path().join(index.to_string());
+        std::fs::create_dir(&work).unwrap();
+        let registry = registry.clone();
+        let barrier = barrier.clone();
+        workers.push(tokio::task::spawn_blocking(move || {
+            let (mut spec, _) = fixture(&work, "ready", AgentProvider::Codex);
+            spec.secret_profile_registry_root = Some(registry);
+            barrier.wait();
+            let ready = super::prepare(spec, &work);
+            assert!(ready.secret_profile.is_some(), "concurrent launch degraded");
+            assert!(ready.codex_shell_policy.is_some());
+            spawn_reported(&ready, &work, AgentProvider::Codex, "enabled");
+        }));
+    }
+    for worker in workers {
+        worker.await.unwrap();
+    }
 }

@@ -133,7 +133,9 @@ with no secret environment, overlay or injected runtime PATH, and one fixed
 reason warning. The TUI uses a unique 0600 profile under CODEX_HOME, removed
 through a held handle on session end. A bounded private registry under harness
 state records exact names and parent/file dev/ino before capability publication.
-Startup enumerates only registry records and unlinks exact identity matches;
+Startup enumerates only registry records and checks exact entry identity
+immediately before unlinkat; the remaining same-user check-to-unlink race is an
+accepted boundary (documented in `docs/device-secret-release.md`);
 it never scans a user Codex home. App-server start/resume uses private stdio
 configuration. The known TUI capability-on-disk
 exposure and provider persistence qualification are recorded in

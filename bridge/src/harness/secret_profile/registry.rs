@@ -7,8 +7,14 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 const MAX_RECORDS: usize = 4096;
+const ADMISSION_WAIT: Duration = Duration::from_secs(1);
+const ADMISSION_RETRY: Duration = Duration::from_millis(5);
+static ADMISSION_MUTEX: Mutex<()> = Mutex::new(());
+static OWNED_FILE_MUTEX: Mutex<()> = Mutex::new(());
 const MAX_RECORD_BYTES: u64 = 16384;
 const READ_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::NOFOLLOW)
@@ -17,6 +23,64 @@ const READ_FLAGS: OFlags = OFlags::RDONLY
 
 pub(super) struct Registry {
     directory: File,
+}
+
+/// Closing a descriptor does not end a flock retained by a pre-exec fork.
+/// End the logical admission lease explicitly; profile liveness locks differ.
+struct AdmissionLock {
+    file: File,
+    _mutex: MutexGuard<'static, ()>,
+}
+impl std::ops::Deref for AdmissionLock {
+    type Target = File;
+    fn deref(&self) -> &File {
+        &self.file
+    }
+}
+impl Drop for AdmissionLock {
+    fn drop(&mut self) {
+        loop {
+            match self.file.unlock() {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                _ => break,
+            }
+        }
+    }
+}
+
+/// Production ownership acquisitions wait briefly; sweeper liveness probes do not.
+/// This mutex is separate from admission because record publication holds admission.
+pub(super) fn lock_owned_file(file: &File) -> io::Result<()> {
+    let _owned = OWNED_FILE_MUTEX
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    flock_until(file, Instant::now() + ADMISSION_WAIT)
+}
+
+fn flock_until(file: &File, deadline: Instant) -> io::Result<()> {
+    loop {
+        match super::lock(file) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) => {}
+            Err(error) => return Err(error),
+        }
+        retry_until(deadline)?;
+    }
+}
+fn retry_until(deadline: Instant) -> io::Result<()> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "secret profile registry busy",
+        ));
+    }
+    std::thread::sleep(remaining.min(ADMISSION_RETRY));
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize)]
@@ -58,7 +122,7 @@ impl Registry {
         pending_name: Option<&str>,
     ) -> io::Result<RegistryGuard> {
         let record = Record::new(home, home_fd, final_name, file, pending_name)?;
-        super::lock(file)?;
+        lock_owned_file(file)?;
         let _admission = self.admission_lock()?;
         self.admit(MAX_RECORDS)?;
         let name = format!("{}.json", uuid::Uuid::new_v4());
@@ -78,7 +142,7 @@ impl Registry {
             record,
             removed: AtomicBool::new(false),
         };
-        super::lock(&metadata)?;
+        lock_owned_file(&metadata)?;
         let bytes = serde_json::to_vec(&guard.record).map_err(|_| invalid())?;
         if bytes.len() as u64 > MAX_RECORD_BYTES {
             return Err(invalid());
@@ -95,7 +159,14 @@ impl Registry {
         self.sweep_records()
     }
 
-    fn admission_lock(&self) -> io::Result<File> {
+    fn admission_lock(&self) -> io::Result<AdmissionLock> {
+        // Serialize local admissions before starting the bounded cross-process
+        // flock wait. Time spent behind another local operation is not contention
+        // on this registry's file lock (and may belong to another registry root).
+        let mutex = ADMISSION_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let deadline = Instant::now() + ADMISSION_WAIT;
         private(&self.directory.metadata()?, true)?;
         let file: File = fs::openat(
             &self.directory,
@@ -105,8 +176,11 @@ impl Registry {
         )?
         .into();
         private(&file.metadata()?, false)?;
-        super::lock(&file)?;
-        Ok(file)
+        flock_until(&file, deadline)?;
+        Ok(AdmissionLock {
+            file,
+            _mutex: mutex,
+        })
     }
 
     fn admit(&self, limit: usize) -> io::Result<()> {
@@ -275,6 +349,9 @@ impl Record {
 
     fn unlink_profiles(&self, home: &File) -> io::Result<()> {
         for name in self.names() {
+            // Identity is checked immediately before unlinkat. There is no
+            // atomic conditional-unlink API; the same-user check/unlink window
+            // is an accepted boundary of this exact-entry cleanup.
             if self.matches(home, name)? {
                 unlink(home, name)?;
             }

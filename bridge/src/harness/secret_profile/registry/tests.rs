@@ -347,3 +347,92 @@ fn crash_after_final_hardlink_publication_retires_both_exact_names() {
     assert!(!home.join(final_name).exists());
     assert_eq!(records(&registry), 0);
 }
+
+#[test]
+fn admission_lease_ends_on_parent_drop_even_with_inherited_descriptors() {
+    const CHILD: &str = "BUILD_REGISTRY_ADMISSION_FORK_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // The paused fork must not retain unrelated parallel tests' lifetime
+        // locks. Exec into one isolated test before creating any fixture FDs.
+        let name = std::thread::current().name().unwrap().to_owned();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let (_root, registry, _home, _directory) = fixture();
+    let held = registry.admission_lock().unwrap();
+    let duplicate = held.try_clone().unwrap();
+    #[cfg(target_os = "linux")]
+    let child = {
+        crate::git_fixture::inherited_fd::assert_cloexec(&held);
+        crate::git_fixture::inherited_fd::InheritedFdChild::hold()
+    };
+    drop(held);
+    let reacquired = registry.admission_lock();
+    drop(duplicate);
+    #[cfg(target_os = "linux")]
+    drop(child);
+    assert!(
+        reacquired.is_ok(),
+        "logical admission lease must end before inherited descriptors close"
+    );
+}
+
+#[test]
+fn concurrent_admission_waits_for_the_current_owner_to_release() {
+    let (_root, registry, _home, _directory) = fixture();
+    let held = registry.admission_lock().unwrap();
+    let other = Registry {
+        directory: registry.directory.try_clone().unwrap(),
+    };
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        other.admission_lock().is_ok()
+    });
+    started_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(25));
+    drop(held);
+    assert!(
+        waiter.join().unwrap(),
+        "short real contention should serialize admission"
+    );
+}
+
+#[test]
+fn admission_contention_times_out_with_a_bounded_error() {
+    let (_root, registry, _home, _directory) = fixture();
+    let held: File = fs::openat(
+        &registry.directory,
+        ".lock",
+        OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_bits_truncate(0o600),
+    )
+    .unwrap()
+    .into();
+    super::super::lock(&held).unwrap();
+    let started = std::time::Instant::now();
+    let result = registry.admission_lock();
+    let waited = started.elapsed();
+    drop(held);
+    assert!(matches!(result,Err(ref error) if error.kind()==io::ErrorKind::WouldBlock));
+    assert!(
+        waited >= std::time::Duration::from_millis(900),
+        "admission should retry short contention"
+    );
+    assert!(
+        waited < std::time::Duration::from_secs(5),
+        "admission wait must stay bounded"
+    );
+}

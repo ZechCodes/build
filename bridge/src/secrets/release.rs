@@ -27,7 +27,7 @@ impl SecretService {
         // Load and decrypt off the SQLite writer. The final transaction compares
         // this immutable context/revision again before it commits the audit.
         let candidate = self.release_candidate(caller, id);
-        self.inner.writer.secrets_release(
+        let result = self.inner.writer.secrets_release(
             caller,
             id,
             request_id,
@@ -42,7 +42,11 @@ impl SecretService {
                 }
                 value
             },
-        )
+        );
+        if let Ok(Some(record)) = self.inner.writer.secret_record(id) {
+            self.changed(&record);
+        }
+        result
     }
 
     fn release_candidate(
@@ -56,7 +60,10 @@ impl SecretService {
         let Some(record) = self.inner.writer.secret_record(id)? else {
             return Ok(None);
         };
-        if !crate::store::secrets::scope_allows(caller, &record)
+        if !self
+            .inner
+            .writer
+            .secret_release_scope_allows(caller, &record)?
             || record.revoked_at.is_some()
             || record.attached_at.is_none()
             || !record.blob_present

@@ -143,7 +143,24 @@ fn secret_post_atomically_claims_multiple_and_replays_the_original_message() {
     writer
         .secrets_revoke(&first, time::OffsetDateTime::now_utc().unix_timestamp())
         .unwrap();
+    let before_sequence = f.app.runs[&f.owner]
+        .agents
+        .by_id(&f.agent)
+        .unwrap()
+        .thread
+        .last_sequence();
+    let queued_before = f.app.delivery_queue.queued().count();
     let replay = f.send(&params).unwrap();
+    assert_eq!(
+        f.app.runs[&f.owner]
+            .agents
+            .by_id(&f.agent)
+            .unwrap()
+            .thread
+            .last_sequence(),
+        before_sequence
+    );
+    assert_eq!(f.app.delivery_queue.queued().count(), queued_before);
     assert_eq!(accepted["operation_id"], replay["operation_id"]);
     let receipt = f.app.operation_receipt("secret-send").unwrap().unwrap();
     assert_eq!(

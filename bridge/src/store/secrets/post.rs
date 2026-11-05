@@ -8,6 +8,14 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::collections::HashSet;
 
 impl StoreWriter {
+    pub(crate) fn secret_release_scope_allows(
+        &self,
+        caller: &crate::secrets::SecretCaller,
+        record: &SecretRecord,
+    ) -> Result<bool> {
+        final_scope_allows(&self.connection(), caller, record)
+    }
+
     pub fn secrets_post_preflight(&self, binding: &SecretPostBinding) -> Result<Vec<SecretRecord>> {
         preflight(&self.connection(), binding)
     }

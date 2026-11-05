@@ -7,6 +7,21 @@ use rusqlite::{Connection, OptionalExtension, Row};
 pub(super) const COLUMNS: &str = "id,device_id,creator,name,ttl_seconds,grant_scope,grant_agent_id,grant_conversation_id,grant_generation,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,stage_draft_id,created_at,attached_at,expires_at,revoked_at,revision,message_operation_id,upload_request_id,upload_digest,blob_present,revocation_reason";
 
 impl StoreWriter {
+    /// Bounded unique lookup used after upload timeout and same-request retries.
+    pub fn secret_by_upload_request(
+        &self,
+        device: &str,
+        creator: &str,
+        request: &str,
+    ) -> Result<Option<SecretRecord>> {
+        let connection = self.connection();
+        let id: Option<String> = connection.query_row(
+            "SELECT id FROM secret_records WHERE device_id=?1 AND creator=?2 AND upload_request_id=?3",
+            rusqlite::params![device, creator, request], |row| row.get(0),
+        ).optional()?;
+        id.map(|id| required(&connection, &id)).transpose()
+    }
+
     pub fn secret_record(&self, id: &str) -> Result<Option<SecretRecord>> {
         validate_id(id)?;
         load(&self.connection(), id)
@@ -67,7 +82,7 @@ pub(super) fn load(connection: &Connection, id: &str) -> Result<Option<SecretRec
     Ok(record)
 }
 
-fn from_row(row: &Row<'_>) -> rusqlite::Result<SecretRecord> {
+pub(super) fn from_row(row: &Row<'_>) -> rusqlite::Result<SecretRecord> {
     let scope: String = row.get(5)?;
     let grant = match scope.as_str() {
         "agent" => GrantScope::Agent {
@@ -113,7 +128,7 @@ pub(super) fn required(connection: &Connection, id: &str) -> Result<SecretRecord
     load(connection, id)?.ok_or(SecretError::Unavailable)
 }
 
-fn validate_loaded(record: &SecretRecord) -> Result<()> {
+pub(super) fn validate_loaded(record: &SecretRecord) -> Result<()> {
     record.context.validate()?;
     validate_revocation_reason(record)?;
     if record.created_at < 0 || record.revision < 1 || record.revoked_at.is_some_and(|at| at < 0) {

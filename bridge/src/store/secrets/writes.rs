@@ -20,7 +20,26 @@ impl StoreWriter {
         durable(self, |tx| {
             check_conflict(tx, record)?;
             check_quota(tx, record)?;
-            insert(tx, record)
+            insert(tx, record)?;
+            super::append_metadata_in(tx, record, "created", record.created_at)
+        })
+    }
+
+    /// Recheck committed target authority in the very transaction that publishes
+    /// the staged descriptor. Reset/deletion while encryption waits cannot
+    /// resurrect a retired stage after its lifecycle transaction has committed.
+    pub fn secrets_stage_authorized(
+        &self,
+        record: &SecretRecord,
+        scope: &crate::api::v1::secrets::SecretScope,
+    ) -> Result<()> {
+        validate_stage(record)?;
+        durable(self, |tx| {
+            super::metadata::authorize(tx, scope)?;
+            check_conflict(tx, record)?;
+            check_quota(tx, record)?;
+            insert(tx, record)?;
+            super::append_metadata_in(tx, record, "created", record.created_at)
         })
     }
 
@@ -32,7 +51,20 @@ impl StoreWriter {
         operation_id: &str,
         now: i64,
     ) -> Result<Vec<SecretRecord>> {
-        durable(self, |tx| attach_in(tx, ids, operation_id, now))
+        durable(self, |tx| {
+            let already: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM secret_bindings WHERE operation_id=?1)",
+                [operation_id],
+                |row| row.get(0),
+            )?;
+            let records = attach_in(tx, ids, operation_id, now)?;
+            if !already {
+                for record in &records {
+                    super::append_metadata_in(tx, record, "attached", now)?;
+                }
+            }
+            Ok(records)
+        })
     }
 
     pub fn secrets_revoke(&self, id: &str, now: i64) -> Result<SecretRecord> {
@@ -88,9 +120,22 @@ fn tombstone(
         return Err(SecretError::Invalid);
     }
     durable(writer, |tx| {
-        let _ = records::required(tx, id)?;
+        let before = records::required(tx, id)?;
         tx.execute("UPDATE secret_records SET revoked_at=?2,revocation_reason=?3,revision=revision+1 WHERE id=?1 AND revoked_at IS NULL",params![id,now,reason])?;
-        records::required(tx, id)
+        let record = records::required(tx, id)?;
+        if before.revoked_at.is_none() {
+            super::append_metadata_in(
+                tx,
+                &record,
+                if reason == "expired" {
+                    "expired"
+                } else {
+                    "revoked"
+                },
+                now,
+            )?;
+        }
+        Ok(record)
     })
 }
 

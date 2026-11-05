@@ -10,6 +10,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+type ChangeObserver = Arc<dyn Fn(&SecretRecord) + Send + Sync>;
+
 struct Inner {
     device_id: String,
     writer: StoreWriter,
@@ -18,6 +20,7 @@ struct Inner {
     state: Mutex<ClockState>,
     jobs: Arc<tokio::sync::Semaphore>,
     unauthenticated: Mutex<release::UnauthenticatedFailures>,
+    change_observer: Mutex<Option<ChangeObserver>>,
 }
 
 /// Device-local storage service. Call from blocking work outside the app lock.
@@ -34,6 +37,32 @@ pub struct SweepReport {
 }
 
 impl SecretService {
+    pub fn device_id(&self) -> &str {
+        &self.inner.device_id
+    }
+
+    pub fn set_change_observer(&self, observer: ChangeObserver) {
+        *self
+            .inner
+            .change_observer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(observer);
+    }
+
+    pub(super) fn changed(&self, record: &SecretRecord) {
+        let observer = self
+            .inner
+            .change_observer
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(observer) = observer {
+            if let Ok(record) = self.inner.writer.secret_metadata_resolve(record) {
+                observer(&record);
+            }
+        }
+    }
+
     pub fn open(state_root: &Path, device_id: &str, writer: StoreWriter) -> Result<Self> {
         Self::open_with_clock(
             state_root,
@@ -77,6 +106,7 @@ impl SecretService {
                 state: Mutex::new(ClockState::new(clock, highwater)),
                 jobs: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_JOBS)),
                 unauthenticated: Mutex::new(release::UnauthenticatedFailures::default()),
+                change_observer: Mutex::new(None),
             }),
         };
         if service.sweep().is_err() {
@@ -117,8 +147,20 @@ impl SecretService {
         upload_request_id: String,
         upload_digest: String,
     ) -> Result<SecretRecord> {
+        let job = self.job()?;
+        self.stage_with_job(context, value, upload_request_id, upload_digest, job, None)
+    }
+
+    fn stage_with_job(
+        &self,
+        context: SecretContext,
+        value: SecretValue,
+        upload_request_id: String,
+        upload_digest: String,
+        _job: tokio::sync::OwnedSemaphorePermit,
+        authority: Option<&crate::api::v1::secrets::SecretScope>,
+    ) -> Result<SecretRecord> {
         let vault = self.vault()?;
-        let _job = self.job()?;
         context.validate()?;
         if context.device_id != self.inner.device_id {
             return Err(SecretError::Unavailable);
@@ -149,8 +191,12 @@ impl SecretService {
         vault.write(&record.context, &value)?;
         // A failed SQL commit deliberately leaves an inaccessible orphan. Only
         // the serialized sweeper removes it; no accepted value can be unlinked.
-        self.inner.writer.secrets_stage(&record)?;
+        match authority {
+            Some(scope) => self.inner.writer.secrets_stage_authorized(&record, scope)?,
+            None => self.inner.writer.secrets_stage(&record)?,
+        }
         state.expired(&record, &observation);
+        self.changed(&record);
         Ok(record)
     }
 
@@ -243,6 +289,7 @@ impl SecretService {
             .secrets_revoke(id, observation.effective_now)?;
         // Unlink failure does not undo or fail the committed revocation.
         self.delete_record(&record, &mut state);
+        self.changed(&record);
         Ok(record)
     }
 
@@ -281,6 +328,9 @@ impl SecretService {
         for record in &records {
             retained.insert(record.context.id.as_str());
             if self.retire_if_needed(record, &mut state, &observation)? {
+                if let Some(current) = self.inner.writer.secret_record(&record.context.id)? {
+                    self.changed(&current);
+                }
                 if self.delete_record(record, &mut state) {
                     report.deleted += 1;
                 } else {
@@ -339,3 +389,6 @@ mod release_tests;
 
 #[path = "release.rs"]
 mod release;
+
+#[path = "staging.rs"]
+mod staging;

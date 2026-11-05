@@ -1,24 +1,167 @@
 {
-  "baseline_production_sha": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
-  "candidate_base_sha": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
-  "candidate_identity": "uncommitted working source; warmer/runtime implementation plus developing task/directory paging; synthetic peers remain 3.33 and 3.34",
-  "candidate_spa_patch_sha256": "5f61a6c163ec2909da12d90617cfd55f945a48f74a3b999f40a9260eb9a97487",
-  "harness_sha256": "134883eef47c710e0a72860e96dc4cf28cf79105383f2f9c81d643c95d74c059",
-  "node": "22.23.4",
-  "baseline_exit": 0,
-  "candidate_exit": 0,
-  "comparison_exit": 0,
-  "rows_per_source": 18,
-  "warmer_source_sha256": {
-    "spa/src/core/cacheSync.js": "bb2a219d3bca03bb87637516aa12d40481c3248d17b6696616c3bff5268ab31a",
-    "spa/src/core/scopedSyncRuntime.js": "a5b1887ebc85edba75b5a6bd56b3f3321155a66d5ced59011b91a5efc4c3e0a5",
-    "spa/src/core/syncPhases.js": "0fd7c17dda366637f3ab34245e9b165806fac2bb1b5056174dfcf698b4158c03",
-    "spa/src/core/syncVisibleScopes.js": "7e8197e875f4421759ec5a4ff8cca5c3f372e1ace8518e610ef7f3cecebfb238",
-    "spa/src/core/fileDiffs.js": "708cce5281bbdc0082791bcef9d05524b3b3b017d283e106e977da82b3b2707e",
-    "spa/src/core/taskReviewCache.js": "a8dd24bbd7fd739e5a3d79341adb99bbdaaeffe658cdc0aaddf24d7712edcaef",
-    "spa/src/core/trackerTaskDetailsFeed.js": "d26e0ec35f4d2ebccb6e51929ad06205ba52667ae32e072368c0efb2861bf5ef",
-    "spa/src/core/directoryScope.js": "91323e3494e7919095f9c2259617b00207df985168c57ac2ce07aada0274b9ba"
+  "exit_code": 0,
+  "base": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+  "source": "50d4a264726cc866160e3a360afdb65345842767",
+  "restored": true,
+  "drivers": {
+    "spa/test/compat335.test.js": "8cbcaa79e71e703ae70ac2ff76182057b17d8fab58679f5b1d63db994c88bea5",
+    "spa/test/syncTimingCutover.test.js": "134883eef47c710e0a72860e96dc4cf28cf79105383f2f9c81d643c95d74c059",
+    "spa/test/taskOpenCost.test.js": "bd035edd6b173bf54401b69a8743c12bff57691c414b71633dd155dbcd80fdf3"
   },
-  "candidate_spa_source_count": 622,
-  "candidate_spa_sources_digest": "da526e48187438b223a4162dcb0a23c3133184f5051776836f84246ba45fd18c"
+  "affected_sources": 38,
+  "all_spa_files": 1723,
+  "all_spa_sha256": "af7686a64bdf37108dc180e5d4b6b9dca60690a0a4bf42fe23956679e9effa3b",
+  "ledger": "/home/zech/Projects/.agent-scratch/894/final-cutover-50d4a2647/commands.jsonl",
+  "cohort": "final matched exact-source synthetic peer/runtime/cache cohort",
+  "baseline_18_row_records": "cutover-before.jsonl",
+  "candidate_18_row_records": "cutover-final/startup-candidate-final.jsonl",
+  "compatibility_335_records": [
+    "cutover-final/compat335-old-spa.jsonl",
+    "cutover-final/compat335-candidate-spa.jsonl"
+  ],
+  "task_open_records": [
+    "cutover-final/task-open-old-spa.jsonl",
+    "cutover-final/task-open-candidate-spa.jsonl"
+  ],
+  "raw_record_counts": {
+    "startup_final": 18,
+    "compat335_old": 9,
+    "compat335_candidate": 9,
+    "task_open_old": 4,
+    "task_open_candidate": 4
+  },
+  "fixture_processes": [
+    {
+      "name": "old SPA against 3.35 peer",
+      "argv": [
+        "/usr/bin/nice",
+        "-n",
+        "10",
+        "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/node_modules/.bin/vitest",
+        "run",
+        "test/compat335.test.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa",
+      "env_overlay": {
+        "CARGO_BUILD_JOBS": "8",
+        "CUTOVER_COMPAT_SOURCE_LABEL": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+        "CUTOVER_PROFILE_OUTPUT": "/home/zech/Projects/.agent-scratch/894/final-cutover-50d4a2647/compat335-old-spa.jsonl",
+        "PATH": "/home/zech/.local/share/mise/installs/node/22.23.4/bin:/usr/local/bin:/usr/bin:/bin"
+      },
+      "exit_code": 0
+    },
+    {
+      "name": "selected task mount task-open-old-spa",
+      "argv": [
+        "/usr/bin/nice",
+        "-n",
+        "10",
+        "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/node_modules/.bin/vitest",
+        "run",
+        "test/taskOpenCost.test.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa",
+      "env_overlay": {
+        "CARGO_BUILD_JOBS": "8",
+        "PATH": "/home/zech/.local/share/mise/installs/node/22.23.4/bin:/usr/local/bin:/usr/bin:/bin",
+        "TASK_OPEN_COST_OUTPUT": "/home/zech/Projects/.agent-scratch/894/final-cutover-50d4a2647/task-open-old-spa.jsonl",
+        "TASK_OPEN_VARIANT": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03"
+      },
+      "exit_code": 0
+    },
+    {
+      "name": "candidate SPA against 3.35 peer",
+      "argv": [
+        "/usr/bin/nice",
+        "-n",
+        "10",
+        "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/node_modules/.bin/vitest",
+        "run",
+        "test/compat335.test.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa",
+      "env_overlay": {
+        "CARGO_BUILD_JOBS": "8",
+        "CUTOVER_COMPAT_SOURCE_LABEL": "50d4a264726cc866160e3a360afdb65345842767",
+        "CUTOVER_EXPECT_LAZY": "1",
+        "CUTOVER_PROFILE_OUTPUT": "/home/zech/Projects/.agent-scratch/894/final-cutover-50d4a2647/compat335-candidate-spa.jsonl",
+        "PATH": "/home/zech/.local/share/mise/installs/node/22.23.4/bin:/usr/local/bin:/usr/bin:/bin"
+      },
+      "exit_code": 0
+    },
+    {
+      "name": "selected task mount task-open-candidate-spa",
+      "argv": [
+        "/usr/bin/nice",
+        "-n",
+        "10",
+        "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/node_modules/.bin/vitest",
+        "run",
+        "test/taskOpenCost.test.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa",
+      "env_overlay": {
+        "CARGO_BUILD_JOBS": "8",
+        "PATH": "/home/zech/.local/share/mise/installs/node/22.23.4/bin:/usr/local/bin:/usr/bin:/bin",
+        "TASK_OPEN_COST_OUTPUT": "/home/zech/Projects/.agent-scratch/894/final-cutover-50d4a2647/task-open-candidate-spa.jsonl",
+        "TASK_OPEN_VARIANT": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "exit_code": 0
+    },
+    {
+      "name": "final candidate 18-row startup cohort",
+      "argv": [
+        "/usr/bin/nice",
+        "-n",
+        "10",
+        "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/node_modules/.bin/vitest",
+        "run",
+        "test/syncTimingCutover.test.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa",
+      "env_overlay": {
+        "CARGO_BUILD_JOBS": "8",
+        "CUTOVER_COMPAT_SOURCE_LABEL": "50d4a264726cc866160e3a360afdb65345842767",
+        "CUTOVER_EXPECT_LAZY": "1",
+        "CUTOVER_PROFILE_OUTPUT": "/home/zech/Projects/.agent-scratch/894/final-cutover-50d4a2647/startup-candidate-final.jsonl",
+        "PATH": "/home/zech/.local/share/mise/installs/node/22.23.4/bin:/usr/local/bin:/usr/bin:/bin"
+      },
+      "exit_code": 0
+    }
+  ],
+  "all_346_process_exits_zero": true,
+  "restored_files": 38,
+  "restore_protocol": "each source restored from checked disk copy via actual cp,touch,cmp; complete1723-fileSPA hashes/modes verified",
+  "runner_sha256": "3a9a3e57322870e494a0e090ee1290af4de09760037250ad8708643ceb249140",
+  "files": {
+    "result.json": "ca998ef518f5921059dd3f355ad654a51cd3f37ca36b650904f9b112840e9075",
+    "commands.jsonl": "ee6338e9532fe64111b5476312c859f360af9c2f9cc60513ce50bf1e1dd72aa2",
+    "affected-sources.json": "9addbae9c1e7c6cae60eae2a3aec62a9243e3886a71568b87cefb9b790964cfa",
+    "full-spa-before.json": "e7ceae83fa36fa2eb3edb6dc5716b6826281c09fa2b734e058ebe7724fff2b1a",
+    "compat335-old-spa.jsonl": "78462447f99fb6d40be315f7aeea38e4d9cad2cba0b0aa541bced48d37b706fb",
+    "compat335-old-spa.log": "cec7a27be175ad5ecf7c0c0469bfdb938d3a1134b9479a7d197a1b7a127cf4e1",
+    "task-open-old-spa.jsonl": "145da60c500eb9b631816bdd792e28a220169e5ab8d1a3269a38899d8577dae8",
+    "task-open-old-spa.log": "6b44a0f2d43834ae73c8be53cf7224494698fd95b627d8e42f65380119e24933",
+    "compat335-candidate-spa.jsonl": "84bb3de1aad7041f6db6ffada26779fe15c8e55f2d8969cf2661f3b4c617669c",
+    "compat335-candidate-spa.log": "e1edcb91abe253a752c453bbac5f731f1562fa9e2ecc5bd1aefc24e6c3309636",
+    "task-open-candidate-spa.jsonl": "1ff2a6eb62de0b6bfd7be0cb267494fc9052c4a61723a106a6e48df792f2bce6",
+    "task-open-candidate-spa.log": "cc4bfd97c6cc2393418eadc0ab238b7fb7182d282e80e05514bd76e25058ce84",
+    "startup-candidate-final.jsonl": "c469c71f15d613b9a75c654c8f1bcec3437c01eddbd8f112405c48194872e1f5",
+    "startup-candidate-final.log": "803ee65768f3b9d5cc6b178b6d73d73942ea46acbf816f142135532e2d45ec8a",
+    "task-open-comparison.json": "29fab7d522e3eb5a47e0f31742baa1122238ea204c82bc92be825337d741a93b",
+    "task-open-comparison.md": "813cbc7530d93927723936151713020e9f4c6d99d14f0862f5c670f21068d251",
+    "compat335-comparison/cutover.csv": "7f65b2cb54035878954221fba7c89666208bf4464cf2d76f8d8ef8b9fc0556c6",
+    "compat335-comparison/cutover.md": "d7dd8895470881c5520b751ac3cdc46847027802d856aff3a29d64b4b9b5c138",
+    "startup-final-comparison/cutover.csv": "914be63bd9e292d142ab6432f869e14d0f42baaff146556b3eded7ae2b1adadd",
+    "startup-final-comparison/cutover.md": "92f0d94bd1f88d74415e2eb313800fb7c0558f3d5feb0749924c4811ae075d3d"
+  },
+  "development_cohort_retained": "cutover-development-manifest.json and cutover-after.jsonl",
+  "limits": "simulated peers/greeting/subscription transport; real SPA/adapter/scoped runtime/engine/fake-IDB/task mount. Not installed bridge combinations or deployments. Task opener excludes bootstrap, read marks/reviews/actions and push-subscription wire.",
+  "raw_log_storage": "raw-log-storage.json",
+  "raw_log_storage_note": "Raw .log path/hash entries identify the original decoded bytes. These logs travel as lossless .log.json wrappers indexed by raw-log-storage; original plain bytes are not normalized."
 }

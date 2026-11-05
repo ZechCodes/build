@@ -6,5 +6,7 @@
   "baseline_commands_ledger_sha256": "70cca6ea9dded0267b28d921d9e47d746f2b991cd45aa4be0804e930c979ace4",
   "baseline_source_restore": "copy/touch/cmp actual0 in retained append-statements-base/commands.jsonl",
   "candidate_full_log_sha256": "adc422d0bfc9794381a4580a44ad9dbf8ff5610ef11e74b459a0a638522b8a8a",
-  "candidate_full_log": "/home/zech/Projects/.agent-scratch/894/store-tests-counted-final.log"
+  "candidate_full_log": "/home/zech/Projects/.agent-scratch/894/store-tests-counted-final.log",
+  "raw_log_storage": "../raw-log-storage.json",
+  "raw_log_storage_note": "Raw .log path/hash entries identify the original decoded bytes. These logs travel as lossless .log.json wrappers indexed by raw-log-storage; original plain bytes are not normalized."
 }

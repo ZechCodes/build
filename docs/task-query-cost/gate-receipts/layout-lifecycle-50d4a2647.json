@@ -1,0 +1,24 @@
+{
+  "event": "complete",
+  "label": "layout-lifecycle",
+  "argv": [
+    "setsid",
+    "nice",
+    "-n",
+    "10",
+    "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+    "node_modules/vitest/vitest.mjs",
+    "run",
+    "--project",
+    "layout",
+    "test/browser/filesExplorerLayout.test.js",
+    "test/browser/workspaceDirectories.test.js",
+    "test/browser/workspaceReviewLayout.test.js"
+  ],
+  "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa",
+  "exit_code": 0,
+  "head": "50d4a264726cc866160e3a360afdb65345842767",
+  "files": 3,
+  "tests": 22,
+  "log_sha256": "6425d611d7516ca4cd942d320119533f4fd6590d2e49860df57532fc3e16e450"
+}

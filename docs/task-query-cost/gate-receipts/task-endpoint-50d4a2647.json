@@ -1,0 +1,36 @@
+{
+  "source": "50d4a264726cc866160e3a360afdb65345842767",
+  "command_receipt": {
+    "event": "complete",
+    "label": "tracker-api",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--lib",
+      "app::tests::tracker::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+    "exit_code": 0,
+    "head": "50d4a264726cc866160e3a360afdb65345842767"
+  },
+  "test": "app::tests::tracker::long_task_open_reports_bounded_bytes_and_preserves_all_history_unread_counts",
+  "measurements": {
+    "legacy_reply_bytes": 2528313,
+    "bounded_reply_bytes": 31933,
+    "legacy_endpoint_invocations": 1,
+    "bounded_endpoint_invocations": 1,
+    "legacy_micros": 307113,
+    "bounded_micros": 13848
+  },
+  "bounded_elapsed_assertion_us": 100000,
+  "unread_count_assertion": 4096,
+  "log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/tracker-api.log",
+  "log_sha256": "d52695aaeec2f13a2555438d664f0654b37fe3f843c8bc712d62ce84492c9495",
+  "scope": "Warm debug handler app.handle probe; serialized entire reply JSON. No network/whole-view mount/production latency claim."
+}

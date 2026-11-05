@@ -6,6 +6,23 @@ cache and `taskFeed`. Only peer responses, greetings, subscription transport and
 browser-lock admission are fixtures. Cache transactions, notifications,
 projections and feed rereads run against real `fake-indexeddb` event-loop work.
 
+The final matched source cohort at
+`50d4a264726cc866160e3a360afdb65345842767` exited **0**. All five fixture
+processes and both comparison processes exited 0; the runner restored all
+38 affected production files and verified the complete 1,723-file SPA hash.
+The exact commands, raw records, source/driver identities and restoration
+checks are linked by [the final manifest](cutover-manifest.json) and retained
+in [`cutover-final/commands.jsonl`](cutover-final/commands.jsonl). Earlier
+development records remain intact and are labeled separately below.
+
+Small scoped startup bytes/RPCs/logical/cache work decrease, and all nine
+legacy 3.33 deterministic cells remain identical. The selected 20-comment
+task mount adds **112 bytes cold / 224 bytes warm** of bounded response
+metadata while keeping RPC/publication counts unchanged; that cost is shown
+explicitly in the mounted-view table, not hidden by the long-history savings.
+These are synthetic-peer/source measurements and real cache/mount work, not
+four installed bridge deployments or whole-app production latency claims.
+
 The Inbox is open and no conversation, checkout, task page or file is mounted.
 Consequently the measured history, Git, tree, patch and diff calls are hidden
 warming. The separate task-open and directory-page contract tests measure those
@@ -104,7 +121,7 @@ increase. Wall times remain explicit observations and require interpretation
 with their measurement limits. Baseline-vs-itself parser control exited 0 with
 18 rows and no reported small-account regressions.
 
-## Candidate cohort
+## Earlier development candidate cohort
 
 The candidate direct command, from `spa/`, was:
 
@@ -121,7 +138,7 @@ This candidate was measured as uncommitted working source based on `e1c4b21f`,
 with the warmer/runtime implementation and developing task/directory paging
 changes present. It is not attributed to a later final commit. The synthetic
 peers remain wire 3.33/3.34, so the new wire 3.35 task/directory opt-ins are not
-exercised. [`cutover-manifest.json`](cutover-manifest.json) pins the working
+exercised. [`cutover-development-manifest.json`](cutover-development-manifest.json) pins the working
 patch and warmer source hashes; the full source-hash map remains in scratch.
 
 Raw candidate records are [`cutover-after.jsonl`](cutover-after.jsonl). The
@@ -151,17 +168,16 @@ cache wall time also decreases in all starts. Legacy wall samples vary, includin
 89.885 → 102.982 ms for small cold; unchanged deterministic work does not turn
 that one wall observation into a statistical no-regression claim.
 
-## Prepared final-source cohorts (not yet executed)
+## Final exact-source cohorts
 
-The controlled final runner currently pins code source
-`18749eab6758df54dd96b2dcfde779b6176b99fd`. This preparation is not an execution
-receipt. It requires the tracked SPA and complete production source tree to
-match that commit before starting, and refuses an existing run directory.
-The pending runner is
-`/home/zech/Projects/.agent-scratch/894/run-final-cutover.py`; its prepared
-SHA-256 is `c7580cec890300bddd52ad17ed3c6820f1ee64dc37825557be0af2a940431809`.
+The controlled final runner pinned code source
+`50d4a264726cc866160e3a360afdb65345842767`. It required the tracked SPA and
+complete production source tree to match that commit before starting, and
+refused a reused run directory. The executed runner was
+`/home/zech/Projects/.agent-scratch/894/run-final-cutover.py`, SHA-256
+`3a9a3e57322870e494a0e090ee1290af4de09760037250ad8708643ceb249140`.
 
-It serializes five separately logged fixture processes:
+It serialized five separately logged fixture processes, all actual exit 0:
 
 1. Wire-3.35 startup compatibility against exact `e1c4b21f` production SPA
    source: small/single-project/large × cold/warm/long-absent, nine records.
@@ -200,6 +216,99 @@ IndexedDB task writers. It precompletes device bootstrap, holds replies long
 enough to witness cached paint, and records all mount RPC bytes/counts,
 publication counts and first-paint/data-publication wall observations. The
 service, greeting and push-subscription wire are synthetic; read marks, review
-metadata, user actions, SQL/disk and whole-app bootstrap are excluded. These
-four-case mounted measurements remain pending; the one-endpoint byte probe in
-`task-query-performance.md` must not be reported as this whole mounted opener.
+metadata, user actions, SQL/disk and whole-app bootstrap are excluded. The
+one-endpoint byte probe in `task-query-performance.md` must not be reported
+as this whole mounted opener.
+
+### Old/new SPA × peer versions
+
+| Production SPA source | Synthetic 3.33 peer | Synthetic 3.34 peer | Synthetic 3.35 peer |
+| --- | --- | --- | --- |
+| Exact `e1c4b21f` | Nine startup records; legacy writer path | Nine startup records; scoped directories with warmers retained | Nine startup records; real adapter ignores the three new feature flags |
+| Exact `50d4a2647` | Nine startup records; identical bytes/RPCs/logical/cache work to old source | Nine startup records; scoped lazy startup, no hidden body/list RPCs | Nine startup records; real adapter recognizes timeline/tree/hint capabilities, no hidden body/list RPCs |
+
+The 3.33/3.34 cells use the frozen 18-row harness and original exact-source
+baseline. The 3.35 cells use the independently pinned compatibility clone and
+a checked full production-source swap. Each cell has cold/warm/long-absent
+starts for all three profiles. These simulated peers exercise real SPA code,
+capability parsing in the 3.35 clone, scoped engine and cache publication.
+They are not separately deployed bridge binaries. Cache rollback and actual
+bridge-handler compatibility have independent tests in
+[the recovery/producer map](cutover-coverage.md).
+
+Full final startup tables are retained in
+[`startup-final-comparison/cutover.md`](cutover-final/startup-final-comparison/cutover.md)
+and [`compat335-comparison/cutover.md`](cutover-final/compat335-comparison/cutover.md).
+Both comparison processes exited 0 with no increase in their small-startup
+deterministic counter gates. Wall samples remain observations, including
+legacy samples that vary upward; they are not production timing guarantees.
+
+### Mounted selected-task opener
+
+| History | Cache | All mount RPCs | Response JSON bytes | DOM-title observation ms | Cache publications |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 20 | cold | 6 → 6 | 11,676 → 11,788 | 341.973 → 319.155 | 2 → 2 |
+| 20 | warm | 7 → 7 | 16,993 → 17,217 | 122.924 → 99.957 | 3 → 3 |
+| 4096 | cold | 6 → 6 | 1,000,235 → 26,390 | 263.383 → 222.226 | 2 → 2 |
+| 4096 | warm | 7 → 7 | 1,986,810 → 39,120 | 172.546 → 141.756 | 3 → 3 |
+
+Every cold opener includes one `sync.snapshot`, four `sync.changes` and one
+`tasks.get`; warm includes the same scoped reads plus two `tasks.get` calls.
+The counts include all calls during the measured mount, not just the detail
+endpoint. Both arms paint the warm cached title **before held RPC replies are
+released**. Cold mounts have no cached paint. Publication counts are unchanged.
+For 20 comments, paging metadata adds 112 response bytes per detail reply
+(224 across the two warm detail replies). This is an explicit small-task byte
+cost; the startup no-regression counter result does not erase it.
+
+The `firstPaintMs` field is a jsdom MutationObserver's first visible-title
+observation, not a browser pixel/frame or production latency measurement.
+The separate endpoint probe uses different comment bodies and therefore has
+different absolute JSON byte totals; it cannot be combined with this mount
+table as if the fixtures were identical. All raw per-method counts, cache
+callbacks, first-publication times and identity checks are retained in
+[`task-open-comparison.json`](cutover-final/task-open-comparison.json) and its
+four-record old/new JSONL inputs. No retries or installed bridge were used.
+## Frozen-head root-hint negative control
+
+At `50d4a2647`, forcing a Files root body into the hints path made
+`changes::subscriptions::files_hints_stay_root_free_when_a_legacy_subscriber_needs_the_same_root`
+fail with actual exit **101**: the received body included an unexpected
+`root`, while the expected hint contained only paths and truncation metadata.
+The [negative-control receipt](gate-receipts/negative-controls-50d4a2647/manifest.json)
+retains the raw failure, the separate capacity-32 preparation failure, and
+all mandatory copy/touch/cmp restoration exits 0. This checks that the
+hint-contract regression is detected even when a legacy subscriber also
+requires a root; it is not an ordinary production-test pass.
+
+## Lossless raw-log storage
+
+Repository whitespace checks reject the raw CLI logs' trailing spaces and
+final blank lines. Those bytes remain unchanged. All 21 retained logs travel
+as `.log.json` wrappers containing `raw_utf8` plus the original byte SHA-256;
+[the storage index](raw-log-storage.json) maps original filenames to wrappers
+and retains both raw and wrapper hashes. Raw `.log` names/hashes in earlier
+provenance describe the decoded bytes. To decode one wrapper into task scratch:
+
+```sh
+/usr/bin/python3 -c 'import hashlib,json,pathlib,sys; v=json.loads(pathlib.Path(sys.argv[1]).read_text()); b=v["raw_utf8"].encode("utf-8"); assert hashlib.sha256(b).hexdigest()==v["sha256"]; pathlib.Path(sys.argv[2]).write_bytes(b)' docs/task-query-cost/gate-receipts/semgrep-50d4a2647/scan.log.json /home/zech/Projects/.agent-scratch/894/decoded-semgrep-scan.log
+```
+
+Every wrapper was decoded and compared byte-for-byte with its original
+before commit. Original plain logs remain available in the task's retained
+local/scratch artifacts for attachments. No whitespace normalization, ignore
+rule or scanner allowlist was added.
+
+## Lossless command-parameter storage
+
+The API-manifest command receipts store their Git base as the first `base`
+field and use the literal `$BASE` as one `argv` element. Replacing that entire
+element with the record's `base` reconstructs the exact original executable
+argument vector; this is storage notation, requiring no shell interpolation.
+[The parameter-storage provenance](gate-receipts/command-parameter-storage.json)
+retains both original and parameterized stored-file SHA-256 identities, the
+verbatim scratch-ledger identities, and all five equivalent receipt cases.
+Every reconstructed receipt was compared with its saved original. This
+removes a false generic-key interpretation of an API script followed by a
+Git SHA without altering measured commands, exits, source identities,
+allowlists or original scratch logs.

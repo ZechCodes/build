@@ -1,0 +1,32 @@
+{
+  "source": "50d4a264726cc866160e3a360afdb65345842767",
+  "main_scan_exit_code": 0,
+  "findings": 0,
+  "tracked_targets": 82,
+  "configured_rules": 1074,
+  "rules_reported_run": 200,
+  "timeouts": {
+    "spa/src/core/agentRail.js": [
+      "javascript.express.security.audit.express-ssrf.express-ssrf"
+    ],
+    "spa/test/agentRailDom.test.js": [
+      "javascript.express.security.audit.express-ssrf.express-ssrf",
+      "javascript.express.security.audit.xss.direct-response-write.direct-response-write"
+    ]
+  },
+  "timeout_disposition": "Closed by focused same-auto/error scan with timeout60 and threshold0, actual0,200rules/2files,0findings and no timeout warnings. Initial3timeouts remain retained.",
+  "files": {
+    "commands.jsonl": "891b2cede885a55dee97c0aa01964e7d49fe576e5c6042659d2c316eae54f500",
+    "paths.json": "10a2584024f47c97485f935e569f9497e0bf3a13c0416d3933c6fea69b14e04d",
+    "scan.log": "eb56fa39be275f35ebc23c80fdeae8d1363ef27ed402d2afbf5526fb0324849c",
+    "exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "focused-timeouts.log": "aec8b8c026b3816fbca7a60cd23c3f275917251e4fd8af19110e3d70cf4f6e5c",
+    "focused-receipt.json": "54f0355d5a44cdfb708bbb77faf7e9cf09b0c6673271bfbe4fb0eca4d7cf2c0b"
+  },
+  "focused_scan_exit_code": 0,
+  "focused_scan_findings": 0,
+  "focused_scan_timeout_warnings": 0,
+  "focused_receipt": "focused-receipt.json",
+  "raw_log_storage": "../../raw-log-storage.json",
+  "raw_log_storage_note": "Raw .log path/hash entries identify the original decoded bytes. These logs travel as lossless .log.json wrappers indexed by raw-log-storage; original plain bytes are not normalized."
+}

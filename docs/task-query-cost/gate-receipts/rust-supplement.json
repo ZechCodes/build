@@ -1,0 +1,185 @@
+[
+  {
+    "label": "changes-fixtures-fixed",
+    "cwd": "bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--lib",
+      "changes::subscriptions::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 159.3237748146057
+  },
+  {
+    "label": "directory-identity-verified",
+    "cwd": "bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--lib",
+      "directory_identity_",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.5791223049163818
+  },
+  {
+    "label": "tracker-api-refactored",
+    "cwd": "bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--lib",
+      "app::tests::tracker::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 59.05177640914917
+  },
+  {
+    "label": "append-refactored",
+    "cwd": "bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--lib",
+      "store::tests::conversations::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 12.798950433731079
+  },
+  {
+    "label": "sql-reads-frozen",
+    "cwd": "bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--lib",
+      "app::tests::runtime::sql_reads::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 5.934351444244385
+  },
+  {
+    "label": "api-contract-fixtures-fixed",
+    "cwd": "bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--test",
+      "api_contract",
+      "--",
+      "--nocapture"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 7.651012182235718
+  },
+  {
+    "label": "rust-format-frozen",
+    "cwd": "bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "fmt",
+      "--check"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 11.175625801086426
+  },
+  {
+    "label": "rust-clippy-refactored",
+    "cwd": "bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "clippy",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 157.44471788406372
+  },
+  {
+    "base": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+    "label": "prior-wire-manifest-frozen",
+    "cwd": ".",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+      "scripts/api-verbs-manifest.mjs",
+      "$BASE"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 1.0679106712341309
+  },
+  {
+    "label": "prior-wire-manifest-clean-frozen",
+    "cwd": ".",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "git",
+      "diff",
+      "--exit-code",
+      "--",
+      "fixtures/api/verbs-3.34.json"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.024458646774291992
+  },
+  {
+    "label": "http-manifest-frozen",
+    "cwd": ".",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+      "scripts/http-resource-manifest.mjs",
+      "--check"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.11093425750732422
+  }
+]

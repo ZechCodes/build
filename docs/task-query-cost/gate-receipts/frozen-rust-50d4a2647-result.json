@@ -1,0 +1,73 @@
+{
+  "exit_code": 0,
+  "results": [
+    {
+      "label": "negative-controls",
+      "exit_code": 0
+    },
+    {
+      "label": "append-baseline-statements",
+      "exit_code": 0
+    },
+    {
+      "label": "store-tests",
+      "exit_code": 0
+    },
+    {
+      "label": "sync",
+      "exit_code": 0
+    },
+    {
+      "label": "device-lifecycle",
+      "exit_code": 0
+    },
+    {
+      "label": "tracker-sync",
+      "exit_code": 0
+    },
+    {
+      "label": "sql-reads",
+      "exit_code": 0
+    },
+    {
+      "label": "tracker-api",
+      "exit_code": 0
+    },
+    {
+      "label": "filesystem",
+      "exit_code": 0
+    },
+    {
+      "label": "directory-identity",
+      "exit_code": 0
+    },
+    {
+      "label": "changes",
+      "exit_code": 0
+    },
+    {
+      "label": "api-contract",
+      "exit_code": 0
+    },
+    {
+      "label": "fmt",
+      "exit_code": 0
+    },
+    {
+      "label": "clippy",
+      "exit_code": 0
+    },
+    {
+      "label": "prior-wire",
+      "exit_code": 0
+    },
+    {
+      "label": "prior-wire-clean",
+      "exit_code": 0
+    },
+    {
+      "label": "http-manifest",
+      "exit_code": 0
+    }
+  ]
+}

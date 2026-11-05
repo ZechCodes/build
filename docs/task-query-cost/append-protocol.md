@@ -91,3 +91,43 @@ with raw baseline and candidate observations and fixture/log hashes in
 [`provenance.json`](append-statements/provenance.json). The statement-cache
 capacity-32 negative control is a separate compilation/reuse check; these
 execution counts do not substitute for its failed-control/restoration evidence.
+
+## Frozen-head statement-cache negative control
+
+At exact `50d4a264726cc866160e3a360afdb65345842767`, reducing the prepared-
+statement cache from 128 to 32 made
+`store::tests::task_summaries::cache::repeated_metadata_and_comment_writes_reuse_the_projection_program`
+fail with actual process **101**, observing 8 preparations where the warmed
+program expected 3. The original file was restored from its saved copy,
+touched and byte-compared, all exit 0; the source comparison against HEAD
+also exited 0. The control orchestration exited 0 because its deliberate
+behavioral failure and mandatory restoration were both confirmed.
+[The raw control/restoration receipt](gate-receipts/negative-controls-50d4a2647/manifest.json)
+also retains the independent forced-root negative control. Restored ordinary
+final gates are attributed separately; a failing control is not counted as
+a passing production test.
+
+## Exact final-source execution-count qualification
+
+The same comparison was rerun once against the frozen `50d4a2647` fixture:
+[final baseline/candidate maps](append-statements-50d4a2647/comparison.json)
+retain **181 → 168 executions, 127 → 122 SELECT starts, and 44 → 37 rows**
+at all three history lengths. The complete maps remain equal within each arm.
+The copy-controlled baseline, observer sanity check and restored final
+`store::tests::` process all exited 0; the latter ran 313 tests with one
+ignored. All mandatory baseline copy/touch/cmp restorations and HEAD source
+comparison exited 0. The light comparator also exited 0, using:
+
+```sh
+/usr/bin/python3 docs/task-query-cost/append-statements.py --baseline /home/zech/Projects/.agent-scratch/894/frozen-append-statements-50d/baseline.log --candidate /home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/store-tests.log --output docs/task-query-cost/append-statements-50d4a2647
+```
+
+[Final provenance](append-statements-50d4a2647/provenance.json) preserves the
+full-log and fixture/source hashes, actual process receipts, baseline command
+ledger and observer sanity check. Earlier maps/raw observations above remain
+retained with their own provenance. This is execution-count qualification,
+not another paired wall-clock cohort.
+
+Raw append logs use the same [lossless JSON storage](cutover-protocol.md#lossless-raw-log-storage)
+as the other receipts; [the index](raw-log-storage.json) preserves all original
+bytes/hashes and wrapper locations.

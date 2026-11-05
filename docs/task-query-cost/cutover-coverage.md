@@ -1,6 +1,7 @@
 # #894 producer and recovery coverage map
 
-This is a source audit of the test cases present in the #894 working tree.
+This is a source audit of the test cases at the frozen #894 code head
+`50d4a264726cc866160e3a360afdb65345842767`.
 **A case listed here is not an execution claim.** This audit ran no tests;
 the execution receipts below are imported from the parent's retained process
 records. Final-head gate logs, exact source identity, exits and ignored-test
@@ -195,8 +196,25 @@ The large-fixture ≤100 ms assertion is
 It is `#[ignore = "timing: release-profile timing.yml"]`; a normal targeted
 `cargo test --lib app::tracker::sync_tests::` does **not** execute it. A claim
 that this timing gate passed requires its explicit release-profile ignored-test
-run or separately attributed exact-source timing evidence. None was run by
-this documentation audit.
+run or separately attributed exact-source timing evidence. The explicit run at
+`50d4a264726cc866160e3a360afdb65345842767` now has actual exit **0**
+(one test), retained in [the release receipt](gate-receipts/release-read-bound-50d4a2647.json)
+and its [raw log](gate-receipts/release-read-bound-50d4a2647.log.json). With the app
+mutex held, carrier client totals were **16,862 µs** for `sync.head`,
+**29,355 µs** for the device snapshot, **23,191 µs** for `sync.changes`, and
+**6,470 µs** for the task snapshot, all below 100 ms. The 10m47s release compile
+and 314.17s test-process duration include build/setup outside those request
+timers; neither is read latency. This is one synthetic large-fixture
+measurement of real handlers, not an arbitrary-load or production guarantee.
+
+The separate task-detail handler probe
+`app::tests::tracker::long_task_open_reports_bounded_bytes_and_preserves_all_history_unread_counts`
+also ran in the exact final `50d4a2647` tracker-API process with exit 0. Its
+4096-entry bounded invocation asserts <100 ms and observes 13,848 µs
+(debug, warm, direct `app.handle`), retaining all-history unread count 4096.
+[The endpoint receipt](gate-receipts/task-endpoint-50d4a2647.json) distinguishes
+this handler observation from held-lock wire dispatch and whole mounted-view
+measurements. It is not a release carrier or production-latency result.
 
 ## Filesystem/source-view boundary and unsupported claims
 
@@ -231,25 +249,30 @@ this documentation audit.
 - Producer inventory/semantic tests cover supported writers and rendered
   families; they do not prove arbitrary future writers, unsupported raw SQL,
   every OS watcher behavior, encrypted-network loss, or every account's timing.
-- Default targeted gates omit ignored release timing tests. No full SPA suite,
+- Default targeted gates omit ignored release timing tests; the explicitly
+  selected same-head release timing test above ran separately with exit 0. No full SPA suite,
   installed bridge, live filesystem watcher integration or deployment was
   executed by this audit. The coordinator's serial gate remains separate.
 
-## Retained gate attribution and remaining qualification
+## Retained gate attribution and exact final qualification
 
 The original retained batch is copied without changing its exits in
 [`gate-receipts/initial-rust.json`](gate-receipts/initial-rust.json) and
 [`initial-spa.json`](gate-receipts/initial-spa.json). Its passing groups are
 evidence for that batch, not a blanket pass at later code head `18749eab6`.
-The later source contains the intervening fixes; fresh supplement/final-head
-qualification remains pending and is tracked on #894.
+The later source contains the intervening fixes. The exact final-head Rust
+qualification now has actual exit 0 for all 17 processes, retained in
+[`frozen-rust-50d4a2647.json`](gate-receipts/frozen-rust-50d4a2647.json), its
+[exact command ledger](gate-receipts/frozen-rust-50d4a2647-commands.jsonl) and
+[result](gate-receipts/frozen-rust-50d4a2647-result.json).
 
 Three Rust groups in that first batch exited 101: `changes-final` (stale
 legacy `KindSet` fixture), `api-contract-final` (a fixture missing
 `bridge_epoch`) and `rust-clippy-final` (two test-only complexity findings).
-The source/fixture corrections have landed; this document does not infer a
-successful rerun. Formatting and prior-wire/HTTP manifest checks in the
-retained batch exited 0.
+The source/fixture corrections landed; the subsequent supplement and exact
+final-head corresponding processes all exited 0. The earlier 101 exits remain
+retained rather than being relabeled. Formatting and prior-wire/HTTP manifest
+checks also exited 0 in the exact final-head batch.
 
 The first affected unit aggregate exited 1: 355/357 files passed, with 15
 failed cases in `taskPageQueuedRepairOwnership.test.js` and
@@ -257,24 +280,52 @@ failed cases in `taskPageQueuedRepairOwnership.test.js` and
 are retained in
 [`unit-initial-failures.json`](gate-receipts/unit-initial-failures.json).
 The parent subsequently reports all 15 corrected fixture cases passing in
-focused runs; a new 359-file aggregate is still pending. The first layout
+focused runs. A later 359-file aggregate at `17c8b9103` exited 1 with a
+Rust-fixture-marker parsing failure and a Done-row DOM timing race; its two
+named failures and unchanged production-source disposition are retained in
+[`unit-17c8b9103-failures.json`](gate-receipts/unit-17c8b9103-failures.json).
+After those two fixture-only corrections, the exact `50d4a2647` batch has
+**lint exit 0, 359 targeted unit files/5889 tests exit 0, and build exit 0**,
+recorded in [`verified-spa-50d4a2647.json`](gate-receipts/verified-spa-50d4a2647.json).
+This is the selected affected-file union, not the coordinator's full SPA suite.
+The first layout
 process exited 143. The lead explicitly directed a detached repeat; its
 recorded exit is 0 with 76 files/597 tests, retained in
 [`layout-repeat.json`](gate-receipts/layout-repeat.json). No third layout
 run is claimed. The full state, including the earlier failures and remaining
 work, is explicit in [`status.json`](gate-receipts/status.json).
 
+The final same-head lifecycle supplement also exited 0 at `50d4a2647`:
+three browser files/22 tests, retained in
+[`layout-lifecycle-50d4a2647.json`](gate-receipts/layout-lifecycle-50d4a2647.json).
+The Rust supplement's 11 recorded processes all exited 0, including the
+corrected changes/API/Clippy groups, in
+[`rust-supplement.json`](gate-receipts/rust-supplement.json). The fresh complete
+same-head Rust/negative-control/statement-baseline queue also completed with
+all 17 orchestration/process exits 0. The two deliberate negative variants
+failed their named behavioral tests with expected process 101; all mandatory
+copy/touch/cmp restorations exited 0. Their [raw control receipt](gate-receipts/negative-controls-50d4a2647/manifest.json)
+and the [fresh execution-count comparison](append-statements-50d4a2647/provenance.json)
+retain the distinct interpretations. Static qualification also has actual
+exit 0: the main Semgrep scan reported zero findings across 82 tracked SPA
+paths (200 applicable rules from 1074 configured rules), with three rule
+timeouts initially retained. A focused same-config two-file run with
+`--timeout 60 --timeout-threshold 0` exited 0 with zero findings and no timeout
+warnings, closing those coverage gaps. The [scan receipts and both raw logs](gate-receipts/semgrep-50d4a2647/manifest.json)
+retain the initial warning and focused outcome separately. No full SPA suite
+or installed-bridge deployment is implied by these targeted gates.
+
 | Required group | Why it is separate | Execution evidence in this audit |
 | --- | --- | --- |
-| `cargo test --lib store::sync::` | Journal/device/task producer, cursor, retention and startup tests | Retained `sync-final` process exit 0; later-head qualification pending |
-| `cargo test --lib store::tests::` | Shared writer/projection/append budget regression coverage | Retained `store-tests-counted-final` process exit 0; later-head qualification pending |
-| `cargo test --lib app::device_lifecycle_tests::` | Registry/non-SQL producers and marker ordering | Retained `device-lifecycle-final` process exit 0; later-head qualification pending |
-| `cargo test --lib app::tracker::sync_tests::` | Task recovery RPC/snapshot/selection semantics | Retained `tracker-sync-final` process exit 0; ignored timing separate |
-| `cargo test --lib app::tests::runtime::sql_reads::` | Wire read-pool dispatch while app/writer locks are held | Retained `sql-reads-final` process exit 0; fresh frozen-head supplement pending |
-| Scoped SPA engine/recovery/reconnect/cache/presence/runtime/paint suites listed above | Real cache atomicity plus lifecycle/DOM boundaries | Earlier 357-file unit aggregate exit 1 for the two fixture files above; corrected final 359-file aggregate pending |
-| New task timeline and directory paging contract suites | New 3.35 open-read shapes/continuations, legacy direction and cache behavior | Retained `tracker-api-final` and `filesystem-final` process exits 0; separate source-fix/final-head qualification pending |
+| `cargo test --lib store::sync::` | Journal/device/task producer, cursor, retention and startup tests | Exact50d process exit 0: 118 tests |
+| `cargo test --lib store::tests::` | Shared writer/projection/append budget regression coverage | Exact50d process exit 0: 313 tests, one ignored; separate append baseline/control receipts retained |
+| `cargo test --lib app::device_lifecycle_tests::` | Registry/non-SQL producers and marker ordering | Exact50d process exit 0: 27 tests |
+| `cargo test --lib app::tracker::sync_tests::` | Task recovery RPC/snapshot/selection semantics | Exact50d process exit 0: 18 tests, one ignored; explicit release timing also exit 0 |
+| `cargo test --lib app::tests::runtime::sql_reads::` | Wire read-pool dispatch while app/writer locks are held | Exact50d process exit 0: 15 tests, one ignored |
+| Scoped SPA engine/recovery/reconnect/cache/presence/runtime/paint suites listed above | Real cache atomicity plus lifecycle/DOM boundaries | Verified `50d4a2647` affected union: 359 files/5889 tests, process exit 0; earlier failed fixture aggregates retained |
+| New task timeline and directory paging contract suites | New 3.35 open-read shapes/continuations, legacy direction and cache behavior | Exact50d tracker API 29 tests, filesystem 69, directory identity 3, changes 52 and API contract 68, every process exit 0 |
 
-### Final affected SPA selection: prepared, not executed
+### Final affected SPA selection
 
 The final selection was generated from the five independently assembled
 target/fixture lists, every new or changed SPA test, and all tests that directly
@@ -285,8 +336,8 @@ record fields. Tests importing matching helper modules are included as well.
 
 | Prepared list | Count | Status |
 | --- | ---: | --- |
-| `/home/zech/Projects/.agent-scratch/894/final-affected-spa-unit.txt` | 359 | Prepared, including `directoryLegacyRoot`, `checkoutWatcherLifecycle` and changed `cacheSyncChanges`; final aggregate pending |
-| `/home/zech/Projects/.agent-scratch/894/final-affected-spa-browser.txt` | 76 | Detached repeat exited 0/597 tests; source/head attribution remains in the parent receipt |
+| `/home/zech/Projects/.agent-scratch/894/final-affected-spa-unit.txt` | 359 | Verified `50d4a2647` process exit 0/5889 tests; includes `directoryLegacyRoot`, `checkoutWatcherLifecycle` and changed `cacheSyncChanges` |
+| `/home/zech/Projects/.agent-scratch/894/final-affected-spa-browser.txt` | 76 | Detached repeat exited 0/597 tests; final same-head three-file lifecycle supplement exited 0/22 tests |
 
 The generator, selection reasons and literal-search evidence are preserved in
 the same scratch directory as `collect-final-spa-union.py`,
@@ -297,9 +348,11 @@ not a test-suite result.
 
 `syncTimingCutover.test.js`, `compat335.test.js` and `taskOpenCost.test.js` are deliberately excluded
 from this ordinary affected-suite list because their measurements and exact-
-source compatibility cohorts run separately and serially. The existing 18-row
-performance cohort has its own recorded exits; the separate wire-3.35
-old-source/new-source compatibility driver still needs its own evidence.
+source compatibility/mounted-open cohorts ran separately and serially. The
+final exact-base/`50d4a2647` runner exited 0: all five fixture processes and
+both comparison processes exited 0, covering 18 startup rows, nine 3.35 rows
+per arm and four mounted-task cases per arm. Full source restoration and raw
+results are retained by [the final manifest](cutover-manifest.json).
 Capture tools, seed modules and diagnostic files that match literal searches
 are listed explicitly as non-test matches in the manifest. They are not
 Vitest suites; importing tests cover the helper fixtures. Standalone captures

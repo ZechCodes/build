@@ -1,0 +1,15 @@
+{
+  "exit_code": 0,
+  "base": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+  "source": "50d4a264726cc866160e3a360afdb65345842767",
+  "restored": true,
+  "drivers": {
+    "spa/test/compat335.test.js": "8cbcaa79e71e703ae70ac2ff76182057b17d8fab58679f5b1d63db994c88bea5",
+    "spa/test/syncTimingCutover.test.js": "134883eef47c710e0a72860e96dc4cf28cf79105383f2f9c81d643c95d74c059",
+    "spa/test/taskOpenCost.test.js": "bd035edd6b173bf54401b69a8743c12bff57691c414b71633dd155dbcd80fdf3"
+  },
+  "affected_sources": 38,
+  "all_spa_files": 1723,
+  "all_spa_sha256": "af7686a64bdf37108dc180e5d4b6b9dca60690a0a4bf42fe23956679e9effa3b",
+  "ledger": "/home/zech/Projects/.agent-scratch/894/final-cutover-50d4a2647/commands.jsonl"
+}

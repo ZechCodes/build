@@ -1,0 +1,457 @@
+{
+  "source": "50d4a264726cc866160e3a360afdb65345842767",
+  "exit_code": 0,
+  "groups": {
+    "negative-controls": {
+      "command": {
+        "event": "complete",
+        "label": "negative-controls",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "/usr/bin/python3",
+          "/home/zech/Projects/.agent-scratch/894/frozen-negative-controls-50d.py"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/negative-controls.log",
+      "raw_log_sha256": "7a560938a4bbac4fd366bc037c66521d033745e5e4eaaff8fc5ebb4b986a4865",
+      "test_results": []
+    },
+    "append-baseline-statements": {
+      "command": {
+        "event": "complete",
+        "label": "append-baseline-statements",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "/usr/bin/python3",
+          "/home/zech/Projects/.agent-scratch/894/frozen-append-statements-50d.py"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/append-baseline-statements.log",
+      "raw_log_sha256": "6db43226664df58272c1e9a9bd38e3ce060347aef127501fa7fbdfda8ac20c64",
+      "test_results": []
+    },
+    "store-tests": {
+      "command": {
+        "event": "complete",
+        "label": "store-tests",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "test",
+          "--lib",
+          "store::tests::",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/store-tests.log",
+      "raw_log_sha256": "21d9fc9681f792358d79f588cae25af193da7afd0ffa0517d133c6de17898681",
+      "test_results": [
+        {
+          "passed": 313,
+          "failed": 0,
+          "ignored": 1
+        }
+      ]
+    },
+    "sync": {
+      "command": {
+        "event": "complete",
+        "label": "sync",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "test",
+          "--lib",
+          "store::sync::",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/sync.log",
+      "raw_log_sha256": "2ecb839cadbc330e716c6eaf82f0301f73fe61c778d8edb6898de1106a04a07d",
+      "test_results": [
+        {
+          "passed": 118,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "device-lifecycle": {
+      "command": {
+        "event": "complete",
+        "label": "device-lifecycle",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "test",
+          "--lib",
+          "app::device_lifecycle_tests::",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/device-lifecycle.log",
+      "raw_log_sha256": "f056c0e5dc37efe578a5c53558946ceff1ec06d87bcb990cac120a533858b17d",
+      "test_results": [
+        {
+          "passed": 27,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "tracker-sync": {
+      "command": {
+        "event": "complete",
+        "label": "tracker-sync",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "test",
+          "--lib",
+          "app::tracker::sync_tests::",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/tracker-sync.log",
+      "raw_log_sha256": "1d9b7900ac01937a5949a73bc58a79ef1d0a834eabd8bc16d31fbdb80aa4f502",
+      "test_results": [
+        {
+          "passed": 18,
+          "failed": 0,
+          "ignored": 1
+        }
+      ]
+    },
+    "sql-reads": {
+      "command": {
+        "event": "complete",
+        "label": "sql-reads",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "test",
+          "--lib",
+          "app::tests::runtime::sql_reads::",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/sql-reads.log",
+      "raw_log_sha256": "3e89eed1d90ba1dfa6fe1774ffed838706b6d71fd9a07240b37a3b1957098fa9",
+      "test_results": [
+        {
+          "passed": 15,
+          "failed": 0,
+          "ignored": 1
+        }
+      ]
+    },
+    "tracker-api": {
+      "command": {
+        "event": "complete",
+        "label": "tracker-api",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "test",
+          "--lib",
+          "app::tests::tracker::",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/tracker-api.log",
+      "raw_log_sha256": "d52695aaeec2f13a2555438d664f0654b37fe3f843c8bc712d62ce84492c9495",
+      "test_results": [
+        {
+          "passed": 29,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "filesystem": {
+      "command": {
+        "event": "complete",
+        "label": "filesystem",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "test",
+          "--lib",
+          "app::tests::filesystem::",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/filesystem.log",
+      "raw_log_sha256": "5cc4c85f4df8d9736ff6460c721e11b1a1168f102d75c8eb61f90406f8f24d6b",
+      "test_results": [
+        {
+          "passed": 69,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "directory-identity": {
+      "command": {
+        "event": "complete",
+        "label": "directory-identity",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "test",
+          "--lib",
+          "directory_identity_",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/directory-identity.log",
+      "raw_log_sha256": "2073f4a8774785ea4e495a601aae3023e7ec175dc38978d95f7c0f7dbc15eaef",
+      "test_results": [
+        {
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "changes": {
+      "command": {
+        "event": "complete",
+        "label": "changes",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "test",
+          "--lib",
+          "changes::subscriptions::",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/changes.log",
+      "raw_log_sha256": "b0a500ea845cc6017152f1543343017489cf6b8deab1d929e6f748d51df6acd0",
+      "test_results": [
+        {
+          "passed": 52,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "api-contract": {
+      "command": {
+        "event": "complete",
+        "label": "api-contract",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "test",
+          "--test",
+          "api_contract",
+          "--",
+          "--nocapture"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/api-contract.log",
+      "raw_log_sha256": "4499408af82f7481927317c154d00bb0df4a44b8544be59320f2f02cd50e79ae",
+      "test_results": [
+        {
+          "passed": 68,
+          "failed": 0,
+          "ignored": 0
+        }
+      ]
+    },
+    "fmt": {
+      "command": {
+        "event": "complete",
+        "label": "fmt",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "fmt",
+          "--check"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/fmt.log",
+      "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_results": []
+    },
+    "clippy": {
+      "command": {
+        "event": "complete",
+        "label": "clippy",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "clippy",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/clippy.log",
+      "raw_log_sha256": "b941f241fdfe49a9b15a51b38fea3d2e4b664b25a8bd6d8665e89fa10631a0fe",
+      "test_results": []
+    },
+    "prior-wire": {
+      "command": {
+        "base": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+        "event": "complete",
+        "label": "prior-wire",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+          "scripts/api-verbs-manifest.mjs",
+          "$BASE"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/prior-wire.log",
+      "raw_log_sha256": "d99b97df3dbc61c39ccef93a0794480059131596f8ae5a9f7475a0d5750828ac",
+      "test_results": []
+    },
+    "prior-wire-clean": {
+      "command": {
+        "event": "complete",
+        "label": "prior-wire-clean",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "git",
+          "diff",
+          "--exit-code",
+          "--",
+          "fixtures/api/verbs-3.34.json"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/prior-wire-clean.log",
+      "raw_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "test_results": []
+    },
+    "http-manifest": {
+      "command": {
+        "event": "complete",
+        "label": "http-manifest",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+          "scripts/http-resource-manifest.mjs",
+          "--check"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+        "exit_code": 0,
+        "head": "50d4a264726cc866160e3a360afdb65345842767"
+      },
+      "raw_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/http-manifest.log",
+      "raw_log_sha256": "406aa56a9769aab67b981428639fb1abebc35c889faaea4bf79f83d8a7c32cae",
+      "test_results": []
+    }
+  },
+  "runner": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d.py",
+  "runner_sha256": "12c1a6dee5a03a86cd38cd5fe5994f19bad45e1ae2ee41568b8612a094d64c7b",
+  "environment": {
+    "CARGO_BUILD_JOBS": "8",
+    "TMPDIR": "/home/zech/Projects/.agent-scratch/894",
+    "nice": "10"
+  },
+  "negative_control_note": "Expected behavioral101 processes are nested inside negative-controls orchestration0; raw failures and mandatory copy/touch/cmp restoration0 are separately retained."
+}

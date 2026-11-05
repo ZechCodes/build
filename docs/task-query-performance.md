@@ -444,9 +444,13 @@ publication for small, single-project and large profiles across cold, warm
 and retention-expired starts. Scoped small-account deterministic work falls;
 the old-bridge cells retain identical byte/RPC/logical/cache-callback counts.
 Logical RPC time is a fixture model, and fake-IDB wall time is a Node-process
-observation, not production network or disk latency. The earlier candidate
-record is explicitly attributed to its working-source manifest; final-head
-remeasurement and wire-3.35 old/new-SPA compatibility receipts remain separate.
+observation, not production network or disk latency. Final source
+`50d4a264726cc866160e3a360afdb65345842767` has an actual exit-0 matched cohort:
+18 startup records, nine old/new-source 3.35 records per arm, and four selected-
+task mount records per arm. All five fixture processes and both comparison
+processes exited 0. Earlier development records retain their own working-source
+manifest. The final manifest retains every command/exit and verifies restoration
+of all 38 temporarily swapped source files plus the complete 1,723-file SPA hash.
 
 The [warmer → open-read map](task-query-cost/lazy-read-map.md) identifies the
 replacement reader for every removed fan-out and the current capability
@@ -469,14 +473,38 @@ do not establish an elapsed-time improvement or regression.
 
 The actual task endpoint probe
 `app::tests::tracker::long_task_open_reports_bounded_bytes_and_preserves_all_history_unread_counts`
-observes a 4096-entry task: result JSON falls **2,528,313 → 31,933 bytes**,
-with **one endpoint invocation in each mode**. The same debug warm observation
-is 445,602 → 23,195 µs. Those development measurements cover the endpoint
+observes a 4096-entry task: endpoint reply JSON falls **2,528,313 → 31,933 bytes**,
+with **one endpoint invocation in each mode**. The earlier debug warm observation
+is 445,602 → 23,195 µs; the exact final `50d4a2647` targeted process also
+exited 0, observing 307,113 → 13,848 µs and asserting the bounded invocation
+finishes below 100 ms while preserving all-history unread count 4096.
+[Its receipt](task-query-cost/gate-receipts/task-endpoint-50d4a2647.json)
+records the exact command and full-log hash. Those handler measurements cover the endpoint
 invocation, not the whole mounted task view, its scoped snapshot/catch-up,
 transport framing, cache publication or paint. A separate frozen
 `taskOpenCost.test.js` driver counts all selected-task mount RPCs, response
 bytes, cache publications and first paint for 20/4096 entries × cold/warm;
-its matched exact-base/final-source four-case proof is pending execution.
-It precompletes device bootstrap and excludes read marks, reviews, user actions
+its matched exact-base/final-source four-case proof now has actual exit 0 in
+both arms. All mount RPCs remain 6 cold / 7 warm. At 4096 entries, total
+response JSON falls **1,000,235 → 26,390 bytes cold** and
+**1,986,810 → 39,120 bytes warm**. At 20 entries, bounded metadata adds
+**112 bytes cold / 224 bytes warm**: **11,676 → 11,788** and
+**16,993 → 17,217**, respectively, with unchanged RPC/publication counts.
+This small-task byte cost is explicit; the startup small-account counter pass
+does not imply zero overhead for every selected-task reply. Both arms paint
+warm cached content before held replies are released. Detailed per-method
+counts, publications and jsdom DOM-title observations are in
+[the final mount comparison](task-query-cost/cutover-final/task-open-comparison.json).
+The endpoint and mounted-view probes use different synthetic comment bodies;
+their absolute byte totals are separate fixture observations.
+The mounted driver precompletes device bootstrap and excludes read marks, reviews, user actions
 and push-subscription wire traffic, so even that result is a selected-task
 opener rather than whole-app startup.
+The explicit same-head release-profile large recovery test also exited **0**
+while the app mutex was held. Carrier client totals were **16.862 ms**
+(`sync.head`), **29.355 ms** (device snapshot), **23.191 ms** (`sync.changes`)
+and **6.470 ms** (task snapshot), each below the 100 ms bound. The
+[raw release receipt](task-query-cost/gate-receipts/release-read-bound-50d4a2647.json)
+retains the exact command and source. Build/setup time is outside these
+request timers; this one synthetic run of real handlers is not a production
+latency guarantee.

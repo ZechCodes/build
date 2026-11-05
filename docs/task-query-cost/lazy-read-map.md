@@ -1,9 +1,15 @@
 # Lazy view reads: ownership and replacement reads (#894)
 
-This is a source audit of the final cutover implementation. Compatibility and
-performance proof remains pending the coordinator's final serial gates; this
-map does not claim those gates passed. The supported-version floor was not
-approved for retiring legacy paths, so those paths remain.
+This is a source audit of the final cutover implementation. Actual matched
+compatibility/performance and targeted gate receipts are linked below; the
+coordinator's full SPA acceptance gate remains separate. The supported-version
+floor was not approved for retiring legacy paths, so those paths remain.
+
+The matched source cohort at `50d4a2647` now records five successful fixture
+processes, exact-base/candidate source verification and mandatory copy-based
+restoration in [the final cost manifest](cutover-manifest.json). These are
+synthetic-peer/source compatibility and cache/mount measurements, not installed
+bridge deployments or the coordinator's full SPA acceptance gate.
 
 Review boundaries, in dependency order:
 
@@ -114,6 +120,51 @@ continuation without presenting a sync error. These fence recoveries have no
 loading, toast or error UX. Genuine history/read failures retain ordinary
 error handling. Scoped sync recovery itself supplies no user-facing fence
 state.
+
+## Visible owners, hidden body retirement and root reuse
+
+Scoped Git watchers are owned by the shown pane and document. `gitPane`
+`checkoutReadsAllowed` stops metadata/body/selected-patch work while hidden;
+`bindCheckoutWatcher` disposes the old binding and advances its generation on
+hide or re-greeting. Showing the pane/document paints held records and
+revalidates only its selected status/log/unpushed/Changes readers. A frame or
+queued cache write from the old binding cannot become the new owner's data.
+The unscoped 3.33 watcher path retains its existing hide/show behavior.
+
+Files distinguishes modern hints from legacy body-bearing subscriptions.
+`directoryWatcher.createDirectoryWatcher` may retain root-free `files.hints`
+while folded, marking held listings stale without fetching hidden content.
+With scoped 3.34's legacy `files` payload, folding the root or hiding the
+document retires that body subscription. Returning reacquires the watcher
+and refreshes visible demand from cached content. Its generation predicate
+fences a frame that was awaiting cache admission when the owner changed.
+
+`directoryPages.legacyRootForVisibleReader` also preserves the useful visible
+legacy contract: a valid complete root listing already carried by a 3.34
+`files` frame is published first when that root is on screen. Atomic admission
+checks the current greeting/binding, root visibility and captured record write.
+An accepted root is marked fulfilled, so only other affected expanded
+directories are requested; no duplicate root RPC is made. Folded/hidden roots,
+foreign or malformed bodies, newer cache writes and modern hint-capable
+greetings cannot admit that legacy body. The modern hint remains root-free.
+
+Source-owned cache guards reach the transaction itself. The optional mounted
+owner passed to `cacheSync.applyProjectSourceChanges` controls queue admission,
+each source applier and atomic record writes; retirement before or during
+IndexedDB admission rejects the old frame. `writeDirectoryGit` commits a
+status/unpushed update and its dependent invalidations together, rechecking
+the active owner and captured record write inside the transaction. A stale
+answer cannot mark a newer log/diff stale after losing its own admission.
+These guards preserve the legacy unowned producer path and do not expose
+sync fences to the renderer.
+
+Exact regressions are in `checkoutWatcherLifecycle.test.js`,
+`directoryLegacyRoot.test.js` and the owner-admission/transaction cases in
+`cacheSyncChanges.test.js`; source-specific visible read fencing remains in
+`syncVisibleReads.test.js`. The secondary-workspace-source board/state
+fallback still lacks an independent live filesystem subject, as stated in
+[the coverage boundary](cutover-coverage.md#filesystemsource-view-boundary-and-unsupported-claims).
+Open/reconnect validation does not imply a new filesystem event producer.
 
 ## Read coordination and priority audit
 

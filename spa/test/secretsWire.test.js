@@ -6,9 +6,9 @@ import { bridgeCapabilities, dispatchChangeEvent, greetBridge, resetChangeEvents
 
 it("keeps secret features off until the current greeting names each one", () => {
   expect(bridgeCapabilities("ungreeted-secrets").secrets).toEqual({ attachments: false, sealedUpload: false, metadataEvents: false });
-  expect(v1.capabilitiesOf({ api_version: "3.35.0", capabilities: [] }).secrets).toEqual({ attachments: false, sealedUpload: false, metadataEvents: false });
+  expect(v1.capabilitiesOf({ api_version: "3.36.0", capabilities: [] }).secrets).toEqual({ attachments: false, sealedUpload: false, metadataEvents: false });
   for (const feature of ["attachments", "sealedUpload", "metadataEvents"]) {
-    const flags = v1.capabilitiesOf({ api_version: "3.35.0", capabilities: [`secrets.${feature}`] }).secrets;
+    const flags = v1.capabilitiesOf({ api_version: "3.36.0", capabilities: [`secrets.${feature}`] }).secrets;
     expect(flags[feature]).toBe(true);
     expect(Object.values(flags).filter(Boolean)).toHaveLength(1);
   }
@@ -29,7 +29,7 @@ it("routes project hints without their originating conversation and fences curre
   dispatchChangeEvent(projectEvent, "project-device");
   expect(hear).not.toHaveBeenCalled();
   let current = true;
-  await greetBridge(async () => ({ api_version: "3.35.0", push_events: true, capabilities: ["secrets.metadataEvents"], events: ["secrets.changed"] }),
+  await greetBridge(async () => ({ api_version: "3.36.0", push_events: true, capabilities: ["secrets.metadataEvents"], events: ["secrets.changed"] }),
     { deviceId: "project-device", isCurrent: () => current });
   dispatchChangeEvent({ ...projectEvent, name: "never forwarded", value: "synthetic value", sealed_payload: "synthetic envelope" }, "project-device");
   expect(hear).toHaveBeenCalledWith({ scope: "project", project_id: "project-wire", revision: 2, secret_ids: ["sec_synthetic"] });

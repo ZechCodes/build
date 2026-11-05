@@ -829,7 +829,7 @@ runtime that starts them.
 
 ### Wire versioning and capabilities
 
-Secret attachment wire 3.35.0 (#1003) registers sealed uploads, metadata
+Secret attachment wire 3.36.0 (#1003) registers sealed uploads, metadata
 queries, revocation and audit queries, plus optional secret references on
 `thread.post`. The three secrets feature capabilities and four method names
 remain explicitly unadvertised until UI enablement. The hello event and change-kind
@@ -843,7 +843,7 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
 
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.35.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.36.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   3.31.0 retires snapshot-mode creation and actions, removes legacy agent
   mutation tools and adds the compact `legacy_review` summary marker,
   independently announced by `tasks.review.snapshotRetired` (#974).

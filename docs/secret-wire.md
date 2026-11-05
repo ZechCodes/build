@@ -1,4 +1,4 @@
-# Secret attachment wire (3.35.0)
+# Secret attachment wire (3.36.0)
 
 Secret uploads are accepted only through an authenticated device-user opening.
 HTTP and WebRTC share the same typed methods and execution authority. The

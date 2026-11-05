@@ -1,6 +1,6 @@
 {
-  "api_version": "3.34.0",
-  "commit": "e1c4b21f",
+  "api_version": "3.35.0",
+  "commit": "bdb14ae3",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -186,6 +186,7 @@
     "capture.get",
     "capture.reroute",
     "changes.bodies",
+    "changes.filesHints",
     "changes.projectSources",
     "changes.refusedKinds",
     "changes.subscribe",
@@ -211,6 +212,7 @@
     "fs.projectSources",
     "fs.read",
     "fs.tree",
+    "fs.treePaged",
     "fs.uploadAbort",
     "fs.uploadBegin",
     "fs.uploadChunk",
@@ -351,6 +353,7 @@
     "tasks.review.update",
     "tasks.review.verdictDelivery",
     "tasks.reviewComments",
+    "tasks.timelinePaged",
     "tasks.unreadCounts",
     "tasks.unwatch",
     "tasks.update",

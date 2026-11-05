@@ -75,7 +75,7 @@ use std::collections::BTreeSet;
 /// 3.34.0 adds explicit device owner pins and live pooled session summaries (#997).
 /// 3.35.0 adds bounded task timelines, directory pages and file invalidation hints (#894).
 /// 3.36.0 adds sealed staged secrets and metadata-only attachment delivery (#1003).
-pub const API_VERSION: &str = "3.35.0";
+pub const API_VERSION: &str = "3.36.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.

@@ -128,13 +128,21 @@ fn quota_admission_waits_for_inherited_stale_profile_descriptors() {
     let (second, file2, name2) = tracked(&registry, &home, &directory);
     let inherited_profile = first._profile.try_clone().unwrap();
     let inherited_metadata = first._metadata.try_clone().unwrap();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
     let inherited_child = std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(25));
+        release_rx.recv().unwrap();
         drop(inherited_profile);
     });
 
     crash(first, file1);
-    registry.admit(2).unwrap();
+    let mut release_tx = Some(release_tx);
+    registry
+        .admit_with_full_observer(2, || {
+            if let Some(release_tx) = release_tx.take() {
+                release_tx.send(()).unwrap();
+            }
+        })
+        .unwrap();
 
     inherited_child.join().unwrap();
     assert!(inherited_metadata.metadata().is_ok());
@@ -142,6 +150,33 @@ fn quota_admission_waits_for_inherited_stale_profile_descriptors() {
     assert!(home.join(name2).exists());
     assert_eq!(records(&registry), 1);
     drop((inherited_metadata, second, file2));
+}
+
+#[test]
+fn scoped_file_lock_releases_inherited_descriptors() {
+    let (_root, registry, _home, _directory) = fixture();
+    let file: File = fs::openat(
+        &registry.directory,
+        ".scoped-lock",
+        OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC,
+        Mode::from_bits_truncate(0o600),
+    )
+    .unwrap()
+    .into();
+    let held = ScopedFileLock::acquire(&file).unwrap();
+    let inherited = file.try_clone().unwrap();
+    drop(held);
+
+    let contender: File = fs::openat(
+        &registry.directory,
+        ".scoped-lock",
+        OFlags::RDWR | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .unwrap()
+    .into();
+    super::super::lock(&contender).unwrap();
+    drop((inherited, contender));
 }
 #[test]
 fn pending_and_final_registration_share_exact_inode_and_guard_cleanup() {

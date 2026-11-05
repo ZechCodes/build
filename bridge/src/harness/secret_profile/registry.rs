@@ -52,6 +52,21 @@ fn unlock(file: &File) {
     }
 }
 
+struct ScopedFileLock<'a>(&'a File);
+
+impl<'a> ScopedFileLock<'a> {
+    fn acquire(file: &'a File) -> io::Result<Self> {
+        super::lock(file)?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for ScopedFileLock<'_> {
+    fn drop(&mut self) {
+        unlock(self.0);
+    }
+}
+
 /// Production ownership acquisitions wait briefly; sweeper liveness probes do not.
 /// This mutex is separate from admission because record publication holds admission.
 pub(super) fn lock_owned_file(file: &File) -> io::Result<()> {
@@ -205,6 +220,14 @@ impl Registry {
     }
 
     fn admit(&self, limit: usize) -> io::Result<()> {
+        self.admit_with_full_observer(limit, || {})
+    }
+
+    fn admit_with_full_observer(
+        &self,
+        limit: usize,
+        mut observe_full: impl FnMut(),
+    ) -> io::Result<()> {
         if self.names()?.len() < limit {
             return Ok(());
         }
@@ -215,6 +238,7 @@ impl Registry {
             if self.names()?.len() < limit {
                 return Ok(());
             }
+            observe_full();
             if !wait_for_retry(deadline, &mut retry) {
                 return Err(io::Error::other("secret profile registry full"));
             }
@@ -259,9 +283,10 @@ impl Registry {
                 return Ok(false);
             }
         };
-        if super::lock(&metadata).is_err() {
-            return Ok(false);
-        }
+        let _metadata_lock = match ScopedFileLock::acquire(&metadata) {
+            Ok(lock) => lock,
+            Err(_) => return Ok(false),
+        };
         let record = read_record(&metadata);
         if let Ok(record) = record {
             if !record.cleanup() {

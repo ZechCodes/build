@@ -19,7 +19,10 @@ impl AppState {
         let previous = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
         let mut observation = None;
         self.swap_project_snapshot_observation(id, &mut observation);
-        if let Err(error) = change(&mut self.projects) {
+        let changed = change(&mut self.projects).and_then(|()| {
+            self.validate_secret_project(self.projects.get(id).expect("staged project"))
+        });
+        if let Err(error) = changed {
             configuration.swap(&mut self.projects, id);
             self.swap_project_snapshot_observation(id, &mut observation);
             return Err(error);

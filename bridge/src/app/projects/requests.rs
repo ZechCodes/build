@@ -219,6 +219,7 @@ impl AppState {
         T: WorktreeMutation,
         S: crate::app::runtime::lifecycle::LifecycleSettlement<T::Output>,
     {
+        self.validate_secret_source(&dest)?;
         let row = PendingRow::on_directory(
             crate::worktree::external_worktree_id(&crate::worktree::canonical_planned_path(&dest)),
             title,
@@ -305,6 +306,7 @@ impl AppState {
         let path = path_text.map(expand_tilde);
         let canonical = path.as_deref().map(canonical_source_path).transpose()?;
         if let Some(candidate) = &canonical {
+            self.validate_secret_source(candidate)?;
             if self
                 .projects
                 .iter()

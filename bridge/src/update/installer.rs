@@ -120,6 +120,7 @@ pub fn create_job(
     attempt_id: &str,
     replaces_development_build: bool,
 ) -> Result<(PathBuf, Job), String> {
+    crate::config::vault::validate_update_tasks(home, tasks_dir)?;
     uuid::Uuid::parse_str(attempt_id).map_err(|_| "invalid update attempt id")?;
     let nonce = attempt_id.to_string();
     let root = updates_dir(home);
@@ -502,6 +503,8 @@ pub fn ensure_recovery(home: &Path) -> Result<(), String> {
 }
 
 fn recover(job: &Job, dir: &Path) -> Result<(), TransactionFailure> {
+    crate::config::vault::validate_update_tasks(&job.home, &job.tasks_dir)
+        .map_err(TransactionFailure::Pending)?;
     let binary = dir.join("previous-build-bridge");
     let running = dir.join("running-build-bridge");
     let marker = dir.join("previous-install-marker");
@@ -568,6 +571,8 @@ fn install_with(
     service: &mut dyn FnMut(&str) -> Result<(), String>,
     health: &mut dyn FnMut(&Job, &Path) -> Result<(), String>,
 ) -> Result<(), TransactionFailure> {
+    crate::config::vault::validate_update_tasks(&job.home, &job.tasks_dir)
+        .map_err(TransactionFailure::Recovered)?;
     let verified_binary =
         verified_staged_snapshot(job, dir).map_err(TransactionFailure::Recovered)?;
     let old_binary = dir.join("previous-build-bridge");

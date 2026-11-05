@@ -170,6 +170,7 @@ impl AppState {
         path: &str,
     ) -> Result<PathBuf, String> {
         let candidate = canonical_source_path(&expand_tilde(path.trim()))?;
+        self.validate_secret_source(&candidate)?;
         if candidate == source.path {
             return Ok(candidate);
         }

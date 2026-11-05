@@ -3,6 +3,9 @@
 //! overridden through `BRIDGE_*` variables (dev stacks and compose set them all
 //! explicitly).
 
+#[path = "config/vault.rs"]
+pub(crate) mod vault;
+
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
@@ -75,8 +78,8 @@ impl BridgeConfig {
 }
 
 /// Resolve config from an environment lookup and the user's home directory.
-/// Dev validates filesystem aliases without creating state. Prod keeps its
-/// original environment-only resolution.
+/// Vault isolation is validated for both channels without creating state. Dev
+/// additionally refuses paths within production state.
 pub fn resolve(
     lookup: impl Fn(&str) -> Option<String>,
     home: &Path,
@@ -138,6 +141,7 @@ pub fn resolve(
         home: home.to_path_buf(),
         state_root,
     };
+    vault::validate(&config)?;
     if channel == Channel::Dev {
         validate_dev_paths(&config)?;
     }
@@ -363,3 +367,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "config/vault_tests.rs"]
+mod vault_tests;

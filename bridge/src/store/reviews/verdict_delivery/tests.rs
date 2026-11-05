@@ -19,7 +19,7 @@ fn schema20_upgrade_creates_empty_verdict_journal_without_changing_tasks() {
     store.connection().execute_batch("DROP TABLE review_verdict_deliveries; DROP TABLE review_revision_dispatches; UPDATE meta SET value='20' WHERE key='schema_version'").unwrap();
     drop(store);
     let reopened = Store::new(dir.path()).unwrap();
-    assert_eq!(SCHEMA_VERSION, 23);
+    assert_eq!(SCHEMA_VERSION, 25);
     assert_eq!(reopened.load_tracker_task(&task.id).unwrap().unwrap(), task);
     assert!(reopened
         .pending_review_verdict_deliveries(10)
@@ -33,7 +33,7 @@ fn schema20_upgrade_creates_empty_verdict_journal_without_changing_tasks() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(schema, 23);
+    assert_eq!(schema, 25);
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM review_revision_dispatches",

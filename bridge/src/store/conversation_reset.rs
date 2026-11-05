@@ -29,12 +29,14 @@ impl Store {
         summary_owners: &HashSet<String>,
     ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            super::secrets::retire_conversation_in(tx, conversation_id)?;
             super::sync::reset_device_conversation(tx, conversation_id)?;
             tx.execute("DELETE FROM conversation_retention WHERE agent_id = ?1", [conversation_id])?;
             tx.execute("DELETE FROM thread_items WHERE agent_id = ?1", [conversation_id])?;
             tx.execute("DELETE FROM operations WHERE conversation_id = ?1", [conversation_id])?;
             tx.execute("DELETE FROM conversation_attachment_uploads WHERE conversation_id = ?1", [conversation_id])?;
             for agent in agents {
+                super::secrets::retire_agent_in(tx, &agent.id)?;
                 super::sync::reset_device_conversation(tx, &agent.id)?;
                 tx.execute("DELETE FROM conversation_retention WHERE agent_id = ?1", [&agent.id])?;
                 tx.execute("DELETE FROM thread_items WHERE agent_id = ?1", [&agent.id])?;

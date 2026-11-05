@@ -387,6 +387,7 @@ pub(in crate::app) fn reserve_agent_spawn(
             s.record_agent_session_end(&instance.entity_id, &instance.agent_id, &instance);
         }
     }
+    let secret_launch = s.mint_secret_launch(&issuer, &project_id);
     let session_token = uuid::Uuid::new_v4().to_string();
     // Before the child exists, because the child dials the done socket as soon
     // as it is up and an unregistered token is an unauthorized report.
@@ -411,6 +412,7 @@ pub(in crate::app) fn reserve_agent_spawn(
             recorded_resume_id,
             probes: s.session_probes(),
             session_token: session_token.clone(),
+            secret_launch,
             mcp_surface: s.agent_mcp_surface(owner, agent_id),
             cli_readings: Arc::clone(&s.cli_readings),
         },

@@ -266,7 +266,7 @@ Already built. v1 adds no relay features. (The streaming-crypto upgrade — pair
 
 ## 7. Auth & Billing Posture
 
-- Build never handles Anthropic (or any vendor) credentials. Users authenticate harnesses locally (`claude /login`, API keys in their own env). Model traffic goes direct from the user's machine to the vendor; the relay never carries it.
+- Harness sign-in credentials remain local to the harness. The unadvertised #1001 device-vault foundation separately stores user-supplied secret values encrypted on the device; it currently exposes no upload or retrieval route. The planned secret attachment feature intentionally lets authorized agents retrieve those values. This supersedes the historical claim that Build never handles vendor credentials. Users authenticate harnesses locally (`claude /login`, API keys in their own env). Model traffic goes direct from the user's machine to the vendor; the relay never carries it.
 - The integration-mode switch is named by **mechanism** (PTY session vs. SDK), not by compliance posture. Build's job is to tell the user what each mode does and which billing bucket it draws from. The user's relationship with their vendor is their own.
 - In v1, every prompt an agent receives is human-initiated: a dispatch, an approval, a batched review round, or terminal input. There is no Build-originated prompting in v1 — not as policy enforcement, but because auto-dispatch is deferred to the SDK path in v1.x where it belongs technically.
 - Defaults steer: subscription-detected → PTY mode (the only v1 mode anyway). When SDK mode ships, key/credit-detected defaults there for automation features. Overrides always available, always with the relevant details displayed.

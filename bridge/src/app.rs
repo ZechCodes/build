@@ -35,6 +35,9 @@ mod rpc;
 mod rtc;
 mod runs;
 mod runtime;
+#[cfg(unix)]
+mod secret_release;
+mod secret_storage;
 mod session_summaries;
 mod snapshot_projection;
 mod streams;
@@ -343,6 +346,9 @@ pub struct AppState {
     /// Durable plan/run records under the bridge state dir, if persistence is
     /// enabled.
     store: Option<Store>,
+    secret_service: Option<crate::secrets::SecretService>,
+    // Source admission keeps the vault fence even when secret startup degrades.
+    secret_state_root: Option<std::path::PathBuf>,
     /// What the user said, before anything decided where it goes, keyed by
     /// capture id. Durable from the moment it is taken — the router runs after
     /// the write, never instead of it.
@@ -680,6 +686,8 @@ impl AppState {
         };
         let state_root = context.state_root.clone();
         let bridge_exe = context.bridge_exe.clone();
+        let mut session_registry = SessionRegistry::new();
+        session_registry.configure_secret_context(&context);
         let agent = build_agent(qa_agent, context);
         let watchers = WorktreeWatchers::new();
         let facts_handle = FactsHandle::default();
@@ -722,6 +730,8 @@ impl AppState {
             session_seen: HashMap::new(),
             user_session: Default::default(),
             store: None,
+            secret_service: None,
+            secret_state_root: None,
             captures: HashMap::new(),
             router_sessions: HashMap::new(),
             updates: None,
@@ -768,7 +778,7 @@ impl AppState {
             term_shell: resolve_term_shell(),
             streams: HashMap::new(),
             uploads: HashMap::new(),
-            session_registry: SessionRegistry::new(),
+            session_registry,
             delivery_queue: Default::default(),
             review_verdict_poll_after: 0,
             watch_agent_filed_tasks: false,

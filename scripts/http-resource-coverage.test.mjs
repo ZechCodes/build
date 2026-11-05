@@ -221,6 +221,9 @@ const metadataUses = {
 // Split public digests into short display parts so secret scanners do not
 // mistake a file name containing "Key" plus a SHA-256 for a credential.
 // Each key pins the entire named spa/src file, including assignment edges.
+// #1009: download adds scoped fs.read (whole/paged); directory actions retain
+// NEW_ENTRIES and the existing upload RPC wrapper/queue. No new route or
+// dynamic method producer. #1008 changes preview classes only.
 // taskReviewActions/Feedback now delegate to the inventoried taskReviewMerge/Batch
 // modules; neither delegating view has its own RPC/producer occurrence.
 const sourceFingerprintParts = {
@@ -267,8 +270,9 @@ const sourceFingerprintParts = {
   "core/diffSort.js": ["9ef743b8", "16f0a5ae", "1d9ec36a", "455f0e76", "c04a0902", "8deca6c7", "70acd150", "dbe96ac6"],
   "core/directoryRail.js": ["98080c38", "f2152285", "3e025868", "10652120", "d12c8ead", "cfa571c6", "6c3476c8", "b6b56ef2"],
   "core/fileDiffs.js": ["94424fd1", "118dcd8d", "6c511bb9", "642d4822", "e4ebd5c2", "ffd9b041", "41d478ef", "20b2347d"],
-  "core/filesUploadActions.js": ["a3bbb078", "74d42693", "0534c27d", "8bf50ca4", "1b0cccc7", "b6cc2162", "feb1f0ef", "53188d20"],
-  "core/filesUploads.js": ["32702379", "79d5ef63", "c486dc67", "90cbc884", "c0cbf79d", "28deabc3", "f4202a02", "d95a8bd3"],
+  "core/fileDownload.js": ["e53778d8", "5f5c1cd3", "b3911bd3", "f6077ecf", "e0ca80d7", "a7c15c52", "6a9e47fb", "0a3df067"],
+  "core/filesUploadActions.js": ["0b4425a7", "5323bc95", "a96d1ae2", "32a48f65", "0e2c09e2", "d145483b", "ed4a2978", "f9ee6cc6"],
+  "core/filesUploads.js": ["f0f92dd6", "99cd5370", "8978158a", "9456ca4c", "3f685a13", "466ef521", "a055e412", "160ed312"],
   "core/fileUploadRpc.js": ["7891a6ca", "183a9b67", "b7fe41fc", "ba71c70a", "1896ec75", "2809155c", "1375617f", "a9ab96d0"],
   "core/fileUploads.js": ["a1a4c2df", "5ef03503", "483e7b99", "099e04a0", "77c9e865", "a22a23dd", "a704cd79", "6678f239"],
   "core/fileUploadsModel.js": ["d11fdd79", "8bb9318c", "fbc2cff2", "29b16930", "9d73b3ee", "89d5d976", "7e2b756a", "69d40aac"],
@@ -384,7 +388,7 @@ const sourceFingerprintParts = {
   // #997 deviceProjects.js:82: the existing project.list loader delegates to owned device recovery.
   "views/deviceProjects.js": ["8ff87af9", "bead4587", "20c4bc9d", "89c548aa", "9a137b45", "4cb5741b", "880a3013", "429a0844"],
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
-  "views/files.js": ["06be3768", "e7119790", "efdf9d19", "1f24d56e", "0105300d", "78661f62", "dffa8c08", "d92269a8"],
+  "views/files.js": ["5ac9c067", "1d53faf6", "1932fd80", "3769199a", "be71e573", "d67acdec", "10883b60", "a1d9b4b5"],
   "views/projectChanges.js": ["e195b594", "3a7689fe", "14bfc899", "18ada18d", "ab36cd52", "ad96ba97", "a877c4da", "c9c3b78f"],
   "views/projectView.js": ["b790e1ad", "c92e3880", "d880307e", "45527ad4", "70eade31", "b21f74d0", "423e637a", "6999aa4e"],
   "views/taskReview.js": ["7d540d05", "70beae35", "200434ea", "decae581", "f1b126d6", "9a38fe38", "642a621a", "2e34a257"],

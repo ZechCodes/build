@@ -482,3 +482,25 @@ fn removed_sync_error(error: crate::store::sync::SyncError, missing: &str) -> Ap
         other => sync_error(other),
     }
 }
+
+impl ReadContext {
+    pub(in crate::app) fn validates_secret_caller(
+        &self,
+        caller: &crate::secrets::SecretCaller,
+    ) -> bool {
+        if self.deleting_project {
+            return false;
+        }
+        let address = IssuedCodingAddress {
+            owner: caller.owner_id.clone(),
+            agent: caller.agent_id.clone(),
+            canonical_owner: caller.canonical_owner_id.clone(),
+            conversation: caller.conversation_id.clone(),
+            thread_id: caller.thread_id.clone(),
+            generation: caller.generation_revision,
+        };
+        caller.generation == caller.thread_id
+            && self.addresses.validate(&address).is_ok()
+            && self.addresses.project_for(&address) == Some(caller.project_id.as_str())
+    }
+}

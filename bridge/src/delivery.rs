@@ -125,6 +125,7 @@ pub struct AgentSpawnPlan {
     pub recorded_resume_id: Option<String>,
     pub probes: SessionProbes,
     pub session_token: String,
+    pub(crate) secret_launch: Option<crate::harness::SecretLaunchEnvironment>,
     /// The Build MCP surface the agent's persisted purpose grants
     /// ([`crate::mcp::McpSurface`]): what its launch declares, where that is
     /// narrower than its id names.
@@ -195,7 +196,7 @@ impl AgentSpawnPlan {
             .map_err(|refusal| refusal.to_string())?;
         Ok(ReadyToSpawn {
             compaction_policy: prepared.compaction_policy,
-            spec: prepared.spec,
+            spec: crate::harness::secret_launch::apply(prepared.spec, self.secret_launch),
             size: prepared.pty_size,
             locator,
             resume_session_id,

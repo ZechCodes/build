@@ -162,8 +162,16 @@ review receivers, task state and attachments, resume rosters and local harness
 sessions. It uses SQLite's online backup API, rewrites prod state paths, verifies
 table counts/record IDs, worktree references and attachment hashes, and retains
 a backup for rollback. Logs, builds, deployments, rollouts, backups and project
-scratch are excluded, except exact database-referenced project scratch directories
+scratch and the device-local `secrets/` vault (key and encrypted values) are
+excluded, except exact database-referenced project scratch directories
 whose names match `<Project>-<12hex>`; those referenced directories are copied.
+Secret metadata in SQLite/history may survive migration or a database-only
+backup while its values remain unavailable. A target containing a `secrets/`
+entry is refused even with `--force`: migration cannot copy its vault into
+staging or retain it in a rollback backup alongside a replaced metadata DB.
+Rollback also refuses a `secrets/` entry in either its current target or its
+backup, before changing shared remotes or renaming either state tree. It checks
+again at restore admission, including entries created after rollback preflight.
 Missing referenced worktrees are a hard verification failure. Rehearsal reads
 the supplied snapshot and checks existence of shared worktree directories;
 it never edits shared repository configuration. Review receiver Git URLs in shared repositories also need
@@ -252,7 +260,29 @@ operations and retryable failed intents whose target workspace has gone are
 listed as undeliverable stale records with IDs and targets, without changing
 statuses. Missing roots for live or unknown targets fail verification.
 
-To roll back, first have the operator stop dev and confirm both bridges are
+The first dev bridge startup creates a device-local `secrets/` vault, even if
+no secret was uploaded. Once that entry exists, this state rollback is refused;
+`--force` cannot bypass the vault boundary. Keep both bridges stopped while
+choosing recovery, and keep the existing vault at its original location: its
+key is needed for any retained values. Do not delete it or move it into a
+`.retired-…` directory or rollback backup to make this command pass.
+
+Prefer a forward fix in the current dev state. Preserve the migration backup
+and its manifest, obtain a reviewed fix ref, then intentionally deploy that ref
+with `scripts/buildctl --env dev bridge deploy <forward-fix-ref>` and validate
+dev as above while prod stays stopped. This retains the current state and vault.
+If a forward fix is unsuitable, arrange an operator-reviewed metadata-only
+restore to a newly provisioned, clean device-state destination using the
+supported backup/migration procedure, with the vault excluded. This CLI has no
+arbitrary-destination or vault-retirement option; coordinate that procedure
+before changing state paths or retiring a vault. If startup refuses a foreign
+or unregistered key, stop the bridge, preserve the vault and metadata together,
+and arrange an operator-reviewed restore of matching state or the fresh-state
+procedure above; never delete the key to force startup. Normal Build backups do not
+contain secret values; a user-managed value backup is a separate recovery input.
+
+When neither the target nor the backup has a vault entry, to roll back first
+have the operator stop dev and confirm both bridges are
 `inactive` or `failed`. Restore using the exact backup path printed by migration, then have
 the operator restart prod:
 

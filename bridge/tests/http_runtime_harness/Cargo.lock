@@ -414,6 +414,7 @@ dependencies = [
  "uuid",
  "vt100",
  "webrtc",
+ "zeroize",
 ]
 
 [[package]]

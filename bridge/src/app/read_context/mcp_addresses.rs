@@ -37,6 +37,7 @@ struct AgentIdentity {
 #[derive(Clone, PartialEq, Eq)]
 struct OwnerIdentity {
     is_plan: bool,
+    project_id: Option<String>,
     // AgentRoster::iter order is authoritative for omitted agent_id.
     agents: Vec<AgentIdentity>,
     pin: Option<String>,
@@ -72,6 +73,7 @@ impl OwnerIdentity {
             .collect();
         Some(Self {
             is_plan: app.plans.contains_key(owner),
+            project_id: app.projects.project_id_of(owner).map(str::to_owned),
             agents,
             pin: app.project_pin(owner).map(str::to_owned),
         })
@@ -237,6 +239,16 @@ impl McpAddresses {
             },
             resident_floor: canonical.resident_floor,
         })
+    }
+
+    pub fn project_for(&self, target: &IssuedCodingAddress) -> Option<&str> {
+        let owner_project = self.owners.get(&target.owner)?.project_id.as_deref()?;
+        let canonical_project = self
+            .owners
+            .get(&target.canonical_owner)?
+            .project_id
+            .as_deref()?;
+        (owner_project == canonical_project).then_some(owner_project)
     }
 
     pub fn issued_address(&self, agent: &str) -> Result<IssuedCodingAddress, String> {

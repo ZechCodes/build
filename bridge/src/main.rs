@@ -803,6 +803,13 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
     // agent can create work in state that might be discarded. The local health
     // beat still proves the daemon initialized and its app lock is responsive.
     wait_for_update_probation(&runtime.config).await;
+    // Only unlocked Build-owned profiles are orphans; another channel's live
+    // sessions retain their profile lock throughout this startup cleanup.
+    let sweep =
+        tokio::task::spawn_blocking(build_bridge::harness::sweep_codex_secret_profiles).await;
+    if !matches!(sweep, Ok(Ok(()))) {
+        eprintln!("secret profile cleanup unavailable");
+    }
     sweep_startup_uploads(app.clone()).await;
     // The relay socket, redialled for as long as the daemon runs, on the
     // liveness runtime. The main thread waits for the signal that ends the

@@ -75,3 +75,45 @@ it("restores the whole secret set after a refused atomic post", async () => {
   expect(controller.restoreRejected(submission, new Error("refused"))).toBe("restored");
   expect(controller.readDraft()).toMatchObject({ body: "all or none", secrets: [descriptor, second] });
 });
+
+it("keeps a staged value out of IndexedDB, local storage, and the post intent", async () => {
+  vi.resetModules();
+  setupIdb();
+  localStorage.clear();
+  const [{ createChatRepository }, { createSecretDraftService }, { readUiRecord }] = await Promise.all([
+    import("../src/core/chatRepository.js"),
+    import("../src/core/secretDrafts.js"),
+    import("../src/core/localUiStore.js"),
+  ]);
+  const call = vi.fn(async (method) => method === "secrets.create"
+    ? descriptor : { phase: "ack", operation_id: "operation-secret" });
+  const repository = createChatRepository({
+    scope: { deviceId: "device-sinks" }, call, createOperationId: () => "operation-secret",
+  });
+  repository.configureCapabilities({
+    api_version: "3.36.0",
+    capabilities: ["secrets.attachments", "secrets.sealedUpload", "secrets.metadataEvents"],
+  });
+  const controller = repository.controller(identity);
+  const metadata = { upsert: vi.fn(async () => descriptor), refresh: vi.fn(), findRequest: vi.fn() };
+  const service = createSecretDraftService({
+    deviceId: "device-sinks", creator: "device_user", projectId: "project-sinks",
+    recipient: () => ({ ownerId: "owner-chat", agentId: "agent-chat", conversationId: "agent-chat", generation: "thread-chat", draftId: null }),
+    capabilities: () => ({ attachments: true, sealedUpload: true, metadataEvents: true }),
+    deviceTransportPublicKey: () => "synthetic-public-key", call, draft: controller.secretDraft(), metadata,
+    sealUpload: vi.fn(async () => "synthetic-sealed-envelope"),
+    createRequestId: () => descriptor.request_id,
+  });
+  const sentinel = "synthetic-plaintext-only-in-modal";
+  await service.stage({ name: "CHAT_TOKEN", value: sentinel, scope: "agent" });
+  await vi.waitFor(async () => expect((await readUiRecord(repository.draftAddress(identity)))?.value?.secrets).toEqual([descriptor]));
+
+  const stored = await readUiRecord(repository.draftAddress(identity));
+  const localValues = Array.from({ length: localStorage.length }, (_, index) => localStorage.getItem(localStorage.key(index)));
+  expect(JSON.stringify({ stored, localValues })).not.toContain(sentinel);
+  const submission = controller.captureSubmission({ ...controller.readDraft(), body: "use the secret" });
+  await controller.post(submission);
+  const post = call.mock.calls.find(([method]) => method === "thread.post");
+  expect(JSON.stringify(post)).not.toContain(sentinel);
+  expect(JSON.stringify(post)).not.toContain("synthetic-sealed-envelope");
+});

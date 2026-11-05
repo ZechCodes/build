@@ -163,6 +163,13 @@ def test_deploy_status_rollback(setup):
     assert not env.home.joinpath(".build").exists()
 
 
+def test_activation_installs_runtime_launcher_before_service(setup):
+    bridge, runner, _ = setup
+    bridge.deploy()
+    commands = [args[-1] for args, _, _ in runner.calls]
+    assert commands.index("install-runtime-launcher") < commands.index("install-service")
+
+
 def test_inherited_bridge_vars_stripped(setup, monkeypatch):
     bridge, runner, env = setup
     monkeypatch.setenv("BRIDGE_CHANNEL", "prod")

@@ -129,6 +129,10 @@ new_sandbox() {
 # with the status the case chose for pairing.
 printf '%s %s\n' "${BRIDGE_API_URL:-https://getbuild.ing}" "$*" >> "$HOME/bridge-apis"
 case "${1:-}" in
+    install-runtime-launcher)
+        printf '#!/bin/sh\nexit 0\n' > "${0%/*}/buildctl"
+        chmod 0755 "${0%/*}/buildctl"
+        ;;
     pair)
         printf '%s\n' "$*" >> "$HOME/bridge-calls"
         # Kept for another api: refused before any code is printed (#320).
@@ -238,6 +242,7 @@ installs_a_verified_tarball() {
     name="installs_a_verified_tarball"
     root="$(new_sandbox "$name")"
     status="$(run_install "$root")"
+    [ -x "$root/dest/buildctl" ] || { fail "$name" "runtime launcher not installed"; return 1; }
     assert_exit "$name" "$root" "$status" 0 || return 1
     if [ ! -x "$root/dest/build-bridge" ]; then
         fail "$name" "no executable build-bridge in the install directory"

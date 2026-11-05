@@ -304,6 +304,7 @@ install_binary() {
     chmod 0755 build-bridge
     mv build-bridge "$INSTALL_DIR/build-bridge" || fail "could not write $INSTALL_DIR/build-bridge" \
         "Set BUILD_BRIDGE_INSTALL_DIR to a directory you can write to, then run the installer again."
+    "$INSTALL_DIR/build-bridge" install-runtime-launcher || fail "could not install the agent runtime launcher"
     # The updater only changes a binary this installer placed. Record the
     # canonical path and its exact digest; a locally built replacement remains
     # visible in Settings but cannot be overwritten from the app.

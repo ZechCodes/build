@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -16,6 +17,11 @@ MUTATIONS = {"deploy", "rollback", "pair", "prune"}
 
 
 class CommandParser(argparse.ArgumentParser):
+    def error(self, message):
+        if self.prog.startswith("buildctl secrets") or getattr(self, "secret_context", False):
+            self.exit(2, "invalid_arguments\n")
+        super().error(message)
+
     def parse_args(self, args=None, namespace=None):
         parsed = super().parse_args(args, namespace)
         if parsed.group != "migrate" and not parsed.env:
@@ -51,6 +57,8 @@ def parser():
         help="allow replacement with an exact force-with-lease",
     )
     app.add_parser("status")
+    secrets = groups.add_parser("secrets").add_subparsers(dest="command", required=True)
+    secrets.add_parser("get").add_argument("--id", required=True)
     migration = groups.add_parser("migrate", help="copy prod state into dev")
     migration.add_argument("--from", dest="source", choices=["prod"], required=True)
     migration.add_argument("--to", dest="target", choices=["dev"], required=True)
@@ -151,6 +159,19 @@ def environment_command(args, envs, runner, repo, fetch):
     )
 
 
+def secrets_command(args):
+    binary = os.environ.get("BRIDGE_SECRET_BRIDGE", "")
+    if not Path(binary).is_absolute():
+        print("unauthorized", file=sys.stderr)
+        return 1
+    try:
+        os.execv(binary, [binary, "secrets", "get", "--env", args.env, "--id", args.id])
+        return 0
+    except OSError:
+        print("secret_unavailable", file=sys.stderr)
+        return 1
+
+
 def main(
     argv=None,
     *,
@@ -160,7 +181,12 @@ def main(
     registry_path=None,
     fetch=default_fetch,
 ):
-    args = parser().parse_args(argv)
+    command_parser = parser()
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    command_parser.secret_context = "secrets" in raw_args[:3]
+    args = command_parser.parse_args(raw_args)
+    if args.group == "secrets":
+        return secrets_command(args)
     try:
         envs = load_registry(registry_path or registry_file(), home or Path.home())
         if args.group == "migrate":

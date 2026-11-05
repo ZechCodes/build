@@ -242,6 +242,7 @@ class Bridge:
         record = self.records()
         binary = self.binary(sha)
         expected = digest(binary)
+        self.runner.run([str(binary), "install-runtime-launcher"], env=child_env)
         self.service.prepare_install()
         result = self.runner.run(
             [str(binary), "install-service"], env=child_env, check=False

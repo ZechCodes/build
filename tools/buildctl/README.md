@@ -1,6 +1,15 @@
 # buildctl
 
 One explicit environment for local bridges and hosted app/relay deployments.
+
+Agent sessions also have a checkout-independent `buildctl` beside their installed
+bridge, with that absolute directory first on their PATH. It supports only
+`buildctl --env dev|prod secrets get --id sec_…`, forwarding to the sibling
+bridge. The management facade here accepts the same command and execs the
+launch-supplied bridge path; neither facade selects identity from the checkout
+or registry. Missing or stale agent authority fails closed. Reads print exact
+value bytes without an added newline. This command does not change production
+deployment restrictions. Plain user terminal tabs receive no secret capability.
 From the repository checkout:
 
 ```bash

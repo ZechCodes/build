@@ -1,0 +1,10 @@
+#!/bin/sh
+# Agent runtime facade. The bridge owns authentication and channel validation.
+set -eu
+refuse() { printf '%s\n' 'invalid_arguments' >&2; exit 2; }
+[ "$#" -eq 6 ] || refuse
+[ "$1" = '--env' ] && [ "$3" = 'secrets' ] && [ "$4" = 'get' ] && [ "$5" = '--id' ] || refuse
+case "$2" in dev|prod) ;; *) refuse ;; esac
+case "$0" in /*/*) bridge="${0%/*}/build-bridge" ;; *) printf '%s\n' 'unauthorized' >&2; exit 1 ;; esac
+[ -x "$bridge" ] || { printf '%s\n' 'secret_unavailable' >&2; exit 1; }
+exec "$bridge" secrets get --env "$2" --id "$6"

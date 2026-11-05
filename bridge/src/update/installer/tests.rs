@@ -56,6 +56,10 @@ fn healthy(job: &Job, _: &Path) -> Result<(), String> {
     assert!(fs::read_to_string(&job.installed_binary)
         .unwrap()
         .contains("9.9.9"));
+    assert_eq!(
+        fs::read_to_string(job.installed_binary.parent().unwrap().join("buildctl")).unwrap(),
+        crate::runtime_launcher::SOURCE
+    );
     Ok(())
 }
 

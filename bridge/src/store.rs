@@ -552,7 +552,11 @@ impl Store {
             )?;
             Ok((out, pending))
         };
-        let (out, pending) = if full { self.writer.durable_transaction(wrapper) } else { self.in_transaction(wrapper) }?;
+        let (out, pending) = if full {
+            self.writer.durable_transaction(wrapper)
+        } else {
+            self.in_transaction(wrapper)
+        }?;
         // Notify after commit; failed writes never publish process-local work.
         if pending {
             self.waiting_on_wakeup.notify_one();

@@ -1,4 +1,5 @@
 use super::*;
+use crate::operation::OperationReceipt;
 use crate::secrets::{GrantScope, SecretContext, SecretPostBinding, SecretRecord, StageContext};
 
 fn setup(store: &Store) -> (PersistedRun, OperationReceipt, SecretPostBinding, String) {
@@ -152,4 +153,72 @@ fn secret_atomic_operation_rolls_back_at_message_and_receipt_boundaries() {
             .save_run_accepting_operation_with_secrets(&record, &receipt, Some(&claim))
             .is_ok());
     }
+}
+
+#[test]
+fn secret_atomic_operation_refuses_ended_recipients_and_changed_project_membership() {
+    for ended in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let (record, receipt, claim, id) = setup(&store);
+        if ended {
+            let mut changed = record.clone();
+            changed.agents[0].state = crate::agent::AgentLifecycle::Ended;
+            store.save_run(&changed).unwrap();
+        } else {
+            store.writer_for_test().execute("UPDATE device_project_ids SET project_id='other-project' WHERE project_id='test-project'", []).unwrap();
+        }
+        assert!(store
+            .save_run_accepting_operation_with_secrets(&record, &receipt, Some(&claim))
+            .is_err());
+        assert!(store.operation(&receipt.operation_id).unwrap().is_none());
+        assert!(store
+            .writer()
+            .secret_record(&id)
+            .unwrap()
+            .unwrap()
+            .attached_at
+            .is_none());
+    }
+}
+
+#[test]
+fn secret_atomic_operation_cold_replay_preserves_binding_and_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let (record, receipt, mut claim, id) = setup(&store);
+    let accepted = store
+        .save_run_accepting_operation_with_secrets(&record, &receipt, Some(&claim))
+        .unwrap();
+    drop(store);
+    let restarted = Store::new(dir.path()).unwrap();
+    claim.attached_at = 500;
+    let retried = restarted
+        .save_run_accepting_operation_with_secrets(&record, &receipt, Some(&claim))
+        .unwrap();
+    assert_eq!(retried, accepted);
+    let secret = restarted.writer().secret_record(&id).unwrap().unwrap();
+    assert_eq!(secret.attached_at, Some(200));
+    assert_eq!(secret.expires_at, Some(260));
+    let connection = restarted.writer_for_test();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM secret_final_bindings WHERE secret_id=?1",
+                [&id],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM secret_audit WHERE secret_id=?1 AND outcome='attached'",
+                [&id],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
 }

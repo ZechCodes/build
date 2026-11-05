@@ -54,6 +54,7 @@ fn current_target(connection: &Connection, claim: &SecretPostBinding) -> Result<
     let agent: crate::agent::Agent = serde_json::from_str(&raw)
         .map_err(|_| StoreError::Io(std::io::Error::other("secret_unavailable")))?;
     if owner != claim.owner_id
+        || agent.owner_id != owner
         || agent.conversation_id() != claim.conversation_id
         || agent.state == crate::agent::AgentLifecycle::Ended
     {
@@ -71,7 +72,22 @@ fn current_target(connection: &Connection, claim: &SecretPostBinding) -> Result<
     };
     let canonical: crate::agent::Agent = serde_json::from_str(&raw)
         .map_err(|_| StoreError::Io(std::io::Error::other("secret_unavailable")))?;
-    let project: Option<String> = connection.query_row("SELECT p.project_id FROM device_owner_projects o JOIN device_project_ids p ON p.path=o.project_path WHERE o.owner_id=?1",[&claim.owner_id],|row|row.get(0)).optional()?;
+    if canonical.id != claim.conversation_id
+        || canonical.conversation_id() != claim.conversation_id
+        || canonical.state == crate::agent::AgentLifecycle::Ended
+    {
+        return Ok(false);
+    }
     Ok(canonical.thread.id == claim.generation
-        && project.as_deref() == Some(claim.project_id.as_str()))
+        && project_matches(connection, &claim.owner_id, &claim.project_id)?
+        && project_matches(connection, &canonical.owner_id, &claim.project_id)?)
+}
+
+fn project_matches(
+    connection: &Connection,
+    owner: &str,
+    project_id: &str,
+) -> Result<bool, StoreError> {
+    let project: Option<String> = connection.query_row("SELECT p.project_id FROM device_owner_projects o JOIN device_project_ids p ON p.path=o.project_path WHERE o.owner_id=?1",[owner],|row|row.get(0)).optional()?;
+    Ok(project.as_deref() == Some(project_id))
 }

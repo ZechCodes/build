@@ -183,6 +183,7 @@ pub struct HarnessSpec {
     pub known_session_id: Option<String>,
     pub compaction_sidecar: Option<PathBuf>,
     pub(crate) secret_profile: Option<Arc<crate::harness::secret_profile::SecretProfile>>,
+    pub(crate) codex_shell_policy: Option<Box<serde_json::Value>>,
     pub pi_telemetry: Option<Box<crate::harness::pi_telemetry::PiTelemetryConfig>>,
     /// The Build agent this spec starts, when the harness logs anything that
     /// must name it (task #58: a usage limit in bridge.log says whose turn).
@@ -220,6 +221,7 @@ impl HarnessSpec {
             known_session_id: None,
             compaction_sidecar: None,
             secret_profile: None,
+            codex_shell_policy: None,
             pi_telemetry: None,
             agent_id: None,
             kind: ChildKind::Agent,

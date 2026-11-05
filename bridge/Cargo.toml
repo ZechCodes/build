@@ -43,7 +43,7 @@ httpdate = "1"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 semver = "1"
 # Codex's config.toml, for its credential store setting (#434).
-toml = { version = "0.8", default-features = false, features = ["parse"] }
+toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 hyper = { version = "=1.10.1", features = ["server", "http1"] }

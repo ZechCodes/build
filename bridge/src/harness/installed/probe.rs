@@ -104,6 +104,8 @@ pub(crate) fn command_for_test(binary: &str, args: &[&str]) -> std::process::Com
     child::command(binary, args, false)
 }
 mod codex_list;
+mod codex_policy;
+pub(crate) use codex_policy::read as codex_shell_policy;
 
 use child::ProbeChild;
 

@@ -115,9 +115,13 @@ fn codex_filtered_shell_child_receives_secret_authority_without_mcp_or_other_bri
 async fn all_five_harness_shell_children_receive_their_own_capability_and_runtime_path() {
     let root = tempfile::tempdir().unwrap();
     let checkout = tempfile::tempdir().unwrap();
+    let bin = root.path().join("installed-build/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let bridge = bin.join("build-bridge");
+    crate::runtime_launcher::install_sibling(&bridge).unwrap();
     let context = HarnessContext {
         channel: crate::config::Channel::Dev,
-        bridge_exe: "/installed-build/bin/build-bridge".into(),
+        bridge_exe: bridge,
         mcp_socket: root.path().join("mcp.sock"),
         state_root: root.path().to_owned(),
     };
@@ -157,13 +161,13 @@ async fn all_five_harness_shell_children_receive_their_own_capability_and_runtim
             &lines[..3],
             &[
                 "own-secret-token",
-                "/installed-build/bin/build-bridge",
+                context.bridge_exe.to_str().unwrap(),
                 "unset"
             ],
             "{provider:?}"
         );
         assert!(
-            lines[3].starts_with("/installed-build/bin:"),
+            lines[3].starts_with(&format!("{}:", bin.join(".build-runtime").display())),
             "{provider:?}"
         );
     }

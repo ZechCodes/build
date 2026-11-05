@@ -43,32 +43,47 @@ fn codex_home() -> io::Result<PathBuf> {
     Ok(path)
 }
 
-pub(crate) fn prepare(spec: HarnessSpec) -> Result<HarnessSpec, super::HarnessError> {
-    if spec.binary != "codex" || spec.args.iter().any(|arg| arg == "app-server") {
+pub(crate) fn prepare(
+    mut spec: HarnessSpec,
+    cwd: &Path,
+) -> Result<HarnessSpec, super::HarnessError> {
+    if spec.binary != "codex" {
         return Ok(spec);
     }
-    if super::secret_launch::codex_thread_config(&spec, None).is_none() {
+    if super::secret_launch::secret_values(&spec).is_none() {
         return Ok(spec);
     }
-    install(
-        spec,
-        &codex_home()
-            .map_err(|_| super::HarnessError::Setup("secret profile unavailable".into()))?,
-    )
-    .map_err(|_| super::HarnessError::Setup("secret profile unavailable".into()))
+    let home = spec
+        .env
+        .iter()
+        .rev()
+        .find(|(key, _)| key == "CODEX_HOME")
+        .map(|(_, value)| PathBuf::from(value))
+        .map(Ok)
+        .unwrap_or_else(codex_home)
+        .map_err(|_| unavailable())?;
+    // Codex must not create a fresh 0755 home before Build validates its path.
+    directory::open_or_create(&home).map_err(|_| unavailable())?;
+    spec.env.retain(|(key, _)| key != "CODEX_HOME");
+    spec = spec.env("CODEX_HOME", home.to_str().ok_or_else(unavailable)?);
+    let policy =
+        super::installed::probe::codex_shell_policy(&spec, cwd).map_err(|_| unavailable())?;
+    spec.codex_shell_policy = Some(Box::new(policy));
+    if spec.args.iter().any(|arg| arg == "app-server") {
+        return Ok(spec);
+    }
+    install(spec, &home).map_err(|_| unavailable())
+}
+
+fn unavailable() -> super::HarnessError {
+    super::HarnessError::Setup("secret runtime policy unavailable".into())
 }
 
 fn install(mut spec: HarnessSpec, home: &Path) -> io::Result<HarnessSpec> {
     let config = super::secret_launch::codex_thread_config(&spec, None)
         .ok_or_else(|| io::Error::other("secret launch unavailable"))?;
-    let mut contents = String::from("[shell_environment_policy]\nignore_default_excludes = false\nexclude = [\"BRIDGE_*\"]\ninclude_only = []\n\n[shell_environment_policy.set]\n");
-    for (key, value) in config["shell_environment_policy"]["set"]
-        .as_object()
-        .unwrap()
-    {
-        // Keys are our fixed allowlist; JSON quoting also protects TOML strings.
-        contents.push_str(&format!("{key} = {value}\n"));
-    }
+    let contents =
+        toml::to_string(&config).map_err(|_| io::Error::other("secret profile unavailable"))?;
     let name = format!("{PREFIX}{}", uuid::Uuid::new_v4());
     let file_name = format!("{name}{SUFFIX}");
     let path = home.join(&file_name);
@@ -218,7 +233,7 @@ mod tests {
                 .as_table()
                 .unwrap()
                 .len(),
-            7
+            6
         );
         assert_eq!(
             parsed["shell_environment_policy"]["ignore_default_excludes"].as_bool(),

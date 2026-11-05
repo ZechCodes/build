@@ -66,7 +66,7 @@ impl ProbeChild {
     }
 
     /// A prepared probe command, cut off at `deadline`.
-    fn spawn(mut command: Command, deadline: Duration) -> std::io::Result<Self> {
+    pub(super) fn spawn(mut command: Command, deadline: Duration) -> std::io::Result<Self> {
         let hard_expiry = Instant::now() + deadline;
         let diagnostic_reserve = MAX_STDERR_WAIT.min(deadline / 10);
         let mut child = command.spawn()?;

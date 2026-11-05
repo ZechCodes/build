@@ -81,7 +81,10 @@ fn prepared_agent_launch_preserves_setup_errors() {
 fn prepared_agent_launch_exposes_the_installed_runtime_bin() {
     let (dir, repo) = init_repo();
     let orchestrator = orchestrator(&dir, &repo);
-    let launch = orchestrator.agent_launch();
+    let mut launch = orchestrator.agent_launch();
+    launch.bridge_exe = dir.path().join("installed/build-bridge");
+    std::fs::create_dir_all(launch.bridge_exe.parent().unwrap()).unwrap();
+    crate::runtime_launcher::install_sibling(&launch.bridge_exe).unwrap();
     let prepared = launch
         .prepare(
             "agent-runtime-path",
@@ -102,7 +105,7 @@ fn prepared_agent_launch_exposes_the_installed_runtime_bin() {
         .clone();
     assert_eq!(
         std::env::split_paths(&path).next().unwrap(),
-        launch.bridge_exe.parent().unwrap()
+        launch.bridge_exe.parent().unwrap().join(".build-runtime")
     );
 }
 pub(super) fn manifest_entry(id: &str, title: &str, position: usize) -> StageManifestEntry {

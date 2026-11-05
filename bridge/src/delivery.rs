@@ -196,10 +196,10 @@ impl AgentSpawnPlan {
             .map_err(|refusal| refusal.to_string())?;
         Ok(ReadyToSpawn {
             compaction_policy: prepared.compaction_policy,
-            spec: crate::harness::secret_profile::prepare(crate::harness::secret_launch::apply(
-                prepared.spec,
-                self.secret_launch,
-            ))
+            spec: crate::harness::secret_profile::prepare(
+                crate::harness::secret_launch::apply(prepared.spec, self.secret_launch),
+                &self.cwd,
+            )
             .map_err(|error| error.to_string())?,
             size: prepared.pty_size,
             locator,
@@ -224,6 +224,149 @@ pub struct ReadyToSpawn {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    const POLICY_CLI: &str = r#"#!/usr/bin/env python3
+import json, os, pathlib, sys, tomllib
+if any(name.startswith(('BRIDGE_', 'BUILD_')) for name in os.environ):
+    raise RuntimeError('policy probe inherited Build authority')
+home = pathlib.Path(os.environ['CODEX_HOME'])
+for line in sys.stdin:
+    request = json.loads(line)
+    if request.get('method') == 'initialize':
+        result = {'userAgent': 'fixture/0.166.0'}
+    elif request.get('method') == 'config/read':
+        (home / 'probe-observed.json').write_text(json.dumps({'cwd': request['params']['cwd'], 'saw_auth': False}))
+        result = {'config': tomllib.loads((home / 'config.toml').read_text())}
+    else:
+        continue
+    print(json.dumps({'id': request['id'], 'result': result}), flush=True)
+"#;
+
+    #[test]
+    fn secret_policy_preparation_runs_through_delivery_and_only_tui_writes_a_profile() {
+        const CHILD: &str = "BUILD_SECRET_DELIVERY_GATE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let root = tempfile::tempdir().unwrap();
+            let bin = root.path().join("bin");
+            let home = root.path().join("codex-home");
+            std::fs::create_dir(&bin).unwrap();
+            std::fs::create_dir(&home).unwrap();
+            crate::isolation::test_fixture::write_executable(&bin.join("codex"), POLICY_CLI);
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "delivery::tests::secret_policy_preparation_runs_through_delivery_and_only_tui_writes_a_profile", "--nocapture"])
+                .env(CHILD, "1").env("CODEX_HOME", home)
+                .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default()))
+                .env("BRIDGE_MCP_TOKEN", "parent-mcp-authority")
+                .env("BRIDGE_SECRET_TOKEN", "parent-secret-authority")
+                .env("BRIDGE_SECRET_FUTURE", "parent-future-authority")
+                .output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let home = PathBuf::from(std::env::var_os("CODEX_HOME").unwrap());
+        let user_config = "[shell_environment_policy]\ninherit = \"core\"\nignore_default_excludes = false\nexclude = [\"CORP_*\"]\ninclude_only = [\"PATH\", \"HOME\", \"LANG\"]\n[shell_environment_policy.set]\n\"MY.APP-FLAG\" = \"user-setting\"\n";
+        std::fs::write(home.join("config.toml"), user_config).unwrap();
+        for provider in AgentProvider::ALL {
+            let (root, repo) = crate::git_fixture::init_repo();
+            let bridge = root.path().join("installed/build-bridge");
+            std::fs::create_dir(bridge.parent().unwrap()).unwrap();
+            crate::runtime_launcher::install_sibling(&bridge).unwrap();
+            let is_codex = matches!(
+                provider,
+                AgentProvider::Codex | AgentProvider::CodexAppServer
+            );
+            let mut spec = HarnessSpec::new(if is_codex { "codex" } else { "fixture-harness" });
+            if provider == AgentProvider::CodexAppServer {
+                spec = spec.arg("app-server");
+            }
+            let orchestrator = crate::orchestrator::Orchestrator::new(
+                repo.clone(),
+                root.path().join("worktrees"),
+                crate::orchestrator::Agent::Warm(Box::new(spec)),
+                crate::templates::Templates::default(),
+                bridge.clone(),
+            );
+            let ready = AgentSpawnPlan {
+                launch: orchestrator.agent_launch(),
+                root: repo.clone(),
+                cwd: repo.clone(),
+                agent_id: "agent-fixture".into(),
+                model_choice: ModelChoice {
+                    provider,
+                    ..ModelChoice::default()
+                },
+                recorded_resume_id: None,
+                probes: probes(|_| false),
+                session_token: "mcp-authority".into(),
+                secret_launch: Some(crate::harness::SecretLaunchEnvironment::new(
+                    "/fixture.sock".into(),
+                    "dev".into(),
+                    "agent-fixture".into(),
+                    "owner-fixture".into(),
+                    "own-secret-authority".into(),
+                    bridge.to_str().unwrap().into(),
+                )),
+                mcp_surface: crate::mcp::McpSurface::Coding,
+                cli_readings: crate::harness::installed::readings().clone(),
+            }
+            .probe_and_scaffold()
+            .unwrap();
+            assert!(!format!("{:?}", ready.spec).contains("own-secret-authority"));
+            assert!(!ready
+                .spec
+                .args
+                .iter()
+                .any(|arg| arg.contains("own-secret-authority")));
+            let selected = ready
+                .spec
+                .args
+                .windows(2)
+                .find(|args| args[0] == "--profile");
+            if provider == AgentProvider::Codex {
+                let path = home.join(format!("{}.config.toml", selected.unwrap()[1]));
+                assert!(!path.starts_with(&repo));
+                let parsed: toml::Value =
+                    toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+                assert_eq!(
+                    parsed["shell_environment_policy"]["inherit"].as_str(),
+                    Some("core")
+                );
+                assert_eq!(
+                    parsed["shell_environment_policy"]["set"]["MY.APP-FLAG"].as_str(),
+                    Some("user-setting")
+                );
+                drop(ready);
+                assert!(!path.exists());
+            } else {
+                assert!(selected.is_none(), "{provider:?}");
+                if is_codex {
+                    let config =
+                        crate::harness::secret_launch::codex_thread_config(&ready.spec, None)
+                            .unwrap();
+                    assert_eq!(config["shell_environment_policy"]["inherit"], "core");
+                    assert_eq!(
+                        config["shell_environment_policy"]["set"]["MY.APP-FLAG"],
+                        "user-setting"
+                    );
+                }
+            }
+            assert_eq!(
+                std::fs::read_to_string(home.join("config.toml")).unwrap(),
+                user_config
+            );
+            let status = crate::git_process::run_git(&repo, &["status", "--porcelain"]).unwrap();
+            assert!(status.is_empty(), "{status}");
+        }
+        let observed: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(home.join("probe-observed.json")).unwrap())
+                .unwrap();
+        assert_eq!(observed["saw_auth"], false);
+    }
 
     fn probes(holds: impl Fn(&str) -> bool + Send + Sync + 'static) -> SessionProbes {
         SessionProbes {

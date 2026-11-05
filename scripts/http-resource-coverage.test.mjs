@@ -2,6 +2,7 @@
 // This scans consumers independently of the Rust registry: intersecting the
 // two would silently discard legacy calls and newly introduced methods.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -1068,4 +1069,9 @@ test("secrets metadata routes are explicit and sealed uploads are bounded", asyn
     if (method === "secrets.create") assert.equal(operation.requestMaxBytes, 65536);
   }
   assert.ok(!manifest.operations.some(({ method }) => method === "secrets.get"), "Value release has no public HTTP route");
+});
+
+test("the generator inventories ordinary, required-context and optional-context methods", () => {
+  const output = execFileSync(process.execPath, [fileURLToPath(new URL("scripts/http-resource-manifest.mjs", root)), "--check"], { encoding: "utf8" });
+  assert.match(output, /157 explicit resource routes; generated artifacts current/);
 });

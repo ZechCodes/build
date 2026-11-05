@@ -629,7 +629,7 @@ impl AppState {
             if let Some(delivery) = delivery.as_mut() {
                 delivery.payload = payload;
             }
-            let receipt = self.stage_post_acceptance(
+            let receipt = match self.stage_post_acceptance(
                 params,
                 origin,
                 address,
@@ -637,7 +637,17 @@ impl AppState {
                 sequence,
                 delivery,
                 local_refusal,
-            )?;
+            ) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    if let Ok(agent) = active.agents.resolve_mut(Some(&address.conversation_id)) {
+                        agent.thread = previous_thread;
+                    }
+                    self.plans
+                        .insert(address.conversation_entity_id.clone(), active);
+                    return Err(error);
+                }
+            };
             if let Err(error) =
                 self.finish_plan_mutation(address.conversation_entity_id.clone(), active)
             {
@@ -701,7 +711,7 @@ impl AppState {
         if let Some(delivery) = delivery.as_mut() {
             delivery.payload = payload;
         }
-        let receipt = self.stage_post_acceptance(
+        let receipt = match self.stage_post_acceptance(
             params,
             origin,
             address,
@@ -709,7 +719,17 @@ impl AppState {
             sequence,
             delivery,
             local_refusal,
-        )?;
+        ) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                if let Ok(agent) = active.agents.resolve_mut(Some(&address.conversation_id)) {
+                    agent.thread = previous_thread;
+                }
+                self.runs
+                    .insert(address.conversation_entity_id.clone(), active);
+                return Err(error);
+            }
+        };
         if let Err(error) = self.finish_run_mutation(address.conversation_entity_id.clone(), active)
         {
             self.runs

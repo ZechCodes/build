@@ -8,8 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 pub struct StoreWriter {
     pub(super) connection: Arc<Mutex<Connection>>,
     pub(super) wakeup: Arc<tokio::sync::Notify>,
-    secret_change_observer:
-        Arc<Mutex<Option<Arc<dyn Fn(&crate::secrets::SecretRecord) + Send + Sync>>>>,
+    secret_change_observer: Arc<Mutex<Option<crate::secrets::ChangeObserver>>>,
     #[cfg(test)]
     pub(super) fail_next_write: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -31,10 +30,7 @@ impl StoreWriter {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
-    pub(crate) fn set_secret_change_observer(
-        &self,
-        observer: Arc<dyn Fn(&crate::secrets::SecretRecord) + Send + Sync>,
-    ) {
+    pub(crate) fn set_secret_change_observer(&self, observer: crate::secrets::ChangeObserver) {
         *self
             .secret_change_observer
             .lock()
@@ -94,6 +90,37 @@ impl StoreWriter {
                 "injected store failure",
             )));
         }
+        self.with_connection_durability(full, |connection| {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let mut batch = super::sync::PublicationBatch::default();
+            let result = work(&transaction, &mut batch)?;
+            super::sync::collect_tasks(&transaction, &mut batch)?;
+            super::sync::collect_device(&transaction, &mut batch)?;
+            batch.publish(&transaction, super::sync::now_ms())?;
+            transaction.commit()?;
+            Ok(result)
+        })
+    }
+
+    pub(super) fn with_full_durability<T, E>(
+        &self,
+        work: impl FnOnce(&mut Connection) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<rusqlite::Error>,
+    {
+        self.with_connection_durability(true, work)
+    }
+
+    fn with_connection_durability<T, E>(
+        &self,
+        full: bool,
+        work: impl FnOnce(&mut Connection) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<rusqlite::Error>,
+    {
         let mut connection = self.connection();
         let restore = if full {
             let previous: i64 =
@@ -107,17 +134,7 @@ impl StoreWriter {
         } else {
             None
         };
-        let result: Result<T, StoreError> = (|| {
-            let transaction =
-                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let mut batch = super::sync::PublicationBatch::default();
-            let result = work(&transaction, &mut batch)?;
-            super::sync::collect_tasks(&transaction, &mut batch)?;
-            super::sync::collect_device(&transaction, &mut batch)?;
-            batch.publish(&transaction, super::sync::now_ms())?;
-            transaction.commit()?;
-            Ok(result)
-        })();
+        let result = work(&mut connection);
         let restored = restore.map_or(Ok(()), |previous| {
             connection.pragma_update(None, "synchronous", previous)
         });
@@ -245,6 +262,43 @@ mod tests {
             )
             .unwrap();
         assert_eq!(value, "committed");
+        assert_eq!(authorizer.calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn committed_secret_durable_write_succeeds_when_pragma_restore_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::new(dir.path()).unwrap();
+        let writer = store.writer();
+        let before_revision: i64 = writer
+            .connection()
+            .query_row(
+                "SELECT COALESCE((SELECT revision FROM secret_clock WHERE singleton=1), 0)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut authorizer = PragmaAuthorizer {
+            calls: AtomicUsize::new(0),
+            deny_at: 3,
+        };
+        set_authorizer(&writer, &mut authorizer);
+        let missing = format!("sec_{}", uuid::Uuid::new_v4());
+        let result = writer.secrets_mark_deleted(&missing);
+        clear_authorizer(&writer);
+        assert!(
+            result.is_ok(),
+            "a committed secret write must report success"
+        );
+        let after_revision: i64 = writer
+            .connection()
+            .query_row(
+                "SELECT revision FROM secret_clock WHERE singleton=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after_revision, before_revision + 1);
         assert_eq!(authorizer.calls.load(Ordering::SeqCst), 3);
     }
 }

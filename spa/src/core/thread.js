@@ -40,6 +40,8 @@ import { attachMediaSource, createMediaBody, createMediaUrl } from "./mediaBlob.
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
+const HOUR_SECONDS = 60 * 60;
+const DAY_SECONDS = 24 * HOUR_SECONDS;
 
 function ordinal(day) {
   const lastTwoDigits = day % 100;
@@ -170,6 +172,7 @@ export const provisionalThreadItem = ({ operationId, message = {}, sequence = nu
     sequence,
     body: message.body || "",
     attachments: message.attachments || [],
+    ...(Array.isArray(message.secret_ids) ? { secret_ids: [...message.secret_ids] } : {}),
     ...(message.viewing_context ? { viewing_context: message.viewing_context } : {}),
     created_at: new Date().toISOString(),
     delivery_status: deliveryStatus,
@@ -704,6 +707,46 @@ function outcomeMarkerHtml(outcome, agentLabel) {
 const messageContextHtml = (message) => message.viewing_context?.items?.length
   ? `<div class="message-viewing-context">${viewingContextChipsHtml(message.viewing_context)}</div>` : "";
 
+const secretMetadataById = (source, secretId) => {
+  if (source instanceof Map) return source.get(secretId);
+  if (Array.isArray(source)) return source.find((entry) => entry?.secret_id === secretId);
+  return source && typeof source === "object" ? source[secretId] : null;
+};
+
+const plural = (amount, unit) => `${amount} ${unit}${amount === 1 ? "" : "s"}`;
+
+/** The lifetime stamped on a metadata-only secret chip. TTL begins only once
+ * the bridge durably accepts the message, so every finite label says so. */
+export function secretTtlLabel(ttlSeconds) {
+  if (ttlSeconds === null) return "No expiry";
+  const seconds = Number(ttlSeconds);
+  if (!Number.isSafeInteger(seconds) || seconds <= 0) return "";
+  if (seconds % DAY_SECONDS === 0) return `${plural(seconds / DAY_SECONDS, "day")} after sending`;
+  if (seconds % HOUR_SECONDS === 0) return `${plural(seconds / HOUR_SECONDS, "hour")} after sending`;
+  if (seconds % 60 === 0) return `${plural(seconds / 60, "minute")} after sending`;
+  return `${plural(seconds, "second")} after sending`;
+}
+
+/** Exact visible chip copy from a validated cache descriptor. */
+export function secretChipLabel(metadata) {
+  const name = metadata?.name;
+  const scope = { agent: "Agent", project: "Project" }[metadata?.grant?.scope];
+  const ttl = secretTtlLabel(metadata?.ttl_seconds);
+  if (![name, scope, ttl].every(Boolean)) return "";
+  return `${name} · ${scope} · ${ttl}`;
+}
+
+/** Sent rows name only secret ids. Metadata and display copy come from the
+ * cache snapshot supplied by the surface; history cannot fabricate a chip. */
+function messageSecretsHtml(message, secretMetadata) {
+  if (!Array.isArray(message.secret_ids)) return "";
+  const chips = message.secret_ids.flatMap((secretId) => {
+    const label = secretChipLabel(secretMetadataById(secretMetadata, secretId));
+    return label ? [`<span class="thread-secret-chip">${esc(label)}</span>`] : [];
+  });
+  return chips.length ? `<div class="thread-secret-chips">${chips.join("")}</div>` : "";
+}
+
 const DELIVERY_STATUS_META = {
   queued: { label: "Queued", description: "Queued for the agent" },
   submitted: { label: "Queued", description: "Queued for the agent" },
@@ -880,6 +923,7 @@ function messageCardHtml(message, agentLabel, context) {
       ${handedTaskHtml(message, context)}
       ${body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(body, { place: context.place, taskLabelScope: `message:${messageKey(message)}` })}</div>` : ""}
       ${attachmentsHtml(message.attachments, threadState)}
+      ${messageSecretsHtml(message, context.secretMetadata)}
       ${linksHtml(message.links)}
       ${optionsHtml(message, live, offer, threadState)}
       ${messageFooterHtml(message)}
@@ -1725,12 +1769,12 @@ const drawsNoRow = (message) =>
   // would be the same words a second time.
   || !!message.answers_options_of;
 
-function messageRow(item, index, agentLabel, { threadId, spoken, threadState, place, agentLabels, agentModels }) {
+function messageRow(item, index, agentLabel, { threadId, spoken, threadState, place, agentLabels, agentModels, secretMetadata }) {
   const message = item.data || {};
   if (drawsNoRow(message)) return [];
   const offer = offerKey(threadId, message.id);
   const live = spoken && !threadState.isSending(offer);
-  const context = { live, offer, threadState, place, agentLabels, agentModels };
+  const context = { live, offer, threadState, place, agentLabels, agentModels, secretMetadata };
   return [withLazyHtml({ key: rowKey(message, index), item }, () => messageHtml(message, agentLabel, context))];
 }
 
@@ -1763,11 +1807,13 @@ function timelineOf(sourceItems, agentLabel, place) {
 /// each item sits in the whole timeline, so a row drawn from a slice is the row
 /// the whole would have drawn.
 function rowsOfTimeline({ agentLabel, folding, topLevelItems, lastSpoken }, from, threadId, view) {
-  const { threadState, place, agentLabels, agentModels } = view;
+  const { threadState, place, agentLabels, agentModels, secretMetadata } = view;
   return topLevelItems.slice(from).flatMap((item, offset) => {
     const index = from + offset;
     return item.type === "message"
-      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken, threadState, place, agentLabels, agentModels })
+      ? messageRow(item, index, agentLabel, {
+          threadId, spoken: index === lastSpoken, threadState, place, agentLabels, agentModels, secretMetadata,
+        })
       : [activityRow(item, index, agentLabel, folding)];
   });
 }
@@ -1868,6 +1914,7 @@ export function timelineEntries(
     // tracking notice's "X did Y" — and X has to be a name the reader knows.
     agentLabels = {},
     agentModels = {},
+    secretMetadata,
     workspaces,
     hiddenByLevel = 0,
     // How much of the conversation to draw (core/timelineSlice.js): none draws
@@ -1883,6 +1930,7 @@ export function timelineEntries(
     agentLabel,
     agentLabels,
     agentModels,
+    secretMetadata,
     workspaces,
     threadId,
     threadState,

@@ -44,6 +44,12 @@ impl AppState {
             })
             .await;
             let path = format!("{control_path}.secrets");
+            // The standard-library validator applies this platform's sun_path
+            // length limit without echoing the configured path or connecting.
+            if let Err(error) = std::os::unix::net::SocketAddr::from_pathname(&path) {
+                eprintln!("secret release socket unavailable: invalid Unix socket path: {error}");
+                return;
+            }
             let listener = match bind_private_listener(Path::new(&path)).await {
                 Ok(listener) => listener,
                 Err(_) => {

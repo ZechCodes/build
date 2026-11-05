@@ -49,7 +49,7 @@ pub(in crate::app) struct SessionRegistry {
     mcp_tokens: HashMap<String, String>,
     mcp_read_authority: super::McpReadAuthority,
     secret_authority: super::SecretSessionAuthority,
-    secret_launch: Option<(String, String, String)>,
+    secret_launch: Option<SecretLaunchContext>,
     /// A failed roster save cannot undo an agent binding's actual retirement.
     /// Agent IDs are shared by aliases; owner IDs only support deletion cleanup.
     retired_bindings: HashMap<String, String>,
@@ -57,6 +57,12 @@ pub(in crate::app) struct SessionRegistry {
     /// Where the tabs' byte pumps paint: the daemon's push runtime, or — with
     /// none set, as in the tests — whatever runtime starts them.
     push_runtime: Option<tokio::runtime::Handle>,
+}
+
+struct SecretLaunchContext {
+    device: Option<String>,
+    channel: String,
+    socket: String,
 }
 
 struct ShellCheckoutHold {
@@ -477,25 +483,30 @@ impl SessionRegistry {
         context: &crate::harness::HarnessContext,
     ) {
         self.secret_authority.clear();
-        self.secret_launch = Some((
-            String::new(),
-            context.channel.as_str().into(),
-            format!("{}.secrets", context.mcp_socket.display()),
-        ));
+        self.secret_launch = Some(SecretLaunchContext {
+            device: None,
+            channel: context.channel.as_str().into(),
+            socket: format!("{}.secrets", context.mcp_socket.display()),
+        });
     }
 
     pub(in crate::app) fn set_secret_device(&mut self, device: &str) {
-        if let Some((held, _, _)) = &mut self.secret_launch {
-            if held != device {
+        if let Some(context) = &mut self.secret_launch {
+            let device = (!device.is_empty()).then_some(device);
+            if context.device.as_deref() != device {
                 self.secret_authority.clear();
             }
-            *held = device.into();
+            context.device = device.map(str::to_owned);
         }
     }
 
     pub(in crate::app) fn secret_launch_context(&self) -> Option<(&str, &str, &str)> {
-        let (device, channel, socket) = self.secret_launch.as_ref()?;
-        (!device.is_empty()).then_some((device.as_str(), channel.as_str(), socket.as_str()))
+        let context = self.secret_launch.as_ref()?;
+        Some((
+            context.device.as_deref()?,
+            &context.channel,
+            &context.socket,
+        ))
     }
 
     pub(in crate::app) fn install_secret_token(

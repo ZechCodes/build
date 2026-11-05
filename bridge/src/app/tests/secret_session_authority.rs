@@ -262,3 +262,55 @@ fn audit_identifiers_never_persist_a_launch_capability_or_uuid_value_as_request_
         );
     }
 }
+
+fn assert_app_minted_secret_member(fixture: &mut Fixture) {
+    let (authority, _, caller) = fixture.launch();
+    let result: crate::secrets::Result<()> = fixture
+        .app
+        .store
+        .as_ref()
+        .unwrap()
+        .writer()
+        .secrets_release(
+            &caller,
+            &format!("sec_{}", uuid::Uuid::new_v4()),
+            &uuid::Uuid::new_v4().to_string(),
+            1000,
+            || authority.revalidate(&caller),
+            |_, _| panic!("the membership probe uses an unknown secret ID"),
+        );
+    assert!(
+        matches!(result, Err(crate::secrets::SecretError::Unavailable)),
+        "an app-minted member must pass SQL membership, not return Unauthorized: {result:?}"
+    );
+}
+
+#[test]
+fn secret_sql_membership_accepts_app_minted_workspace_agent() {
+    let mut fixture = Fixture::new();
+    let workspace = super::project_agent::workspace(
+        &mut fixture.app,
+        &fixture.project,
+        "secret-membership-probe",
+    );
+    let ensured = fixture.app.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace}),
+    ));
+    assert_eq!(ensured["ok"], true, "{ensured:?}");
+    fixture.owner = ensured["result"]["run_id"].as_str().unwrap().into();
+    let added = fixture
+        .app
+        .handle(req("agent.add", json!({"entity_id": fixture.owner})));
+    assert_eq!(added["ok"], true, "{added:?}");
+    fixture.agent = added["result"]["agent"]["id"].as_str().unwrap().into();
+    assert_app_minted_secret_member(&mut fixture);
+}
+
+#[test]
+fn secret_sql_membership_accepts_app_minted_project_coordinator() {
+    let mut fixture = Fixture::new();
+    (fixture.owner, fixture.agent) =
+        super::project_agent::project_agent(&mut fixture.app, &fixture.project);
+    assert_app_minted_secret_member(&mut fixture);
+}

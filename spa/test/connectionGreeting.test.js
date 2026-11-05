@@ -168,6 +168,57 @@ describe("what a greeting settles on the device it greeted", () => {
     expect(controller.readDraft()).toMatchObject({ body: "keep all", secrets: [descriptor] });
   });
 
+  it("releases a secret post after a capable greeting without holding an ordinary post", async () => {
+    let finishHello;
+    const session = bridgeAnswering("dev-secret-success", {});
+    session.call.mockImplementation((method, params) => {
+      if (method === "session.hello") return new Promise((resolve) => { finishHello = resolve; });
+      if (method === "thread.post") return Promise.resolve({ phase: "ack", operation_id: params.operation_id });
+      return Promise.resolve({});
+    });
+    const context = adoptDeviceSession(session);
+    const controller = context.chatRepository.controller({
+      entityId: "owner-success", agentId: "agent-success", conversationId: "conversation-success",
+      threadId: "thread-success", threadGenerationRevision: 1,
+    });
+    const descriptor = {
+      secret_id: "sec_success", request_id: "11111111-1111-4111-8111-111111111111", name: "SUCCESS_TOKEN", ttl_seconds: null,
+      grant: { scope: "agent", agent_id: "agent-success", conversation_id: "conversation-success", generation: "thread-success" },
+      scope: { owner_id: "owner-success", conversation_id: "conversation-success", generation: "thread-success", draft_id: null },
+      created_at: 1, attached_at: null, expires_at: null, revoked_at: null, revision: 1, status: "staged",
+    };
+    controller.writeDraft({ body: "secret post", secrets: [descriptor] });
+    const secretSubmission = controller.captureSubmission();
+    const greeting = greetLiveBridge(context);
+    const postingSecret = controller.post(secretSubmission);
+    await Promise.resolve();
+    expect(session.call.mock.calls.some(([method]) => method === "thread.post")).toBe(false);
+
+    controller.writeDraft({ body: "ordinary post" });
+    const ordinarySubmission = controller.captureSubmission();
+    await controller.post(ordinarySubmission);
+    const postsBeforeGreeting = session.call.mock.calls.filter(([method]) => method === "thread.post");
+    expect(postsBeforeGreeting).toHaveLength(1);
+    expect(postsBeforeGreeting[0][1]).toMatchObject({
+      body: "ordinary post", operation_id: ordinarySubmission.operationId,
+    });
+    expect(postsBeforeGreeting[0][1]).not.toHaveProperty("secret_ids");
+
+    finishHello({
+      ...secretsGreeting.result,
+      capabilities: [...secretsGreeting.result.capabilities,
+        "secrets.attachments", "secrets.sealedUpload", "secrets.metadataEvents"],
+    });
+    await greeting;
+    await postingSecret;
+
+    const posts = session.call.mock.calls.filter(([method]) => method === "thread.post");
+    expect(posts).toHaveLength(2);
+    expect(posts[1][1]).toMatchObject({
+      body: "secret post", secret_ids: ["sec_success"], operation_id: secretSubmission.operationId,
+    });
+  });
+
   it("establishes the authoritative epoch before installing the adapter", async () => {
     const greeting = epochGreeting.result;
     const session = bridgeAnswering("dev-epoch", greeting);

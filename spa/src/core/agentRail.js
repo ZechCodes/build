@@ -394,7 +394,9 @@ export function createRailChatOwnership(repository, key, entityOf, { metadataCac
     const scopeKey = JSON.stringify(scope);
     if (!metadataScopes.has(scopeKey)) metadataScopes.set(scopeKey, metadataCache.track(scope, { active }));
   };
-  trackMetadata({ projectId }, () => repository.active);
+  const trackProjectMetadata = (scopeProjectId) =>
+    trackMetadata({ projectId: scopeProjectId }, () => repository.active);
+  trackProjectMetadata(projectId);
   const addressFor = (entity, agent) => {
     const execution = entity.executionContext;
     if (execution) {
@@ -412,10 +414,12 @@ export function createRailChatOwnership(repository, key, entityOf, { metadataCac
     controllerFor(agent) {
       const entity = entityOf();
       if (!agent || !entity.entityId) return null;
+      const scopeProjectId = projectId || entity.projectId || null;
+      trackProjectMetadata(scopeProjectId);
       const address = addressFor(entity, agent);
       const controller = repository.controller(address);
       if (address.threadId) trackMetadata({
-        projectId, ownerId: address.entityId, agentId: address.agentId,
+        projectId: scopeProjectId, ownerId: address.entityId, agentId: address.agentId,
         conversationId: address.conversationId, generation: address.threadId, draftId: null,
       }, () => repository.isCurrentConversation(address));
       const digest = entity.executionContext?.agent || agent;

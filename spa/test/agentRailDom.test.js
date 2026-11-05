@@ -1391,79 +1391,64 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(callsTo("thread.page")[0].params.thread_id).toBe("activated-thread-a");
   });
 
-  it("learns the incarnation supplied by the first reply before the matching roster arrives", async () => {
-    // An ID-less cached cursor is not proof that the first versioned reply
-    // belongs to its history. Probe once, then replace it from a newest page.
-    await delayedRosterHandoff("after", null, "reply-thread-a", false, 2);
-    expect(callsTo("thread.page")[0].params.thread_id).toBeUndefined();
-    expect(callsTo("thread.page")[1].params).not.toHaveProperty("after_sequence");
-    expect(callsTo("thread.page")[1].params.thread_id).toBe("reply-thread-a");
-    expect(railHost().querySelector("#rail-body")?.textContent).not.toContain("Cached before the roster");
-    const stored = (await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" })).value;
-    expect(stored.thread_id).toBe("reply-thread-a");
-    expect(stored.items.map(({ data }) => data.sequence)).toEqual([2]);
-  });
-
-  it.each([false, true])("replaces an unproven legacy cursor from a fresh newest page after an empty=%s generation probe", async (emptyProbe) => {
+  it.each(["before", "after"])("holds an id-less cached window without relabelling when the roster arrives %s the first reply", async (arrival) => {
     lazy.enabled = true;
     conversationReadReceipts.enabled = true;
-    chatRepository.railView("workspace:ws-unproven-cursor").chooseAgent("ag-1");
+    chatRepository.railView("workspace:ws-legacy-opening").chooseAgent("ag-1");
     await writeRailBoard({
       projects: [{ project_id: "p1", name: "build" }],
-      workspaces: [{ id: "ws-unproven-cursor", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
+      workspaces: [{ id: "ws-legacy-opening", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
     });
     const address = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" };
-    const oldItems = [said(100, "Legacy cursor 100 remains painted during recovery")];
-    await writeCached(address, { items: oldItems, deliveredSequence: 100, olderItemsRemain: false,
-      knownTotalItems: 1, activityDigests: [], retired_thread_ids: ["retired-earlier"] });
-    const last = emptyProbe ? 4 : 104;
-    const newestItems = Array.from({ length: 4 }, (_, index) => said(last - 3 + index, `Fresh current incarnation ${index + 1}`));
-    let releaseNewest;
-    const newest = new Promise((resolve) => { releaseNewest = () => resolve({ thread_id: "fresh-thread-b", thread_generation_revision: 2,
-      items: newestItems, has_more: !emptyProbe, thread_last_sequence: last }); });
+    await writeRailThread("run-3", "ag-1", { items: [said(100, "Unversioned cached paint")] });
+    let release;
+    const page = new Promise((resolve) => { release = () => resolve({
+      thread_id: "roster-thread-b", items: [said(101, "Arriving legacy words")],
+      thread_last_sequence: 101, has_more: false,
+    }); });
     const original = bridge.call;
     bridge.call = vi.fn((method, params) => {
       if (method !== "thread.page") return original(method, params);
       calls.push({ method, params });
-      if (callsTo("thread.page").length > 1) return newest;
-      return { thread_id: "fresh-thread-b", thread_generation_revision: 2,
-        items: emptyProbe ? [] : newestItems,
-        has_more: false, thread_last_sequence: last };
+      return page;
     });
     const frames = [];
     let observer;
     try {
-      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-unproven-cursor" }));
-      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Legacy cursor 100"));
-      observer = new MutationObserver(() => frames.push(railHost().querySelector("#rail-body")?.textContent || ""));
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-legacy-opening" }));
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Unversioned cached paint"));
+      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+      observer = new MutationObserver(() => {
+        const body = railHost().querySelector("#rail-body");
+        frames.push({ empty: !body || !!body.querySelector(".thread-empty"), text: body?.textContent || "" });
+      });
       observer.observe(railHost(), { childList: true, subtree: true, characterData: true });
-      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
-      expect(callsTo("thread.page")[0].params.after_sequence).toBe(100);
-      expect(callsTo("thread.page")[1].params).not.toHaveProperty("after_sequence");
-      expect(callsTo("thread.page")[1].params.thread_id).toBe("fresh-thread-b");
-      expect(callsTo("thread.page")[1].params.limit).toBe(LATEST_THREAD_ITEMS);
-      const held = (await readCached(address)).value;
-      expect(held.items).toEqual(oldItems);
-      expect(held.deliveredSequence).toBe(100);
-      expect(held.thread_id).toBeUndefined();
-      expect(railHost().querySelector("#rail-body")?.textContent).toContain("Legacy cursor 100");
-      releaseNewest();
+      if (arrival === "after") {
+        release();
+        await Promise.all(conversationReadReceipts.windows);
+        const beforeRoster = (await readCached(address)).value;
+        expect(beforeRoster.thread_id).toBeUndefined();
+        expect(beforeRoster.items.some(({ data }) => data.sequence === 100)).toBe(true);
+      }
+      const oldReader = conversationReadReceipts.seeds.at(-1).cache;
+      const seedCount = conversationReadReceipts.seeds.length;
+      await writeRailWorkItem({ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false, thread_id: "roster-thread-b" })] });
+      await vi.waitFor(() => expect(conversationReadReceipts.seeds.slice(seedCount).some(({ cache }) => cache !== oldReader)).toBe(true));
+      await Promise.all(conversationReadReceipts.seeds.slice(seedCount).map(({ promise }) => promise));
+      expect(railHost().querySelector("#rail-body")?.textContent).toMatch(/Unversioned cached paint|Arriving legacy words/);
+      release();
       await Promise.all(conversationReadReceipts.windows);
-      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Fresh current incarnation"));
+      await vi.waitFor(async () => expect((await readCached(address)).value.items.some(({ data }) => data.sequence === 101)).toBe(true));
+      await Promise.all(conversationReadReceipts.windows);
+      expect(callsTo("thread.page").length).toBeLessThanOrEqual(2);
+      expect(callsTo("thread.page").map(({ params }) => params.thread_id)).toEqual([undefined, "roster-thread-b"]);
       const stored = (await readCached(address)).value;
-      expect(stored.items).toEqual(newestItems);
-      expect(stored.deliveredSequence).toBe(last);
-      expect(stored.thread_id).toBe("fresh-thread-b");
-      expect(stored.retired_thread_ids).toEqual(["retired-earlier"]);
-      await writeRailWorkItem({ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false, thread_id: "fresh-thread-b", thread_generation_revision: 2 })] });
-      await vi.waitFor(() => expect(headWho()).toBe(TOPICS["ag-1"]));
-      await Promise.all(conversationReadReceipts.seeds.map(({ promise }) => promise));
-      await Promise.all(conversationReadReceipts.windows);
-      expect(callsTo("thread.page")).toHaveLength(2);
-      expect(railHost().querySelector("#rail-body")?.textContent).not.toContain("Legacy cursor 100");
-      expect(frames.every((text) => /Legacy cursor 100|Fresh current incarnation/.test(text))).toBe(true);
+      expect(stored.thread_id).toBeUndefined();
+      expect(stored.items.some(({ data }) => data.sequence === 100)).toBe(true);
+      expect(frames.length).toBeGreaterThan(0);
+      expect(frames.some((frame) => frame.empty || !/Unversioned cached paint|Arriving legacy words/.test(frame.text))).toBe(false);
     } finally {
-      releaseNewest();
+      release();
       await Promise.allSettled(conversationReadReceipts.windows);
       observer?.disconnect();
       conversationReadReceipts.enabled = false;

@@ -114,6 +114,7 @@ fn codex_filtered_shell_child_receives_secret_authority_without_mcp_or_other_bri
 #[tokio::test]
 async fn all_five_harness_shell_children_receive_their_own_capability_and_runtime_path() {
     let root = tempfile::tempdir().unwrap();
+    let checkout = tempfile::tempdir().unwrap();
     let context = HarnessContext {
         channel: crate::config::Channel::Dev,
         bridge_exe: "/installed-build/bin/build-bridge".into(),
@@ -128,7 +129,7 @@ async fn all_five_harness_shell_children_receive_their_own_capability_and_runtim
         let options = crate::orchestrator::SpawnOptions {
             owner_id: "agent-fixture".into(),
             mcp_session_token: "separate-mcp-token".into(),
-            cwd: root.path().to_owned(),
+            cwd: checkout.path().to_owned(),
             ..crate::orchestrator::SpawnOptions::default()
         };
         let spec = super::harness_for(provider)

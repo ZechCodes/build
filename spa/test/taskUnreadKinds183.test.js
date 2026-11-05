@@ -59,15 +59,17 @@ describe("the bridge's cases", () => {
   let cases;
 
   beforeAll(async () => {
-    const { stdout } = await run("cargo", ["test", "--lib", "tracker_unread_kinds", "--", "--nocapture"], {
+    const { stdout } = await run("cargo", ["test", "--lib", "tracker_unread_kinds", "--", "--nocapture", "--test-threads=1"], {
       cwd: bridgeRoot,
       env: { ...process.env, BUILD_PRINT_UNREAD_KINDS: "1" },
       maxBuffer: 2 * 1024 * 1024,
       timeout: 600_000,
     });
-    const line = stdout.split(/\r?\n/).find((candidate) => candidate.startsWith("BUILD_UNREAD_KINDS="));
+    // Libtest can prefix uncaptured output with `test <name> ... `.
+    const marker = "BUILD_UNREAD_KINDS=";
+    const line = stdout.split(/\r?\n/).find((candidate) => candidate.includes(marker));
     expect(line, "Rust must print BUILD_UNREAD_KINDS").toBeDefined();
-    ({ cases } = JSON.parse(line.slice("BUILD_UNREAD_KINDS=".length)));
+    ({ cases } = JSON.parse(line.slice(line.indexOf(marker) + marker.length)));
   }, 620_000);
 
   it("covers filing and tracking, and a comment with a move", () => {

@@ -963,7 +963,7 @@ const knownProjectName = (context) => context.projectAgent?.name || context.proj
  *  neither — a task's, say — which reads no project at all. */
 function railProjectId(context) {
   if (context.projectAgent?.projectId) return context.projectAgent.projectId;
-  return context.kind === "project" ? context.projectId || null : null;
+  return context.projectId || null;
 }
 
 /** Which conversation the rail was asked to keep beside the one it stands on. */

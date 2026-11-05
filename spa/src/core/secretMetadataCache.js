@@ -137,6 +137,7 @@ function belongsTo(metadata, scope) {
 }
 
 const byId = (left, right) => left.secret_id.localeCompare(right.secret_id);
+const trackedActive = (entry) => [...entry.registrations].some((registration) => registration.active());
 function mergeEntries(held = [], incoming = []) {
   const entries = new Map(held.map((entry) => [entry.secret_id, entry]));
   for (const entry of incoming) {
@@ -221,7 +222,7 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
   const validCursor = (value) => value === null || presentText(value);
   const refreshCurrent = (scope) => {
     const trackedScope = tracked.get(scopeKey(scope));
-    return current() && (!trackedScope || trackedScope.active());
+    return current() && (!trackedScope || trackedActive(trackedScope));
   };
   const nextCursor = (page) => page.next === undefined ? null : page.next;
 
@@ -242,18 +243,27 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
 
   function track(rawScope, { active: scopeActive = () => true } = {}) {
     const scope = normalizedScope(rawScope);
-    tracked.set(scopeKey(scope), { scope, active: scopeActive });
-    return () => tracked.delete(scopeKey(scope));
+    const key = scopeKey(scope);
+    const entry = tracked.get(key) || { scope, registrations: new Set() };
+    const wasActive = trackedActive(entry);
+    const registration = { active: scopeActive };
+    entry.registrations.add(registration);
+    tracked.set(key, entry);
+    if (!wasActive && trackedActive(entry)) void refresh(scope).catch(() => {});
+    return () => {
+      entry.registrations.delete(registration);
+      if (!entry.registrations.size && tracked.get(key) === entry) tracked.delete(key);
+    };
   }
 
   async function refreshTracked() {
     if (!supported()) return [];
-    return Promise.all([...tracked.values()].filter((entry) => entry.active()).map((entry) => refresh(entry.scope)));
+    return Promise.all([...tracked.values()].filter(trackedActive).map((entry) => refresh(entry.scope)));
   }
 
   function onHint(hint) {
     if (!supported()) return;
-    const candidates = [...tracked.values()].filter((entry) => entry.active() && (
+    const candidates = [...tracked.values()].filter((entry) => trackedActive(entry) && (
       hint.scope === "device"
       || (hint.scope === "project" && entry.scope.projectId === hint.project_id && !entry.scope.conversationId)
       || (hint.scope === "agent" && entry.scope.ownerId === hint.entity_id

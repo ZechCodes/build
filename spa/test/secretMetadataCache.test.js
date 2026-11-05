@@ -107,12 +107,12 @@ it("treats reordered events as refresh hints while revisions prevent rollback", 
   const cache = createSecretMetadataCache({ deviceId: "device-events", capabilities, call });
   caches.push(cache);
   cache.track(projectScope);
-
-  secretsChangedOn("device-events", { scope: "project", project_id: "project-cache", revision: 4, secret_ids: ["sec_project"] });
   await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
   await vi.waitFor(async () => expect((await cache.read(projectScope))[0]?.revision).toBe(4));
+  call.mockClear();
+
   secretsChangedOn("device-events", { scope: "project", project_id: "project-cache", revision: 3, secret_ids: ["sec_project"] });
-  await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
   await vi.waitFor(async () => expect((await cache.read(projectScope))[0]).toMatchObject({ revision: 4, status: "revoked" }));
 });
 
@@ -125,6 +125,8 @@ it("refreshes only the invalidated project or agent scope", async () => {
   caches.push(cache);
   cache.track(projectScope);
   cache.track(agentScope);
+  await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(2));
+  call.mockClear();
 
   secretsChangedOn("device-scopes", {
     scope: "agent", entity_id: "owner-cache", conversation_id: "conversation-cache",
@@ -151,6 +153,10 @@ it("refreshes tracked scopes after event loss and refuses a stale generation rep
   caches.push(cache);
   cache.track(projectScope);
   cache.track(agentScope, { active: () => currentGeneration === agentScope.generation });
+  await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(2));
+  resolveAgent({ secrets: [], server_now: 1_800_000_000, next: null });
+  await vi.waitFor(async () => expect(await cache.read(projectScope)).toHaveLength(1));
+  call.mockClear();
 
   const refreshing = cache.refreshTracked();
   await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(2));
@@ -159,6 +165,41 @@ it("refreshes tracked scopes after event loss and refuses a stale generation rep
   await refreshing;
   await vi.waitFor(async () => expect(await cache.read(projectScope)).toHaveLength(1));
   expect(await cache.read(agentScope)).toEqual([]);
+});
+
+it("refreshes a scope registered after support is already live", async () => {
+  const call = vi.fn(async () => ({ secrets: [metadata()], server_now: 1_800_000_000, next: null }));
+  const cache = createSecretMetadataCache({ deviceId: "device-late", capabilities, call });
+  caches.push(cache);
+
+  cache.track(projectScope);
+
+  await vi.waitFor(() => expect(call).toHaveBeenCalledOnce());
+  await vi.waitFor(async () => expect((await cache.read(projectScope)).map((entry) => entry.secret_id)).toEqual(["sec_project"]));
+});
+
+it("keeps overlapping registrations independent until their own disposer runs", async () => {
+  const call = vi.fn(async () => ({ secrets: [metadata()], server_now: 1_800_000_000, next: null }));
+  const cache = createSecretMetadataCache({ deviceId: "device-overlap", capabilities, call });
+  caches.push(cache);
+  const stopFirst = cache.track(projectScope);
+  const stopSecond = cache.track(projectScope);
+  await vi.waitFor(() => expect(call).toHaveBeenCalledOnce());
+  call.mockClear();
+
+  stopFirst();
+  secretsChangedOn("device-overlap", {
+    scope: "project", project_id: "project-cache", revision: 2, secret_ids: ["sec_project"],
+  });
+  await vi.waitFor(() => expect(call).toHaveBeenCalledOnce());
+  call.mockClear();
+
+  stopSecond();
+  secretsChangedOn("device-overlap", {
+    scope: "project", project_id: "project-cache", revision: 3, secret_ids: ["sec_project"],
+  });
+  await Promise.resolve();
+  expect(call).not.toHaveBeenCalled();
 });
 
 it("degrades silently when the complete capability family is absent", async () => {

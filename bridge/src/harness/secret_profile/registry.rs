@@ -87,6 +87,16 @@ fn retry_until(deadline: Instant) -> io::Result<()> {
     Ok(())
 }
 
+fn wait_for_retry(deadline: Instant, retry: &mut Duration) -> bool {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return false;
+    }
+    std::thread::sleep(remaining.min(*retry));
+    *retry = (*retry * 2).min(Duration::from_millis(100));
+    true
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
@@ -160,7 +170,14 @@ impl Registry {
 
     pub(super) fn sweep(&self) -> io::Result<()> {
         let _admission = self.admission_lock()?;
-        self.sweep_records()
+        let deadline = Instant::now() + ADMISSION_WAIT;
+        let mut retry = ADMISSION_RETRY;
+        while self.sweep_records()? {
+            if !wait_for_retry(deadline, &mut retry) {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn admission_lock(&self) -> io::Result<AdmissionLock> {
@@ -194,16 +211,13 @@ impl Registry {
         let deadline = Instant::now() + ADMISSION_WAIT;
         let mut retry = ADMISSION_RETRY;
         loop {
-            self.sweep_records()?;
+            let _ = self.sweep_records()?;
             if self.names()?.len() < limit {
                 return Ok(());
             }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            if !wait_for_retry(deadline, &mut retry) {
                 return Err(io::Error::other("secret profile registry full"));
             }
-            std::thread::sleep(remaining.min(retry));
-            retry = (retry * 2).min(Duration::from_millis(100));
         }
     }
 
@@ -226,29 +240,36 @@ impl Registry {
         Ok(names)
     }
 
-    fn sweep_records(&self) -> io::Result<()> {
+    /// Returns whether a guard has ended while its profile lock remains.
+    fn sweep_records(&self) -> io::Result<bool> {
+        let mut orphaned_profile = false;
         for name in self.names()? {
-            self.sweep_record(&name)?;
+            orphaned_profile |= self.sweep_record(&name)?;
         }
-        self.directory.sync_all()
+        self.directory.sync_all()?;
+        Ok(orphaned_profile)
     }
 
-    fn sweep_record(&self, name: &str) -> io::Result<()> {
+    fn sweep_record(&self, name: &str) -> io::Result<bool> {
         let metadata: File = match fs::openat(&self.directory, name, READ_FLAGS, Mode::empty()) {
             Ok(fd) => fd.into(),
-            Err(rustix::io::Errno::NOENT) => return Ok(()),
-            Err(_) => return unlink(&self.directory, name),
+            Err(rustix::io::Errno::NOENT) => return Ok(false),
+            Err(_) => {
+                unlink(&self.directory, name)?;
+                return Ok(false);
+            }
         };
         if super::lock(&metadata).is_err() {
-            return Ok(());
+            return Ok(false);
         }
         let record = read_record(&metadata);
         if let Ok(record) = record {
             if !record.cleanup() {
-                return Ok(());
+                return Ok(true);
             }
         }
-        unlink(&self.directory, name)
+        unlink(&self.directory, name)?;
+        Ok(false)
     }
 }
 

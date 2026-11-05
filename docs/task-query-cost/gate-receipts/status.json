@@ -1,0 +1,33 @@
+{
+  "recorded_batch": "retained earlier final-gates manifests; not a blanket pass at later18749eab6",
+  "latest_prepared_source": "18749eab6758df54dd96b2dcfde779b6176b99fd",
+  "rust_passed_groups": [
+    "store-tests-counted-final",
+    "sync-final",
+    "device-lifecycle-final",
+    "tracker-sync-final",
+    "sql-reads-final",
+    "tracker-api-final",
+    "filesystem-final",
+    "rust-format-final",
+    "prior-wire-manifest-final",
+    "prior-wire-manifest-clean-final",
+    "http-manifest-final"
+  ],
+  "rust_failed_groups": {
+    "changes-final": 101,
+    "api-contract-final": 101,
+    "rust-clippy-final": 101
+  },
+  "failed_group_disposition": {
+    "changes-final": "legacy KindSet expected-value fixture fixed; fresh supplement pending",
+    "api-contract-final": "missing bridge_epoch fixture fixed; fresh supplement pending",
+    "rust-clippy-final": "two test-only complexity failures refactored; fresh supplement pending"
+  },
+  "spa_initial_unit": "exit1: two fixture files/15 cases; fixture corrections followed by focused15passes reported by parent; final359-file aggregate pending",
+  "spa_initial_layout": "exit143; lead-directed detached repeat exit0,76files597tests; no thirdlayout claimed",
+  "spa_prepared_unit_files": 359,
+  "spa_prepared_browser_files": 76,
+  "serialized_compatibility_and_mount": "three drivers prepared; exact-source old/new3.35+mounted task+final startup execution pending",
+  "receipt_owner": "Final qualification/review receipts on #894; do not turn a selected batch into an all-gates pass"
+}

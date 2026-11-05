@@ -1,0 +1,25 @@
+{
+  "process_exit": 1,
+  "files": 357,
+  "failed_files": 2,
+  "failed_tests": 15,
+  "passed_tests": 5844,
+  "failed_names": [
+    "test/taskPageQueuedRepairOwnership.test.js > admits the same repair key for a real replacement session after rejecting the old queued owner before greeting",
+    "test/taskPageQueuedRepairOwnership.test.js > coalesces an admitted repair key through refusal and admits a genuine later retirement for the same owner",
+    "test/taskPageQueuedRepairOwnership.test.js > coalesces the same accepted repair key while its actual content basis capture is awaiting dispatch",
+    "test/taskPageQueuedRepairOwnership.test.js > recovers the queued repair through a real replacement greeting normal refresh",
+    "test/taskPendingContentRecovery.test.js > drops a committed deferred feed recovery after disposal",
+    "test/taskPendingContentRecovery.test.js > drops a committed deferred page recovery after disposal",
+    "test/taskPendingContentRecovery.test.js > drops a deferred feed settlement demand after real session replacement",
+    "test/taskPendingContentRecovery.test.js > drops a deferred page settlement demand after real session replacement",
+    "test/taskPendingContentRecovery.test.js > recovers a deferred feed read when real commit notification settles before its observer",
+    "test/taskPendingContentRecovery.test.js > recovers a deferred page read when real commit notification settles before its observer",
+    "test/taskPendingContentRecovery.test.js > recovers an actual deferred feed full read once its exact update settles without a cache hint",
+    "test/taskPendingContentRecovery.test.js > recovers an actual deferred page full read once its exact update settles without a cache hint",
+    "test/taskPendingContentRecovery.test.js > registers only the native page update task key through its RPC and existing refresh",
+    "test/taskPendingContentRecovery.test.js > waits for both exact mutations before one feed recovery after rejection",
+    "test/taskPendingContentRecovery.test.js > waits for both exact mutations before one page recovery after rejection"
+  ],
+  "log_sha256": "eb9a7a2a6f75d849c603c12518f28ed7bf1f2bec20fe50bf521a645c7e48869d"
+}

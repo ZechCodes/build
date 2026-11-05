@@ -433,3 +433,50 @@ They require separate cost disposition; passing gates and #890 acceptance do
 not waive them. The common fixture supplies forced-repair/startup and completed
 reopen timings and raw process HWM snapshots, not matched empty startup, RSS,
 allocator delta or storage measurements. Those limits remain explicit.
+
+## #894 lazy-read cutover and bounded open reads
+
+The [cutover protocol and retained startup records](task-query-cost/cutover-protocol.md)
+compare the original `e1c4b21f` warming program with the scoped lazy-read
+candidate, using the same frozen #869-derived fixture. It records bytes, all
+modeled RPCs, logical request time, actual fake-IndexedDB work and `taskFeed`
+publication for small, single-project and large profiles across cold, warm
+and retention-expired starts. Scoped small-account deterministic work falls;
+the old-bridge cells retain identical byte/RPC/logical/cache-callback counts.
+Logical RPC time is a fixture model, and fake-IDB wall time is a Node-process
+observation, not production network or disk latency. The earlier candidate
+record is explicitly attributed to its working-source manifest; final-head
+remeasurement and wire-3.35 old/new-SPA compatibility receipts remain separate.
+
+The [warmer → open-read map](task-query-cost/lazy-read-map.md) identifies the
+replacement reader for every removed fan-out and the current capability
+conditions that retain legacy behavior. The
+[producer/missed-event coverage map](task-query-cost/cutover-coverage.md)
+links supported writers, failure windows and recovery cases to exact tests.
+Neither source mapping nor a performance fixture substitutes for their
+targeted gate receipts; final validation and review receipts are recorded on
+#894 as those processes complete.
+
+The [append cohort](task-query-cost/append-protocol.md) isolates the three
+coalescer programs using a common current schema and fixture. Publication
+stays in the canonical write transaction. Changed rows fall **44 → 37**,
+executed statements **181 → 168**, and SELECT starts **127 → 122**, with
+complete per-table/per-SQL maps constant at histories 1, 60 and 4096.
+All six paired warm-wall processes exited 0, and all 87 observations per
+arm/history plus every round median are retained. The lead's disposition is
+**no measurable wall-clock change at this noise level**; the mixed medians
+do not establish an elapsed-time improvement or regression.
+
+The actual task endpoint probe
+`app::tests::tracker::long_task_open_reports_bounded_bytes_and_preserves_all_history_unread_counts`
+observes a 4096-entry task: result JSON falls **2,528,313 → 31,933 bytes**,
+with **one endpoint invocation in each mode**. The same debug warm observation
+is 445,602 → 23,195 µs. Those development measurements cover the endpoint
+invocation, not the whole mounted task view, its scoped snapshot/catch-up,
+transport framing, cache publication or paint. A separate frozen
+`taskOpenCost.test.js` driver counts all selected-task mount RPCs, response
+bytes, cache publications and first paint for 20/4096 entries × cold/warm;
+its matched exact-base/final-source four-case proof is pending execution.
+It precompletes device bootstrap and excludes read marks, reviews, user actions
+and push-subscription wire traffic, so even that result is a selected-task
+opener rather than whole-app startup.

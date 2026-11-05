@@ -1,0 +1,61 @@
+{
+  "clock": "warm in-process elapsed microseconds; median of three process medians",
+  "protocol": "three untimed warm-ups then 29 samples; history grows identically by 32 in each process",
+  "source": "coalescing-only baseline uses exact e1c4b21f journal/device/retention code; both arms use final schema and fixture",
+  "rows": [
+    {
+      "starting_history": 1,
+      "samples_per_arm": 87,
+      "before_rows": 44,
+      "after_rows": 37,
+      "base_round_medians_us": [
+        6729,
+        4675,
+        4508
+      ],
+      "base_median_us": 4675,
+      "candidate_round_medians_us": [
+        4508,
+        3877,
+        6013
+      ],
+      "candidate_median_us": 4508
+    },
+    {
+      "starting_history": 60,
+      "samples_per_arm": 87,
+      "before_rows": 44,
+      "after_rows": 37,
+      "base_round_medians_us": [
+        5504,
+        5562,
+        4926
+      ],
+      "base_median_us": 5504,
+      "candidate_round_medians_us": [
+        4974,
+        6726,
+        6396
+      ],
+      "candidate_median_us": 6396
+    },
+    {
+      "starting_history": 4096,
+      "samples_per_arm": 87,
+      "before_rows": 44,
+      "after_rows": 37,
+      "base_round_medians_us": [
+        29795,
+        26555,
+        27986
+      ],
+      "base_median_us": 27986,
+      "candidate_round_medians_us": [
+        27807,
+        25931,
+        29530
+      ],
+      "candidate_median_us": 27807
+    }
+  ]
+}

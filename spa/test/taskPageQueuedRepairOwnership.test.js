@@ -158,7 +158,14 @@ it("keeps the same repair key cached before replacement greeting and dispatches 
   expect(mounted.context.adapter).toBeNull();
   expect(document.querySelector(".task-page-title")?.textContent).toBe(row.title);
   expect(runtime.content.taskFullRefreshKey((await runtime.tracker.readTaskRecord(deviceId, projectId, taskId)).task)).toBe(mounted.key);
-  await greetSession(mounted.replacement, mounted.context);
+  // Release the real greeting authority without announcing an independent
+  // global refresh. The next case covers greetBridge's normal refresh path;
+  // this case isolates the same-key reader already waiting for negotiation.
+  const { selectAdapter } = await import("../src/core/bridgeApi/index.js");
+  const greeting = await mounted.replacement.session.call("session.hello");
+  const selection = selectAdapter(greeting);
+  runtime.contexts.adoptBridgeSelection(mounted.context, selection,
+    selection.create(mounted.replacement.session.call));
   await vi.waitFor(() => expect(mounted.replacement.gets).toHaveLength(1));
   mounted.replacement.gets[0].resolve(answer("Current negotiated repair"));
   await runtime.asks.at(-1);

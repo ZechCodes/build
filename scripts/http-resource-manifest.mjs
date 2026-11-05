@@ -10,6 +10,7 @@ const read = (path) => readFileSync(resolve(root, path), "utf8");
 const json = (path) => JSON.parse(read(path));
 const bytes = (n) => 4 * Math.ceil(n / 3) + 65536;
 const overrides = new Map([
+  ["secrets.create", 65536],
   ["tasks.attach", bytes(5 * 1048576)], ["thread.attach", bytes(5 * 1048576)],
   ["fs.uploadChunk", bytes(4 * 1048576)], ["fs.write", bytes(1048576)],
 ]);

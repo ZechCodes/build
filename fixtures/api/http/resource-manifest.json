@@ -96,6 +96,10 @@
       "run_git_action",
       "run_message",
       "run_request_changes",
+      "secrets_audit",
+      "secrets_create",
+      "secrets_list",
+      "secrets_revoke",
       "session_hello",
       "settings_get",
       "settings_set",
@@ -1710,6 +1714,82 @@
         "source": "bridge/src/api/v1/lifecycle.rs",
         "params": "RunRequestChangesParams",
         "result": "RunView"
+      }
+    },
+    {
+      "method": "secrets.audit",
+      "operationId": "secrets_audit",
+      "verb": "POST",
+      "path": "/v1/secrets/{secret_id}/audit-queries",
+      "pathParams": [
+        "secret_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/secrets.rs",
+        "params": "AuditParams",
+        "result": "AuditPage"
+      }
+    },
+    {
+      "method": "secrets.create",
+      "operationId": "secrets_create",
+      "verb": "POST",
+      "path": "/v1/secrets",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 65536,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/secrets.rs",
+        "params": "CreateParams",
+        "result": "SecretMetadata"
+      }
+    },
+    {
+      "method": "secrets.list",
+      "operationId": "secrets_list",
+      "verb": "POST",
+      "path": "/v1/secret-queries",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/secrets.rs",
+        "params": "ListParams",
+        "result": "MetadataPage"
+      }
+    },
+    {
+      "method": "secrets.revoke",
+      "operationId": "secrets_revoke",
+      "verb": "POST",
+      "path": "/v1/secrets/{secret_id}/revocations",
+      "pathParams": [
+        "secret_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/secrets.rs",
+        "params": "RevokeParams",
+        "result": "SecretMetadata"
       }
     },
     {

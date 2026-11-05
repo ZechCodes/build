@@ -74,6 +74,7 @@ use std::collections::BTreeSet;
 /// 3.33.0 completes leased durable device recovery (#995).
 /// 3.34.0 adds explicit device owner pins and live pooled session summaries (#997).
 /// 3.35.0 adds bounded task timelines, directory pages and file invalidation hints (#894).
+/// 3.36.0 adds sealed staged secrets and metadata-only attachment delivery (#1003).
 pub const API_VERSION: &str = "3.35.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
@@ -192,6 +193,19 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "workspaces.reclaimBranches",
 ];
 
+/// Known features and verbs withheld from greetings until the complete secrets
+/// UX and installed runtime CLI ship together. Slice F enables this set by
+/// moving its feature names into FEATURE_CAPABILITIES and removing this gate.
+pub const UNADVERTISED_CAPABILITIES: &[&str] = &[
+    "secrets.attachments",
+    "secrets.sealedUpload",
+    "secrets.metadataEvents",
+    "secrets.create",
+    "secrets.list",
+    "secrets.revoke",
+    "secrets.audit",
+];
+
 /// Everything this bridge can serve on a session, as exact method names and
 /// explicit feature names. Sorting and deduplication make the greeting stable.
 pub fn capabilities(qa_agent: bool) -> Vec<&'static str> {
@@ -201,7 +215,10 @@ pub fn capabilities(qa_agent: bool) -> Vec<&'static str> {
     if qa_agent {
         names.extend(QA_METHODS.iter().copied());
     }
-    names.into_iter().collect()
+    names
+        .into_iter()
+        .filter(|name| !UNADVERTISED_CAPABILITIES.contains(name))
+        .collect()
 }
 
 /// Why a verb refused, as the wire spells it (step 2.4). A closed enum: a new
@@ -450,6 +467,9 @@ impl ApiError {
     /// <thing>`), and `internal` for everything else — which a test counts,
     /// so the list shrinks over time.
     pub fn classify(message: String) -> ApiError {
+        if let Some(error) = secret_refusal(&message) {
+            return error;
+        }
         if let Some(error) = crate::app::AppState::decode_file_error(&message) {
             return error;
         }
@@ -527,6 +547,25 @@ impl From<String> for ApiError {
     fn from(message: String) -> ApiError {
         ApiError::internal(message)
     }
+}
+
+/// Secret work returns closed codes across the deferred boundary; never
+/// include decrypted payloads or storage diagnostics in public errors.
+fn secret_refusal(message: &str) -> Option<ApiError> {
+    let error = match message {
+        "secret_invalid" => ApiError::invalid_params(message),
+        "secret_conflict" => ApiError::conflict(message, None),
+        "secret_limit" => ApiError::busy(message),
+        "secret_unavailable"
+        | "secret_expired"
+        | "secret_revoked"
+        | "secret_clock_rollback"
+        | "secret_io"
+        | "secret_database"
+        | "unauthorized" => ApiError::unavailable(message),
+        _ => return None,
+    };
+    Some(error)
 }
 
 /// Review service errors cross the off-lock drain as strings, just like Git
@@ -633,6 +672,31 @@ mod tests {
                 "id": 2, "ok": false, "error": "destination exists",
                 "error_code": "already_exists", "retryable": false
             })
+        );
+    }
+
+    #[test]
+    fn deferred_secret_errors_keep_their_closed_public_classification() {
+        for (message, code) in [
+            ("secret_invalid", "invalid_params"),
+            ("secret_conflict", "conflict"),
+            ("secret_limit", "busy"),
+            ("secret_unavailable", "unavailable"),
+            ("secret_expired", "unavailable"),
+            ("secret_revoked", "unavailable"),
+            ("secret_clock_rollback", "unavailable"),
+            ("secret_io", "unavailable"),
+            ("secret_database", "unavailable"),
+            ("unauthorized", "unavailable"),
+        ] {
+            let error = ApiError::classify(message.into());
+            assert_eq!(error.code(), code, "{message}");
+            assert_eq!(error.message(), message);
+            assert_eq!(error.retryable(), message == "secret_limit");
+        }
+        assert_eq!(
+            ApiError::classify("secret_invalid: diagnostic".into()).code(),
+            "internal"
         );
     }
 

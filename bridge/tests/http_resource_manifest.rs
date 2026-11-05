@@ -100,5 +100,5 @@ fn retired_legacy_writes_keep_http_routes_for_structured_refusals() {
             "missing compatibility route {method}"
         );
     }
-    assert_eq!(manifest["operations"].as_array().unwrap().len(), 153);
+    assert_eq!(manifest["operations"].as_array().unwrap().len(), 157);
 }

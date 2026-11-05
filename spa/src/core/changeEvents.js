@@ -67,6 +67,7 @@ import { greetingVersion, PRE_ALPHA_API_VERSION, selectAdapter, SPA_API_RANGE } 
 import { rememberBridgeUpdateStatus } from "./bridgeUpdates.js";
 import { modelsChangedOn } from "./modelCatalog.js";
 import { harnessesChangedOn } from "./harnessInventoryEvents.js";
+import { secretsChangedOn } from "./secretMetadataEvents.js";
 import { rememberNeedsYouRule } from "./needsYouRule.js";
 import { rememberBranchDelete } from "./branchDeleteSupport.js";
 import { NO_REVIEW_SUPPORT, rememberReviewSupport } from "./taskReviewSupport.js";
@@ -111,6 +112,7 @@ const NO_CAPABILITIES = Object.freeze({
     listPaged: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false,
   }),
   compaction: Object.freeze({ harnessThresholds: false }),
+  secrets: Object.freeze({ attachments: false, sealedUpload: false, metadataEvents: false }),
   conversations: Object.freeze({ settings: false, reset: false }),
   github: Object.freeze({ repos: false }),
   messages: Object.freeze({ context: false }),
@@ -825,6 +827,10 @@ const DEVICE_EVENTS = new Map([
   ["models.changed", (_payload, deviceId) => modelsChangedOn(deviceId)],
   ["harnesses.changed", ({ revision }, deviceId) => harnessesChangedOn(deviceId, revision)],
   ["compaction.changed", (payload, deviceId) => refreshCompactionOn(deviceId, payload)],
+  ["secrets.changed", (payload, deviceId) => {
+    const state = bridgeFor(deviceId);
+    if (state?.current() && state.adapter?.capabilities.secrets?.metadataEvents) secretsChangedOn(deviceId, payload);
+  }],
 ]);
 
 function refreshCompactionOn(deviceId, event) {

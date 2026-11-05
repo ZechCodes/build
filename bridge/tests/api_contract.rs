@@ -10,6 +10,7 @@
 use build_bridge::api::v1;
 use build_bridge::api::{
     capabilities, API_VERSION, FEATURE_CAPABILITIES, LEGACY_METHODS, QA_METHODS,
+    UNADVERTISED_CAPABILITIES,
 };
 use build_bridge::changes;
 use serde_json::Value;
@@ -354,12 +355,13 @@ fn every_v1_method_has_a_fixture_and_every_fixture_names_a_served_method() {
 }
 
 #[test]
-fn every_fixture_verb_has_an_advertised_capability() {
+fn every_fixture_verb_has_an_advertised_or_explicitly_withheld_capability() {
     let advertised: BTreeSet<&str> = capabilities(true).into_iter().collect();
     for (method, _) in method_fixtures() {
         assert!(
-            advertised.contains(method.as_str()),
-            "{method}: fixture verb absent from session.hello capabilities"
+            advertised.contains(method.as_str())
+                || UNADVERTISED_CAPABILITIES.contains(&method.as_str()),
+            "{method}: fixture verb absent from advertised and withheld capabilities"
         );
     }
     let normal: BTreeSet<&str> = capabilities(false).into_iter().collect();
@@ -1353,6 +1355,50 @@ fn check_untyped_push(event: &Value, keys: &[&str]) {
     }
 }
 
+fn check_secret_metadata_event(event: &Value) {
+    let fields = match event["scope"].as_str().expect("secret grant scope") {
+        "project" => vec!["type", "scope", "project_id", "secret_ids", "revision"],
+        "agent" => {
+            assert_eq!(event["thread_id"], event["generation"]);
+            vec![
+                "type",
+                "scope",
+                "entity_id",
+                "conversation_id",
+                "thread_id",
+                "generation",
+                "secret_ids",
+                "revision",
+            ]
+        }
+        other => panic!("unknown secret scope {other}"),
+    };
+    let expected: BTreeSet<_> = fields.into_iter().collect();
+    let actual: BTreeSet<_> = event
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        actual, expected,
+        "secret events carry only IDs, revision and scope context"
+    );
+    for field in expected.difference(&BTreeSet::from(["secret_ids", "revision"])) {
+        assert!(event[*field]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+    }
+    assert!(event["revision"]
+        .as_u64()
+        .is_some_and(|revision| revision > 0));
+    let ids = event["secret_ids"].as_array().expect("bounded secret ids");
+    assert!(!ids.is_empty() && ids.len() <= 100);
+    assert!(ids
+        .iter()
+        .all(|id| id.as_str().is_some_and(|id| id.starts_with("sec_"))));
+}
+
 #[test]
 fn every_event_example_is_what_the_bridge_serialises() {
     let examples = event_examples();
@@ -1393,6 +1439,7 @@ fn every_event_example_is_what_the_bridge_serialises() {
                     "bridge update event is the status wire shape plus type"
                 );
             }
+            changes::SECRETS_CHANGED_EVENT => check_secret_metadata_event(event),
             changes::COMPACTION_CHANGED_EVENT => {
                 let scope = event["scope"].as_str().expect("scope");
                 assert!(["device", "project", "workspace", "conversation"].contains(&scope));
@@ -2370,5 +2417,35 @@ fn workspace_legacy_review_markers_survive_typed_serialization() {
         };
         assert_eq!(row["legacy_review"], true);
         assert!(row.get("active_review").is_none());
+    }
+}
+
+#[test]
+fn secrets_contract_is_known_but_withheld_until_the_complete_feature_ships() {
+    let registered: BTreeSet<_> = v1::methods().iter().map(|(name, _)| *name).collect();
+    let advertised: BTreeSet<_> = capabilities(true).into_iter().collect();
+    for method in [
+        "secrets.create",
+        "secrets.list",
+        "secrets.revoke",
+        "secrets.audit",
+    ] {
+        assert!(registered.contains(method), "missing {method}");
+        assert!(UNADVERTISED_CAPABILITIES.contains(&method));
+        assert!(
+            !advertised.contains(method),
+            "prematurely advertised {method}"
+        );
+    }
+    for feature in [
+        "secrets.attachments",
+        "secrets.sealedUpload",
+        "secrets.metadataEvents",
+    ] {
+        assert!(UNADVERTISED_CAPABILITIES.contains(&feature));
+        assert!(
+            !advertised.contains(feature),
+            "prematurely advertised {feature}"
+        );
     }
 }

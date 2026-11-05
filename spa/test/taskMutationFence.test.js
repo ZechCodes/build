@@ -81,7 +81,7 @@ it("matches the bridge's supported task write methods and excludes every task re
   const methods = [...effects.matchAll(/"(tasks\.[^"]+)"/g)].map((match) => match[1]);
   for (const method of new Set(methods)) expect(fence.isTaskMutationMethod(method)).toBe(writes.includes(`"${method}"`));
   for (const method of ["entity.seen", "entity.dismiss", "entity.mute", "project.delete"]) expect(fence.isTaskMutationMethod(method)).toBe(true);
-  for (const method of ["tasks.delete", "tasks.track", "tasks.dismiss", "tasks.unknown", "board.list", "thread.post"]) expect(fence.isTaskMutationMethod(method)).toBe(false);
+  for (const method of ["tasks.delete", "tasks.track", "tasks.dismiss", "tasks.unknown", "board.list", "thread.post", "secrets.create", "secrets.list", "secrets.revoke", "secrets.audit"]) expect(fence.isTaskMutationMethod(method)).toBe(false);
   for (const method of ["sync.head", "sync.snapshot", "sync.changes"]) expect(fence.isTaskMutationMethod(method)).toBe(false);
 });
 
@@ -193,3 +193,15 @@ it("cannot publish support from a greeting replaced before its cache transaction
   await vi.waitFor(async () => expect((await readCached(taskCountsSupportAddress(selected)))?.value).toEqual({ counts: false, everCounts: false }));
   expect(await readTaskCountsSupport(selected)).toBe(false);
 });
+
+// Vault and conversation metadata cannot invalidate task projections.
+it.each(["secrets.create", "secrets.list", "secrets.revoke", "secrets.audit"])(
+  "leaves task authority untouched for %s", async (method) => {
+    const before = fence.taskMutationEpoch(deviceId), pending = deferred();
+    expect(call(method, () => pending.promise)).toBe(pending.promise);
+    expect(fence.taskMutationEpoch(deviceId)).toBe(before);
+    expect(fence.taskMutationsPending(deviceId)).toBe(0);
+    pending.resolve({}); await pending.promise;
+    expect(fence.taskMutationEpoch(deviceId)).toBe(before);
+  },
+);

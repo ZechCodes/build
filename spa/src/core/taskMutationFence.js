@@ -1,6 +1,7 @@
 // Local read authority, deliberately independent of server query bases and the
 // durable write journal. A pending or settled mutation invalidates old reads;
 // listeners request authoritative refreshes without changing cached totals.
+// secrets.* writes vault/conversation metadata and stays outside this task set.
 const taskWrites = new Set([
   "tasks.assign", "tasks.attach", "tasks.close", "tasks.comment", "tasks.create",
   "tasks.read_through", "tasks.reopen", "tasks.unwatch", "tasks.update",

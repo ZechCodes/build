@@ -12094,6 +12094,587 @@
         }
       }
     },
+    "/v1/secrets/{secret_id}/audit-queries": {
+      "post": {
+        "operationId": "secrets_audit",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "secret_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Existing opaque selector; encoded as exactly one path segment."
+          },
+          {
+            "$ref": "#/components/parameters/session"
+          },
+          {
+            "$ref": "#/components/parameters/subscription"
+          },
+          {
+            "$ref": "#/components/parameters/requestId"
+          },
+          {
+            "$ref": "#/components/parameters/priority"
+          },
+          {
+            "$ref": "#/components/parameters/operationId"
+          },
+          {
+            "$ref": "#/components/parameters/after"
+          }
+        ],
+        "description": "Maps only to secrets.audit. Remaining JSON fields retain their existing semantics. Registered v1 parameters, including unknown fields, are validated by the existing typed registry. Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method! and v1_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
+        "x-build-method": "secrets.audit",
+        "x-build-contract": {
+          "source": "bridge/src/api/v1/secrets.rs",
+          "params": "AuditParams",
+          "result": "AuditPage",
+          "fixture": "fixtures/api/v1/secrets.audit.json"
+        },
+        "x-build-request-max-bytes": 1048576,
+        "x-build-response-max-bytes": 8388608,
+        "x-build-requires-events": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "x-build-schema-complete": false
+              },
+              "example": {
+                "scope": {
+                  "project_id": "project-synthetic",
+                  "stage": {
+                    "owner_id": "workspace-synthetic",
+                    "conversation_id": "agent-synthetic",
+                    "generation": "thread-synthetic",
+                    "draft_id": null
+                  }
+                },
+                "after": 0,
+                "limit": 100
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Final existing wire reply, including typed success/error outcome. No blanket durable acknowledgement or retry promise.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reply"
+                },
+                "examples": {
+                  "wire": {
+                    "value": {
+                      "id": "example",
+                      "ok": true,
+                      "result": {
+                        "events": [],
+                        "server_now": 1800000000,
+                        "next": null
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Http400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Http405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Http426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          }
+        }
+      }
+    },
+    "/v1/secrets": {
+      "post": {
+        "operationId": "secrets_create",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/session"
+          },
+          {
+            "$ref": "#/components/parameters/subscription"
+          },
+          {
+            "$ref": "#/components/parameters/requestId"
+          },
+          {
+            "$ref": "#/components/parameters/priority"
+          },
+          {
+            "$ref": "#/components/parameters/operationId"
+          },
+          {
+            "$ref": "#/components/parameters/after"
+          }
+        ],
+        "description": "Maps only to secrets.create. Remaining JSON fields retain their existing semantics. Registered v1 parameters, including unknown fields, are validated by the existing typed registry. Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method! and v1_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
+        "x-build-method": "secrets.create",
+        "x-build-contract": {
+          "source": "bridge/src/api/v1/secrets.rs",
+          "params": "CreateParams",
+          "result": "SecretMetadata",
+          "fixture": "fixtures/api/v1/secrets.create.json"
+        },
+        "x-build-request-max-bytes": 65536,
+        "x-build-response-max-bytes": 8388608,
+        "x-build-requires-events": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "x-build-schema-complete": false
+              },
+              "example": {
+                "request_id": "11111111-1111-4111-8111-111111111111",
+                "device_id": "device-synthetic",
+                "creator": "device_user",
+                "scope": {
+                  "owner_id": "workspace-synthetic",
+                  "conversation_id": "agent-synthetic",
+                  "generation": "thread-synthetic",
+                  "draft_id": null
+                },
+                "grant": {
+                  "scope": "project",
+                  "project_id": "project-synthetic"
+                },
+                "name": "SYNTHETIC_TOKEN",
+                "ttl_seconds": null,
+                "sealed_payload": "synthetic-sealed-payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Final existing wire reply, including typed success/error outcome. No blanket durable acknowledgement or retry promise.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reply"
+                },
+                "examples": {
+                  "wire": {
+                    "value": {
+                      "id": "example",
+                      "ok": true,
+                      "result": {
+                        "secret_id": "sec_22222222-2222-4222-8222-222222222222",
+                        "request_id": "11111111-1111-4111-8111-111111111111",
+                        "name": "SYNTHETIC_TOKEN",
+                        "ttl_seconds": null,
+                        "grant": {
+                          "scope": "project",
+                          "project_id": "project-synthetic"
+                        },
+                        "scope": {
+                          "owner_id": "workspace-synthetic",
+                          "conversation_id": "agent-synthetic",
+                          "generation": "thread-synthetic",
+                          "draft_id": null
+                        },
+                        "created_at": 1800000000,
+                        "attached_at": null,
+                        "expires_at": null,
+                        "revoked_at": null,
+                        "revision": 1,
+                        "status": "staged"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Http400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Http405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Http426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          }
+        }
+      }
+    },
+    "/v1/secret-queries": {
+      "post": {
+        "operationId": "secrets_list",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/session"
+          },
+          {
+            "$ref": "#/components/parameters/subscription"
+          },
+          {
+            "$ref": "#/components/parameters/requestId"
+          },
+          {
+            "$ref": "#/components/parameters/priority"
+          },
+          {
+            "$ref": "#/components/parameters/operationId"
+          },
+          {
+            "$ref": "#/components/parameters/after"
+          }
+        ],
+        "description": "Maps only to secrets.list. Remaining JSON fields retain their existing semantics. Registered v1 parameters, including unknown fields, are validated by the existing typed registry. Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method! and v1_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
+        "x-build-method": "secrets.list",
+        "x-build-contract": {
+          "source": "bridge/src/api/v1/secrets.rs",
+          "params": "ListParams",
+          "result": "MetadataPage",
+          "fixture": "fixtures/api/v1/secrets.list.json"
+        },
+        "x-build-request-max-bytes": 1048576,
+        "x-build-response-max-bytes": 8388608,
+        "x-build-requires-events": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "x-build-schema-complete": false
+              },
+              "example": {
+                "scope": {
+                  "project_id": "project-synthetic",
+                  "stage": {
+                    "owner_id": "workspace-synthetic",
+                    "conversation_id": "agent-synthetic",
+                    "generation": "thread-synthetic",
+                    "draft_id": null
+                  }
+                },
+                "secret_ids": [],
+                "request_ids": [
+                  "11111111-1111-4111-8111-111111111111"
+                ],
+                "after": null,
+                "limit": 100
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Final existing wire reply, including typed success/error outcome. No blanket durable acknowledgement or retry promise.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reply"
+                },
+                "examples": {
+                  "wire": {
+                    "value": {
+                      "id": "example",
+                      "ok": true,
+                      "result": {
+                        "secrets": [
+                          {
+                            "secret_id": "sec_22222222-2222-4222-8222-222222222222",
+                            "request_id": "11111111-1111-4111-8111-111111111111",
+                            "name": "SYNTHETIC_TOKEN",
+                            "ttl_seconds": null,
+                            "grant": {
+                              "scope": "project",
+                              "project_id": "project-synthetic"
+                            },
+                            "scope": {
+                              "owner_id": "workspace-synthetic",
+                              "conversation_id": "agent-synthetic",
+                              "generation": "thread-synthetic",
+                              "draft_id": null
+                            },
+                            "created_at": 1800000000,
+                            "attached_at": null,
+                            "expires_at": null,
+                            "revoked_at": null,
+                            "revision": 1,
+                            "status": "staged"
+                          }
+                        ],
+                        "server_now": 1800000000,
+                        "next": null
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Http400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Http405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Http426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          }
+        }
+      }
+    },
+    "/v1/secrets/{secret_id}/revocations": {
+      "post": {
+        "operationId": "secrets_revoke",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "secret_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Existing opaque selector; encoded as exactly one path segment."
+          },
+          {
+            "$ref": "#/components/parameters/session"
+          },
+          {
+            "$ref": "#/components/parameters/subscription"
+          },
+          {
+            "$ref": "#/components/parameters/requestId"
+          },
+          {
+            "$ref": "#/components/parameters/priority"
+          },
+          {
+            "$ref": "#/components/parameters/operationId"
+          },
+          {
+            "$ref": "#/components/parameters/after"
+          }
+        ],
+        "description": "Maps only to secrets.revoke. Remaining JSON fields retain their existing semantics. Registered v1 parameters, including unknown fields, are validated by the existing typed registry. Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method! and v1_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
+        "x-build-method": "secrets.revoke",
+        "x-build-contract": {
+          "source": "bridge/src/api/v1/secrets.rs",
+          "params": "RevokeParams",
+          "result": "SecretMetadata",
+          "fixture": "fixtures/api/v1/secrets.revoke.json"
+        },
+        "x-build-request-max-bytes": 1048576,
+        "x-build-response-max-bytes": 8388608,
+        "x-build-requires-events": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "x-build-schema-complete": false
+              },
+              "example": {
+                "scope": {
+                  "project_id": "project-synthetic",
+                  "stage": {
+                    "owner_id": "workspace-synthetic",
+                    "conversation_id": "agent-synthetic",
+                    "generation": "thread-synthetic",
+                    "draft_id": null
+                  }
+                },
+                "operation_id": "33333333-3333-4333-8333-333333333333"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Final existing wire reply, including typed success/error outcome. No blanket durable acknowledgement or retry promise.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reply"
+                },
+                "examples": {
+                  "wire": {
+                    "value": {
+                      "id": "example",
+                      "ok": true,
+                      "result": {
+                        "secret_id": "sec_22222222-2222-4222-8222-222222222222",
+                        "request_id": "11111111-1111-4111-8111-111111111111",
+                        "name": "SYNTHETIC_TOKEN",
+                        "ttl_seconds": null,
+                        "grant": {
+                          "scope": "project",
+                          "project_id": "project-synthetic"
+                        },
+                        "scope": {
+                          "owner_id": "workspace-synthetic",
+                          "conversation_id": "agent-synthetic",
+                          "generation": "thread-synthetic",
+                          "draft_id": null
+                        },
+                        "created_at": 1800000000,
+                        "attached_at": null,
+                        "expires_at": null,
+                        "revoked_at": 1800000010,
+                        "revision": 2,
+                        "status": "revoked"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Http400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Http405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Http426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          }
+        }
+      }
+    },
     "/v1/session-greetings": {
       "post": {
         "operationId": "session_hello",
@@ -12423,6 +13004,7 @@
                           "harnesses.changed",
                           "models.changed",
                           "rtc.diagnostics",
+                          "secrets.changed",
                           "writes.confirmed"
                         ],
                         "coalesce_window_ms": 250,
@@ -12436,7 +13018,8 @@
                             "files",
                             "terminals",
                             "tasks",
-                            "compaction.changed"
+                            "compaction.changed",
+                            "secrets.changed"
                           ],
                           "items": "bodies",
                           "batch_ms": {

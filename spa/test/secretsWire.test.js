@@ -17,6 +17,10 @@ it("keeps secret features off until the current greeting names each one", () => 
     expect(flags[feature]).toBe(true);
     expect(Object.values(flags).filter(Boolean)).toHaveLength(1);
   }
+  expect(v1.capabilitiesOf({
+    api_version: "3.34.0",
+    capabilities: ["secrets.attachments", "secrets.sealedUpload", "secrets.metadataEvents"],
+  }).secrets).toEqual({ attachments: false, sealedUpload: false, metadataEvents: false });
 });
 
 it("recognizes the metadata invalidation without treating it as a reply", () => {

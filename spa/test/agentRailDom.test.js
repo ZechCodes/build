@@ -1098,6 +1098,80 @@ describe("the rail over a machine that is asked nothing", () => {
   });
   const three = () => [agent(), agent({ id: "ag-2", ordinal: 2 }), agent({ id: "ag-3", ordinal: 3 })];
 
+  it("registers project and agent metadata scopes for an ordinary workspace rail", async () => {
+    payload = {
+      kind: "workspace", project_id: "p1", workspace_id: "ws-secrets", entity_id: "run-3",
+      agents: [agent({ conversation_id: "conversation-secrets", thread_id: "thread-secrets" })],
+      run: { run_id: "run-3", thread: { items: [], sessions: [] } },
+    };
+    const stops = [];
+    const secretMetadataCache = {
+      track: vi.fn(() => {
+        const stop = vi.fn();
+        stops.push(stop);
+        return stop;
+      }),
+    };
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-secrets", project_id: "p1", name: "Secrets", entity_id: "run-3" }],
+    });
+
+    await mount({
+      kind: "workspace", projectId: "p1", workspaceId: "ws-secrets", secretMetadataCache,
+      openAgentId: "ag-1", panelOpen: true,
+    });
+
+    expect(secretMetadataCache.track).toHaveBeenCalledWith({ projectId: "p1" }, expect.any(Object));
+    expect(secretMetadataCache.track).toHaveBeenCalledWith({
+      projectId: "p1", ownerId: "run-3", agentId: "ag-1",
+      conversationId: "conversation-secrets", generation: "thread-secrets", draftId: null,
+    }, expect.any(Object));
+
+    expect(railHost().querySelector('[data-bubble="project"]')).toBeNull();
+    railHost().querySelector(".rail-overview-toggle").click();
+    await vi.waitFor(() => expect(panel()?.querySelector(".rail-overview-list")).toBeTruthy());
+    expect(panel().querySelector(".rail-overview-up")).toBeNull();
+    expect(panel().querySelector("[data-overview-scope]")).toBeNull();
+    expect(panel().querySelector('[aria-label="Project agents"]')).toBeNull();
+    rail.dispose();
+    rail = null;
+    expect(stops).toHaveLength(2);
+    stops.forEach((stop) => expect(stop).toHaveBeenCalledOnce());
+  });
+
+  it("tracks a branch route's secret scopes without adding project overview UI", async () => {
+    payload = branchRow({
+      agents: [agent({ conversation_id: "conversation-branch", thread_id: "thread-branch" })],
+    });
+    const stops = [];
+    const secretMetadataCache = {
+      track: vi.fn(() => {
+        const stop = vi.fn();
+        stops.push(stop);
+        return stop;
+      }),
+    };
+
+    await mount({ secretMetadataCache, openAgentId: "ag-1", panelOpen: true });
+
+    expect(secretMetadataCache.track).toHaveBeenCalledWith({ projectId: "p1" }, expect.any(Object));
+    expect(secretMetadataCache.track).toHaveBeenCalledWith({
+      projectId: "p1", ownerId: "run-3", agentId: "ag-1",
+      conversationId: "conversation-branch", generation: "thread-branch", draftId: null,
+    }, expect.any(Object));
+    railHost().querySelector(".rail-overview-toggle").click();
+    await vi.waitFor(() => expect(panel()?.querySelector(".rail-overview-list")).toBeTruthy());
+    await vi.waitFor(() => expect([...panel().querySelectorAll(".rail-overview-section")]
+      .map((section) => section.getAttribute("aria-label"))).toEqual(["Agents"]));
+    expect(panel().querySelector(".rail-overview-up")).toBeNull();
+    expect(panel().querySelector("[data-overview-scope]")).toBeNull();
+    rail.dispose();
+    rail = null;
+    expect(stops).toHaveLength(2);
+    stops.forEach((stop) => expect(stop).toHaveBeenCalledOnce());
+  });
+
   it("paints the agents and the conversation the disk holds, with no context live at all", async () => {
     payload = branchRow({ agents: three(), run: { run_id: "run-3", thread: { items: [said(1, "what was said")] } } });
     // Nothing is answering: no device session, and every call left hanging.

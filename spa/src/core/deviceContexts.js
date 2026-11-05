@@ -25,6 +25,7 @@ import { deviceWriteOperations } from "./writeOperationRuntime.js";
 import { resetTaskMutationFences, retireTaskMutationFence, retargetTaskMutationFence,
   wrapTaskMutationCall } from "./taskMutationFence.js";
 import { rememberTaskCountsSupport } from "./taskCountsSupport.js";
+import { createSecretMetadataCache, secretFeaturesAvailable } from "./secretMetadataCache.js";
 
 const contexts = new Map(); // deviceId → context, in the order they were adopted
 const deviceLifecycles = createDeviceLifecycles();
@@ -173,6 +174,7 @@ function createDeviceContext(deviceId) {
     rpc: null, // asking this machine; stood up below, over the context itself
     cacheScope: scopeFor(deviceId),
     chatRepository: null,
+    secretMetadataCache: null,
     writeOperations: deviceWriteOperations(deviceId),
     adapter: null, // the API adapter this bridge's greeting installed, or null
     apiVersion: null, // the `api_version` it greeted with
@@ -209,6 +211,12 @@ function createDeviceContext(deviceId) {
     whenGreeted: (dispatch) => whenGreeted(context, dispatch),
   }));
   contexts.set(deviceId, context);
+  context.secretMetadataCache = createSecretMetadataCache({
+    deviceId,
+    call: (...asked) => context.rpc(...asked),
+    capabilities: () => context.adapter?.capabilities?.secrets || {},
+    active: context.active,
+  });
   return context;
 }
 
@@ -505,7 +513,20 @@ function bindRepository(context, call) {
     scope: context.cacheScope,
     call,
     viewingContext: App.viewingContext,
+    dispatchPost: (post) => dispatchChatPost(context, post),
   });
+}
+
+async function dispatchChatPost(context, post) {
+  if (!post.hasSecrets) return post.send();
+  const request = await whenGreeted(context, () => {
+    if (!secretFeaturesAvailable(context.adapter?.capabilities?.secrets)) {
+      throw new ApiError("unknown_method", "This bridge cannot attach staged secrets");
+    }
+    return post.send(context.rpc);
+  });
+  if (!request) throw new Error(deviceAwayMark(context));
+  return request.sent;
 }
 
 /** Retire a device for good: its controllers and drafts go, its rows leave the
@@ -522,6 +543,7 @@ export function retireDeviceContext(deviceId) {
   contexts.delete(deviceId);
   retireTaskMutationFence(deviceId);
   deviceEras.set(deviceId, (deviceEras.get(deviceId) || 0) + 1);
+  context.secretMetadataCache?.dispose();
   context.chatRepository?.dispose();
   context.disposeModelCatalog?.();
   dropFeedDevice(deviceId);

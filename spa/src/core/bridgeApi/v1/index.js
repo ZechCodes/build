@@ -142,6 +142,15 @@ function namesOf(greeting, version) {
   return new Set(Array.isArray(greeting.capabilities) ? greeting.capabilities : []);
 }
 
+function secretCapabilities(names, version) {
+  const supported = satisfies(version, ">=3.36.0 <4.0.0");
+  return {
+    attachments: supported && names.has("secrets.attachments"),
+    sealedUpload: supported && names.has("secrets.sealedUpload"),
+    metadataEvents: supported && names.has("secrets.metadataEvents"),
+  };
+}
+
 /** The existing surface-facing flags, selected independently by name. Unknown
  *  names never become flags. Subscription kinds and push event names continue
  *  to come from their own advertised lists. */
@@ -217,11 +226,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       bodyPrecondition: names.has("tasks.bodyPrecondition"),
       waitingOn: names.has("tasks.waitingOn"),
     },
-    secrets: {
-      attachments: names.has("secrets.attachments"),
-      sealedUpload: names.has("secrets.sealedUpload"),
-      metadataEvents: names.has("secrets.metadataEvents"),
-    },
+    secrets: secretCapabilities(names, version),
     compaction: { harnessThresholds: names.has("compaction.harnessThresholds") },
     conversations: { settings: names.has("conversations.settings"), reset: names.has("conversation.reset") },
     github: { repos: names.has("github.repos") },

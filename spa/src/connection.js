@@ -851,6 +851,7 @@ export function greetLiveBridge(context, {
       // milliseconds away.
       releaseDeferredAttachments(session.deviceId, repository);
       if (greetingAuthority.stands()) void repository?.resolveUncertainPosts();
+      if (greetingAuthority.stands()) void context.secretMetadataCache?.refreshTracked().catch(() => {});
       void refreshBridgeUpdateStatus(session.deviceId, session.call, isCurrent).catch(() => {});
     }
     return settled;

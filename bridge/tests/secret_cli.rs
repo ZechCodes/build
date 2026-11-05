@@ -144,6 +144,7 @@ fn both_facades_share_the_runtime_contract() {
                 cmd
             };
             cmd.env_clear()
+                .current_dir(root.path())
                 .env("PATH", "")
                 .env(
                     "PYTHONPATH",

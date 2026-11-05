@@ -1,0 +1,194 @@
+[
+  {
+    "historyLength": 20,
+    "start": "cold",
+    "before": {
+      "schema": "task-open-v1",
+      "variant": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+      "historyLength": 20,
+      "start": "cold",
+      "rpcCount": 6,
+      "byMethod": {
+        "sync.snapshot": 1,
+        "sync.changes": 4,
+        "tasks.get": 1
+      },
+      "requestBytes": 605,
+      "responseBytes": 11676,
+      "firstPaintMs": 255.541606,
+      "firstDataPublicationMs": 74.840035,
+      "dataPublications": 2,
+      "cachedPaintBeforeReplies": false,
+      "idbCallbacks": 248,
+      "cachedTimelineRows": 20,
+      "wallMs": 296.800239,
+      "measurement": "real selected-task mount + scope owner; precompleted device bootstrap; mocked transport/greeting/push subscriptions; read marks/reviews/actions excluded"
+    },
+    "after": {
+      "schema": "task-open-v1",
+      "variant": "907ae03e33c2bf39b108d721a3cff72a9ce3a8d6",
+      "historyLength": 20,
+      "start": "cold",
+      "rpcCount": 6,
+      "byMethod": {
+        "sync.snapshot": 1,
+        "sync.changes": 4,
+        "tasks.get": 1
+      },
+      "requestBytes": 638,
+      "responseBytes": 11788,
+      "firstPaintMs": 249.635209,
+      "firstDataPublicationMs": 73.903752,
+      "dataPublications": 2,
+      "cachedPaintBeforeReplies": false,
+      "idbCallbacks": 248,
+      "cachedTimelineRows": 20,
+      "wallMs": 291.4752,
+      "measurement": "real selected-task mount + scope owner; precompleted device bootstrap; mocked transport/greeting/push subscriptions; read marks/reviews/actions excluded"
+    }
+  },
+  {
+    "historyLength": 20,
+    "start": "warm",
+    "before": {
+      "schema": "task-open-v1",
+      "variant": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+      "historyLength": 20,
+      "start": "warm",
+      "rpcCount": 7,
+      "byMethod": {
+        "sync.snapshot": 1,
+        "tasks.get": 2,
+        "sync.changes": 4
+      },
+      "requestBytes": 665,
+      "responseBytes": 16993,
+      "firstPaintMs": 84.136067,
+      "firstDataPublicationMs": 138.112673,
+      "dataPublications": 3,
+      "cachedPaintBeforeReplies": true,
+      "idbCallbacks": 273,
+      "cachedTimelineRows": 20,
+      "wallMs": 184.277054,
+      "measurement": "real selected-task mount + scope owner; precompleted device bootstrap; mocked transport/greeting/push subscriptions; read marks/reviews/actions excluded"
+    },
+    "after": {
+      "schema": "task-open-v1",
+      "variant": "907ae03e33c2bf39b108d721a3cff72a9ce3a8d6",
+      "historyLength": 20,
+      "start": "warm",
+      "rpcCount": 7,
+      "byMethod": {
+        "sync.snapshot": 1,
+        "tasks.get": 2,
+        "sync.changes": 4
+      },
+      "requestBytes": 731,
+      "responseBytes": 17217,
+      "firstPaintMs": 84.703918,
+      "firstDataPublicationMs": 137.868106,
+      "dataPublications": 3,
+      "cachedPaintBeforeReplies": true,
+      "idbCallbacks": 273,
+      "cachedTimelineRows": 20,
+      "wallMs": 181.858214,
+      "measurement": "real selected-task mount + scope owner; precompleted device bootstrap; mocked transport/greeting/push subscriptions; read marks/reviews/actions excluded"
+    }
+  },
+  {
+    "historyLength": 4096,
+    "start": "cold",
+    "before": {
+      "schema": "task-open-v1",
+      "variant": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+      "historyLength": 4096,
+      "start": "cold",
+      "rpcCount": 6,
+      "byMethod": {
+        "sync.snapshot": 1,
+        "sync.changes": 4,
+        "tasks.get": 1
+      },
+      "requestBytes": 605,
+      "responseBytes": 1000235,
+      "firstPaintMs": 217.926424,
+      "firstDataPublicationMs": 55.818559,
+      "dataPublications": 2,
+      "cachedPaintBeforeReplies": false,
+      "idbCallbacks": 248,
+      "cachedTimelineRows": 50,
+      "wallMs": 264.465473,
+      "measurement": "real selected-task mount + scope owner; precompleted device bootstrap; mocked transport/greeting/push subscriptions; read marks/reviews/actions excluded"
+    },
+    "after": {
+      "schema": "task-open-v1",
+      "variant": "907ae03e33c2bf39b108d721a3cff72a9ce3a8d6",
+      "historyLength": 4096,
+      "start": "cold",
+      "rpcCount": 6,
+      "byMethod": {
+        "sync.snapshot": 1,
+        "sync.changes": 4,
+        "tasks.get": 1
+      },
+      "requestBytes": 638,
+      "responseBytes": 26390,
+      "firstPaintMs": 214.324677,
+      "firstDataPublicationMs": 56.693924,
+      "dataPublications": 2,
+      "cachedPaintBeforeReplies": false,
+      "idbCallbacks": 248,
+      "cachedTimelineRows": 50,
+      "wallMs": 288.468163,
+      "measurement": "real selected-task mount + scope owner; precompleted device bootstrap; mocked transport/greeting/push subscriptions; read marks/reviews/actions excluded"
+    }
+  },
+  {
+    "historyLength": 4096,
+    "start": "warm",
+    "before": {
+      "schema": "task-open-v1",
+      "variant": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+      "historyLength": 4096,
+      "start": "warm",
+      "rpcCount": 7,
+      "byMethod": {
+        "sync.snapshot": 1,
+        "tasks.get": 2,
+        "sync.changes": 4
+      },
+      "requestBytes": 665,
+      "responseBytes": 1986810,
+      "firstPaintMs": 145.531443,
+      "firstDataPublicationMs": 203.201525,
+      "dataPublications": 3,
+      "cachedPaintBeforeReplies": true,
+      "idbCallbacks": 273,
+      "cachedTimelineRows": 50,
+      "wallMs": 271.803432,
+      "measurement": "real selected-task mount + scope owner; precompleted device bootstrap; mocked transport/greeting/push subscriptions; read marks/reviews/actions excluded"
+    },
+    "after": {
+      "schema": "task-open-v1",
+      "variant": "907ae03e33c2bf39b108d721a3cff72a9ce3a8d6",
+      "historyLength": 4096,
+      "start": "warm",
+      "rpcCount": 7,
+      "byMethod": {
+        "sync.snapshot": 1,
+        "tasks.get": 2,
+        "sync.changes": 4
+      },
+      "requestBytes": 731,
+      "responseBytes": 39120,
+      "firstPaintMs": 436.967787,
+      "firstDataPublicationMs": 504.887191,
+      "dataPublications": 3,
+      "cachedPaintBeforeReplies": true,
+      "idbCallbacks": 273,
+      "cachedTimelineRows": 50,
+      "wallMs": 946.321986,
+      "measurement": "real selected-task mount + scope owner; precompleted device bootstrap; mocked transport/greeting/push subscriptions; read marks/reviews/actions excluded"
+    }
+  }
+]

@@ -1,0 +1,34 @@
+{
+  "head": "50d4a264726cc866160e3a360afdb65345842767",
+  "controls": [
+    {
+      "event": "behavioral_negative_control_confirmed",
+      "label": "statement-cache32",
+      "test": "store::tests::task_summaries::cache::repeated_metadata_and_comment_writes_reuse_the_projection_program",
+      "exit_code": 101,
+      "head": "50d4a264726cc866160e3a360afdb65345842767"
+    },
+    {
+      "event": "behavioral_negative_control_confirmed",
+      "label": "files-hints-root",
+      "test": "changes::subscriptions::files_hints_stay_root_free_when_a_legacy_subscriber_needs_the_same_root",
+      "exit_code": 101,
+      "head": "50d4a264726cc866160e3a360afdb65345842767"
+    }
+  ],
+  "restoration": {
+    "event": "restoration_complete",
+    "failure": null,
+    "restoration_failures": [],
+    "exit_code": 0,
+    "head": "50d4a264726cc866160e3a360afdb65345842767"
+  },
+  "files": {
+    "commands.jsonl": "02f71657afd16ef29c494aea85ea2855c7468289ae5487e7121417c287cdda59",
+    "statement-cache32.log": "b1c33648550a13457774e26bf4e00952ca1d76dec565416035d18c6695cba166",
+    "files-hints-root.log": "ba7ded3968dfd9174f2a826f24a19bc9dcfc4661ef12764942ec866b7f74961e"
+  },
+  "interpretation": "Both deliberate negative variants fail their exact behavioral tests with process101. Mandatory copy/touch/cmp restores and HEAD source comparison all exit0; orchestration exits0. Ordinary restored final gates recorded separately.",
+  "raw_log_storage": "../../raw-log-storage.json",
+  "raw_log_storage_note": "Raw .log path/hash entries identify the original decoded bytes. These logs travel as lossless .log.json wrappers indexed by raw-log-storage; original plain bytes are not normalized."
+}

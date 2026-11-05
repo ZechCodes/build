@@ -1,0 +1,5 @@
+{
+  "original_path": "docs/task-query-cost/cutover-final/task-open-candidate-spa.log",
+  "sha256": "cc4bfd97c6cc2393418eadc0ab238b7fb7182d282e80e05514bd76e25058ce84",
+  "raw_utf8": "\n RUN  v4.1.11 /home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa\n\n\n Test Files  1 passed (1)\n      Tests  4 passed (4)\n   Start at  21:15:03\n   Duration  6.82s (transform 2.93s, setup 97ms, import 90ms, tests 5.24s, environment 1.18s)\n\n"
+}

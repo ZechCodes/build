@@ -4,6 +4,7 @@ import { supportsDeviceSync } from "../src/core/deviceSyncSupport.js";
 
 const fake = vi.hoisted(() => ({ owners: new Set(), wake: vi.fn() }));
 vi.mock("../src/core/scopedSyncRuntime.js", () => ({
+  lazyViewReadsEnabled: () => false,
   deviceScopedSyncOwns: (deviceId) => fake.owners.has(deviceId),
   wakeScopedSync: (...args) => fake.wake(...args),
 }));

@@ -1,12 +1,13 @@
 import { taskSyncScope } from "./scopedSyncRegistry.js";
-import { scopedSyncOwns, wakeScopedSync } from "./scopedSyncRuntime.js";
+import { lazyViewReadsEnabled, scopedSyncOwns, wakeScopedSync } from "./scopedSyncRuntime.js";
 // Cached task details for list and Dashboard attention. The list supplies the
 // task ids and their update stamps; the cache supplies the task and timeline.
 // Wire answers only write records. Cache announcements are the sole path by
 // which a fetched detail reaches a reader.
 
 import { readCached, readCachedMany, recordWriteOf, subscribeCache } from "./localCache.js";
-import { TRACKER_TASK_KIND, taskAddress, taskRecord, writeTaskRecord, captureTaskDetailRead } from "./trackerCache.js";
+import { TRACKER_TASK_KIND, taskAddress, writeTaskRecord, captureTaskDetailRead } from "./trackerCache.js";
+import { requestTaskDetail, taskDetailRecord } from "./taskTimelinePages.js";
 import { changedSince } from "./trackerModel.js";
 import { trailingRead } from "./trailingRead.js";
 import { deviceSession } from "./deviceReconnect.js";
@@ -94,7 +95,7 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
     if (answer?.task?.id !== id) return;
     // The transaction selects ordinary content and independent read/watch/PR
     // families separately, retaining newer content without dropping new facts.
-    await writeTaskRecord(deviceId, projectId, id, taskRecord(answer?.task, answer?.timeline), {
+    await writeTaskRecord(deviceId, projectId, id, taskDetailRecord(answer), {
       detailBasis: basis.detailBasis, contentRead: basis.contentRead,
       accept: acceptsRead, onOrdinaryDeferred: () => deferRead(id, acceptsRead),
     });
@@ -114,20 +115,24 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
       await wakeScopedSync(deviceId, (scope) => scope.kind === "task" && scope.task_id === id);
       return;
     }
+    if (lazyViewReadsEnabled(deviceId)) return;
     if (!acceptsQueuedRead(id)) return;
     const version = versionOf(taskForRead(id));
     const context = contextFor(deviceId), identity = deviceContextIdentity(deviceId), session = deviceSession(deviceId);
     const acceptsOwner = () => !disposed && contextFor(deviceId) === context && deviceContextIdentity(deviceId) === identity
       && deviceSession(deviceId) === session && (!context || context.active())
-      && !scopedSyncOwns(deviceId, taskSyncScope(id));
+      && !lazyViewReadsEnabled(deviceId) && !scopedSyncOwns(deviceId, taskSyncScope(id));
     try {
       const [detailBasis, contentRead] = await Promise.all([
         captureTaskDetailRead(deviceId, projectId, id),
         captureTaskContentRead(address(id), { revalidate: "full" }),
       ]);
       if (!acceptsOwner() || !stillWanted(id, version)) return;
-      const answer = await callRpc("tasks.get", { task_id: id });
-      await writeAnswer(id, answer, { detailBasis, contentRead }, () => acceptsOwner() && stillWanted(id, version));
+      const request = await requestTaskDetail({ deviceId, taskId: id, callRpc,
+        active: () => acceptsOwner() && stillWanted(id, version) });
+      if (!request?.accept()) return;
+      await writeAnswer(id, request.answer, { detailBasis, contentRead },
+        () => request.accept() && acceptsOwner() && stillWanted(id, version));
     } catch {
       // The list remains useful offline. A later list version can retry.
     }
@@ -187,7 +192,7 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
   });
 
   function queueIfBehind(id, detail) {
-    if (!callRpc) return;
+    if (!callRpc || lazyViewReadsEnabled(deviceId)) return;
     const task = listed.get(id);
     if (refreshRequested.has(id)) {
       pending.set(id, versionOf(taskForRead(id)));

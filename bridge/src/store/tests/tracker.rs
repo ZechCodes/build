@@ -11,6 +11,9 @@ use crate::tracker::{
 const PROJECT: &str = "/repo";
 const OTHER_PROJECT: &str = "/other-repo";
 
+#[path = "tracker_timeline.rs"]
+mod timeline;
+
 fn drafted(title: &str) -> Task {
     Task::drafted(PROJECT, title, Actor::User, NOW)
 }

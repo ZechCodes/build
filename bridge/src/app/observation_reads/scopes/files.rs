@@ -1,6 +1,6 @@
 use super::*;
 use crate::app::fs::{
-    directory_listing, host_directory_list, read_scoped_file, FileScope, MOVED_SOURCE,
+    directory_read, host_directory_list, read_scoped_file, FileScope, MOVED_SOURCE,
 };
 use crate::app::TermScope;
 
@@ -31,10 +31,7 @@ impl ScopeReadContext {
                 None => AppState::canonical_root(&root),
             };
             if tree {
-                directory_listing(
-                    &root,
-                    params.get("path").and_then(Value::as_str).unwrap_or(""),
-                )
+                directory_read(&root, &params)
             } else {
                 read_scoped_file(&root, &params)
             }

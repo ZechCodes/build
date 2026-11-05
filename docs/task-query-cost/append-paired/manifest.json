@@ -1,0 +1,35 @@
+{
+  "source_protocol": "coalescing-only baseline uses exact e1c4b21f journal/device/retention code; both arms use final schema and fixture",
+  "source_before_three_paths": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+  "coalescer_paths": [
+    "bridge/src/store/sync/journal.rs",
+    "bridge/src/store/sync/device.rs",
+    "bridge/src/store/sync/retention.rs"
+  ],
+  "profile": "debug test binary; matching current schema and append fixture in both arms",
+  "sample_count": 522,
+  "samples_per_arm_per_length": 87,
+  "all_process_exit_codes": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "files": {
+    "runs.json": "e9e87552743d4b010cd777ee95a4b08d7cf3200728eca533e390df748eb13650",
+    "summary.json": "57e5ad8b1a7414566fc8b48b04fbb7f92d6624e4045d414f3e9d8a888080f757",
+    "comparison.md": "3dfa2ba1cf99d3367d4b284f8326dd7107a0848dc1dc35b341464a4b2ffee12c",
+    "round-1-base.log": "0da4a32d5df7cc16d9b10e052b394e839319737776321e2581113699328c6cb0",
+    "round-1-candidate.log": "1433c01f68b58c50e0cbe78402b2d4c479cf489756bc632954006e8f64e2258e",
+    "round-2-candidate.log": "7c57d38ebc704fddf0d24e26b2106e8b8d73acfc7750a04893efcc3826b38f42",
+    "round-2-base.log": "9edee75baff4b023e1767f5901b6d9fec0fda8f16d4a1513027291b613ce2d4a",
+    "round-3-base.log": "888ea1bd1fff5b547eefe1a4de8f79b256f8cd2fba582dfdf54ee0e14f12284a",
+    "round-3-candidate.log": "e1f635f73744bcc377cefc5fd9d03067523afd1b51c141f0df8840622d4c9344",
+    "samples.json": "b02ac45026ee90bd63fbfdfdc1932f4305af4d473b8993b33651270ac7d7c135"
+  },
+  "disposition": "Lead op936: no measurable wall-clock change at this noise level; no improvement or regression claim; deterministic changed rows44 ->37.",
+  "raw_log_storage": "../raw-log-storage.json",
+  "raw_log_storage_note": "Raw .log path/hash entries identify the original decoded bytes. These logs travel as lossless .log.json wrappers indexed by raw-log-storage; original plain bytes are not normalized."
+}

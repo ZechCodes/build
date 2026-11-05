@@ -1,0 +1,88 @@
+{
+  "source": "50d4a264726cc866160e3a360afdb65345842767",
+  "baseline_coalescer_base": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+  "scope": "Three exact old coalescer paths plus original44-row expectations, common50d Store/schema/128cache and executed-statement observer. Not whole-old/new Store binary comparison.",
+  "actual_process_receipts": [
+    {
+      "event": "complete",
+      "label": "append-baseline-statements",
+      "argv": [
+        "nice",
+        "-n",
+        "10",
+        "/usr/bin/python3",
+        "/home/zech/Projects/.agent-scratch/894/frozen-append-statements-50d.py"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0,
+      "head": "50d4a264726cc866160e3a360afdb65345842767"
+    },
+    {
+      "event": "complete",
+      "label": "store-tests",
+      "argv": [
+        "nice",
+        "-n",
+        "10",
+        "cargo",
+        "test",
+        "--lib",
+        "store::tests::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+      "exit_code": 0,
+      "head": "50d4a264726cc866160e3a360afdb65345842767"
+    }
+  ],
+  "parser_exit_code": 0,
+  "restoration": {
+    "event": "restoration_complete",
+    "failure": null,
+    "restoration_failures": [],
+    "exit_code": 0
+  },
+  "baseline_log_sha256": "dead8220583cb8a4e2b8d3100f5ae6fcd2fa1eb5343ec4f80efc8ad472e73122",
+  "candidate_full_log": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/store-tests.log",
+  "candidate_full_log_sha256": "21d9fc9681f792358d79f588cae25af193da7afd0ffa0517d133c6de17898681",
+  "baseline_counter_sanity_exit_code": 0,
+  "source_copies_sha256": {
+    "bridge/src/store/sync/journal.rs": "6b125a2750ba62daa5a33acac820ba56ac8036314c4dc2cd5eebc633144fbe64",
+    "bridge/src/store/sync/device.rs": "4755fa067597360ee3ea970a9b5ded2c7878eb4b06e8cbfdedbb850e92334119",
+    "bridge/src/store/sync/retention.rs": "0b50853baf443664bb5e411c38849af59b1943f8564b9d377839d28989329fee",
+    "bridge/src/store/tests/conversations.rs": "93ccd6e14ddd7486c2d666d501e00ea4f7beffb58e270486c125018c54c40d2d"
+  },
+  "baseline_coalescer_sha256": {
+    "bridge/src/store/sync/journal.rs": "f994d945fbfa68fb35f0dbee88e2126c2d72a12a538a52946ac74512998e87bb",
+    "bridge/src/store/sync/device.rs": "89f0be14604abe8db0b11c50f4cc29901d2c18b737f4cdf324dbc99767a1b359",
+    "bridge/src/store/sync/retention.rs": "4f9034042bcfdbfb869d98f94c39c944c482df0380843d73d49c7dc93aad4bcb"
+  },
+  "baseline_fixture_sha256": "82b052c170727c23ce6ed690ec6db0203239cf15b58e8462b31c543a553c7567",
+  "files": {
+    "comparison.json": "d3d452bbf70b863e2f1c2dacb11c002090d371dd22973d22dc035397e6ff758f",
+    "comparison.md": "a56002060c5894174b7e33aed09855946176429841c2e420672815aa29fa39a0",
+    "baseline.log": "dead8220583cb8a4e2b8d3100f5ae6fcd2fa1eb5343ec4f80efc8ad472e73122",
+    "baseline-commands.jsonl": "a34846c51de18ecf6d06a5a1469a34de86d8f8bebbf440618458e074e3947465",
+    "counter-sanity.log": "a13575dd8f752c6a5a441e37d894ef75aed25c036773398388fa0b9f5eb04558",
+    "candidate-observations.log": "2cb6b68299c2fcd539524b6b63fd9f450d31723f0f3859b1e9a761086ff96cde"
+  },
+  "baseline_counter_sanity_receipt": {
+    "event": "complete",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "/home/zech/Projects/.agent-scratch/894/frozen-append-statements-50d-tests",
+      "store::tests::conversations::write_cost::execution_cost_counts_each_cached_statement_execution_instead_of_preparations",
+      "--exact",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+    "exit_code": 0
+  },
+  "raw_log_storage": "../raw-log-storage.json",
+  "raw_log_storage_note": "Raw .log path/hash entries identify the original decoded bytes. These logs travel as lossless .log.json wrappers indexed by raw-log-storage; original plain bytes are not normalized."
+}

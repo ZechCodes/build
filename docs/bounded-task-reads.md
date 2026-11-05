@@ -173,3 +173,42 @@ carrier reads separately.
 | `reset_conversation` | Identity refresh after replacing complete agent skeletons. Receipt acknowledgments/delivery-status and retention mutate only transcript fields, which do not enter the identity projection. |
 | Project task-history deletion | Capture tasks and dependency neighbors before deletion; remove cards, facts and memberships, then refresh surviving counterpart counts. |
 | Legacy import and startup migrations | Runtime import uses the common entity producers; task rename and old agent migrations precede projection backfill. Explicit import/repair hooks cover keyed edits, deletion and reparenting. |
+
+## Bounded task detail and history (wire 3.35)
+
+`tasks.timelinePaged` announces the explicit `tasks.get` opt-in
+`{task_id, timeline_paged:true}`. It returns the full task body and the newest
+50 timeline entries, ascending, with `has_more` and opaque `next_cursor`.
+`limit` accepts 1–100. Pass the cursor as `before` to read the next older
+window; no background continuation is implied. Without this opt-in, the
+legacy full-timeline response has exactly its previous shape.
+
+An older-comment link can request `{task_id, timeline_paged:true,
+timeline_anchor:entryId}`. The result includes that entry and its older context
+without walking through every newer page. `before` and `timeline_anchor` are
+mutually exclusive. Cursor tokens authenticate the task, persistent journal
+incarnation and `(timestamp,id,type)` position. Malformed, tampered, foreign-task
+and foreign-incarnation tokens are refused as `invalid_params`.
+These cursor refusals carry `details.reason: "task_timeline_cursor_invalid"`;
+an Older read can refresh its cached head silently. Other read and data failures
+retain their ordinary errors.
+
+Scoped `task_head.row` uses the same page producer, continuation and
+`timeline_incarnation` as the detail RPC. `timeline_read_through` is the highest
+canonical unread-relevant entry ID across all history, including entries outside
+the timestamp window. Task unread/mention counts, activity and Done time come
+from the maintained summaries. The nullable `task.last_reviewed_snapshot_id`
+retains the last user opinion even outside the window; an additive partial
+expression index makes that a point seek instead of a history scan.
+
+Each timeline row is capped at 64 KiB and the encoded timeline window at
+256 KiB; byte pressure can make a page shorter than its row limit. A later
+oversized row remains behind the continuation and is explicitly refused when
+requested. Imported task records over 512 KiB are refused before copying or
+decoding their body; ordinary body writes already enforce 32,000 bytes. The
+whole bounded detail response is capped at 1 MiB. These refusals retain cached
+content. The SQL lane uses the request's read transaction, independent of the
+app lock. Bounded identity enrichment uses point facts for page references and
+does not restore every historical roster. Older-page replies can enrich the
+cached author dictionary while current task body, watch state and other control
+fields retain their newer authority.

@@ -1,0 +1,170 @@
+{
+  "source": "df14cf15c28ced422842e1b718b729a30da1d517",
+  "exit_code": 0,
+  "groups": {
+    "tree-pages": {
+      "command": {
+        "event": "complete",
+        "label": "tree-pages",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "test",
+          "--lib",
+          "app::fs::tree_pages::",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "df14cf15c28ced422842e1b718b729a30da1d517"
+      },
+      "test_results": [
+        {
+          "passed": 10,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "raw_log": "backend-tree-pages.log.json",
+      "original_log_sha256": "f07fbdf6000677637c91cde9a8132242591bdf837fe5d06e01a1ebae26ce20ae"
+    },
+    "filesystem": {
+      "command": {
+        "event": "complete",
+        "label": "filesystem",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "test",
+          "--lib",
+          "app::tests::filesystem::",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "df14cf15c28ced422842e1b718b729a30da1d517"
+      },
+      "test_results": [
+        {
+          "passed": 69,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "raw_log": "backend-filesystem.log.json",
+      "original_log_sha256": "73ae110870efd14f5b64f62440ac14a4ce394f3fcb4ed3f13a43a83225b14f84"
+    },
+    "sql-reads": {
+      "command": {
+        "event": "complete",
+        "label": "sql-reads",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "test",
+          "--lib",
+          "app::tests::runtime::sql_reads::",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "df14cf15c28ced422842e1b718b729a30da1d517"
+      },
+      "test_results": [
+        {
+          "passed": 15,
+          "failed": 0,
+          "ignored": 1
+        }
+      ],
+      "raw_log": "backend-sql-reads.log.json",
+      "original_log_sha256": "5ffe5f87bd4932e52649dcb5904856e09af366256efdcaf94dcc98e697d7a6b5"
+    },
+    "file-hints": {
+      "command": {
+        "event": "complete",
+        "label": "file-hints",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "test",
+          "--lib",
+          "changes::subscriptions::files_hints_",
+          "--",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "df14cf15c28ced422842e1b718b729a30da1d517"
+      },
+      "test_results": [
+        {
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "raw_log": "backend-file-hints.log.json",
+      "original_log_sha256": "0eedd4fac0bd34ea462af1ef44a320ca22af6dd22a2cb0cbc9a105fe425cf4ba"
+    },
+    "format": {
+      "command": {
+        "event": "complete",
+        "label": "format",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "fmt",
+          "--check"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "df14cf15c28ced422842e1b718b729a30da1d517"
+      },
+      "test_results": [],
+      "raw_log": "backend-format.log.json",
+      "original_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "clippy": {
+      "command": {
+        "event": "complete",
+        "label": "clippy",
+        "argv": [
+          "nice",
+          "-n",
+          "10",
+          "cargo",
+          "clippy",
+          "--all-targets",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+        "exit_code": 0,
+        "head": "df14cf15c28ced422842e1b718b729a30da1d517"
+      },
+      "test_results": [],
+      "raw_log": "backend-clippy.log.json",
+      "original_log_sha256": "5df844ee69403378b01bedce7ffff3f2374a339ef6b1a72fe6f0192b19791399"
+    }
+  },
+  "scheduling_deviation": "Parent reports a potential earlier development fmt/Clippy launch overlap. It is disclosed as a scheduling deviation, not performance evidence. This final six-process backend ledger is serial and every process exited0."
+}

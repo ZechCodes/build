@@ -73,7 +73,8 @@ use std::collections::BTreeSet;
 /// 3.32.0 adds bounded durable recovery for project task lists and opened tasks (#892).
 /// 3.33.0 completes leased durable device recovery (#995).
 /// 3.34.0 adds explicit device owner pins and live pooled session summaries (#997).
-pub const API_VERSION: &str = "3.34.0";
+/// 3.35.0 adds bounded task timelines, directory pages and file invalidation hints (#894).
+pub const API_VERSION: &str = "3.35.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -116,12 +117,14 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "bodies.pages", // Since 1.26.0: range on fs.read, git.diff, git.show, git.changeset_diff.
     "branches.finishDelete",
     "changes.bodies",
+    "changes.filesHints", // Since 3.35.0: path invalidations without hidden tree bodies (#894).
     "changes.projectSources", // Since 3.21.0: project_source subscription scope and source-qualified items (#529).
     "changes.refusedKinds",
     "changes.subscriptions",
     "conversations.settings",
     "diffs.perFile",
     "errors.codes",
+    "fs.treePaged",     // Since 3.35.0: bounded directory entries on demand (#894).
     "fs.mediaRawPages", // Since 1.30.0: exact binary ranges for Blob media reads, through 64 MiB.
     "fs.projectSourcePath", // Since 3.17.0: source_path refuses a moved project source (#360).
     "fs.projectSources", // Since 3.9.0: project_id + source_id on fs.tree/read/write (#359).
@@ -159,6 +162,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "tasks.listReadiness",
     "tasks.listExcludeAssignee",
     "tasks.listSummaries", // Since 3.26.0: bounded lightweight pages and plural filters (#890).
+    "tasks.timelinePaged", // Since 3.35.0: opted-in bounded task detail/history reads (#894).
     "tasks.listPaged",     // Since 1.25.0: limit/cursor and next_cursor on tasks.list.
     "tasks.unreadCounts",  // Since 1.29.0: unread_count on a watched task (tasks.list, tasks.get).
     "tasks.waitingOn", // Since 3.21.0: scoped graph, deferred assignment and bounded dependency reads (#562).

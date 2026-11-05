@@ -102,6 +102,24 @@
         "subscription_id": "s-compaction",
         "watch": "live"
       }
+    },
+    {
+      "params": {
+        "subscription_id": "synthetic-files-hints",
+        "scope": {
+          "kind": "entity",
+          "id": "synthetic-run"
+        },
+        "kinds": [
+          "files.hints"
+        ],
+        "mode": "realtime",
+        "priority": "foreground"
+      },
+      "result": {
+        "subscription_id": "synthetic-files-hints",
+        "watch": "live"
+      }
     }
   ],
   "harness_thresholds": {
@@ -111,5 +129,13 @@
       "compaction.changed"
     ],
     "note": "Subscribe only under the current greeting capability; refresh authoritative compaction caches after subscription acceptance."
+  },
+  "files_hints": {
+    "since": "3.35.0",
+    "capability": "changes.filesHints",
+    "kinds": [
+      "files.hints"
+    ],
+    "payload": "Existing files:{paths,truncated} only; no root directory body. Confined relative paths, at most 200 names; oversized or invalid names produce truncated:true."
   }
 }

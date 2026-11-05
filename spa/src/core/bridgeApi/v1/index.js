@@ -152,12 +152,14 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     writes: { epoch: names.has("bridge.epoch"), ackConfirmMethods: ackConfirmMethods(greeting, names.has("bridge.epoch")) },
     changes: {
       subscriptions,
+      filesHints: names.has("changes.filesHints"),
       kinds: subscriptions && Array.isArray(kinds) ? kinds.filter((kind) => typeof kind === "string") : [],
       projectSources: names.has("changes.projectSources"),
     },
     git: { projectSources: names.has("git.projectSources"), showPaths: names.has("git.showPaths") },
     term: { projectSources: names.has("term.projectSources") },
     fs: {
+      treePaged: names.has("fs.treePaged"),
       projectSources: names.has("fs.projectSources"),
       projectSourcePath: names.has("fs.projectSourcePath"),
       uploads: names.has("fs.uploadBegin"),
@@ -191,6 +193,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       pullRequests: names.has("tasks.review.pullRequests"),
     },
     tasks: {
+      timelinePaged: names.has("tasks.timelinePaged"),
       context: names.has("tasks.context"),
       assignProjectAgent: names.has("tasks.assignProjectAgent"),
       attachments: names.has("tasks.attachments"),

@@ -1,0 +1,5 @@
+{
+  "original_path": "/home/zech/Projects/.agent-scratch/894/review3-controls/workspace-source.log",
+  "sha256": "215b648892eee3eef831325f51f6b4a4c17959852b43bdf3897ed23f4e055a82",
+  "raw_utf8": "{\"source\": \"b38e11bc78fd0b6925352425e54b931a249101ba\", \"negative_exit_code\": 1, \"failure\": null, \"restoration_failures\": [], \"exit_code\": 0}\n"
+}

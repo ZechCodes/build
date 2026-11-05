@@ -28,9 +28,9 @@ beforeEach(() => {
 afterEach(async () => {
   page?.dispose(); feed?.dispose();
   for (const request of runtime?.requests || []) request.resolve(answer(runtime.serverTask));
-  await Promise.allSettled(runtime?.reads || []);
   runtime?.changes.resetChangeEvents();
   runtime?.contexts.resetDeviceContexts();
+  await Promise.allSettled(runtime?.reads || []);
   vi.restoreAllMocks();
 });
 
@@ -56,6 +56,9 @@ async function setup() {
   });
   runtime.session = fakeSession(deviceId);
   runtime.session.call.mockImplementation((method) => {
+    if (method === "session.hello") return Promise.resolve({
+      api_version: "3.24.0", push_events: true, events: ["changes"], capabilities: [],
+    });
     if (method === "tasks.update") {
       const request = deferred(); runtime.updates.push(request); runtime.requests.push(request);
       return request.promise;
@@ -66,6 +69,14 @@ async function setup() {
     return request.promise;
   });
   runtime.context = runtime.contexts.adoptDeviceSession(runtime.session);
+  await runtime.changes.greetBridge(runtime.session.call, {
+    deviceId, isCurrent: () => runtime.context.session === runtime.session,
+    install: (selection) => {
+      const adapter = selection.create(runtime.session.call);
+      runtime.contexts.adoptBridgeSelection(runtime.context, selection, adapter);
+      return adapter;
+    },
+  });
   runtime.address = runtime.tracker.taskAddress(deviceId, projectId, taskId);
   runtime.summaryAddress = runtime.summaries.summaryAddress(scope, taskId);
   await runtime.tracker.writeTasksRecord(deviceId, projectId, runtime.tracker.tasksRecord([held], columns()));

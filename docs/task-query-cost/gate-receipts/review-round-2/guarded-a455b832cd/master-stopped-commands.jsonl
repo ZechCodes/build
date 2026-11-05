@@ -1,0 +1,4 @@
+{"event": "start", "argv": ["nice", "-n", "10", "/usr/bin/python3", "/home/zech/Projects/.agent-scratch/894/review-a455-final-backend.py"], "label": "backend"}
+{"event": "complete", "argv": ["nice", "-n", "10", "/usr/bin/python3", "/home/zech/Projects/.agent-scratch/894/review-a455-final-backend.py"], "label": "backend", "exit_code": 0}
+{"event": "start", "argv": ["nice", "-n", "10", "/usr/bin/python3", "/home/zech/Projects/.agent-scratch/894/review-a455-final-ui.py"], "label": "ui"}
+{"event": "complete", "argv": ["nice", "-n", "10", "/usr/bin/python3", "/home/zech/Projects/.agent-scratch/894/review-a455-final-ui.py"], "label": "ui", "exit_code": 1}

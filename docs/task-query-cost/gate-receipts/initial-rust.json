@@ -1,0 +1,239 @@
+[
+  {
+    "label": "store-tests-counted-final",
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--lib",
+      "store::tests::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 255.0112819671631
+  },
+  {
+    "label": "sync-final",
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--lib",
+      "store::sync::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 27.047787189483643
+  },
+  {
+    "label": "device-lifecycle-final",
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--lib",
+      "app::device_lifecycle_tests::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 6.854085683822632
+  },
+  {
+    "label": "tracker-sync-final",
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--lib",
+      "app::tracker::sync_tests::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 9.83413028717041
+  },
+  {
+    "label": "sql-reads-final",
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--lib",
+      "app::tests::runtime::sql_reads::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 7.107601881027222
+  },
+  {
+    "label": "tracker-api-final",
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--lib",
+      "app::tests::tracker::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 61.20698428153992
+  },
+  {
+    "label": "filesystem-final",
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--lib",
+      "app::tests::filesystem::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 20.909106969833374
+  },
+  {
+    "label": "changes-final",
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--lib",
+      "changes::subscriptions::",
+      "--",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 101,
+    "elapsed_seconds": 0.610356330871582
+  },
+  {
+    "label": "api-contract-final",
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "test",
+      "--test",
+      "api_contract",
+      "--",
+      "--nocapture"
+    ],
+    "exit_code": 101,
+    "elapsed_seconds": 12.480523586273193
+  },
+  {
+    "label": "rust-format-final",
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "fmt",
+      "--check"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 13.679518222808838
+  },
+  {
+    "label": "rust-clippy-final",
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "cargo",
+      "clippy",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 101,
+    "elapsed_seconds": 246.1663737297058
+  },
+  {
+    "base": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+    "label": "prior-wire-manifest-final",
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+      "scripts/api-verbs-manifest.mjs",
+      "$BASE"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 1.0373787879943848
+  },
+  {
+    "label": "prior-wire-manifest-clean-final",
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "git",
+      "diff",
+      "--exit-code",
+      "--",
+      "fixtures/api/verbs-3.34.json"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.022873878479003906
+  },
+  {
+    "label": "http-manifest-final",
+    "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+    "argv": [
+      "nice",
+      "-n",
+      "10",
+      "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+      "scripts/http-resource-manifest.mjs",
+      "--check"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.11072039604187012
+  }
+]

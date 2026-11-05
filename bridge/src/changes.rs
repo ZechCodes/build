@@ -170,6 +170,9 @@ pub enum Kind {
     Git,
     /// Working-tree paths.
     Files,
+    /// Confined path invalidations, without a root listing (wire 3.35).
+    #[serde(rename = "files.hints")]
+    FilesHints,
     /// The tabs open in a checkout — the human's shells, coming and going.
     Terminals,
     /// One project's task tracker: a create, an update, a comment, a move
@@ -186,11 +189,12 @@ pub enum Kind {
 
 impl Kind {
     /// Every kind, in wire order.
-    pub const ALL: [Kind; 7] = [
+    pub const ALL: [Kind; 8] = [
         Kind::State,
         Kind::Thread,
         Kind::Git,
         Kind::Files,
+        Kind::FilesHints,
         Kind::Terminals,
         Kind::Tasks,
         Kind::CompactionChanged,
@@ -203,6 +207,7 @@ impl Kind {
             Kind::Thread => "thread",
             Kind::Git => "git",
             Kind::Files => "files",
+            Kind::FilesHints => "files.hints",
             Kind::Terminals => "terminals",
             Kind::Tasks => "tasks",
             Kind::CompactionChanged => COMPACTION_CHANGED_EVENT,
@@ -212,7 +217,7 @@ impl Kind {
     /// Whether this kind comes from the worktree — the two the settle window
     /// paces, and the two that need a filesystem watcher.
     pub fn is_worktree(self) -> bool {
-        matches!(self, Kind::Git | Kind::Files)
+        matches!(self, Kind::Git | Kind::Files | Kind::FilesHints)
     }
 }
 
@@ -982,7 +987,7 @@ impl Subscription {
                 .collect::<Vec<_>>()
             {
                 let names = match kind {
-                    Kind::Files => &item.files,
+                    Kind::Files | Kind::FilesHints => &item.files,
                     Kind::Tasks => &item.tasks,
                     _ => &NameSet::default(),
                 };
@@ -1051,8 +1056,21 @@ impl Subscription {
         item.kinds.insert(kind);
         match kind {
             Kind::Files => item.files.add(names, FILES_PER_FLUSH),
+            Kind::FilesHints => {
+                item.files.add(names, FILES_PER_FLUSH);
+                item.files.truncated |= names.is_empty();
+            }
             Kind::Tasks => item.tasks.add(names, TASKS_PER_FLUSH),
             _ => {}
+        }
+    }
+
+    fn note_file_hint(&mut self, entity: &str, names: &[String], truncated: bool, now: Instant) {
+        self.note(entity, Kind::FilesHints, names, now);
+        if truncated {
+            if let Some(item) = self.pending.get_mut(entity) {
+                item.files.truncated = true;
+            }
         }
     }
 
@@ -1382,7 +1400,7 @@ fn item_payload(
     if item.kinds.contains(Kind::Git) {
         out.insert("git".into(), git_payload(facts));
     }
-    if item.kinds.contains(Kind::Files) {
+    if item.kinds.contains(Kind::Files) || item.kinds.contains(Kind::FilesHints) {
         out.insert("files".into(), files_payload(item, facts));
     }
     if item.kinds.contains(Kind::Terminals) {
@@ -1508,10 +1526,30 @@ fn files_payload(item: &PendingItem, facts: Option<&EntityFacts>) -> Value {
     let mut files = Map::new();
     files.insert("paths".into(), json!(item.files.names));
     files.insert("truncated".into(), json!(item.files.truncated));
-    if let Some(root) = facts.and_then(|f| f.root_listing.clone()) {
-        files.insert("root".into(), root);
+    // A mixed flush may have root facts for a legacy subscriber. Hints must
+    // remain root-free even when those facts are already available.
+    if item.kinds.contains(Kind::Files) {
+        if let Some(root) = facts.and_then(|f| f.root_listing.clone()) {
+            files.insert("root".into(), root);
+        }
     }
     Value::Object(files)
+}
+
+fn file_hint_paths(paths: &[String]) -> (Vec<String>, bool) {
+    let confined =
+        |path: &&String| path.len() <= 4096 && crate::fs_scope::is_worktree_contained_path(path);
+    let inspected = &paths[..paths.len().min(FILES_PER_FLUSH + 1)];
+    let truncated = paths.is_empty()
+        || paths.len() > FILES_PER_FLUSH
+        || inspected.iter().any(|path| !confined(&path));
+    let names = inspected
+        .iter()
+        .filter(confined)
+        .take(FILES_PER_FLUSH)
+        .cloned()
+        .collect();
+    (names, truncated)
 }
 
 /// The tab list the facts source read, or an empty object where it read
@@ -1877,6 +1915,10 @@ impl ChangeBus {
     /// No encryption, no channel a slow reader can fill, no I/O of any kind —
     /// nothing a caller holding the app lock could block the whole daemon on.
     pub fn note_kind(&self, entity_id: &str, kind: Kind) {
+        if kind == Kind::Files {
+            self.note_files(entity_id, &[]);
+            return;
+        }
         self.note_subscriptions(entity_id, kind, &[]);
     }
 
@@ -1887,7 +1929,25 @@ impl ChangeBus {
 
     /// These working-tree paths moved, relative to the worktree root.
     pub fn note_files(&self, entity_id: &str, paths: &[String]) {
-        self.note_subscriptions(entity_id, Kind::Files, paths);
+        let now = Instant::now();
+        let mut subscriptions = self.subscriptions.lock().unwrap();
+        let mut hints = None;
+        let mut noted = false;
+        for sub in subscriptions.iter_mut() {
+            if sub.wants(entity_id, Kind::Files) {
+                sub.note(entity_id, Kind::Files, paths, now);
+                noted = true;
+            }
+            if sub.wants(entity_id, Kind::FilesHints) {
+                let (names, truncated) = hints.get_or_insert_with(|| file_hint_paths(paths));
+                sub.note_file_hint(entity_id, names, *truncated, now);
+                noted = true;
+            }
+        }
+        drop(subscriptions);
+        if noted {
+            self.wake.notify_one();
+        }
     }
 
     /// Queue a device invalidation only for subscriptions explicitly requesting it.
@@ -3391,12 +3451,34 @@ mod subscriptions {
         assert_eq!(parsed.scope, Scope::Entity("run-7".into()));
         assert_eq!(
             parsed.kinds,
-            Kind::ALL
-                .into_iter()
-                .filter(|kind| *kind != Kind::CompactionChanged)
-                .collect()
+            [
+                Kind::State,
+                Kind::Thread,
+                Kind::Git,
+                Kind::Files,
+                Kind::Terminals,
+                Kind::Tasks
+            ]
+            .into_iter()
+            .collect()
         );
         assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
+    }
+
+    #[test]
+    fn file_hint_subscriptions_round_trip_alone_and_beside_legacy_files() {
+        for kinds in [vec!["files.hints"], vec!["files", "files.hints"]] {
+            let wire = json!({
+                "subscription_id": "synthetic-files-roundtrip",
+                "scope": { "kind": "entity", "id": "synthetic-run" },
+                "kinds": kinds,
+                "mode": "realtime",
+                "priority": "foreground",
+            });
+            let parsed: SubscriptionSpec = serde_json::from_value(wire.clone()).unwrap();
+            assert!(parsed.kinds.contains(Kind::FilesHints));
+            assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
+        }
     }
 
     /// The defaults and the clamp: a mode is realtime and a priority is
@@ -3994,6 +4076,148 @@ mod subscriptions {
                 "truncated": false,
                 "root": { "path": "", "entries": [{ "name": "src", "kind": "dir" }] },
             })
+        );
+    }
+
+    fn files_hint_subscription(id: &str) -> SubscriptionSpec {
+        serde_json::from_value(json!({
+            "subscription_id":id,"scope":{"kind":"entity","id":"run-7"},
+            "kinds":["files.hints"],"mode":"realtime","priority":"foreground"
+        }))
+        .expect("files.hints is independently negotiated")
+    }
+
+    #[test]
+    fn files_hints_do_not_scan_or_publish_a_root_directory() {
+        let root_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = Arc::clone(&root_reads);
+        let bus = ChangeBus::with_sources(
+            Duration::ZERO,
+            Arc::new(Vec::new),
+            Arc::new(move |requests: &[FactsRequest]| {
+                observed.fetch_add(
+                    requests.iter().filter(|request| request.files).count(),
+                    Ordering::Relaxed,
+                );
+                Vec::new()
+            }),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("synthetic-files-hints");
+        bus.subscribe(&sender, files_hint_subscription("hints-only"));
+        assert!(
+            bus.covered_worktrees().contains("run-7"),
+            "hint readers retain filesystem observation"
+        );
+        bus.note_files("run-7", &["src/a.rs".into(), "src/a.rs".into()]);
+        bus.flush();
+        let messages = frames(drained(&mut rx, &key));
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0]["items"][0]["files"],
+            json!({"paths":["src/a.rs"],"truncated":false})
+        );
+        assert_eq!(root_reads.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn files_hints_stay_root_free_when_a_legacy_subscriber_needs_the_same_root() {
+        let root_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = Arc::clone(&root_reads);
+        let root = json!({"path":"","entries":[{"name":"synthetic.txt","kind":"file","size":1}]});
+        let source_root = root.clone();
+        let bus = ChangeBus::with_sources(
+            Duration::ZERO,
+            Arc::new(Vec::new),
+            Arc::new(move |requests: &[FactsRequest]| {
+                requests
+                    .iter()
+                    .map(|request| {
+                        if request.files {
+                            observed.fetch_add(1, Ordering::Relaxed);
+                        }
+                        EntityFacts {
+                            entity_id: request.entity_id.clone(),
+                            root_listing: request.files.then(|| source_root.clone()),
+                            ..EntityFacts::default()
+                        }
+                    })
+                    .collect()
+            }),
+        );
+        let (hint, mut hint_rx, hint_key) = SessionSender::observable("synthetic-hints");
+        let (legacy, mut legacy_rx, legacy_key) = SessionSender::observable("synthetic-legacy");
+        bus.subscribe(&hint, files_hint_subscription("hints"));
+        bus.subscribe(
+            &legacy,
+            SubscriptionSpec {
+                kinds: [Kind::Files].into_iter().collect(),
+                ..spec(
+                    "legacy",
+                    Scope::Entity("run-7".into()),
+                    Mode::Realtime,
+                    Priority::Foreground,
+                )
+            },
+        );
+        bus.note_files("run-7", &["a.txt".into()]);
+        bus.flush();
+        assert_eq!(
+            root_reads.load(Ordering::Relaxed),
+            1,
+            "one legacy lookup serves the union"
+        );
+        assert_eq!(
+            frames(drained(&mut hint_rx, &hint_key))[0]["items"][0]["files"],
+            json!({"paths":["a.txt"],"truncated":false})
+        );
+        assert_eq!(
+            frames(drained(&mut legacy_rx, &legacy_key))[0]["items"][0]["files"],
+            json!({"paths":["a.txt"],"truncated":false,"root":root})
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn files_hints_bound_names_and_never_publish_foreign_paths() {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let (sender, mut rx, key) = SessionSender::observable("synthetic-confined-hints");
+        bus.subscribe(&sender, files_hint_subscription("hints"));
+        bus.note_files(
+            "run-7",
+            &[
+                "../foreign".into(),
+                "/absolute".into(),
+                "src/good.rs".into(),
+                "x".repeat(4097),
+            ],
+        );
+        bus.flush();
+        assert_eq!(
+            frames(drained(&mut rx, &key))[0]["items"][0]["files"],
+            json!({"paths":["src/good.rs"],"truncated":true})
+        );
+        let paths = (0..FILES_PER_FLUSH + 1)
+            .map(|index| format!("entry-{index}"))
+            .collect::<Vec<_>>();
+        tokio::time::advance(ENTITY_SETTLE_WINDOW).await;
+        bus.note_files("run-7", &paths);
+        bus.flush();
+        let messages = frames(drained(&mut rx, &key));
+        let files = &messages[0]["items"][0]["files"];
+        assert_eq!(files["paths"].as_array().unwrap().len(), FILES_PER_FLUSH);
+        assert_eq!(files["truncated"], true);
+        assert!(files.get("root").is_none());
+    }
+
+    #[test]
+    fn files_hints_receive_unknown_path_observation_repairs_as_truncated_invalidations() {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let (sender, mut rx, key) = SessionSender::observable("synthetic-observation-hints");
+        bus.subscribe(&sender, files_hint_subscription("hints"));
+        bus.note_kind("run-7", Kind::Files);
+        bus.flush();
+        assert_eq!(
+            frames(drained(&mut rx, &key))[0]["items"][0]["files"],
+            json!({"paths":[],"truncated":true})
         );
     }
 

@@ -27,7 +27,8 @@
     "not_found",
     "invalid_params",
     "conflict",
-    "internal"
+    "internal",
+    "unavailable"
   ],
   "project_sources": {
     "since": "3.9.0",
@@ -63,6 +64,51 @@
           }
         ]
       }
+    },
+    {
+      "params": {
+        "run_id": "run-7",
+        "path": "src",
+        "paged": true,
+        "limit": 2
+      },
+      "result": {
+        "path": "src",
+        "entries": [
+          {
+            "name": "api",
+            "kind": "dir"
+          },
+          {
+            "name": "main.rs",
+            "kind": "file",
+            "size": 1024
+          }
+        ],
+        "has_more": true,
+        "next_cursor": "synthetic-opaque-directory-cursor"
+      }
+    },
+    {
+      "params": {
+        "run_id": "run-7",
+        "path": "src",
+        "paged": true,
+        "limit": 2,
+        "cursor": "synthetic-opaque-directory-cursor"
+      },
+      "result": {
+        "path": "src",
+        "entries": [
+          {
+            "name": "remaining.rs",
+            "kind": "file",
+            "size": 20
+          }
+        ],
+        "has_more": false,
+        "next_cursor": null
+      }
     }
   ],
   "project_source_path": {
@@ -72,5 +118,30 @@
       "source_path"
     ],
     "refused_with": "conflict"
+  },
+  "paged": {
+    "since": "3.35.0",
+    "capability": "fs.treePaged",
+    "params": [
+      "paged",
+      "limit",
+      "cursor"
+    ],
+    "default_limit": 100,
+    "max_limit": 200,
+    "order": [
+      "directories_first",
+      "lowercase_name",
+      "raw_name"
+    ],
+    "cursor_binding": [
+      "scope_root",
+      "path",
+      "directory_identity"
+    ],
+    "continuation": "Live keyset after the previous page. Entries inserted before the cursor are seen by a new first-page read.",
+    "refused_with": {
+      "identity_unavailable": "unavailable"
+    }
   }
 }

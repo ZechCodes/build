@@ -1,0 +1,27 @@
+{
+  "source": "df14cf15c28ced422842e1b718b729a30da1d517",
+  "exit_code": 0,
+  "results": [
+    {
+      "label": "truncated",
+      "wrapper_exit": 1,
+      "behavior_exit": 1,
+      "restored": true,
+      "passed": true
+    },
+    {
+      "label": "retention",
+      "wrapper_exit": 1,
+      "behavior_exit": 1,
+      "restored": true,
+      "passed": true
+    },
+    {
+      "label": "reveal",
+      "wrapper_exit": 1,
+      "behavior_exit": 1,
+      "restored": true,
+      "passed": true
+    }
+  ]
+}

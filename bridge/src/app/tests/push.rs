@@ -277,7 +277,7 @@ async fn the_greeting_announces_push_events() {
         json!({
             "subscriptions": true,
             "mode": "subscriptions",
-            "kinds": ["state", "thread", "git", "files", "terminals", "tasks", "compaction.changed"],
+            "kinds": ["state", "thread", "git", "files", "files.hints", "terminals", "tasks", "compaction.changed"],
             "items": "bodies",
             "batch_ms": { "min": 1000, "max": 600_000 },
         }),

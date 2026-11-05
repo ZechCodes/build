@@ -1,0 +1,54 @@
+{
+  "source": "907ae03e33c2bf39b108d721a3cff72a9ce3a8d6",
+  "base": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+  "exit_code": 0,
+  "result": {
+    "exit_code": 0,
+    "base": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+    "source": "907ae03e33c2bf39b108d721a3cff72a9ce3a8d6",
+    "restored": true,
+    "drivers": {
+      "spa/test/compat335.test.js": "8cbcaa79e71e703ae70ac2ff76182057b17d8fab58679f5b1d63db994c88bea5",
+      "spa/test/syncTimingCutover.test.js": "134883eef47c710e0a72860e96dc4cf28cf79105383f2f9c81d643c95d74c059",
+      "spa/test/taskOpenCost.test.js": "bd035edd6b173bf54401b69a8743c12bff57691c414b71633dd155dbcd80fdf3"
+    },
+    "affected_sources": 38,
+    "all_spa_files": 1724,
+    "all_spa_sha256": "90e94fea991842c18c23c3342e3d4685596e40c11c15bce533a0684343218f30",
+    "ledger": "/home/zech/Projects/.agent-scratch/894/review-cutover-907ae03e33/commands.jsonl"
+  },
+  "runner": "/home/zech/Projects/.agent-scratch/894/run-review-cutover-907ae03e33.py",
+  "runner_sha256": "67dc95ee79c0d877d8da25e6f6d5cc66411f8a7f0f76990b4a58f688f1879972",
+  "frozen_drivers": {
+    "spa/test/compat335.test.js": "8cbcaa79e71e703ae70ac2ff76182057b17d8fab58679f5b1d63db994c88bea5",
+    "spa/test/syncTimingCutover.test.js": "134883eef47c710e0a72860e96dc4cf28cf79105383f2f9c81d643c95d74c059",
+    "spa/test/taskOpenCost.test.js": "bd035edd6b173bf54401b69a8743c12bff57691c414b71633dd155dbcd80fdf3"
+  },
+  "measurement_scope": "Synthetic peers + real scoped engine/cache and selected task mount; not installed bridge binaries or production network/disk/browser pixels. Startup compares the frozen exact-base18rows;3.35 and task-open old-source arms were freshly executed under copy control.",
+  "old_baseline_startup": "../cutover-before.jsonl",
+  "raw_log_storage": "raw-log-storage.json",
+  "wall_disposition": "All samples retained. Long-warm task wall271.803432\u2192946.321986ms and title145.531443\u2192436.967787ms increased in this run despite equal RPC/IDB/publication counts; no causal improvement or regression claim or retry.",
+  "files_sha256": {
+    "result.json": "3a594aba0a4d3b51cc9e65c9093fcdd30f0fcafa548a1747934afee66fd685d6",
+    "commands.jsonl": "8b1a1c47370a0ef0781c43ccbbc4bcd193adb760f84ec133269de8716c36191d",
+    "affected-sources.json": "9addbae9c1e7c6cae60eae2a3aec62a9243e3886a71568b87cefb9b790964cfa",
+    "full-spa-before.json": "c52a87a84462dae00e0bcade05eb8f9e4ea692f9f2a490f153096f31fd909226",
+    "compat335-old-spa.jsonl": "aaf36cc72657d5b8ee609044f6bb8219a91ddddc04f89105dd58da8d0460741d",
+    "compat335-candidate-spa.jsonl": "bd9beb28a29d42e3217485ded8a658a79ac556f7731dc60cb4f2f14361173507",
+    "task-open-old-spa.jsonl": "32029040a2615bd6daff1a7930cc39e51f09013ffb4893e38889a8dd9500ece6",
+    "task-open-candidate-spa.jsonl": "7bc520e6e46f75dd462fb4fb7bf316dad38f9c65311734c6ec12fcf4dc55946e",
+    "startup-candidate-final.jsonl": "1f4d8a191e81b65af82f286a02b4ac71f9427b43c4c9f362c1bcfd34f3787d0d",
+    "task-open-comparison.json": "e597e225f97fe5298429a6b2c93013e8c0bcae84c0f7c3420c80cce2a421d972",
+    "task-open-comparison.md": "3d6dc914cbe0ecfb8d1647fd3618acf7d91d3cc542e8d3704112b688983a595d",
+    "compat335-old-spa.log.json": "ef3771233beae9677c22cbe9922f34ae920e36de428d98a5e11a9199607924f8",
+    "compat335-candidate-spa.log.json": "75949f6853a21f63a58344a37a85adf3e74b932bd078753a8f439cec799debf1",
+    "task-open-old-spa.log.json": "fe6e4f933376f75ac1834ab836c4345a9e91df19f7e069d7db0dec95f63430f9",
+    "task-open-candidate-spa.log.json": "569f837c08ee593a648e83cf27a5499fd82c0318cc8c2b6b8bd7ee405b9a31be",
+    "startup-candidate-final.log.json": "42fdf67793dbdbf486fed42ee5ebe42c71488c5360c1a5d9ef3167a253e1c81b",
+    "raw-log-storage.json": "2f07a6372c6bb1fb09a860c82db263b592212c17ebc14dd262766e0995b4e904",
+    "compat335-comparison/cutover.csv": "7d7c064f56ebbd062826ee5947e58945c1b0f7732f8087992d52ccf38a4e149e",
+    "compat335-comparison/cutover.md": "e57f2777f8161ddf338e98671ee38d2154fee02032a6cd593233ec3efe33d707",
+    "startup-final-comparison/cutover.csv": "b03204fbe8c01b8ee71bd9251f62d64185cc254a816e96b19a37940f87c39af0",
+    "startup-final-comparison/cutover.md": "7ac9a7df03b49e47c9d2b2b5b7b51cf7737870c9b61f6690908f884efaf7839a"
+  }
+}

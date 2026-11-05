@@ -10,6 +10,7 @@ import { clearedWorkspaceReviewTask } from "./sessionListCache.js";
 import { commandRefusalMessage } from "./commandRefusal.js";
 import { trailingRead } from "./trailingRead.js";
 import { refreshCachedReviewReads } from "./taskReviewReads.js";
+import { lazyViewReadsEnabled } from "./scopedSyncRuntime.js";
 
 export const REVIEW_KIND = "task-review";
 export const reviewAddress = ({ deviceId, projectId, taskId }) => ({
@@ -108,6 +109,7 @@ export function createTaskReviewRepository({ callRpc, generationOf = () => null,
 // Reconnect and invalidations discover review metadata through summaries too;
 // none of these reads publishes branches or replays saved action requests.
 export async function refreshCachedReviews({ deviceId, projectId, callRpc, active = () => true, discoveredTaskIds = [] }, taskIds = null) {
+  if (lazyViewReadsEnabled(deviceId)) return;
   const support = await readReviewSupport(deviceId);
   if (!support.get) return;
   const held = await cachedSubKeys(deviceId, projectId, REVIEW_KIND);

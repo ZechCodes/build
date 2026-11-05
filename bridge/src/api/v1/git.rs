@@ -319,6 +319,13 @@ pub struct FsTreeParams {
     /// Scope-relative; the scope root when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// Wire 3.35, fs.treePaged: bounded keyset directory pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paged: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -696,6 +703,14 @@ pub struct FsTreeEntry {
 pub struct FsTreeResult {
     pub path: String,
     pub entries: Vec<FsTreeEntry>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub page: Option<FsTreePage>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsTreePage {
+    pub has_more: bool,
+    pub next_cursor: Option<String>,
 }
 
 /// One file's bytes, as `fs.read` answers and `fs.write` answers back.

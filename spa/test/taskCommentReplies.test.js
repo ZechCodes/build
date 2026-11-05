@@ -20,6 +20,18 @@ const render = (timeline, reading = context) => {
 };
 
 describe("task comment reply quotes", () => {
+  it("offers a deliberate seek for an unloaded parent in a paged timeline", () => {
+    const quote = render([reply], { ...context, canSeekComment: true }).querySelector(".tracker-task-comment-reply");
+    expect(quote.tagName).toBe("BUTTON");
+    expect(quote.dataset.commentJump).toBe(parent.id);
+    expect(quote.textContent).toContain("Reply to an earlier comment");
+  });
+
+  it("does not present a loaded reply count as the total for partial history", () => {
+    const host = render([parent, reply], { ...context, partialTimeline: true });
+    expect(host.querySelector('[data-comment-id="tc-parent"] .task-comment-replies').textContent).toBe("Show reply");
+  });
+
   it("quotes the parent's mark, name, relative time and bounded plain excerpt in one named control", () => {
     const host = render([parent, reply]);
     const quote = host.querySelector('[data-comment-id="tc-reply"] .tracker-task-comment-reply');
@@ -70,6 +82,23 @@ describe("task comment reply quotes", () => {
 });
 
 describe("deliberate reply navigation", () => {
+  it("seeks an unloaded reply target only after activation and fences disposal", async () => {
+    const host = render([reply], { ...context, canSeekComment: true });
+    host.scrollTo = vi.fn();
+    let release;
+    const reveal = vi.fn(() => new Promise((resolve) => { release = resolve; }));
+    const navigation = createTaskReplyNavigation(host, { reveal });
+    navigation.wire();
+    expect(reveal).not.toHaveBeenCalled();
+    host.querySelector("button[data-comment-jump]").click();
+    expect(reveal).toHaveBeenCalledWith(parent.id);
+    host.prepend(render([parent]).firstElementChild.firstElementChild);
+    navigation.dispose();
+    release(true);
+    await Promise.resolve();
+    expect(host.scrollTo).not.toHaveBeenCalled();
+  });
+
   it("scrolls once on activation, keeps the arrival mark through a paint, then removes it", () => {
     vi.useFakeTimers();
     const host = render([parent, reply]);

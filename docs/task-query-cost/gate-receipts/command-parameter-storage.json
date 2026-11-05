@@ -1,0 +1,42 @@
+{
+  "base": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+  "schema": "command-receipt-parameters-1",
+  "expansion": "For a receipt object whose argv contains literal $BASE, replace that entire argv element with the object base field; omit the storage-only base field to recover the original receipt data. No shell expansion is needed.",
+  "verification": "All five expanded command vectors and complete original receipt data equal the saved originals. Original scratch ledgers remain verbatim. Original stored-file identities are retained separately from parameterized stored identities. No existing manifest contained the original frozen-command JSONL digest, so no digest reference was silently replaced.",
+  "records": [
+    {
+      "path": "gate-receipts/initial-rust.json",
+      "original_stored_sha256": "ab97c478669eb4546ed34a00bcc5a1e332de8aceb816250e705b73470e18de0d",
+      "parameterized_stored_sha256": "186e696a2da30a63f0536c03d008a1f74df1749a9b9d81915212da053c3a2b93",
+      "parameterized_records": 1,
+      "original_stored_copy": "/home/zech/Projects/.agent-scratch/894/receipt-storage-before-amend-943f1cb63/gate-receipts/initial-rust.json",
+      "verbatim_source": "/home/zech/Projects/.agent-scratch/894/final-gates-rust.json",
+      "verbatim_source_sha256": "ab97c478669eb4546ed34a00bcc5a1e332de8aceb816250e705b73470e18de0d"
+    },
+    {
+      "path": "gate-receipts/rust-supplement.json",
+      "original_stored_sha256": "d063bafd4062a73ad643b4e856b7a899140b7169fbc3281b9ff41ba151361769",
+      "parameterized_stored_sha256": "02bbd2fa2d1c9c7ab52456f13e20da09f09a61154d31b9599603cd245d32f4c4",
+      "parameterized_records": 1,
+      "original_stored_copy": "/home/zech/Projects/.agent-scratch/894/receipt-storage-before-amend-943f1cb63/gate-receipts/rust-supplement.json",
+      "verbatim_source": "/home/zech/Projects/.agent-scratch/894/final-gates-rust_supplement.json",
+      "verbatim_source_sha256": "d063bafd4062a73ad643b4e856b7a899140b7169fbc3281b9ff41ba151361769"
+    },
+    {
+      "path": "gate-receipts/frozen-rust-50d4a2647.json",
+      "original_stored_sha256": "0ee0d4362a907be2472d8c9a0b4299e4b7eee73a8e340bc815e64c93e9373c75",
+      "parameterized_stored_sha256": "545654c728168931bdecce1ee68b97418752e9370ebb320098f2d2f7bef01030",
+      "parameterized_records": 1,
+      "original_stored_copy": "/home/zech/Projects/.agent-scratch/894/receipt-storage-before-amend-943f1cb63/gate-receipts/frozen-rust-50d4a2647.json"
+    },
+    {
+      "path": "gate-receipts/frozen-rust-50d4a2647-commands.jsonl",
+      "original_stored_sha256": "46ee6179c09b537d559304bf71360e2b339eb388424f271017b357f9c69c9649",
+      "parameterized_stored_sha256": "50d3aa5f4abd8f699a91c38c01c74f34b7e52b1a8f5ed7b59dd1b6be155e25ed",
+      "parameterized_records": 2,
+      "original_stored_copy": "/home/zech/Projects/.agent-scratch/894/receipt-storage-before-amend-943f1cb63/gate-receipts/frozen-rust-50d4a2647-commands.jsonl",
+      "verbatim_source": "/home/zech/Projects/.agent-scratch/894/frozen-rust-50d4a2647/commands.jsonl",
+      "verbatim_source_sha256": "46ee6179c09b537d559304bf71360e2b339eb388424f271017b357f9c69c9649"
+    }
+  ]
+}

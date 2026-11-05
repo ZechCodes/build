@@ -1,0 +1,5 @@
+{
+  "original_path": "docs/task-query-cost/cutover-final/compat335-old-spa.log",
+  "sha256": "cec7a27be175ad5ecf7c0c0469bfdb938d3a1134b9479a7d197a1b7a127cf4e1",
+  "raw_utf8": "\n RUN  v4.1.11 /home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa\n\n\n Test Files  1 passed (1)\n      Tests  3 passed (3)\n   Start at  21:14:01\n   Duration  19.76s (transform 2.66s, setup 73ms, import 135ms, tests 18.33s, environment 1.01s)\n\n"
+}

@@ -303,6 +303,7 @@ fn read_tree(
             return Ok(ReviewReadResult::Tree(FsTreeResult {
                 path: path.into(),
                 entries: Vec::new(),
+                page: None,
             }))
         }
         (None, false) => return Err("not a directory".into()),
@@ -358,6 +359,7 @@ fn read_tree(
     Ok(ReviewReadResult::Tree(FsTreeResult {
         path: path.into(),
         entries: dirs,
+        page: None,
     }))
 }
 

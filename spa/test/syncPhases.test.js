@@ -68,6 +68,43 @@ afterEach(() => disposers.forEach((dispose) => dispose()));
 
 const microtasks = async () => { for (let turn = 0; turn < 500; turn += 1) await Promise.resolve(); };
 
+describe("scoped lazy reads", () => {
+  it("stops inbox warming when scoped ownership takes over during a legacy read", async () => {
+    let lazy = false;
+    const held = gate();
+    route = { name: "inbox" };
+    readers.thread = async (_context, entityId, agent, priority) => {
+      event(entityId, "thread", priority, agent.id);
+      await held.promise;
+    };
+    const pass = fixture(false, null, { lazyReads: () => lazy }).run();
+    await microtasks();
+    expect(events.length).toBeGreaterThan(0);
+    const started = [...events];
+    lazy = true;
+    held.release();
+    await pass;
+    expect(events).toEqual(started);
+  });
+
+  it("leaves unopened conversations and checkouts cold, including the routed checkout", async () => {
+    await fixture(false, null, { lazyReads: () => true }).run();
+    expect(events).toEqual([]);
+  });
+
+  it("recovers only mounted reads and the mounted conversation", async () => {
+    mounted("run-1", "tree", "src");
+    mounted("run-1", "diff");
+    disposers.push(registerSyncThread(() => ({ deviceId: "dev-1", entityId: "run-2", agentId: "ag-2-a" })));
+    await fixture(true, null, { lazyReads: () => true }).run();
+    expect(events).toEqual([
+      { entityId: "run-2", kind: "thread", priority: "foreground", sub: "ag-2-a" },
+      { entityId: "run-1", kind: "tree", priority: "foreground", sub: "src" },
+      { entityId: "run-1", kind: "diff", priority: "foreground", sub: "" },
+    ]);
+  });
+});
+
 describe("foreground record scopes", () => {
   it("promotes every read of the selected record and keeps unrelated records in background", () => {
     const phases = fixture();

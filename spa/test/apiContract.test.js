@@ -29,7 +29,7 @@ const eventExamples = fixtures
 
 describe("the v1 adapter against fixtures/api/v1", () => {
   it("pins wire 3.34 device roster and pooled directory session facts", () => {
-    expect(versions.current).toBe("3.34.0");
+    expect(versions.current).toBe("3.35.0");
     const snapshot = methodFixtures.find(({ body }) => body.method === "sync.snapshot").body;
     const example = snapshot.examples.find((entry) => entry.since === "3.34.0");
     expect(example.params.scope).toEqual({ kind: "device" });

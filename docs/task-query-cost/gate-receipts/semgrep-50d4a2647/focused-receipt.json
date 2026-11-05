@@ -1,0 +1,9 @@
+{
+  "source_head": "50d4a264726cc866160e3a360afdb65345842767",
+  "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+  "exact_shell_command": "CARGO_BUILD_JOBS=8 TMPDIR=/home/zech/Projects/.agent-scratch/894 nice -n 10 semgrep --config auto --error --timeout 60 --timeout-threshold 0 spa/src/core/agentRail.js spa/test/agentRailDom.test.js > /home/zech/Projects/.agent-scratch/894/semgrep-timeouts-focused.log 2>&1",
+  "exit_code": 0,
+  "session_id": 2732,
+  "log": "/home/zech/Projects/.agent-scratch/894/semgrep-timeouts-focused.log",
+  "disposition": "Fresh focused scan after main exit0 had three rule/file timeouts. Focused exit0, no findings, no timeout warnings."
+}

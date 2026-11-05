@@ -15,6 +15,34 @@ const comment = (id, kind, body) => ({ type: "comment", id, author: { kind }, bo
 const detail = (one, timeline) => ({ task: one, timeline });
 const inbox = (id, fields = {}) => ({ kind: "tracker_task", projectKey: PROJECT, task_id: id, unread: 1, ...fields });
 
+describe("bounded timeline attention", () => {
+  it("uses complete summary attention without hidden task detail warming", () => {
+    const one = task("cold-summary", { watched: true, unread_agent_comments: 2, unread_mentions: 1, unread_service_mentions: 0 });
+    for (const cached of [null, { task: one, timeline: [], stale: true }]) {
+      expect(watchedTaskReasons(one, cached, true)).toEqual([ATTENTION_REASONS.inbox]);
+      expect(taskAttention(one, { detail: cached, askedOnly: true }).needsYou).toBe(true);
+      expect(hasUnreadInboxComment(one, cached, inbox(one.id))).toBe(true);
+    }
+  });
+
+  it("uses authoritative complete-history counts for asks outside the loaded window", () => {
+    const one = task("paged", { watched: true, unread_agent_comments: 4, unread_mentions: 1, unread_service_mentions: 1 });
+    const cached = { ...detail(one, [comment("tc-90", "user", "Newest is my own")]), has_more: true };
+    expect(watchedTaskReasons(one, cached, true)).toEqual([ATTENTION_REASONS.inbox]);
+    expect(taskAttention(one, { detail: cached, askedOnly: true }).needsYou).toBe(true);
+    expect(hasUnreadInboxComment(one, cached, inbox(one.id))).toBe(true);
+    const done = { ...one, status: "done" };
+    expect(watchedTaskReasons(done, { ...cached, task: done }, true, { verdictDelivery: true })).toEqual([ATTENTION_REASONS.inbox]);
+  });
+
+  it("keeps counts authoritative when a loaded window contains asks already read elsewhere", () => {
+    const one = task("paged", { watched: true, read_through: "te-99", unread_agent_comments: 0, unread_mentions: 0, unread_service_mentions: 0 });
+    const cached = { ...detail(one, [{ ...comment("tc-90", "agent", "Previously asked"), mentions_user: true }]), has_more: true };
+    expect(watchedTaskReasons(one, cached, true, { verdictDelivery: true })).toEqual([]);
+    expect(hasUnreadInboxComment(one, cached, inbox(one.id))).toBe(false);
+  });
+});
+
 describe("a watched task's inbox reasons (#125)", () => {
   it("are the Needs you reasons, for a task the user watches", () => {
     const one = task("review", { watched: true, status: "in_review", assignee: { kind: "user" }, read_through: "te-01" });

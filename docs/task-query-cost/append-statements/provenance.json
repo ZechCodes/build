@@ -1,0 +1,12 @@
+{
+  "baseline_source": "exact e1 journal/device/retention only; common current Store/schema/cache128 + instrumentation; original44-row expectations",
+  "candidate_source": "preserved store-tests-counted-final.log producer program; later final-head gates separately attributed",
+  "baseline_fixture_sha256": "06f024221e31523ac0f903d9a7009e2add7b37a57e447d91e86cf86ee8b1a04c",
+  "baseline_observer_copy_sha256": "1916264ce2d90e0a1cd2adf58fdd9d2fd1c14c3d9fc53b72e4f12548b96c400e",
+  "baseline_commands_ledger_sha256": "70cca6ea9dded0267b28d921d9e47d746f2b991cd45aa4be0804e930c979ace4",
+  "baseline_source_restore": "copy/touch/cmp actual0 in retained append-statements-base/commands.jsonl",
+  "candidate_full_log_sha256": "adc422d0bfc9794381a4580a44ad9dbf8ff5610ef11e74b459a0a638522b8a8a",
+  "candidate_full_log": "/home/zech/Projects/.agent-scratch/894/store-tests-counted-final.log",
+  "raw_log_storage": "../raw-log-storage.json",
+  "raw_log_storage_note": "Raw .log path/hash entries identify the original decoded bytes. These logs travel as lossless .log.json wrappers indexed by raw-log-storage; original plain bytes are not normalized."
+}

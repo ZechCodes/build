@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 const durable = vi.hoisted(() => ({ owns: false, wake: vi.fn(async () => []), release: vi.fn(), register: vi.fn() }));
 vi.mock("../src/core/scopedSyncRuntime.js", () => ({
+  lazyViewReadsEnabled: () => false,
   scopedSyncOwns: () => durable.owns,
   wakeScopedSync: (...args) => durable.wake(...args),
 }));

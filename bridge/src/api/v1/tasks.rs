@@ -35,7 +35,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             TasksFilterChoicesParams,
             TasksFilterChoices
         ),
-        v1_method!("tasks.get", tasks_get, TaskIdParams, TaskDetail),
+        v1_method!("tasks.get", tasks_get, TasksGetParams, TaskDetail),
         v1_method!(
             "tasks.create",
             tasks_create,
@@ -106,12 +106,27 @@ pub struct ProjectIdParams {
     pub project_id: String,
 }
 
-/// A task named and nothing else asked of it: `tasks.get`,
-/// `tasks.reopen`.
+/// A task named and nothing else asked of it: `tasks.reopen`.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TaskIdParams {
     #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,
+}
+
+/// Since 3.35.0, `timeline_paged:true` opts into bounded task history.
+/// Without that explicit opt-in the response remains the legacy full timeline.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TasksGetParams {
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
+    pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_paged: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_anchor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
 }
 
 /// One project's tasks, narrowed. Every filter is optional and they are ANDed.
@@ -808,6 +823,20 @@ pub struct TaskView {
     /// a task nobody watches never shows a count, so it carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unread_count: Option<u64>,
+    /// Since 3.35.0, bounded details carry authoritative all-history counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread_agent_comments: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread_mentions: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread_service_mentions: Option<u64>,
+    /// Present (including null) on bounded details and scoped task heads.
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub last_reviewed_snapshot_id: Option<Option<String>>,
     /// A watched task's activity streak, split by a silence of 8h or more
     /// (3.21.0, `tasks.activitySessions`). Bookkeeping does not extend it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1128,6 +1157,22 @@ pub type TaskTimelineEntry = Value;
 pub struct TaskDetail {
     pub task: TaskView,
     pub timeline: Vec<TaskTimelineEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_more: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub next_cursor: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_incarnation: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub timeline_read_through: Option<Option<String>>,
 }
 
 /// One kanban column: the slug that is stored, the name that is shown.
@@ -1229,6 +1274,28 @@ const UNAVAILABLE: [&str; 7] = [
 ///
 /// [`ApiError::classify`]: crate::api::ApiError::classify
 pub(crate) fn refine(error: ApiError) -> ApiError {
+    if [
+        "invalid task timeline cursor",
+        "invalid task timeline selector",
+        "timeline page limit",
+        "timeline_paged",
+        "timeline_anchor",
+    ]
+    .iter()
+    .any(|marker| error.message().contains(marker))
+    {
+        return ApiError::invalid_params(error.message());
+    }
+    if [
+        "bounded task timeline",
+        "bounded task record",
+        "bounded task review snapshot",
+    ]
+    .iter()
+    .any(|marker| error.message().contains(marker))
+    {
+        return ApiError::unavailable(error.message());
+    }
     if error.message().starts_with("invalid task query selector:") {
         return ApiError::invalid_params(error.message());
     }
@@ -1444,7 +1511,7 @@ fn tasks_filter_choices(
     answer(app.tasks_filter_choices(&params.wire())).map_err(refine)
 }
 
-fn tasks_get(app: &mut AppState, params: TaskIdParams) -> Result<Answer<TaskDetail>, ApiError> {
+fn tasks_get(app: &mut AppState, params: TasksGetParams) -> Result<Answer<TaskDetail>, ApiError> {
     answer(app.tasks_get(&params.wire())).map_err(refine)
 }
 

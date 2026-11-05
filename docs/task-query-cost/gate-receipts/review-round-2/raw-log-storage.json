@@ -1,0 +1,101 @@
+{
+  "encoding": "lossless UTF-8 raw_utf8 JSON strings; encode as UTF-8 and verify raw SHA to decode",
+  "logs": [
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/timeline-oldmerge-control-df14cf15c2/behavior.log",
+      "wrapper": "timeline-control.log.json",
+      "raw_sha256": "450fde0ba1676b8132a030465adb3901666965ea5ff89b155c49dbab5d4089d5",
+      "wrapper_sha256": "f30c897fbee7a698d53feb610437e03bfe8982197e45674b96be81411bdc219c"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-hints-control-df14cf15c2/negative.log",
+      "wrapper": "review-hints-control.log.json",
+      "raw_sha256": "9c7cc517b5b8a380b41d7b4bc51c35d6607574b6f36f05d0b65e8db01828c0d2",
+      "wrapper_sha256": "d8ea3dce05e23bbfcad2f5f63106fd153203867478573ac0aa4dc67fb37ed73c"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/spa-tree-truncated-negative.log",
+      "wrapper": "tree-truncated-control.log.json",
+      "raw_sha256": "dd59bcf37acf3b611fa71812c746b595077d302d21859d19a5722b0e6627f4b6",
+      "wrapper_sha256": "4386aed0705cb0b0cee42462f1f15d1034b0b294a019a1d565b9e6bb91631513"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/spa-tree-retention-negative.log",
+      "wrapper": "tree-retention-control.log.json",
+      "raw_sha256": "787ab48c02d47d20232f93c5775edb331699157b79a7015fa13c4c15479669dd",
+      "wrapper_sha256": "c5a2b97903e7d316bce10bb03d6d1c2b83a819f3a1d729939185193c07dec89b"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/spa-tree-reveal-negative.log",
+      "wrapper": "tree-reveal-control.log.json",
+      "raw_sha256": "f58aa55e3e8ba8cf03d4e389b002fcfd3185b4edc4c20795b5a615c1a2e6441c",
+      "wrapper_sha256": "2f3939d5f2c648e4601f7c228341fa6b43bea329109e55a3fcda54544681095f"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-hints-red.log",
+      "wrapper": "review-hints-development-red.log.json",
+      "raw_sha256": "d2b9ca6c60dfa12e5e92a8952ca9af9aedcf11f84811de50c24986ba3b1fc568",
+      "wrapper_sha256": "abb6b35ca317ca7a5a54ac3d442ae7bf230c4e792000f9cacaec17f7360b9ee2"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/directory-lease-weak-control-df14cf15.log",
+      "wrapper": "lease-weak-control.log.json",
+      "raw_sha256": "c5342d95f80741635e0dbb9a8c8ab966c8e059017ad1a6bb0f40760ccb2ab83a",
+      "wrapper_sha256": "bd7874a0ed435584775738611e56bd34234fada2a39e49703c5fd3c6a09ebf49"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-round1-final-backend/tree-pages.log",
+      "wrapper": "backend-tree-pages.log.json",
+      "raw_sha256": "f07fbdf6000677637c91cde9a8132242591bdf837fe5d06e01a1ebae26ce20ae",
+      "wrapper_sha256": "94396ea271e446986eadb9f3c5e697e70a1c97d2f5d9534157d016673462f7a4"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-round1-final-backend/filesystem.log",
+      "wrapper": "backend-filesystem.log.json",
+      "raw_sha256": "73ae110870efd14f5b64f62440ac14a4ce394f3fcb4ed3f13a43a83225b14f84",
+      "wrapper_sha256": "4bd5d4b8f444b2df7a3bf20f0f0cc69c228b76679b4b2818c3f2d0dda2afba2f"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-round1-final-backend/sql-reads.log",
+      "wrapper": "backend-sql-reads.log.json",
+      "raw_sha256": "5ffe5f87bd4932e52649dcb5904856e09af366256efdcaf94dcc98e697d7a6b5",
+      "wrapper_sha256": "8a4c6811542352e7ac04ffb6195ff8e48a24b2b83e3c3f5fa655259576bbf35e"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-round1-final-backend/file-hints.log",
+      "wrapper": "backend-file-hints.log.json",
+      "raw_sha256": "0eedd4fac0bd34ea462af1ef44a320ca22af6dd22a2cb0cbc9a105fe425cf4ba",
+      "wrapper_sha256": "d192cf63ed0b35bae5d04ad1baf595bfdc95150afdf4ed3c79dd789187d52068"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-round1-final-backend/format.log",
+      "wrapper": "backend-format.log.json",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "wrapper_sha256": "ea96d1f65d0505ed9c7db1507093d0fe337eb4bf29cbbb9011483dae34de8840"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-round1-final-backend/clippy.log",
+      "wrapper": "backend-clippy.log.json",
+      "raw_sha256": "5df844ee69403378b01bedce7ffff3f2374a339ef6b1a72fe6f0192b19791399",
+      "wrapper_sha256": "a0b18d6305d04e015dae9174766a77d1a52f4d26bc6a6c5c89d63d03b985796f"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-round1-final-ui/unit.log",
+      "wrapper": "pre-guard-ui-unit.log.json",
+      "raw_sha256": "c145c034a8987439ab6d1afbcabee394950e9cff75cf5c6add148ac5fe009d99",
+      "wrapper_sha256": "74a546b0d058c1cc7527d67ca494128c37c9572c260bcf30ccdf23cade593aaf"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-round1-final-ui/lint.log",
+      "wrapper": "pre-guard-ui-lint.log.json",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "wrapper_sha256": "afd3ba0d331dc9ae7714b6f3c47490af42ed1a9ce1863e81099e852558abce12"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-cursor-guard-red.log",
+      "wrapper": "review-cursor-guard-development-red.log.json",
+      "raw_sha256": "482179564ada34b522906507abaae9194aed31861a35839893014faa0e523ca2",
+      "wrapper_sha256": "1c90007c16e291fcc3c650f50d75f2671e217e97719271cbec41707c93d9ef8d"
+    }
+  ]
+}

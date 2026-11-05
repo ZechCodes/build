@@ -58,6 +58,16 @@ afterEach(() => {
 });
 
 describe("arming", () => {
+  it("delivers bounded file hint bodies to explicitly named hint watchers", () => {
+    const onChanges = vi.fn();
+    armChangeEvents({ push_events: true }, "dev-a");
+    const watcher = watchChanges({ onChanges, entity: "run-1", deviceId: "dev-a", kinds: ["files.hints"] });
+    const files = { paths: ["src/file.js"], truncated: false };
+    entityMoved("run-1", "dev-a", { files });
+    expect(onChanges).toHaveBeenCalledWith([{ entity_id: "run-1", files }]);
+    watcher.dispose();
+  });
+
   it("arms on the bridge's push_events flag", () => {
     expect(armChangeEvents({ push_events: true, events: ["board.changed"] }, "dev-a")).toBe(true);
     expect(changeEventsArmed("dev-a")).toBe(true);

@@ -205,6 +205,10 @@ it("falls back to the 24-hour Done once an older bridge answers the list", async
   // The empty line and the dropped session both follow this bridge's list
   // answer, by separate writes: the line can be up before the session goes.
   await announced((heard) => subscribeCache(userSessionAddress("dev-1"), heard), async () => (await readUserSession("dev-1")) === null);
+  // The pane rereads the announced session asynchronously. The earlier empty
+  // paint can precede its cached-session paint; await the final fallback DOM.
+  await painted(() => doneRows().length === 0 && host.querySelector(".task-dashboard-empty")?.textContent
+    === "Nothing moved to Done in the last 24 hours.");
   expect(await readUserSession("dev-1")).toBe(null);
   expect(doneRows()).toEqual([]);
 });

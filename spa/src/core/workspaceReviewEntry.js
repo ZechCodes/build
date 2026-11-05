@@ -8,6 +8,7 @@ import { reviewCreateDraftAddress } from "./taskReviewDrafts.js";
 import { reviewFailure } from "./taskReviewCache.js";
 import { openReviewCreateForm, openReviewPushForm } from "./workspaceReviewForm.js";
 import { readWorkspaceReviewContext, boundSourceFacts, pendingReviewText, canPushSource, shortReviewRef, sourcePushDestination } from "./workspaceReviewState.js";
+import { createWorkspaceReviewReads } from "./workspaceReviewReads.js";
 
 async function reviewOptions(options) {
   if (options.callRpc) return options;
@@ -119,13 +120,16 @@ async function switchReviewBranch(options, fact) {
 
 export function mountWorkspaceReviewEntry(host, options) {
   let disposed = false;
+  let visible = true;
   let modal = null;
   let revision = 0;
   let html = null;
+  const reads = createWorkspaceReviewReads({ ...options, active: () => !disposed && visible });
   async function paint() {
     const read = ++revision;
     const context = await readWorkspaceReviewContext(options);
     if (disposed || read !== revision) return;
+    reads.select(context);
     const next = entryHtml(context, options);
     if (html === next) { wirePublication(context); return; }
     html = next;
@@ -157,7 +161,15 @@ export function mountWorkspaceReviewEntry(host, options) {
   const unwatch = subscribeCache({ deviceId: options.deviceId }, () => void paint());
   const unwatchDraft = subscribeUiRecords(reviewCreateDraftAddress(options), () => void paint());
   void paint();
-  return { dispose() { disposed = true; unwatch(); unwatchDraft(); return modal?.close(); } };
+  return {
+    setVisible(shown) {
+      if (visible === shown || disposed) return;
+      visible = shown;
+      if (!shown) reads.suspend();
+      else void paint();
+    },
+    dispose() { disposed = true; reads.dispose(); unwatch(); unwatchDraft(); return modal?.close(); },
+  };
 }
 
 function replaceEntryHtml(host, next) {

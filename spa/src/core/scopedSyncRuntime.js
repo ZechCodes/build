@@ -33,6 +33,11 @@ export const scopedSyncWriter = () => Boolean(browserLockAvailable() && runtime?
 export const scopedSyncOwns = (deviceId, scope) => browserLockAvailable() && supported(bridgeCapabilities(deviceId), scope, deviceId)
   && scopeIsTracked(deviceId, scope);
 export const deviceScopedSyncOwns = (deviceId) => scopedSyncOwns(deviceId, deviceSyncScope());
+// All three scoped families must be negotiated before abandoning legacy
+// warming. Current ownership includes the wire floor and browser-wide lock.
+export const lazyViewReadsEnabled = (deviceId) => deviceScopedSyncOwns(deviceId)
+  && bridgeCapabilities(deviceId)?.sync?.projectTasks === true
+  && bridgeCapabilities(deviceId)?.sync?.task === true;
 export const projectScopedSyncOwns = (deviceId, projectId) => scopedSyncOwns(deviceId, projectSyncScope(projectId));
 
 function retire(deviceId) {

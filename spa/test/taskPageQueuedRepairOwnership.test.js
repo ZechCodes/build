@@ -30,9 +30,9 @@ beforeEach(() => {
 afterEach(async () => {
   page?.dispose();
   for (const request of requests) request.resolve(answer("Disposed reply"));
-  await Promise.allSettled(runtime?.reads || []);
   runtime?.changes.resetChangeEvents();
   runtime?.contexts.resetDeviceContexts();
+  await Promise.allSettled(runtime?.reads || []);
   vi.restoreAllMocks();
 });
 
@@ -50,6 +50,17 @@ function sessionWithHeldReads() {
     return request.promise;
   });
   return { session, gets };
+}
+
+async function greetSession(owner, context) {
+  await runtime.changes.greetBridge(owner.session.call, {
+    deviceId, isCurrent: () => context.session === owner.session,
+    install: (selection) => {
+      const adapter = selection.create(owner.session.call);
+      runtime.contexts.adoptBridgeSelection(context, selection, adapter);
+      return adapter;
+    },
+  });
 }
 
 async function mountRealPage() {
@@ -86,6 +97,7 @@ async function mountRealPage() {
   const coherentReads = vi.spyOn(runtime.local, "readCachedMany");
   const old = sessionWithHeldReads();
   const context = runtime.contexts.adoptDeviceSession(old.session);
+  await greetSession(old, context);
   const { mountTaskPage } = await import("../src/core/trackerTaskPage.js");
   page = mountTaskPage(document.querySelector("#queued-page"), {
     ...scope, taskId, projectKey: `${deviceId}|${projectId}`, callRpc: context.rpc,
@@ -137,15 +149,27 @@ async function replaceWithQueuedRepair() {
   return { ...mounted, replacement, key };
 }
 
-it("admits the same repair key for a real replacement session after rejecting the old queued owner before greeting", async () => {
+it("keeps the same repair key cached before replacement greeting and dispatches it under the negotiated owner", async () => {
   const mounted = await replaceWithQueuedRepair();
   await reannounceSameKey(mounted, mounted.key);
-  await vi.waitFor(() => expect(mounted.replacement.gets).toHaveLength(1));
+  await vi.waitFor(() => expect(runtime.reads).toHaveLength(3));
+  expect(mounted.replacement.gets).toHaveLength(0);
   expect(mounted.replacement.session.call.mock.calls.some(([method]) => method === "session.hello")).toBe(false);
   expect(mounted.context.adapter).toBeNull();
-  mounted.replacement.gets[0].resolve(answer("Current pre-greeting repair"));
+  expect(document.querySelector(".task-page-title")?.textContent).toBe(row.title);
+  expect(runtime.content.taskFullRefreshKey((await runtime.tracker.readTaskRecord(deviceId, projectId, taskId)).task)).toBe(mounted.key);
+  // Release the real greeting authority without announcing an independent
+  // global refresh. The next case covers greetBridge's normal refresh path;
+  // this case isolates the same-key reader already waiting for negotiation.
+  const { selectAdapter } = await import("../src/core/bridgeApi/index.js");
+  const greeting = await mounted.replacement.session.call("session.hello");
+  const selection = selectAdapter(greeting);
+  runtime.contexts.adoptBridgeSelection(mounted.context, selection,
+    selection.create(mounted.replacement.session.call));
+  await vi.waitFor(() => expect(mounted.replacement.gets).toHaveLength(1));
+  mounted.replacement.gets[0].resolve(answer("Current negotiated repair"));
   await runtime.asks.at(-1);
-  expect((await runtime.tracker.readTaskRecord(deviceId, projectId, taskId)).task.title).toBe("Current pre-greeting repair");
+  expect((await runtime.tracker.readTaskRecord(deviceId, projectId, taskId)).task.title).toBe("Current negotiated repair");
   expect(mounted.old.gets).toHaveLength(1);
   expect(mounted.replacement.gets).toHaveLength(1);
 });
@@ -154,14 +178,7 @@ it("recovers the queued repair through a real replacement greeting normal refres
   const mounted = await replaceWithQueuedRepair();
   // This is an independent positive: greeting's normal demand can cover K.
   // It does not establish that a pre-greeting same-key repair was admitted.
-  await runtime.changes.greetBridge(mounted.replacement.session.call, {
-    deviceId, isCurrent: () => mounted.context.session === mounted.replacement.session,
-    install: (selection) => {
-      const adapter = selection.create(mounted.replacement.session.call);
-      runtime.contexts.adoptBridgeSelection(mounted.context, selection, adapter);
-      return adapter;
-    },
-  });
+  await greetSession(mounted.replacement, mounted.context);
   await vi.waitFor(() => expect(mounted.replacement.gets).toHaveLength(1));
   expect(mounted.replacement.session.call.mock.calls.filter(([method]) => method === "session.hello")).toHaveLength(1);
   mounted.replacement.gets[0].resolve(answer("Greeting repaired title"));

@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 const durable = vi.hoisted(() => ({ owns: false, wake: vi.fn(async () => []), release: vi.fn(), register: vi.fn() }));
 vi.mock("../src/core/scopedSyncRuntime.js", () => ({
+  lazyViewReadsEnabled: () => false,
   scopedSyncOwns: () => durable.owns,
   wakeScopedSync: (...args) => durable.wake(...args),
 }));
@@ -34,7 +35,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
   bridgeCapabilities: () => ({
     changes: { subscriptions: true, kinds: carriedKinds },
     // #57: whether this bridge can carry files on a task.
-    tasks: { attachments: carriesAttachments, watching: carriesWatching },
+    tasks: { attachments: carriesAttachments, watching: carriesWatching, timelinePaged: carriesTimelinePaging },
   }),
   watchChanges: (registration) => {
     const named = RETIRED.filter((option) => option in registration);
@@ -52,6 +53,7 @@ let carriedKinds = EVERY_KIND;
 /** Whether the bridge under test has `tasks.attach` (1.8). */
 let carriesAttachments = true;
 let carriesWatching = false;
+let carriesTimelinePaging = false;
 
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args) }));
@@ -156,6 +158,7 @@ beforeEach(async () => {
   carriedKinds = EVERY_KIND;
   carriesAttachments = true;
   carriesWatching = false;
+  carriesTimelinePaging = false;
   away = true;
   reconnecting = true;
   movedListeners = new Set();
@@ -166,6 +169,7 @@ beforeEach(async () => {
   feed.items = [{ kind: "branch", projectKey: PROJECT_KEY, run_id: "run-1", agents: [{ id: "agent-1", ordinal: 1 }] }];
   document.body.innerHTML = '<div id="pane"></div>';
   host = document.querySelector("#pane");
+  host.scrollTo = vi.fn();
   trackerCache = await import("../src/core/trackerCache.js");
   ({ mountTaskPage } = await import("../src/core/trackerTaskPage.js"));
   await trackerCache.writeTasksRecord("dev-1", "proj-1", { tasks: [], columns: columns() });
@@ -174,6 +178,186 @@ beforeEach(async () => {
     if (refuses?.method === method) throw new Error(refuses.message);
     return method === "tasks.get" ? answerFor() : {};
   });
+});
+
+it("paints cached history before a bounded open read and prepends older pages on demand", async () => {
+  carriesTimelinePaging = true;
+  const local = await import("../src/core/localCache.js");
+  const detail = trackerCache.taskAddress("dev-1", "proj-1", "task-1");
+  const cached = { ...answerFor({}, TIMELINE.slice(2)), has_more: true, next_cursor: "before-new" };
+  await local.writeCached(detail, cached);
+  let release;
+  const head = new Promise((resolve) => { release = resolve; });
+  call = vi.fn(async (method, params) => {
+    if (method !== "tasks.get") return {};
+    if (params.before) return { ...answerFor({ title: "Older reply cannot replace the task" }, TIMELINE.slice(0, 2)), has_more: false, next_cursor: null };
+    return head;
+  });
+  await mount();
+  expect(entries().join(" ")).toContain("On it.");
+  expect(host.querySelector(".task-page-title").textContent).toBe(cached.task.title);
+  expect(listed("tasks.get")[0][1]).toEqual({ task_id: "task-1", timeline_paged: true, limit: 50 });
+  expect(listed("tasks.get")).toHaveLength(1);
+  release(cached);
+  await flush();
+  host.querySelector("[data-task-timeline-older]").click();
+  await flush();
+  expect(listed("tasks.get")[1][1]).toEqual({ task_id: "task-1", timeline_paged: true, limit: 50, before: "before-new" });
+  expect(entries()).toHaveLength(4);
+  expect(entries().join(" ")).toContain("This reproduces on a phone too.");
+  expect(host.querySelector(".task-page-title").textContent).toBe(cached.task.title);
+  expect(host.querySelector("[data-task-timeline-older]")).toBeNull();
+  expect((await local.readCached(detail)).value.timeline.map((row) => row.id)).toEqual(TIMELINE.map((row) => row.id));
+});
+
+it("upgrades a cached legacy-shaped head and loads its second page from Older history", async () => {
+  carriesTimelinePaging = true;
+  const local = await import("../src/core/localCache.js");
+  const address = trackerCache.taskAddress("dev-1", "proj-1", "task-1");
+  const cached = { ...answerFor({}, TIMELINE.slice(2)), has_more: true };
+  await local.writeCached(address, cached);
+  let release;
+  const head = new Promise((resolve) => { release = resolve; });
+  call = vi.fn(async (method, params) => {
+    if (method !== "tasks.get") return {};
+    return params.before ? { ...answerFor({}, TIMELINE.slice(0, 2)), has_more: false,
+      next_cursor: null, timeline_incarnation: "store-one" } : head;
+  });
+  await mount();
+  expect(entries().join(" ")).toContain("On it.");
+  expect(host.querySelector("[data-task-timeline-older]")).toBeNull();
+  release({ ...cached, next_cursor: "before-upgraded", timeline_incarnation: "store-one" });
+  await vi.waitFor(() => expect(host.querySelector("[data-task-timeline-older]")).not.toBeNull());
+  host.querySelector("[data-task-timeline-older]").click();
+  await vi.waitFor(() => expect(entries()).toHaveLength(4));
+  expect(listed("tasks.get").map(([, params]) => params)).toEqual([
+    { task_id: "task-1", timeline_paged: true, limit: 50 },
+    { task_id: "task-1", timeline_paged: true, limit: 50, before: "before-upgraded" },
+  ]);
+  expect((await local.readCached(address)).value.timeline.map((row) => row.id)).toEqual(TIMELINE.map((row) => row.id));
+  expect(host.querySelector("[data-task-timeline-older]")).toBeNull();
+  expect(notifyError).not.toHaveBeenCalled();
+});
+
+it("retains cached history and continuation when an older page fails", async () => {
+  carriesTimelinePaging = true;
+  call = vi.fn(async (method, params) => {
+    if (method !== "tasks.get") return {};
+    if (params.before) throw new Error("History unavailable");
+    return { ...answerFor({}, TIMELINE.slice(2)), has_more: true, next_cursor: "before-new" };
+  });
+  await mount();
+  host.querySelector("[data-task-timeline-older]").click();
+  await flush();
+  expect(entries()).toHaveLength(2);
+  expect(host.querySelector("[data-task-timeline-older]")).not.toBeNull();
+  expect(notifyError).toHaveBeenCalledWith("Could not load older history", "History unavailable");
+});
+
+it("silently replaces a refused foreign Older cursor without hiding cached history", async () => {
+  carriesTimelinePaging = true;
+  const cached = { ...answerFor({}, TIMELINE.slice(2)), has_more: true, next_cursor: "foreign-before", timeline_incarnation: "old-store" };
+  let release;
+  const replacement = new Promise((resolve) => { release = resolve; });
+  let first = true;
+  call = vi.fn(async (method, params) => {
+    if (method !== "tasks.get") return {};
+    if (params.before) throw Object.assign(new Error("invalid task timeline cursor; read newest page again"), {
+      code: "invalid_params", details: { reason: "task_timeline_cursor_invalid" },
+    });
+    if (first) { first = false; return cached; }
+    return replacement;
+  });
+  await mount();
+  host.querySelector("[data-task-timeline-older]").click();
+  await vi.waitFor(() => expect(listed("tasks.get")).toHaveLength(3));
+  expect(entries().join(" ")).toContain("On it.");
+  expect(notifyError).not.toHaveBeenCalled();
+  release({ ...cached, timeline_incarnation: "new-store", next_cursor: "current-before" });
+  await vi.waitFor(async () => expect((await trackerCache.readTaskRecord("dev-1", "proj-1", "task-1")).next_cursor).toBe("current-before"));
+  expect(notifyError).not.toHaveBeenCalled();
+});
+
+it("seeks a routed older comment into a bounded separate section while retaining newest history", async () => {
+  carriesTimelinePaging = true;
+  const newest = { ...answerFor({}, TIMELINE.slice(2)), has_more: true, next_cursor: "before-new", timeline_incarnation: "store-one" };
+  const anchor = { ...answerFor({}, TIMELINE.slice(0, 2)), has_more: false, next_cursor: null, timeline_incarnation: "store-one" };
+  call = vi.fn(async (method, params) => method === "tasks.get" ? params.timeline_anchor ? anchor : newest : {});
+  await mount({ commentId: "tc-1" });
+  await vi.waitFor(() => expect(host.querySelector("#comment-tc-1")?.classList.contains("task-comment-target")).toBe(true));
+  expect(listed("tasks.get").some(([, params]) => params.timeline_anchor === "tc-1")).toBe(true);
+  expect(host.querySelector("[data-task-history-gap]")).not.toBeNull();
+  expect(entries().join(" ")).toContain("On it.");
+  const saved = await trackerCache.readTaskRecord("dev-1", "proj-1", "task-1");
+  expect(saved.next_cursor).toBe("before-new");
+  expect(saved.timeline).toEqual(newest.timeline);
+});
+
+it("seeks an unloaded reply parent only when the reader presses its quote", async () => {
+  carriesTimelinePaging = true;
+  const newest = { ...answerFor({}, [{ ...TIMELINE.at(-1), reply_to: "tc-1" }]), has_more: true, next_cursor: "before-new", timeline_incarnation: "store-one" };
+  const anchor = { ...answerFor({}, TIMELINE.slice(0, 2)), has_more: false, next_cursor: null, timeline_incarnation: "store-one" };
+  call = vi.fn(async (method, params) => method === "tasks.get" ? params.timeline_anchor ? anchor : newest : {});
+  await mount();
+  expect(listed("tasks.get")).toHaveLength(1);
+  host.querySelector(".tracker-task-comment-reply").click();
+  await vi.waitFor(() => expect(host.querySelector("#comment-tc-1")?.classList.contains("task-comment-target")).toBe(true));
+  expect(listed("tasks.get").filter(([, params]) => params.timeline_anchor === "tc-1")).toHaveLength(1);
+  expect(host.querySelector("[data-task-history-gap]")).not.toBeNull();
+});
+
+it("retains the newer reply anchor when two seek responses arrive in reverse order", async () => {
+  carriesTimelinePaging = true;
+  const held = { ...answerFor({}, [
+    comment({ id: "tc-90", body: "First reply", reply_to: "tc-old-one" }),
+    comment({ id: "tc-91", body: "Second reply", reply_to: "tc-old-two" }),
+  ]), has_more: true, next_cursor: "before-new", timeline_incarnation: "store-one" };
+  const releases = new Map();
+  call = vi.fn(async (method, params) => {
+    if (method !== "tasks.get") return {};
+    if (!params.timeline_anchor) return held;
+    return new Promise((resolve) => releases.set(params.timeline_anchor, resolve));
+  });
+  await mount();
+  host.querySelectorAll(".tracker-task-comment-reply")[0].click();
+  await vi.waitFor(() => expect(releases.has("tc-old-one")).toBe(true));
+  host.querySelectorAll(".tracker-task-comment-reply")[1].click();
+  await vi.waitFor(() => expect(releases.has("tc-old-two")).toBe(true));
+  const anchor = (id) => ({ ...answerFor({}, [comment({ id, body: `Earlier ${id}` })]),
+    has_more: false, next_cursor: null, timeline_incarnation: "store-one" });
+  releases.get("tc-old-two")(anchor("tc-old-two"));
+  await vi.waitFor(() => expect(host.querySelector("#comment-tc-old-two")?.classList.contains("task-comment-target")).toBe(true));
+  releases.get("tc-old-one")(anchor("tc-old-one"));
+  await flush();
+  expect(host.querySelector("#comment-tc-old-two")?.classList.contains("task-comment-target")).toBe(true);
+  const anchors = (await trackerCache.readTaskRecord("dev-1", "proj-1", "task-1")).timeline_anchor_pages;
+  expect(anchors["tc-old-two"].anchor).toBe("tc-old-two");
+  expect(anchors["tc-old-one"]).toBeUndefined();
+});
+
+it("keeps independent mounted comment anchors when another tab selects a different target", async () => {
+  carriesTimelinePaging = true;
+  const held = { ...answerFor({}, TIMELINE.slice(2)), has_more: true, next_cursor: "before-new", timeline_incarnation: "store-one" };
+  const anchor = (id) => ({ ...answerFor({}, [comment({ id, body: `Earlier ${id}` })]),
+    has_more: false, next_cursor: null, timeline_incarnation: "store-one" });
+  call = vi.fn(async (method, params) => method === "tasks.get" ? params.timeline_anchor ? anchor(params.timeline_anchor) : held : {});
+  await mount({ commentId: "tc-old-one" });
+  await vi.waitFor(() => expect(host.querySelector("#comment-tc-old-one")).not.toBeNull());
+  const otherFrame = document.createElement("iframe");
+  document.body.append(otherFrame);
+  const otherHost = otherFrame.contentDocument.createElement("div");
+  otherFrame.contentDocument.body.append(otherHost);
+  otherHost.scrollTo = vi.fn();
+  const other = mountTaskPage(otherHost, { deviceId: "dev-1", projectId: "proj-1", projectKey: PROJECT_KEY,
+    taskId: "task-1", commentId: "tc-old-two", callRpc: call, feed: () => feed, catalog: () => ({ providers: [] }), navigate: vi.fn() });
+  try {
+    await vi.waitFor(() => expect(otherHost.querySelector("#comment-tc-old-two")).not.toBeNull());
+    await flush();
+    expect(host.querySelector("#comment-tc-old-one")?.classList.contains("task-comment-target")).toBe(true);
+    expect(otherHost.querySelector("#comment-tc-old-two")?.classList.contains("task-comment-target")).toBe(true);
+  } finally {
+    other.dispose(); otherFrame.remove();
+  }
 });
 
 afterEach(() => {

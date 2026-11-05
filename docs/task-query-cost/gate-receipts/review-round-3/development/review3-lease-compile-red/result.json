@@ -1,0 +1,19 @@
+{
+  "event": "complete",
+  "argv": [
+    "nice",
+    "-n",
+    "10",
+    "cargo",
+    "test",
+    "--lib",
+    "app::fs::tree_pages::lease_tests::directory_lease_idle_expiry_releases_last_file_without_another_request",
+    "--",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+  "head": "ffb8d5992a16f8cf3f08fc223d9df4c0f754c82b",
+  "exit_code": 101
+}

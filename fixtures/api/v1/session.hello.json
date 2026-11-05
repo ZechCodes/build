@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.34.0",
+    "api_version": "3.35.0",
     "ack_confirm_methods": [],
     "capabilities": [
       "agent.add",
@@ -35,6 +35,7 @@
       "capture.get",
       "capture.reroute",
       "changes.bodies",
+      "changes.filesHints",
       "changes.projectSources",
       "changes.refusedKinds",
       "changes.subscribe",
@@ -60,6 +61,7 @@
       "fs.projectSources",
       "fs.read",
       "fs.tree",
+      "fs.treePaged",
       "fs.uploadAbort",
       "fs.uploadBegin",
       "fs.uploadChunk",
@@ -200,6 +202,7 @@
       "tasks.review.update",
       "tasks.review.verdictDelivery",
       "tasks.reviewComments",
+      "tasks.timelinePaged",
       "tasks.unreadCounts",
       "tasks.unwatch",
       "tasks.update",
@@ -274,6 +277,7 @@
         "thread",
         "git",
         "files",
+        "files.hints",
         "terminals",
         "tasks",
         "compaction.changed"

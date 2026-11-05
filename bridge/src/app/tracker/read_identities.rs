@@ -81,6 +81,41 @@ impl AppState {
 }
 
 impl TaskIdentityContext {
+    /// Page readers resolve only referenced agents through maintained point
+    /// facts. They never restore the device's entire historical roster set.
+    pub(super) fn read_task_bounded(
+        &self,
+        source: &impl TaskReadSource,
+        mut task: Task,
+        timeline: &[TimelineEntry],
+    ) -> Result<Task, String> {
+        use super::StoredAnswer;
+        let ids = mentioned(&task, timeline);
+        task.identities.retain(|id, _| ids.contains(id));
+        for id in ids {
+            if let Some((durable, _)) = source.task_summary_identity_with_owner(&id).stored()? {
+                let identity = self.identity(&id, &durable);
+                task.identities
+                    .entry(id)
+                    .and_modify(|prior| {
+                        *prior = retain_known_fields(prior, identity.clone());
+                    })
+                    .or_insert(identity);
+            } else {
+                task.identities
+                    .entry(id.clone())
+                    .or_insert_with(|| unknown_identity(&id));
+            }
+        }
+        for identity in task.identities.values_mut() {
+            identity.available = self
+                .live
+                .get(&identity.agent_id)
+                .is_some_and(|live| live.available);
+        }
+        Ok(task)
+    }
+
     pub(super) fn retain_live_owners(
         &mut self,
         previous: &Self,

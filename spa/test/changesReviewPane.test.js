@@ -5,6 +5,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { painted } from "./waits.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -313,7 +314,7 @@ describe("workspace comments", () => {
 
   it("anchors selected text with ambient context disabled", async () => {
     const { pane, container, calls } = await workspacePane();
-    const code = container.querySelector('tr.add .code');
+    const code = await painted(() => container.querySelector('tr.add .code'), container);
     code.closest(".file").classList.remove("capped");
     const range = document.createRange();
     range.selectNodeContents(code);

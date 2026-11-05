@@ -1,0 +1,212 @@
+{
+  "name": "retention",
+  "expected_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+  "expected_source_sha256": "52ebe239482c1d324878ab4741d68b7cb7fc55c9fcb3e564c675a188784e6079",
+  "expected_failing_names": [
+    "retains a three-page selected row when a child hint refreshes the loaded directory window"
+  ],
+  "commands": [
+    {
+      "event": "tree_control_command",
+      "control": "retention",
+      "phase": "initial_head",
+      "candidate_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0,
+      "stdout": "a455b832cdfb5c213ccea901f3883141019bd9ad\n",
+      "stderr": ""
+    },
+    {
+      "event": "tree_control_command",
+      "control": "retention",
+      "phase": "initial_owned_source_clean",
+      "candidate_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+      "argv": [
+        "git",
+        "diff",
+        "--quiet",
+        "a455b832cdfb5c213ccea901f3883141019bd9ad",
+        "--",
+        "spa/src/core/fileTree.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "retention",
+      "phase": "save_copy",
+      "candidate_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+      "argv": [
+        "cp",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/src/core/fileTree.js",
+        "/home/zech/Projects/.agent-scratch/894/file-tree-window-staging/fileTree-retention-negative-a455b832.copy.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "retention",
+      "phase": "verify_saved_copy",
+      "candidate_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+      "argv": [
+        "cmp",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/src/core/fileTree.js",
+        "/home/zech/Projects/.agent-scratch/894/file-tree-window-staging/fileTree-retention-negative-a455b832.copy.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "retention",
+      "phase": "install_mutant",
+      "candidate_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+      "argv": [
+        "cp",
+        "/home/zech/Projects/.agent-scratch/894/file-tree-window-staging/fileTree-retention-mutant-a455b832.js",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/src/core/fileTree.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "retention",
+      "phase": "touch_mutant",
+      "candidate_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+      "argv": [
+        "touch",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/src/core/fileTree.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "retention",
+      "phase": "behavioral_negative_control",
+      "candidate_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+      "argv": [
+        "nice",
+        "-n",
+        "10",
+        "env",
+        "CARGO_BUILD_JOBS=8",
+        "TMPDIR=/home/zech/Projects/.agent-scratch/894",
+        "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+        "node_modules/vitest/vitest.mjs",
+        "run",
+        "test/fileTreePaging.test.js",
+        "-t",
+        "three-page selected row"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa",
+      "exit_code": 1,
+      "output_path": "/home/zech/Projects/.agent-scratch/894/spa-tree-retention-negative-a455b832.log"
+    },
+    {
+      "event": "tree_control_command",
+      "control": "retention",
+      "phase": "restore_copy",
+      "candidate_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+      "argv": [
+        "cp",
+        "/home/zech/Projects/.agent-scratch/894/file-tree-window-staging/fileTree-retention-negative-a455b832.copy.js",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/src/core/fileTree.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "retention",
+      "phase": "touch_restored_source",
+      "candidate_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+      "argv": [
+        "touch",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/src/core/fileTree.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "retention",
+      "phase": "verify_restore_cmp",
+      "candidate_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+      "argv": [
+        "cmp",
+        "/home/zech/Projects/.agent-scratch/894/file-tree-window-staging/fileTree-retention-negative-a455b832.copy.js",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/src/core/fileTree.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "retention",
+      "phase": "final_head",
+      "candidate_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0,
+      "stdout": "a455b832cdfb5c213ccea901f3883141019bd9ad\n",
+      "stderr": ""
+    },
+    {
+      "event": "tree_control_command",
+      "control": "retention",
+      "phase": "final_owned_source_clean",
+      "candidate_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+      "argv": [
+        "git",
+        "diff",
+        "--quiet",
+        "a455b832cdfb5c213ccea901f3883141019bd9ad",
+        "--",
+        "spa/src/core/fileTree.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    }
+  ],
+  "observed_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+  "initial_source_sha256": "52ebe239482c1d324878ab4741d68b7cb7fc55c9fcb3e564c675a188784e6079",
+  "mutant_sha256": "7652cc6a34eecc451fc49a5f7f458ff776d92bd2d5a7647b122977741074389c",
+  "command": [
+    "nice",
+    "-n",
+    "10",
+    "env",
+    "CARGO_BUILD_JOBS=8",
+    "TMPDIR=/home/zech/Projects/.agent-scratch/894",
+    "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+    "node_modules/vitest/vitest.mjs",
+    "run",
+    "test/fileTreePaging.test.js",
+    "-t",
+    "three-page selected row"
+  ],
+  "exit_code": 1,
+  "expected_failure_names_present": {
+    "retains a three-page selected row when a child hint refreshes the loaded directory window": true
+  },
+  "restore_cp_exit_code": 0,
+  "restore_touch_exit_code": 0,
+  "cmp_exit_code": 0,
+  "restored_sha256": "52ebe239482c1d324878ab4741d68b7cb7fc55c9fcb3e564c675a188784e6079",
+  "final_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+  "final_owned_source_exit_code": 0,
+  "restoration_verified": true
+}

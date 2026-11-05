@@ -1,0 +1,47 @@
+{
+  "encoding": "lossless UTF-8 raw_utf8 JSON strings; the originals were installed control operands",
+  "sources": [
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/taskTimelineWindow-upgrade-old.js",
+      "wrapper": "timeline-defective.source.json",
+      "raw_sha256": "2ac3796fbcff341aa025d21baa4c641b86b44b88b62318114b26799b572cedfa",
+      "wrapper_sha256": "b52456b2e4b13080af73ed9664425fc2c72b7a23f093b9d3a841d1d83e08c46f"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-hints-before.js",
+      "wrapper": "watcher-defective.source.json",
+      "raw_sha256": "c0ea9b55b51b7a3f397b05c2a037a6a7ed4f7e63f83641bbd503ba94ca5f41cd",
+      "wrapper_sha256": "e1d58062e4301ccb5e336716f717961ffccf5a00914e00d251ffec5696f7cb75"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-cursor-guard-mutant.js",
+      "wrapper": "cursor-defective.source.json",
+      "raw_sha256": "2cd4ae12ecd82b2a6e79e47c59bec56893196f6bb67951a5b3151aec4b3b11de",
+      "wrapper_sha256": "156646ecd8ba013233799d0ee7dd32d1d85828037c0f69a5b46ef18dbe9324db"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/file-tree-window-staging/fileTree-truncated-mutant-907ae03e.js",
+      "wrapper": "tree-truncated-defective.source.json",
+      "raw_sha256": "a5a5f1111ffe315bcecc7def7e9549da6e6b0b9aec814dfa407d6f2a03eb1e5a",
+      "wrapper_sha256": "ce3c08a301689b8cd2f854d51cade4cd0cd496ee5409ecdad90b1a244866450b"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/file-tree-window-staging/fileTree-retention-mutant-907ae03e.js",
+      "wrapper": "tree-retention-defective.source.json",
+      "raw_sha256": "7652cc6a34eecc451fc49a5f7f458ff776d92bd2d5a7647b122977741074389c",
+      "wrapper_sha256": "8644834447e7b96f45ff56935f3a5d148fdc024d40ae669a00e5cb6cf934af9a"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/file-tree-window-staging/fileTree-reveal-mutant-907ae03e.js",
+      "wrapper": "tree-reveal-defective.source.json",
+      "raw_sha256": "1205ffb148bb05fa69cf5216c126af5eb1ad7e3fc83840fd8426ddf5653e7a5a",
+      "wrapper_sha256": "73b4400d26b5a395004e12435aa81aabca8517cbac5b312628235e33b45020f2"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/directory-lease-control-weak.rs",
+      "wrapper": "lease-weak-defective.source.json",
+      "raw_sha256": "354a8132b4e0f8c2e29deca97259ac5c091da0ff7d2063306ed04c4fab663182",
+      "wrapper_sha256": "ee328db913f147c4c61811727f4ea21d8b65cabb33ea0bb5fd3bfecae1f82af6"
+    }
+  ]
+}

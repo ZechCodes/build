@@ -16,7 +16,7 @@ vi.mock("../src/core/cachedRows.js", () => ({ cachedFeedView: async () => ({ wor
 vi.mock("../src/core/taskFeed.js", () => ({ subscribeFeed: (listener) => { listener(); return () => {}; }, refreshFeed: async () => [true] }));
 vi.mock("../src/core/workspaceRail.js", () => ({ mountWorkspaceRail: () => ({ paint() {}, feedMoved() {}, dispose() {} }) }));
 vi.mock("../src/views/files.js", () => ({ renderFilesTab: () => ({ dispose() {} }) }));
-vi.mock("../src/core/workspaceReviewEntry.js", () => ({ mountWorkspaceReviewEntry: () => ({ dispose() {} }) }));
+vi.mock("../src/core/workspaceReviewEntry.js", () => ({ mountWorkspaceReviewEntry: () => ({ setVisible() {}, dispose() {} }) }));
 vi.mock("../src/core/workspaceTasksTab.js", () => ({ mountWorkspaceTasksTab: () => ({ dispose() {} }), workspaceTasksPlace: () => ({}) }));
 vi.mock("../src/views/workspaceChanges.js", () => ({ mountWorkspaceChanges: (host) => {
   host.innerHTML = '<div class="workspace-changes"><div class="workspace-changes-surface"><aside class="crail-host"></aside></div></div>';

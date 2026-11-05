@@ -22,7 +22,8 @@ import { commitPatchParams } from "./commitDiffTarget.js";
 //
 // # The order, and why it is an order
 //
-// Lists land independently, then the open conversation and checkout, then
+// Scoped ownership reads only mounted conversations and checkout panes after
+// directory recovery. Legacy lists land independently, then the open checkout,
 // inbox conversations and tasks, then background checkout warming. The phase
 // planner re-evaluates the route between reads and at background wire boundaries.
 //
@@ -39,7 +40,7 @@ import { commitPatchParams } from "./commitDiffTarget.js";
 // read it followed, so a read never writes over a record a push wrote after it
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
-import { captureScopedSync, deviceScopedSyncOwns, projectScopedSyncOwns, reconcileScopedSyncRuntime, startScopedSyncRuntime,
+import { captureScopedSync, deviceScopedSyncOwns, lazyViewReadsEnabled, projectScopedSyncOwns, reconcileScopedSyncRuntime, startScopedSyncRuntime,
   stopScopedSyncRuntime, wakeScopedSync, wakeScopedSyncChanges } from "./scopedSyncRuntime.js";
 import { enrichDeviceRuntimeState, enrichDeviceRuntimeBoard, hasDeviceRuntimeCollections } from "./scopedDeviceRuntime.js";
 import { refreshReadState } from "./readStateRepair.js";
@@ -55,8 +56,9 @@ import { projectRosterRows } from "./projectRosterFeed.js";
 import { projectsWithAgentRosters, syncProjectAgents } from "./projectAgentsCache.js";
 import { trailingRead } from "./trailingRead.js";
 import { combinePushItems, createPushQueue } from "./pushQueue.js";
-import { subscribeThreadReaders, visibleSyncThread } from "./syncVisibleScopes.js";
+import { subscribeThreadReaders, subscribeSyncReads, visibleSyncThread, visibleSyncReads } from "./syncVisibleScopes.js";
 import { createSyncPhases } from "./syncPhases.js";
+import { applyDirectoryHint } from "./directoryPages.js";
 import { createBackgroundStreams } from "./syncBackgroundStreams.js";
 import { createTaskPhases, taskReadScope } from "./syncTaskPhases.js";
 import { createTaskReadQueue } from "./serialTaskReads.js";
@@ -178,6 +180,7 @@ let visibilityWired = false;
 let stopDeviceWatch = null;
 let stopLandingWatch = null;
 let stopThreadWatch = null;
+let stopVisibleReadWatch = null;
 let stopCacheWatch = null;
 // Counts the times the sync layer stood down. Every read and push applier
 // belongs to the one it started under, and stops writing when that ends —
@@ -361,6 +364,7 @@ function threadReadIsVisible(context, scope) {
 }
 
 function wakeThreadReads() {
+  for (const deviceId of subscriptions.keys()) followVisibleThread(deviceId);
   for (const queues of pushQueues.values()) queues.scope.wake();
   for (const pass of passes.values()) void pass.foreground?.();
 }
@@ -618,6 +622,7 @@ async function orderedSync(deviceId, turn) {
   const discovery = syncDiscovery(beforeLists?.view, view);
   const phases = createSyncPhases({
     context, pass, view, route: () => App.route, readGroups: turn.groups, discovery,
+    lazyReads: () => lazyViewReadsEnabled(deviceId),
     stage: (name) => diagnosticStage(turn, name),
     projectRosterReads: projectRosterReads(context, view, pass, discovery),
     sourceTerminalReads: lists.sourceTerminalReads,
@@ -1085,8 +1090,7 @@ function readTasks(context, projectId) {
  * "was written to inside the TTL", which is the rule. The routed workspace
  * leads, whatever the inbox order says.
  */
-async function workspacesToRead(context, view) {
-  const items = projectRosterRows(view);
+function workspaceRows(view, items) {
   const rows = new Map();
   // `items` is the inbox, so it omits a run after every agent on it is
   // unwatched. The routed workspace still owns that run and its thread; the
@@ -1098,6 +1102,17 @@ async function workspacesToRead(context, view) {
   for (const row of items) {
     const entityId = entityIdOf(row);
     if (entityId) rows.set(entityId, row);
+  }
+  return rows;
+}
+
+async function workspacesToRead(context, view) {
+  const items = projectRosterRows(view);
+  const rows = workspaceRows(view, items);
+  if (lazyViewReadsEnabled(context.deviceId)) {
+    const selection = { active: 0, recent: 0, projectOwner: 0 };
+    syncDiagnostics.selected(context.syncTurn?.diagnostic, selection);
+    return { order: [], rows, routed: null, activeIds: new Set(), selection, rosterBaseRows: new Map() };
   }
   const activeIds = cacheableEntityIds({ items });
   const owners = projectConversationIds(view);
@@ -1221,6 +1236,7 @@ async function dropUnnamedEntity(context, entityId) {
 
 /** Optional checkout bodies only run after the foreground and inbox phases. */
 async function syncWorkspaceExtras(context, entityId, row) {
+  if (lazyViewReadsEnabled(context.deviceId)) return true;
   const priority = "background";
   const scope = gitScopeOf(row);
   if (!scope) return true;
@@ -1464,6 +1480,7 @@ async function syncUnpushed(context, entityId, scope, priority) {
  *  A reader opening it asks from the pane, uncapped, and keeps it in pages
  *  (#95); that read never consults the warming marker. */
 async function syncPatches(context, entityId, scope, commits, priority) {
+  if (lazyViewReadsEnabled(context.deviceId)) return;
   const hashes = (commits || [])
     .map((commit) => commit.hash)
     .filter(Boolean)
@@ -1483,6 +1500,7 @@ async function syncPatches(context, entityId, scope, commits, priority) {
 }
 
 async function warmPatch(context, entityId, scope, hash, priority) {
+  if (lazyViewReadsEnabled(context.deviceId)) return;
   const address = addressOf(context, entityId, PATCH_RECORD_KIND, hash);
   const fence = pushFence();
   const answer = await ask(context, "git.show", { ...scope, hash, max_bytes: COMMIT_PATCH_MAX_BYTES }, priority, address);
@@ -1648,6 +1666,12 @@ const subscriptionShape = (deviceId) => ({
  *  realtime watcher at all. */
 async function subscribeDevice(context) {
   const deviceId = context.deviceId;
+  const lazyReads = lazyViewReadsEnabled(deviceId);
+  const previous = subscriptions.get(deviceId);
+  if (previous && previous.lazyReads !== lazyReads) {
+    disposeDeviceSubscription(previous);
+    subscriptions.delete(deviceId);
+  }
   if (!subscriptions.has(deviceId)) {
     const shape = subscriptionShape(deviceId);
     subscriptions.set(deviceId, {
@@ -1655,7 +1679,7 @@ async function subscribeDevice(context) {
         ...shape,
         id: "s-inbox",
         scope: "all",
-        kinds: inboxPushKinds(deviceId),
+        kinds: inboxPushKinds(deviceId).filter((kind) => !lazyReads || kind !== "thread"),
         mode: "realtime",
         priority: "foreground",
       }),
@@ -1663,15 +1687,37 @@ async function subscribeDevice(context) {
         ...shape,
         id: "s-background",
         scope: "all",
-        kinds: ["git", "files", "terminals"],
+        kinds: lazyReads ? ["terminals"] : ["git", "files", "terminals"],
         mode: { batch_ms: BACKGROUND_COOLDOWN_MS },
         priority: "background",
       }),
       active: null,
       activeId: null,
+      lazyReads, thread: null, threadEntityId: null,
     });
   }
+  followVisibleThread(deviceId);
   await refollowRoute(deviceId);
+}
+
+function disposeDeviceSubscription(held) {
+  held.inbox.dispose();
+  held.background.dispose();
+  held.active?.dispose();
+  held.thread?.dispose();
+}
+
+// Device sync owns unseen conversation summaries. Only a mounted chat asks
+// for transcript pushes; changing the rail's owner replaces this subscription.
+function followVisibleThread(deviceId) {
+  const held = subscriptions.get(deviceId);
+  if (!held) return;
+  const wanted = held.lazyReads ? visibleSyncThread(deviceId)?.entityId || null : null;
+  if (held.threadEntityId === wanted) return;
+  held.thread?.dispose();
+  held.threadEntityId = wanted;
+  held.thread = wanted ? watchChanges({ ...subscriptionShape(deviceId), id: "s-thread",
+    entity: wanted, kinds: ["thread"], mode: "realtime", priority: "foreground" }) : null;
 }
 
 /**
@@ -1735,7 +1781,7 @@ function followRoutedEntity(deviceId, entityId) {
     ...subscriptionShape(deviceId),
     id: "s-active",
     entity: wanted,
-    kinds: ["git", "files", "terminals"],
+    kinds: held.lazyReads ? ["terminals"] : ["git", "files", "terminals"],
     mode: "realtime",
     priority: "foreground",
   });
@@ -1782,9 +1828,9 @@ async function writeSessionList(context, kind, incoming, before, options) {
 
 /** A record as a push carries it, marked so a read that was already out when
  *  it landed does not write its older answer over it. */
-function writePushed(address, value) {
+function writePushed(address, value, guard = null) {
   notePush(address);
-  return writeCached(address, value);
+  return guard ? mergeCachedAtomically(address, () => guard() ? value : null) : writeCached(address, value);
 }
 
 const pushQueues = new Map();
@@ -1913,11 +1959,25 @@ function enqueuePushRemainder(context, item) {
 
 /** Source subscriptions are owned by their mounted panes; writes still go
  * through the shared sync layer and the source's captured directory address. */
-export function applyProjectSourceChanges(items, deviceId) {
-  const context = syncContext(contextFor(deviceId));
-  if (!context) return Promise.resolve();
+export function applyProjectSourceChanges(items, deviceId, ownerActive = null) {
+  const original = syncContext(contextFor(deviceId));
+  if (!original) return Promise.resolve();
+  const context = sourcePushContext(original, ownerActive);
   context.pushing = true;
   return queuesFor(context).body.enqueueApplied(context, items.filter((item) => item.project_source));
+}
+
+function sourcePushContext(context, ownerActive) {
+  return ownerActive ? { ...context, ownerAdmission: true, active: () => context.active() && ownerActive() } : context;
+}
+
+function writeSourceValue(context, entityId, kind, value) {
+  return writePushed(addressOf(context, entityId, kind), value, context.ownerAdmission ? context.active : null);
+}
+
+function mergePushedValue(context, address, merge) {
+  const guarded = (current) => context.active() ? merge(current) : null;
+  return context.ownerAdmission ? mergeCachedAtomically(address, guarded) : mergeCached(address, guarded);
 }
 
 async function applyProjectSourceItem(context, item) {
@@ -1943,7 +2003,7 @@ async function invalidateSourceHistory(context, entityId, status) {
     if (!context.active()) return;
     const address = addressOf(context, entityId, kind);
     notePush(address);
-    await mergeCached(address, (current) => context.active() ? staleDiffRecord(current) : null);
+    await mergePushedValue(context, address, staleDiffRecord);
   }
 }
 
@@ -1952,13 +2012,13 @@ async function applySourceGit(context, entityId, git, source) {
   if (!context.active()) return;
   for (const [kind, value] of [["status", git.status], ["unpushed", git.unpushed && unpushedRecord(git.unpushed)]]) {
     if (!context.active()) return;
-    if (value) await writePushed(addressOf(context, entityId, kind), value);
+    if (value) await writeSourceValue(context, entityId, kind, value);
   }
   if (!context.active()) return;
   if (git.log) {
     const address = addressOf(context, entityId, "log");
     notePush(address);
-    await mergeCached(address, (current) => context.active() ? { ...windowedLog(current, git.log), stale: false } : null);
+    await mergePushedValue(context, address, (current) => ({ ...windowedLog(current, git.log), stale: false }));
   }
   if (!context.active()) return;
   await applySourceDiff(context, entityId, git.diff, source);
@@ -1969,7 +2029,7 @@ async function applySourceDiff(context, entityId, diff, source) {
   if (diff !== null) return;
   const address = addressOf(context, entityId, "diff");
   notePush(address);
-  await mergeCached(address, (current) => context.active() ? staleDiffRecord(current) : null);
+  await mergePushedValue(context, address, staleDiffRecord);
 }
 
 /** The board item: which entities left the board, and the two lists when they
@@ -2142,6 +2202,8 @@ function deferStateReview(context, entityId, review, fence) {
 async function applyThreadItem(context, entityId, tips) {
   for (const tip of orderedThreadTips(context, entityId, tips || [])) {
     if (!context.active()) return;
+    if (lazyViewReadsEnabled(context.deviceId) && !threadReadIsVisible(context,
+      addressOf(context, entityId, THREAD_RECORD_KIND, tipKey(tip)))) continue;
     await applyThreadTip(context, entityId, tip);
   }
 }
@@ -2266,7 +2328,8 @@ function catchupGoal(tip, held) {
 
 async function deferThreadCatchup(context, entityId, tip, sub, held) {
   const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub), fence = pushFence();
-  const reading = { ...context, active: () => context.active() && !pushedSince(address, fence) };
+  const reading = { ...context, active: () => context.active() && !pushedSince(address, fence)
+    && (!lazyViewReadsEnabled(context.deviceId) || threadReadIsVisible(context, address)) };
   if (!reading.active()) return;
   const settled = queuesFor(context).catchups.enqueue(JSON.stringify([entityId, sub]), {
     context: reading, active: reading.active, address, entityId, generation: threadGenerationKey(held),
@@ -2278,10 +2341,22 @@ async function deferThreadCatchup(context, entityId, tip, sub, held) {
   else await settled;
 }
 
+async function refreshOpenReads(context, entityId, kinds) {
+  for (const { key, read } of visibleSyncReads(context.deviceId)) {
+    if (!context.active()) return;
+    if (key.entityId === entityId && kinds.includes(key.kind)) await read(context.active);
+  }
+}
+
 /** `git`: the shapes ride the push, so nothing is asked for them. Two things
  *  never ride one — the patch behind a commit, and a working-tree diff too big
  *  to send — and those are pulled here. */
 async function applyGit(context, entityId, git) {
+  if (lazyViewReadsEnabled(context.deviceId)) return refreshOpenReads(context, entityId, ["status", "log", "unpushed", "diff"]);
+  return applyLegacyGit(context, entityId, git);
+}
+
+async function applyLegacyGit(context, entityId, git) {
   const row = await heldValue(context, entityId, "row");
   if (!context.active()) return;
   if (git.status) await writePushed(addressOf(context, entityId, "status"), git.status);
@@ -2302,7 +2377,7 @@ async function applyGit(context, entityId, git) {
 async function writePushedDiff(context, entityId, diff, row) {
   const address = addressOf(context, entityId, "diff");
   notePush(address);
-  await mergeCached(address, (current) => context.active() ? diffRecord(current, diff, row) : null);
+  await mergePushedValue(context, address, (current) => diffRecord(current, diff, row));
 }
 
 async function pullWhatTheGitItemCouldNotCarry(context, entityId, git, row) {
@@ -2335,6 +2410,13 @@ async function pullWhatTheGitItemCouldNotCarry(context, entityId, git, row) {
  *  the list was truncated, because a truncated list means "refetch the tree",
  *  not "these paths". */
 async function applyFiles(context, entityId, files) {
+  if (lazyViewReadsEnabled(context.deviceId)) return applyDirectoryHint({
+    deviceId: context.deviceId, entityId, files, active: context.active,
+  });
+  return applyLegacyFiles(context, entityId, files);
+}
+
+async function applyLegacyFiles(context, entityId, files) {
   if (files.root) {
     await writePushed(
       addressOf(context, entityId, "tree", files.root.path || ""),
@@ -2360,6 +2442,11 @@ async function applyFiles(context, entityId, files) {
  *  a held body says what to refresh, even when the previous reader was stood
  *  down or the tab reloaded. There are at most `RECENT_FILES` of them. */
 async function rereadHeldFiles(context, entityId, scope, files = null) {
+  if (lazyViewReadsEnabled(context.deviceId)) return true;
+  return rereadLegacyHeldFiles(context, entityId, scope, files);
+}
+
+async function rereadLegacyHeldFiles(context, entityId, scope, files) {
   const held = await cachedSubKeys(context.deviceId, entityId, FILE_RECORD_KIND);
   if (!context.active()) return false;
   const named = new Set(files?.paths || []);
@@ -2505,7 +2592,7 @@ async function discoveredReviews(context, projectId) {
 }
 
 async function readReviews(context, projectId, ids = null, hinted = []) {
-  if (!projectId || !context.active()) return;
+  if (!projectId || !context.active() || lazyViewReadsEnabled(context.deviceId)) return;
   const discoveredTaskIds = [...new Set([...await discoveredReviews(context, projectId), ...hinted])];
   if (!context.active()) return;
   await refreshCachedReviews({
@@ -2535,7 +2622,7 @@ async function readGitReviews(context, entityId, row) {
 const applyTasks = async (context, projectId, tasks) => {
   await wakeScopedSync(context.deviceId, (scope) => scope.project_id === projectId
     || scope.kind === "task" && (tasks?.truncated || tasks?.task_ids?.includes(scope.task_id)));
-  if (!context.active()) return;
+  if (!context.active() || lazyViewReadsEnabled(context.deviceId)) return;
   await readTasks(context, projectId);
   if (context.active()) await readReviews(context, projectId, tasks?.truncated ? null : tasks?.task_ids || null);
 };
@@ -2642,6 +2729,9 @@ export function startCacheSync() {
   stopDeviceWatch = onDeviceStateChanged(considerDevices);
   stopLandingWatch = onSubscriptionHeld(subscriptionLanded);
   stopThreadWatch = subscribeThreadReaders(wakeThreadReads);
+  stopVisibleReadWatch = subscribeSyncReads(() => {
+    for (const pass of passes.values()) void pass.foreground?.();
+  });
   if (typeof document !== "undefined" && !visibilityWired) {
     document.addEventListener("visibilitychange", onVisibilityChange);
     visibilityWired = true;
@@ -2657,6 +2747,8 @@ function disposeProjectTerminalSubscriptions() {
 }
 
 function disposeCacheWatches() {
+  stopVisibleReadWatch?.();
+  stopVisibleReadWatch = null;
   stopThreadWatch?.();
   stopThreadWatch = null;
   stopCacheWatch?.();
@@ -2671,11 +2763,7 @@ export function stopCacheSync() {
   if (stopLandingWatch) stopLandingWatch();
   stopLandingWatch = null;
   disposeCacheWatches();
-  for (const held of subscriptions.values()) {
-    held.inbox.dispose();
-    held.background.dispose();
-    held.active?.dispose();
-  }
+  for (const held of subscriptions.values()) disposeDeviceSubscription(held);
   subscriptions.clear();
   for (const queues of pushQueues.values()) { queues.body.clear(); queues.background.clear(); queues.catchups.clear(); }
   pushQueues.clear();

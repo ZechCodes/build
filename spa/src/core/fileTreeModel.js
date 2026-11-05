@@ -36,10 +36,11 @@ export function visibleTreeRows(listings, expanded, dir = "", depth = 0) {
   const listing = listings.get(dir);
   if (!listing) return [];
   if (listing.error) return [{ kind: "error", path: dir, depth, message: listing.error }];
-  return (listing.entries || []).flatMap((entry) => {
+  const entries = (listing.entries || []).flatMap((entry) => {
     const row = entryRow(dir, depth, expanded)(entry);
     return row.expanded ? [row, ...visibleTreeRows(listings, expanded, row.path, depth + 1)] : [row];
   });
+  return listing.has_more && listing.next_cursor ? [...entries, { kind: "more", path: dir, depth }] : entries;
 }
 
 const ROW_MARK = {
@@ -73,6 +74,8 @@ const rowTitle = (row) => ({
 // ellipsize inside it (.fname), and a bare text node in the row's flex line has
 // no box to do that in.
 const rowHtml = (marks, focusPath) => (row) => {
+  if (row.kind === "more")
+    return `<div role="none" style="--depth:${row.depth}"><button type="button" class="fmore" data-tree-more="${esc(row.path)}" aria-label="Load more entries in ${esc(row.path || "root")}">Load more</button></div>`;
   if (row.kind === "error")
     return `<div class="frow ferr" style="--depth:${row.depth}" role="none">cannot list: ${esc(row.message)}</div>`;
   const states = rowStates(row, marks, row.path === focusPath);
@@ -85,7 +88,7 @@ const rowHtml = (marks, focusPath) => (row) => {
  *  data-path attribute the wiring reads back. */
 export function fileTreeHtml(rows, marks) {
   if (!rows.length) return '<div class="empty">Empty directory.</div>';
-  const navigable = rows.filter((row) => row.kind !== "error");
+  const navigable = rows.filter((row) => !["error", "more"].includes(row.kind));
   const focusPath = navigable.some((row) => row.path === marks.cursorPath) ? marks.cursorPath : navigable[0]?.path;
   return rows.map(rowHtml(marks, focusPath)).join("");
 }
@@ -127,7 +130,7 @@ const KEY_MOVES = {
  *  parent); Enter opens a file and toggles a directory. */
 export function treeKeyMove(rows, cursorPath, key) {
   const move = KEY_MOVES[key];
-  const navigable = rows.filter((row) => row.kind !== "error");
+  const navigable = rows.filter((row) => !["error", "more"].includes(row.kind));
   if (!move || !navigable.length) return null;
   const index = navigable.findIndex((row) => row.path === cursorPath);
   if (index < 0) return { cursor: navigable[0].path };
@@ -149,7 +152,7 @@ const EDGES = {
  *  keys to the roots around it. */
 export function treeEdge(rows, cursorPath, key) {
   const edge = EDGES[key];
-  const navigable = rows.filter((row) => row.kind !== "error");
+  const navigable = rows.filter((row) => !["error", "more"].includes(row.kind));
   const index = navigable.findIndex((row) => row.path === cursorPath);
   if (!edge || index < 0) return null;
   return edge(navigable, index);

@@ -9,6 +9,18 @@ const ALL_FEATURES = [
   "tasks.attachments", "tasks.watching", "tasks.context", "conversations.settings",
 ];
 
+it("gates paged task reads, directory reads and file hints independently", () => {
+  const flags = (capabilities) => v1.capabilitiesOf({ api_version: "3.35.0", capabilities });
+  const capable = flags(["tasks.timelinePaged", "fs.treePaged", "changes.filesHints"]);
+  expect(capable.tasks.timelinePaged).toBe(true);
+  expect(capable.fs.treePaged).toBe(true);
+  expect(capable.changes.filesHints).toBe(true);
+  const legacy = flags([]);
+  expect(legacy.tasks.timelinePaged).toBe(false);
+  expect(legacy.fs.treePaged).toBe(false);
+  expect(legacy.changes.filesHints).toBe(false);
+});
+
 const greetingV1 = (over = {}) => ({
   api_version: "3.24.0",
   capabilities: ALL_FEATURES,
@@ -101,10 +113,10 @@ describe("adapter selection", () => {
       // The kinds come through as the greeting states them: a caller asks
       // whether this bridge carries the one it is about to name, because every
       // kind in one subscribe shares that call's fate.
-      changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"], projectSources: false },
+      changes: { subscriptions: true, filesHints: false, kinds: ["state", "thread", "git", "files"], projectSources: false },
       git: { projectSources: false, showPaths: false },
       term: { projectSources: false },
-      fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
+      fs: { treePaged: false, projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
       requests: { priority: true },
       rtc: { clientLanCache: false },
       errors: { codes: true },
@@ -113,7 +125,7 @@ describe("adapter selection", () => {
       sync: { device: false, projectTasks: false, task: false },
       reviews: { snapshotRetired: false, reject: false, author: false, verdictDelivery: false, retryDelivery: false, commits: false, commit: false, since: false, anchorCommit: false, forTask: false, taskChoices: false, linkedTaskChoices: false, get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
-      tasks: { attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, listSummaries: false, filterChoices: false, counts: false, lookup: false, listWatched: false, listAttention: false, listLinkedWorkspace: false, listTracked: false, listReviewMode: false, listOrder: false, listReadiness: false, listExcludeAssignee: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
+      tasks: { timelinePaged: false, attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, listSummaries: false, filterChoices: false, counts: false, lookup: false, listWatched: false, listAttention: false, listLinkedWorkspace: false, listTracked: false, listReviewMode: false, listOrder: false, listReadiness: false, listExcludeAssignee: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
       compaction: { harnessThresholds: false },
       conversations: { settings: true, reset: false },
       github: { repos: false },

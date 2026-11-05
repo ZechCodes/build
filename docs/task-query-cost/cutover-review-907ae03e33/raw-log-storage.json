@@ -1,0 +1,35 @@
+{
+  "encoding": "lossless UTF-8 raw_utf8 JSON strings",
+  "logs": [
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-cutover-907ae03e33/compat335-old-spa.log",
+      "wrapper": "compat335-old-spa.log.json",
+      "raw_sha256": "8b640025040c7e5a897c2440ae734bb21d8eb53291944028d8502898100c3d65",
+      "wrapper_sha256": "ef3771233beae9677c22cbe9922f34ae920e36de428d98a5e11a9199607924f8"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-cutover-907ae03e33/compat335-candidate-spa.log",
+      "wrapper": "compat335-candidate-spa.log.json",
+      "raw_sha256": "1249433ad656e0352cc8e2e5c644569d70ac29dbe0f1fd43ae2315eafb7d0378",
+      "wrapper_sha256": "75949f6853a21f63a58344a37a85adf3e74b932bd078753a8f439cec799debf1"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-cutover-907ae03e33/task-open-old-spa.log",
+      "wrapper": "task-open-old-spa.log.json",
+      "raw_sha256": "2b4493c61987b70c0b3f5436174fd120246a33717a880580050344a5a21dd9d4",
+      "wrapper_sha256": "fe6e4f933376f75ac1834ab836c4345a9e91df19f7e069d7db0dec95f63430f9"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-cutover-907ae03e33/task-open-candidate-spa.log",
+      "wrapper": "task-open-candidate-spa.log.json",
+      "raw_sha256": "d04891ca90bb7fbbf86f354476ccf4a0508e35ee4b4dbede0d92dd375080ce2e",
+      "wrapper_sha256": "569f837c08ee593a648e83cf27a5499fd82c0318cc8c2b6b8bd7ee405b9a31be"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-cutover-907ae03e33/startup-candidate-final.log",
+      "wrapper": "startup-candidate-final.log.json",
+      "raw_sha256": "d521ecfd70d8df14500092ce2e31baf8cc9e6646385939be55f1985292d3fe30",
+      "wrapper_sha256": "42fdf67793dbdbf486fed42ee5ebe42c71488c5360c1a5d9ef3167a253e1c81b"
+    }
+  ]
+}

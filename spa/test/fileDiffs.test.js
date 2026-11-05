@@ -7,6 +7,8 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { pagedAnswer } from "./gitWireFixture.js";
 
 let fileDiffs, cache, pages;
+const lazy = vi.hoisted(() => ({ enabled: false }));
+vi.mock("../src/core/scopedSyncRuntime.js", () => ({ lazyViewReadsEnabled: () => lazy.enabled }));
 
 const deferred = () => {
   let resolve;
@@ -53,6 +55,7 @@ const wireOver = (contentKeys, calls) =>
   });
 
 beforeEach(async () => {
+  lazy.enabled = false;
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
@@ -63,6 +66,18 @@ beforeEach(async () => {
 
 const mountDiffs = (call) =>
   fileDiffs.createFileDiffs({ deviceId: "dev-1", entityId: "run-1", scope: { run_id: "run-1" }, call });
+
+it("leaves collapsed bodies cold under scoped ownership and still reads an expanded file", async () => {
+  lazy.enabled = true;
+  const calls = [];
+  const diffs = mountDiffs(wireOver({ "a.js": "key-a", "b.js": "key-b" }, calls));
+  expect(await diffs.warm(TWO)).toBe(0);
+  expect(calls).toEqual([]);
+  await diffs.sync({ status: TWO, openPaths: new Set(["a.js"]) });
+  expect(calls.map(({ params }) => params.paths)).toEqual([["a.js"]]);
+  expect((await cache.readCached(address("a.js")))?.value.content_key).toBe("key-a");
+  diffs.dispose();
+});
 
 describe("pathsToFetch", () => {
   it("fetches an open file whose body is missing", () => {

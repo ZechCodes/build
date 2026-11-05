@@ -1,0 +1,90 @@
+{
+  "status": "executed_frozen_source_selection",
+  "source_head": "b38e11bc78fd0b6925352425e54b931a249101ba",
+  "prior_selection": "907 conservative369-unit + revision11-browser",
+  "patterns": {
+    "direct_module_imports": "(?:fileTree|taskReviewFiles|directoryWatcher|directoryPages)\\.js",
+    "subscription_fixtures": "changes\\.filesHints|fs\\.treePaged|kind:\\s*[\"\\x27]board[\"\\x27]|\"kind\"\\s*:\\s*\"board\"",
+    "error_fixtures": "[\"\\x27]invalid_params[\"\\x27]",
+    "private_cache_metadata": "loaded_pages"
+  },
+  "matches": {
+    "direct_module_imports": [
+      "test/browser/taskReadingContinuity.test.js",
+      "test/browser/taskReviewPageLayout.test.js",
+      "test/directoryHints.test.js",
+      "test/directoryLegacyRoot.test.js",
+      "test/fileTreePaging.test.js",
+      "test/filesUploadActions.test.js",
+      "test/syncVisibleReads.test.js",
+      "test/syncVisibleScopes.test.js",
+      "test/taskPullRequestPage.test.js",
+      "test/taskReviewFiles.test.js",
+      "test/taskReviewFilesHints.test.js",
+      "test/taskReviewFilesNavigation.test.js",
+      "test/taskReviewNavigationDom.test.js",
+      "test/taskReviewPage.test.js"
+    ],
+    "subscription_fixtures": [
+      "test/bridgeApi.test.js",
+      "test/changeSubscriptions.test.js",
+      "test/checkoutWatcherLifecycle.test.js",
+      "test/compat335.test.js",
+      "test/pushRefetch.test.js",
+      "test/taskReviewFilesHints.test.js"
+    ],
+    "error_fixtures": [
+      "test/browser/workspaceLock.test.js",
+      "test/browser/workspaceReviewLayout.test.js",
+      "test/changeSubscriptions.test.js",
+      "test/compactionCache.test.js",
+      "test/directoryPages.test.js",
+      "test/fileTreePaging.test.js",
+      "test/scopedSyncEngine.test.js",
+      "test/scopedSyncRecovery.test.js",
+      "test/taskReviewChanges.test.js",
+      "test/taskReviewFilesHints.test.js",
+      "test/trackerTaskPageDom.test.js",
+      "test/transientRead.test.js",
+      "test/workspaceReviewCreateRace.test.js"
+    ],
+    "private_cache_metadata": []
+  },
+  "excluded_serial_measurement_drivers": [
+    "test/compat335.test.js",
+    "test/syncTimingCutover.test.js",
+    "test/taskOpenCost.test.js"
+  ],
+  "unit_count": 371,
+  "browser_count": 12,
+  "added_unit": [
+    "test/taskReviewChanges.test.js",
+    "test/transientRead.test.js"
+  ],
+  "added_browser": [
+    "test/browser/workspaceLock.test.js"
+  ],
+  "files": {
+    "/home/zech/Projects/.agent-scratch/894/review3-affected-spa-unit.txt": "d07b0eea3ef9a90a28950c4dfb3e87418ead195e04031f518b8da42f864fc76d",
+    "/home/zech/Projects/.agent-scratch/894/review3-affected-spa-browser.txt": "7b4313f33e0148ca4ff0056b2190dc995d773e4489cb3c8998095399b6a65dc8"
+  },
+  "excluded_driver_sha256": {
+    "test/compat335.test.js": "8cbcaa79e71e703ae70ac2ff76182057b17d8fab58679f5b1d63db994c88bea5",
+    "test/syncTimingCutover.test.js": "134883eef47c710e0a72860e96dc4cf28cf79105383f2f9c81d643c95d74c059",
+    "test/taskOpenCost.test.js": "bd035edd6b173bf54401b69a8743c12bff57691c414b71633dd155dbcd80fdf3"
+  },
+  "added_fixture_reasons": {
+    "test/taskReviewChanges.test.js": "exact invalid_params error fixture; included conservatively per parent instruction",
+    "test/transientRead.test.js": "exact invalid_params error fixture; included conservatively per parent instruction",
+    "test/browser/workspaceLock.test.js": "exact invalid_params error fixture; included conservatively per parent instruction"
+  },
+  "qualification": "Parent final b38 positive batch: unit371 files6193tests exit0; browser12 files80tests exit0. Excluded3 performance drivers not rerun.",
+  "prepared_at_previous_js_head": "105b2e4a2567f4d3cdf105b46780412676513364",
+  "source_sha256": {
+    "spa/src/core/fileTree.js": "cbd10ef934a6582af532b1ad9b4f1b1161db953eb58911d23f2557a4e53586c8",
+    "spa/src/core/taskReviewFiles.js": "83db28dc66ec3f811bf00bfed2e1dc7b7b9ff81a04b9cc2326f9f9bbe21df135",
+    "spa/test/fileTreePaging.test.js": "b1dd1f278a7821f1be1b1ad354e77d0ec60b64b02c472341ab0a13177eff38f0",
+    "spa/test/taskReviewFilesHints.test.js": "91c8810b272100f66550e9e8d8ab3afdcbe4d44811e56a7052eb4d7301404122",
+    "bridge/src/app/fs/tree_pages.rs": "47e766192a0c5ad1d87d9fc88f52b322770827637022265ba17ed2a08da92576"
+  }
+}

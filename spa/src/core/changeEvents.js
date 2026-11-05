@@ -95,10 +95,10 @@ export { SPA_API_RANGE };
  *  a greeting, and about a bridge nobody here speaks to. */
 const NO_CAPABILITIES = Object.freeze({
   writes: Object.freeze({ epoch: false, ackConfirmMethods: Object.freeze([]) }),
-  changes: Object.freeze({ subscriptions: false, kinds: Object.freeze([]), projectSources: false }),
+  changes: Object.freeze({ subscriptions: false, filesHints: false, kinds: Object.freeze([]), projectSources: false }),
   git: Object.freeze({ projectSources: false }),
   term: Object.freeze({ projectSources: false }),
-  fs: Object.freeze({ projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false }),
+  fs: Object.freeze({ treePaged: false, projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false }),
   requests: Object.freeze({ priority: false }),
   rtc: Object.freeze({ clientLanCache: false }),
   errors: Object.freeze({ codes: false }),
@@ -106,6 +106,7 @@ const NO_CAPABILITIES = Object.freeze({
   bodies: Object.freeze({ pages: false, mediaRawPages: false }),
   reviews: NO_REVIEW_SUPPORT,
   tasks: Object.freeze({
+    timelinePaged: false,
     attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false,
     listPaged: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false,
   }),
@@ -689,7 +690,8 @@ function coveredBy(watcher, items) {
 function forKinds(watcher, item) {
   if (!watcher.kinds.length) return item;
   const carried = KIND_FIELDS.filter((kind) => kind in item);
-  const mine = carried.filter((kind) => watcher.kinds.includes(kind));
+  const mine = carried.filter((kind) => watcher.kinds.includes(kind)
+    || kind === "files" && watcher.kinds.includes("files.hints"));
   if (!carried.length || mine.length === carried.length) return item;
   if (!mine.length) return null;
   const narrowed = { ...item };

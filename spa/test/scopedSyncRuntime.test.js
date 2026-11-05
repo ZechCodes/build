@@ -40,6 +40,24 @@ beforeEach(async () => {
     greeting: { epoch: "e1", current: () => true, capabilities: { sync: { device: false, task: true, projectTasks: true } } } }];
   runtime = await import("../src/core/scopedSyncRuntime.js");
 });
+it("requires complete current ownership across 3.34 → 3.33 → 3.34 rollback", () => {
+  fake.contexts[0].greeting.capabilities.sync.device = true;
+  runtime.startScopedSyncRuntime({ ownsLock: () => fake.lock, request: vi.fn() });
+  expect(runtime.lazyViewReadsEnabled("d1")).toBe(true);
+  fake.contexts[0].apiVersion = "3.33.0";
+  expect(runtime.lazyViewReadsEnabled("d1")).toBe(false);
+  fake.greeted();
+  fake.contexts[0].apiVersion = "3.34.0";
+  fake.greeted();
+  expect(runtime.lazyViewReadsEnabled("d1")).toBe(true);
+  fake.contexts[0].greeting.capabilities.sync.task = false;
+  expect(runtime.lazyViewReadsEnabled("d1")).toBe(false);
+  fake.contexts[0].greeting.capabilities.sync.task = true;
+  vi.stubGlobal("navigator", {});
+  expect(runtime.lazyViewReadsEnabled("d1")).toBe(false);
+  runtime.stopScopedSyncRuntime();
+});
+
 describe("scoped sync runtime ownership", () => {
   it("waits for grant or bounded timeout eligibility before creating an engine", () => {
     runtime.startScopedSyncRuntime({ ownsLock: () => fake.lock, request: vi.fn() });

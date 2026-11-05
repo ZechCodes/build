@@ -1,0 +1,5 @@
+{
+  "original_path": "/home/zech/Projects/.agent-scratch/894/review-a455-final-backend/clippy.log",
+  "sha256": "a3f7f74c8b820306ee380050290c312e00415b3b0519c41fa1908752d3ca0be0",
+  "raw_utf8": "    Checking build-bridge v0.2.13 (/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 22s\n"
+}

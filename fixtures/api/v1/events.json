@@ -770,6 +770,22 @@
           "id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
         }
       ]
+    },
+    {
+      "type": "changes",
+      "subscription_id": "synthetic-files-hints",
+      "bridge_epoch": "synthetic-bridge-epoch",
+      "items": [
+        {
+          "entity_id": "synthetic-run",
+          "files": {
+            "paths": [
+              "src/synthetic.rs"
+            ],
+            "truncated": false
+          }
+        }
+      ]
     }
   ],
   "harness_thresholds": {
@@ -777,5 +793,11 @@
     "capability": "compaction.harnessThresholds",
     "event": "compaction.changed",
     "payload": "Scope/owner invalidation only; refresh authoritative settings and held agent records."
+  },
+  "files_hints": {
+    "since": "3.35.0",
+    "capability": "changes.filesHints",
+    "event": "changes",
+    "payload": "files:{paths,truncated}, without root, on subscriptions requesting files.hints."
   }
 }

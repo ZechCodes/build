@@ -1,0 +1,73 @@
+{
+  "base": "4820977bc8f91d6c7c039f2817bee8f1285e4a13",
+  "source": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+  "changed_spa_paths": [
+    "spa/src/core/directoryWatcher.js",
+    "spa/src/core/fileTree.js",
+    "spa/src/core/taskReviewFiles.js",
+    "spa/src/core/taskTimelineWindow.js",
+    "spa/test/changesReviewPane.test.js",
+    "spa/test/directoryHints.test.js",
+    "spa/test/directoryPages.test.js",
+    "spa/test/fileTreePaging.test.js",
+    "spa/test/taskReviewFilesHints.test.js",
+    "spa/test/taskTimelinePages.test.js",
+    "spa/test/trackerTaskPageDom.test.js"
+  ],
+  "selected": {
+    "test/browser/filesExplorerLayout.test.js": {
+      "category": "production Files helper consumer",
+      "reason": "Imports filesExplorerSeed.mjs, whose mountFilesExplorer mounts src/views/files.js and the changed fileTree; checks directory/open-row reading place."
+    },
+    "test/browser/filesUploadActions.test.js": {
+      "category": "production Files helper consumer",
+      "reason": "Imports the real Files explorer helper; upload-created paths exercise the changed reveal path and selection."
+    },
+    "test/browser/filesUploadTrayLayout.test.js": {
+      "category": "production Files helper consumer",
+      "reason": "Imports the real Files explorer helper; keeps the mounted Files surface active while upload/tray state changes."
+    },
+    "test/browser/mediaBlobPlayback.test.js": {
+      "category": "direct production Files view consumer",
+      "reason": "Loads src/views/files.js and calls renderFilesTab with real cached media bodies, covering changed tree/open selection integration."
+    },
+    "test/browser/projectFiles.test.js": {
+      "category": "source Files view consumer",
+      "reason": "Opens a project source through the actual project Files rail, not merely a project_source fixture string."
+    },
+    "test/browser/projectWorkspaceChanges.test.js": {
+      "category": "source Files view consumer",
+      "reason": "The source-qualified commit deep-link test explicitly clicks data-open-file and waits for the real Files preview."
+    },
+    "test/browser/taskReadingContinuity.test.js": {
+      "category": "direct changed-module/cache consumer",
+      "reason": "Directly loads taskReviewFiles.js and real trackerTaskPage/cache, covering saved tree/blob child cache paints and reading-place retention."
+    },
+    "test/browser/taskReviewLayout.test.js": {
+      "category": "live/saved review Files consumer",
+      "reason": "Explicitly exercises saved and live review Files on both viewport classes through mountTaskReviewPage."
+    },
+    "test/browser/taskReviewPageLayout.test.js": {
+      "category": "direct changed-module consumer",
+      "reason": "Directly loads taskReviewFiles.js and tests cached review Files and anchor jumps in the actual task page."
+    },
+    "test/browser/workspaceDirectories.test.js": {
+      "category": "workspace Files lifecycle consumer",
+      "reason": "Actual Files roots, directory additions/removals and surviving selected-file cache-scope rebinding exercise the changed tree/watcher."
+    },
+    "test/browser/workspaceReviewLayout.test.js": {
+      "category": "requested owner integration smoke",
+      "reason": "Retains the parent-requested workspace review owner/form lifecycle smoke through the entry used to reach saved/live Files; no claim that it alone tests the modern hint payload."
+    }
+  },
+  "count": 11,
+  "scope": "Revision-only browser selection; source_path/project_source and capabilities did not change, so generic literal matches alone do not require rerunning all76 prior browser suites.",
+  "unchanged_prior_evidence": "Original76browserfiles/597tests at their own recorded source plus50d lifecycle supplement remain retained; not recast as new execution.",
+  "excluded_surface_examples": {
+    "test/browser/taskPullRequestLayout.test.js": "Exercises PR lifecycle/Changes feedback; does not open the changed Files branch in the inspected cases.",
+    "test/browser/diffLinksLayout.test.js": "Inspected cases remain review Changes/Git links rather than the changed Files browser.",
+    "other trackerTaskPage-only consumers": "No browser fixture uses timeline_paged/next_cursor/timeline_incarnation; the actual partial-head upgrade is covered by the focused unit/DOM suites. Generic task entry imports are not expanded into all task browser cases.",
+    "generic unchanged source_path/project_source fixtures": "Retained in the conservative369unit/full-task selection and prior76browser evidence; literal presence alone is not a changed wire contract."
+  },
+  "guard_revision_note": "Quiet cursor-notice guard adds no wire fields or browser entrypoint; same11 concrete consumers remain relevant. Ambient-context readiness correction is unit-only."
+}

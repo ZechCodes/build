@@ -1,0 +1,24 @@
+{
+  "baseline_production_sha": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+  "candidate_base_sha": "e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03",
+  "candidate_identity": "uncommitted working source; warmer/runtime implementation plus developing task/directory paging; synthetic peers remain 3.33 and 3.34",
+  "candidate_spa_patch_sha256": "5f61a6c163ec2909da12d90617cfd55f945a48f74a3b999f40a9260eb9a97487",
+  "harness_sha256": "134883eef47c710e0a72860e96dc4cf28cf79105383f2f9c81d643c95d74c059",
+  "node": "22.23.4",
+  "baseline_exit": 0,
+  "candidate_exit": 0,
+  "comparison_exit": 0,
+  "rows_per_source": 18,
+  "warmer_source_sha256": {
+    "spa/src/core/cacheSync.js": "bb2a219d3bca03bb87637516aa12d40481c3248d17b6696616c3bff5268ab31a",
+    "spa/src/core/scopedSyncRuntime.js": "a5b1887ebc85edba75b5a6bd56b3f3321155a66d5ced59011b91a5efc4c3e0a5",
+    "spa/src/core/syncPhases.js": "0fd7c17dda366637f3ab34245e9b165806fac2bb1b5056174dfcf698b4158c03",
+    "spa/src/core/syncVisibleScopes.js": "7e8197e875f4421759ec5a4ff8cca5c3f372e1ace8518e610ef7f3cecebfb238",
+    "spa/src/core/fileDiffs.js": "708cce5281bbdc0082791bcef9d05524b3b3b017d283e106e977da82b3b2707e",
+    "spa/src/core/taskReviewCache.js": "a8dd24bbd7fd739e5a3d79341adb99bbdaaeffe658cdc0aaddf24d7712edcaef",
+    "spa/src/core/trackerTaskDetailsFeed.js": "d26e0ec35f4d2ebccb6e51929ad06205ba52667ae32e072368c0efb2861bf5ef",
+    "spa/src/core/directoryScope.js": "91323e3494e7919095f9c2259617b00207df985168c57ac2ce07aada0274b9ba"
+  },
+  "candidate_spa_source_count": 622,
+  "candidate_spa_sources_digest": "da526e48187438b223a4162dcb0a23c3133184f5051776836f84246ba45fd18c"
+}

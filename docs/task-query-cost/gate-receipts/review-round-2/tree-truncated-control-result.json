@@ -1,0 +1,202 @@
+{
+  "name": "truncated",
+  "expected_head": "df14cf15c28ced422842e1b718b729a30da1d517",
+  "expected_source_sha256": "52ebe239482c1d324878ab4741d68b7cb7fc55c9fcb3e564c675a188784e6079",
+  "expected_failing_names": [
+    "refreshes only first pages of visible touched directories and leaves a folded directory cold",
+    "refreshes every visible expanded first page for a truncated hint while folded descendants stay cold"
+  ],
+  "commands": [
+    {
+      "event": "tree_control_command",
+      "control": "truncated",
+      "phase": "initial_head",
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0,
+      "stdout": "df14cf15c28ced422842e1b718b729a30da1d517\n",
+      "stderr": ""
+    },
+    {
+      "event": "tree_control_command",
+      "control": "truncated",
+      "phase": "initial_owned_source_clean",
+      "argv": [
+        "git",
+        "diff",
+        "--quiet",
+        "df14cf15c28ced422842e1b718b729a30da1d517",
+        "--",
+        "spa/src/core/fileTree.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "truncated",
+      "phase": "save_copy",
+      "argv": [
+        "cp",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/src/core/fileTree.js",
+        "/home/zech/Projects/.agent-scratch/894/file-tree-window-staging/fileTree-truncated-negative.copy.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "truncated",
+      "phase": "verify_saved_copy",
+      "argv": [
+        "cmp",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/src/core/fileTree.js",
+        "/home/zech/Projects/.agent-scratch/894/file-tree-window-staging/fileTree-truncated-negative.copy.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "truncated",
+      "phase": "install_mutant",
+      "argv": [
+        "cp",
+        "/home/zech/Projects/.agent-scratch/894/file-tree-window-staging/fileTree-truncated-mutant.js",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/src/core/fileTree.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "truncated",
+      "phase": "touch_mutant",
+      "argv": [
+        "touch",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/src/core/fileTree.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "truncated",
+      "phase": "behavioral_negative_control",
+      "argv": [
+        "nice",
+        "-n",
+        "10",
+        "env",
+        "CARGO_BUILD_JOBS=8",
+        "TMPDIR=/home/zech/Projects/.agent-scratch/894",
+        "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+        "node_modules/vitest/vitest.mjs",
+        "run",
+        "test/directoryHints.test.js",
+        "-t",
+        "refreshes only first pages|every visible expanded first page"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa",
+      "exit_code": 1,
+      "output_path": "/home/zech/Projects/.agent-scratch/894/spa-tree-truncated-negative.log"
+    },
+    {
+      "event": "tree_control_command",
+      "control": "truncated",
+      "phase": "restore_copy",
+      "argv": [
+        "cp",
+        "/home/zech/Projects/.agent-scratch/894/file-tree-window-staging/fileTree-truncated-negative.copy.js",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/src/core/fileTree.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "truncated",
+      "phase": "touch_restored_source",
+      "argv": [
+        "touch",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/src/core/fileTree.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "truncated",
+      "phase": "verify_restore_cmp",
+      "argv": [
+        "cmp",
+        "/home/zech/Projects/.agent-scratch/894/file-tree-window-staging/fileTree-truncated-negative.copy.js",
+        "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa/src/core/fileTree.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    },
+    {
+      "event": "tree_control_command",
+      "control": "truncated",
+      "phase": "final_head",
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0,
+      "stdout": "df14cf15c28ced422842e1b718b729a30da1d517\n",
+      "stderr": ""
+    },
+    {
+      "event": "tree_control_command",
+      "control": "truncated",
+      "phase": "final_owned_source_clean",
+      "argv": [
+        "git",
+        "diff",
+        "--quiet",
+        "df14cf15c28ced422842e1b718b729a30da1d517",
+        "--",
+        "spa/src/core/fileTree.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build",
+      "exit_code": 0
+    }
+  ],
+  "observed_head": "df14cf15c28ced422842e1b718b729a30da1d517",
+  "initial_source_sha256": "52ebe239482c1d324878ab4741d68b7cb7fc55c9fcb3e564c675a188784e6079",
+  "mutant_sha256": "a5a5f1111ffe315bcecc7def7e9549da6e6b0b9aec814dfa407d6f2a03eb1e5a",
+  "command": [
+    "nice",
+    "-n",
+    "10",
+    "env",
+    "CARGO_BUILD_JOBS=8",
+    "TMPDIR=/home/zech/Projects/.agent-scratch/894",
+    "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+    "node_modules/vitest/vitest.mjs",
+    "run",
+    "test/directoryHints.test.js",
+    "-t",
+    "refreshes only first pages|every visible expanded first page"
+  ],
+  "exit_code": 1,
+  "expected_failure_names_present": {
+    "refreshes only first pages of visible touched directories and leaves a folded directory cold": true,
+    "refreshes every visible expanded first page for a truncated hint while folded descendants stay cold": true
+  },
+  "restore_cp_exit_code": 0,
+  "restore_touch_exit_code": 0,
+  "cmp_exit_code": 0,
+  "restored_sha256": "52ebe239482c1d324878ab4741d68b7cb7fc55c9fcb3e564c675a188784e6079",
+  "final_head": "df14cf15c28ced422842e1b718b729a30da1d517",
+  "final_owned_source_exit_code": 0,
+  "restoration_verified": true
+}

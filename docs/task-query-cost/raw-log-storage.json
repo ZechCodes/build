@@ -1,0 +1,153 @@
+{
+  "encoding": "lossless UTF-8 JSON string",
+  "decode": "Read wrapper JSON, encode raw_utf8 as UTF-8, and verify sha256. No bytes were normalized. Original plain logs remain in task scratch/local evidence for attachments.",
+  "logs": [
+    {
+      "original_path": "docs/task-query-cost/append-paired/round-1-base.log",
+      "wrapper": "docs/task-query-cost/append-paired/round-1-base.log.json",
+      "raw_sha256": "0da4a32d5df7cc16d9b10e052b394e839319737776321e2581113699328c6cb0",
+      "wrapper_sha256": "04dae9cb8c657428f7e6d4378689960b1693f26f562e36a4442eb6b8e3fb7f88",
+      "raw_bytes": 8944
+    },
+    {
+      "original_path": "docs/task-query-cost/append-paired/round-1-candidate.log",
+      "wrapper": "docs/task-query-cost/append-paired/round-1-candidate.log.json",
+      "raw_sha256": "1433c01f68b58c50e0cbe78402b2d4c479cf489756bc632954006e8f64e2258e",
+      "wrapper_sha256": "4887e23165251448435d55252c85474ae20750fbf8800bb9479bab27ea33a58f",
+      "raw_bytes": 8930
+    },
+    {
+      "original_path": "docs/task-query-cost/append-paired/round-2-base.log",
+      "wrapper": "docs/task-query-cost/append-paired/round-2-base.log.json",
+      "raw_sha256": "9edee75baff4b023e1767f5901b6d9fec0fda8f16d4a1513027291b613ce2d4a",
+      "wrapper_sha256": "c779356e7c037db69ffdb45e42e71df026fee5dd514a3c124f3297b58c51b198",
+      "raw_bytes": 8927
+    },
+    {
+      "original_path": "docs/task-query-cost/append-paired/round-2-candidate.log",
+      "wrapper": "docs/task-query-cost/append-paired/round-2-candidate.log.json",
+      "raw_sha256": "7c57d38ebc704fddf0d24e26b2106e8b8d73acfc7750a04893efcc3826b38f42",
+      "wrapper_sha256": "1099fafca12f7cb15b2b44309010196a2844db5aae4ac3091a2395875705fbd3",
+      "raw_bytes": 8929
+    },
+    {
+      "original_path": "docs/task-query-cost/append-paired/round-3-base.log",
+      "wrapper": "docs/task-query-cost/append-paired/round-3-base.log.json",
+      "raw_sha256": "888ea1bd1fff5b547eefe1a4de8f79b256f8cd2fba582dfdf54ee0e14f12284a",
+      "wrapper_sha256": "01094c5eff125b4b5825b64f2bfd3dcc3a95a6e724ccbb8d72ffa81193447273",
+      "raw_bytes": 8929
+    },
+    {
+      "original_path": "docs/task-query-cost/append-paired/round-3-candidate.log",
+      "wrapper": "docs/task-query-cost/append-paired/round-3-candidate.log.json",
+      "raw_sha256": "e1f635f73744bcc377cefc5fd9d03067523afd1b51c141f0df8840622d4c9344",
+      "wrapper_sha256": "d649af612f28acd79c459b110c0ac35a07abfb5f8f7c525c3676740e32cc8869",
+      "raw_bytes": 8931
+    },
+    {
+      "original_path": "docs/task-query-cost/append-statements/baseline.log",
+      "wrapper": "docs/task-query-cost/append-statements/baseline.log.json",
+      "raw_sha256": "b1392f0552d95e8a028560f55a376cedb2fd625079058bff303d2de0fac33982",
+      "wrapper_sha256": "8f93965b9baed4789a09df65cba448c1d61db472562ea45eef5e79e26a549c41",
+      "raw_bytes": 41137
+    },
+    {
+      "original_path": "docs/task-query-cost/append-statements/candidate-observations.log",
+      "wrapper": "docs/task-query-cost/append-statements/candidate-observations.log.json",
+      "raw_sha256": "da631e8c9123aadf3b09138fa2f18a1aa00848b41ccbb8009e393c8939e2f2aa",
+      "wrapper_sha256": "feabe3a392f12741f72c0b3cf67d6803d56352271791bfb6a4aa7cc2e99f84b2",
+      "raw_bytes": 37434
+    },
+    {
+      "original_path": "docs/task-query-cost/append-statements-50d4a2647/baseline.log",
+      "wrapper": "docs/task-query-cost/append-statements-50d4a2647/baseline.log.json",
+      "raw_sha256": "dead8220583cb8a4e2b8d3100f5ae6fcd2fa1eb5343ec4f80efc8ad472e73122",
+      "wrapper_sha256": "c7b9c667010f2b8b0ddcfcafc725a4bd71844da2de6171f9fd3ebb55149c496d",
+      "raw_bytes": 41131
+    },
+    {
+      "original_path": "docs/task-query-cost/append-statements-50d4a2647/candidate-observations.log",
+      "wrapper": "docs/task-query-cost/append-statements-50d4a2647/candidate-observations.log.json",
+      "raw_sha256": "2cb6b68299c2fcd539524b6b63fd9f450d31723f0f3859b1e9a761086ff96cde",
+      "wrapper_sha256": "6b3e1e043fd3c9c3dd951135536aaa1f32598b5c828cfbb073a154857c644f03",
+      "raw_bytes": 37434
+    },
+    {
+      "original_path": "docs/task-query-cost/append-statements-50d4a2647/counter-sanity.log",
+      "wrapper": "docs/task-query-cost/append-statements-50d4a2647/counter-sanity.log.json",
+      "raw_sha256": "a13575dd8f752c6a5a441e37d894ef75aed25c036773398388fa0b9f5eb04558",
+      "wrapper_sha256": "0a78ef28460b59319116d8ab6d4af7fa6897253a062606ac1e83f253947587b1",
+      "raw_bytes": 1135
+    },
+    {
+      "original_path": "docs/task-query-cost/cutover-final/compat335-candidate-spa.log",
+      "wrapper": "docs/task-query-cost/cutover-final/compat335-candidate-spa.log.json",
+      "raw_sha256": "e1edcb91abe253a752c453bbac5f731f1562fa9e2ecc5bd1aefc24e6c3309636",
+      "wrapper_sha256": "8fa5e8e5da0eeaa017e20c40393e1974725c4fa758664453f2ad017e05ce1a2c",
+      "raw_bytes": 303
+    },
+    {
+      "original_path": "docs/task-query-cost/cutover-final/compat335-old-spa.log",
+      "wrapper": "docs/task-query-cost/cutover-final/compat335-old-spa.log.json",
+      "raw_sha256": "cec7a27be175ad5ecf7c0c0469bfdb938d3a1134b9479a7d197a1b7a127cf4e1",
+      "wrapper_sha256": "873fdefd9fb9dd0fd2e2261212cdc1b0265cdfd9a313e7cb3f1294c28a5919da",
+      "raw_bytes": 304
+    },
+    {
+      "original_path": "docs/task-query-cost/cutover-final/startup-candidate-final.log",
+      "wrapper": "docs/task-query-cost/cutover-final/startup-candidate-final.log.json",
+      "raw_sha256": "803ee65768f3b9d5cc6b178b6d73d73942ea46acbf816f142135532e2d45ec8a",
+      "wrapper_sha256": "b3410d87d8baca5f291ff7ab6bbd31ab6672fab42cd428f4ded768d7ec39d193",
+      "raw_bytes": 304
+    },
+    {
+      "original_path": "docs/task-query-cost/cutover-final/task-open-candidate-spa.log",
+      "wrapper": "docs/task-query-cost/cutover-final/task-open-candidate-spa.log.json",
+      "raw_sha256": "cc4bfd97c6cc2393418eadc0ab238b7fb7182d282e80e05514bd76e25058ce84",
+      "wrapper_sha256": "5f62b01d44af765790f03cbd6682931f654b7d743d476e8d8c203013740f8500",
+      "raw_bytes": 301
+    },
+    {
+      "original_path": "docs/task-query-cost/cutover-final/task-open-old-spa.log",
+      "wrapper": "docs/task-query-cost/cutover-final/task-open-old-spa.log.json",
+      "raw_sha256": "6b44a0f2d43834ae73c8be53cf7224494698fd95b627d8e42f65380119e24933",
+      "wrapper_sha256": "a9009f4f120ea9f6c008dd77f8ecc839be9ac8cf53b7e21608bd7b2fd21f45b7",
+      "raw_bytes": 303
+    },
+    {
+      "original_path": "docs/task-query-cost/gate-receipts/negative-controls-50d4a2647/files-hints-root.log",
+      "wrapper": "docs/task-query-cost/gate-receipts/negative-controls-50d4a2647/files-hints-root.log.json",
+      "raw_sha256": "ba7ded3968dfd9174f2a826f24a19bc9dcfc4661ef12764942ec866b7f74961e",
+      "wrapper_sha256": "d3a83cbc6b00923396211419eff4bc6bbfef9ed3c2dc6b8798347fa859b436b7",
+      "raw_bytes": 1107
+    },
+    {
+      "original_path": "docs/task-query-cost/gate-receipts/negative-controls-50d4a2647/statement-cache32.log",
+      "wrapper": "docs/task-query-cost/gate-receipts/negative-controls-50d4a2647/statement-cache32.log.json",
+      "raw_sha256": "b1c33648550a13457774e26bf4e00952ca1d76dec565416035d18c6695cba166",
+      "wrapper_sha256": "ce56be04e09d377b1fa26fc510a49bbe7a685dc0d87fd8abbf4cb598994eb8a2",
+      "raw_bytes": 1995
+    },
+    {
+      "original_path": "docs/task-query-cost/gate-receipts/release-read-bound-50d4a2647.log",
+      "wrapper": "docs/task-query-cost/gate-receipts/release-read-bound-50d4a2647.log.json",
+      "raw_sha256": "a7d4716fbb113109ac34018ddc96dca535243a02f40d2bbfaadef2b7ee1ffe9a",
+      "wrapper_sha256": "36d7c0c8ef1dfda0df19aa6eb71480cbeeed3c15f42cc53a90f48d5d3d46c7d1",
+      "raw_bytes": 14222
+    },
+    {
+      "original_path": "docs/task-query-cost/gate-receipts/semgrep-50d4a2647/focused-timeouts.log",
+      "wrapper": "docs/task-query-cost/gate-receipts/semgrep-50d4a2647/focused-timeouts.log.json",
+      "raw_sha256": "aec8b8c026b3816fbca7a60cd23c3f275917251e4fd8af19110e3d70cf4f6e5c",
+      "wrapper_sha256": "c2842dfe83eb3157e9b44c15e254e037ba68cb29e5132847020af0daf76b306e",
+      "raw_bytes": 1667
+    },
+    {
+      "original_path": "docs/task-query-cost/gate-receipts/semgrep-50d4a2647/scan.log",
+      "wrapper": "docs/task-query-cost/gate-receipts/semgrep-50d4a2647/scan.log.json",
+      "raw_sha256": "eb56fa39be275f35ebc23c80fdeae8d1363ef27ed402d2afbf5526fb0324849c",
+      "wrapper_sha256": "0331b92a3cf4c60c869b53a4f0e4aebcb81068d81ce0c268818a8eee5c9be9d5",
+      "raw_bytes": 2064
+    }
+  ]
+}

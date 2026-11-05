@@ -13,6 +13,56 @@ import { sessionAnswering } from "./deviceSessionFixture.js";
 /** The one bridge this file's device answers through: a test that hands over
  *  a new `call` is that bridge answering differently, not another machine. */
 const bridge = { call: null };
+const lazy = vi.hoisted(() => ({ enabled: false }));
+vi.mock("../src/core/scopedSyncRuntime.js", async (original) => ({
+  ...await original(), lazyViewReadsEnabled: () => lazy.enabled,
+}));
+// Forward real cache and wire operations while recording their completion.
+// Explicit gates hold seed/notification timing only in the late-reader test.
+const conversationReadReceipts = vi.hoisted(() => ({ enabled: false, seeds: [], windows: [], caches: [], seedGate: null, readingCache: null, readingWindow: false, cacheReads: [], windowRequests: [] }));
+vi.mock("../src/core/conversationCache.js", async (original) => {
+  const actual = await original();
+  return { ...actual, createConversationCache: (options) => {
+    const receipt = { seedGate: conversationReadReceipts.enabled ? conversationReadReceipts.seedGate : null, notificationGate: null, notifications: [] };
+    const cache = actual.createConversationCache({ ...options, onThreadSeeded: (...args) => {
+      const notify = () => options.onThreadSeeded?.(...args);
+      if (receipt.notificationGate) receipt.notifications.push(receipt.notificationGate.then(notify));
+      else notify();
+    } });
+    receipt.cache = cache;
+    if (conversationReadReceipts.enabled) conversationReadReceipts.caches.push(receipt);
+    const invoke = (method, args) => {
+      const previous = conversationReadReceipts.readingCache;
+      conversationReadReceipts.readingCache = cache;
+      try {
+        const promise = cache[method](...args);
+        if (conversationReadReceipts.enabled) conversationReadReceipts.cacheReads.push({ cache, method, promise });
+        return promise;
+      } finally { conversationReadReceipts.readingCache = previous; }
+    };
+    return { ...cache, reread: (...args) => invoke("reread", args), seed: (...seedArgs) => {
+      const promise = receipt.seedGate ? receipt.seedGate.then(() => invoke("seed", seedArgs)) : invoke("seed", seedArgs);
+      if (conversationReadReceipts.enabled) conversationReadReceipts.seeds.push({ cache, promise });
+      return promise;
+    } };
+  } };
+});
+vi.mock("../src/core/threadSync.js", async (original) => {
+  const actual = await original();
+  return { ...actual, syncThreadWindow: (...args) => {
+    const previous = conversationReadReceipts.readingWindow;
+    conversationReadReceipts.readingWindow = true;
+    let promise;
+    try { promise = actual.syncThreadWindow(...args); }
+    finally { conversationReadReceipts.readingWindow = previous; }
+    if (conversationReadReceipts.enabled) {
+      conversationReadReceipts.windows.push(promise);
+      conversationReadReceipts.windowRequests.push(args[0]);
+    }
+    return promise;
+  } };
+});
+
 /** What a bridge that carries watching says in its greeting. */
 const WATCHING_GREETING = Object.freeze({ api_version: "3.24.0", capabilities: ["tasks.watching"] });
 
@@ -263,6 +313,16 @@ const pushRow = async (row = payload) => {
 };
 
 beforeEach(async () => {
+  lazy.enabled = false;
+  conversationReadReceipts.enabled = false;
+  conversationReadReceipts.seeds = [];
+  conversationReadReceipts.windows = [];
+  conversationReadReceipts.caches = [];
+  conversationReadReceipts.seedGate = null;
+  conversationReadReceipts.readingCache = null;
+  conversationReadReceipts.readingWindow = false;
+  conversationReadReceipts.cacheReads = [];
+  conversationReadReceipts.windowRequests = [];
   document.body.innerHTML = bodyHtml;
   // A standing panel has a viewport; jsdom otherwise measures it as hidden.
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {
@@ -1216,7 +1276,626 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(railHost().querySelector("#railinput")).not.toBeNull();
   });
 
-  it("recovers an unwatched workspace agent whose owner is absent from the board", async () => {
+  const settleCapturedConversationReads = async () => {
+    for (let round = 0; round < 8; round += 1) {
+      const count = conversationReadReceipts.cacheReads.length + conversationReadReceipts.windows.length;
+      await Promise.allSettled(conversationReadReceipts.cacheReads.map(({ promise }) => promise));
+      await Promise.allSettled(conversationReadReceipts.windows);
+      if (count === conversationReadReceipts.cacheReads.length + conversationReadReceipts.windows.length) return;
+    }
+  };
+
+  it("keeps the current incarnation B when a retired same-address seed A completes late", async () => {
+    lazy.enabled = true;
+    conversationReadReceipts.enabled = true;
+    chatRepository.railView("workspace:ws-reordered-seed").chooseAgent("ag-1");
+    await writeRailBoard({ projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-reordered-seed", project_id: "p1", name: "Quiet work", entity_id: "run-3" }] });
+    const cache = await import("../src/core/localCache.js");
+    const originalRead = cache.readCached;
+    const heldSeeds = [];
+    let releaseObservers, releaseWire;
+    const observerGate = new Promise((resolve) => { releaseObservers = resolve; });
+    const wireGate = new Promise((resolve) => { releaseWire = resolve; });
+    const readSpy = vi.spyOn(cache, "readCached").mockImplementation((address) => {
+      const reader = conversationReadReceipts.readingCache;
+      const windowRead = conversationReadReceipts.readingWindow;
+      const reading = originalRead(address);
+      if (address.kind !== "thread" || address.entityId !== "run-3" || address.sub !== "ag-1" || windowRead) return reading;
+      // Repository generation observations legitimately lag the visible cache
+      // reader. Hold their real read results, not generation checks themselves.
+      if (!reader) return reading.then(async (record) => { await observerGate; return record; });
+      return reading.then(async (record) => {
+        if (record?.value?.thread_id !== "incarnation-a") return record;
+        let release;
+        const gate = new Promise((resolve) => { release = resolve; });
+        heldSeeds.push({ reader, release });
+        await gate;
+        return record;
+      });
+    });
+    const originalCall = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return originalCall(method, params);
+      calls.push({ method, params });
+      return wireGate.then(() => ({ thread_id: params.thread_id, items: [said(2, "Current B wire reply")], has_more: false, thread_last_sequence: 2 }));
+    });
+    try {
+      await writeRailThread("run-3", "ag-1", { items: [said(1, "Retired incarnation A")], thread_id: "incarnation-a" });
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-reordered-seed" }));
+      await vi.waitFor(() => expect(heldSeeds.length).toBeGreaterThan(0));
+      const oldReader = conversationReadReceipts.seeds.at(-1).cache;
+      const cacheCount = conversationReadReceipts.caches.length;
+      await writeRailWorkItem({ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false })] });
+      await vi.waitFor(() => expect(conversationReadReceipts.caches.length).toBeGreaterThan(cacheCount));
+      const canonical = conversationReadReceipts.caches.at(-1).cache;
+      await vi.waitFor(() => expect(heldSeeds.some(({ reader }) => reader === canonical)).toBe(true));
+      // The old watcher has been retired before B is published, so its pending
+      // A read remains a genuine same-address, ID-less read rather than stale
+      // work invalidated by its own reread serial or a different-agent check.
+      await writeRailThread("run-3", "ag-1", { items: [said(1, "Current incarnation B")], thread_id: "incarnation-b" });
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Current incarnation B"));
+      heldSeeds.filter(({ reader }) => reader === canonical).forEach(({ release }) => release());
+      await Promise.all(conversationReadReceipts.seeds.filter(({ cache }) => cache === canonical).map(({ promise }) => promise));
+      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+      expect(callsTo("thread.page")[0].params.thread_id).toBe("incarnation-b");
+      heldSeeds.filter(({ reader }) => reader === oldReader).forEach(({ release }) => release());
+      await Promise.all(conversationReadReceipts.seeds.filter(({ cache }) => cache === oldReader).map(({ promise }) => promise));
+      feedSubscribers.forEach((subscriber) => subscriber(feedSnapshot));
+      // Await dispatch for every real window-read invocation already admitted;
+      // never infer completion from the old cached text still being painted.
+      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(conversationReadReceipts.windowRequests.length));
+      expect(conversationReadReceipts.windowRequests.map(({ threadId }) => threadId)).toEqual(["incarnation-b"]);
+      expect(callsTo("thread.page").map(({ params }) => params.thread_id)).toEqual(["incarnation-b"]);
+      expect(railHost().querySelector("#rail-body")?.textContent).toContain("Current incarnation B");
+      expect(railHost().querySelector("#rail-body")?.textContent).not.toContain("Retired incarnation A");
+    } finally {
+      heldSeeds.forEach(({ release }) => release());
+      releaseObservers(); releaseWire();
+      await settleCapturedConversationReads();
+      readSpy.mockRestore();
+      conversationReadReceipts.enabled = false;
+    }
+  });
+
+  it("rejects an agent A seed after the selected conversation switches to agent B", async () => {
+    lazy.enabled = true;
+    conversationReadReceipts.enabled = true;
+    payload = branchRow({ agents: [agent({ watched: true, thread_id: "agent-a-thread" }), agent({ id: "ag-2", ordinal: 2, watched: true, thread_id: "agent-b-thread" })] });
+    await writeRailWorkItem(payload);
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "Agent A history")], thread_id: "agent-a-thread" });
+    await writeRailThread("run-3", "ag-2", { items: [said(1, "Agent B history")], thread_id: "agent-b-thread" });
+    const cache = await import("../src/core/localCache.js");
+    const originalRead = cache.readCached;
+    let releaseA;
+    const gate = new Promise((resolve) => { releaseA = resolve; });
+    let waiting = false;
+    const readSpy = vi.spyOn(cache, "readCached").mockImplementation((address) => {
+      const reading = originalRead(address);
+      if (!conversationReadReceipts.readingCache || address.kind !== "thread" || address.sub !== "ag-1") return reading;
+      waiting = true;
+      return reading.then(async (record) => { await gate; return record; });
+    });
+    const originalCall = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return originalCall(method, params);
+      calls.push({ method, params });
+      return { thread_id: params.thread_id, items: [], has_more: false, thread_last_sequence: 1 };
+    });
+    try {
+      rail = mountAgentRail(railHost(), railAddress({ openAgentId: "ag-1", panelOpen: true }));
+      await vi.waitFor(() => expect(waiting).toBe(true));
+      await vi.waitFor(() => expect(railHost().querySelector('[data-bubble="agent"][data-agent="ag-2"]')).not.toBeNull());
+      railHost().querySelector('[data-bubble="agent"][data-agent="ag-2"]').click();
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Agent B history"));
+      releaseA();
+      await settleCapturedConversationReads();
+      expect(railHost().querySelector("#rail-body")?.textContent).toContain("Agent B history");
+      expect(railHost().querySelector("#rail-body")?.textContent).not.toContain("Agent A history");
+      expect(callsTo("thread.page").map(({ params }) => params.agent_id)).toEqual(["ag-2"]);
+    } finally {
+      releaseA();
+      await settleCapturedConversationReads();
+      readSpy.mockRestore();
+      conversationReadReceipts.enabled = false;
+    }
+  });
+
+  it("shares the actual pending legacy seed when lazy ownership activates on a warm mounted conversation", async () => {
+    conversationReadReceipts.enabled = true;
+    payload = branchRow({ agents: [agent({ watched: true, thread_id: "warm-thread" })] });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "Unbroken warm cached paint")], thread_id: "warm-thread" });
+    await mount({ openAgentId: "ag-1", panelOpen: true });
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Unbroken warm cached paint"));
+    await settleCapturedConversationReads();
+    railHost().querySelector(".rail-overview-toggle").click();
+    await vi.waitFor(() => expect(panel()?.querySelector(".rail-overview-list")).not.toBeNull());
+    await settleCapturedConversationReads();
+    conversationReadReceipts.seeds = []; conversationReadReceipts.cacheReads = [];
+    conversationReadReceipts.windows = []; conversationReadReceipts.windowRequests = [];
+    const cache = await import("../src/core/localCache.js");
+    const originalRead = cache.readCached;
+    let releaseRead;
+    const gate = new Promise((resolve) => { releaseRead = resolve; });
+    let actualSeedReads = 0;
+    const readSpy = vi.spyOn(cache, "readCached").mockImplementation((address) => {
+      const reading = originalRead(address);
+      if (!conversationReadReceipts.readingCache || address.kind !== "thread" || address.sub !== "ag-1") return reading;
+      actualSeedReads += 1;
+      return reading.then(async (record) => { await gate; return record; });
+    });
+    const frames = [];
+    let observer;
+    const originalCall = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return originalCall(method, params);
+      calls.push({ method, params });
+      return { thread_id: params.thread_id, items: [], has_more: false, thread_last_sequence: 1 };
+    });
+    try {
+      // A real return from overview resets the reader after the existing rail
+      // has settled its owner and already painted this canonical history.
+      await vi.waitFor(() => expect(railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]')).not.toBeNull());
+      railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+      await vi.waitFor(() => expect(actualSeedReads).toBe(1));
+      expect(railHost().querySelector("#rail-body")?.textContent).toContain("Unbroken warm cached paint");
+      frames.push(railHost().querySelector("#rail-body").textContent);
+      observer = new MutationObserver(() => frames.push(railHost().querySelector("#rail-body")?.textContent || ""));
+      observer.observe(railHost(), { childList: true, subtree: true, characterData: true });
+      expect(callsTo("thread.page")).toHaveLength(0);
+      lazy.enabled = true;
+      feedSubscribers.forEach((subscriber) => subscriber(feedSnapshot));
+      expect(actualSeedReads).toBe(1);
+      releaseRead();
+      await settleCapturedConversationReads();
+      expect(callsTo("thread.page")).toHaveLength(1);
+      expect(railHost().querySelector("#rail-body")?.textContent).toContain("Unbroken warm cached paint");
+      expect(frames.every((text) => text.includes("Unbroken warm cached paint"))).toBe(true);
+    } finally {
+      releaseRead();
+      await settleCapturedConversationReads();
+      observer?.disconnect();
+      readSpy.mockRestore();
+      conversationReadReceipts.enabled = false;
+    }
+  });
+
+  it("finishes an in-flight cache seed after the selected hidden chat resets its reader", async () => {
+    lazy.enabled = true;
+    conversationReadReceipts.enabled = true;
+    payload = branchRow({ agents: [agent({ watched: true })] });
+    const cachedItems = [said(1, "Seeded while the chat is hidden")];
+    await writeRailWorkItem(payload);
+    await writeRailThread("run-3", "ag-1", { items: cachedItems });
+    const cache = await import("../src/core/localCache.js");
+    const originalRead = cache.readCached;
+    let releaseRead;
+    const readGate = new Promise((resolve) => { releaseRead = resolve; });
+    const heldReads = [];
+    const readSpy = vi.spyOn(cache, "readCached").mockImplementation((address) => {
+      const read = originalRead(address);
+      if (address.entityId !== "run-3" || address.kind !== "thread" || address.sub !== "ag-1") return read;
+      return read.then(async (record) => {
+        heldReads.push(record);
+        await readGate;
+        return record;
+      });
+    });
+    const hidden = vi.spyOn(document, "hidden", "get");
+    try {
+      rail = mountAgentRail(railHost(), railAddress({ openAgentId: "ag-1", panelOpen: true }));
+      await vi.waitFor(() => expect(conversationReadReceipts.seeds.length).toBeGreaterThan(0));
+      await vi.waitFor(() => expect(heldReads.length).toBeGreaterThan(0));
+      const boundHistory = chatRepository.history("ag-1").threadCache;
+      expect(boundHistory.readWindow()).toBeNull();
+      const seeded = Promise.allSettled(conversationReadReceipts.seeds.map(({ promise }) => promise));
+      hidden.mockReturnValue(true);
+      railHost().querySelector(".rail-overview-toggle").click();
+      await vi.waitFor(() => expect(panel()?.querySelector(".rail-overview-list")).not.toBeNull());
+      // This is a real same-agent openConversation reset. Hidden chat painting
+      // returns before binding a replacement, leaving the old read in flight.
+      railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+      expect(railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').classList.contains("active")).toBe(true);
+      releaseRead();
+      expect((await seeded).every(({ status }) => status === "fulfilled")).toBe(true);
+      expect(boundHistory.readWindow()?.items).toEqual(cachedItems);
+      expect(callsTo("thread.page")).toHaveLength(0);
+    } finally {
+      releaseRead();
+      await Promise.allSettled(conversationReadReceipts.seeds.map(({ promise }) => promise));
+      await Promise.allSettled(conversationReadReceipts.windows);
+      readSpy.mockRestore();
+      hidden.mockRestore();
+      conversationReadReceipts.enabled = false;
+    }
+  });
+
+  const delayedRosterHandoff = async (rosterArrival, threadId = null, replyThreadId = threadId, activateLazy = false, expectedReads = 1) => {
+    lazy.enabled = !activateLazy;
+    conversationReadReceipts.enabled = true;
+    chatRepository.railView("workspace:ws-delayed-roster").chooseAgent("ag-1");
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-delayed-roster", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
+    });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "Cached before the roster")], ...(threadId ? { thread_id: threadId } : {}) });
+    let deliverPage;
+    const delayedPage = new Promise((resolve) => { deliverPage = resolve; });
+    const original = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return original(method, params);
+      calls.push({ method, params });
+      return delayedPage;
+    });
+    const releasePage = () => deliverPage({ items: [said(2, "Fresh open-time words")], has_more: false, thread_last_sequence: 2, ...(replyThreadId ? { thread_id: replyThreadId } : {}) });
+    const frames = [];
+    let observer;
+    try {
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-delayed-roster" }));
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Cached before the roster"));
+      observer = new MutationObserver(() => {
+        const body = railHost().querySelector("#rail-body");
+        frames.push({ empty: !body || !!body.querySelector(".thread-empty"), text: body?.textContent || "" });
+      });
+      observer.observe(railHost(), { childList: true, subtree: true, characterData: true });
+      if (activateLazy) {
+        const mountedReader = conversationReadReceipts.caches.at(-1).cache;
+        expect(callsTo("thread.page")).toHaveLength(0);
+        lazy.enabled = true;
+        // Repaint the existing cached conversation as ownership becomes lazy;
+        // no roster or replacement reader has been supplied by the greeting.
+        feedSubscribers.forEach((subscriber) => subscriber(feedSnapshot));
+        await vi.waitFor(() => expect(callsTo("thread.page").length).toBeGreaterThan(0));
+        expect(conversationReadReceipts.caches.at(-1).cache).toBe(mountedReader);
+      } else await vi.waitFor(() => expect(callsTo("thread.page").length).toBeGreaterThan(0));
+      if (rosterArrival === "after") {
+        releasePage();
+        await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Fresh open-time words"));
+        await Promise.all(conversationReadReceipts.windows);
+      }
+      const firstReader = conversationReadReceipts.seeds.at(-1).cache;
+      const seedCount = conversationReadReceipts.seeds.length;
+      // Publishing the roster replaces the transient history with its canonical
+      // controller, while the visible conversation and opening stay the same.
+      await writeRailWorkItem({ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false, ...(replyThreadId ? { thread_id: replyThreadId } : {}) })] });
+      await vi.waitFor(() => expect(conversationReadReceipts.seeds.slice(seedCount).some(({ cache }) => cache !== firstReader)).toBe(true));
+      // watchConversation registered its await before this test. Once the real
+      // canonical seed resolves, its continuation has entered any new read.
+      await Promise.all(conversationReadReceipts.seeds.slice(seedCount).map(({ promise }) => promise));
+      await vi.waitFor(() => expect(headWho()).toBe(TOPICS["ag-1"]));
+      await vi.waitFor(() => expect(railHost().querySelector("#railinput")).not.toBeNull());
+      expect(callsTo("workspace.get")).toHaveLength(0);
+      expect(railHost().querySelector("#rail-body")?.textContent).toContain(rosterArrival === "before" ? "Cached before the roster" : "Fresh open-time words");
+      expect(callsTo("thread.page")).toHaveLength(expectedReads);
+      releasePage();
+      await Promise.all(conversationReadReceipts.windows);
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Fresh open-time words"));
+      expect(callsTo("thread.page")).toHaveLength(expectedReads);
+      expect(frames.length).toBeGreaterThan(0);
+      expect(frames.some((frame) => frame.empty || !/Cached before the roster|Fresh open-time words/.test(frame.text))).toBe(false);
+    } finally {
+      releasePage();
+      await Promise.allSettled(conversationReadReceipts.windows);
+      observer?.disconnect();
+      conversationReadReceipts.enabled = false;
+    }
+  };
+
+  it.each(["before", "after"])("revalidates one logical conversation opening when its roster arrives %s the delayed first page", async (rosterArrival) => {
+    await delayedRosterHandoff(rosterArrival);
+  });
+
+  it.each(["before", "after"])("revalidates one cached incarnation when its matching roster arrives %s the delayed first page", async (rosterArrival) => {
+    await delayedRosterHandoff(rosterArrival, "cached-thread-a");
+    expect(callsTo("thread.page")[0].params.thread_id).toBe("cached-thread-a");
+  });
+
+  it.each(["before", "after"])("revalidates once when lazy ownership activates before the matching roster arrives %s the first reply", async (rosterArrival) => {
+    await delayedRosterHandoff(rosterArrival, "activated-thread-a", "activated-thread-a", true);
+    expect(callsTo("thread.page")[0].params.thread_id).toBe("activated-thread-a");
+  });
+
+  it.each(["before", "after"])("holds an id-less cached window without relabelling when the roster arrives %s the first reply", async (arrival) => {
+    lazy.enabled = true;
+    conversationReadReceipts.enabled = true;
+    chatRepository.railView("workspace:ws-legacy-opening").chooseAgent("ag-1");
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-legacy-opening", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
+    });
+    const address = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" };
+    await writeRailThread("run-3", "ag-1", { items: [said(100, "Unversioned cached paint")] });
+    let release;
+    const page = new Promise((resolve) => { release = () => resolve({
+      thread_id: "roster-thread-b", items: [said(101, "Arriving legacy words")],
+      thread_last_sequence: 101, has_more: false,
+    }); });
+    const original = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return original(method, params);
+      calls.push({ method, params });
+      return page;
+    });
+    const frames = [];
+    let observer;
+    try {
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-legacy-opening" }));
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Unversioned cached paint"));
+      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+      observer = new MutationObserver(() => {
+        const body = railHost().querySelector("#rail-body");
+        frames.push({ empty: !body || !!body.querySelector(".thread-empty"), text: body?.textContent || "" });
+      });
+      observer.observe(railHost(), { childList: true, subtree: true, characterData: true });
+      if (arrival === "after") {
+        release();
+        await Promise.all(conversationReadReceipts.windows);
+        const beforeRoster = (await readCached(address)).value;
+        expect(beforeRoster.thread_id).toBeUndefined();
+        expect(beforeRoster.items.some(({ data }) => data.sequence === 100)).toBe(true);
+      }
+      const oldReader = conversationReadReceipts.seeds.at(-1).cache;
+      const seedCount = conversationReadReceipts.seeds.length;
+      await writeRailWorkItem({ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false, thread_id: "roster-thread-b" })] });
+      await vi.waitFor(() => expect(conversationReadReceipts.seeds.slice(seedCount).some(({ cache }) => cache !== oldReader)).toBe(true));
+      await Promise.all(conversationReadReceipts.seeds.slice(seedCount).map(({ promise }) => promise));
+      expect(railHost().querySelector("#rail-body")?.textContent).toMatch(/Unversioned cached paint|Arriving legacy words/);
+      release();
+      await Promise.all(conversationReadReceipts.windows);
+      await vi.waitFor(async () => expect((await readCached(address)).value.items.some(({ data }) => data.sequence === 101)).toBe(true));
+      await Promise.all(conversationReadReceipts.windows);
+      expect(callsTo("thread.page").length).toBeLessThanOrEqual(2);
+      expect(callsTo("thread.page").map(({ params }) => params.thread_id)).toEqual([undefined, "roster-thread-b"]);
+      const stored = (await readCached(address)).value;
+      expect(stored.thread_id).toBeUndefined();
+      expect(stored.items.some(({ data }) => data.sequence === 100)).toBe(true);
+      expect(frames.length).toBeGreaterThan(0);
+      expect(frames.some((frame) => frame.empty || !/Unversioned cached paint|Arriving legacy words/.test(frame.text))).toBe(false);
+    } finally {
+      release();
+      await Promise.allSettled(conversationReadReceipts.windows);
+      observer?.disconnect();
+      conversationReadReceipts.enabled = false;
+    }
+  });
+
+  it("reads a different incarnation when the roster replaces a cached thread", async () => {
+    lazy.enabled = true;
+    conversationReadReceipts.enabled = true;
+    chatRepository.railView("workspace:ws-changed-thread").chooseAgent("ag-1");
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-changed-thread", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
+    });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "Cached incarnation A")], thread_id: "cached-thread-a", thread_generation_revision: 1 });
+    const original = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return original(method, params);
+      calls.push({ method, params });
+      return { thread_id: params.thread_id, thread_generation_revision: params.thread_id === "cached-thread-a" ? 1 : 2,
+        items: [said(2, params.thread_id === "cached-thread-a" ? "Fresh incarnation A" : "Fresh incarnation B")], has_more: false, thread_last_sequence: 2 };
+    });
+    try {
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-changed-thread" }));
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Fresh incarnation A"));
+      await Promise.all(conversationReadReceipts.windows);
+      // A reset's authoritative generation publication precedes the new page;
+      // threadSync must continue refusing foreign B pages over a held A record.
+      await writeRailThread("run-3", "ag-1", { items: [], thread_id: "roster-thread-b", thread_generation_revision: 2 });
+      await writeRailWorkItem({ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false, thread_id: "roster-thread-b", thread_generation_revision: 2 })] });
+      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+      await Promise.all(conversationReadReceipts.windows);
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Fresh incarnation B"));
+      expect(callsTo("thread.page").map(({ params }) => params.thread_id)).toEqual(["cached-thread-a", "roster-thread-b"]);
+      expect((await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" })).value.thread_id).toBe("roster-thread-b");
+    } finally {
+      await Promise.allSettled(conversationReadReceipts.windows);
+      conversationReadReceipts.enabled = false;
+    }
+  });
+
+  it("keeps the cached window when an old reader reports a real cache reread while canonical seed waits", async () => {
+    lazy.enabled = true;
+    conversationReadReceipts.enabled = true;
+    chatRepository.railView("workspace:ws-late-seed").chooseAgent("ag-1");
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-late-seed", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
+    });
+    const retainedText = "Retained while canonical seed waits";
+    await writeRailThread("run-3", "ag-1", { items: [said(1, retainedText)] });
+    let releasePage, releaseNotification, releaseCanonical;
+    const page = new Promise((resolve) => { releasePage = () => resolve({ items: [said(2, "Fresh late-seed reply")], has_more: false, thread_last_sequence: 2 }); });
+    const notificationGate = new Promise((resolve) => { releaseNotification = resolve; });
+    const canonicalGate = new Promise((resolve) => { releaseCanonical = resolve; });
+    const original = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return original(method, params);
+      calls.push({ method, params });
+      return page;
+    });
+    try {
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-late-seed" }));
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain(retainedText));
+      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+      const oldReader = conversationReadReceipts.caches.at(-1);
+      oldReader.notificationGate = notificationGate;
+      // A real subscribed cache write performs the old reader's reread. Hold
+      // only its resulting notification until the replacement reader exists.
+      await writeRailThread("run-3", "ag-1", { items: [said(1, retainedText + " after cache write")] });
+      await vi.waitFor(() => expect(oldReader.notifications.length).toBeGreaterThan(0));
+      const cacheCount = conversationReadReceipts.caches.length;
+      conversationReadReceipts.seedGate = canonicalGate;
+      await writeRailWorkItem({ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false })] });
+      await vi.waitFor(() => expect(conversationReadReceipts.caches.length).toBeGreaterThan(cacheCount));
+      const canonical = conversationReadReceipts.caches.at(-1);
+      await vi.waitFor(() => expect(conversationReadReceipts.seeds.some(({ cache }) => cache === canonical.cache)).toBe(true));
+      releaseNotification();
+      await Promise.all(oldReader.notifications);
+      expect(railHost().querySelector("#rail-body")?.textContent).toContain(retainedText);
+      expect(railHost().querySelector("#rail-body .thread-empty")).toBeNull();
+      releaseCanonical();
+      await Promise.all(conversationReadReceipts.seeds.map(({ promise }) => promise));
+      releasePage();
+      await Promise.all(conversationReadReceipts.windows);
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Fresh late-seed reply"));
+      expect(callsTo("thread.page")).toHaveLength(1);
+    } finally {
+      releaseNotification(); releaseCanonical(); releasePage();
+      await Promise.allSettled(conversationReadReceipts.seeds.map(({ promise }) => promise));
+      await Promise.allSettled(conversationReadReceipts.windows);
+      conversationReadReceipts.enabled = false;
+    }
+  });
+
+  it("uses the new cached incarnation after the device session changes without a roster", async () => {
+    lazy.enabled = true;
+    conversationReadReceipts.enabled = true;
+    chatRepository.railView("workspace:ws-session-incarnation").chooseAgent("ag-1");
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-session-incarnation", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
+    });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "Session A cache")], thread_id: "session-thread-a" });
+    const original = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return original(method, params);
+      calls.push({ method, params });
+      return { thread_id: params.thread_id, items: [], has_more: false, thread_last_sequence: 1 };
+    });
+    try {
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-session-incarnation" }));
+      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+      await Promise.all(conversationReadReceipts.windows);
+      const priorSession = contextFor("dev-1").session;
+      adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "2.0.0" }, null);
+      expect(contextFor("dev-1").session).not.toBe(priorSession);
+      await writeRailThread("run-3", "ag-1", { items: [said(1, "Session B cache")], thread_id: "session-thread-b" });
+      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+      await Promise.all(conversationReadReceipts.windows);
+      expect(callsTo("thread.page").map(({ params }) => params.thread_id)).toEqual(["session-thread-a", "session-thread-b"]);
+      expect(railHost().querySelector("#rail-body")?.textContent).toContain("Session B cache");
+    } finally {
+      await Promise.allSettled(conversationReadReceipts.windows);
+      conversationReadReceipts.enabled = false;
+    }
+  });
+
+  it("forgets an evicted cached incarnation on a genuine no-roster reopen", async () => {
+    lazy.enabled = true;
+    conversationReadReceipts.enabled = true;
+    chatRepository.railView("workspace:ws-evicted-thread").chooseAgent("ag-1");
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-evicted-thread", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
+    });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "Paint retained after eviction")], thread_id: "evicted-thread-a" });
+    const original = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return original(method, params);
+      calls.push({ method, params });
+      return { ...(params.thread_id ? { thread_id: params.thread_id } : {}), items: [], has_more: false, thread_last_sequence: 1 };
+    });
+    try {
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-evicted-thread" }));
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Paint retained after eviction"));
+      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+      await Promise.all(conversationReadReceipts.windows);
+      await evictEntity("dev-1", "run-3");
+      expect(await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" })).toBeFalsy();
+      rail.collapse();
+      await vi.waitFor(() => expect(panel()?.getAttribute("aria-hidden")).toBe("true"));
+      bubbles()[0].click();
+      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+      await Promise.all(conversationReadReceipts.windows);
+      expect(callsTo("thread.page")[1].params.thread_id).toBeUndefined();
+      expect(railHost().querySelector("#rail-body")?.textContent).toContain("Paint retained after eviction");
+    } finally {
+      await Promise.allSettled(conversationReadReceipts.windows);
+      conversationReadReceipts.enabled = false;
+    }
+  });
+
+  const mountLazyCachedConversations = async () => {
+    lazy.enabled = true;
+    payload = branchRow({ agents: [agent({ watched: true }), agent({ id: "ag-2", ordinal: 2, watched: true })] });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "First cached conversation")] });
+    await writeRailThread("run-3", "ag-2", { items: [said(1, "Second cached conversation")] });
+    const original = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return original(method, params);
+      calls.push({ method, params });
+      return { items: [], has_more: false, thread_last_sequence: 1 };
+    });
+    await mount({ openAgentId: "ag-1", panelOpen: true });
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("First cached conversation"));
+  };
+
+  it("revalidates a genuine conversation reselection after leaving its cached address", async () => {
+    await mountLazyCachedConversations();
+    railHost().querySelector('[data-bubble="agent"][data-agent="ag-2"]').click();
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Second cached conversation"));
+    railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(3));
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("First cached conversation"));
+    expect(callsTo("thread.page").map(({ params }) => params.agent_id)).toEqual(["ag-1", "ag-2", "ag-1"]);
+  });
+
+  it("revalidates a conversation selected again after roster replacement", async () => {
+    await mountLazyCachedConversations();
+    await writeRailWorkItem(branchRow({ agents: [agent({ id: "ag-2", ordinal: 2, watched: true })] }));
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Second cached conversation"));
+    await writeRailWorkItem(branchRow({ agents: [agent({ watched: true })] }));
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(3));
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("First cached conversation"));
+    expect(callsTo("thread.page").map(({ params }) => params.agent_id)).toEqual(["ag-1", "ag-2", "ag-1"]);
+  });
+
+  it("revalidates a reopened cached conversation on the same agent", async () => {
+    await mountLazyCachedConversations();
+    rail.collapse();
+    await vi.waitFor(() => expect(panel()?.getAttribute("aria-hidden")).toBe("true"));
+    railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+    expect(callsTo("thread.page").map(({ params }) => params.agent_id)).toEqual(["ag-1", "ag-1"]);
+  });
+
+  it("revalidates a collapsed conversation reopened by dropping a file", async () => {
+    await mountLazyCachedConversations();
+    rail.collapse();
+    await vi.waitFor(() => expect(panel()?.getAttribute("aria-hidden")).toBe("true"));
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    drop.dataTransfer = { files: [new File(["notes"], "reopen.txt", { type: "text/plain" })], items: [], types: ["Files"] };
+    railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').dispatchEvent(drop);
+    await vi.waitFor(() => expect(panel()?.getAttribute("aria-hidden")).toBe("false"));
+    await vi.waitFor(() => expect(panel()?.querySelector(".composer-chip-name")?.textContent).toBe("reopen.txt"));
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+    expect(callsTo("thread.page").map(({ params }) => params.agent_id)).toEqual(["ag-1", "ag-1"]);
+  });
+
+  it("revalidates a cached conversation after its actual device session is replaced", async () => {
+    await mountLazyCachedConversations();
+    const previous = contextFor("dev-1").session;
+    adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "2.0.0" }, null);
+    expect(contextFor("dev-1").session).not.toBe(previous);
+    await writeRailWorkItem(payload);
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+    expect(callsTo("thread.page").map(({ params }) => params.agent_id)).toEqual(["ag-1", "ag-1"]);
+  });
+
+  it("revalidates a cached conversation when its thread incarnation changes", async () => {
+    await mountLazyCachedConversations();
+    payload = branchRow({ agents: [agent({ watched: false, thread_id: "thread-next", thread_generation_revision: 1 })] });
+    await writeRailWorkItem(payload);
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+    expect(callsTo("thread.page")[1].params.thread_id).toBe("thread-next");
+  });
+
+  it.each([false, true])("paints and revalidates a cached unwatched conversation under lazy ownership (%s)", async (enabled) => {
+    lazy.enabled = enabled;
     await wipeCache();
     await wipeUiRecords();
     chatRepository.railView("workspace:ws-unwatched").chooseAgent("ag-1");
@@ -1237,6 +1916,7 @@ describe("the rail over a machine that is asked nothing", () => {
     await vi.waitFor(() => expect(headWho()).toBe(TOPICS["ag-1"]));
     expect(railHost().querySelector("#railinput")).not.toBeNull();
     expect(callsTo("workspace.get")).toHaveLength(0);
+    if (enabled) await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
   });
 
   it("paints the selected agent's cached watch value and follows a push", async () => {

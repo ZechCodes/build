@@ -1,0 +1,119 @@
+{
+  "encoding": "lossless UTF-8 raw_utf8 JSON strings",
+  "logs": [
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-907-final-backend/tree-pages.log",
+      "wrapper": "backend-tree-pages.log.json",
+      "raw_sha256": "db4b5ef3c16e3f581016b9780884ddaf2ae3479152567873ea71049421352cb8",
+      "wrapper_sha256": "0a3920b4bccd21aef981343001e89d6b1e29cba89180f6f7ff87fe841a353d45"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-907-final-backend/filesystem.log",
+      "wrapper": "backend-filesystem.log.json",
+      "raw_sha256": "a9761507ddd31a6f7c9cb77de7e2e08118b5cf58f4cb20553808033c549e5392",
+      "wrapper_sha256": "92a4d03ef8e63f80ae2f80053e3052799a04271dd617b76f1f5c0417eb661442"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-907-final-backend/sql-reads.log",
+      "wrapper": "backend-sql-reads.log.json",
+      "raw_sha256": "3520047f4f0b522587d8e62f89550fed9f32c43ccfdbe09b8a89977a1964f7aa",
+      "wrapper_sha256": "295420b3b9feef154c04a331d71cc11e85545c2059c7f64a41072c1308df1880"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-907-final-backend/file-hints.log",
+      "wrapper": "backend-file-hints.log.json",
+      "raw_sha256": "896b765b01c8bfce54c056e1199ed412dc388b90be1990ccd8facbed3a761437",
+      "wrapper_sha256": "08526a16d2d9d26c2654825f3e7be8ad6c523252c32a6a73423ee8cb6e8936bf"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-907-final-backend/format.log",
+      "wrapper": "backend-format.log.json",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "wrapper_sha256": "b1595870ced21ede515d1b901e8ebe0b4d908fe5d22d64a19e7fba4a81feb2c1"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-907-final-backend/clippy.log",
+      "wrapper": "backend-clippy.log.json",
+      "raw_sha256": "45f75b19e5718ce74d75d27dc949e2b0cc21908a1e53dca4d31c24e03ebe8e09",
+      "wrapper_sha256": "c2638e1ad21640ba6252cbc080853c191be52b25912df05580f0cedba7f9796a"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-907-final-ui/lint.log",
+      "wrapper": "ui-lint.log.json",
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "wrapper_sha256": "d42468ee596bb472f13b35672ff1f2c3671731b19effd10517d398fd29aa87f4"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-907-final-ui/unit.log",
+      "wrapper": "ui-unit.log.json",
+      "raw_sha256": "d2d2a2562ac2862f6d838fde7028fa70f4ad263d8a9862e2bedf77771d5e1f5d",
+      "wrapper_sha256": "6b81ef351a1c9c2b389d177f79063fc3489e4b673434b266cd72b32e954aa5e1"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-907-final-ui/layout.log",
+      "wrapper": "ui-layout.log.json",
+      "raw_sha256": "fc3743b70b21fd515d73b19306b85bb747fe90377cb3747bf6097d3e305e2057",
+      "wrapper_sha256": "3c8f7c361d60d37bb1f65442940850f7176990e3be6482cf454af5f20ced617e"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-907-final-ui/build.log",
+      "wrapper": "ui-build.log.json",
+      "raw_sha256": "9e00dea7618bf524914c8bab2d061ccfee33ba2362bae0a743565d2295c0d67f",
+      "wrapper_sha256": "87fe69c1f9fd585ddc5b771f2aa1672e4bb9e5531fdf39cde84f3c9187e4d341"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-907-final-ui/cost.log",
+      "wrapper": "ui-cost.log.json",
+      "raw_sha256": "a1d8a1facb4e71fe1440e72b559754798e627b9006d4c562cfbcbc9b838fe9d0",
+      "wrapper_sha256": "6af5efbc2f5da6616e501c3e79976f197cd05432c1fbad1433be99679576b2ff"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-907-final-ui/semgrep.log",
+      "wrapper": "ui-semgrep.log.json",
+      "raw_sha256": "fae06a9a435e6d8849b0fb9d7e7b53ff091ce6efa09170832beb48feadccbaed",
+      "wrapper_sha256": "3363ed6d55b6894d0c5b97e68cde8ba4c096835d07d85ee62e21a1f8864b6ba9"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/timeline-oldmerge-907ae03e-fresh907-final-head-01/behavior.log",
+      "wrapper": "timeline-control.log.json",
+      "raw_sha256": "498f051264d0f263d85491f340f721e7e58898106ea4112c8f16eca9e9cd2b46",
+      "wrapper_sha256": "b11246b7e6aa403e46393e271f922234f60236ca6e859bd2fadfcaf72030ab1c"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-hints-control-907ae03e33/negative.log",
+      "wrapper": "watcher-control.log.json",
+      "raw_sha256": "0a08aa21ccdb9368c8a335506284f252b4fd7c00099d7822325520ce81ab166f",
+      "wrapper_sha256": "0985bbb2e7adf30ba4e3043050a69f598b7ff2987c80c81c6e411f1ea4165bb8"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/review-cursor-control-907ae03e33/negative.log",
+      "wrapper": "cursor-control.log.json",
+      "raw_sha256": "326760bf271ddc8f6e86a943ab997dd394d2dcb6cd67a61d0204e62c29dc7670",
+      "wrapper_sha256": "ba59c6f262fd8948f74f33ba4fb7d496ae1b1c67263f15d3f4613c0ca0942ec5"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/spa-tree-truncated-negative-907ae03e.log",
+      "wrapper": "tree-truncated-control.log.json",
+      "raw_sha256": "7765f1a1973b012ba0c4015b92100bda884a86a7d1636ceef34ecf1fd46cb175",
+      "wrapper_sha256": "1118c1064927fdf62fba77a4042d45bdd87cf333039ad6d462661d0d05b6a1f6"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/spa-tree-retention-negative-907ae03e.log",
+      "wrapper": "tree-retention-control.log.json",
+      "raw_sha256": "3490b9a2cb45581802b97b9a3961f0205e99e8399f10f3b794a241830f4ebc20",
+      "wrapper_sha256": "2143c9df90a10606a83072019343762a13993e49e54d378f9007548ff059bd86"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/spa-tree-reveal-negative-907ae03e.log",
+      "wrapper": "tree-reveal-control.log.json",
+      "raw_sha256": "a3a5bfe618a169ff4d903edaefc7c9a8759816e37e43e2b0579166527036fe89",
+      "wrapper_sha256": "7dcece415d94f88d8af56c374dbdf548022a64d5dcd1bf78f9be5ded9c117aed"
+    },
+    {
+      "original": "/home/zech/Projects/.agent-scratch/894/directory-lease-weak-control-907ae03e.log",
+      "wrapper": "lease-weak-control.log.json",
+      "raw_sha256": "c19d5dc0f4c10a44503c9e4a9991e16233e68c8eb5edc9b2f9a703f3ea3575cc",
+      "wrapper_sha256": "759db25c5d67806b79b723fb68965af72fad7c0558dd0acbb92965adab079e06"
+    }
+  ]
+}

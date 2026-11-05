@@ -20,6 +20,8 @@ import closeFixture from "../../fixtures/api/v1/tasks.review.close.json";
 // These repositories use isolated injected callers; current-greeting dispatch
 // is covered by taskReviewSupport's registered-device tests.
 vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: () => null }));
+const lazy = vi.hoisted(() => ({ enabled: false }));
+vi.mock("../src/core/scopedSyncRuntime.js", () => ({ lazyViewReadsEnabled: () => lazy.enabled }));
 
 const scope = { deviceId: "reviews-cache", projectId: "proj-1", taskId: "task-1" };
 const support = { snapshotRetired: false, reject: false, author: false, verdictDelivery: false, retryDelivery: false, get: true, snapshot: true, diff: true, complete: true, act: true, comments: true,
@@ -28,7 +30,7 @@ const support = { snapshotRetired: false, reject: false, author: false, verdictD
 const review = fixture.result.review;
 const pullRequest = fixture.examples[1].result;
 const prSupport = Object.fromEntries(Object.keys(support).map((key) => [key, true]));
-beforeEach(async () => { await wipeCache(); });
+beforeEach(async () => { lazy.enabled = false; await wipeCache(); });
 afterEach(() => { vi.restoreAllMocks(); forgetPushes(); });
 
 it("gates each verb and comments independently and remembers the greeting", async () => {
@@ -37,6 +39,17 @@ it("gates each verb and comments independently and remembers the greeting", asyn
   await rememberReviewSupport(scope.deviceId, caps);
   expect(await readReviewSupport(scope.deviceId)).toEqual(caps.reviews);
   expect(await readReviewSupport("unknown")).toEqual(Object.fromEntries(Object.keys(support).map((key) => [key, false])));
+});
+
+it("refreshes review metadata on open without warming previously visited comparisons", async () => {
+  lazy.enabled = true;
+  await rememberReviewSupport(scope.deviceId, { reviews: prSupport });
+  await writeReviewRecord(scope, review, 1);
+  const callRpc = vi.fn(async () => ({ review }));
+  await refreshCachedReviews({ ...scope, callRpc, discoveredTaskIds: [scope.taskId] });
+  expect(callRpc).not.toHaveBeenCalled();
+  await createTaskReviewRepository({ ...scope, callRpc }).refresh();
+  expect(callRpc).toHaveBeenCalledWith("tasks.review.get", { task_id: scope.taskId });
 });
 
 it("never probes unsupported bridges", async () => {

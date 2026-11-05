@@ -1,0 +1,12 @@
+test/browser/filesExplorerLayout.test.js
+test/browser/filesUploadActions.test.js
+test/browser/filesUploadTrayLayout.test.js
+test/browser/mediaBlobPlayback.test.js
+test/browser/projectFiles.test.js
+test/browser/projectWorkspaceChanges.test.js
+test/browser/taskReadingContinuity.test.js
+test/browser/taskReviewLayout.test.js
+test/browser/taskReviewPageLayout.test.js
+test/browser/workspaceDirectories.test.js
+test/browser/workspaceLock.test.js
+test/browser/workspaceReviewLayout.test.js

@@ -1,0 +1,50 @@
+[
+  {
+    "round": 1,
+    "arm": "base",
+    "command": "nice -n 10 /home/zech/Projects/.agent-scratch/894/append-baseline-tests store::tests::conversations::appending_one_message_writes_a_constant_row_budget_however_long_the_conversation_is --exact --nocapture --test-threads=1",
+    "exit_code": 0,
+    "binary_sha256": "7ca49e13dae1a07c6151b5d669b7a6700ce81798facf7f14655a5ca8c8e9ad77",
+    "log": "round-1-base.log"
+  },
+  {
+    "round": 1,
+    "arm": "candidate",
+    "command": "nice -n 10 /home/zech/Projects/.agent-scratch/894/append-candidate-tests store::tests::conversations::appending_one_message_writes_a_constant_row_budget_however_long_the_conversation_is --exact --nocapture --test-threads=1",
+    "exit_code": 0,
+    "binary_sha256": "18c457dc79b086c60257f62ccb6e85179a248100ce3f4a83a09173c9098aea0d",
+    "log": "round-1-candidate.log"
+  },
+  {
+    "round": 2,
+    "arm": "candidate",
+    "command": "nice -n 10 /home/zech/Projects/.agent-scratch/894/append-candidate-tests store::tests::conversations::appending_one_message_writes_a_constant_row_budget_however_long_the_conversation_is --exact --nocapture --test-threads=1",
+    "exit_code": 0,
+    "binary_sha256": "18c457dc79b086c60257f62ccb6e85179a248100ce3f4a83a09173c9098aea0d",
+    "log": "round-2-candidate.log"
+  },
+  {
+    "round": 2,
+    "arm": "base",
+    "command": "nice -n 10 /home/zech/Projects/.agent-scratch/894/append-baseline-tests store::tests::conversations::appending_one_message_writes_a_constant_row_budget_however_long_the_conversation_is --exact --nocapture --test-threads=1",
+    "exit_code": 0,
+    "binary_sha256": "7ca49e13dae1a07c6151b5d669b7a6700ce81798facf7f14655a5ca8c8e9ad77",
+    "log": "round-2-base.log"
+  },
+  {
+    "round": 3,
+    "arm": "base",
+    "command": "nice -n 10 /home/zech/Projects/.agent-scratch/894/append-baseline-tests store::tests::conversations::appending_one_message_writes_a_constant_row_budget_however_long_the_conversation_is --exact --nocapture --test-threads=1",
+    "exit_code": 0,
+    "binary_sha256": "7ca49e13dae1a07c6151b5d669b7a6700ce81798facf7f14655a5ca8c8e9ad77",
+    "log": "round-3-base.log"
+  },
+  {
+    "round": 3,
+    "arm": "candidate",
+    "command": "nice -n 10 /home/zech/Projects/.agent-scratch/894/append-candidate-tests store::tests::conversations::appending_one_message_writes_a_constant_row_budget_however_long_the_conversation_is --exact --nocapture --test-threads=1",
+    "exit_code": 0,
+    "binary_sha256": "18c457dc79b086c60257f62ccb6e85179a248100ce3f4a83a09173c9098aea0d",
+    "log": "round-3-candidate.log"
+  }
+]

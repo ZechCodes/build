@@ -206,12 +206,20 @@ function revisionTimelineParts(rows, context) {
  *  the mounted page patches these entries with the shared keyed list painter. */
 export function timelineParts(rows, context) {
   if (!rows.length) return { frame: `<p class="empty task-empty">Nothing has happened on this task yet.</p>`, rows: [] };
-  const index = commentReplyIndex(rows);
+  const anchor = context.anchorRows || [];
+  const index = commentReplyIndex([...anchor, ...rows]);
+  const parts = (items) => context.reviewSupport?.reject ? revisionTimelineParts(items, { ...context, replyIndex: index })
+    : items.flatMap((row) => timelineEntryParts(row, { ...context, replyIndex: index }));
   return {
     frame: '<ul class="task-timeline"></ul>',
-    rows: context.reviewSupport?.reject ? revisionTimelineParts(rows, { ...context, replyIndex: index })
-      : rows.flatMap((row) => timelineEntryParts(row, { ...context, replyIndex: index })),
+    rows: [...parts(anchor), ...timelineGapParts(context, anchor.length > 0), ...parts(rows)],
   };
+}
+
+function timelineGapParts(context, anchored) {
+  const parts = anchored ? [{ name: "history-gap", html: '<li class="task-history-gap" data-task-history-gap>Newer entries are not loaded between this comment and the latest history.</li>' }] : [];
+  if (context.timelineMore) parts.push({ name: "history-more", html: '<li class="task-history-more"><button type="button" class="btn mini" data-task-timeline-older>Older history</button></li>' });
+  return parts;
 }
 
 /** The timeline: comments and events interleaved, ascending, in the order the

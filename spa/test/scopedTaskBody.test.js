@@ -1,5 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+const support = vi.hoisted(() => ({ paged: false }));
+vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: () => ({ tasks: { timelinePaged: support.paged } }) }));
 
 const deviceId = "body-device", projectId = "proj-1", taskId = "task-1";
 const detail = { deviceId, entityId: projectId, kind: "tracker-task", sub: taskId };
@@ -10,6 +12,7 @@ const deferred = () => { let resolve; const promise = new Promise((done) => { re
 
 beforeEach(async () => {
   vi.resetModules();
+  support.paged = true;
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   cache = await import("../src/core/localCache.js");
@@ -25,10 +28,31 @@ beforeEach(async () => {
 const refresh = (callRpc, active = () => true) => body.refreshScopedTaskBody({ deviceId, projectId, taskId, callRpc, active });
 const answer = (extra = {}) => ({ task: { ...head, body: "complete body", attachments: ["attachment"], ...extra }, timeline: ["legacy timeline"] });
 
+it("uses a bounded newest window when supplementing body bytes on a capable bridge", async () => {
+  support.paged = true;
+  const call = vi.fn(async () => answer());
+  expect(await refresh(call)).toBe(true);
+  expect(call).toHaveBeenCalledWith("tasks.get", { task_id: taskId, timeline_paged: true, limit: 50 });
+});
+
+it("restores full legacy history on selected 3.35 to 3.34 rollback even when the task revision is unchanged", async () => {
+  support.paged = true;
+  await refresh(async () => answer());
+  support.paged = false;
+  const legacy = vi.fn(async () => answer());
+  expect(await refresh(legacy)).toBe(true);
+  expect(legacy).toHaveBeenCalledWith("tasks.get", { task_id: taskId });
+  const saved = await read();
+  expect(saved.task.title).toBe("journal header");
+  expect(saved.timeline).toEqual(["legacy timeline"]);
+  expect(saved.has_more).toBe(false);
+  expect(saved.next_cursor).toBeUndefined();
+});
+
 it("supplements body fields while preserving the journal header, facts and timeline", async () => {
   const call = vi.fn(async () => answer({ title: "full legacy header" }));
   expect(await refresh(call)).toBe(true);
-  expect(call).toHaveBeenCalledWith("tasks.get", { task_id: taskId });
+  expect(call).toHaveBeenCalledWith("tasks.get", { task_id: taskId, timeline_paged: true, limit: 50 });
   expect(await read()).toMatchObject({ task: { title: "journal header", body: "complete body", attachments: ["attachment"] },
     timeline: ["journal timeline"], has_more: true });
 });

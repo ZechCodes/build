@@ -1,0 +1,20 @@
+{
+  "event": "complete",
+  "argv": [
+    "nice",
+    "-n",
+    "10",
+    "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+    "node_modules/vitest/vitest.mjs",
+    "run",
+    "--project",
+    "unit",
+    "test/fileTreePaging.test.js",
+    "test/taskReviewFilesHints.test.js",
+    "test/directoryHints.test.js",
+    "test/directoryPages.test.js"
+  ],
+  "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa",
+  "head": "ffb8d5992a16f8cf3f08fc223d9df4c0f754c82b",
+  "exit_code": 0
+}

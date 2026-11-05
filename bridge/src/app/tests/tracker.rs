@@ -7,6 +7,220 @@
 use super::project_agent::{added_project, rooted, workspace};
 use super::*;
 
+#[test]
+fn task_timeline_cursor_refusals_have_a_typed_recovery_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project_id) = tracked(dir.path());
+    let task = filed(&mut app, &project_id, "timeline cursor refusal");
+    let id = task_id(&task);
+    let comment = app.handle(req(
+        "tasks.comment",
+        json!({"task_id":id,"body":"synthetic cursor context"}),
+    ));
+    assert_eq!(comment["ok"], true, "{comment}");
+    let first = app.handle(req(
+        "tasks.get",
+        json!({"task_id":id,"timeline_paged":true,"limit":1}),
+    ));
+    let cursor = first["result"]["next_cursor"].as_str().unwrap().to_string();
+    let other = filed(&mut app, &project_id, "foreign cursor task");
+    for params in [
+        json!({"task_id":id,"timeline_paged":true,"before":"malformed-cursor"}),
+        json!({"task_id":task_id(&other),"timeline_paged":true,"before":cursor}),
+    ] {
+        let refused = app.handle(req("tasks.get", params));
+        assert_eq!(refused["error_code"], "invalid_params", "{refused}");
+        assert_eq!(
+            refused["details"]["reason"], "task_timeline_cursor_invalid",
+            "{refused}"
+        );
+    }
+    app.tracker_store()
+        .unwrap()
+        .writer_for_test()
+        .execute(
+            "UPDATE meta SET value=?1 WHERE key='sync_incarnation'",
+            [uuid::Uuid::new_v4().to_string()],
+        )
+        .unwrap();
+    let replaced = app.handle(req(
+        "tasks.get",
+        json!({"task_id":id,"timeline_paged":true,"before":cursor}),
+    ));
+    assert_eq!(replaced["error_code"], "invalid_params", "{replaced}");
+    assert_eq!(
+        replaced["details"]["reason"], "task_timeline_cursor_invalid",
+        "{replaced}"
+    );
+
+    // A real data failure must remain visible; it is not a cursor fence.
+    let store = app.tracker_store().unwrap();
+    let record = store.load_tracker_task(&id).unwrap().unwrap();
+    let bad: crate::tracker::TaskComment = serde_json::from_value(json!({
+        "id":crate::tracker::new_comment_id(),"task_id":id,"author":{"kind":"user"},
+        "body":"synthetic broken record","created_at":"2099-01-01T00:00:00Z",
+    }))
+    .unwrap();
+    store
+        .save_tracker_task_activity(&record, std::slice::from_ref(&bad), &[])
+        .unwrap();
+    store
+        .writer_for_test()
+        .execute(
+            "UPDATE tracker_comments SET record='invalid synthetic history' WHERE id=?1",
+            [bad.id],
+        )
+        .unwrap();
+    let failure = app.handle(req(
+        "tasks.get",
+        json!({"task_id":id,"timeline_paged":true,"limit":1}),
+    ));
+    assert_eq!(failure["error_code"], "unavailable", "{failure}");
+    assert_ne!(
+        failure["details"]["reason"], "task_timeline_cursor_invalid",
+        "{failure}"
+    );
+}
+
+#[test]
+fn unopted_task_get_keeps_the_legacy_wire_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project_id) = tracked(dir.path());
+    let task = filed(&mut app, &project_id, "legacy task detail params");
+    let id = task_id(&task);
+    let legacy = app.handle(req("tasks.get", json!({"task_id":id})));
+    assert_eq!(legacy["ok"], true, "{legacy}");
+    for mut params in [
+        json!({"limit":1,"before":"not-a-timeline-cursor","timeline_anchor":"absent"}),
+        json!({"before":17,"limit":"future-client-value","timeline_anchor":["future"]}),
+        json!({"timeline_paged":false,"before":17,"limit":"future-client-value","timeline_anchor":["future"]}),
+    ] {
+        params["task_id"] = json!(id);
+        let answer = app.handle(req("tasks.get", params));
+        assert_eq!(answer["ok"], false, "{answer}");
+        assert_eq!(answer["error_code"], "invalid_params", "{answer}");
+    }
+    let explicit_legacy = app.handle(req(
+        "tasks.get",
+        json!({"task_id":id,"timeline_paged":false}),
+    ));
+    assert_eq!(explicit_legacy, legacy);
+    let paged = app.handle(req(
+        "tasks.get",
+        json!({"task_id":id,"timeline_paged":true,"limit":1}),
+    ));
+    assert_eq!(paged["ok"], true, "{paged}");
+    assert_eq!(paged["result"]["timeline"].as_array().unwrap().len(), 1);
+    assert_eq!(paged["result"]["has_more"], false);
+    assert!(paged["result"]["next_cursor"].is_null());
+    assert_eq!(app.handle(req("tasks.get", json!({"task_id":id}))), legacy);
+    let malformed = app.handle(req(
+        "tasks.get",
+        json!({"task_id":id,"timeline_paged":"invalid-mode"}),
+    ));
+    assert_eq!(malformed["error_code"], "invalid_params", "{malformed}");
+}
+
+#[test]
+fn negotiated_task_detail_pages_history_and_preserves_the_legacy_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project_id) = tracked(dir.path());
+    let task = filed(&mut app, &project_id, "bounded task open");
+    let id = task_id(&task);
+    add_task_detail_comments(&mut app, &id, 65);
+    let legacy = app.handle(req("tasks.get", json!({"task_id":id})))["result"].clone();
+    assert!(legacy.get("has_more").is_none());
+    assert!(legacy.get("next_cursor").is_none());
+    assert!(legacy["timeline"].as_array().unwrap().len() > 50);
+    let first = app.handle(req(
+        "tasks.get",
+        json!({"task_id":id,"timeline_paged":true}),
+    ));
+    assert_eq!(first["ok"], true, "{first}");
+    assert_eq!(first["result"]["timeline"].as_array().unwrap().len(), 50);
+    assert_eq!(first["result"]["has_more"], true);
+    let cursor = first["result"]["next_cursor"].as_str().unwrap();
+    let older = app.handle(req(
+        "tasks.get",
+        json!({"task_id":id,"timeline_paged":true,"before":cursor}),
+    ));
+    assert_eq!(older["ok"], true, "{older}");
+    assert_eq!(older["result"]["has_more"], false);
+    assert!(older["result"]["next_cursor"].is_null());
+    let mut joined = older["result"]["timeline"].as_array().unwrap().clone();
+    joined.extend(first["result"]["timeline"].as_array().unwrap().clone());
+    assert_eq!(json!(joined), legacy["timeline"]);
+    assert_eq!(
+        app.handle(req("tasks.get", json!({"task_id":id})))["result"],
+        legacy
+    );
+    assert_invalid_task_paging_selectors(&mut app, &id);
+}
+
+fn add_task_detail_comments(app: &mut AppState, id: &str, count: usize) {
+    for index in 0..count {
+        let answer = app.handle(req(
+            "tasks.comment",
+            json!({"task_id":id,"body":format!("synthetic comment {index}")}),
+        ));
+        assert_eq!(answer["ok"], true, "{answer}");
+    }
+}
+
+fn assert_invalid_task_paging_selectors(app: &mut AppState, id: &str) {
+    for params in [
+        json!({"task_id":id,"timeline_paged":true,"before":"bad"}),
+        json!({"task_id":id,"timeline_paged":true,"limit":101}),
+    ] {
+        let refused = app.handle(req("tasks.get", params));
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(refused["error_code"], "invalid_params", "{refused}");
+    }
+}
+
+#[test]
+fn long_task_open_reports_bounded_bytes_and_preserves_all_history_unread_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project_id) = tracked(dir.path());
+    let task = filed(&mut app, &project_id, "long task open");
+    let id = task_id(&task);
+    let store = app.tracker_store().unwrap();
+    let mut record = store.load_tracker_task(&id).unwrap().unwrap();
+    record.watched = true;
+    let comments = (0..4096).map(|_| serde_json::from_value::<crate::tracker::TaskComment>(json!({
+        "id":crate::tracker::new_comment_id(), "task_id":id, "author":{"kind":"agent","agent_id":"synthetic-perf-agent"},
+        "body":"synthetic timeline body ".repeat(16), "created_at":"2026-11-01T00:00:00Z"
+    })).unwrap()).collect::<Vec<_>>();
+    store
+        .save_tracker_task_activity(&record, &comments, &[])
+        .unwrap();
+    let started = std::time::Instant::now();
+    let legacy = app.handle(req("tasks.get", json!({"task_id":id})));
+    let legacy_micros = started.elapsed().as_micros();
+    let started = std::time::Instant::now();
+    let bounded = app.handle(req(
+        "tasks.get",
+        json!({"task_id":id,"timeline_paged":true}),
+    ));
+    let bounded_elapsed = started.elapsed();
+    assert_eq!(bounded["ok"], true, "{bounded}");
+    assert_eq!(bounded["result"]["timeline"].as_array().unwrap().len(), 50);
+    assert_eq!(
+        bounded["result"]["task"]["unread_count"],
+        legacy["result"]["task"]["unread_count"]
+    );
+    assert_eq!(bounded["result"]["task"]["unread_count"], 4096);
+    assert_eq!(bounded["result"]["task"]["unread_agent_comments"], 4096);
+    let legacy_bytes = serde_json::to_vec(&legacy).unwrap().len();
+    let bounded_bytes = serde_json::to_vec(&bounded).unwrap().len();
+    eprintln!("task_open entries=4096 legacy_bytes={legacy_bytes} bounded_bytes={bounded_bytes} legacy_rpc=1 bounded_rpc=1 legacy_micros={legacy_micros} bounded_micros={}", bounded_elapsed.as_micros());
+    assert!(bounded_bytes < legacy_bytes / 10);
+    assert!(
+        bounded_elapsed < std::time::Duration::from_millis(100),
+        "bounded task read took {bounded_elapsed:?}"
+    );
+}
+
 /// A project with a store behind it — a tracker needs one, and a bridge
 /// without persistence says so rather than losing what the user filed.
 ///

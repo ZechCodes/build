@@ -1,0 +1,16 @@
+{
+  "source": "17c8b9103ba6f8d2e95d6b6a7ed23c6393f5af26",
+  "process_exit": 1,
+  "files": 359,
+  "failed_files": 2,
+  "passed_files": 357,
+  "passed_tests": 5886,
+  "failed_tests": 1,
+  "skipped_tests": 2,
+  "failed_names": [
+    "test/doneSinceLeftWiring.test.js > falls back to the 24-hour Done once an older bridge answers the list",
+    "test/taskUnreadKinds183.test.js > the bridge's cases"
+  ],
+  "corrective_followup": "two test-only fixture corrections; focused2files12tests actual0; final50d359file5889testaggregate actual0",
+  "log_sha256": "267b12d6696430dda7381615e27b6368ae18086ef7a6ce80e2000fc3049871a8"
+}

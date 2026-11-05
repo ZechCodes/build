@@ -13,6 +13,26 @@ const userSays = (id) => comment({ id, author: { kind: "user" } });
 const detailOf = (held, timeline) => ({ task: held, timeline });
 
 describe("one task's unread", () => {
+  it("uses complete-history counts while the newest window does not reach the read floor", () => {
+    const listed = task({ watched: true, read_through: "tc-01", unread_count: 80 });
+    const cached = { ...detailOf(listed, [agentSays("tc-90")]), has_more: true };
+    expect(taskUnreadCount(listed, cached)).toBe(80);
+    const current = { ...listed, unread_count: 81 };
+    expect(taskUnreadCount(listed, { ...cached, task: current })).toBe(81);
+  });
+
+  it("can clear a partial history count after the loaded newest row was read", () => {
+    const listed = task({ watched: true, read_through: "tc-01", unread_count: 80 });
+    const cached = { ...detailOf({ ...listed, read_through: "tc-90" }, [agentSays("tc-90")]), has_more: true, timeline_read_through: "tc-90" };
+    expect(taskUnreadCount(listed, cached)).toBe(0);
+  });
+
+  it("does not infer unread coverage from timestamp order when imports have newer ids outside the window", () => {
+    const listed = task({ watched: true, read_through: "tc-50", unread_count: 3 });
+    const cached = { ...detailOf(listed, [agentSays("tc-40")]), has_more: true, timeline_read_through: "tc-99" };
+    expect(taskUnreadCount(listed, cached)).toBe(3);
+  });
+
   it("is nothing on a task nobody watches, whatever the list or the timeline says", () => {
     const unwatched = task({ unread_count: 4 });
     expect(taskUnreadCount(unwatched, detailOf(unwatched, [agentSays("tc-02")]))).toBe(0);

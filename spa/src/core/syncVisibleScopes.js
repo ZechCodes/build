@@ -7,6 +7,7 @@ const trees = new Set();
 const diffs = new Set();
 const threads = new Set();
 const reads = new Set();
+const readListeners = new Set();
 const readerListeners = new Set();
 let readerSignature = "";
 const addressOf = (address) => typeof address === "function" ? address() : address;
@@ -32,16 +33,25 @@ export const registerSyncThread = (identityGetter, activeGetter = alwaysActive) 
   return () => { stop(); notifyThreadReaders(); };
 };
 
-export const registerSyncRead = (keyGetter, read, activeGetter = alwaysActive) =>
-  register(reads, keyGetter, read, activeGetter);
+const notifyReadListeners = () => { for (const listener of readListeners) listener(); };
+export const subscribeSyncReads = (listener) => {
+  readListeners.add(listener);
+  return () => readListeners.delete(listener);
+};
+export const registerSyncRead = (keyGetter, read, activeGetter = alwaysActive) => {
+  const stop = register(reads, keyGetter, read, activeGetter);
+  queueMicrotask(notifyReadListeners);
+  return () => { stop(); notifyReadListeners(); };
+};
 
 const readKey = (key) => JSON.stringify([key.deviceId, key.entityId, key.kind, key.sub || ""]);
-const readMounted = (scope, key, passActive) => {
+const readMounted = (scope, key, passActive, options) => {
   const active = () => {
     const current = addressOf(scope.address);
     return scope.active() && passActive() && current && readKey(current) === readKey(key);
   };
-  return active() ? scope.value(active) : null;
+  if (!active()) return null;
+  return options === undefined ? scope.value(active) : scope.value(active, options);
 };
 
 /** Source panes own reads that the board's entity sync cannot address. The
@@ -53,7 +63,7 @@ export function visibleSyncReads(deviceId) {
     const key = addressOf(scope.address);
     if (key?.deviceId !== deviceId) continue;
     const identity = readKey(key);
-    if (!jobs.has(identity)) jobs.set(identity, { key, read: (active = alwaysActive) => readMounted(scope, key, active) });
+    if (!jobs.has(identity)) jobs.set(identity, { key, read: (active = alwaysActive, options) => readMounted(scope, key, active, options) });
   }
   return [...jobs.values()];
 }

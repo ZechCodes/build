@@ -1,0 +1,30 @@
+{
+  "head": "b38e11bc78fd0b6925352425e54b931a249101ba",
+  "exit_code": 0,
+  "results": [
+    {
+      "label": "tree-pages",
+      "exit_code": 0
+    },
+    {
+      "label": "filesystem",
+      "exit_code": 0
+    },
+    {
+      "label": "sql-reads",
+      "exit_code": 0
+    },
+    {
+      "label": "file-hints",
+      "exit_code": 0
+    },
+    {
+      "label": "format",
+      "exit_code": 0
+    },
+    {
+      "label": "clippy",
+      "exit_code": 0
+    }
+  ]
+}

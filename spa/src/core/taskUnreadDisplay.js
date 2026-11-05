@@ -5,6 +5,7 @@ import { taskWatchIntentAddress, TASK_CONTENT_GENERATION_ADDRESS, taskContentSco
   taskWatchControlAddress, TASK_READS_KIND } from "./taskReadOrder.js";
 import { randomToken } from "./idbRecords.js";
 import { taskUnreadCount, taskUnreadDisplayCount } from "./taskUnread.js";
+import { timelineNeedsCounters } from "./taskTimelineWindow.js";
 import { changedSince } from "./trackerModel.js";
 import { TASK_FAMILY_CACHE, TASK_WATCH_CACHE, hasTaskWatchSnapshot } from "./taskWatchFacts.js";
 import { messageOf } from "./text.js";
@@ -32,7 +33,7 @@ const validLifetime = (context) => lifetime(context).every(nonempty);
 const reportFailure = (error) => console.info("Task unread display persistence unavailable", error);
 const familyAvailable = (task) => Boolean(task?.[TASK_FAMILY_CACHE]?.total || task?.[TASK_FAMILY_CACHE]?.paint?.total);
 const familyUnknown = (task) => Boolean(task?.[TASK_FAMILY_CACHE]?.unknown?.total);
-const timelineCurrent = (task, detail) => Array.isArray(detail?.timeline) && !changedSince(task, detail);
+const timelineCurrent = (task, detail) => !timelineNeedsCounters(detail) && !changedSince(task, detail);
 
 function unknownTotal(task, detail, previous) {
   if (familyUnknown(task)) return true;

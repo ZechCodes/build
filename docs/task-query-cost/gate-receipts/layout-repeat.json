@@ -1,0 +1,8 @@
+{
+  "process_exit": 0,
+  "files": 76,
+  "tests": 597,
+  "source_qualification": "detached repeat explicitly directed by lead; source/head attribution remains with #894 final receipt",
+  "log": "/home/zech/Projects/.agent-scratch/894/layout-2.log",
+  "log_sha256": "436e13d647de53ba67a5648ca64b522f14fcaf90d1df933bcf204915f24f0c67"
+}

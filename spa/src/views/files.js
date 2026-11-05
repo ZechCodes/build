@@ -34,6 +34,9 @@
 
 import { esc, pickAFileText } from "../core/text.js";
 import { directoryCacheId, syncWalksCheckout } from "../core/directoryScope.js";
+import { directoryPageParams, fileTouchedByHint, normalizedDirectoryHint } from "../core/directoryPages.js";
+import { createDirectoryWatcher } from "../core/directoryWatcher.js";
+import { lazyViewReadsEnabled } from "../core/scopedSyncRuntime.js";
 import { deleteCached, deleteCachedIfUnwritten, readCached, recordWriteOf, subscribeCache } from "../core/localCache.js";
 import { FILE_RECORD_KIND, cacheFileBody, filePageReader, filePagesReadable } from "../core/cacheLifetime.js";
 import {
@@ -60,9 +63,11 @@ import { attachMediaSource, createMediaBody, releaseMediaSource } from "../core/
 import { requestPriorityFields } from "../core/readRequests.js";
 import { bridgeCapabilities } from "../core/changeEvents.js";
 import { mountFilesUploads } from "../core/filesUploads.js";
+import { registerSyncRead, syncPaneShown } from "../core/syncVisibleScopes.js";
 
 const FS_READ_MAX_BYTES = 1_048_576;
 const filesDeviceId = (cacheScope) => cacheScope?.deviceId;
+const fileFromRecord = (record) => record?.value?.file;
 
 function bindPreviewMedia(host, file, pages) {
   const element = host.querySelector(".fmedia, .fimg");
@@ -302,7 +307,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
    *  hold is the answer. A workspace source's and a project's are not walked by
    *  anybody, so what they hold is the last visit's own work: a seed to paint
    *  at once, and never a reason to skip the read. */
-  const rootReadsForItself = (root) => !syncWalksCheckout(root.scope);
+  const rootReadsForItself = (root) => !syncWalksCheckout(root.scope, cacheScope?.deviceId);
   const readsForItself = (key) => rootReadsForItself(locate(key).root);
   const scopeOf = (key) => locate(key).root.scope;
 
@@ -387,18 +392,18 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
    *  record — and then read the stored record back: the view paints what the
    *  cache holds, never the answer. A mount handed no cache has nowhere to
    *  store, so it shows the answer as it came. */
-  const storePulledFile = async (path, file, request, previousWrite) => {
+  const storePulledFile = async (path, file, request, previousWrite, active = () => true) => {
     const address = fileAddress(path);
     if (!address) return { file };
     const current = await heldRecord(address);
-    if (!stillSelected(request, path)) return {};
-    if (recordWriteOf(current) !== previousWrite) return { file: current?.value?.file };
+    if (!stillSelected(request, path) || !active()) return {};
+    if (recordWriteOf(current) !== previousWrite) return { file: fileFromRecord(current) };
     await cacheFileBody({
       deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file,
-      readPage: storePageReader(path, file), still: recordStill(address, previousWrite), written: previousWrite,
+      readPage: storePageReader(path, file), still: async () => active() && await recordStill(address, previousWrite)(), written: previousWrite,
     });
     if (!stillSelected(request, path)) return {};
-    return { file: (await heldRecord(address))?.value?.file };
+    return { file: fileFromRecord(await heldRecord(address)) };
   };
 
   // A paged file is started over from its first page at most once off each
@@ -424,7 +429,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     if (stored) restartedTo = `${path}\n${(await heldRecord(address))?.value?.file?.of}`;
   };
 
-  const pullFile = async (path, request, previousWrite) => {
+  const pullFile = async (path, request, previousWrite, active = () => true) => {
     try {
       const raw = bridgeCapabilities(cacheScope?.deviceId)?.bodies?.mediaRawPages === true && isMediaPath(pathOf(path));
       const params = {
@@ -434,7 +439,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
       const file = raw
         ? await callRpc("fs.read", params, requestPriorityFields("background"))
         : await callRpc("fs.read", params);
-      return storePulledFile(path, file, request, previousWrite);
+      return storePulledFile(path, file, request, previousWrite, active);
     } catch (error) {
       return { error };
     }
@@ -474,7 +479,6 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     publishFileContext();
     stopPagedView();
     carriedScroll = null;
-    showPlaceholder("loading");
   };
 
   const editorIsCurrent = (path, state) =>
@@ -514,6 +518,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     const address = fileAddress(path);
     const record = await heldRecord(address);
     if (!stillSelected(request, path)) return;
+    if (!record?.value?.file) showPlaceholder("loading");
     if (takeHeldFile(path, request, address, record)) return;
     const result = await pullFile(path, request, recordWriteOf(record));
     showFileResult(path, request, result);
@@ -529,6 +534,20 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     const result = await pullFile(path, request, recordWriteOf(record));
     showFileResult(path, request, result);
   };
+
+  const refreshSelectedFile = async (active, { files } = {}) => {
+    const path = selectedPath, request = fileRequest;
+    if (!path || !active()) return;
+    if (files && !fileTouchedByHint(pathOf(path), normalizedDirectoryHint(files))) return;
+    const record = await heldRecord(fileAddress(path));
+    if (!stillSelected(request, path) || !active()) return;
+    const result = await pullFile(path, request, recordWriteOf(record), active);
+    if (active()) showFileResult(path, request, result);
+  };
+  const unregisterSyncFile = registerSyncRead(
+    () => selectedPath ? fileAddress(selectedPath) : null, refreshSelectedFile,
+    () => !disposed && Boolean(selectedPath) && syncPaneShown(previewEl),
+  );
 
   // Reveal/hide is EPHEMERAL: a fresh renderPreview re-derives the secrets and
   // starts fully masked, so any repaint/navigation resets to the hidden state.
@@ -851,8 +870,12 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     listingAddress: (dir) => rootAddress(root, "tree", dir),
     stateAddress: rootAddress(root, "ui-files", "tree"),
     readsForItself: () => rootReadsForItself(root),
-    keepHeldOnError: Boolean(root.scope?.project_id),
-    listDirectory: (dir) => callRpc("fs.tree", { ...root.scope, path: dir }),
+    keepHeldOnError: Boolean(root.scope?.project_id) || lazyViewReadsEnabled(cacheScope?.deviceId),
+    listDirectory: (dir, continuation) => callRpc("fs.tree", { ...root.scope, path: dir, ...directoryPageParams(cacheScope?.deviceId, continuation) }),
+    watchDirectory: (visible, onVisible) => createDirectoryWatcher({ deviceId: cacheScope?.deviceId, visible, onVisible,
+      scopeOf: () => root.scope, entityIdOf: () => rootAddress(root, "tree", "")?.entityId,
+      active: () => !disposed && Boolean(cacheScope?.active()),
+    }),
     finePointer,
   });
   const openFromTree = (key) => {
@@ -912,6 +935,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
       fileRequest += 1;
       uploadView.dispose();
       tree.dispose();
+      unregisterSyncFile();
       tabs.dispose();
       unwatchFile?.();
       unwatchFile = null;

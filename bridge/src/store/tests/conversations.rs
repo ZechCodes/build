@@ -231,34 +231,35 @@ fn project_history_survives_each_run_delete_until_explicit_project_clear() {
 /// The canonical append still writes only one item plus its agent and run.
 /// Device sync adds a fixed journal/projection budget, independent of history.
 #[test]
-fn device_334_appending_one_message_writes_one_row_however_long_the_conversation_is() {
+fn appending_one_message_writes_a_constant_row_budget_however_long_the_conversation_is() {
     let mut short_cost = None;
+    let mut short_executions = None;
     for length in [1, 60, 4096] {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks")).expect("store opens");
-        store
-            .writer_for_test()
-            .execute(
-                "INSERT INTO device_project_ids VALUES('/repo','budget-project')",
-                [],
-            )
-            .unwrap();
-        let mut record = run_record("run-1", None, NOW);
-        for n in 0..length {
-            record.agents[0]
-                .thread
-                .post_user(format!("message {n}"), None, NOW);
-        }
-        store.save_run(&record).expect("the first save writes");
+        let mut record = append_cost_fixture(&store, length);
         let before = store.total_changes();
         let cost = write_cost::WriteCost::start(&store);
         record.agents[0]
             .thread
             .post_user("one more", None, "2026-08-21T10:00:00.001Z");
+        let started = std::time::Instant::now();
         store.save_run(&record).expect("the append saves");
+        let append_micros = started.elapsed().as_micros();
         let rows = cost.rows();
+        let executions = cost.executions();
         let written = store.total_changes() - before;
         drop(cost);
+        // save_run and every producer it invokes use the single writer's
+        // Transaction; none acquires ReadPool. Start/stop surround only save_run,
+        // excluding fixture construction and the verification reads below.
+        // Print before the row pin so the identical observer/fixture can also
+        // measure the pre-coalescer source with its different write budget.
+        eprintln!(
+            "append_sql length={length} connection=writer executions={} selects={} statements={:?}",
+            executions.total, executions.selects, executions.statements
+        );
+        assert_constant_append_executions(&mut short_executions, executions);
         assert_eq!(
             rows.values().sum::<u64>(),
             written,
@@ -286,8 +287,8 @@ fn device_334_appending_one_message_writes_one_row_however_long_the_conversation
         // Wire 3.34: advancing a real timestamp changes the conversation and
         // two compact pooled summaries (owner and project), each once. Four
         // device rows publish: agent, inbox conversation, owner session and
-        // project session. Their four COW versions plus the batch head cost
-        // five sync_state writes. Family touches cost insert+delete per pool.
+        // project session. Their COW accounting and the journal head share
+        // one sync_state write. Family touches cost insert+delete per pool.
         // No write depends on the retained transcript's length. Pin every
         // table, including newly introduced writes; same-time appends below
         // prove that unchanged pooled facts incur no extra write/publication.
@@ -303,11 +304,11 @@ fn device_334_appending_one_message_writes_one_row_however_long_the_conversation
             ("sync_device_agent_touches", 2),
             ("sync_journal", 4),
             ("sync_routes", 4),
-            ("sync_stream_state", 4),
+            ("sync_stream_state", 1),
             ("sync_revisions", 4),
             ("sync_projection", 4),
             ("sync_projection_versions", 4),
-            ("sync_state", 5),
+            ("sync_state", 1),
         ]
         .into_iter()
         .map(|(table, rows)| (table.to_owned(), rows))
@@ -316,7 +317,7 @@ fn device_334_appending_one_message_writes_one_row_however_long_the_conversation
             rows, expected,
             "append must use only the enumerated constant device budget"
         );
-        eprintln!("append length={length} writes={written} tables={rows:?}");
+        eprintln!("append length={length} micros={append_micros} writes={written} tables={rows:?}");
         if let Some(ref short) = short_cost {
             assert_eq!(
                 &rows, short,
@@ -362,6 +363,66 @@ fn device_334_appending_one_message_writes_one_row_however_long_the_conversation
             reload_run(&store, "run-1").agents[0].thread.items.len(),
             (length + 2).min(RESIDENT_CONVERSATION_TAIL)
         );
+        drop(quiet);
+        profile_warm_appends(&store, &mut record, length, written);
+    }
+}
+
+fn append_cost_fixture(store: &Store, length: usize) -> PersistedRun {
+    store
+        .writer_for_test()
+        .execute(
+            "INSERT INTO device_project_ids VALUES('/repo','budget-project')",
+            [],
+        )
+        .unwrap();
+    let mut record = run_record("run-1", None, NOW);
+    for n in 0..length {
+        record.agents[0]
+            .thread
+            .post_user(format!("message {n}"), None, NOW);
+    }
+    store.save_run(&record).expect("the first save writes");
+    record
+}
+
+fn assert_constant_append_executions(
+    short_executions: &mut Option<write_cost::ExecutionCost>,
+    executions: write_cost::ExecutionCost,
+) {
+    assert!(executions.selects > 0, "append reads must be observed");
+    if let Some(short) = short_executions.as_ref() {
+        assert_eq!(
+            &executions, short,
+            "append SQL executions and every SQL count must stay constant across history lengths"
+        );
+    } else {
+        *short_executions = Some(executions);
+    }
+}
+
+// An explicit performance cohort adds three untimed warm-ups and 29 samples
+// to the same synthetic fixture. Ordinary targeted correctness runs stay small.
+fn profile_warm_appends(store: &Store, record: &mut PersistedRun, length: usize, budget: u64) {
+    if std::env::var_os("TASK894_APPEND_PROFILE").is_none() {
+        return;
+    }
+    for sample in 0..32 {
+        let at = format!("2026-08-21T10:00:00.{:03}Z", sample + 2);
+        record.agents[0]
+            .thread
+            .post_user(format!("warm append {sample}"), None, &at);
+        let before = store.total_changes();
+        let started = std::time::Instant::now();
+        store.save_run(record).expect("warm append saves");
+        let micros = started.elapsed().as_micros();
+        let writes = store.total_changes() - before;
+        assert_eq!(writes, budget, "every timed append retains the row budget");
+        if sample >= 3 {
+            eprintln!(
+                "warm_append length={length} sample={sample} micros={micros} writes={writes}"
+            );
+        }
     }
 }
 

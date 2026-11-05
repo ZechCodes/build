@@ -1,0 +1,116 @@
+{
+  "recorded_batch": "Initial failures remain historical; exact50d final Rust/SPA/performance/release gates actual0.",
+  "latest_prepared_source": "50d4a264726cc866160e3a360afdb65345842767",
+  "rust_passed_groups": [
+    "store-tests-counted-final",
+    "sync-final",
+    "device-lifecycle-final",
+    "tracker-sync-final",
+    "sql-reads-final",
+    "tracker-api-final",
+    "filesystem-final",
+    "rust-format-final",
+    "prior-wire-manifest-final",
+    "prior-wire-manifest-clean-final",
+    "http-manifest-final"
+  ],
+  "failed_group_disposition": {
+    "changes-final": "Corrected; supplement0 and fresh exact50d corresponding process0.",
+    "api-contract-final": "Corrected; supplement0 and fresh exact50d corresponding process0.",
+    "rust-clippy-final": "Corrected; supplement0 and fresh exact50d corresponding process0."
+  },
+  "spa_initial_unit": "initial357fileaggregate1; all15fixturecases corrected; later17c359aggregate1 with Rust-markerparsefixture+oneDoneDOMrace, retained separately",
+  "spa_initial_layout": "exit143; lead-directed detached repeat exit0,76files597tests; no thirdlayout claimed",
+  "spa_prepared_unit_files": 359,
+  "spa_prepared_browser_files": 76,
+  "serialized_compatibility_and_mount": "final50d runner actual0; 5fixtureprocesses0,3359rows/arm,mounted4cases/arm,startup18rows; restored38sources and verified1723SPAfilehash",
+  "receipt_owner": "Final qualification/review receipts remain on #894; no coordinator fullSPA or installedbridge deployment claimed",
+  "latest_executed_source": "907ae03e33c2bf39b108d721a3cff72a9ce3a8d6",
+  "rust_supplement": {
+    "changes-fixtures-fixed": 0,
+    "directory-identity-verified": 0,
+    "tracker-api-refactored": 0,
+    "append-refactored": 0,
+    "sql-reads-frozen": 0,
+    "api-contract-fixtures-fixed": 0,
+    "rust-format-frozen": 0,
+    "rust-clippy-refactored": 0,
+    "prior-wire-manifest-frozen": 0,
+    "prior-wire-manifest-clean-frozen": 0,
+    "http-manifest-frozen": 0
+  },
+  "spa_final_unit": "verified at50d: lint0,359targetedunitfiles5889tests0,build0; this is not fullSPA suite",
+  "spa_layout": "lead-directed detached76files597tests actual0; final50d lifecycle supplement3files22tests actual0",
+  "remaining_qualification": "Runtime qualification is complete. Secret scan/publication are recorded separately by parent after the artifact commit; coordinator fullSPA and installed bridge deployment are not claimed.",
+  "release_read_bound": {
+    "exit_code": 0,
+    "source": "50d4a264726cc866160e3a360afdb65345842767",
+    "client_total_us": [
+      16862,
+      29355,
+      23191,
+      6470
+    ],
+    "receipt": "release-read-bound-50d4a2647.json"
+  },
+  "fresh_negative_controls": {
+    "source": "50d4a264726cc866160e3a360afdb65345842767",
+    "orchestration_exit_code": 0,
+    "statement_cache_32": 101,
+    "forced_files_root": 101,
+    "restoration_exit_code": 0,
+    "receipt": "negative-controls-50d4a2647/manifest.json"
+  },
+  "fresh_append_execution_comparison": {
+    "source": "50d4a264726cc866160e3a360afdb65345842767",
+    "baseline": 0,
+    "counter_sanity": 0,
+    "restored_store_tests": 0,
+    "parser": 0,
+    "counts": "181\u2192168executions,127\u2192122SELECTstarts,44\u219237writes; maps constant at1/60/4096",
+    "receipt": "../append-statements-50d4a2647/provenance.json"
+  },
+  "rust_initial_failed_groups": {
+    "changes-final": 101,
+    "api-contract-final": 101,
+    "rust-clippy-final": 101
+  },
+  "rust_final": {
+    "source": "50d4a264726cc866160e3a360afdb65345842767",
+    "exit_code": 0,
+    "process_count": 17,
+    "receipt": "frozen-rust-50d4a2647.json"
+  },
+  "semgrep_main": {
+    "exit_code": 0,
+    "findings": 0,
+    "targets": 82,
+    "rule_timeouts": 3,
+    "receipt": "semgrep-50d4a2647/manifest.json"
+  },
+  "semgrep_focused": {
+    "exit_code": 0,
+    "findings": 0,
+    "targets": 2,
+    "rule_timeouts": 0,
+    "timeout_seconds": 60,
+    "timeout_threshold": 0,
+    "receipt": "semgrep-50d4a2647/focused-receipt.json"
+  },
+  "original_runtime_source": "50d4a264726cc866160e3a360afdb65345842767",
+  "latest_re_review": {
+    "source": "907ae03e33c2bf39b108d721a3cff72a9ce3a8d6",
+    "positive_master_exit": 0,
+    "control_outer_exit": 0,
+    "unit_files": 369,
+    "unit_tests": 6138,
+    "browser_files": 11,
+    "browser_tests": 79,
+    "backend_processes": 6,
+    "cost": 0,
+    "semgrep_exit": 0,
+    "semgrep_findings": 0,
+    "semgrep_timeouts": 0,
+    "receipt": "review-round-2/final-907ae03e33/manifest.json"
+  }
+}

@@ -15,6 +15,7 @@ use super::{b64encode, fenced_scope_path, media_mime_hint, require_str, AppState
 mod deferred;
 mod errors;
 pub(in crate::app) mod path_lock;
+mod tree_pages;
 pub(in crate::app) mod uploads;
 use deferred::{FileMutation, FileTarget};
 
@@ -151,6 +152,22 @@ const FS_MEDIA_LEGACY_READ_MAX_BYTES: u64 = 32 * 1_048_576;
 /// The body of `fs.tree`, and what a `files` push item carries for the root —
 /// one listing, so a client painting from a push and a client painting from a
 /// read are looking at the same thing.
+pub(in crate::app) fn directory_read(
+    root: &std::path::Path,
+    params: &Value,
+) -> Result<Value, String> {
+    let path = params.get("path").and_then(Value::as_str).unwrap_or("");
+    if params.get("paged").and_then(Value::as_bool) == Some(true) {
+        return tree_pages::listing(root, path, params);
+    }
+    if params.get("cursor").is_some() || params.get("limit").is_some() {
+        return Err(errors::encode(ApiError::invalid_params(
+            "directory cursors and limits require paged:true",
+        )));
+    }
+    directory_listing(root, path)
+}
+
 pub(in crate::app) fn directory_listing(
     root: &std::path::Path,
     path: &str,
@@ -334,12 +351,7 @@ impl AppState {
     pub(crate) fn fs_tree(&mut self, params: &Value) -> Result<Value, String> {
         let scope = FileScope::parse(params)?;
         let root = scope.resolve_root(self)?;
-        let path = params
-            .get("path")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
-        directory_listing(&root, &path)
+        directory_read(&root, params)
     }
 
     /// Read one file from a source or worktree scope, base64 always, capped at the

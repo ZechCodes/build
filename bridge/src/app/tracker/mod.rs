@@ -15,6 +15,7 @@ mod activity;
 mod agent_files;
 mod aggregates;
 mod attachments;
+mod bounded_detail;
 mod bounded_pages;
 pub(crate) mod sync_scopes;
 #[cfg(test)]

@@ -358,6 +358,19 @@ async fn task_snapshot_has_a_bounded_timeline_head_and_a_watermark() {
         50
     );
     assert_eq!(answer["records"][0]["row"]["has_more"], true);
+    let page = store.task_timeline_page(&task.id, None, 50).unwrap();
+    assert_eq!(
+        answer["records"][0]["row"]["next_cursor"],
+        json!(page.next_cursor)
+    );
+    assert_eq!(
+        answer["records"][0]["row"]["timeline_incarnation"],
+        json!(page.timeline_incarnation)
+    );
+    assert_eq!(
+        answer["records"][0]["row"]["timeline_read_through"],
+        json!(page.timeline_read_through)
+    );
     assert!(answer["cursor"].as_str().is_some());
     assert_eq!(answer["records"][0]["row"]["task"]["title"], "opened");
     let head = &answer["records"][0]["row"]["timeline"];

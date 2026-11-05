@@ -2118,7 +2118,7 @@
       "requires_events": false,
       "contract": {
         "source": "bridge/src/api/v1/tasks.rs",
-        "params": "TaskIdParams",
+        "params": "TasksGetParams",
         "result": "TaskDetail"
       }
     },

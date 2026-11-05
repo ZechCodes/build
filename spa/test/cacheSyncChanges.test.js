@@ -1350,6 +1350,105 @@ describe("project source Git facts", () => {
     return (await import("../src/core/directoryScope.js")).directoryCacheId(scope);
   };
 
+  it("rejects source frames from a retired mounted owner before queue admission and accepts the new owner", async () => {
+    const id = await seed();
+    const status = { deviceId: "dev-1", entityId: id, kind: "status" };
+    const cursor = { deviceId: "dev-1", entityId: "p1", kind: "sync-cursor", sub: "synthetic-task-owner" };
+    await cache.writeCached(status, { status_key: "held", files: [] });
+    await cache.writeCached(cursor, { cursor: "held-synthetic-cursor", incarnation: "held-synthetic-store" });
+    const before = await cache.readCached(status), cursorBefore = await cache.readCached(cursor);
+    let entered, release;
+    const admitted = new Promise((resolve) => { entered = resolve; });
+    const held = new Promise((resolve) => { release = resolve; });
+    const readCached = cache.readCached;
+    let blocked = false, owner = true;
+    vi.spyOn(cache, "readCached").mockImplementation(async (address) => {
+      if (!blocked && address.kind === "projects") { blocked = true; entered(); await held; }
+      return readCached(address);
+    });
+    const first = sync.applyProjectSourceChanges([fact({ status: { status_key: "retired-first" } })], "dev-1", () => owner);
+    await admitted;
+    const queued = sync.applyProjectSourceChanges([fact({ status: { status_key: "retired-queued" } })], "dev-1", () => owner);
+    owner = false; // Hiding then showing creates a different captured owner.
+    release();
+    await Promise.all([first, queued]);
+    expect(await cache.readCached(status)).toEqual(before);
+    expect(await cache.readCached(cursor)).toEqual(cursorBefore);
+    await sync.applyProjectSourceChanges([fact({ status: { status_key: "new-owner" } })], "dev-1", () => true);
+    expect((await cache.readCached(status)).value.status_key).toBe("new-owner");
+    expect(await cache.readCached(cursor)).toEqual(cursorBefore);
+  });
+
+  it("retains a new mounted owner queued behind retired source frames for the same directory", async () => {
+    const id = await seed();
+    const address = { deviceId: "dev-1", entityId: id, kind: "status" };
+    await cache.writeCached(address, { status_key: "held" });
+    let entered, release;
+    const admitted = new Promise((resolve) => { entered = resolve; });
+    const held = new Promise((resolve) => { release = resolve; });
+    const readCached = cache.readCached;
+    let blocked = false, oldOwner = true;
+    vi.spyOn(cache, "readCached").mockImplementation(async (target) => {
+      if (!blocked && target.kind === "projects") { blocked = true; entered(); await held; }
+      return readCached(target);
+    });
+    const first = sync.applyProjectSourceChanges([fact({ status: { status_key: "old-running" } })], "dev-1", () => oldOwner);
+    await admitted;
+    const queued = sync.applyProjectSourceChanges([fact({ status: { status_key: "old-queued" } })], "dev-1", () => oldOwner);
+    oldOwner = false;
+    const replacement = sync.applyProjectSourceChanges([fact({ status: { status_key: "new-queued" } })], "dev-1", () => true);
+    expect((await cache.readCached(address)).value.status_key).toBe("held");
+    release();
+    await Promise.all([first, queued, replacement]);
+    expect((await cache.readCached(address)).value.status_key).toBe("new-queued");
+  });
+
+  it.each([
+    { label: "status", kind: "status", git: { status: { status_key: "arriving" } } },
+    { label: "unpushed", kind: "unpushed", git: { unpushed: { diff_key: "arriving", commits: [] } } },
+    { label: "log", kind: "log", git: { log: { commits: [{ hash: "synthetic-new" }], newest: "synthetic-new", reset: true } } },
+    { label: "diff", kind: "diff", git: { diff: { diff_key: "arriving", patch: "synthetic patch" } } },
+    { label: "log invalidation", kind: "log", git: { status: { status_key: "arriving" } } },
+    { label: "refs invalidation", kind: "refs", git: { status: { status_key: "arriving" } } },
+    { label: "diff invalidation", kind: "diff", git: { diff: null } },
+    { label: "terminal roster", kind: "terminals", terminals: { tabs: [{ term_id: "synthetic-new" }] } },
+  ])("rejects an owner-bound source $label retired before its real cache transaction", async ({ kind, git, terminals }) => {
+    const id = await seed();
+    const address = { deviceId: "dev-1", entityId: id, kind };
+    await cache.writeCached({ ...address, kind: "status" }, { status_key: "held" });
+    const previous = { status: { status_key: "held" }, unpushed: { diff_key: "held", commits: [] },
+      log: { commits: [{ hash: "synthetic-held" }], newest: "synthetic-held" },
+      diff: { diff_key: "held", patch: "synthetic held patch" }, refs: { refs: ["main"] }, terminals: { tabs: [] } };
+    await cache.writeCached(address, previous[kind]);
+    const before = await cache.readCached(address);
+    let entered, release;
+    const admitted = new Promise((resolve) => { entered = resolve; });
+    const held = new Promise((resolve) => { release = resolve; });
+    const operation = kind === "terminals" ? "mergeCachedTogether" : "mergeCachedAtomically";
+    const mergeCached = cache[operation];
+    let owner = true, blocked = false;
+    vi.spyOn(cache, operation).mockImplementation(async (target, merge) => {
+      const addresses = Array.isArray(target) ? target : [target];
+      if (!blocked && addresses.some((entry) => entry.entityId === id && entry.kind === kind)) {
+        blocked = true; entered(); await held;
+      }
+      // Exercise the actual IndexedDB readwrite transaction and its reducer.
+      return mergeCached(target, merge);
+    });
+    const item = terminals ? { project_source: scope, terminals } : fact(git);
+    const reading = sync.applyProjectSourceChanges([item], "dev-1", () => owner);
+    let timeout;
+    try {
+      await Promise.race([admitted, new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("owner-bound source write did not use guarded atomic admission")), 1000);
+      })]);
+      owner = false;
+      release();
+      await reading;
+      expect(await cache.readCached(address)).toEqual(before);
+    } finally { clearTimeout(timeout); release(); await reading; }
+  });
+
   it("stores source facts under the complete directory address and preserves the legacy namespace", async () => {
     const id = await seed();
     await cache.writeCached({ deviceId: "dev-1", entityId: "p1", kind: "status" }, { status_key: "legacy" });

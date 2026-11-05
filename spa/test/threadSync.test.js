@@ -302,15 +302,16 @@ describe("forward coverage and repair cursors", () => {
   it.each([false, true])("does not relabel a pre-id cursor after an unseen reset (probe has items: %s)", async (hasItems) => {
     await cache.writeCached(address, { ...windowAt(message(100, "retired transcript")), historyStartSequence: 75,
       repairThrough: 150, retired_thread_ids: ["already-retired"], knownTotalItems: 1000 });
-    const newestItems = hasItems ? [message(101, "new transcript"), message(102, "new tail")] : [message(1, "new transcript"), message(2, "new tail")];
+    const newestItems = hasItems ? [message(101, "new transcript"), message(102, "new tail")] : [];
+    const newestSequence = newestItems.at(-1)?.data.sequence || 0;
     const call = vi.fn(async (_method, params) => ({ thread_id: "reset-incarnation", thread_generation_revision: 2,
       items: Object.hasOwn(params, "after_sequence") ? (hasItems ? newestItems : []) : newestItems,
-      thread_last_sequence: newestItems.at(-1).data.sequence, thread_total: 2, has_more: false }));
+      thread_last_sequence: newestSequence, thread_total: newestItems.length, has_more: false }));
     expect(await sync(call)).toBe(true);
     const window = await saved();
     expect(window.items).toEqual(newestItems);
-    expect(window.deliveredSequence).toBe(newestItems.at(-1).data.sequence);
-    expect(window.knownTotalItems).toBe(2);
+    expect(window.deliveredSequence).toBe(newestSequence);
+    expect(window.knownTotalItems).toBe(newestItems.length);
     expect(window.historyStartSequence).toBeUndefined();
     expect(window.repairThrough).toBeUndefined();
     expect(window.retired_thread_ids).toEqual(["already-retired"]);

@@ -127,13 +127,7 @@ fn negotiated_task_detail_pages_history_and_preserves_the_legacy_contract() {
     let (_repo, mut app, project_id) = tracked(dir.path());
     let task = filed(&mut app, &project_id, "bounded task open");
     let id = task_id(&task);
-    for index in 0..65 {
-        let answer = app.handle(req(
-            "tasks.comment",
-            json!({"task_id":id,"body":format!("synthetic comment {index}")}),
-        ));
-        assert_eq!(answer["ok"], true, "{answer}");
-    }
+    add_task_detail_comments(&mut app, &id, 65);
     let legacy = app.handle(req("tasks.get", json!({"task_id":id})))["result"].clone();
     assert!(legacy.get("has_more").is_none());
     assert!(legacy.get("next_cursor").is_none());
@@ -160,6 +154,20 @@ fn negotiated_task_detail_pages_history_and_preserves_the_legacy_contract() {
         app.handle(req("tasks.get", json!({"task_id":id})))["result"],
         legacy
     );
+    assert_invalid_task_paging_selectors(&mut app, &id);
+}
+
+fn add_task_detail_comments(app: &mut AppState, id: &str, count: usize) {
+    for index in 0..count {
+        let answer = app.handle(req(
+            "tasks.comment",
+            json!({"task_id":id,"body":format!("synthetic comment {index}")}),
+        ));
+        assert_eq!(answer["ok"], true, "{answer}");
+    }
+}
+
+fn assert_invalid_task_paging_selectors(app: &mut AppState, id: &str) {
     for params in [
         json!({"task_id":id,"timeline_paged":true,"before":"bad"}),
         json!({"task_id":id,"timeline_paged":true,"limit":101}),

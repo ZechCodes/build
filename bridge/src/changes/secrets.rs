@@ -43,7 +43,7 @@ fn payload(record: &crate::secrets::SecretRecord) -> Value {
 }
 
 pub(super) fn covered(scope: &Scope, payload: &Value) -> bool {
-    scope.covers(route(payload))
+    payload["scope"] == "device" || scope.covers(route(payload))
 }
 
 fn route(payload: &Value) -> &str {
@@ -55,9 +55,7 @@ fn route(payload: &Value) -> &str {
 
 impl Subscription {
     pub(super) fn note_secret_change(&mut self, payload: Value, now: Instant) {
-        if !self.spec.kinds.contains(Kind::SecretsChanged)
-            || !self.spec.scope.covers(route(&payload))
-        {
+        if !self.spec.kinds.contains(Kind::SecretsChanged) || !covered(&self.spec.scope, &payload) {
             return;
         }
         if self.pending.is_empty() {
@@ -83,13 +81,22 @@ fn identity(payload: &Value) -> Value {
 }
 
 fn merge(events: &mut Vec<Value>, payload: Value) {
+    if payload["scope"] == "device"
+        || events
+            .first()
+            .is_some_and(|event| event["scope"] == "device")
+    {
+        device_refresh(events, payload["revision"].as_i64().unwrap_or(1));
+        return;
+    }
     let Some(existing) = events
         .iter_mut()
         .find(|event| identity(event) == identity(&payload))
     else {
-        // There cannot be more scope contexts than retained blobs (1,000).
         if events.len() < crate::secrets::MAX_RETAINED_BLOBS {
             events.push(payload);
+        } else {
+            device_refresh(events, payload["revision"].as_i64().unwrap_or(1));
         }
         return;
     };
@@ -115,4 +122,14 @@ fn merge(events: &mut Vec<Value>, payload: Value) {
     } else {
         existing["secret_ids"] = json!(ids);
     }
+}
+
+fn device_refresh(events: &mut Vec<Value>, revision: i64) {
+    let revision = events
+        .iter()
+        .filter_map(|event| event["revision"].as_i64())
+        .fold(revision, i64::max);
+    *events = vec![
+        json!({"type":SECRETS_CHANGED_EVENT,"scope":"device","revision":revision,"secret_ids":[],"truncated":true}),
+    ];
 }

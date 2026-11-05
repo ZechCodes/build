@@ -57,3 +57,11 @@ it("keeps reordered hints as refresh requests and refuses malformed scope metada
   secretsChangedOn("hint-device", agent);
   expect(hear).toHaveBeenCalledTimes(3);
 });
+
+it("turns a bounded device overflow hint into a full metadata refresh", () => {
+  const hear = vi.fn();
+  const dispose = onSecretsChanged("overflow-device", hear);
+  secretsChangedOn("overflow-device", { type: "secrets.changed", scope: "device", revision: 1001, secret_ids: [], truncated: true, name: "discarded", value: "discarded" });
+  expect(hear).toHaveBeenCalledWith({ scope: "device", revision: 1001, secret_ids: [], truncated: true });
+  dispose();
+});

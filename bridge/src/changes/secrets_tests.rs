@@ -95,3 +95,20 @@ fn secret_ids_are_bounded_and_scope_invalidation_survives_other_kind_overflow() 
     }
     assert!(found);
 }
+
+#[test]
+fn scope_overflow_becomes_explicit_device_refresh_without_losing_new_changes() {
+    let bus = ChangeBus::new(Duration::ZERO);
+    let (sender, mut rx, key) = SessionSender::observable("scope-overflow");
+    bus.subscribe(&sender, subscription(Scope::All));
+    for index in 0..=crate::secrets::MAX_RETAINED_BLOBS {
+        bus.note_secret_change(json!({"type":"secrets.changed","scope":"project","project_id":format!("project-{index}"),"revision":index+1,"secret_ids":["sec_synthetic"]}));
+    }
+    assert_eq!(bus.flush(), 1);
+    let frame = SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+    assert_eq!(frame["scope"], "device");
+    assert_eq!(frame["truncated"], true);
+    assert_eq!(frame["secret_ids"], json!([]));
+    assert_eq!(frame["revision"], 1001);
+    assert!(rx.try_recv().is_err());
+}

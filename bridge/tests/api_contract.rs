@@ -1356,7 +1356,12 @@ fn check_untyped_push(event: &Value, keys: &[&str]) {
 }
 
 fn check_secret_metadata_event(event: &Value) {
-    let fields = match event["scope"].as_str().expect("secret grant scope") {
+    let mut fields = match event["scope"].as_str().expect("secret grant scope") {
+        "device" => {
+            assert_eq!(event["truncated"], true);
+            assert_eq!(event["secret_ids"], serde_json::json!([]));
+            vec!["type", "scope", "secret_ids", "revision"]
+        }
         "project" => vec!["type", "scope", "project_id", "secret_ids", "revision"],
         "agent" => {
             assert_eq!(event["thread_id"], event["generation"]);
@@ -1373,6 +1378,9 @@ fn check_secret_metadata_event(event: &Value) {
         }
         other => panic!("unknown secret scope {other}"),
     };
+    if event["truncated"] == true {
+        fields.push("truncated");
+    }
     let expected: BTreeSet<_> = fields.into_iter().collect();
     let actual: BTreeSet<_> = event
         .as_object()
@@ -1384,7 +1392,7 @@ fn check_secret_metadata_event(event: &Value) {
         actual, expected,
         "secret events carry only IDs, revision and scope context"
     );
-    for field in expected.difference(&BTreeSet::from(["secret_ids", "revision"])) {
+    for field in expected.difference(&BTreeSet::from(["secret_ids", "revision", "truncated"])) {
         assert!(event[*field]
             .as_str()
             .is_some_and(|value| !value.is_empty()));
@@ -1393,7 +1401,7 @@ fn check_secret_metadata_event(event: &Value) {
         .as_u64()
         .is_some_and(|revision| revision > 0));
     let ids = event["secret_ids"].as_array().expect("bounded secret ids");
-    assert!(!ids.is_empty() && ids.len() <= 100);
+    assert!(ids.len() <= 100 && (!ids.is_empty() || event["truncated"] == true));
     assert!(ids
         .iter()
         .all(|id| id.as_str().is_some_and(|id| id.starts_with("sec_"))));

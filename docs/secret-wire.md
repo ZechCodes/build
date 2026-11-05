@@ -74,3 +74,20 @@ route by canonical project ID without looking up the originating conversation.
 Treat it as an invalidation: bounded list reads reconcile loss/reordering, and
 revisions prevent stale metadata from becoming authoritative. There is no
 second durable event cursor and no web-push secret content.
+
+A coalesced hint names at most 100 secret IDs; `truncated:true` with no IDs
+requires a full refresh of that scope. If an inactive subscription accumulates
+more than 1,000 distinct scopes, it receives a bounded `scope:"device"` hint
+with `truncated:true` and no IDs. Refresh every held secret-metadata scope for
+that device. This fallback remains restricted to subscriptions requesting the
+`secrets.changed` kind. Events are hints, so compare revisions on refreshed
+individual descriptors; a different secret's higher revision cannot suppress
+another secret's invalidation.
+
+Lifecycle audit facts (`created`, `attached`, `expired`, `revoked`) and existing
+release/denial facts share one monotonically increasing audit sequence. The
+schema-25 upgrade extends the old audit outcome constraint using a savepoint
+and table rebuild, preserving every retained row and the AUTOINCREMENT
+high-water even when the highest old row was pruned. Lifecycle facts commit
+with their metadata mutation. Release/denial summaries retain their original
+meaning; creating or revoking a secret does not increment a denial count.

@@ -16,6 +16,7 @@ export function onSecretsChanged(deviceId, listener) {
 }
 
 function scopeOf(event) {
+  if (event.scope === "device" && event.truncated === true && event.secret_ids.length === 0) return { scope: "device" };
   if (event.scope === "project" && identifier(event.project_id)) return { scope: "project", project_id: event.project_id };
   if (event.scope !== "agent") return null;
   const keys = ["entity_id", "conversation_id", "thread_id", "generation"];

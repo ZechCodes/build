@@ -56,7 +56,47 @@ fn healthy(job: &Job, _: &Path) -> Result<(), String> {
     assert!(fs::read_to_string(&job.installed_binary)
         .unwrap()
         .contains("9.9.9"));
+    assert_eq!(
+        fs::read_to_string(
+            job.installed_binary
+                .parent()
+                .unwrap()
+                .join(".build-runtime/buildctl")
+        )
+        .unwrap(),
+        crate::runtime_launcher::SOURCE
+    );
     Ok(())
+}
+
+#[test]
+fn foreign_global_and_private_buildctl_do_not_block_updates() {
+    for private in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let job = development_fixture(dir.path(), None);
+        let bin = job.installed_binary.parent().unwrap();
+        let foreign = if private {
+            fs::create_dir(bin.join(".build-runtime")).unwrap();
+            bin.join(".build-runtime/buildctl")
+        } else {
+            bin.join("buildctl")
+        };
+        fs::write(&foreign, "foreign command").unwrap();
+        install_with(
+            &job,
+            dir.path(),
+            &job.installed_binary,
+            &mut |_| Ok(()),
+            &mut |job, _| {
+                assert!(fs::read_to_string(&job.installed_binary)
+                    .unwrap()
+                    .contains("9.9.9"));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(foreign).unwrap(), "foreign command");
+    }
 }
 
 #[test]

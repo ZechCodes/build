@@ -68,6 +68,7 @@ the relay binary `bridge/src/bin/relay.rs`.
 | Subcommand | What it does |
 | --- | --- |
 | `serve` (default) | runs the daemon |
+| `secrets get --id <id> [--env <channel>]` | reads a value from the private release socket using only launch-supplied `BRIDGE_SECRET_*` context; exact stdout bytes, fixed stderr errors |
 | `mcp --task <owner>` | the stdio MCP server an agent's harness launches (`mcp_stdio`) |
 | `pair` | device-initiated pairing: prints a code, the short fingerprint and an approve link (`<web>/app/#/pair/<code>`), all within 80 columns, and waits for approval in Build (`bridge/src/pairing.rs`); an identity stored as approved that the api's status answer reports `revoked` or `unknown` (or, from an older api, just not approved) is renamed to `identity.json.retired-<device id>` and a new identity is paired in its place, when that answer comes from the api that approved it (`approved_by` in the identity file, recorded only when a pairing through that api completes, else the default api; urls compared by scheme, host and effective port) or `pair --retire` says so; another api's answer ends `pair` with the identity untouched and exit status 3, which `install.sh` answers with `pair --retire` |
 | `install-service` / `uninstall-service` | systemd user unit or launchd agent (`bridge/src/service/`); both gate on the same status answer as `pair`, and uninstalling keeps the identity file and says so |
@@ -106,6 +107,39 @@ CLI version probes: they drop a parent agent's session markers
 `BRIDGE_IDENTITY_FILE` and env-provisioned keys), both in
 `bridge/src/harness/mod.rs`. A user's own terminal tab keeps the identity, so
 `build-bridge pair` typed there finds the identity the daemon uses (#320).
+
+### Secret runtime command
+
+The installer, management deploy/rollback and self-update install the embedded
+`bridge/runtime/buildctl` launcher at `<bin>/.build-runtime/buildctl`. Agent
+launches prepend only that private directory, after recognizing the Build
+wrapper; ordinary terminal PATH and global `buildctl` remain untouched. A
+foreign runtime destination is skipped with a warning. The launcher forwards `buildctl --env <channel> secrets get --id
+<id>` to `../build-bridge` without a checkout or language runtime. The
+repository management facade execs the launch-supplied absolute
+`BRIDGE_SECRET_BRIDGE` and retains its production management restrictions.
+
+`secret_cli.rs` dispatches before daemon configuration and never opens device
+state or keys. It requires the dedicated socket/channel/owner/agent/token
+context, checks any explicit environment against that channel, sends one bounded
+request, buffers at most 16 KiB under an absolute I/O deadline, and writes exact
+value bytes with no added newline. Diagnostics use a fixed error allowlist.
+Values are intentionally visible to stdout consumers and their transcripts.
+Codex extends the user's effective shell policy, preserving inheritance,
+custom settings and filters while restoring only the six dedicated secret
+variables. Runtime PATH enters the harness environment, not the policy set.
+Secret setup is optional: home/probe/profile failures keep Codex launchable,
+with no secret environment, overlay or injected runtime PATH, and one fixed
+reason warning. The TUI uses a unique 0600 profile under CODEX_HOME, removed
+through a held handle on session end. A bounded private registry under harness
+state records exact names and parent/file dev/ino before capability publication.
+Startup enumerates only registry records and checks exact entry identity
+immediately before unlinkat; the remaining same-user check-to-unlink race is an
+accepted boundary (documented in `docs/device-secret-release.md`);
+it never scans a user Codex home. App-server start/resume uses private stdio
+configuration. The known TUI capability-on-disk
+exposure and provider persistence qualification are recorded in
+`docs/device-secret-release.md`.
 
 ### Module layout
 

@@ -80,6 +80,7 @@ def test_configured_environment_and_install(configured, monkeypatch):
     binary.chmod(0o700)
     runner, service = Mock(), Mock()
     runner.run.return_value.returncode = 0
+    runner.run.return_value.stderr = ""
     bridge = Bridge(env, runner, env.home, service=service)
     bridge.verify = Mock()
     bridge.activate(SHA)

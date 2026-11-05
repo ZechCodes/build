@@ -445,7 +445,7 @@ fn mcp_config_name(owner_id: &str) -> String {
 pub enum Agent {
     /// A fixed warm interactive session: spawn the binary, then write the prompt
     /// to its PTY.
-    Warm(HarnessSpec),
+    Warm(Box<HarnessSpec>),
     /// A provider/model-aware warm interactive session. The builder supplies
     /// argv and environment; Build still injects the prompt through the PTY.
     WarmBuilder(WarmBuilder),
@@ -526,12 +526,12 @@ impl AgentLaunch {
             mcp_surface: mcp.surface,
         };
         let spec = match &self.agent {
-            Agent::Warm(spec) => Ok(spec.clone()),
+            Agent::Warm(spec) => Ok(spec.as_ref().clone()),
             Agent::WarmBuilder(build) => build("", model_choice, &options),
         }?;
         Ok(PreparedAgentLaunch {
             compaction_policy: self.compaction_policy.clone(),
-            spec,
+            spec: crate::harness::secret_launch::runtime_path(spec, &self.bridge_exe)?,
             pty_size: self.pty_size,
         })
     }

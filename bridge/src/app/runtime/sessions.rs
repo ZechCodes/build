@@ -407,11 +407,11 @@ pub(in crate::app) fn build_agent(qa_agent: bool, context: HarnessContext) -> Ag
         // delivered prompt from one eaten by a startup dialog, which is how a
         // fully green suite once hid exactly that bug. The scripted agent does
         // the file writing.
-        Agent::Warm(
+        Agent::Warm(Box::new(
             HarnessSpec::new("sh")
                 .arg("-c")
                 .arg("printf '\\033[?2004h'; cat >/dev/null"),
-        )
+        ))
     } else {
         // Real agents are interactive TUIs. The provider's own `Harness` owns
         // argv, environment and whatever the worktree needs to be prepared

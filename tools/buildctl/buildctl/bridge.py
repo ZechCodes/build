@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import time
 
@@ -236,12 +237,14 @@ class Bridge:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def activate(self, sha):
+    def activate(self, sha, *, install_runtime=True):
         self.env.require_mutation()
         child_env = self.env.bridge_env(os.environ)
         record = self.records()
         binary = self.binary(sha)
         expected = digest(binary)
+        if install_runtime:
+            self.install_runtime(binary, child_env)
         self.service.prepare_install()
         result = self.runner.run(
             [str(binary), "install-service"], env=child_env, check=False
@@ -261,6 +264,19 @@ class Bridge:
             self.env, self.env.state_root / "buildctl.json", json.dumps(record) + "\n"
         )
         return {**record, "environment": self.env.name, "relay": "authenticated"}
+
+    def install_runtime(self, binary, child_env):
+        result = self.runner.run(
+            [str(binary), "install-runtime-launcher"], env=child_env, check=False
+        )
+        unsupported = result.returncode == 2 and result.stderr.startswith(
+            "unknown command: install-runtime-launcher\nusage: build-bridge "
+        )
+        if result.returncode and not unsupported:
+            raise BuildctlError("runtime launcher installation failed")
+        warning = "runtime launcher destination is occupied; skipping"
+        if not result.returncode and result.stderr.splitlines()[:1] == [warning]:
+            print("buildctl: " + warning, file=sys.stderr)
 
     def verify(self, expected, cursor):
         deadline = time.monotonic() + self.verify_timeout
@@ -289,7 +305,9 @@ class Bridge:
             atomic_write(
                 self.env, self.env.state_root / "buildctl-candidate", previous + "\n"
             )
-            return self.activate(previous)
+            # Historical staged binaries can predate the runtime command. Their
+            # existing launcher, if any, stays beside that exact staged binary.
+            return self.activate(previous, install_runtime=False)
 
     def pair(self):
         with management_lock(self.env):

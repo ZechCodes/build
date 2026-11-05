@@ -1,10 +1,12 @@
 //! Codex CLI.
 //!
-//! Everything this provider is told arrives as `--config` overrides on the
-//! command that starts the session: the MCP server to run, the tools that
+//! Provider settings arrive as `--config` overrides on the command that
+//! starts the session: the MCP server to run, the tools that
 //! server is allowed to expose, the trust grant for the worktree, and the paste
-//! handling Build's prompt delivery depends on. Nothing is written outside the
-//! process, which is why this harness needs no workspace preparation.
+//! handling Build's prompt delivery depends on. Secret shell authority is the
+//! exception: an owned 0600 launch profile supplies only BRIDGE_SECRET_* and
+//! runtime PATH without putting capability bytes in argv. The profile lives
+//! outside the checkout and is removed at session end.
 
 use crate::agent_message::{BuildTool, Framing, MessageKind, ToolLoading};
 use std::collections::HashSet;
@@ -233,6 +235,8 @@ impl Harness for CodexHarness {
             .unset_all(INHERITED_AGENT_MARKERS)
             .unset_all(DAEMON_IDENTITY_VARS)
             .arg("--dangerously-bypass-approvals-and-sandbox");
+        spec.secret_profile_registry_root =
+            Some(super::secret_profile::registry_root(&context.state_root));
         for arg in self.model_args(choice) {
             spec = spec.arg(arg);
         }

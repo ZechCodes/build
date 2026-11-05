@@ -197,6 +197,8 @@ impl Harness for CodexAppServerHarness {
             .unset_all(DAEMON_IDENTITY_VARS)
             .arg("app-server")
             .arg("--stdio");
+        spec.secret_profile_registry_root =
+            Some(super::secret_profile::registry_root(&context.state_root));
         if let Some(effort) = &choice.effort {
             spec = spec.arg("--config").arg(format!(
                 "model_reasoning_effort={}",

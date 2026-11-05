@@ -20,6 +20,10 @@
 
 pub(crate) mod secret_launch;
 pub use secret_launch::SecretLaunchEnvironment;
+pub(crate) mod secret_profile;
+pub use secret_profile::{
+    registry_root as secret_profile_registry_root, sweep_codex_secret_profiles,
+};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -48,6 +52,8 @@ mod mcp_surface_tests;
 pub(crate) mod pi;
 pub mod pi_compaction;
 pub mod pi_telemetry;
+#[cfg(test)]
+mod secret_child_env_tests;
 mod session;
 pub mod shell_tail;
 #[cfg(test)]

@@ -432,7 +432,13 @@ impl CodexAppServerSession {
         )?;
         let connection = Arc::new(
             AppServerConnection::new(Box::new(pipes.stdin), limits.connection())
-                .with_thread_config(settings.thread_config),
+                .with_thread_config(
+                    crate::harness::secret_launch::codex_thread_config(
+                        spec,
+                        settings.thread_config.clone(),
+                    )
+                    .or(settings.thread_config),
+                ),
         );
         let (sender, receiver) = broadcast::channel(ACTIVITY_BACKLOG);
         let (status, _) = watch::channel(SessionStatusSnapshot::new(AgentStatus::Starting));

@@ -620,6 +620,8 @@ fn install_with(
         }
         verify_staged_digest(job)?;
         atomic_replace_verified(&verified_binary, &job.installed_binary, &job.staged_digest)?;
+        crate::runtime_launcher::install_sibling(&job.installed_binary)
+            .map_err(|e| e.to_string())?;
         super::provenance::write_marker(&job.home, &job.installed_binary)?;
         service("start")?;
         health(job, dir)

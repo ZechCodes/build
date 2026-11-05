@@ -93,6 +93,27 @@ fn run_main_runtime(work: impl std::future::Future<Output = ()>) {
 }
 
 async fn dispatch() {
+    if std::env::args().nth(1).as_deref() == Some("install-runtime-launcher") {
+        let result = std::env::current_exe()
+            .and_then(|binary| build_bridge::runtime_launcher::install_sibling(&binary));
+        if result.is_err() {
+            eprintln!("runtime launcher installation failed");
+            std::process::exit(1);
+        }
+        return;
+    }
+    // Runtime retrieval must never resolve daemon configuration or open state.
+    if std::env::args().nth(1).as_deref() == Some("secrets") {
+        let args: Result<Vec<_>, _> = std::env::args_os()
+            .skip(2)
+            .map(|arg| arg.into_string())
+            .collect();
+        let Ok(args) = args else {
+            eprintln!("secret_invalid");
+            std::process::exit(1);
+        };
+        std::process::exit(build_bridge::secret_cli::run(&args).await);
+    }
     // Every dev command, including MCP, validates paths before accessing state.
     let dev_config = match config::Channel::resolve(std::env::var("BRIDGE_CHANNEL").ok().as_deref())
     {
@@ -782,7 +803,11 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
     // agent can create work in state that might be discarded. The local health
     // beat still proves the daemon initialized and its app lock is responsive.
     wait_for_update_probation(&runtime.config).await;
-    sweep_startup_uploads(app.clone()).await;
+    sweep_startup_artifacts(
+        app.clone(),
+        build_bridge::harness::secret_profile_registry_root(&runtime.harness_context.state_root),
+    )
+    .await;
     // The relay socket, redialled for as long as the daemon runs, on the
     // liveness runtime. The main thread waits for the signal that ends the
     // daemon; the socket task is aborted then, which is the socket generation
@@ -998,7 +1023,28 @@ fn spawn_resume_after_restart(
 }
 
 /// Stage cleanup is startup I/O and runs outside runtime workers.
-async fn sweep_startup_uploads(app: Arc<std::sync::Mutex<AppState>>) {
+async fn sweep_startup_secret_profiles(registry_root: std::path::PathBuf) {
+    use std::io::Write;
+    // Cleanup enumerates only private records and checks exact filesystem
+    // identities; user Codex directories are never pattern-scanned.
+    let sweep = tokio::task::spawn_blocking(move || {
+        build_bridge::harness::sweep_codex_secret_profiles(&registry_root)
+    })
+    .await;
+    if !matches!(sweep, Ok(Ok(()))) {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "secret profile cleanup unavailable"
+        );
+    }
+}
+
+/// Transient artifact cleanup runs before agents resume, outside runtime workers.
+async fn sweep_startup_artifacts(
+    app: Arc<std::sync::Mutex<AppState>>,
+    registry_root: std::path::PathBuf,
+) {
+    sweep_startup_secret_profiles(registry_root).await;
     let removed = tokio::task::spawn_blocking(move || app.lock().unwrap().sweep_stale_uploads())
         .await
         .expect("startup upload cleanup completed");

@@ -19,7 +19,8 @@ raw output can enter tool transcripts or terminal history.
 The injected variables are `BRIDGE_SECRET_SOCKET` (exact local socket),
 `BRIDGE_SECRET_CHANNEL` (the CLI `--env` binding), `BRIDGE_SECRET_AGENT`
 (request `agent_id`), `BRIDGE_SECRET_OWNER` (informational only), and
-`BRIDGE_SECRET_TOKEN` (request `capability`). The server derives owner, project,
+`BRIDGE_SECRET_TOKEN` (request `capability`), plus `BRIDGE_SECRET_BRIDGE`
+(the absolute executable used by the repository facade). The server derives owner, project,
 device and generation from its issued record; those are never request selectors.
 
 ## Private socket protocol
@@ -36,8 +37,8 @@ including newline). Only these fields are accepted:
 ```
 
 Client request IDs are canonical UUIDs used only for bounded request admission;
-they are never copied into durable audit. Each audit event receives a fresh
-bridge-generated UUID, even when a client retries the same request ID.
+they are never copied into durable audit. Each new audit group receives a fresh
+bridge-generated UUID, independent of the client request ID.
 The capability is authentication material; it
 must never enter argv, diagnostics, message text, history or audit records.
 
@@ -50,8 +51,8 @@ scope/project/generation and unavailable/corrupt vaults share
 `secret_unavailable`. Only an authenticated, currently authorized recipient may
 learn an expired/revoked status. No request or value is echoed.
 
-There are at most four active connections/jobs, a five-second input/output
-budget, 64 admitted requests per second in total, and 16 per capability per
+There are at most four active connections/jobs, a 250-ms pre-auth frame
+deadline, a five-second output budget, 64 admitted requests per second in total, and 16 per capability per
 second. Excess connections close immediately. Rate counters retain only a
 bounded set of capability digests for the current window, not capability text.
 A disconnected consumer can have a committed release audit without receiving
@@ -71,11 +72,108 @@ a bridge-generated audit request UUID, time and outcome. Unknown and wrong-scope
 targets use the fixed `unavailable` sentinel; neither their supplied secret IDs
 nor client request IDs enter audit. Known targets and summary keys come only
 from the authorized stored record. It contains no values, value hashes, command arguments or
-child output. Authorized releases remain individually attributable; invalid
-capability failures are coalesced. Maintenance drops detailed events older than
+child output. Authorized releases remain individually attributable. Authenticated denials
+coalesce per resolved caller/session, target and outcome in one-minute windows,
+with first/last timestamps and a saturating attempt count. Unknown and wrong-scope
+targets share the same fixed sentinel group. At most 4,096 denial groups are
+retained; insertion evicts the oldest denial group, preserving release rows and
+per-secret totals. Internal bounded keyset readers support per-secret and
+indexed per-caller audit pages, including `unavailable` targets. These readers
+carry metadata only and grant no retrieval authority. Invalid capability
+failures are coalesced. Maintenance drops detailed events older than
 90 days while retaining summaries (last release, count and status). It runs
 outside the global app lock.
 
-This slice does not advertise public secret capabilities or enable uploads,
-message attachment admission or the installed `buildctl secrets get` facade.
-Those are separate slices.
+## Runtime command
+
+`buildctl --env dev secrets get --id sec_…` (or `--env prod` for that
+channel) writes the exact value bytes to stdout, with no added newline. Both
+the installed launcher and repository management facade exec the bridge's
+`secrets get` command. The installed launcher needs only a POSIX shell and its
+parent-directory bridge (`../build-bridge`); it does not need Python, Cargo, Git
+or a checkout. Missing or
+stale capability context and an environment mismatch fail as `unauthorized`.
+Errors are fixed bounded stderr messages and never include values or envelopes.
+Production deployment restrictions in the management CLI remain unchanged.
+
+The CLI reads no device keys or daemon state and does not select an agent from
+CWD. It buffers a complete size-bounded response before writing stdout, uses an
+absolute socket deadline, and writes no temporary credential file. Broken pipe,
+spawn failure and process termination leave no credential file to clean up.
+Retrieved bytes are deliberately printed; downstream tools/transcripts can
+capture them. The installer, self-update, deployment and rollback install the
+launcher in the selected bridge's `.build-runtime/` subdirectory. It never
+writes a global `buildctl`. A foreign runtime destination is preserved and
+skipped with a warning; its directory is not added to agent PATH. Rollback,
+older-ref deployment and pinned installs tolerate older bridges that lack the
+launcher subcommand.
+
+This slice does not advertise public secret capabilities or enable uploads or
+message attachment admission. Those are separate slices.
+
+
+## Codex shell capability and on-disk exposure
+
+Codex applies its configured shell environment policy before commands run.
+Build extends the user's effective policy: inheritance and custom set values
+remain, `BRIDGE_*` joins exclusions, and the six dedicated names join any
+existing include allowlist. Only those six launch values are restored. The MCP
+token is not part of that restored set. PATH is prepended only in the harness
+process environment when the private Build launcher is present; user shell
+PATH policy remains authoritative. Capability bytes never
+enter launch argv.
+
+For the Codex TUI, a unique `build-secret-<uuid>.config.toml` profile in the
+existing `CODEX_HOME` carries this narrow shell configuration. This is an
+explicit on-disk exposure of the session capability, not a retrieved value.
+Optional secret setup never blocks an ordinary Codex launch. A symlinked home
+or ancestor, unavailable/legacy/unsupported config probe, timeout, registry or
+profile failure logs one fixed reason without values. Build strips all dedicated
+secret variables, the overlay and its injected runtime PATH, preserving the
+user's ordinary launch and MCP settings. Existing user directories use normal
+filesystem resolution; Build does not walk or change their ancestors. A missing
+final home leaf may be created with 0700. No-follow/private permissions apply to
+Build-created registry storage and profile entries.
+
+The profile is created with exclusive 0600 permissions and selected by plain
+name in argv. Build first creates an empty pending entry, writes a durable
+private registry record, then writes capability bytes and publishes without
+replacing an existing entry. Records contain configured home, exact final and
+pending names, file/parent device and inode IDs and owner UID; never a capability
+or retrieved value. The registry lives at `<harness-state>/secret-profiles`,
+with at most 4,096 records of at most 16 KiB each. Serialized admission prunes
+stale entries at the limit; live locks are retained. Concurrent admissions wait
+behind an in-process mutex, then retry the close-on-exec file lock for up to
+one second; release explicitly unlocks before close, including across sibling
+forks. Registry exhaustion or a lock held beyond the deadline degrades secret
+setup rather than agent startup.
+
+Session end removes exact matching entries through the held directory handle
+and retires the record. Startup enumerates only the Build-private registry,
+opens each recorded configured home normally (following the user's own links),
+checks parent dev/ino, and uses no-follow fstatat plus exact file dev/ino before
+unlinkat. A missing, replaced or moved target drops only the record. No user
+Codex home is enumerated or pattern-deleted; unregistered files remain untouched.
+The identity check occurs immediately before unlinkat, relative to the held
+parent fd. There is a remaining check-to-unlink window: Linux provides no atomic
+unlink conditioned on an inode. A same-user process replacing that exact name
+inside this window may have its replacement removed. This is accepted within
+the same-user trust boundary: “Securing the machine is up to the user.” Build
+never follows an entry symlink, and a replacement observed before the check is
+left alone. Live profiles retain advisory locks. User config, auth and history
+stay in place.
+Registered crash leftovers are removed on a later sweep if identities still
+match. Retired session capabilities remain dead even if a user moved the file
+or permissions prevent deletion.
+
+The Codex app server receives the same narrow configuration over private stdio
+at thread start and resume. It does not use a profile file. Offline qualification on Codex 0.166.0 completed real shell-tool turns against
+a loopback fake Responses provider, then restarted and resumed with a rotated
+capability. Rollout/session and default-log scans found no copies of either
+capability. A profile-selected Codex exec turn likewise found the capability
+only in the expected TUI profile, and zero copies after removing that file.
+Shell commands verified that MCP auth, unrelated Bridge variables and an AWS
+credential were absent. The task's ready report retains the reproducible
+check drivers and scan evidence. Custom provider logging,
+OS-user access and an agent deliberately printing or saving its own capability
+are outside this storage boundary.

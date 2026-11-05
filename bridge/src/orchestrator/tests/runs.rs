@@ -39,7 +39,7 @@ pub(super) fn orchestrator(dir: &tempfile::TempDir, repo: &Path) -> Orchestrator
     Orchestrator::new(
         repo.to_path_buf(),
         dir.path().join("worktrees"),
-        Agent::Warm(warm_harness()),
+        Agent::Warm(Box::new(warm_harness())),
         Templates::default(),
         std::fs::canonicalize(repo.join("README.md")).unwrap(),
     )
@@ -75,6 +75,38 @@ fn prepared_agent_launch_preserves_setup_errors() {
         OrchestratorError::Harness(HarnessError::Setup(message))
             if message == "injected Pi setup failure"
     ));
+}
+
+#[test]
+fn prepared_agent_launch_exposes_the_installed_runtime_bin() {
+    let (dir, repo) = init_repo();
+    let orchestrator = orchestrator(&dir, &repo);
+    let mut launch = orchestrator.agent_launch();
+    launch.bridge_exe = dir.path().join("installed/build-bridge");
+    std::fs::create_dir_all(launch.bridge_exe.parent().unwrap()).unwrap();
+    crate::runtime_launcher::install_sibling(&launch.bridge_exe).unwrap();
+    let prepared = launch
+        .prepare(
+            "agent-runtime-path",
+            crate::orchestrator::LaunchDirs::at(&repo),
+            &ModelChoice::default(),
+            false,
+            None,
+            "token",
+        )
+        .unwrap();
+    let path = prepared
+        .spec
+        .env
+        .iter()
+        .find(|(name, _)| name == "PATH")
+        .unwrap()
+        .1
+        .clone();
+    assert_eq!(
+        std::env::split_paths(&path).next().unwrap(),
+        launch.bridge_exe.parent().unwrap().join(".build-runtime")
+    );
 }
 pub(super) fn manifest_entry(id: &str, title: &str, position: usize) -> StageManifestEntry {
     StageManifestEntry {
@@ -592,7 +624,7 @@ async fn resume_run_redispatches_single_stage_and_multi_stage_builds() {
     let orch2 = Orchestrator::new(
         repo.to_path_buf(),
         dir.path().join("worktrees2"),
-        Agent::Warm(HarnessSpec::new("true")),
+        Agent::Warm(Box::new(HarnessSpec::new("true"))),
         Templates::default(),
         std::fs::canonicalize(repo.join("README.md")).unwrap(),
     );

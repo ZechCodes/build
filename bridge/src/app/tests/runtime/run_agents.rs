@@ -15,7 +15,7 @@ pub(in crate::app::tests) fn insert_live_run(
     let side = Orchestrator::new(
         repo.to_path_buf(),
         side_root.join("wt"),
-        Agent::Warm(HarnessSpec::new("true")),
+        Agent::Warm(Box::new(HarnessSpec::new("true"))),
         Templates::default(),
         test_bridge_exe(),
     );
@@ -102,7 +102,7 @@ pub(in crate::app::tests) fn insert_run_without_agent(
     let side = Orchestrator::new(
         repo.to_path_buf(),
         side_root.join("wt"),
-        Agent::Warm(HarnessSpec::new("true")),
+        Agent::Warm(Box::new(HarnessSpec::new("true"))),
         Templates::default(),
         test_bridge_exe(),
     );
@@ -504,7 +504,7 @@ pub(in crate::app::tests) fn insert_plan_without_agent(
     let side = Orchestrator::new(
         repo.to_path_buf(),
         side_root.join("wt"),
-        Agent::Warm(HarnessSpec::new("true")),
+        Agent::Warm(Box::new(HarnessSpec::new("true"))),
         Templates::default(),
         test_bridge_exe(),
     );

@@ -67,7 +67,7 @@ pub(in crate::app::tests) fn insert_run(
     let side = Orchestrator::new(
         repo.to_path_buf(),
         side_root.join("wt"),
-        Agent::Warm(HarnessSpec::new("true")),
+        Agent::Warm(Box::new(HarnessSpec::new("true"))),
         Templates::default(),
         test_bridge_exe(),
     );
@@ -869,7 +869,7 @@ fn a_start_for_an_entity_whose_session_is_over_says_so_on_its_agent() {
         let side = Orchestrator::new(
             repo.clone(),
             dir.path().join("side-wt"),
-            Agent::Warm(HarnessSpec::new("true")),
+            Agent::Warm(Box::new(HarnessSpec::new("true"))),
             Templates::default(),
             test_bridge_exe(),
         );

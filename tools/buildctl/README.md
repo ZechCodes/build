@@ -1,6 +1,24 @@
 # buildctl
 
 One explicit environment for local bridges and hosted app/relay deployments.
+
+Agent sessions also have a checkout-independent `buildctl` in the private
+`.build-runtime/` directory beside their installed bridge, with that absolute
+directory first on agent PATH only. It supports only
+`buildctl --env dev|prod secrets get --id sec_…`, forwarding to the installed
+bridge via `../build-bridge`. The management facade here accepts the same command
+and execs the launch-supplied bridge path; neither facade selects identity from the checkout
+or registry. Missing or stale agent authority fails closed. Reads print exact
+value bytes without an added newline. This command does not change production
+deployment restrictions. Plain user terminal tabs receive no secret capability.
+Installers and updates leave global `buildctl` commands untouched. An unrelated
+file or symlink at the private runtime destination skips launcher installation
+with a warning; the bridge installation and update still succeed, and agents do
+not add that foreign runtime directory to PATH.
+The standalone installer extracts the wrapper through the verified candidate
+before replacing the installed bridge. Helper or wrapper publication failures
+leave the previous binary and provenance intact; a failed final provenance
+publication restores that binary, or removes an unrecorded fresh candidate.
 From the repository checkout:
 
 ```bash
@@ -97,7 +115,11 @@ previous build and performs the same verification; it requires a previous
 verified deployment. After a successful rollback, the previous/current records
 swap, allowing rollback to be reversed. Rollback replaces the pairing candidate
 with its target before installation, so even a failed attempt cannot leave pair
-pointing at a stale deployment candidate. There is no automatic rollback. Prune
+pointing at a stale deployment candidate. It preserves any launcher already
+beside that staged build; rollback to a bridge predating secrets does not require
+the newer runtime installation command. Deploying a pre-secrets ref or pinning
+an older release also permits its missing runtime command; other launcher
+installation errors remain fatal. There is no automatic rollback. Prune
 keeps current, previous, any running managed build, and N newest build directories
 (default 3); it removes only directories inside the environment's binary root.
 

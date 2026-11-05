@@ -167,3 +167,23 @@ Semgrep51rules/5changedRustfiles and diff checks passed. TDD red/green and the
 five complete run logs accompany the task evidence. The previous parallel
 caveat is superseded by this proof. Commands ran nice-n10 with scratch temp and
 Cargo target directories; gitleaks gates the single follow-up push.
+
+
+## Executable-publication follow-up
+
+The gate's ETXTBSY failure is covered by a deterministic retained-writer fork
+regression. Closing a staged writer before rename alone is insufficient when a
+fork child retains the same inode's writable description. Installation now
+closes the writer and exec-checks the staged trusted wrapper before publishing.
+The no-argument, empty-environment, null-stdio probe exits2 before bridge lookup
+or authority handling. Only ETXTBSY is retried, for at most one second. Success
+proves the inode can execute; timeout preserves the prior bytes/dev/ino and
+removes staging residue. The regression failed before the fix and now passes,
+including explicit release after the first busy observation.
+
+Integrated Cargo-built tests passed with default parallelism:20 consecutive CLI
+suites (8/8 each), alongside49 cycles of carrier tests (4/4) and eight-way Codex
+spawn tests (1/1). Launcher8/8 and updater25/25 also pass; zero ignored in every
+run. All-target clippy with warnings denied, fmt, Semgrep and diff checks pass.
+Commands use nice-n10 and scratch TMPDIR/CARGO_TARGET_DIR. The full gate remains
+the coordinator's check after delta review; gitleaks gates this follow-up push.

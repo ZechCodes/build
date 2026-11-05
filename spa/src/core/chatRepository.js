@@ -893,9 +893,19 @@ class ChatController {
     // Capability hydration may finish while a typed draft is still in the
     // debounce queue. Preserve the draft-cache contract: no controller
     // announcement may expose that edit before its write can be read back.
-    void writer.flush().then(() => {
-      if (this.#repository.active && this.#cacheDraft === writer) this.announce();
-    }).catch(() => {});
+    void (async () => {
+      while (this.#repository.active && this.#cacheDraft === writer) {
+        const revision = this.#draft.revision;
+        await writer.flush();
+        if (!this.#repository.active || this.#cacheDraft !== writer) return;
+        // An edit can enter the debounce queue while the prior flush waits on
+        // IndexedDB. Drain again until the revision being announced is the
+        // same revision whose writer has settled and read back.
+        if (this.#draft.revision !== revision) continue;
+        this.announce();
+        return;
+      }
+    })().catch(() => {});
   }
 
   dispose({ discardDraft = false } = {}) {

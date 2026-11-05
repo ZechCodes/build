@@ -29,7 +29,7 @@ fn opener() -> SealedUploadOpener {
 }
 
 fn envelope() -> Value {
-    json!({"domain": "build.secrets.upload", "version": 1, "context": context(), "value": "synthetic-secret-value"})
+    json!({"domain": "build.secrets.upload", "version": 1, "context": context(), "value_b64": BASE64.encode("synthetic-secret-value")})
 }
 
 fn sealed_plain(plain: &[u8]) -> String {
@@ -49,11 +49,10 @@ fn padded(value: &Value) -> Vec<u8> {
     padded
 }
 
-#[test]
-fn javascript_sealing_opens_exact_utf8_value() {
+fn open_javascript(value: &str) -> SecretValue {
     let mut public = [0; 32];
     crypto_scalarmult_base(&mut public, &[7u8; 32]);
-    let input = json!({"deviceTransportPublicKeyB64": BASE64.encode(public), "context": context(), "value": " synthetic-é-test\n "});
+    let input = json!({"deviceTransportPublicKeyB64": BASE64.encode(public), "context": context(), "value": value});
     let mut child = Command::new("node")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -73,8 +72,20 @@ fn javascript_sealing_opens_exact_utf8_value() {
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success(), "JS sealing helper failed");
     let sealed = String::from_utf8(output.stdout).unwrap();
-    let value = opener().open(&sealed, &context()).unwrap();
-    assert_eq!(value.as_bytes(), " synthetic-é-test\n ".as_bytes());
+    opener().open(&sealed, &context()).unwrap()
+}
+
+#[test]
+fn javascript_sealing_opens_exact_utf8_value() {
+    let value = " synthetic-é-test\n ";
+    assert_eq!(open_javascript(value).as_bytes(), value.as_bytes());
+}
+
+#[test]
+fn javascript_maximum_size_newline_and_control_values_round_trip() {
+    for value in ["\n".repeat(16 * 1024), "\u{1}".repeat(16 * 1024)] {
+        assert_eq!(open_javascript(&value).as_bytes(), value.as_bytes());
+    }
 }
 
 #[test]
@@ -127,9 +138,12 @@ fn domain_version_unknown_fields_and_value_limits_are_strict() {
         ("domain", json!("other.domain")),
         ("version", json!(2)),
         ("extra", json!(true)),
-        ("value", json!("")),
-        ("value", json!("has\u{0}nul")),
-        ("value", json!("x".repeat(16385))),
+        ("value_b64", json!("")),
+        ("value_b64", json!(BASE64.encode(b"has\0nul"))),
+        ("value_b64", json!(BASE64.encode(vec![b'x'; 16385]))),
+        ("value_b64", json!("malformed!")),
+        ("value_b64", json!(BASE64.encode([0xff]))),
+        ("value", json!("previous-unadvertised-format")),
     ] {
         let mut body = envelope();
         body[field] = change;
@@ -177,7 +191,7 @@ fn nullable_ttl_agent_grant_and_provisional_draft_round_trip() {
     };
     let mut body = envelope();
     body["context"] = serde_json::to_value(&expected).unwrap();
-    body["value"] = json!("x".repeat(16 * 1024));
+    body["value_b64"] = json!(BASE64.encode(vec![b'x'; 16 * 1024]));
     let value = opener()
         .open(&sealed_plain(&padded(&body)), &expected)
         .unwrap();

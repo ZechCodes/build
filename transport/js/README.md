@@ -13,7 +13,10 @@ canonical UUID `request_id`, `name`, nullable `ttl_seconds`, `grant` and `stage`
 `owner_id`, `conversation_id`, `generation` and nullable `draft_id`.
 
 The plaintext frame is exactly 32 KiB: a four-byte big-endian JSON length,
-UTF-8 JSON, then zero padding. The libsodium sealed-box ciphertext is base64
+UTF-8 JSON (with the exact UTF-8 value encoded as `value_b64`, standard base64
+without padding), then zero padding. Encoding the value separately keeps all
+16 KiB values within the frame even when JSON escaping would expand control
+characters. The libsodium sealed-box ciphertext is base64
 without padding. Rust uses dryoc to authenticate/open it and compares every
 context field with the authenticated outer request. The full create request
 is capped at 64 KiB. Names match `[A-Za-z_][A-Za-z0-9_.-]{0,63}`; values are

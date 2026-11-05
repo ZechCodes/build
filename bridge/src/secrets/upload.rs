@@ -120,7 +120,7 @@ struct UploadEnvelope {
     domain: String,
     version: u32,
     context: UploadContext,
-    value: UploadValue,
+    value_b64: UploadValue,
 }
 
 #[derive(Deserialize)]
@@ -147,10 +147,18 @@ fn open_padded(plaintext: &[u8], expected: &UploadContext) -> Result<SecretValue
     if envelope.domain != DOMAIN || envelope.version != VERSION || &envelope.context != expected {
         return Err(SecretError::Invalid);
     }
-    if envelope.value.0.is_empty() {
+    if envelope.value_b64.0.len() > (super::MAX_VALUE_BYTES * 4).div_ceil(3) {
         return Err(SecretError::Invalid);
     }
-    SecretValue::new(envelope.value.0.as_bytes().to_vec())
+    let decoded = Zeroizing::new(
+        BASE64
+            .decode(&envelope.value_b64.0)
+            .map_err(|_| SecretError::Invalid)?,
+    );
+    if decoded.is_empty() || std::str::from_utf8(&decoded).is_err() {
+        return Err(SecretError::Invalid);
+    }
+    SecretValue::new(decoded.to_vec())
 }
 
 #[cfg(test)]

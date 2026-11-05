@@ -39,19 +39,23 @@ function validateContext(context) {
   validateStage(context.stage);
 }
 
-export function sealSecretUploadWithSodium(sodium, { deviceTransportPublicKeyB64, context, value }) {
-  validateContext(context);
+function encodedValue(sodium, value) {
   if (typeof value !== 'string') invalid();
   const valueBytes = new TextEncoder().encode(value);
   try {
     if (!valueBytes.length || valueBytes.length > MAX_VALUE_BYTES || value.includes('\0')) invalid();
+    return sodium.to_base64(valueBytes, sodium.base64_variants.ORIGINAL_NO_PADDING);
   } finally {
     sodium.memzero(valueBytes);
   }
+}
+
+export function sealSecretUploadWithSodium(sodium, { deviceTransportPublicKeyB64, context, value }) {
+  validateContext(context);
   if (typeof deviceTransportPublicKeyB64 !== 'string' || deviceTransportPublicKeyB64.length !== 43) invalid();
   const recipient = sodium.from_base64(deviceTransportPublicKeyB64, sodium.base64_variants.ORIGINAL_NO_PADDING);
   if (recipient.length !== 32) invalid();
-  const encoded = sodium.from_string(JSON.stringify({ domain: 'build.secrets.upload', version: 1, context, value }));
+  const encoded = sodium.from_string(JSON.stringify({ domain: 'build.secrets.upload', version: 1, context, value_b64: encodedValue(sodium, value) }));
   const padded = new Uint8Array(PADDED_BYTES);
   try {
     if (encoded.length > PADDED_BYTES - 4) invalid();

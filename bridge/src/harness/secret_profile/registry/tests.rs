@@ -312,3 +312,38 @@ fn guard_drops_registry_record_even_when_profile_permissions_change() {
     assert!(guard.removed.load(Ordering::Acquire));
     drop(file);
 }
+
+#[test]
+fn crash_after_final_hardlink_publication_retires_both_exact_names() {
+    let (_root, registry, home, directory) = fixture();
+    let id = uuid::Uuid::new_v4();
+    let pending = format!(".build-secret-{id}.pending");
+    let final_name = format!("build-secret-{id}.config.toml");
+    let file = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(home.join(&pending))
+        .unwrap();
+    let guard = registry
+        .record(&home, &directory, &final_name, &file, Some(&pending))
+        .unwrap();
+    fs::linkat(
+        &directory,
+        pending.as_str(),
+        &directory,
+        final_name.as_str(),
+        AtFlags::empty(),
+    )
+    .unwrap();
+    let pending_metadata = std::fs::metadata(home.join(&pending)).unwrap();
+    let final_metadata = std::fs::metadata(home.join(&final_name)).unwrap();
+    assert_eq!(pending_metadata.ino(), final_metadata.ino());
+    assert_eq!(pending_metadata.nlink(), 2);
+    crash(guard, file);
+    registry.sweep().unwrap();
+    assert!(!home.join(pending).exists());
+    assert!(!home.join(final_name).exists());
+    assert_eq!(records(&registry), 0);
+}

@@ -1127,6 +1127,45 @@ describe("the rail over a machine that is asked nothing", () => {
       projectId: "p1", ownerId: "run-3", agentId: "ag-1",
       conversationId: "conversation-secrets", generation: "thread-secrets", draftId: null,
     }, expect.any(Object));
+
+    expect(railHost().querySelector('[data-bubble="project"]')).toBeNull();
+    railHost().querySelector(".rail-overview-toggle").click();
+    await vi.waitFor(() => expect(panel()?.querySelector(".rail-overview-list")).toBeTruthy());
+    expect(panel().querySelector(".rail-overview-up")).toBeNull();
+    expect(panel().querySelector("[data-overview-scope]")).toBeNull();
+    expect(panel().querySelector('[aria-label="Project agents"]')).toBeNull();
+    rail.dispose();
+    rail = null;
+    expect(stops).toHaveLength(2);
+    stops.forEach((stop) => expect(stop).toHaveBeenCalledOnce());
+  });
+
+  it("tracks a branch route's secret scopes without adding project overview UI", async () => {
+    payload = branchRow({
+      agents: [agent({ conversation_id: "conversation-branch", thread_id: "thread-branch" })],
+    });
+    const stops = [];
+    const secretMetadataCache = {
+      track: vi.fn(() => {
+        const stop = vi.fn();
+        stops.push(stop);
+        return stop;
+      }),
+    };
+
+    await mount({ secretMetadataCache, openAgentId: "ag-1", panelOpen: true });
+
+    expect(secretMetadataCache.track).toHaveBeenCalledWith({ projectId: "p1" }, expect.any(Object));
+    expect(secretMetadataCache.track).toHaveBeenCalledWith({
+      projectId: "p1", ownerId: "run-3", agentId: "ag-1",
+      conversationId: "conversation-branch", generation: "thread-branch", draftId: null,
+    }, expect.any(Object));
+    railHost().querySelector(".rail-overview-toggle").click();
+    await vi.waitFor(() => expect(panel()?.querySelector(".rail-overview-list")).toBeTruthy());
+    await vi.waitFor(() => expect([...panel().querySelectorAll(".rail-overview-section")]
+      .map((section) => section.getAttribute("aria-label"))).toEqual(["Agents"]));
+    expect(panel().querySelector(".rail-overview-up")).toBeNull();
+    expect(panel().querySelector("[data-overview-scope]")).toBeNull();
     rail.dispose();
     rail = null;
     expect(stops).toHaveLength(2);

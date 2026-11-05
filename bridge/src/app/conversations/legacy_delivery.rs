@@ -152,6 +152,7 @@ impl AppState {
                 prior_context: String::new(),
                 ask_to_name: false,
                 tells_sender_context: false,
+                secret_environment: None,
             },
         )))
     }

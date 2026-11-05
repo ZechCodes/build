@@ -433,7 +433,7 @@ fn every_canonical_sql_writer_has_an_audited_publication_owner() {
             &["touch_task", "metadata_refresh"][..],
         ),
         (
-            "writer.rs::transaction_with_publications",
+            "writer.rs::transaction_with_durability",
             &["collect_tasks", "collect_device", "publish", "commit"][..],
         ),
     ] {

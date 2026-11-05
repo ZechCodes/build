@@ -46,6 +46,25 @@ impl AppState {
         self.post_to_thread(params, PostOrigin::default())
     }
 
+    /// Only the authenticated browser entry may bind staged secret references.
+    pub(crate) fn thread_post_authenticated(
+        &mut self,
+        params: &Value,
+        context: &crate::execution::CallContext,
+    ) -> Result<Value, String> {
+        if super::secrets::secret_ids(params)?.is_empty() {
+            return self.thread_post(params);
+        }
+        let authenticated_user = self.secret_user_context(context)?;
+        self.post_to_thread(
+            params,
+            PostOrigin {
+                authenticated_user: Some(authenticated_user),
+                ..PostOrigin::default()
+            },
+        )
+    }
+
     /// `thread.post`, asked for by an agent rather than by the human.
     ///
     /// The same write, with two things added: the message wears the sender, so
@@ -68,6 +87,9 @@ impl AppState {
     ) -> Result<Value, String> {
         let origin = PostOrigin {
             operation_id: None,
+            authenticated_user: None,
+            secret_claim: None,
+            secret_metadata: Vec::new(),
             from_task: Some(
                 serde_json::from_value(frozen["envelope"].clone()).map_err(|e| e.to_string())?,
             ),
@@ -82,6 +104,7 @@ impl AppState {
     fn post_to_thread(&mut self, params: &Value, origin: PostOrigin) -> Result<Value, String> {
         let normalized_params = normalize_post_viewing_contexts(params)?;
         let params = &normalized_params;
+        super::secrets::require_secret_user(params, &origin)?;
         let entity_id = require_str(params, "entity_id")?;
         if self.plans.contains_key(&entity_id) {
             return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string());
@@ -118,6 +141,11 @@ impl AppState {
                     address.agent_id
                 ));
             }
+        }
+        let mut origin = origin;
+        if let Some((claim, metadata)) = self.prepare_post_secrets(params, &address, &origin)? {
+            origin.secret_claim = Some(claim);
+            origin.secret_metadata = metadata;
         }
         let choice = parse_option_choice(params)?;
         let interrupt = params
@@ -391,7 +419,7 @@ impl AppState {
             None => parse_thread_post_messages(
                 params,
                 crate::thread::ArtifactKind::Diff,
-                !attachments.is_empty(),
+                !attachments.is_empty() || origin.secret_claim.is_some(),
             )?,
         };
         if choice.is_none()
@@ -559,7 +587,7 @@ impl AppState {
                 .thread
                 .clone();
             let working = previous_thread.conversation_is_working();
-            let (sequence, payload) = append_operation_reviewer_messages(
+            let (sequence, mut payload) = append_operation_reviewer_messages(
                 &mut active
                     .agents
                     .resolve_mut(Some(&address.conversation_id))?
@@ -569,6 +597,15 @@ impl AppState {
                 choice,
                 origin.operation_id.as_deref(),
             );
+            super::secrets::attach_post_metadata(
+                &mut active
+                    .agents
+                    .resolve_mut(Some(&address.conversation_id))?
+                    .thread,
+                &mut payload,
+                &origin,
+                self.secret_environment(),
+            )?;
             if let Some(error) = local_refusal {
                 active
                     .agents
@@ -614,7 +651,7 @@ impl AppState {
             .thread
             .clone();
         let working = previous_thread.conversation_is_working();
-        let (sequence, payload) = append_operation_reviewer_messages(
+        let (sequence, mut payload) = append_operation_reviewer_messages(
             &mut active
                 .agents
                 .resolve_mut(Some(&address.conversation_id))?
@@ -624,6 +661,15 @@ impl AppState {
             choice,
             origin.operation_id.as_deref(),
         );
+        super::secrets::attach_post_metadata(
+            &mut active
+                .agents
+                .resolve_mut(Some(&address.conversation_id))?
+                .thread,
+            &mut payload,
+            &origin,
+            self.secret_environment(),
+        )?;
         if let Some(error) = local_refusal {
             active
                 .agents
@@ -706,8 +752,11 @@ impl AppState {
             delivery,
             requested_by: origin.requested_by,
         };
-        self.operation_ledger
-            .stage_acceptance(address.conversation_entity_id.clone(), receipt.clone());
+        self.operation_ledger.stage_acceptance_with_secrets(
+            address.conversation_entity_id.clone(),
+            receipt.clone(),
+            origin.secret_claim,
+        );
         Ok(Some(receipt))
     }
 

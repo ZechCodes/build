@@ -12,8 +12,13 @@ const sameGeneration = (held, incoming) => !held?.timeline_incarnation || !incom
   || held.timeline_incarnation === incoming.timeline_incarnation;
 const rowKey = (row) => `${row?.type}:${row?.id}`;
 const historyOffset = (held, row) => row?.id ? (held?.timeline || []).findIndex((entry) => rowKey(entry) === rowKey(row)) : -1;
+const canPrependHeld = (held, incoming) => held.has_more !== true || (Object.hasOwn(held, "next_cursor")
+  && held.timeline_incarnation === incoming.timeline_incarnation);
 
 function prependHeldPrefix(next, held, offset) {
+  // Older scoped heads have no continuation. Only a complete legacy history
+  // or a paged window from this incarnation can extend the arriving page.
+  if (!canPrependHeld(held, next)) return;
   next.timeline = [...held.timeline.slice(0, offset), ...next.timeline];
   next.has_more = held.has_more === true;
   if (held.timeline_legacy_complete && !Object.hasOwn(next, "next_cursor")) next.timeline_legacy_complete = true;

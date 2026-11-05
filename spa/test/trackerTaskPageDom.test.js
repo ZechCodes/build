@@ -210,6 +210,35 @@ it("paints cached history before a bounded open read and prepends older pages on
   expect((await local.readCached(detail)).value.timeline.map((row) => row.id)).toEqual(TIMELINE.map((row) => row.id));
 });
 
+it("upgrades a cached legacy-shaped head and loads its second page from Older history", async () => {
+  carriesTimelinePaging = true;
+  const local = await import("../src/core/localCache.js");
+  const address = trackerCache.taskAddress("dev-1", "proj-1", "task-1");
+  const cached = { ...answerFor({}, TIMELINE.slice(2)), has_more: true };
+  await local.writeCached(address, cached);
+  let release;
+  const head = new Promise((resolve) => { release = resolve; });
+  call = vi.fn(async (method, params) => {
+    if (method !== "tasks.get") return {};
+    return params.before ? { ...answerFor({}, TIMELINE.slice(0, 2)), has_more: false,
+      next_cursor: null, timeline_incarnation: "store-one" } : head;
+  });
+  await mount();
+  expect(entries().join(" ")).toContain("On it.");
+  expect(host.querySelector("[data-task-timeline-older]")).toBeNull();
+  release({ ...cached, next_cursor: "before-upgraded", timeline_incarnation: "store-one" });
+  await vi.waitFor(() => expect(host.querySelector("[data-task-timeline-older]")).not.toBeNull());
+  host.querySelector("[data-task-timeline-older]").click();
+  await vi.waitFor(() => expect(entries()).toHaveLength(4));
+  expect(listed("tasks.get").map(([, params]) => params)).toEqual([
+    { task_id: "task-1", timeline_paged: true, limit: 50 },
+    { task_id: "task-1", timeline_paged: true, limit: 50, before: "before-upgraded" },
+  ]);
+  expect((await local.readCached(address)).value.timeline.map((row) => row.id)).toEqual(TIMELINE.map((row) => row.id));
+  expect(host.querySelector("[data-task-timeline-older]")).toBeNull();
+  expect(notifyError).not.toHaveBeenCalled();
+});
+
 it("retains cached history and continuation when an older page fails", async () => {
   carriesTimelinePaging = true;
   call = vi.fn(async (method, params) => {

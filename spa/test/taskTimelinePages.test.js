@@ -49,6 +49,34 @@ it("preserves loaded older history and its continuation across an overlapping ne
   expect(next).toMatchObject({ has_more: true, next_cursor: "older-a" });
 });
 
+it.each([0, 3])("upgrades a cursorless legacy head at offset %i without losing the arriving continuation", (offset) => {
+  const ids = ["a", "b", "c", "d", "e"];
+  const held = { timeline: ids.map((id) => entry(id)), has_more: true };
+  const incoming = { ...record([...ids.slice(offset), "f"], "before-upgraded"), timeline_incarnation: "store-one" };
+  const next = pages.mergeTaskTimeline(held, incoming);
+  expect(next.timeline).toEqual(incoming.timeline);
+  expect(next).toMatchObject({ has_more: true, next_cursor: "before-upgraded", timeline_incarnation: "store-one" });
+  const repeated = pages.mergeTaskTimeline(next, { ...incoming, next_cursor: "before-refreshed" });
+  expect(repeated.timeline).toEqual(incoming.timeline);
+  expect(repeated.next_cursor).toBe("before-upgraded");
+});
+
+it("does not reuse an unfenced cursor from a partially upgraded cached window", () => {
+  const held = record(["a", "b", "c"], "unfenced-before-a");
+  const incoming = { ...record(["c", "d"], "before-c"), timeline_incarnation: "store-one" };
+  expect(pages.mergeTaskTimeline(held, incoming)).toMatchObject({
+    timeline: incoming.timeline, has_more: true, next_cursor: "before-c", timeline_incarnation: "store-one",
+  });
+});
+
+it("keeps a complete legacy timeline complete when a bounded head arrives", () => {
+  const held = { timeline: ["a", "b", "c"].map((id) => entry(id)), has_more: false };
+  const incoming = { ...record(["c", "d"], "before-c"), timeline_incarnation: "store-one" };
+  const next = pages.mergeTaskTimeline(held, incoming);
+  expect(next.timeline.map((row) => row.id)).toEqual(["a", "b", "c", "d"]);
+  expect(next).toMatchObject({ has_more: false, next_cursor: null });
+});
+
 it("replaces a disjoint head instead of pretending the missing interval is loaded", () => {
   expect(pages.mergeTaskTimeline(record(["a", "b"], "old"), record(["d", "e"], "new")))
     .toMatchObject({ timeline: [entry("d"), entry("e")], next_cursor: "new", has_more: true });
@@ -110,7 +138,7 @@ it("keeps held timeline pagination when a full read loses ordinary content autho
 it("preserves loaded older pages when the scoped journal publishes an overlapping task head", async () => {
   const { createScopedTaskSyncCache } = await import("../src/core/scopedTaskSyncCache.js");
   const writer = createScopedTaskSyncCache({ deviceId: "d1", projectId: "p1", scope: { kind: "task", task_id: "t1" }, bridgeIdentity: "d1" });
-  await cache.writeCached(address, record(["a", "b", "c"], "older-a"));
+  await cache.writeCached(address, { ...record(["a", "b", "c"], "older-a"), timeline_incarnation: "synthetic-store" });
   const row = { ...record(["c", "d"], "older-c"), task: { id: "t1", project_id: "p1", title: "Current header", updated_at: "2026-11-04T12:00:00Z", watched: false } };
   expect(await writer.publish({ snapshot: true, capture: await writer.capture(),
     response: { cursor: "sync-new", incarnation: "synthetic-store", watermark: "2", bridge_epoch: "e1" },
@@ -118,6 +146,21 @@ it("preserves loaded older pages when the scoped journal publishes an overlappin
   const saved = (await cache.readCached(address)).value;
   expect(saved.timeline.map((entry) => entry.id)).toEqual(["a", "b", "c", "d"]);
   expect(saved).toMatchObject({ next_cursor: "older-a", has_more: true, timeline_read_through: "d" });
+});
+
+it("upgrades a 3.34 scoped head with the same incarnation but no paging cursor", async () => {
+  const { createScopedTaskSyncCache } = await import("../src/core/scopedTaskSyncCache.js");
+  const writer = createScopedTaskSyncCache({ deviceId: "d1", projectId: "p1", scope: { kind: "task", task_id: "t1" }, bridgeIdentity: "d1" });
+  const held = { ...record(["a", "b", "c"], "ignored"), timeline_incarnation: "synthetic-store" };
+  delete held.next_cursor;
+  await cache.writeCached(address, held);
+  const row = { ...record(["c", "d"], "before-c"), task: { id: "t1", project_id: "p1", title: "Upgraded header", updated_at: "2026-11-04T12:00:00Z", watched: false } };
+  expect(await writer.publish({ snapshot: true, capture: await writer.capture(),
+    response: { cursor: "sync-upgraded", incarnation: "synthetic-store", watermark: "2", bridge_epoch: "e1" },
+    records: [{ kind: "task_head", key: "t1", revision: "2", row }] })).toBe(true);
+  const saved = (await cache.readCached(address)).value;
+  expect(saved.timeline).toEqual(row.timeline);
+  expect(saved).toMatchObject({ next_cursor: "before-c", has_more: true, timeline_incarnation: "synthetic-store" });
 });
 
 it("keeps a bounded anchor section separately without inventing a contiguous newest history", async () => {

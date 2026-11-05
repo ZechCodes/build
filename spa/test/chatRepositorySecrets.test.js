@@ -117,3 +117,38 @@ it("keeps a staged value out of IndexedDB, local storage, and the post intent", 
   expect(JSON.stringify(post)).not.toContain(sentinel);
   expect(JSON.stringify(post)).not.toContain("synthetic-sealed-envelope");
 });
+
+it("submits a secret-bearing post immediately through ack-then-confirm", async () => {
+  vi.resetModules();
+  const [{ createChatRepository }, v1] = await Promise.all([
+    import("../src/core/chatRepository.js"),
+    import("../src/core/bridgeApi/v1/index.js"),
+  ]);
+  const greeting = {
+    api_version: "3.36.0",
+    capabilities: ["bridge.epoch", "secrets.attachments", "secrets.sealedUpload", "secrets.metadataEvents"],
+    ack_confirm_methods: ["thread.post"],
+  };
+  const rawCall = vi.fn();
+  const writes = { submit: vi.fn(async () => ({ accepted: true })) };
+  const adapter = v1.create(rawCall, greeting, { writeOperations: writes });
+  const repository = createChatRepository({
+    scope: { deviceId: "device-ack" }, call: adapter.call,
+    createOperationId: () => "operation-ack",
+    storage: { getItem: () => null, setItem: vi.fn() },
+  });
+  repository.configureCapabilities(greeting);
+  const controller = repository.controller(identity);
+  controller.writeDraft({ body: "atomic", secrets: [descriptor] });
+
+  const receipt = await controller.post(controller.captureSubmission());
+
+  expect(receipt).toMatchObject({ phase: "ack", operation_id: "operation-ack" });
+  expect(writes.submit).toHaveBeenCalledOnce();
+  expect(writes.submit).toHaveBeenCalledWith(expect.objectContaining({
+    method: "thread.post",
+    operationId: "operation-ack",
+    params: expect.objectContaining({ body: "atomic", secret_ids: ["sec_chat"], operation_id: "operation-ack" }),
+  }));
+  expect(rawCall).not.toHaveBeenCalled();
+});

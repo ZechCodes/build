@@ -195,10 +195,10 @@ impl Harness for CodexAppServerHarness {
         let mut spec = HarnessSpec::new("codex")
             .unset_all(INHERITED_AGENT_MARKERS)
             .unset_all(DAEMON_IDENTITY_VARS)
-            .arg("--config")
-            .arg(codex::SECRET_SHELL_ENVIRONMENT)
             .arg("app-server")
-            .arg("--stdio");
+            .arg("--stdio")
+            .arg("--config")
+            .arg(codex::SECRET_SHELL_ENVIRONMENT);
         if let Some(effort) = &choice.effort {
             spec = spec.arg("--config").arg(format!(
                 "model_reasoning_effort={}",

@@ -238,9 +238,9 @@ impl Harness for CodexHarness {
             .submit_delay(REAL_TUI_SUBMIT_DELAY)
             .unset_all(INHERITED_AGENT_MARKERS)
             .unset_all(DAEMON_IDENTITY_VARS)
+            .arg("--dangerously-bypass-approvals-and-sandbox")
             .arg("--config")
-            .arg(SECRET_SHELL_ENVIRONMENT)
-            .arg("--dangerously-bypass-approvals-and-sandbox");
+            .arg(SECRET_SHELL_ENVIRONMENT);
         for arg in self.model_args(choice) {
             spec = spec.arg(arg);
         }

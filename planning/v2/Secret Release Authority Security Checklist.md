@@ -1,0 +1,27 @@
+# Secret release authority and audit security checklist
+
+Scope: #1002, the private local session authority and audit layer, on top of
+#1001's encrypted vault. Public uploads, message admission, runtime CLI
+installation and SPA interaction remain separately reviewed slices.
+
+Verification is in progress. The final task report records the frozen commit,
+commands, actual exit codes and attached evidence. No public capability is
+advertised by this change.
+
+| # | Control | Evidence |
+|---|---|---|
+| 1 | Purpose-limited capability is independent of MCP and binds device/channel, canonical project/owner/conversation/generation and process incarnation. | `runtime/sessions/secret_authority.rs`, `secret_release_authority.rs`; token independence, selector spoof, device-rebind and same-generation restart tests. |
+| 2 | Authority derives from the issued record and current committed membership; no caller selector, CWD, path or task grants access. | `read_context/mcp_addresses.rs`, `store/secrets/release.rs`; saved/candidate membership, removed member, canonical and alias project rebind, durable generation regressions. |
+| 3 | Agent grants require exact recipient/generation; Project grants allow current members including coordinator; cross-project and wrong-scope reads disclose no existence/status. | Scope and caller matrices in `secrets/release_tests.rs`; scope precedes expiry/revocation lookup outcomes. |
+| 4 | Capability material enters only dedicated launch environment. Every provider strips inherited capability prefixes; probes and ordinary terminal tabs acquire no agent authority. | `harness/secret_launch.rs`, PTY/ADK/app-server spawn integration, installed probe test; HarnessSpec Debug redacts argument and environment values. |
+| 5 | Private mode-0600 Unix socket is separate from MCP/HTTP/browser RPC. Live or full-backlog sockets are not replaced; arbitrary entries/symlinks are preserved. | `app/secret_release.rs`; protected binding and full-backlog bounded-probe tests. |
+| 6 | Frames, admitted connections, jobs, rate state and I/O time are bounded. Only strict request fields and canonical request UUIDs are accepted. | `app/secret_release/transport.rs`; oversized/malformed/selectors, pipelining, rate and actual idle-client admission tests; shared four-job vault budget. |
+| 7 | Scope/membership/generation/revision and final TTL are checked at the durable release linearization point shared with revoke/reset/removal. | `secrets/release.rs`, `store/secrets/release.rs`; concurrent revoke, final expiry sampling, persistent-generation and metadata-change tests. |
+| 8 | Every authorized release is FULL-audited before bytes; failed or ignored audit/summary writes refuse release. Audit is metadata only, without value, value hash, argv or output. | Trigger-failure/ignored-write tests, audit restart and serialization checks; transport fixed-error test confirms no value bytes on audit failure. |
+| 9 | Release, decryption, membership and audit work run outside the app lock. Vault filesystem work and all socket I/O run outside the SQLite writer lock; stalled clients cannot hold it. | Predecrypt/final-audit split, blocking-worker endpoint; real service+socket stalled-client test performs writer maintenance while output is blocked. |
+| 10 | Unauthenticated failures are coalesced even on database failure. Detailed audit retention is 90 days with bounded cleanup throughput above admission, while summaries persist. | Coalescing/retry-storm, bounded-pagination, restart, pruning/cleanup-throughput tests; off-lock periodic sweep. |
+
+Raw values are intentionally released to trusted launched agents and descendants
+using their launch context. Such output may enter transcripts or terminal
+history. The at-rest and normal-delivery guarantees do not promise secrecy from
+that agent, the same OS user/root, debuggers or user-created disk snapshots.

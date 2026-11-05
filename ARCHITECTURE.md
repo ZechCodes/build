@@ -1151,8 +1151,9 @@ that grace period; its transactions remain atomic and cleanup remains resumable.
 #### Device secret vault foundation (#1001)
 
 `bridge/src/secrets/` owns device-local encrypted values separately from the
-history database. It is an unadvertised foundation: no secret RPC, capability,
-version change or runtime CLI is enabled. `SecretService` is constructed from
+history database. The public feature remains unadvertised: no secret RPC,
+version change or runtime CLI is enabled. Private session release authority is
+implemented separately from the MCP control plane. `SecretService` is constructed from
 `BridgeConfig.state_root`, the authenticated device ID and the existing store
 writer before the app is shared. Its startup/periodic sweeper captures no app
 mutex and performs disk/SQL work on the blocking pool.
@@ -1184,8 +1185,30 @@ unavailable. Pending initialization without a key can retry after the retirement
 barrier. Recovery uses a tested count-only diagnostic; metadata Debug redacts
 names, and expiry records reason `expired` independently from explicit `revoked`.
 See [device vault storage and lifetime](docs/device-secret-vault.md) for the file format, limits and clock
-policy. Release authority/audit and sealed upload validation belong to the
-subsequent slices and must precede any external exposure.
+policy. Sealed upload validation and message admission belong to subsequent
+slices and must precede public feature advertisement.
+
+#### Private session secret release (#1002)
+
+Agent launches mint dedicated `BRIDGE_SECRET_*` environment capabilities bound
+to device/channel, canonical project/owner/conversation/generation and process
+incarnation. They never enter argv or messages. The separate mode-0600
+`<control socket>.secrets` listener accepts one bounded request per connection;
+it is not MCP, HTTP or browser RPC. Current issued authority and committed SQL
+membership/project/generation are revalidated on each release. Agent grants
+require the exact recipient generation; Project grants permit current members,
+including the coordinator. Unknown IDs and wrong scope share one error.
+
+Schema 25 adds metadata-only release/denial audit and persistent summaries.
+Vault decryption runs off the app lock and SQLite writer. A short FULL writer
+transaction rechecks scope, metadata revision, membership and expiry, then
+commits the audit before returning the value. All metadata locks are released
+before socket I/O. A failed audit refuses release. Four active connections/jobs,
+bounded frames, per-capability/global rate limits and I/O deadlines bound load;
+unauthenticated failure counters are coalesced. The off-lock sweeper removes
+90-day detail in bounded batches while preserving summaries. See
+[the private release protocol](docs/device-secret-release.md) for framing,
+errors, launch authority, ordering and the intentional raw-output boundary.
 
 #### Durable write foundation (#739)
 

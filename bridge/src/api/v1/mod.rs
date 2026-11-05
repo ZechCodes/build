@@ -54,6 +54,7 @@ pub mod harnesses;
 pub mod lifecycle;
 pub mod push;
 pub mod reviews;
+pub mod secrets;
 pub mod sync;
 pub mod tasks;
 pub mod thread;
@@ -149,6 +150,29 @@ macro_rules! v1_context_method {
             $crate::api::v1::Handler::new_context(
                 |app, context, params| {
                     $crate::api::v1::call_context_typed(app, context, params, $handler)
+                },
+                $crate::api::v1::parse_as::<$params>,
+                $crate::api::v1::normalize_as::<$params>,
+                $crate::api::v1::round_trip_as::<$result>,
+                $crate::api::v1::check_as::<$result>,
+            ),
+        )
+    };
+}
+
+/// Preserve existing internal text/file posts while requiring explicit user
+/// authority for optional secret references. No ambient caller state is used.
+#[macro_export]
+macro_rules! v1_optional_context_method {
+    ($name:literal, $handler:path, $params:ty, $result:ty) => {
+        (
+            $name,
+            $crate::api::v1::Handler::new_context(
+                |app, context, params| {
+                    let parsed = $crate::api::v1::parse_params::<$params>(params)?;
+                    let result = $handler(app, context, parsed)?;
+                    ::serde_json::to_value(result)
+                        .map_err(|error| $crate::api::ApiError::internal(error.to_string()))
                 },
                 $crate::api::v1::parse_as::<$params>,
                 $crate::api::v1::normalize_as::<$params>,
@@ -410,7 +434,7 @@ pub fn call_context_typed<P: DeserializeOwned + Serialize, R: Serialize>(
 }
 
 /// Every family's table, in one place.
-fn families() -> [&'static [(&'static str, Handler)]; 14] {
+fn families() -> [&'static [(&'static str, Handler)]; 15] {
     [
         board::methods(),
         changes::methods(),
@@ -420,6 +444,7 @@ fn families() -> [&'static [(&'static str, Handler)]; 14] {
         harnesses::methods(),
         tasks::methods(),
         reviews::methods(),
+        secrets::methods(),
         sync::methods(),
         lifecycle::methods(),
         push::methods(),

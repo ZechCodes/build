@@ -1,5 +1,5 @@
 // The real SPA peer link and crypto; only its rendezvous is a fixture.
-import * as transport from "/node_modules/@build/secure-transport/src/index.js";
+import * as transport from "/node_modules/@build/secure-transport/src/build.js";
 import { openCarrier, peerFrames } from "/src/core/carrier.js";
 import { openPeerLink } from "/src/core/peerLink.js";
 import { createSessionRpc } from "/src/core/sessionRpc.js";

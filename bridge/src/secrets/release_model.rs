@@ -1,6 +1,6 @@
 //! Canonical identity derived from a purpose-limited issued session, never from
 //! a release request's owner/project/CWD selectors.
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct SecretCaller {
@@ -18,7 +18,7 @@ pub struct SecretCaller {
     pub session_incarnation: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SecretAuditRecord {
     pub sequence: i64,
     pub secret_id: String,
@@ -38,7 +38,7 @@ pub struct SecretAuditRecord {
     pub outcome: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SecretAuditSummary {
     pub release_count: i64,
     pub denial_count: i64,

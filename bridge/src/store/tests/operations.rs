@@ -180,6 +180,7 @@ fn operation_acknowledgement_updates_a_message_below_the_resident_tail() {
         prior_context: String::new(),
         ask_to_name: false,
         tells_sender_context: false,
+        secret_environment: None,
     });
     store
         .accept_thread_post("task-1", &record.agents, &receipt)
@@ -348,6 +349,7 @@ fn recovery_repairs_uncertain_receipts_and_preserves_definitive_failure() {
         prior_context: String::new(),
         ask_to_name: false,
         tells_sender_context: false,
+        secret_environment: None,
     });
     store
         .accept_thread_post("task-1", &record.agents, &repair)
@@ -373,6 +375,7 @@ fn recovery_repairs_uncertain_receipts_and_preserves_definitive_failure() {
         prior_context: String::new(),
         ask_to_name: false,
         tells_sender_context: false,
+        secret_environment: None,
     });
     store
         .accept_thread_post("task-1", &record.agents, &failed)
@@ -431,6 +434,7 @@ fn recovery_ignores_an_orphaned_receipt_without_deleting_it() {
         prior_context: String::new(),
         ask_to_name: false,
         tells_sender_context: false,
+        secret_environment: None,
     });
     store
         .accept_thread_post("task-1", &record.agents, &receipt)
@@ -596,3 +600,5 @@ fn a_closed_store_keeps_saved_runs_in_the_database_file_alone() {
     assert!(!original.join("build.db-wal").exists());
     assert!(!original.join("build.db-shm").exists());
 }
+
+mod secret_acceptance;

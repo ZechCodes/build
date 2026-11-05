@@ -36,6 +36,7 @@ pub(super) fn queued_operation(operation_id: &str, posted_sequence: u64) -> Oper
                 prior_context: String::new(),
                 ask_to_name: false,
                 tells_sender_context: false,
+                secret_environment: None,
             }),
         }),
         requested_by: None,

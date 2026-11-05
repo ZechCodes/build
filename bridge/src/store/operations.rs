@@ -1,4 +1,5 @@
 mod delivery_status;
+mod secret_acceptance;
 
 use super::{
     is_json_record, now_rfc3339, write_run, write_task, PersistedPlan, PersistedRun, Store,
@@ -385,10 +386,20 @@ impl Store {
         record: &PersistedPlan,
         receipt: &OperationReceipt,
     ) -> Result<OperationReceipt, StoreError> {
-        self.in_waiting_on_transaction(|tx| {
+        self.save_task_plan_accepting_operation_with_secrets(record, receipt, None)
+    }
+
+    pub(crate) fn save_task_plan_accepting_operation_with_secrets(
+        &self,
+        record: &PersistedPlan,
+        receipt: &OperationReceipt,
+        secrets: Option<&crate::secrets::SecretPostBinding>,
+    ) -> Result<OperationReceipt, StoreError> {
+        self.in_waiting_on_transaction_with_durability(secrets.is_some(), |tx| {
             if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
                 return Ok(existing);
             }
+            secret_acceptance::claim_secrets_in(tx, secrets, receipt)?;
             write_task(tx, record)?;
             Store::write_agents(tx, &record.id, &record.agents)?;
             insert_operation(tx, receipt)?;
@@ -402,10 +413,20 @@ impl Store {
         record: &PersistedRun,
         receipt: &OperationReceipt,
     ) -> Result<OperationReceipt, StoreError> {
-        self.in_waiting_on_transaction(|tx| {
+        self.save_run_accepting_operation_with_secrets(record, receipt, None)
+    }
+
+    pub(crate) fn save_run_accepting_operation_with_secrets(
+        &self,
+        record: &PersistedRun,
+        receipt: &OperationReceipt,
+        secrets: Option<&crate::secrets::SecretPostBinding>,
+    ) -> Result<OperationReceipt, StoreError> {
+        self.in_waiting_on_transaction_with_durability(secrets.is_some(), |tx| {
             if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
                 return Ok(existing);
             }
+            secret_acceptance::claim_secrets_in(tx, secrets, receipt)?;
             write_run(tx, record)?;
             Store::write_agents(tx, &record.id, &record.agents)?;
             insert_operation(tx, receipt)?;

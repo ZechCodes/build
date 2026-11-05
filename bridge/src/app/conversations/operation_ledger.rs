@@ -7,6 +7,7 @@ use crate::operation::{OperationReceipt, OperationStatus};
 pub(in crate::app) struct PendingOperationAcceptance {
     pub(in crate::app) conversation_owner_id: String,
     pub(in crate::app) receipt: OperationReceipt,
+    pub(in crate::app) secrets: Option<crate::secrets::SecretPostBinding>,
 }
 
 #[derive(Default)]
@@ -28,14 +29,25 @@ impl OperationLedger {
         }
     }
     /// Preserve the current single slot: staging replaces its prior value.
+    #[cfg(test)]
     pub(in crate::app) fn stage_acceptance(
         &mut self,
         conversation_owner_id: String,
         receipt: OperationReceipt,
     ) {
+        self.stage_acceptance_with_secrets(conversation_owner_id, receipt, None);
+    }
+
+    pub(in crate::app) fn stage_acceptance_with_secrets(
+        &mut self,
+        conversation_owner_id: String,
+        receipt: OperationReceipt,
+        secrets: Option<crate::secrets::SecretPostBinding>,
+    ) {
         self.pending_acceptance = Some(PendingOperationAcceptance {
             conversation_owner_id,
             receipt,
+            secrets,
         });
     }
 

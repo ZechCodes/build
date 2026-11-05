@@ -15,6 +15,8 @@ pub(crate) enum Effect {
 }
 
 pub const SQL_READ_METHODS: &[&str] = &[
+    "secrets.list",
+    "secrets.audit",
     "sync.head",
     "sync.snapshot",
     "sync.changes",
@@ -106,6 +108,8 @@ const EXTERNAL_READ_METHODS: &[&str] = &[
 const LEGACY_READ_METHODS: &[&str] = &["archived.list"];
 
 const WRITE_METHODS: &[&str] = &[
+    "secrets.create",
+    "secrets.revoke",
     "agent.add",
     "agent.attach",
     "agent.choose",

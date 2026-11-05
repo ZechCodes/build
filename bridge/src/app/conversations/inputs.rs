@@ -44,6 +44,9 @@ impl ReviewerMessage {
 #[derive(Debug, Clone, Default)]
 pub(in crate::app) struct PostOrigin {
     pub operation_id: Option<String>,
+    pub authenticated_user: Option<(String, String)>,
+    pub secret_claim: Option<crate::secrets::SecretPostBinding>,
+    pub secret_metadata: Vec<crate::thread::MessageSecret>,
     /// The agent that wrote the words, when an agent did.
     pub from_agent: Option<crate::thread::AgentIdentity>,
     /// The agent that asked for this post, when an agent did.
@@ -61,6 +64,9 @@ impl PostOrigin {
     pub(in crate::app) fn human(operation_id: Option<String>) -> Self {
         PostOrigin {
             operation_id,
+            authenticated_user: None,
+            secret_claim: None,
+            secret_metadata: Vec::new(),
             from_agent: None,
             from_task: None,
             requested_by: None,
@@ -76,6 +82,9 @@ impl PostOrigin {
     ) -> Self {
         PostOrigin {
             operation_id: None,
+            authenticated_user: None,
+            secret_claim: None,
+            secret_metadata: Vec::new(),
             from_agent: Some(sender),
             requested_by: Some(requester),
             from_task: None,
@@ -429,6 +438,7 @@ pub(in crate::app) fn append_operation_reviewer_messages(
             // agent record can be read.
             ask_to_name: false,
             tells_sender_context: false,
+            secret_environment: None,
         }
     });
     (posted_sequence, payload)

@@ -786,6 +786,37 @@
           }
         }
       ]
+    },
+    {
+      "type": "secrets.changed",
+      "scope": "project",
+      "project_id": "proj-1",
+      "secret_ids": [
+        "sec_00000000-0000-4000-8000-000000000001"
+      ],
+      "revision": 2,
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
+    },
+    {
+      "type": "secrets.changed",
+      "scope": "agent",
+      "entity_id": "run-7",
+      "conversation_id": "conversation-3",
+      "thread_id": "thread-3",
+      "generation": "thread-3",
+      "secret_ids": [
+        "sec_00000000-0000-4000-8000-000000000002"
+      ],
+      "revision": 3,
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
+    },
+    {
+      "type": "secrets.changed",
+      "scope": "device",
+      "revision": 1001,
+      "secret_ids": [],
+      "truncated": true,
+      "bridge_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6"
     }
   ],
   "harness_thresholds": {

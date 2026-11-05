@@ -531,7 +531,15 @@ impl Store {
         &self,
         work: impl FnOnce(&rusqlite::Transaction) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
-        let (out, pending) = self.in_transaction(|tx| {
+        self.in_waiting_on_transaction_with_durability(false, work)
+    }
+
+    fn in_waiting_on_transaction_with_durability<T>(
+        &self,
+        full: bool,
+        work: impl FnOnce(&rusqlite::Transaction) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        let wrapper = |tx: &rusqlite::Transaction<'_>| {
             let before = tx.total_changes();
             let out = work(tx)?;
             let pending = tx.total_changes() != before && tx.query_row(
@@ -543,7 +551,12 @@ impl Store {
                 |row| row.get::<_, bool>(0),
             )?;
             Ok((out, pending))
-        })?;
+        };
+        let (out, pending) = if full {
+            self.writer.durable_transaction(wrapper)
+        } else {
+            self.in_transaction(wrapper)
+        }?;
         // Notify after commit; failed writes never publish process-local work.
         if pending {
             self.waiting_on_wakeup.notify_one();

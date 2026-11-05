@@ -775,7 +775,9 @@ fn audit_identifiers_use_fixed_target_for_unknown_and_wrong_scope_requests() {
     }
     let connection = f.store.writer_for_test();
     let mut query = connection
-        .prepare("SELECT secret_id,request_id FROM secret_audit ORDER BY sequence")
+        // Lifecycle events now coexist in this table; this security assertion
+        // concerns the two denied attempts and their fixed unavailable target.
+        .prepare("SELECT secret_id,request_id FROM secret_audit WHERE outcome='secret_unavailable' ORDER BY sequence")
         .unwrap();
     let identifiers = query
         .query_map([], |row| {
@@ -857,7 +859,7 @@ fn denial_detail_cap_preserves_release_rows_and_totals() {
     let conn = f.store.writer_for_test();
     let count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM secret_audit WHERE outcome!='released'",
+            "SELECT COUNT(*) FROM secret_audit WHERE outcome IN ('secret_unavailable','secret_expired','secret_revoked')",
             [],
             |row| row.get(0),
         )
@@ -969,4 +971,145 @@ fn existing_audit_table_gains_group_fields_and_caller_index_on_reopen() {
             .release_count,
         1
     );
+}
+
+#[test]
+fn release_invalidations_require_a_committed_revision_change() {
+    let f = Fixture::new();
+    let record = f.secret(f.agent_grant(), Some(10));
+    let changes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = changes.clone();
+    f.service.set_change_observer(Arc::new(move |record| {
+        observed.lock().unwrap().push(record.revision);
+    }));
+
+    f.release(&record.context.id).unwrap();
+    f.release(&record.context.id).unwrap();
+    assert!(
+        changes.lock().unwrap().is_empty(),
+        "releases do not change metadata revision"
+    );
+    assert!(matches!(
+        f.service
+            .release(&f.caller, &record.context.id, "synthetic-denial", || false),
+        Err(SecretError::Unauthorized)
+    ));
+    assert!(
+        changes.lock().unwrap().is_empty(),
+        "denials do not change metadata revision"
+    );
+
+    f.clock.0.store(1010, Ordering::SeqCst);
+    f.clock.1.store(10, Ordering::SeqCst);
+    f.store.writer_for_test().execute_batch("CREATE TRIGGER synthetic_fail_expiry_audit BEFORE INSERT ON secret_audit BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END").unwrap();
+    assert!(f.release(&record.context.id).is_err());
+    assert!(
+        changes.lock().unwrap().is_empty(),
+        "rolled back expiry must not invalidate"
+    );
+    f.store
+        .writer_for_test()
+        .execute_batch("DROP TRIGGER synthetic_fail_expiry_audit")
+        .unwrap();
+    assert!(matches!(
+        f.release(&record.context.id),
+        Err(SecretError::Expired)
+    ));
+    let revision = f
+        .store
+        .writer()
+        .secret_record(&record.context.id)
+        .unwrap()
+        .unwrap()
+        .revision;
+    assert_eq!(*changes.lock().unwrap(), vec![revision]);
+    assert!(matches!(
+        f.release(&record.context.id),
+        Err(SecretError::Expired)
+    ));
+    assert_eq!(
+        *changes.lock().unwrap(),
+        vec![revision],
+        "repeated expiry does not invalidate again"
+    );
+}
+
+#[test]
+fn lifecycle_metadata_survives_denial_group_cap_and_retention_without_entering_denial_readers() {
+    let f = Fixture::new();
+    let expired = f.secret(f.agent_grant(), Some(60));
+    let revoked = f.secret(f.agent_grant(), None);
+    f.store
+        .writer()
+        .secrets_expire(&expired.context.id, 1000)
+        .unwrap();
+    f.service.revoke(&revoked.context.id).unwrap();
+    let metadata_count = || {
+        f.store.writer_for_test().query_row("SELECT COUNT(*) FROM secret_audit WHERE outcome IN ('created','attached','expired','revoked')",[],|row|row.get::<_,i64>(0)).unwrap()
+    };
+    assert_eq!(metadata_count(), 6);
+    f.store.writer_for_test().execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<4090) INSERT INTO secret_audit(secret_id,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,last_occurred_at,outcome) SELECT 'unavailable','synthetic-project','synthetic-project','synthetic-legacy','synthetic-legacy','synthetic-generation','synthetic-session','synthetic-request',0,0,'secret_unavailable' FROM n",[]).unwrap();
+    for minute in 0..7 {
+        f.clock.0.store(1000 + 60 * minute, Ordering::SeqCst);
+        assert!(f.release(&expired.context.id).is_err());
+        if minute == 0 {
+            assert!(f.release(&expired.context.id).is_err());
+        }
+    }
+    assert_eq!(
+        metadata_count(),
+        6,
+        "denial group cap must preserve every lifecycle fact"
+    );
+    let denials: i64 = f.store.writer_for_test().query_row("SELECT COUNT(*) FROM secret_audit WHERE outcome IN ('secret_unavailable','secret_expired','secret_revoked')",[],|row|row.get(0)).unwrap();
+    assert_eq!(denials, 4096);
+    let caller = f
+        .store
+        .writer()
+        .secret_audit_by_caller_page(&f.caller.agent_id, 0, 100)
+        .unwrap();
+    assert_eq!(caller.len(), 7, "caller reader excludes lifecycle facts");
+    assert_eq!(caller[0].attempt_count, 2);
+    let facts = f.store.writer_for_test().query_row("SELECT COUNT(*) FROM secret_audit WHERE outcome IN ('created','attached','expired','revoked') AND attempt_count=1 AND last_occurred_at=occurred_at",[],|row|row.get::<_,i64>(0)).unwrap();
+    assert_eq!(
+        facts, 6,
+        "lifecycle appends populate D audit fields without coalescing"
+    );
+    f.store
+        .writer()
+        .secrets_audit_maintain(90 * 86400 + 2000)
+        .unwrap();
+    assert_eq!(
+        metadata_count(),
+        6,
+        "retention prunes release/denial detail only"
+    );
+    assert!(f
+        .store
+        .writer()
+        .secret_audit_by_caller_page(&f.caller.agent_id, 0, 100)
+        .unwrap()
+        .is_empty());
+    let page = f
+        .store
+        .writer()
+        .secret_metadata_audit(
+            "synthetic-device",
+            "synthetic-user",
+            &crate::api::v1::secrets::AuditParams {
+                scope: crate::api::v1::secrets::SecretScope {
+                    project_id: f.caller.project_id.clone(),
+                    stage: Some(expired.context.stage.clone()),
+                },
+                secret_id: expired.context.id.clone(),
+                after: 0,
+                limit: 100,
+            },
+        )
+        .unwrap();
+    assert_eq!(page.events.len(), 3);
+    assert!(page
+        .events
+        .iter()
+        .all(|event| event.attempt_count == 1 && event.last_occurred_at == event.occurred_at));
 }

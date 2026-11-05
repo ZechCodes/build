@@ -15,7 +15,8 @@ spec.loader.exec_module(packages)
 class PackageArchives(unittest.TestCase):
     def npm(self):
         return {f'package/{name}': (ROOT / 'transport/js' / name).read_bytes()
-                for name in ('package.json', 'README.md', 'LICENSE.md', 'src/index.js')}
+                for name in ('package.json', 'README.md', 'LICENSE.md', 'src/index.js',
+                             'src/build.js', 'src/secretsUpload.js')}
 
     def wheel(self):
         files = {f'build_secure_transport/{p.name}': p.read_bytes()
@@ -48,6 +49,19 @@ class PackageArchives(unittest.TestCase):
                         packages.check_npm(files, ROOT)
                     else:
                         packages.check_python(files, ROOT, wheel=True)
+
+    def test_npm_build_owned_sources_must_be_present_and_byte_exact(self):
+        for source in ('src/build.js', 'src/secretsUpload.js'):
+            with self.subTest(source=source):
+                key = 'package/' + source
+                files = self.npm()
+                del files[key]
+                with self.assertRaisesRegex(ValueError, 'allowlist mismatch'):
+                    packages.check_npm(files, ROOT)
+                files = self.npm()
+                files[key] += b'changed\n'
+                with self.assertRaisesRegex(ValueError, 'bytes mismatch'):
+                    packages.check_npm(files, ROOT)
 
     def test_generated_duplicate_source_rejected(self):
         files = self.wheel()

@@ -10,6 +10,7 @@
 use build_bridge::api::v1;
 use build_bridge::api::{
     capabilities, API_VERSION, FEATURE_CAPABILITIES, LEGACY_METHODS, QA_METHODS,
+    UNADVERTISED_CAPABILITIES,
 };
 use build_bridge::changes;
 use serde_json::Value;
@@ -70,7 +71,7 @@ fn api_version_is_what_versions_json_calls_current() {
 
 #[test]
 fn scoped_sync_wire_advertises_complete_device_projection() {
-    assert_eq!(API_VERSION, "3.35.0");
+    assert_eq!(API_VERSION, "3.36.0");
     let methods: BTreeSet<_> = v1::methods().iter().map(|(name, _)| *name).collect();
     for method in ["sync.head", "sync.snapshot", "sync.changes"] {
         assert!(methods.contains(method), "missing typed {method}");
@@ -354,12 +355,13 @@ fn every_v1_method_has_a_fixture_and_every_fixture_names_a_served_method() {
 }
 
 #[test]
-fn every_fixture_verb_has_an_advertised_capability() {
+fn every_fixture_verb_has_an_advertised_or_explicitly_withheld_capability() {
     let advertised: BTreeSet<&str> = capabilities(true).into_iter().collect();
     for (method, _) in method_fixtures() {
         assert!(
-            advertised.contains(method.as_str()),
-            "{method}: fixture verb absent from session.hello capabilities"
+            advertised.contains(method.as_str())
+                || UNADVERTISED_CAPABILITIES.contains(&method.as_str()),
+            "{method}: fixture verb absent from advertised and withheld capabilities"
         );
     }
     let normal: BTreeSet<&str> = capabilities(false).into_iter().collect();
@@ -443,7 +445,7 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.35.0");
+    assert_eq!(API_VERSION, "3.36.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -599,7 +601,7 @@ fn the_harness_inventory_is_announced_with_its_push() {
 #[test]
 fn pull_requests_announce_their_mutations_and_keep_legacy_reads() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.35.0");
+    assert_eq!(API_VERSION, "3.36.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
@@ -1353,6 +1355,58 @@ fn check_untyped_push(event: &Value, keys: &[&str]) {
     }
 }
 
+fn check_secret_metadata_event(event: &Value) {
+    let mut fields = match event["scope"].as_str().expect("secret grant scope") {
+        "device" => {
+            assert_eq!(event["truncated"], true);
+            assert_eq!(event["secret_ids"], serde_json::json!([]));
+            vec!["type", "scope", "secret_ids", "revision"]
+        }
+        "project" => vec!["type", "scope", "project_id", "secret_ids", "revision"],
+        "agent" => {
+            assert_eq!(event["thread_id"], event["generation"]);
+            vec![
+                "type",
+                "scope",
+                "entity_id",
+                "conversation_id",
+                "thread_id",
+                "generation",
+                "secret_ids",
+                "revision",
+            ]
+        }
+        other => panic!("unknown secret scope {other}"),
+    };
+    if event["truncated"] == true {
+        fields.push("truncated");
+    }
+    let expected: BTreeSet<_> = fields.into_iter().collect();
+    let actual: BTreeSet<_> = event
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        actual, expected,
+        "secret events carry only IDs, revision and scope context"
+    );
+    for field in expected.difference(&BTreeSet::from(["secret_ids", "revision", "truncated"])) {
+        assert!(event[*field]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+    }
+    assert!(event["revision"]
+        .as_u64()
+        .is_some_and(|revision| revision > 0));
+    let ids = event["secret_ids"].as_array().expect("bounded secret ids");
+    assert!(ids.len() <= 100 && (!ids.is_empty() || event["truncated"] == true));
+    assert!(ids
+        .iter()
+        .all(|id| id.as_str().is_some_and(|id| id.starts_with("sec_"))));
+}
+
 #[test]
 fn every_event_example_is_what_the_bridge_serialises() {
     let examples = event_examples();
@@ -1393,6 +1447,7 @@ fn every_event_example_is_what_the_bridge_serialises() {
                     "bridge update event is the status wire shape plus type"
                 );
             }
+            changes::SECRETS_CHANGED_EVENT => check_secret_metadata_event(event),
             changes::COMPACTION_CHANGED_EVENT => {
                 let scope = event["scope"].as_str().expect("scope");
                 assert!(["device", "project", "workspace", "conversation"].contains(&scope));
@@ -1557,7 +1612,7 @@ fn thread_page_activity_mode_is_typed_and_optional() {
 
 #[test]
 fn lean_activity_is_announced_with_newest_item_and_exact_digest() {
-    assert_eq!(API_VERSION, "3.35.0");
+    assert_eq!(API_VERSION, "3.36.0");
     assert!(capabilities(false).contains(&"threads.leanActivity"));
     let fixture = read_json(&fixtures_root().join("v1/thread.page.json"));
     assert_eq!(fixture["lean_activity"]["since"], "3.20.0");
@@ -1740,7 +1795,7 @@ fn project_source_changes_are_announced_with_a_scope_and_an_item() {
 /// accepts. The legacy shape is the pinned coordinator alone.
 #[test]
 fn project_workers_are_announced_with_their_roster_read_and_purposes() {
-    assert_eq!(API_VERSION, "3.35.0");
+    assert_eq!(API_VERSION, "3.36.0");
     let advertised = capabilities(false);
     assert!(advertised.contains(&"agents.projectWorkers"));
     assert!(advertised.contains(&"agent.list"));
@@ -1828,7 +1883,7 @@ fn sync_base_path_precondition_is_announced_and_typed() {
 /// echoes the client's id.
 #[test]
 fn project_worker_assignment_is_announced_with_its_kind_and_operation_id() {
-    assert_eq!(API_VERSION, "3.35.0");
+    assert_eq!(API_VERSION, "3.36.0");
     assert!(capabilities(false).contains(&"tasks.assignProjectAgent"));
     let assign = read_json(&fixtures_root().join("v1/tasks.assign.json"));
     let example = &assign["project_agent_assignment"];
@@ -2326,7 +2381,7 @@ fn review_service_notice_markers_are_additive_read_only_wire_fields() {
 
 #[test]
 fn snapshot_retirement_announces_legacy_summary_marker() {
-    assert_eq!(API_VERSION, "3.35.0");
+    assert_eq!(API_VERSION, "3.36.0");
     assert!(capabilities(false).contains(&"tasks.review.snapshotRetired"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
     assert_eq!(greeting["result"]["api_version"], API_VERSION);
@@ -2370,5 +2425,47 @@ fn workspace_legacy_review_markers_survive_typed_serialization() {
         };
         assert_eq!(row["legacy_review"], true);
         assert!(row.get("active_review").is_none());
+    }
+}
+
+#[test]
+fn secrets_contract_is_known_but_withheld_until_the_complete_feature_ships() {
+    let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
+    for names in [
+        &greeting["result"]["events"],
+        &greeting["result"]["changes"]["kinds"],
+    ] {
+        assert!(!names
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "secrets.changed"));
+    }
+
+    let registered: BTreeSet<_> = v1::methods().iter().map(|(name, _)| *name).collect();
+    let advertised: BTreeSet<_> = capabilities(true).into_iter().collect();
+    for method in [
+        "secrets.create",
+        "secrets.list",
+        "secrets.revoke",
+        "secrets.audit",
+    ] {
+        assert!(registered.contains(method), "missing {method}");
+        assert!(UNADVERTISED_CAPABILITIES.contains(&method));
+        assert!(
+            !advertised.contains(method),
+            "prematurely advertised {method}"
+        );
+    }
+    for feature in [
+        "secrets.attachments",
+        "secrets.sealedUpload",
+        "secrets.metadataEvents",
+    ] {
+        assert!(UNADVERTISED_CAPABILITIES.contains(&feature));
+        assert!(
+            !advertised.contains(feature),
+            "prematurely advertised {feature}"
+        );
     }
 }

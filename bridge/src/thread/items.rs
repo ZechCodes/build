@@ -701,6 +701,9 @@ pub struct ThreadMessage {
     /// attachments existed load unchanged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<MessageAttachment>,
+    /// Frozen secret descriptors. Values and sealed uploads never enter history.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<super::MessageSecret>,
     /// Whether the agent kept working after posting this. Only an agent message
     /// carries it, and only a progress note sets it: an ordinary reply hands the
     /// turn back, which is what ends the reviewer-facing "Working" line. Default

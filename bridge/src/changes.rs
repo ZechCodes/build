@@ -114,9 +114,9 @@ pub const BOARD_ITEM_ID: &str = "board";
 pub const CHANGES_EVENT: &str = "changes";
 
 /// The change events a browser session can be told about, announced in the
-/// `session.hello` greeting so a client knows what it may hear. `changes` is
-/// what a subscription delivers.
-pub const ANNOUNCED_EVENTS: [&str; 8] = [
+/// `session.hello` greeting after capability filtering so a client knows what
+/// it may hear. `changes` is what a subscription delivers.
+pub const ANNOUNCED_EVENTS: [&str; 9] = [
     CHANGES_EVENT,
     "bridge.restarting",
     "writes.confirmed",
@@ -125,7 +125,14 @@ pub const ANNOUNCED_EVENTS: [&str; 8] = [
     "rtc.diagnostics",
     HARNESSES_CHANGED_EVENT,
     COMPACTION_CHANGED_EVENT,
+    SECRETS_CHANGED_EVENT,
 ];
+
+/// Feature events and their subscription kinds share the capability gate.
+/// Known internal kinds remain available for explicit subscriptions and tests.
+pub(crate) fn event_is_advertised(name: &str, capabilities: &[&str]) -> bool {
+    name != SECRETS_CHANGED_EVENT || capabilities.contains(&"secrets.metadataEvents")
+}
 
 /// A CLI on this machine changed what it runs, so `models.list` would answer
 /// differently now (#203). Carries nothing else: the catalog is asked again.
@@ -152,6 +159,10 @@ pub const COMPACTION_CHANGED_EVENT: &str = "compaction.changed";
 pub fn compaction_changed_payload(scope: &str, owner_id: Option<&str>) -> Value {
     json!({"type": COMPACTION_CHANGED_EVENT, "scope": scope, "owner_id": owner_id})
 }
+
+pub const SECRETS_CHANGED_EVENT: &str = "secrets.changed";
+
+mod secrets;
 
 // ------------------------------------------------------------ the wire ---
 
@@ -185,11 +196,13 @@ pub enum Kind {
     Tasks,
     #[serde(rename = "compaction.changed")]
     CompactionChanged,
+    #[serde(rename = "secrets.changed")]
+    SecretsChanged,
 }
 
 impl Kind {
     /// Every kind, in wire order.
-    pub const ALL: [Kind; 8] = [
+    pub const ALL: [Kind; 9] = [
         Kind::State,
         Kind::Thread,
         Kind::Git,
@@ -198,6 +211,7 @@ impl Kind {
         Kind::Terminals,
         Kind::Tasks,
         Kind::CompactionChanged,
+        Kind::SecretsChanged,
     ];
 
     /// How the wire spells it.
@@ -211,6 +225,7 @@ impl Kind {
             Kind::Terminals => "terminals",
             Kind::Tasks => "tasks",
             Kind::CompactionChanged => COMPACTION_CHANGED_EVENT,
+            Kind::SecretsChanged => SECRETS_CHANGED_EVENT,
         }
     }
 
@@ -792,6 +807,7 @@ struct PendingItem {
     // The overflow fallback is a resynchronization obligation, not a requested kind.
     overflow_resync: bool,
     compaction: Vec<Value>,
+    secrets: Vec<Value>,
     kinds: KindSet,
     files: NameSet,
     tasks: NameSet,
@@ -838,6 +854,7 @@ impl PendingItem {
         let mut due = PendingItem {
             overflow_resync: self.overflow_resync,
             compaction: self.compaction,
+            secrets: self.secrets,
             ..PendingItem::default()
         };
         for kind in self.kinds.iter() {
@@ -937,8 +954,13 @@ impl Subscription {
             return;
         }
         self.scope_epoch += 1;
-        self.pending
-            .retain(|id, _| id == BOARD_ITEM_ID || scope.covers(id));
+        self.pending.retain(|id, item| {
+            if id == SECRETS_CHANGED_EVENT {
+                item.secrets.retain(|event| secrets::covered(scope, event));
+                return !item.secrets.is_empty();
+            }
+            id == BOARD_ITEM_ID || scope.covers(id)
+        });
         if self.pending.is_empty() {
             self.first_pending_at = None;
         }
@@ -957,6 +979,9 @@ impl Subscription {
             if !kinds.contains(Kind::CompactionChanged) {
                 item.compaction.clear();
             }
+            if !kinds.contains(Kind::SecretsChanged) {
+                item.secrets.clear();
+            }
             !item.is_empty()
         });
         if self.pending.is_empty() {
@@ -972,7 +997,9 @@ impl Subscription {
         let covered = frame
             .items
             .iter()
-            .filter(|(id, _)| *id == BOARD_ITEM_ID || self.spec.scope.covers(id))
+            .filter(|(id, _)| {
+                *id == BOARD_ITEM_ID || *id == SECRETS_CHANGED_EVENT || self.spec.scope.covers(id)
+            })
             .collect::<Vec<_>>();
         for (id, item) in covered {
             if item.overflow_resync {
@@ -983,7 +1010,10 @@ impl Subscription {
             for kind in item
                 .kinds
                 .iter()
-                .filter(|kind| *kind != Kind::CompactionChanged && self.spec.kinds.contains(*kind))
+                .filter(|kind| {
+                    !matches!(*kind, Kind::CompactionChanged | Kind::SecretsChanged)
+                        && self.spec.kinds.contains(*kind)
+                })
                 .collect::<Vec<_>>()
             {
                 let names = match kind {
@@ -1000,6 +1030,9 @@ impl Subscription {
             }
             if self.accepts_compaction() {
                 self.note_compaction(&item.compaction, now);
+            }
+            for payload in &item.secrets {
+                self.note_secret_change(payload.clone(), now);
             }
         }
     }
@@ -1080,8 +1113,19 @@ impl Subscription {
             .pending
             .values()
             .any(|item| !item.compaction.is_empty());
+        let secrets: Vec<_> = self
+            .pending
+            .values()
+            .flat_map(|item| item.secrets.iter().cloned())
+            .collect();
         self.collapsed = true;
         self.pending.clear();
+        if !secrets.is_empty() {
+            let mut item = PendingItem::default();
+            item.kinds.insert(Kind::SecretsChanged);
+            item.secrets = secrets;
+            self.pending.insert(SECRETS_CHANGED_EVENT.into(), item);
+        }
         if compaction {
             let mut item = PendingItem::default();
             item.kinds.insert(Kind::CompactionChanged);
@@ -1332,7 +1376,7 @@ impl DueFrame {
     fn payloads(&self, facts: &BTreeMap<&str, &EntityFacts>, revision: u64) -> Vec<Value> {
         self.items
             .values()
-            .flat_map(|item| item.compaction.iter().cloned())
+            .flat_map(|item| item.compaction.iter().chain(&item.secrets).cloned())
             .chain(self.payload(facts, revision))
             .collect()
     }
@@ -1350,7 +1394,10 @@ impl DueFrame {
         let items: Vec<Value> = self
             .items
             .iter()
-            .filter(|(_, item)| !item.kinds.contains(Kind::CompactionChanged))
+            .filter(|(_, item)| {
+                !item.kinds.contains(Kind::CompactionChanged)
+                    && !item.kinds.contains(Kind::SecretsChanged)
+            })
             .filter(|(id, _)| !facts.get(id.as_str()).is_some_and(|fact| fact.withdrawn))
             .map(|(id, item)| {
                 item_payload(
@@ -5270,3 +5317,7 @@ mod binding_resources {
         assert_eq!(held[0].session.read_scope(), new.read_scope());
     }
 }
+
+#[cfg(test)]
+#[path = "changes/secrets_tests.rs"]
+mod secrets_tests;

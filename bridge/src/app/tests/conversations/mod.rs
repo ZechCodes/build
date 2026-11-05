@@ -11,3 +11,4 @@ mod reset;
 mod sql_reads;
 
 mod retention;
+mod secret_posts;

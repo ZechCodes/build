@@ -10,6 +10,9 @@ mod items;
 mod metadata;
 mod paging;
 mod rendering;
+mod secrets;
+
+pub use secrets::{MessageSecret, MessageSecretScope, SecretEnvironment};
 
 pub use context_reading::ContextReading;
 use conversation::empty_agent;

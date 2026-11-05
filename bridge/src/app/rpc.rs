@@ -654,7 +654,7 @@ impl AppState {
     /// this mutex with no handler behind it, and both must record against one
     /// set of since-boot counters.
     pub fn handler(state: Arc<Mutex<AppState>>) -> FrameHandler {
-        let (clock, peers, pool, reads, snapshots, observations, mutations, greeting) = {
+        let (clock, peers, pool, reads, snapshots, observations, mutations, greeting, secret_reads) = {
             let mut app = state.lock().unwrap();
             app.initialize_snapshot_projection();
             app.initialize_read_context();
@@ -667,6 +667,7 @@ impl AppState {
                 app.observation_service(),
                 super::mutations::MutationService::new(&app),
                 app.session_greeting(crate::bridge_epoch::current()),
+                app.secret_read_service(),
             )
         };
         let ending = Arc::clone(&state);
@@ -679,6 +680,11 @@ impl AppState {
         })
         .with_sql_reads(pool, move |sender, frame, _timer, connection| {
             if matches!(
+                frame.payload["method"].as_str(),
+                Some("secrets.list" | "secrets.audit")
+            ) {
+                secret_reads.call(&sender, frame, connection)
+            } else if matches!(
                 frame.payload["method"].as_str(),
                 Some("writes.status" | "writes.subscribe")
             ) {

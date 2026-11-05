@@ -51,11 +51,20 @@ impl AppState {
         let acceptance = self.operation_ledger.consume_acceptance_for(plan_id);
         match acceptance.as_ref() {
             Some(acceptance) => store
-                .save_task_plan_accepting_operation(&record, &acceptance.receipt)
+                .save_task_plan_accepting_operation_with_secrets(
+                    &record,
+                    &acceptance.receipt,
+                    acceptance.secrets.as_ref(),
+                )
                 .map(|_| ()),
             None => store.save_task_plan(&record),
         }
         .map_err(|e| format!("task store: {e}"))?;
+        self.notify_bound_post_secrets(
+            acceptance
+                .as_ref()
+                .and_then(|acceptance| acceptance.secrets.as_ref()),
+        );
         self.board
             .attention_mut()
             .record_created_if_absent(plan_id, record.created_at.clone());
@@ -124,11 +133,20 @@ impl AppState {
         let acceptance = self.operation_ledger.consume_acceptance_for(run_id);
         match acceptance.as_ref() {
             Some(acceptance) => store
-                .save_run_accepting_operation(&record, &acceptance.receipt)
+                .save_run_accepting_operation_with_secrets(
+                    &record,
+                    &acceptance.receipt,
+                    acceptance.secrets.as_ref(),
+                )
                 .map(|_| ()),
             None => store.save_run(&record),
         }
         .map_err(|e| format!("run store: {e}"))?;
+        self.notify_bound_post_secrets(
+            acceptance
+                .as_ref()
+                .and_then(|acceptance| acceptance.secrets.as_ref()),
+        );
         self.board
             .attention_mut()
             .record_created_if_absent(run_id, record.created_at.clone());

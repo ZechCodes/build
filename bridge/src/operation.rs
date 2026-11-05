@@ -93,6 +93,9 @@ pub struct OperationPayload {
     /// like [`ask_to_name`](Self::ask_to_name).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tells_sender_context: bool,
+    /// Actual device channel, frozen with a secret-bearing accepted delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_environment: Option<crate::thread::SecretEnvironment>,
 }
 
 impl OperationPayload {
@@ -155,13 +158,14 @@ impl OperationPayload {
         let task = self.task_note(provider);
         let looking = self.viewing_task_note(provider);
         let naming = self.name_note(provider);
+        let secrets = self.secret_note(provider);
         let user_prompt = self
             .messages
             .first()
             .map(|message| message.body.trim())
             .filter(|body| !body.is_empty())
             .unwrap_or(MESSAGE_DELIVERY_EMPTY_BODY);
-        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender_context}{workspace}{task}{looking}{naming}\n{MESSAGE_DELIVERY_NATIVE_PAYLOAD}\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
+        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender_context}{workspace}{task}{looking}{naming}{secrets}\n{MESSAGE_DELIVERY_NATIVE_PAYLOAD}\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
         if cold {
             crate::orchestrator::conversation_prompt(&prompt)
         } else {
@@ -195,6 +199,25 @@ impl OperationPayload {
             .collect();
         lines.dedup();
         lines.iter().map(|line| format!("\n{line}\n")).collect()
+    }
+
+    fn secret_note(&self, provider: AgentProvider) -> String {
+        let Some(environment) = self.secret_environment else {
+            return String::new();
+        };
+        let attachment = crate::agent_message::Attachment::Secrets {
+            environment,
+            descriptors: self
+                .messages
+                .iter()
+                .flat_map(|message| message.secrets.iter())
+                .cloned()
+                .collect(),
+        };
+        let harness = crate::harness::harness_for(provider);
+        attachment.text(harness).map_or_else(String::new, |text| {
+            format!("\n{}\n", harness.wrap_attachment(&text))
+        })
     }
 
     /// What to do about the task this turn was handed, when being HANDED one
@@ -598,6 +621,7 @@ mod tests {
             prior_context: "The previous revision changed the parser.".into(),
             ask_to_name: false,
             tells_sender_context: false,
+            secret_environment: None,
         }
     }
 
@@ -636,6 +660,7 @@ mod tests {
 
         let not_the_project_agent = OperationPayload {
             tells_sender_context: false,
+            secret_environment: None,
             ..told.clone()
         };
         let prompt = not_the_project_agent.delivery_prompt("post-1", false, AgentProvider::Claude);

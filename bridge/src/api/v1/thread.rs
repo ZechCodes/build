@@ -30,7 +30,7 @@ use crate::thread::{
     AgentIdentity, CompletionReport, MessageAnchor, PageActivity, SessionLineage, ThreadItem,
     ViewingContext,
 };
-use crate::{v1_method, v1_methods};
+use crate::{v1_method, v1_methods, v1_optional_context_method};
 use serde::{Deserialize, Serialize};
 use serde_json::Number;
 use std::collections::BTreeMap;
@@ -51,7 +51,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             ThreadActivityParams,
             ActivityPage
         ),
-        v1_method!("thread.post", thread_post, ThreadPostParams, PostReceipt),
+        v1_optional_context_method!("thread.post", thread_post, ThreadPostParams, PostReceipt),
         v1_method!(
             "thread.operation",
             thread_operation,
@@ -221,6 +221,10 @@ pub struct OptionReply {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ThreadPostParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft_id: Option<String>,
     pub entity_id: String,
     #[serde(flatten)]
     pub address: ConversationAddress,
@@ -845,9 +849,14 @@ fn thread_activity(
 
 fn thread_post(
     app: &mut AppState,
+    context: Option<&crate::execution::CallContext>,
     params: ThreadPostParams,
 ) -> Result<Answer<PostReceipt>, ApiError> {
-    answer(app.thread_post(&params.wire())).map_err(refine)
+    let outcome = match context {
+        Some(context) => app.thread_post_authenticated(&params.wire(), context),
+        None => app.thread_post(&params.wire()),
+    };
+    answer(outcome).map_err(refine)
 }
 
 fn thread_operation(

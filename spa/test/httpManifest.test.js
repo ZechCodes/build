@@ -7,13 +7,12 @@ import { createHttpRoutes } from "../src/core/httpRoutes.js";
 describe("reviewed REST manifest consumption", () => {
   it("pins the coordinator-released bytes and exact operation IDs", () => {
     const bytes = readFileSync(new URL("../../fixtures/api/http/resource-manifest.json", import.meta.url));
-    expect(createHash("sha256").update(bytes).digest("hex")).toBe("b89bd925186fa08ab88abd53d32f49a2fadd1c5fffa36b3cd2e8e7e1dab3e97a");
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe("465db3f5de9431ac19341710cc1bfc07d3b8f54dde975dfc068ce1960fcc2813");
     expect(createHttpRoutes(manifest).operationIds()).toEqual(manifest.transport.operation_ids);
     expect(createHttpRoutes(manifest).operationIds()).toContain("tasks_review_retryDelivery");
-    // Pin the merged coordinator release: negotiated read contracts can change
-    // manifest bytes without adding operations to the reviewed route count.
-    expect(manifest.operations).toHaveLength(153);
-    for (const operation of ["tasks_review_snapshot", "tasks_review_act", "tasks_review_complete", "sync_head", "sync_snapshot", "sync_changes"]) {
+    // Wire 3.36 adds four metadata-only secrets routes.
+    expect(manifest.operations).toHaveLength(157);
+    for (const operation of ["tasks_review_snapshot", "tasks_review_act", "tasks_review_complete", "sync_head", "sync_snapshot", "sync_changes", "secrets_create", "secrets_list", "secrets_revoke", "secrets_audit"]) {
       expect(createHttpRoutes(manifest).operationIds()).toContain(operation);
     }
   });
@@ -33,6 +32,14 @@ describe("reviewed REST manifest consumption", () => {
       expect(Object.hasOwn(route, "body")).toBe(false);
       expect(() => createHttpRoutes(manifest).request(operation.method, { ...params, extra: true })).toThrow();
     }
+  });
+
+  it("caps sealed uploads and retains metadata-only query placement", () => {
+    const operation = manifest.operations.find(({ method }) => method === "secrets.create");
+    expect(operation).toMatchObject({ verb: "POST", path: "/v1/secrets", requestMaxBytes: 65536 });
+    expect(manifest.operations.find(({ method }) => method === "secrets.list").path).toBe("/v1/secret-queries");
+    expect(manifest.operations.find(({ method }) => method === "secrets.revoke").path).toBe("/v1/secrets/{secret_id}/revocations");
+    expect(manifest.operations.find(({ method }) => method === "secrets.audit").path).toBe("/v1/secrets/{secret_id}/audit-queries");
   });
 
   it("keeps terminal/signaling/QA exclusions out of the HTTP caller", () => {

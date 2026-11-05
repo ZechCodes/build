@@ -2,6 +2,7 @@
 use super::AppState;
 use crate::secrets::{SecretError, SecretService, SweeperHandle};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 impl AppState {
@@ -24,7 +25,13 @@ impl AppState {
             .ok_or(SecretError::Unavailable)
             .and_then(|store| SecretService::open(state_root, device_id, store.writer()));
         match opened {
-            Ok(service) => self.secret_service = Some(service),
+            Ok(service) => {
+                let changes = Arc::clone(&self.changes);
+                service.set_change_observer(Arc::new(move |record| {
+                    changes.note_secret_records(std::slice::from_ref(record))
+                }));
+                self.secret_service = Some(service);
+            }
             Err(_) => eprintln!("secret vault unavailable"),
         }
         Ok(self)

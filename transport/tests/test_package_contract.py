@@ -15,6 +15,11 @@ class PackageContract(unittest.TestCase):
         lock = json.loads((ROOT / 'transport/js/package-lock.json').read_text())
         self.assertEqual(lock['packages'][''].get('license'), package['license'])
 
+    def test_npm_build_entry_preserves_imported_protocol_source(self):
+        package = json.loads((ROOT / 'transport/js/package.json').read_text())
+        self.assertEqual(package['exports'], {'.': './src/build.js'})
+        self.assertTrue((ROOT / 'transport/js/src/build.js').is_file())
+
     def test_python_scoped_license_and_inclusion(self):
         package = tomllib.loads((ROOT / 'transport/python/pyproject.toml').read_text())
         self.assertEqual(package['project'].get('license'), {'file': 'LICENSE.md'})

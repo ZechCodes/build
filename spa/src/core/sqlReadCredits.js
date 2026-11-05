@@ -7,6 +7,7 @@ export const SQL_READ_METHODS = Object.freeze([
   "tasks.list", "tasks.get", "tasks.waiting_on.blocks", "tasks.filterChoices",
   "tasks.counts", "tasks.lookup",
   "writes.status", "writes.subscribe",
+  "secrets.audit", "secrets.list",
 ]);
 export const SQL_READ_LIMIT = 8;
 const methods = new Set(SQL_READ_METHODS);

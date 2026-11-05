@@ -122,6 +122,7 @@ fn delivery_receipt(operation_id: &str) -> OperationReceipt {
                 prior_context: String::new(),
                 ask_to_name: false,
                 tells_sender_context: false,
+                secret_environment: None,
             }),
         }),
         requested_by: None,

@@ -1,4 +1,8 @@
-use super::{records, writes};
+use super::{
+    records,
+    schema::{denial_outcomes_sql, DENIAL_OUTCOMES},
+    writes,
+};
 use crate::secrets::{
     Result, SecretAuditRecord, SecretAuditSummary, SecretCaller, SecretError, SecretRecord,
 };
@@ -13,12 +17,15 @@ pub(super) fn append_in(
     record: Option<&SecretRecord>,
     outcome: &str,
 ) -> Result<()> {
+    if outcome != "released" && !DENIAL_OUTCOMES.contains(&outcome) {
+        return Err(SecretError::Invalid);
+    }
     let now = records::highwater(tx)?;
     // Only resolved, authorized metadata reaches the durable sink. Never
     // persist an endpoint-supplied selector or correlation ID: either can be
     // chosen to contain a capability or a UUID-shaped secret value.
     let id = record.map_or("unavailable", |record| record.context.id.as_str());
-    if outcome != "released" && coalesce_denial_in(tx, caller, id, outcome, now)? {
+    if DENIAL_OUTCOMES.contains(&outcome) && coalesce_denial_in(tx, caller, id, outcome, now)? {
         if record.is_some() {
             summary_in(tx, id, now, outcome)?;
         }
@@ -30,10 +37,10 @@ pub(super) fn append_in(
     if changed != 1 {
         return Err(SecretError::Unavailable);
     }
-    if outcome != "released" {
+    if DENIAL_OUTCOMES.contains(&outcome) {
         // At most one new denial group entered this transaction. The startup
         // migration brings older stores under this cap before admission.
-        tx.execute("DELETE FROM secret_audit WHERE sequence=(SELECT sequence FROM secret_audit WHERE outcome!='released' ORDER BY sequence DESC LIMIT 1 OFFSET 4096)", [])?;
+        tx.execute(&format!("DELETE FROM secret_audit WHERE sequence=(SELECT sequence FROM secret_audit WHERE outcome IN {} ORDER BY sequence DESC LIMIT 1 OFFSET 4096)", denial_outcomes_sql()), [])?;
     }
     // Unknown/wrong-scope targets never grow per-secret summaries.
     if record.is_some() {
@@ -49,7 +56,7 @@ fn coalesce_denial_in(
     outcome: &str,
     now: i64,
 ) -> Result<bool> {
-    let changed = tx.execute("UPDATE secret_audit SET attempt_count=MIN(attempt_count,9223372036854775806)+1,last_occurred_at=?1 WHERE sequence=(SELECT sequence FROM secret_audit WHERE agent_id=?2 AND secret_id=?3 AND outcome=?4 AND outcome!='released' AND occurred_at>=?5 AND project_id=?6 AND owner_id=?7 AND conversation_id=?8 AND generation=?9 AND session_incarnation=?10 ORDER BY occurred_at DESC LIMIT 1)", params![now,caller.agent_id,id,outcome,now-now%60,caller.project_id,caller.owner_id,caller.conversation_id,caller.generation,caller.session_incarnation])?;
+    let changed = tx.execute(&format!("UPDATE secret_audit SET attempt_count=MIN(attempt_count,9223372036854775806)+1,last_occurred_at=?1 WHERE sequence=(SELECT sequence FROM secret_audit WHERE agent_id=?2 AND secret_id=?3 AND outcome=?4 AND outcome IN {} AND occurred_at>=?5 AND project_id=?6 AND owner_id=?7 AND conversation_id=?8 AND generation=?9 AND session_incarnation=?10 ORDER BY occurred_at DESC LIMIT 1)", denial_outcomes_sql()), params![now,caller.agent_id,id,outcome,now-now%60,caller.project_id,caller.owner_id,caller.conversation_id,caller.generation,caller.session_incarnation])?;
     Ok(changed == 1)
 }
 
@@ -76,7 +83,7 @@ impl StoreWriter {
             return Err(SecretError::Invalid);
         }
         let connection = self.connection();
-        let mut query=connection.prepare("SELECT sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome,attempt_count,last_occurred_at FROM secret_audit WHERE secret_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3")?;
+        let mut query=connection.prepare(&format!("SELECT sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome,attempt_count,last_occurred_at FROM secret_audit WHERE secret_id=?1 AND sequence>?2 AND (outcome='released' OR outcome IN {}) ORDER BY sequence LIMIT ?3", denial_outcomes_sql()))?;
         let records = query
             .query_map(params![id, after, limit as i64], audit_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -100,7 +107,7 @@ impl StoreWriter {
             return Err(SecretError::Invalid);
         }
         let connection = self.connection();
-        let mut query = connection.prepare("SELECT sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome,attempt_count,last_occurred_at FROM secret_audit WHERE agent_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3")?;
+        let mut query = connection.prepare(&format!("SELECT sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome,attempt_count,last_occurred_at FROM secret_audit WHERE agent_id=?1 AND sequence>?2 AND (outcome='released' OR outcome IN {}) ORDER BY sequence LIMIT ?3", denial_outcomes_sql()))?;
         let records = query
             .query_map(params![agent_id, after, limit as i64], audit_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -122,7 +129,8 @@ impl StoreWriter {
         let mut total = 0;
         for _ in 0..8 {
             let removed = writes::durable(self, |tx| {
-                Ok(tx.execute("DELETE FROM secret_audit WHERE sequence IN (SELECT sequence FROM secret_audit WHERE occurred_at<?1 ORDER BY occurred_at,sequence LIMIT 1000)",[now.saturating_sub(DETAIL_RETENTION_SECONDS)])?)
+                super::revoke::prune_in(tx, now)?;
+                Ok(tx.execute(&format!("DELETE FROM secret_audit WHERE sequence IN (SELECT sequence FROM secret_audit WHERE occurred_at<?1 AND (outcome='released' OR outcome IN {}) ORDER BY occurred_at,sequence LIMIT 1000)",denial_outcomes_sql()),[now.saturating_sub(DETAIL_RETENTION_SECONDS)])?)
             })?;
             total += removed;
             if removed < 1000 {
@@ -146,7 +154,7 @@ impl StoreWriter {
     }
 }
 
-fn audit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SecretAuditRecord> {
+pub(super) fn audit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SecretAuditRecord> {
     Ok(SecretAuditRecord {
         sequence: row.get(0)?,
         secret_id: row.get(1)?,

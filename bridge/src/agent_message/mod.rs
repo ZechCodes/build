@@ -26,6 +26,7 @@
 pub(crate) mod golden;
 
 use crate::harness::Harness;
+mod secrets;
 use crate::templates::{
     fill, MESSAGE_BUILD_INSTRUCTIONS, MESSAGE_REPLY_AGENT, MESSAGE_REPLY_TASK,
     MESSAGE_REPLY_THREAD, MESSAGE_SYSTEM_REMINDER, MESSAGE_TOOL_HINT_TOOL_SEARCH,
@@ -149,6 +150,12 @@ pub enum Attachment {
     /// How to load these tools, on a harness that hides them behind tool
     /// search. Says nothing where the tools are already loaded.
     ToolHint(Vec<BuildTool>),
+    /// References the authenticated user attached, with the device channel
+    /// frozen at acceptance. This never carries values or upload bodies.
+    Secrets {
+        environment: crate::thread::SecretEnvironment,
+        descriptors: Vec<crate::thread::MessageSecret>,
+    },
 }
 
 impl Attachment {
@@ -182,6 +189,10 @@ impl Attachment {
                 }
                 ToolLoading::Loaded => None,
             },
+            Attachment::Secrets {
+                environment,
+                descriptors,
+            } => secrets::text(*environment, descriptors),
         }
     }
 }
@@ -307,3 +318,6 @@ pub fn build_instructions(text: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod secret_tests;

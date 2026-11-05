@@ -98,6 +98,10 @@ pub(crate) const MESSAGE_DELIVERY_NATIVE_PAYLOAD: &str =
 /// What a delivery says first when its first message has no words.
 pub(crate) const MESSAGE_DELIVERY_EMPTY_BODY: &str = template!("messages/delivery_empty_body.md");
 
+/// Secret references, never their values: JSON `{descriptors}` and the actual
+/// frozen device `{environment}` used by the retrieval command.
+pub(crate) const MESSAGE_ATTACHED_SECRETS: &str = template!("messages/attached_secrets.md");
+
 /// The request an unnamed agent hears on its first turn: the tool `{set_name}`.
 pub(crate) const MESSAGE_AGENT_NAME: &str = template!("messages/agent_name.md");
 

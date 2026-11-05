@@ -27,9 +27,12 @@ impl StoreWriter {
             } else {
                 None
             };
-            let authorized = record
-                .as_ref()
-                .filter(|record| scope_allows(caller, record));
+            let authorized = match record.as_ref() {
+                Some(record) if super::post::final_scope_allows(tx, caller, record)? => {
+                    Some(record)
+                }
+                _ => None,
+            };
             let result = match authorized {
                 Some(record) => read(tx, record),
                 None => Err(SecretError::Unavailable),
@@ -149,6 +152,10 @@ pub(crate) fn clock_observe_in(tx: &Transaction<'_>, now: i64) -> Result<(bool, 
 }
 
 pub(crate) fn expire_in(tx: &Transaction<'_>, id: &str, now: i64) -> Result<()> {
-    tx.execute("UPDATE secret_records SET revoked_at=?2,revocation_reason='expired',revision=revision+1 WHERE id=?1 AND revoked_at IS NULL",rusqlite::params![id,now])?;
+    let changed=tx.execute("UPDATE secret_records SET revoked_at=?2,revocation_reason='expired',revision=revision+1 WHERE id=?1 AND revoked_at IS NULL",rusqlite::params![id,now])?;
+    if changed == 1 {
+        let record = records::required(tx, id)?;
+        super::append_metadata_in(tx, &record, "expired", now)?;
+    }
     Ok(())
 }

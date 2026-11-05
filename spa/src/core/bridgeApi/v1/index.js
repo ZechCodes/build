@@ -66,6 +66,7 @@ export const EVENT_TYPES = Object.freeze([
   "models.changed",
   "harnesses.changed",
   "compaction.changed",
+  "secrets.changed",
   "writes.confirmed",
   "bridge.restarting",
 ]);
@@ -215,6 +216,11 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       listExcludeAssignee: names.has("tasks.listExcludeAssignee"),
       bodyPrecondition: names.has("tasks.bodyPrecondition"),
       waitingOn: names.has("tasks.waitingOn"),
+    },
+    secrets: {
+      attachments: names.has("secrets.attachments"),
+      sealedUpload: names.has("secrets.sealedUpload"),
+      metadataEvents: names.has("secrets.metadataEvents"),
     },
     compaction: { harnessThresholds: names.has("compaction.harnessThresholds") },
     conversations: { settings: names.has("conversations.settings"), reset: names.has("conversation.reset") },

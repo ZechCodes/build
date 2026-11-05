@@ -12,6 +12,7 @@ mod read;
 mod reset;
 mod reset_files;
 mod retention;
+mod secrets;
 mod senders;
 pub(in crate::app) mod sql_read;
 

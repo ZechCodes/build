@@ -697,6 +697,7 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
         stored,
         ..
     } = loaded;
+    let app = daemon_secrets::with_upload_opener(app, &transport_keypair.private_key_b64);
     let repo_display = runtime
         .config
         .repo

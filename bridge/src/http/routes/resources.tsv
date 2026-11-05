@@ -1,4 +1,4 @@
-# Wire 3.34 adds device roster/session row fields to existing sync query replies; routes remain the same 153 operations.
+# Wire 3.36 adds four metadata-only secrets resources; 157 explicit operations.
 # Explicit HTTP resource catalogue. method<TAB>verb<TAB>path. No wildcard methods.
 agent.add	POST	/v1/entities/{entity_id}/agents
 agent.choose	PATCH	/v1/entities/{entity_id}/agents/{agent_id}/model
@@ -81,6 +81,10 @@ run.diff	POST	/v1/runs/{run_id}/diff-queries
 run.git_action	POST	/v1/runs/{run_id}/git-actions
 run.message	POST	/v1/runs/{run_id}/messages
 run.request_changes	POST	/v1/runs/{run_id}/change-requests
+secrets.audit	POST	/v1/secrets/{secret_id}/audit-queries
+secrets.create	POST	/v1/secrets
+secrets.list	POST	/v1/secret-queries
+secrets.revoke	POST	/v1/secrets/{secret_id}/revocations
 session.hello	POST	/v1/session-greetings
 settings.get	GET	/v1/settings
 settings.set	PATCH	/v1/settings

@@ -647,3 +647,32 @@ fn present_unregistered_key_with_no_records_is_not_adopted_or_replaced() {
     assert!(!store.writer().secrets_have_records().unwrap());
     drop(vault);
 }
+
+#[test]
+fn revoke_operation_preserves_expiry_when_only_monotonic_time_advances() {
+    let (_dir, store, clock, service) = fixture();
+    store.writer_for_test().execute("INSERT INTO device_project_ids(path,project_id) VALUES ('/synthetic/project','synthetic-project')", []).unwrap();
+    let record = stage(&service, Some(60));
+    attach(&service, &record);
+    clock.mono.store(60, Ordering::SeqCst);
+    let params = crate::api::v1::secrets::RevokeParams {
+        scope: crate::api::v1::secrets::SecretScope {
+            project_id: "synthetic-project".into(),
+            stage: None,
+        },
+        secret_id: record.context.id.clone(),
+        operation_id: uuid::Uuid::new_v4().to_string(),
+    };
+    let response = service.revoke_operation("synthetic-user", &params).unwrap();
+    assert_eq!(response.status, "expired");
+    assert_eq!(
+        store
+            .writer()
+            .secret_record(&record.context.id)
+            .unwrap()
+            .unwrap()
+            .revocation_reason
+            .as_deref(),
+        Some("expired")
+    );
+}

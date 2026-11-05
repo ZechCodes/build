@@ -55,13 +55,14 @@ fn warn_occupied() {
 /// Publish a launcher atomically without writing a global `buildctl` command.
 /// Foreign private destinations are left intact and do not block installation.
 pub fn install_sibling(binary: &Path) -> io::Result<()> {
-    install_with_hooks(binary, |_| {}, || {})
+    install_with_hooks(binary, |_| {}, || {}, sync_directory)
 }
 
 fn install_with_hooks(
     binary: &Path,
     after_write: impl FnOnce(&fs::File),
     on_busy: impl FnMut(),
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
     let directory = binary
         .parent()
@@ -99,10 +100,22 @@ fn install_with_hooks(
         // so that no reader can observe an ETXTBSY launcher at the final path.
         ready_to_execute(&temporary, on_busy)?;
         fs::rename(&temporary, &destination)?;
-        fs::File::open(&directory)?.sync_all()
+        // Rename is the publication point. A later sync error affects
+        // durability, not which launcher is installed; report it as a warning.
+        if sync_parent(&directory).is_err() {
+            let _ = writeln!(
+                io::stderr().lock(),
+                "runtime launcher published; directory sync failed"
+            );
+        }
+        Ok(())
     })();
     let _ = fs::remove_file(temporary);
     result
+}
+
+fn sync_directory(path: &Path) -> io::Result<()> {
+    fs::File::open(path)?.sync_all()
 }
 
 fn ready_to_execute(path: &Path, mut on_busy: impl FnMut()) -> io::Result<()> {
@@ -250,6 +263,7 @@ mod tests {
                     drop(retained.borrow_mut().take());
                 }
             },
+            sync_directory,
         );
         if mode == "timeout" {
             assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::ETXTBSY));
@@ -264,6 +278,70 @@ mod tests {
         assert!(observed_busy.get());
         assert_eq!(fs::read_dir(runtime).unwrap().count(), 1);
         drop(retained.into_inner());
+    }
+
+    #[test]
+    fn published_launcher_survives_directory_sync_and_warning_failures() {
+        let mode = std::env::var("BUILD_RUNTIME_SYNC_ACTOR").unwrap_or_default();
+        if mode == "warning" || mode == "broken-stderr" {
+            directory_sync_child_actor(&mode);
+            return;
+        }
+        for mode in ["warning", "broken-stderr"] {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime_launcher::tests::published_launcher_survives_directory_sync_and_warning_failures",
+                    "--nocapture",
+                ])
+                .env("BUILD_RUNTIME_SYNC_ACTOR", mode)
+                .env("RUST_TEST_THREADS", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let expected = if mode == "warning" {
+                b"runtime launcher published; directory sync failed\n".as_slice()
+            } else {
+                b"".as_slice()
+            };
+            assert_eq!(output.stderr, expected);
+        }
+    }
+
+    fn directory_sync_child_actor(mode: &str) {
+        let directory = tempfile::tempdir().unwrap();
+        let binary = directory.path().join("build-bridge");
+        let runtime = directory.path().join(".build-runtime");
+        fs::create_dir(&runtime).unwrap();
+        let launcher = runtime.join("buildctl");
+        let previous = format!("{HEADER} previous\nexit 47\n");
+        fs::write(&launcher, previous).unwrap();
+        let metadata = fs::metadata(&launcher).unwrap();
+        let identity = (metadata.dev(), metadata.ino());
+        let result = install_with_hooks(
+            &binary,
+            |_| {},
+            || {},
+            |_| {
+                if mode == "broken-stderr" {
+                    // SAFETY: this is an isolated re-exec test, after all child
+                    // spawning. Closing stderr simulates a failed diagnostic sink.
+                    unsafe {
+                        libc::close(libc::STDERR_FILENO);
+                    }
+                }
+                Err(io::Error::from_raw_os_error(libc::EIO))
+            },
+        );
+        result.unwrap();
+        assert_eq!(fs::read_to_string(launcher).unwrap(), SOURCE);
+        let metadata = fs::metadata(runtime.join("buildctl")).unwrap();
+        assert_ne!((metadata.dev(), metadata.ino()), identity);
+        assert_eq!(fs::read_dir(runtime).unwrap().count(), 1);
     }
 
     #[test]

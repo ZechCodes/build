@@ -225,6 +225,46 @@ fn both_facades_share_the_runtime_contract() {
     }
 }
 
+// Dropping our read end is not sufficient while another thread's pre-exec fork
+// still owns a copy. Establish real EPIPE before asking the child to write.
+fn wait_for_closed_stdout(writer: &mut std::io::PipeWriter, mut reader_present: impl FnMut()) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        match writer.write(&[0]) {
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => return,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Ok(1) => reader_present(),
+            other => panic!("unexpected stdout readiness result: {other:?}"),
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "stdout reader remained open"
+        );
+        // At most 201 bytes fit below even POSIX's minimum pipe capacity.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn closed_stdout_waits_for_the_last_inherited_reader() {
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    let mut inherited = Some(reader.try_clone().unwrap());
+    drop(reader);
+    let mut saw_reader = false;
+    wait_for_closed_stdout(&mut writer, || {
+        saw_reader = true;
+        drop(inherited.take());
+    });
+    assert!(
+        saw_reader,
+        "fixture must observe the retained reader before release"
+    );
+    assert_eq!(
+        writer.write(&[0]).unwrap_err().kind(),
+        std::io::ErrorKind::BrokenPipe
+    );
+}
+
 #[test]
 fn broken_stdout_and_termination_leave_no_files() {
     use std::process::Stdio;
@@ -232,8 +272,10 @@ fn broken_stdout_and_termination_leave_no_files() {
         let root = tempfile::tempdir().unwrap();
         let socket = root.path().join("release.sock");
         let listener = UnixListener::bind(&socket).unwrap();
+        let (reader, writer) = std::io::pipe().unwrap();
+        let mut readiness = writer.try_clone().unwrap();
         let mut child = authorized(&socket)
-            .stdout(Stdio::piped())
+            .stdout(Stdio::from(writer))
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
@@ -242,14 +284,16 @@ fn broken_stdout_and_termination_leave_no_files() {
         BufReader::new(stream.try_clone().unwrap())
             .read_line(&mut line)
             .unwrap();
+        drop(reader);
         if terminate {
             child.kill().unwrap();
         } else {
-            drop(child.stdout.take());
+            wait_for_closed_stdout(&mut readiness, || {});
             writeln!(stream, "{{\"ok\":true,\"length\":{length}}}").unwrap();
             stream.write_all(&vec![b'x'; length]).unwrap();
         }
         drop(stream);
+        drop(readiness);
         let output = child.wait_with_output().unwrap();
         assert!(!output.status.success());
         assert!(output.stdout.is_empty());

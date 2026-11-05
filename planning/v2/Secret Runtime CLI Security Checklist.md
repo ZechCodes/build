@@ -175,15 +175,32 @@ The gate's ETXTBSY failure is covered by a deterministic retained-writer fork
 regression. Closing a staged writer before rename alone is insufficient when a
 fork child retains the same inode's writable description. Installation now
 closes the writer and exec-checks the staged trusted wrapper before publishing.
-The no-argument, empty-environment, null-stdio probe exits2 before bridge lookup
+The no-argument, empty-environment, null-stdio probe exits 2 before bridge lookup
 or authority handling. Only ETXTBSY is retried, for at most one second. Success
 proves the inode can execute; timeout preserves the prior bytes/dev/ino and
 removes staging residue. The regression failed before the fix and now passes,
 including explicit release after the first busy observation.
 
-Integrated Cargo-built tests passed with default parallelism:20 consecutive CLI
-suites (8/8 each), alongside49 cycles of carrier tests (4/4) and eight-way Codex
-spawn tests (1/1). Launcher8/8 and updater25/25 also pass; zero ignored in every
+Integrated Cargo-built tests passed with default parallelism: 20 consecutive CLI
+suites (8/8 each), alongside 49 cycles of carrier tests (4/4) and eight-way Codex
+spawn tests (1/1). Launcher 8/8 and updater 25/25 also pass; zero ignored in every
 run. All-target clippy with warnings denied, fmt, Semgrep and diff checks pass.
-Commands use nice-n10 and scratch TMPDIR/CARGO_TARGET_DIR. The full gate remains
+Commands use `nice -n 10` and scratch TMPDIR/CARGO_TARGET_DIR. The full gate remains
 the coordinator's check after delta review; gitleaks gates this follow-up push.
+
+Rename is the publication boundary. Pre-publication failures leave the prior
+entry intact. Once the exec-verified launcher is renamed into place, a parent
+directory open or fsync failure produces a fixed durability warning and the
+installation reports success. No raw error, path or authority enters that
+warning. The per-install shell probe cost is accepted.
+
+The injected post-rename sync failure reproduced the prior false error result.
+The new regression verifies success, replacement bytes/inode, the exact fixed
+warning, and success even with closed stderr. Launcher tests pass 9/9 and updater
+tests 25/25. Validation also exposed a broken-stdout fixture race: a fork could
+retain its dropped reader and legitimately accept the small write. The fixture
+now confirms EPIPE before sending the value, with a retained-reader regression.
+Twenty fresh default-parallel CLI runs pass 9/9 each, alongside 50 carrier and
+concurrent-spawn cycles (4/4 plus 1/1). Every run has zero ignored tests. Final
+all-target clippy, fmt, Semgrep and diff checks pass; logs preserve both the
+initial fixture failure and the passing proof.

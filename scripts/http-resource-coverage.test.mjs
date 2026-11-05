@@ -342,7 +342,8 @@ const sourceFingerprintParts = {
   "core/sessionRpc.js": ["5d583ef2", "0faaf478", "09fbf975", "ab15af9f", "a78fd5f8", "fc4bab2e", "49d4ef64", "4e13ad2d"],
   "core/sessionSwitch.js": ["dc232a71", "5b006195", "d7910b8e", "8c59e611", "a36dd264", "8bbcfcc8", "0d8739f3", "371accc7"],
   "core/shell.js": ["c9e2a17e", "6ae389f1", "e7a60035", "dfc83868", "dc85c17d", "564daa9f", "9b3e097b", "391bcd33"],
-  "core/sqlReadCredits.js": ["478e10b0", "a7cc8726", "f6afcc2e", "0fce6bea", "9e9f7103", "6526a077", "04fdc4d4", "253ca538"],
+  // #1003: bounded secret metadata reads use the shared SQL admission lane.
+  "core/sqlReadCredits.js": ["6c9b5955", "301a1704", "ef9798df", "3853302b", "edb5b267", "872386a6", "e8e0f30f", "8689421c"],
   // #997 syncDiagnostics.js:14: the device label extends diagnostics only; RPC verb inventory is unchanged.
   "core/syncDiagnostics.js": ["699d4595", "41400002", "6be4a4de", "45c68a8d", "f59ab913", "b68f7991", "936cad7b", "48ee7871"],
   "core/syncLists.js": ["e44aee99", "346eb027", "1e6486f1", "dac9a7ac", "9acdd7b8", "1c4a00f4", "ce196d01", "e22f5292"],

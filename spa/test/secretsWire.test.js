@@ -1,8 +1,13 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
+import { sealSecretUpload, encryptFrame, decryptEnvelope } from "@build/secure-transport";
 import { onSecretsChanged, secretsChangedOn } from "../src/core/secretMetadataEvents.js";
 import * as v1 from "../src/core/bridgeApi/v1/index.js";
 import { bridgeCapabilities, dispatchChangeEvent, greetBridge, resetChangeEvents } from "../src/core/changeEvents.js";
+
+it("resolves secret sealing and the original transport API through the package entry", () => {
+  for (const method of [sealSecretUpload, encryptFrame, decryptEnvelope]) expect(method).toBeTypeOf("function");
+});
 
 it("keeps secret features off until the current greeting names each one", () => {
   expect(bridgeCapabilities("ungreeted-secrets").secrets).toEqual({ attachments: false, sealedUpload: false, metadataEvents: false });

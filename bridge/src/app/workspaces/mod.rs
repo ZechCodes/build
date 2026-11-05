@@ -20,6 +20,7 @@ mod lock;
 mod ownership;
 mod projection_rendering;
 mod reclaim;
+mod secret_sources;
 mod sizes;
 mod snapshots;
 
@@ -41,6 +42,7 @@ struct WorkspaceCreateWork {
     unpublished: bool,
     recover_existing: bool,
     sources: Vec<WorkspaceSource>,
+    secret_sources: secret_sources::SecretSourcePolicy,
     isolation: Isolation,
     /// The sources whose base is brought up to date before the cut (#267).
     base_syncs: Vec<SyncSubject>,
@@ -57,6 +59,8 @@ impl DeferredGitWork for WorkspaceCreateWork {
     }
 
     fn run(&self, _params: &Value) -> Result<Value, String> {
+        self.secret_sources.path(&self.workspace.root)?;
+        self.secret_sources.sources(&self.sources)?;
         let prepared = match sync_before_cut(&self.base_syncs, self.source_state.as_ref()) {
             Ok(prepared) => prepared,
             Err(error) => return self.preparation_failed(error),
@@ -228,6 +232,7 @@ impl WorkspaceCreateWork {
         destination: &Path,
         isolation: Isolation,
     ) -> Result<(Option<String>, Isolation), String> {
+        self.secret_sources.copying(source, destination)?;
         if self.recover_existing && std::fs::symlink_metadata(destination).is_ok() {
             return deferred_creation::recover_checkout(source, destination, &self.workspace_name);
         }
@@ -238,6 +243,7 @@ impl WorkspaceCreateWork {
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
             source,
         );
+        self.secret_sources.copying(source, destination)?;
         materialize_source(
             source,
             destination,
@@ -817,6 +823,8 @@ impl AppState {
         if sources.is_empty() {
             return Err("workspace.create: project has no sources".to_string());
         }
+        let secret_sources = self.workspace_secret_source_policy();
+        secret_sources.sources(&sources)?;
         let isolation = params
             .get("isolation")
             .and_then(Value::as_str)
@@ -854,6 +862,7 @@ impl AppState {
                 unpublished: true,
                 recover_existing: false,
                 sources,
+                secret_sources,
                 isolation,
                 base_syncs: self.cut_sync_subjects(&project_id),
                 source_state: self.source_validation_handle(),
@@ -1074,6 +1083,12 @@ impl AppState {
         {
             return Err(crate::reclaim::BUSY.to_string());
         }
+        let secret_sources = self.workspace_secret_source_policy();
+        let saved = self
+            .workspaces
+            .get(&workspace_id)
+            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
+        secret_sources.workspace(saved)?;
         let workspace = self.workspaces.claim_retry(&workspace_id)?;
         if !workspace.managed {
             return Err("workspace.retry: adopted workspaces require no provisioning".to_string());
@@ -1095,6 +1110,7 @@ impl AppState {
                 unpublished: false,
                 recover_existing: false,
                 sources,
+                secret_sources,
                 isolation: workspace.isolation,
                 base_syncs,
                 source_state: self.source_validation_handle(),
@@ -1582,3 +1598,6 @@ fn workspace_json(workspace: &Workspace) -> Value {
     }
     value
 }
+
+#[cfg(test)]
+mod secrets_tests;

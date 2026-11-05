@@ -18,7 +18,9 @@ from .migrate_paths import Paths, references, scratch_directory
 from .migrate_store import rewrite_database, scan_database, verify_database
 from .runtime import BuildctlError, Runner
 
+# Device-vault keys and values are never a migration/rollback payload.
 IMPORTED = ('config.json', 'projects', 'provider-recovery', 'review-receivers', 'harness', 'tasks')
+
 OPERATIONAL = {'identity.json', 'log', 'builds', 'buildctl.json', 'buildctl-candidate', 'buildctl.lock'}
 WORKTREE_KEYS = {'worktree_path', 'checkout', 'checkout_path', 'working_repository', 'root', 'cwd'}
 
@@ -30,6 +32,21 @@ def no_symlinks(path, *, tree=False):
         for current, dirs, files in os.walk(path):
             if any((Path(current) / name).is_symlink() for name in (*dirs, *files)):
                 raise BuildctlError('migration tree contains a symlink')
+
+
+def refuse_vault(root, label):
+    # lexists sees even broken links and FIFOs without opening or walking them.
+    if os.path.lexists(Path(root) / 'secrets'):
+        raise BuildctlError(label + ' has a device vault; migration cannot move, copy or restore it')
+
+
+def copy_entry(relative):
+    relative = Path(relative)
+    if relative.is_absolute() or not relative.parts or '..' in relative.parts:
+        raise BuildctlError('migration entry escapes its source directory')
+    if relative.parts[0] == 'secrets':
+        raise BuildctlError('device vault is excluded from migration')
+    return relative
 
 
 def remove(path):
@@ -73,8 +90,18 @@ class Migrator:
         if any(states.get(name) not in {'inactive', 'failed'} for name in ('prod', 'dev')):
             raise BuildctlError('both prod and dev units must be stopped (inactive or failed)')
 
+    def refuse_target_vault(self):
+        # An existing target must not be overlaid onto a different metadata DB
+        # or moved into the migration's rollback backup, even under --force.
+        refuse_vault(self.target, 'target')
+
+    def refuse_rollback_vaults(self, backup):
+        self.refuse_target_vault()
+        refuse_vault(backup, 'rollback backup')
+
     def preflight(self, force):
         no_symlinks(self.source)
+        self.refuse_target_vault()
         no_symlinks(self.target, tree=True)
         if self.source.is_relative_to(self.target) or self.target.is_relative_to(self.source):
             raise BuildctlError('migration source and target must be disjoint')
@@ -218,9 +245,10 @@ class Migrator:
     def stage(self, expected, entries, result):
         stage = Path(tempfile.mkdtemp(prefix='.' + self.target.name + '.stage-', dir=self.target.parent))
         try:
+            self.refuse_target_vault()
             if self.target.exists():
                 with open_directory(self.target) as descriptor:
-                    verify_copied(stage, copy_open(descriptor, stage))
+                    verify_copied(stage, copy_open(descriptor, stage, exclude={'secrets'}))
             copied_hashes = self.copy_state(stage, entries)
             verify_copied(stage, copied_hashes)
             rewrite_database(stage / 'tasks/build.db', self.paths)
@@ -247,6 +275,7 @@ class Migrator:
         hashes = {}
         with open_directory(self.source) as source_fd:
             for relative in entries:
+                relative = copy_entry(relative)
                 target = stage / relative
                 remove(target)
                 with open_relative(source_fd, relative) as descriptor:
@@ -272,6 +301,7 @@ class Migrator:
         return len(checked)
 
     def publish(self, stage, changes, result):
+        self.refuse_target_vault()
         backup = self.target.with_name(self.target.name + '.backup-' + uuid.uuid4().hex)
         manifest = {'target': str(self.target), 'source': str(self.source_prefix),
                     'git': changes, 'rehearsal': self.rehearsal, 'status': 'prepared',
@@ -300,6 +330,7 @@ class Migrator:
 
     def rollback(self, backup):
         backup = Path(backup)
+        self.refuse_rollback_vaults(backup)
         no_symlinks(backup, tree=True)
         no_symlinks(self.target, tree=True)
         if backup.parent != self.target.parent or not backup.name.startswith(self.target.name + '.backup-'):
@@ -317,6 +348,9 @@ class Migrator:
             return self.restore(backup, metadata, manifest)
 
     def restore(self, backup, metadata, manifest):
+        # Repeat after rollback preflight and service checks, before remote
+        # edits or either rename: a vault can have appeared in either tree.
+        self.refuse_rollback_vaults(backup)
         if not backup.is_dir():
             raise BuildctlError('rollback state backup is missing')
         retired = self.target.with_name(self.target.name + '.retired-' + uuid.uuid4().hex)

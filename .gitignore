@@ -230,3 +230,9 @@ vendor/
 
 # Build session artifacts (plans, attachments)
 /.build/
+
+# Secret service source modules are code, not device-local vault contents.
+!bridge/src/secrets/
+!bridge/src/secrets/*.rs
+!bridge/src/store/secrets/
+!bridge/src/store/secrets/*.rs

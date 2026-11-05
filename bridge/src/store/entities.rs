@@ -478,6 +478,7 @@ impl Store {
             .collect::<Result<_, _>>()?;
         drop(roster);
         for gone in existing.iter().filter(|id| !keep.contains(id.as_str())) {
+            super::secrets::retire_agent_in(tx, gone)?;
             super::sync::touch_device_agent(tx, gone)?;
             // Removing an agent removes its conversation, but cannot erase the
             // time it contributed to the still-live workspace/project session.
@@ -971,6 +972,7 @@ impl Store {
     /// until then a failed multi-step deletion can leave the project alive.
     pub fn clear_retained_project_messages(&self, project_id: &str) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            super::secrets::retire_project_in(tx, project_id)?;
             tx.execute(
                 "DELETE FROM inbox_retained_messages WHERE project_id = ?1",
                 [project_id],
@@ -1250,6 +1252,7 @@ pub(super) fn write_run(
 /// Capture roster IDs before deleting canonical rows so their bounded identity
 /// projections are removed in the same transaction as the owner.
 fn remove_owner_identities(tx: &rusqlite::Transaction, owner: &str) -> Result<(), StoreError> {
+    super::secrets::retire_owner_in(tx, owner)?;
     super::sync::forget_device_owner(tx, owner)?;
     let ids = tx
         .prepare("SELECT id FROM agents WHERE owner_id=?1")?

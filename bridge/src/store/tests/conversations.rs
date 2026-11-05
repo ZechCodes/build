@@ -233,6 +233,7 @@ fn project_history_survives_each_run_delete_until_explicit_project_clear() {
 #[test]
 fn appending_one_message_writes_a_constant_row_budget_however_long_the_conversation_is() {
     let mut short_cost = None;
+    let mut short_executions = None;
     for length in [1, 60, 4096] {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks")).expect("store opens");
@@ -259,8 +260,27 @@ fn appending_one_message_writes_a_constant_row_budget_however_long_the_conversat
         store.save_run(&record).expect("the append saves");
         let append_micros = started.elapsed().as_micros();
         let rows = cost.rows();
+        let executions = cost.executions();
         let written = store.total_changes() - before;
         drop(cost);
+        // save_run and every producer it invokes use the single writer's
+        // Transaction; none acquires ReadPool. Start/stop surround only save_run,
+        // excluding fixture construction and the verification reads below.
+        // Print before the row pin so the identical observer/fixture can also
+        // measure the pre-coalescer source with its different write budget.
+        eprintln!(
+            "append_sql length={length} connection=writer executions={} selects={} statements={:?}",
+            executions.total, executions.selects, executions.statements
+        );
+        assert!(executions.selects > 0, "append reads must be observed");
+        if let Some(ref short) = short_executions {
+            assert_eq!(
+                &executions, short,
+                "append SQL executions and every SQL count must stay constant across history lengths"
+            );
+        } else {
+            short_executions = Some(executions);
+        }
         assert_eq!(
             rows.values().sum::<u64>(),
             written,

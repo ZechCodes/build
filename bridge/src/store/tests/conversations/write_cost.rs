@@ -8,6 +8,18 @@ thread_local! {
     static CURRENT: RefCell<String> = const {RefCell::new(String::new())};
     static PREVIOUS: Cell<u64> = const {Cell::new(0)};
     static ROWS: RefCell<BTreeMap<String,u64>> = const {RefCell::new(BTreeMap::new())};
+    static STATEMENTS: RefCell<BTreeMap<String,u64>> = const {RefCell::new(BTreeMap::new())};
+}
+
+/// Actual statement starts, including repeated executions of cached statements.
+/// Keys retain unexpanded SQL: fixture values and retained history do not alter
+/// the keys, while different SQL and repeated executions remain distinguishable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ExecutionCost {
+    pub total: u64,
+    /// Statements whose first SQL token is SELECT (not preparation count).
+    pub selects: u64,
+    pub statements: BTreeMap<String, u64>,
 }
 
 fn target(sql: &str) -> String {
@@ -55,7 +67,11 @@ fn observe(event: rusqlite::trace::TraceEvent<'_>) {
     // RETURNING can finish after another statement starts. Attribute changes
     // to the last started statement, rather than its delayed PROFILE event.
     if let rusqlite::trace::TraceEvent::Stmt(statement, _) = event {
-        CURRENT.with(|current| *current.borrow_mut() = statement.sql().into_owned());
+        let sql = statement.sql().into_owned();
+        STATEMENTS.with(|statements| {
+            *statements.borrow_mut().entry(sql.clone()).or_default() += 1;
+        });
+        CURRENT.with(|current| *current.borrow_mut() = sql);
     }
 }
 
@@ -67,6 +83,7 @@ impl<'a> WriteCost<'a> {
         DATABASE.with(|database| database.set(unsafe { connection.handle() }));
         PREVIOUS.with(|previous| previous.set(connection.total_changes()));
         ROWS.with(|rows| rows.borrow_mut().clear());
+        STATEMENTS.with(|statements| statements.borrow_mut().clear());
         connection.trace_v2(
             rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE
                 | rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
@@ -77,6 +94,24 @@ impl<'a> WriteCost<'a> {
     pub(super) fn rows(&self) -> BTreeMap<String, u64> {
         ROWS.with(|rows| rows.borrow().clone())
     }
+    pub(super) fn executions(&self) -> ExecutionCost {
+        let statements = STATEMENTS.with(|statements| statements.borrow().clone());
+        let total = statements.values().sum();
+        let selects = statements
+            .iter()
+            .filter(|(sql, _)| {
+                sql.split_whitespace()
+                    .next()
+                    .is_some_and(|word| word.eq_ignore_ascii_case("SELECT"))
+            })
+            .map(|(_, count)| count)
+            .sum();
+        ExecutionCost {
+            total,
+            selects,
+            statements,
+        }
+    }
 }
 impl Drop for WriteCost<'_> {
     fn drop(&mut self) {
@@ -85,4 +120,32 @@ impl Drop for WriteCost<'_> {
             .trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
         DATABASE.with(|database| database.set(std::ptr::null_mut()));
     }
+}
+
+#[test]
+fn execution_cost_counts_each_cached_statement_execution_instead_of_preparations() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("tasks")).unwrap();
+    let cost = WriteCost::start(&store);
+    {
+        let connection = store.connection();
+        let mut statement = connection.prepare_cached("SELECT ?1").unwrap();
+        for value in [1, 2, 3] {
+            assert_eq!(
+                statement
+                    .query_row([value], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                value
+            );
+        }
+    }
+    assert_eq!(
+        cost.executions(),
+        ExecutionCost {
+            total: 3,
+            selects: 3,
+            statements: BTreeMap::from([("SELECT ?1".to_owned(), 3)]),
+        }
+    );
+    assert!(cost.rows().is_empty());
 }

@@ -334,10 +334,3 @@ export async function buildCloseFrame({ sessionKeyB64, sessionId, routeTo, sende
     nonceB64
   });
 }
-
-// The caller must pass the device transport key from authenticated discovery.
-// Do not put this sealed request into a persisted generic write-intent queue.
-export async function sealSecretUpload(options) {
-  const { sealSecretUploadWithSodium } = await import('./secretsUpload.js');
-  return sealSecretUploadWithSodium(await ensureReady(), options);
-}

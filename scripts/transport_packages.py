@@ -48,7 +48,8 @@ def same_bytes(files, name, expected):
 
 def check_npm(files, root):
     expected = {'package/package.json', 'package/README.md',
-                'package/LICENSE.md', 'package/src/index.js'}
+                'package/LICENSE.md', 'package/src/index.js',
+                'package/src/build.js', 'package/src/secretsUpload.js'}
     if set(files) != expected:
         raise ValueError(f'npm file allowlist mismatch: {sorted(set(files) ^ expected)}')
     for name in expected:

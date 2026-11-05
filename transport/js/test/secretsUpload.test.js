@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 const sodium = createRequire(import.meta.url)('libsodium-wrappers');
-import { sealSecretUpload } from '../src/index.js';
+import { sealSecretUpload } from '@build/secure-transport';
+import * as publicApi from '@build/secure-transport';
+import * as baselineApi from '../src/index.js';
 
 const context = {
   device_id: 'device-test', creator: 'user-test',
@@ -62,4 +64,10 @@ test('full-size newline and control values fit the fixed frame', async () => {
     const envelope = JSON.parse(sodium.to_string(plaintext.subarray(4, 4 + size)));
     assert.equal(sodium.to_string(sodium.from_base64(envelope.value_b64, sodium.base64_variants.ORIGINAL_NO_PADDING)), value);
   }
+});
+
+
+test('Build package entry preserves every original transport export', () => {
+  assert.deepEqual(Object.keys(publicApi).sort(), [...Object.keys(baselineApi), 'sealSecretUpload'].sort());
+  for (const name of Object.keys(baselineApi)) assert.equal(publicApi[name], baselineApi[name]);
 });

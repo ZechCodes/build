@@ -24,6 +24,8 @@ AMENDABLE = {'README.md', 'E2E-MVP.md', 'js/package.json',
              'js/package-lock.json', 'python/pyproject.toml', 'js/test/index.test.js',
              'python/tests/test_device.py'}
 LOCAL_FILES = {'.gitignore', 'UPSTREAM.md', 'js/LICENSE.md',
+               'js/src/build.js', 'js/src/secretsUpload.js',
+               'js/test/secretsUpload.test.js', 'js/testing/secrets-upload.mjs',
                'python/LICENSE.md', 'python/MANIFEST.in',
                'js/testing/python.mjs', 'js/test/vectors.test.js',
                'compatibility/test_vectors.py', 'testing/generate_vectors.py',

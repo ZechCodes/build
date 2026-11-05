@@ -4,7 +4,7 @@
   "description": "Browser-native E2EE protocol helpers for Build secure transport",
   "type": "module",
   "exports": {
-    ".": "./src/index.js"
+    ".": "./src/build.js"
   },
   "scripts": {
     "test": "node --test"

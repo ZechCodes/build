@@ -77,6 +77,10 @@ owed transport checks must succeed before either image builds.
 
 ## Sealed secret uploads
 
+The package's Build-owned `src/build.js` entry re-exports the original transport
+API from the byte-preserved `src/index.js` and adds the sealed-upload helper.
+The imported language READMEs and protocol implementation retain their pins.
+
 `sealSecretUpload({ deviceTransportPublicKeyB64, context, value })` seals a
 version-1 `build.secrets.upload` body to the device transport key supplied by
 authenticated device discovery. `context` contains `device_id`, `creator`, a

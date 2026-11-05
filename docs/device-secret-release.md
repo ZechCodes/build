@@ -105,3 +105,31 @@ launcher beside the selected bridge, refusing to overwrite an unrelated CLI.
 
 This slice does not advertise public secret capabilities or enable uploads or
 message attachment admission. Those are separate slices.
+
+
+## Codex shell capability and on-disk exposure
+
+Codex filters credential-shaped environment names before shell commands run.
+Build retains those default exclusions and excludes other `BRIDGE_*` variables,
+then restores only the six dedicated secret-launch variables and the launcher
+PATH. The MCP token is not part of that restored set. Capability bytes never
+enter launch argv.
+
+For the Codex TUI, a unique `build-secret-<uuid>.config.toml` profile in the
+existing `CODEX_HOME` carries this narrow shell configuration. This is an
+explicit on-disk exposure of the session capability, not a retrieved value.
+The profile is created with exclusive atomic 0600 permissions, used by plain
+profile name in argv, and removed on session end, process exit or failed spawn.
+Startup cleanup removes only unlocked regular files owned by the current user
+whose names match Build's UUID profile pattern. Live profiles are protected by
+an advisory lock, including across bridge channels. User config, auth, history
+and unrelated profiles stay in place and are not rewritten. Crash leftovers
+can remain until the next sweep; revocation and session rotation still fence
+the old capability independently of file deletion.
+
+The Codex app server receives the same narrow configuration over private stdio
+at thread start and resume. It does not use a profile file. A documented offline
+provider persistence check covers rollout/session files and default logs; the
+ready report records the tested version and result. Custom provider logging,
+OS-user access and an agent deliberately printing or saving its own capability
+are outside this storage boundary.

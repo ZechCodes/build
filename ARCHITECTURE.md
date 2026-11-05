@@ -127,9 +127,15 @@ value bytes with no added newline. Diagnostics use a fixed error allowlist.
 Values are intentionally visible to stdout consumers and their transcripts.
 Codex extends the user's effective shell policy, preserving inheritance,
 custom settings and filters while restoring only the six dedicated secret
-variables. Runtime PATH enters the harness environment, not the policy set. The TUI uses a unique 0600 profile under CODEX_HOME,
-removed on session end; startup sweeps unlocked owned Build profiles. App-server
-start/resume uses private stdio configuration. The known TUI capability-on-disk
+variables. Runtime PATH enters the harness environment, not the policy set.
+Secret setup is optional: home/probe/profile failures keep Codex launchable,
+with no secret environment, overlay or injected runtime PATH, and one fixed
+reason warning. The TUI uses a unique 0600 profile under CODEX_HOME, removed
+through a held handle on session end. A bounded private registry under harness
+state records exact names and parent/file dev/ino before capability publication.
+Startup enumerates only registry records and unlinks exact identity matches;
+it never scans a user Codex home. App-server start/resume uses private stdio
+configuration. The known TUI capability-on-disk
 exposure and provider persistence qualification are recorded in
 `docs/device-secret-release.md`.
 

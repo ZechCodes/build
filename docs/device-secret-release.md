@@ -114,7 +114,7 @@ message attachment admission. Those are separate slices.
 
 ## Codex shell capability and on-disk exposure
 
-Codex filters credential-shaped environment names before shell commands run.
+Codex applies its configured shell environment policy before commands run.
 Build extends the user's effective policy: inheritance and custom set values
 remain, `BRIDGE_*` joins exclusions, and the six dedicated names join any
 existing include allowlist. Only those six launch values are restored. The MCP
@@ -126,17 +126,35 @@ enter launch argv.
 For the Codex TUI, a unique `build-secret-<uuid>.config.toml` profile in the
 existing `CODEX_HOME` carries this narrow shell configuration. This is an
 explicit on-disk exposure of the session capability, not a retrieved value.
-A missing Codex home is created with 0700, without following path-component
-symlinks; its final directory must be owned by the current user. Profile writes
-and removal use a pinned directory handle. The profile is created with
-exclusive atomic 0600 permissions, used by plain
-profile name in argv, and removed on session end, process exit or failed spawn.
-Startup cleanup removes only unlocked regular files owned by the current user
-whose names match Build's UUID profile pattern. Live profiles are protected by
-an advisory lock, including across bridge channels. User config, auth, history
-and unrelated profiles stay in place and are not rewritten. Crash leftovers
-can remain until the next sweep; revocation and session rotation still fence
-the old capability independently of file deletion.
+Optional secret setup never blocks an ordinary Codex launch. A symlinked home
+or ancestor, unavailable/legacy/unsupported config probe, timeout, registry or
+profile failure logs one fixed reason without values. Build strips all dedicated
+secret variables, the overlay and its injected runtime PATH, preserving the
+user's ordinary launch and MCP settings. Existing user directories use normal
+filesystem resolution; Build does not walk or change their ancestors. A missing
+final home leaf may be created with 0700. No-follow/private permissions apply to
+Build-created registry storage and profile entries.
+
+The profile is created with exclusive 0600 permissions and selected by plain
+name in argv. Build first creates an empty pending entry, writes a durable
+private registry record, then writes capability bytes and publishes without
+replacing an existing entry. Records contain configured home, exact final and
+pending names, file/parent device and inode IDs and owner UID; never a capability
+or retrieved value. The registry lives at `<harness-state>/secret-profiles`,
+with at most 4,096 records of at most 16 KiB each. Serialized admission prunes
+stale entries at the limit; live locks are retained. Registry exhaustion degrades
+secret setup rather than agent startup.
+
+Session end removes exact matching entries through the held directory handle
+and retires the record. Startup enumerates only the Build-private registry,
+opens each recorded configured home normally (following the user's own links),
+checks parent dev/ino, and uses no-follow fstatat plus exact file dev/ino before
+unlinkat. A missing, replaced or moved target drops only the record. No user
+Codex home is enumerated or pattern-deleted; unregistered files remain untouched.
+Live profiles retain advisory locks. User config, auth and history stay in place.
+Registered crash leftovers are removed on a later sweep if identities still
+match. Retired session capabilities remain dead even if a user moved the file
+or permissions prevent deletion.
 
 The Codex app server receives the same narrow configuration over private stdio
 at thread start and resume. It does not use a profile file. Offline qualification on Codex 0.166.0 completed real shell-tool turns against

@@ -87,6 +87,10 @@ pub(crate) fn runtime_path(
     let Some(bin) = crate::runtime_launcher::bin_directory(bridge) else {
         return Ok(spec);
     };
+    if spec.secret_runtime_bin.as_ref() == Some(&bin) {
+        return Ok(spec);
+    }
+    remove_runtime_path(&mut spec);
     let inherited = spec
         .env
         .iter()
@@ -94,7 +98,7 @@ pub(crate) fn runtime_path(
         .find(|(key, _)| key == "PATH")
         .map(|(_, value)| std::ffi::OsString::from(value))
         .or_else(|| std::env::var_os("PATH"));
-    let mut paths = vec![bin];
+    let mut paths = vec![bin.clone()];
     if let Some(inherited) = inherited {
         paths.extend(std::env::split_paths(&inherited));
     }
@@ -103,7 +107,29 @@ pub(crate) fn runtime_path(
         .and_then(|path| path.into_string().ok())
         .ok_or_else(|| crate::harness::HarnessError::Setup("runtime PATH is invalid".into()))?;
     spec.env.retain(|(key, _)| key != "PATH");
+    spec.secret_runtime_bin = Some(bin);
     Ok(spec.env("PATH", path))
+}
+
+pub(crate) fn remove_runtime_path(spec: &mut HarnessSpec) {
+    let Some(bin) = spec.secret_runtime_bin.take() else {
+        return;
+    };
+    for (name, value) in &mut spec.env {
+        if name != "PATH" {
+            continue;
+        }
+        let mut paths: Vec<_> = std::env::split_paths(value.as_str()).collect();
+        if paths.first() == Some(&bin) {
+            paths.remove(0);
+            let restored = std::env::join_paths(paths)
+                .ok()
+                .and_then(|path| path.into_string().ok());
+            if let Some(restored) = restored {
+                *value = restored;
+            }
+        }
+    }
 }
 
 /// Preserve Codex's effective user policy, adding only this launch's six names.

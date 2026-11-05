@@ -199,8 +199,7 @@ impl AgentSpawnPlan {
             spec: crate::harness::secret_profile::prepare(
                 crate::harness::secret_launch::apply(prepared.spec, self.secret_launch),
                 &self.cwd,
-            )
-            .map_err(|error| error.to_string())?,
+            ),
             size: prepared.pty_size,
             locator,
             resume_session_id,
@@ -304,6 +303,8 @@ for line in sys.stdin:
             AgentProvider::Codex | AgentProvider::CodexAppServer
         );
         let mut spec = HarnessSpec::new(if is_codex { "codex" } else { "fixture-harness" });
+        spec.secret_profile_registry_root =
+            Some(crate::harness::secret_profile::registry_root(root.path()));
         if provider == AgentProvider::CodexAppServer {
             spec = spec.arg("app-server");
         }

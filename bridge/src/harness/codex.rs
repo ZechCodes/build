@@ -235,6 +235,8 @@ impl Harness for CodexHarness {
             .unset_all(INHERITED_AGENT_MARKERS)
             .unset_all(DAEMON_IDENTITY_VARS)
             .arg("--dangerously-bypass-approvals-and-sandbox");
+        spec.secret_profile_registry_root =
+            Some(super::secret_profile::registry_root(&context.state_root));
         for arg in self.model_args(choice) {
             spec = spec.arg(arg);
         }

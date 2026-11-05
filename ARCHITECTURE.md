@@ -832,7 +832,9 @@ runtime that starts them.
 Secret attachment wire 3.35.0 (#1003) registers sealed uploads, metadata
 queries, revocation and audit queries, plus optional secret references on
 `thread.post`. The three secrets feature capabilities and four method names
-remain explicitly unadvertised until UI enablement. Upload values are sealed
+remain explicitly unadvertised until UI enablement. The hello event and change-kind
+lists withhold `secrets.changed` behind the same `secrets.metadataEvents` capability.
+Upload values are sealed
 before the generic adapter, opened through an injected narrow startup handle,
 and stored only in the device vault. Sends commit final bindings, frozen
 metadata, messages and receipts in one FULL transaction. Provisional bindings

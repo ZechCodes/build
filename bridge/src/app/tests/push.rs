@@ -236,6 +236,11 @@ async fn the_greeting_announces_push_events() {
     let hello = call(&handler, "session.hello", json!({}));
     assert_eq!(hello["ok"], true, "{hello:?}");
     assert_eq!(hello["result"]["push_events"], true, "{hello:?}");
+    assert!(!hello["result"]["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|name| name == "secrets.metadataEvents"));
     assert_eq!(
         hello["result"]["bridge_epoch"],
         crate::bridge_epoch::current(),

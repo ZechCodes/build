@@ -114,8 +114,8 @@ pub const BOARD_ITEM_ID: &str = "board";
 pub const CHANGES_EVENT: &str = "changes";
 
 /// The change events a browser session can be told about, announced in the
-/// `session.hello` greeting so a client knows what it may hear. `changes` is
-/// what a subscription delivers.
+/// `session.hello` greeting after capability filtering so a client knows what
+/// it may hear. `changes` is what a subscription delivers.
 pub const ANNOUNCED_EVENTS: [&str; 9] = [
     CHANGES_EVENT,
     "bridge.restarting",
@@ -127,6 +127,12 @@ pub const ANNOUNCED_EVENTS: [&str; 9] = [
     COMPACTION_CHANGED_EVENT,
     SECRETS_CHANGED_EVENT,
 ];
+
+/// Feature events and their subscription kinds share the capability gate.
+/// Known internal kinds remain available for explicit subscriptions and tests.
+pub(crate) fn event_is_advertised(name: &str, capabilities: &[&str]) -> bool {
+    name != SECRETS_CHANGED_EVENT || capabilities.contains(&"secrets.metadataEvents")
+}
 
 /// A CLI on this machine changed what it runs, so `models.list` would answer
 /// differently now (#203). Carries nothing else: the catalog is asked again.

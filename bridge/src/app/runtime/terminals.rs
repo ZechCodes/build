@@ -167,7 +167,14 @@ impl AppState {
     /// Authoritative hello metadata without capturing an application event sink.
     pub(crate) fn session_greeting(&self, bridge_epoch: &str) -> Value {
         let changes = self.changes();
-        let qa_agent = self.qa_agent;
+        let capabilities = crate::api::capabilities(self.qa_agent);
+        let advertised = |name: &&str| crate::changes::event_is_advertised(name, &capabilities);
+        let events: Vec<_> = ANNOUNCED_EVENTS.into_iter().filter(advertised).collect();
+        let kinds: Vec<_> = Kind::ALL
+            .into_iter()
+            .map(Kind::as_str)
+            .filter(advertised)
+            .collect();
         let journal_incarnation = self
             .store
             .as_ref()
@@ -176,10 +183,10 @@ impl AppState {
             "api_version": API_VERSION,
             "bridge_epoch": bridge_epoch,
             "journal_incarnation": journal_incarnation,
-            "capabilities": crate::api::capabilities(qa_agent),
+            "capabilities": capabilities,
             "ack_confirm_methods": crate::api::writes::ACK_CONFIRM_METHODS,
             "push_events": true,
-            "events": ANNOUNCED_EVENTS,
+            "events": events,
             "coalesce_window_ms": changes.window().as_millis() as u64,
             // What a Part 1 adapter reads instead of probing for
             // `changes.subscribe`: whether this bridge serves subscriptions, the
@@ -188,7 +195,7 @@ impl AppState {
             "changes": {
                 "subscriptions": true,
                 "mode": "subscriptions",
-                "kinds": Kind::ALL.map(Kind::as_str),
+                "kinds": kinds,
                 // `"bodies"`: every item carries the shape it names, so a client
                 // paints from the push instead of refetching after it. The one
                 // older answer this replaces is `"names"`, which no bridge that

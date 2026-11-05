@@ -266,7 +266,6 @@
       "harnesses.changed",
       "models.changed",
       "rtc.diagnostics",
-      "secrets.changed",
       "writes.confirmed"
     ],
     "coalesce_window_ms": 250,
@@ -281,8 +280,7 @@
         "files.hints",
         "terminals",
         "tasks",
-        "compaction.changed",
-        "secrets.changed"
+        "compaction.changed"
       ],
       "items": "bodies",
       "batch_ms": {

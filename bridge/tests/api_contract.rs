@@ -2430,6 +2430,18 @@ fn workspace_legacy_review_markers_survive_typed_serialization() {
 
 #[test]
 fn secrets_contract_is_known_but_withheld_until_the_complete_feature_ships() {
+    let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
+    for names in [
+        &greeting["result"]["events"],
+        &greeting["result"]["changes"]["kinds"],
+    ] {
+        assert!(!names
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "secrets.changed"));
+    }
+
     let registered: BTreeSet<_> = v1::methods().iter().map(|(name, _)| *name).collect();
     let advertised: BTreeSet<_> = capabilities(true).into_iter().collect();
     for method in [

@@ -112,3 +112,13 @@ fn scope_overflow_becomes_explicit_device_refresh_without_losing_new_changes() {
     assert_eq!(frame["revision"], 1001);
     assert!(rx.try_recv().is_err());
 }
+
+#[test]
+fn secret_event_and_kind_follow_the_metadata_capability_gate() {
+    for name in [SECRETS_CHANGED_EVENT, Kind::SecretsChanged.as_str()] {
+        assert!(!event_is_advertised(name, &[]));
+        assert!(!event_is_advertised(name, &["secrets.attachments"]));
+        assert!(event_is_advertised(name, &["secrets.metadataEvents"]));
+    }
+    assert!(event_is_advertised(COMPACTION_CHANGED_EVENT, &[]));
+}

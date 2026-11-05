@@ -193,3 +193,23 @@ fn unavailable_opener_and_invalid_context_leave_no_blob_or_metadata() {
     assert_eq!(record_count(&database(root.path())), 0);
     assert!(blobs(root.path()).is_empty());
 }
+
+#[test]
+fn upload_job_limit_applies_before_opening_sealed_values() {
+    let (root, _store, service, opener) = fixture();
+    let permits: Vec<_> = (0..crate::secrets::MAX_CONCURRENT_JOBS)
+        .map(|_| service.inner.jobs.clone().try_acquire_owned().unwrap())
+        .collect();
+    assert!(matches!(
+        service.stage_upload(&context(), "synthetic-sealed-bytes", &opener),
+        Err(SecretError::Limit)
+    ));
+    assert_eq!(opener.0.load(Ordering::SeqCst), 0);
+    assert_eq!(record_count(&database(root.path())), 0);
+    assert!(blobs(root.path()).is_empty());
+    drop(permits);
+    assert!(service
+        .stage_upload(&context(), "synthetic-sealed-bytes", &opener)
+        .is_ok());
+    assert_eq!(opener.0.load(Ordering::SeqCst), 1);
+}

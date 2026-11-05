@@ -13,9 +13,7 @@ pub fn install_sibling(binary: &Path) -> io::Result<()> {
     let destination = directory.join("buildctl");
     if destination.symlink_metadata().is_ok() {
         let existing = fs::read_to_string(&destination)?;
-        if destination.is_symlink()
-            || !existing.starts_with("#!/bin/sh\n# Agent runtime facade.")
-        {
+        if destination.is_symlink() || !existing.starts_with("#!/bin/sh\n# Agent runtime facade.") {
             return Err(io::ErrorKind::AlreadyExists.into());
         }
     }
@@ -63,7 +61,9 @@ mod tests {
         let launcher = directory.path().join("buildctl");
         fs::write(&launcher, "management command").unwrap();
         assert_eq!(
-            install_sibling(&directory.path().join("build-bridge")).unwrap_err().kind(),
+            install_sibling(&directory.path().join("build-bridge"))
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::AlreadyExists
         );
         assert_eq!(fs::read_to_string(launcher).unwrap(), "management command");

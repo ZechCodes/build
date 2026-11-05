@@ -36,6 +36,7 @@ const sameDirectoryKey = (left, right) => left.name === right.name
 const containsHeldTail = (listing, tail) => listing.entries.some((entry) => sameDirectoryKey(entry, tail));
 const needsHeldTail = (listing, tail, count, budget) => Boolean(tail && listing.next_cursor)
   && count < budget && !containsHeldTail(listing, tail);
+const refusedHeldWindow = (listing) => listing?.error_code === "invalid_params";
 const mergedListing = (held, arriving, cursor) => cursor
   ? countedListing(appendDirectoryPage(held, arriving, cursor), heldPageCount(held) + 1) : arriving;
 
@@ -172,7 +173,15 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
 
   const readListingWindow = async (dir, request, active, cursor, previous) => {
     const first = await askMachine(dir, cursor);
-    return cursor || first.error ? first : readHeldWindow(dir, request, active, first, previous);
+    if (cursor || first.error) return first;
+    const window = await readHeldWindow(dir, request, active, first, previous);
+    if (!refusedHeldWindow(window) || !stillListing(dir, request, active)) return window;
+    // Restart one invalid internal cursor without changing the captured owner
+    // or write basis. A second refusal leaves the painted cache untouched.
+    const fresh = await askMachine(dir);
+    if (fresh.error) return fresh;
+    const retried = await readHeldWindow(dir, request, active, fresh, previous);
+    return refusedHeldWindow(retried) ? null : retried;
   };
 
   const handleListingError = async (dir, previousWrite, active, listing, cursor, quiet) => {

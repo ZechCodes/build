@@ -208,3 +208,108 @@ it("retains the loaded sort window when the old tail file becomes a same-name di
   expect(entries.find(({ name }) => name === "file-299.txt").kind).toBe("dir");
   expect(entries.some(({ name }) => name === "file-250.txt")).toBe(true);
 });
+
+async function mountThreePageWindow(listing) {
+  mount(listing);
+  await vi.waitFor(() => expect(paths()).toHaveLength(100));
+  await tree.more("");
+  await vi.waitFor(() => expect(paths()).toHaveLength(200));
+  await tree.more("");
+  await vi.waitFor(() => expect(paths()).toHaveLength(300));
+  tree.setOpenPath("file-250.txt");
+}
+
+function internalRefusalProvider({ repeated = false, refuseAt = "first" } = {}) {
+  let refreshing = false, firstReads = 0, release;
+  const freshHead = new Promise((resolve) => { release = resolve; });
+  const refusal = Object.assign(new Error("synthetic internal cursor lease expired"), { code: "invalid_params" });
+  const refusedHead = () => directoryWindow(0, refuseAt === "second" ? "opaque-before-refusal" : `opaque-expired-${firstReads}`);
+  const listing = vi.fn(async (dir, continuation) => {
+    if (!refreshing) return browsingPages(dir, continuation);
+    if (!continuation?.cursor) {
+      firstReads += 1;
+      if (firstReads > 2) throw new Error("held-window restart budget exceeded");
+      return firstReads === 1 || repeated ? refusedHead() : freshHead;
+    }
+    if (continuation.cursor === "opaque-before-refusal") return directoryWindow(100, `opaque-expired-${firstReads}`);
+    if (continuation.cursor.startsWith("opaque-expired-")) throw refusal;
+    if (continuation.cursor === "opaque-fresh-100") return directoryWindow(100, "opaque-fresh-200");
+    if (continuation.cursor === "opaque-fresh-200") return directoryWindow(200);
+    throw new Error("Unexpected synthetic directory continuation");
+  });
+  return { listing, firstReads: () => firstReads,
+    begin() { refreshing = true; listing.mockClear(); },
+    release() {
+      const page = directoryWindow(0, "opaque-fresh-100");
+      page.entries[0].size = 2;
+      release(page);
+    },
+  };
+}
+
+it.each(["first", "second"])("restarts a held window from a fresh first page after an internal continuation refusal (%s continuation)", async (refuseAt) => {
+  const provider = internalRefusalProvider({ refuseAt });
+  await mountThreePageWindow(provider.listing);
+  const before = await cache.readCached(address(""));
+  const displaced = [];
+  const observer = new MutationObserver(() => {
+    if (!host.querySelector('[data-path="file-250.txt"][aria-current="true"]')
+      || host.textContent.includes("synthetic internal cursor lease expired")) displaced.push(true);
+  });
+  observer.observe(host, { childList: true, subtree: true });
+  provider.begin();
+  const refresh = tree.invalidate({ paths: ["file-050.txt"], truncated: false });
+  try {
+    await vi.waitFor(() => expect(provider.firstReads()).toBe(2));
+    expect(await cache.readCached(address(""))).toEqual(before);
+    expect(paths()).toHaveLength(300);
+    provider.release();
+    await refresh;
+    await vi.waitFor(async () => expect((await cache.readCached(address(""))).value.entries[0].size).toBe(2));
+    const firstAttempt = refuseAt === "second"
+      ? [[""], ["", { cursor: "opaque-before-refusal" }], ["", { cursor: "opaque-expired-1" }]]
+      : [[""], ["", { cursor: "opaque-expired-1" }]];
+    expect(provider.listing.mock.calls).toEqual([...firstAttempt, [""],
+      ["", { cursor: "opaque-fresh-100" }], ["", { cursor: "opaque-fresh-200" }]]);
+    expect((await cache.readCached(address(""))).value.entries).toHaveLength(300);
+    expect(host.querySelector('[data-path="file-250.txt"]')?.getAttribute("aria-current")).toBe("true");
+    expect(displaced).toEqual([]);
+  } finally { provider.release(); observer.disconnect(); await refresh; }
+});
+
+it("bounds repeated internal continuation refusals while retaining the painted cached window", async () => {
+  const provider = internalRefusalProvider({ repeated: true });
+  await mountThreePageWindow(provider.listing);
+  const before = await cache.readCached(address(""));
+  provider.begin();
+  await tree.invalidate({ paths: ["file-050.txt"], truncated: false });
+  expect(provider.firstReads()).toBe(2);
+  expect(provider.listing.mock.calls).toEqual([[""], ["", { cursor: "opaque-expired-1" }],
+    [""], ["", { cursor: "opaque-expired-2" }]]);
+  expect(await cache.readCached(address(""))).toEqual(before);
+  expect(paths()).toHaveLength(300);
+  expect(host.querySelector('[data-path="file-250.txt"]')?.getAttribute("aria-current")).toBe("true");
+  expect(host.textContent).not.toContain("synthetic internal cursor lease expired");
+});
+
+it.each(["hidden", "retired", "new cache write"])("preserves the %s fence across the held-window retry boundary", async (fence) => {
+  const provider = internalRefusalProvider();
+  await mountThreePageWindow(provider.listing);
+  let expected = await cache.readCached(address("")), owner = true;
+  provider.begin();
+  const refresh = tree.invalidate({ paths: ["file-050.txt"], truncated: false }, () => owner && !host.hidden);
+  try {
+    await vi.waitFor(() => expect(provider.firstReads()).toBe(2));
+    if (fence === "hidden") host.hidden = true;
+    if (fence === "retired") owner = false;
+    if (fence === "new cache write") {
+      await cache.writeCached(address(""), { ...expected.value,
+        entries: expected.value.entries.map((entry) => ({ ...entry, size: 7 })) });
+      expected = await cache.readCached(address(""));
+    }
+    provider.release();
+    await refresh;
+    expect(await cache.readCached(address(""))).toEqual(expected);
+    expect(provider.listing).toHaveBeenCalledTimes(fence === "new cache write" ? 5 : 3);
+  } finally { provider.release(); await refresh; }
+});

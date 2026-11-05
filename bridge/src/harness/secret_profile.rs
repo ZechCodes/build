@@ -1,4 +1,5 @@
 //! Codex TUI reads its narrow shell capability through an owned launch profile.
+mod directory;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
@@ -14,11 +15,14 @@ const SUFFIX: &str = ".config.toml";
 pub(crate) struct SecretProfile {
     path: PathBuf,
     _file: File,
+    directory: File,
 }
 
 impl SecretProfile {
     pub(crate) fn remove(&self) {
-        let _ = std::fs::remove_file(&self.path);
+        if let Some(name) = self.path.file_name() {
+            let _ = rustix::fs::unlinkat(&self.directory, name, rustix::fs::AtFlags::empty());
+        }
     }
 }
 
@@ -66,13 +70,24 @@ fn install(mut spec: HarnessSpec, home: &Path) -> io::Result<HarnessSpec> {
         contents.push_str(&format!("{key} = {value}\n"));
     }
     let name = format!("{PREFIX}{}", uuid::Uuid::new_v4());
-    let path = home.join(format!("{name}{SUFFIX}"));
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)?;
-    let mut profile = SecretProfile { path, _file: file };
+    let file_name = format!("{name}{SUFFIX}");
+    let path = home.join(&file_name);
+    let directory = directory::open_or_create(home)?;
+    let file = rustix::fs::openat(
+        &directory,
+        file_name.as_str(),
+        rustix::fs::OFlags::WRONLY
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::EXCL
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::from_bits_truncate(0o600),
+    )?;
+    let mut profile = SecretProfile {
+        path,
+        _file: file.into(),
+        directory,
+    };
     lock(&profile._file)?;
     profile._file.write_all(contents.as_bytes())?;
     profile._file.sync_all()?;
@@ -154,6 +169,34 @@ mod tests {
         )
         .unwrap()
         .env("BRIDGE_MCP_TOKEN", "unrelated-mcp-token")
+    }
+
+    #[test]
+    fn first_launch_creates_a_private_owned_codex_home() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("fresh").join("codex");
+        let spec = install(launch(), &home).unwrap();
+        let metadata = std::fs::symlink_metadata(&home).unwrap();
+        assert!(metadata.is_dir());
+        assert_eq!(metadata.mode() & 0o777, 0o700);
+        // SAFETY: geteuid has no pointer arguments or preconditions.
+        assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+        let profile = spec.secret_profile.as_ref().unwrap().path.clone();
+        assert_eq!(std::fs::metadata(&profile).unwrap().mode() & 0o777, 0o600);
+        drop(spec);
+        assert!(!profile.exists());
+    }
+
+    #[test]
+    fn profile_creation_never_follows_home_or_parent_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        let link = root.path().join("linked-home");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(install(launch(), &link).is_err());
+        assert!(install(launch(), &link.join("child")).is_err());
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
     }
 
     #[test]

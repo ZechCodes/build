@@ -1,0 +1,14 @@
+{
+  "head": "df14cf15c28ced422842e1b718b729a30da1d517",
+  "exit_code": 1,
+  "results": [
+    {
+      "label": "lint",
+      "exit_code": 0
+    },
+    {
+      "label": "unit",
+      "exit_code": 1
+    }
+  ]
+}

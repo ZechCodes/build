@@ -1,0 +1,14 @@
+{
+  "source": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+  "exit_code": 0,
+  "results": [
+    {
+      "label": "watcher",
+      "exit_code": 0
+    },
+    {
+      "label": "quiet-cursor",
+      "exit_code": 0
+    }
+  ]
+}

@@ -508,3 +508,15 @@ and **6.470 ms** (task snapshot), each below the 100 ms bound. The
 retains the exact command and source. Build/setup time is outside these
 request timers; this one synthetic run of real handlers is not a production
 latency guarantee.
+
+The completed [907 re-review qualification](task-query-cost/review-round-2.md)
+adds a fresh exact-base/candidate startup, compatibility and selected-task
+cohort while preserving the earlier measurements above. All deterministic
+startup counters retain their passing result. The four task-open rows now
+include request/response/combined JSON payload: the 20-comment task adds
+**145 bytes cold / 290 warm** in total, with unchanged RPC/cache/publication
+counts. The long-warm observation is explicitly worse in this run: wall
+**271.803 → 946.322 ms**, DOM-title observation **145.531 → 436.968 ms**.
+All samples remain; neither a causal latency claim nor a retry is made.
+The [fresh manifest](task-query-cost/cutover-review-907ae03e33/manifest.json)
+retains exact source restoration, driver identities and all comparison rows.

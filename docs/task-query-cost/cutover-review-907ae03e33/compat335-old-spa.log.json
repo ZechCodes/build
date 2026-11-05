@@ -1,0 +1,6 @@
+{
+  "kind": "raw log",
+  "original_path": "/home/zech/Projects/.agent-scratch/894/review-cutover-907ae03e33/compat335-old-spa.log",
+  "sha256": "8b640025040c7e5a897c2440ae734bb21d8eb53291944028d8502898100c3d65",
+  "raw_utf8": "\n RUN  v4.1.11 /home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa\n\n\n Test Files  1 passed (1)\n      Tests  3 passed (3)\n   Start at  00:13:31\n   Duration  16.20s (transform 1.74s, setup 89ms, import 129ms, tests 14.83s, environment 961ms)\n\n"
+}

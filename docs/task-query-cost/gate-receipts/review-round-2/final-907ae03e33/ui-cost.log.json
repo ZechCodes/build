@@ -1,0 +1,6 @@
+{
+  "kind": "raw log",
+  "original_path": "/home/zech/Projects/.agent-scratch/894/review-907-final-ui/cost.log",
+  "sha256": "a1d8a1facb4e71fe1440e72b559754798e627b9006d4c562cfbcbc9b838fe9d0",
+  "raw_utf8": "{\"exit_code\": 0, \"base\": \"e1c4b21fc3c16e1ab3a2dd70b155efff8a214c03\", \"source\": \"907ae03e33c2bf39b108d721a3cff72a9ce3a8d6\", \"restored\": true, \"drivers\": {\"spa/test/compat335.test.js\": \"8cbcaa79e71e703ae70ac2ff76182057b17d8fab58679f5b1d63db994c88bea5\", \"spa/test/syncTimingCutover.test.js\": \"134883eef47c710e0a72860e96dc4cf28cf79105383f2f9c81d643c95d74c059\", \"spa/test/taskOpenCost.test.js\": \"bd035edd6b173bf54401b69a8743c12bff57691c414b71633dd155dbcd80fdf3\"}, \"affected_sources\": 38, \"all_spa_files\": 1724, \"all_spa_sha256\": \"90e94fea991842c18c23c3342e3d4685596e40c11c15bce533a0684343218f30\", \"ledger\": \"/home/zech/Projects/.agent-scratch/894/review-cutover-907ae03e33/commands.jsonl\"}\n"
+}

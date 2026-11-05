@@ -6,7 +6,7 @@ cache and `taskFeed`. Only peer responses, greetings, subscription transport and
 browser-lock admission are fixtures. Cache transactions, notifications,
 projections and feed rereads run against real `fake-indexeddb` event-loop work.
 
-The final matched source cohort at
+The original matched source cohort at
 `50d4a264726cc866160e3a360afdb65345842767` exited **0**. All five fixture
 processes and both comparison processes exited 0; the runner restored all
 38 affected production files and verified the complete 1,723-file SPA hash.
@@ -27,6 +27,30 @@ The Inbox is open and no conversation, checkout, task page or file is mounted.
 Consequently the measured history, Git, tree, patch and diff calls are hidden
 warming. The separate task-open and directory-page contract tests measure those
 view reads; this startup cohort does not substitute for them.
+
+## Subsequent review corrections
+
+The original measured data and source identities below remain unchanged.
+[Review round 2](review-round-2.md) records the later contract fixes and their
+new qualification separately: truncated hints refresh all expanded visible
+directories, directory refresh replays at most 8 held pages per directory,
+and reveal permits at most 8 extra continuations across its ancestors. Hidden
+stale caches stay cold. Live review Files uses exact source hints where
+available and ignores ordinary board-state callbacks in its modern fallback;
+explicit/reconnect refresh remains. The absent-birth-time provider now has
+bounded real-directory handle leases with separately composed SPA contract
+tests. These changes are not an execution claim for a new startup, mounted-
+view, append-wall or release-carrier cost cohort.
+
+## Current re-review cohort
+
+The fresh cohort at `907ae03e33c2bf39b108d721a3cff72a9ce3a8d6` also exited 0,
+with complete 38-source/1724-SPA-file restoration. [Its manifest](cutover-review-907ae03e33/manifest.json)
+and [the final review result](review-round-2.md) retain the six-cell matrix,
+all startup rows and all four task-open rows, including request/response/total
+JSON bytes and the increased long-warm wall/title observation. These current
+results do not replace the original 50d data below. Secret scan/publication
+are recorded separately by the parent after the artifact commit.
 
 ## Matched scenarios
 
@@ -168,7 +192,7 @@ cache wall time also decreases in all starts. Legacy wall samples vary, includin
 89.885 → 102.982 ms for small cold; unchanged deterministic work does not turn
 that one wall observation into a statistical no-regression claim.
 
-## Final exact-source cohorts
+## Original exact-source cohorts
 
 The controlled final runner pinned code source
 `50d4a264726cc866160e3a360afdb65345842767`. It required the tracked SPA and
@@ -284,7 +308,7 @@ requires a root; it is not an ordinary production-test pass.
 ## Lossless raw-log storage
 
 Repository whitespace checks reject the raw CLI logs' trailing spaces and
-final blank lines. Those bytes remain unchanged. All 21 retained logs travel
+final blank lines. Those bytes remain unchanged. All 21 original-cohort logs travel
 as `.log.json` wrappers containing `raw_utf8` plus the original byte SHA-256;
 [the storage index](raw-log-storage.json) maps original filenames to wrappers
 and retains both raw and wrapper hashes. Raw `.log` names/hashes in earlier

@@ -1,0 +1,112 @@
+{
+  "runtime_before": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+  "fixture_head": "907ae03e33c2bf39b108d721a3cff72a9ce3a8d6",
+  "scope": "Immutable Git-object proof; does not inspect temporary working-tree source during cost swaps.",
+  "changed_paths": [
+    "spa/test/cacheSyncDelivery.test.js"
+  ],
+  "unrelated_fixture_change": "Only added a read-only passesSettled wait before the unchanged exact agents assertion; no desired-value polling/corrective read/production change.",
+  "tree_equivalence": {
+    "bridge": {
+      "before": "ceed03f9c0fb8bcccb44a5a049bf7298b109d1e1",
+      "after": "ceed03f9c0fb8bcccb44a5a049bf7298b109d1e1",
+      "identical": true
+    },
+    "spa/src": {
+      "before": "7644a401a773fde83022dc7ff2777ac0af69ff8b",
+      "after": "7644a401a773fde83022dc7ff2777ac0af69ff8b",
+      "identical": true
+    },
+    "fixtures": {
+      "before": "dd73ffc8d7acdf3b9421556f0f7ee12335aad897",
+      "after": "dd73ffc8d7acdf3b9421556f0f7ee12335aad897",
+      "identical": true
+    },
+    "scripts": {
+      "before": "484c8416f74c535e56e8f9ccfccc8407cb0618f6",
+      "after": "484c8416f74c535e56e8f9ccfccc8407cb0618f6",
+      "identical": true
+    }
+  },
+  "controlled_sources_tests_and_frozen_drivers": {
+    "bridge/src/app/fs/tree_pages.rs": {
+      "before": "961a7ecf42f6f0a29badad29b8487c0715633321",
+      "after": "961a7ecf42f6f0a29badad29b8487c0715633321",
+      "identical": true
+    },
+    "spa/src/core/taskTimelineWindow.js": {
+      "before": "88e9234e8eb693f541fb351e24b555c40864fd4d",
+      "after": "88e9234e8eb693f541fb351e24b555c40864fd4d",
+      "identical": true
+    },
+    "spa/src/core/taskReviewFiles.js": {
+      "before": "05986a3392ac71dad62bf8ce4f60e07d05888481",
+      "after": "05986a3392ac71dad62bf8ce4f60e07d05888481",
+      "identical": true
+    },
+    "spa/src/core/directoryWatcher.js": {
+      "before": "904eab0257dc8718e871e97586088d949c8ce6a6",
+      "after": "904eab0257dc8718e871e97586088d949c8ce6a6",
+      "identical": true
+    },
+    "spa/src/core/fileTree.js": {
+      "before": "73e30e8803b096231c320814f53eeb61dc8a0f57",
+      "after": "73e30e8803b096231c320814f53eeb61dc8a0f57",
+      "identical": true
+    },
+    "spa/src/core/directoryPages.js": {
+      "before": "c43ebe565ae6ac46d0df3fb75a13bbfc1b653362",
+      "after": "c43ebe565ae6ac46d0df3fb75a13bbfc1b653362",
+      "identical": true
+    },
+    "spa/test/taskTimelinePages.test.js": {
+      "before": "bc5050e9f51d2f271d9384e877be0959ab3a4cde",
+      "after": "bc5050e9f51d2f271d9384e877be0959ab3a4cde",
+      "identical": true
+    },
+    "spa/test/trackerTaskPageDom.test.js": {
+      "before": "be798a5a28185b8f940316cb242b1526d861d1bc",
+      "after": "be798a5a28185b8f940316cb242b1526d861d1bc",
+      "identical": true
+    },
+    "spa/test/taskReviewFilesHints.test.js": {
+      "before": "7905db622476e71cf15ce3e8160dcc68bf6edf11",
+      "after": "7905db622476e71cf15ce3e8160dcc68bf6edf11",
+      "identical": true
+    },
+    "spa/test/directoryHints.test.js": {
+      "before": "0461cf23cfc061f8f5c797f5b51d64cc3b088541",
+      "after": "0461cf23cfc061f8f5c797f5b51d64cc3b088541",
+      "identical": true
+    },
+    "spa/test/fileTreePaging.test.js": {
+      "before": "9bccb19a172ccb6fd577df125e030940b076e2e9",
+      "after": "9bccb19a172ccb6fd577df125e030940b076e2e9",
+      "identical": true
+    },
+    "spa/test/directoryPages.test.js": {
+      "before": "00b858ef3058a81c91e48539a455249a71cf7148",
+      "after": "00b858ef3058a81c91e48539a455249a71cf7148",
+      "identical": true
+    },
+    "spa/test/compat335.test.js": {
+      "before": "4a6f4562d1a59315c0b5ef759d03f133ac316737",
+      "after": "4a6f4562d1a59315c0b5ef759d03f133ac316737",
+      "identical": true
+    },
+    "spa/test/syncTimingCutover.test.js": {
+      "before": "fae6e74de555386bc7a63a34459adfc02253405d",
+      "after": "fae6e74de555386bc7a63a34459adfc02253405d",
+      "identical": true
+    },
+    "spa/test/taskOpenCost.test.js": {
+      "before": "6146e11c571347b49af5df56e79479a6834814b0",
+      "after": "6146e11c571347b49af5df56e79479a6834814b0",
+      "identical": true
+    }
+  },
+  "all_seven_control_programs_unchanged": true,
+  "control_reexecution_disposition": "Parent will nevertheless obtain fresh907 control exits after positive stages; a455 controls remain prior evidence.",
+  "command_ledger": "source-equivalence-commands.jsonl",
+  "command_ledger_sha256": "d6895d0a82f30bfd9925ba23c64b66945de0ac91013ce2db68d12e6fe748240b"
+}

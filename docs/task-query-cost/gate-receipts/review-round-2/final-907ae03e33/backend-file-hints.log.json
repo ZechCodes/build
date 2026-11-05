@@ -1,0 +1,5 @@
+{
+  "original_path": "/home/zech/Projects/.agent-scratch/894/review-907-final-backend/file-hints.log",
+  "sha256": "896b765b01c8bfce54c056e1199ed412dc388b90be1990ccd8facbed3a761437",
+  "raw_utf8": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s\n     Running unittests src/lib.rs (target/debug/deps/build_bridge-adde5f98f9de5672)\n\nrunning 4 tests\ntest changes::subscriptions::files_hints_bound_names_and_never_publish_foreign_paths ... ok\ntest changes::subscriptions::files_hints_do_not_scan_or_publish_a_root_directory ... ok\ntest changes::subscriptions::files_hints_receive_unknown_path_observation_repairs_as_truncated_invalidations ... ok\ntest changes::subscriptions::files_hints_stay_root_free_when_a_legacy_subscriber_needs_the_same_root ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 6672 filtered out; finished in 0.01s\n\n"
+}

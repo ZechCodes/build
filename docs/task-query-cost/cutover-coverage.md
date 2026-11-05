@@ -13,6 +13,15 @@ The durable guarantee applies to the `device`, `project_tasks` and `task`
 journal scopes. Git/filesystem contents and process liveness retain their
 separate observation/read-on-open paths; their limitations are listed below.
 
+## Final re-review qualification
+
+Runtime `907ae03e33` has completed its separate [final review qualification](review-round-2.md):
+369 unit files/6138 tests, 11 revision browser files/79 tests, six backend
+stages, lint/build/Semgrep, fresh matched costs and seven behavioral controls.
+Expected negative exits remain distinct from passing positive processes.
+Original producer/store/release receipts below retain their own source heads;
+no full SPA or installed-bridge deployment is implied.
+
 ## Producer inventory boundary
 
 [`producer_guard.rs`](../../bridge/src/store/sync/producer_guard.rs)

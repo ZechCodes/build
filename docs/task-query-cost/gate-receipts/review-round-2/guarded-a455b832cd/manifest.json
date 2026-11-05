@@ -1,0 +1,259 @@
+{
+  "source": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+  "role": "Guarded final source qualification, separate from pre-guarddf14 and original50d cohorts.",
+  "watcher_and_cursor_controls": {
+    "parent_wrapper": 0,
+    "test_exits": [
+      1,
+      1
+    ],
+    "all_restorations": 0,
+    "executed_scripts": [
+      "review-hints-control.py",
+      "review-cursor-control.py"
+    ],
+    "head_specific_copy_scripts": "Prepared/unexecuted; not rerun. Generic runners verify --source equals HEAD."
+  },
+  "prepared_cost_runner": {
+    "path": "/home/zech/Projects/.agent-scratch/894/run-review-cutover-a455b832cd.py",
+    "sha256": "a9ce23ea710d3cd5b7b10591fd24343ea057fd2a94ad733b14523fa4de4e4b29",
+    "run_dir": "review-cutover-a455b832cd",
+    "executed": false
+  },
+  "selection": {
+    "unit_files": 369,
+    "browser_files": 11,
+    "measurement_drivers": "Three frozen fixtures remain separate; all hashes verified unchanged."
+  },
+  "remaining": "a455 UI/master stopped1 on named unit failure; no browser/build/cost/static execution. Further qualification awaits diagnosed correction; no retry by this agent.",
+  "artifacts_sha256": {
+    "watcher-cursor-result.json": "0a8ac3911dc720594210092cbecf50fd7939a32e35663c7952aa91c0ad488467",
+    "watcher-cursor-commands.jsonl": "dda38a319cde271b6de29ebe5d37d0c534576bb6f68b67f35359b2d7e14a778d",
+    "watcher-control-result.json": "2bbe5e9f268d61db56bc9cf5e12c8ddb6bc03578a9ddb4eab2bea8b60c5f299c",
+    "watcher-control-commands.jsonl": "5e16770ca8f1a1457d82e3b4afa43e5b79696b6788512063d0381edfe61192d4",
+    "watcher-control.log.json": "bba8c2c18af0264f9a92f1c1263f7f68c456b2418278bd7d70a072a99c6c6b21",
+    "cursor-control-result.json": "2bbe5e9f268d61db56bc9cf5e12c8ddb6bc03578a9ddb4eab2bea8b60c5f299c",
+    "cursor-control-commands.jsonl": "d88d8e80dd73df975a217165df45f393ebec780e57498491c1cd2599e2e69caf",
+    "cursor-control.log.json": "a74bf15b657f493c0f047529b9e93061ddd269b83f9f3bbecfdc142578089544",
+    "affected-spa-manifest.json": "46b4839707cd7aad900bcde591c84c1cbc47cd4bfd7ab5c74d65bd831903ccd4",
+    "affected-spa-unit.txt": "b621c3d9e6006b208b3a0fde30136b3c657b63b3514e6c3fc4c59f170bd35631",
+    "selection-commands.jsonl": "58bc586136659ed09aa709a2f76ec9311a72b2a4f2cda2bbf1dde889d2a74206",
+    "revision-browser.txt": "867ecf3cd8c38c29184a50f2e8c50387e775beb82ed33dbf3ee7f4be3e2c5b01",
+    "revision-browser-reasons.json": "43c95d0b4dd6a8e30617ff393c5eb56e0bd38ac8fae17238cfd1f41e276ca085",
+    "timeline-control-result.json": "331c6d97e4e7b44ba8bc8e491303ce5a6d602be8a76533da0adb2cdf474bc73f",
+    "timeline-control-commands.jsonl": "9f7d43b8cdfece22d7389c1d7db7867cda218b129231626557cf7a3a82219c29",
+    "timeline-control.log.json": "a8c30f5bc01e40c83740386f72b66fc8cf25ee448486707d54bb3f3712c54119",
+    "tree-truncated-control-result.json": "67aa7dcc8f3addb044f3660b3ab27e65172ccdffeb02b5da1d74f6b1d4912dca",
+    "tree-truncated-control.log.json": "65da5c2bf81ca4c980a2af204272919d96d436bd50dde55d41195502a9d0afce",
+    "tree-retention-control-result.json": "b88f388a3f15e99e74b33131ed1ab3438b12e95a5b636589a1cdd09bfff848bd",
+    "tree-retention-control.log.json": "0b2a2af7627867b9bad5792c1a412f5a4a92455bbbd5ac755d66f637c02f7845",
+    "tree-reveal-control-result.json": "9a96b788bf2c6dc4e37a7dd656eb34f005f32a968c8476e4989cfb4649b5807c",
+    "tree-reveal-control.log.json": "bb211e03e46731e87ae141d0bebef0631246037c3bf8690f3ee57f0103691c16",
+    "lease-weak-control-commands.jsonl": "00dd1fff6d772b8fd7ba1fcd52d65472b84f48484334133ae4774c0bdd0b6ac9",
+    "lease-weak-control.log.json": "189103a258fe5090c62290d1d75cf5f7615e0301e98f2eb5278c689de1ec8b43",
+    "backend-result.json": "f4dd8a798a502f2f3c1fb080743b5aa850916c8e83a7ae07cd81fb9170934faf",
+    "backend-commands.jsonl": "d632e5a61321be2a955f581fb9638adc68d1a77a361fda9d77c9c6e2404fdbea",
+    "backend-tree-pages.log.json": "1c5619166b10713ae7f038a02c7bfe94cc3f1ba30e0154790e534ba33a154743",
+    "backend-filesystem.log.json": "986281f8ea43f718669b5fb5ed96a6fcb07d2a288f0f18ec3614a545284f8e35",
+    "backend-sql-reads.log.json": "c4a80e3bf9047af3569847cb0fadf1328e00a99f0cf3daf3b94a44fd6e605da1",
+    "backend-file-hints.log.json": "e9893805963306addab3b9115f242e6891a5f9568ea0c79bd9843c3b425a5af9",
+    "backend-format.log.json": "335598b1ac344d3610209b491b32aaf9ec5beb1bf499304d0fe4afefa0ba9bc4",
+    "backend-clippy.log.json": "4e74809f3b56ed11bc6432679bbb4344c48b8eeee67a7f9f8d1f2af24b88084c",
+    "ui-stopped-result.json": "2321d4b237c4eb6431f2356d7792e23825a139f9b8bf623b5d52f017b845b85e",
+    "ui-stopped-commands.jsonl": "47fd1f2183038fe371f4dc7a3ee28c86259fef92b08ec0c8ec75a043b45c5be6",
+    "master-stopped-result.json": "8d1f8327e9e9b2875683a22da24690210d86b8d0c2ccb61321087876953a6f96",
+    "master-stopped-commands.jsonl": "7b7ee0cedf49f2613ca188eca6df1936c24efe799a3d42edc214de3956c3c342",
+    "ui-stopped-lint.log.json": "a547db3d8d5c4d690280ab546cad0ba4cb4daffe453e600f6c6d2250639f9773",
+    "ui-stopped-unit.log.json": "ac2f8a7dd8a52aec58036ecc6f3122288083a1b8ba8a874f8a525b3484d67121"
+  },
+  "raw_logs": "raw-log-storage.json",
+  "controls_complete": {
+    "count": 7,
+    "javascript_test_exits": "six processes expected1",
+    "rust_weak_test_exit": 101,
+    "all_saved_copy_restorations": 0,
+    "source": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+    "tree_command_storage": "Each per-head tree result embeds its exact executed command list; old df14 shared-ledger entries are not relabeled."
+  },
+  "backend_complete": {
+    "source": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+    "exit_code": 0,
+    "processes": 6,
+    "groups": {
+      "tree-pages": {
+        "command": {
+          "event": "complete",
+          "label": "tree-pages",
+          "argv": [
+            "nice",
+            "-n",
+            "10",
+            "cargo",
+            "test",
+            "--lib",
+            "app::fs::tree_pages::",
+            "--",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+          "exit_code": 0,
+          "head": "a455b832cdfb5c213ccea901f3883141019bd9ad"
+        },
+        "tests": [
+          {
+            "passed": 10,
+            "failed": 0,
+            "ignored": 0
+          }
+        ],
+        "raw_log": "backend-tree-pages.log.json"
+      },
+      "filesystem": {
+        "command": {
+          "event": "complete",
+          "label": "filesystem",
+          "argv": [
+            "nice",
+            "-n",
+            "10",
+            "cargo",
+            "test",
+            "--lib",
+            "app::tests::filesystem::",
+            "--",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+          "exit_code": 0,
+          "head": "a455b832cdfb5c213ccea901f3883141019bd9ad"
+        },
+        "tests": [
+          {
+            "passed": 69,
+            "failed": 0,
+            "ignored": 0
+          }
+        ],
+        "raw_log": "backend-filesystem.log.json"
+      },
+      "sql-reads": {
+        "command": {
+          "event": "complete",
+          "label": "sql-reads",
+          "argv": [
+            "nice",
+            "-n",
+            "10",
+            "cargo",
+            "test",
+            "--lib",
+            "app::tests::runtime::sql_reads::",
+            "--",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+          "exit_code": 0,
+          "head": "a455b832cdfb5c213ccea901f3883141019bd9ad"
+        },
+        "tests": [
+          {
+            "passed": 15,
+            "failed": 0,
+            "ignored": 1
+          }
+        ],
+        "raw_log": "backend-sql-reads.log.json"
+      },
+      "file-hints": {
+        "command": {
+          "event": "complete",
+          "label": "file-hints",
+          "argv": [
+            "nice",
+            "-n",
+            "10",
+            "cargo",
+            "test",
+            "--lib",
+            "changes::subscriptions::files_hints_",
+            "--",
+            "--nocapture",
+            "--test-threads=1"
+          ],
+          "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+          "exit_code": 0,
+          "head": "a455b832cdfb5c213ccea901f3883141019bd9ad"
+        },
+        "tests": [
+          {
+            "passed": 4,
+            "failed": 0,
+            "ignored": 0
+          }
+        ],
+        "raw_log": "backend-file-hints.log.json"
+      },
+      "format": {
+        "command": {
+          "event": "complete",
+          "label": "format",
+          "argv": [
+            "nice",
+            "-n",
+            "10",
+            "cargo",
+            "fmt",
+            "--check"
+          ],
+          "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+          "exit_code": 0,
+          "head": "a455b832cdfb5c213ccea901f3883141019bd9ad"
+        },
+        "tests": [],
+        "raw_log": "backend-format.log.json"
+      },
+      "clippy": {
+        "command": {
+          "event": "complete",
+          "label": "clippy",
+          "argv": [
+            "nice",
+            "-n",
+            "10",
+            "cargo",
+            "clippy",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+          "exit_code": 0,
+          "head": "a455b832cdfb5c213ccea901f3883141019bd9ad"
+        },
+        "tests": [],
+        "raw_log": "backend-clippy.log.json"
+      }
+    }
+  },
+  "ui_stopped": {
+    "exit_code": 1,
+    "lint_exit": 0,
+    "unit_exit": 1,
+    "passed_files": 368,
+    "total_files": 369,
+    "passed_tests": 6137,
+    "failed_tests": 1,
+    "failure": "test/cacheSyncDelivery.test.js > a pass racing the wire > does not let the board it read overwrite a row pushed while the lists were out",
+    "assertion": "agentsOf(run-1) undefined; expected [ag-1,ag-2]",
+    "later_stages_not_executed": [
+      "browser11",
+      "build",
+      "cost",
+      "semgrep"
+    ]
+  }
+}

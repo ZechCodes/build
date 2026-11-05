@@ -11,6 +11,10 @@ restoration in [the final cost manifest](cutover-manifest.json). These are
 synthetic-peer/source compatibility and cache/mount measurements, not installed
 bridge deployments or the coordinator's full SPA acceptance gate.
 
+The final re-review runtime is `907ae03e33`, with [completed positive and
+control receipts](review-round-2.md) and [fresh source-pinned costs](cutover-review-907ae03e33/manifest.json).
+The original 50d records remain separately attributed.
+
 Review boundaries, in dependency order:
 
 - `d03d2a747`: stop hidden warming under scoped ownership.
@@ -86,7 +90,7 @@ refresh this one owner; there is no `refreshCachedReviews` fanout.
 | Task: `taskTimelinePages.requestTaskDetail` / `taskDetailReadParams`, scoped `task_head` | Paged selected reads request 50 rows (API accepts 1..100), newest window in ascending order. Each row <=64 KiB, window <=256 KiB, full response <=1 MiB; imported task records >512 KiB are refused before body decode. Ordinary body writes already enforce 32,000 bytes; the canonical body is one field, not history paging. `before` is the opaque older cursor. See [bounded task reads](../bounded-task-reads.md#bounded-task-detail-and-history-wire-335). |
 | Task Older / old comment and reply: `trackerTaskPage.readOlderHistory`, `readHistoryPage`, `readRoutedComment`; `taskTimelinePages.prependTaskTimeline` / `keepTaskTimelineAnchor` | Older prepends one cursor-owned window. A routed comment or unloaded reply uses `timeline_anchor` to seek one bounded window, shown separately with a gap boundary rather than draining intervening pages. At most four anchor pages are shared in cache; each mounted view retains its own selected target. Server counters and `timeline_read_through` preserve all-history unread/attention semantics; `last_reviewed_snapshot_id` preserves the last opinion outside the window. Older author facts merge without overwriting current identities/body/watch facts. |
 | Dependencies: `mountTaskWaitingOn`, `createTaskWaitingOnActions.blocks`, `taskWaitingOnCache` | Selected task detail supplies at most 20 forward dependencies (write contract) and the first 20 reverse `blocks`, plus counts and `blocks_next_cursor`. Only the More control calls `tasks.waiting_on.blocks` with the cursor (default 20, API 1..100). `readChoices` reads the cached project task selector; it does not fetch every candidate's body or timeline. Counts on summary rows do not trigger graph expansion. |
-| Files / live review Files: `mountFileTree.load`, `readMore`; `directoryPages.directoryPageParams`; `taskReviewFiles.listDirectory` | Root and expanded directories request `fs.tree {paged:true,limit:100}` when negotiated. More requests that directory's opaque cursor; refreshing its first page does not drain to restore old depth. Cached state preserves the open row/reading place. Uncapable bridges receive the old parameter shape. Snapshot review tree reads retain their existing `tasks.review.diff` contract. |
+| Files / live review Files: `mountFileTree.load`, `readMore`; `directoryPages.directoryPageParams`; `taskReviewFiles.listDirectory` | Root and expanded directories request `fs.tree {paged:true,limit:100}` when negotiated. More requests that directory's opaque cursor. Refresh atomically rebuilds the held window toward its old tail sort key, bounded by `loaded_pages` (or `ceil(entries.length/100)` for an older cache) and at most 8 pages per directory; reveal has at most 8 extra continuation reads shared across ancestors and stops once found. Truncated hints refresh every expanded visible directory; folded stale caches stay cold. Cached state preserves the open row/reading place within the bounded window. Uncapable bridges receive the old parameter shape. Snapshot review tree reads retain their existing `tasks.review.diff` contract. |
 | Selected file: `views/files.pullFile`, `pageReader`, `storePulledFile`; `cacheLifetime.filePageReader` / `readFilePages`; `taskReviewFiles.readFile` | First `fs.read` uses the existing 1 MiB wire cap (raw selected media explicitly requests 1 MiB). Source continuation uses `BODY_PAGE_BYTES=262144`. Media/rendered files deliberately fetch the selected whole body in <=1 MiB chunks, capped at `FILE_MEDIA_MAX_BYTES=64 MiB`, because display needs a complete body; this is open-file demand, not directory warming. Unknown binary bodies remain facts-only. Body-page version changes stop the old chain. |
 | Conversation attachments: `threadAttachmentPages.readThreadAttachment` | The selected attachment is assembled in 1 MiB pages when supported; legacy reads retain their old shape. Attachment loading is an explicit open/download/lightbox demand, not transcript background warming. |
 | Task attachments: `taskAttachmentBodies.createTaskAttachmentBodies().load` | Selected `tasks.attachment` reads assemble 1 MiB wire chunks at background priority; cached attachment bodies paint without rereading. No list or timeline warmer requests these bytes. |
@@ -139,6 +143,18 @@ document retires that body subscription. Returning reacquires the watcher
 and refreshes visible demand from cached content. Its generation predicate
 fences a frame that was awaiting cache admission when the owner changed.
 
+Live task-review Files reuses the exported `directoryWatchSpec` selector for
+exact `project_source` + `files.hints` ownership. If that subject is unavailable,
+its modern fallback registration serves explicit/reconnect refresh only;
+ordinary board state causes no filesystem reads. Matching hints read only
+visible touched directories and selected-file demand. Generation predicates
+reach `fileTree.invalidate` and the selected body's existing cache `still`
+guard; retired or currently hidden readers reject late hint answers. The legacy
+workspace/files watcher branch retains its existing behavior. Continuation
+`invalid_params` is not persisted as a review error: generic recovery keeps
+cached rows/preview painted while obtaining a new head. Genuine first-page
+and unavailable-continuation errors remain visible.
+
 `directoryPages.legacyRootForVisibleReader` also preserves the useful visible
 legacy contract: a valid complete root listing already carried by a 3.34
 `files` frame is published first when that root is on screen. Atomic admission
@@ -165,6 +181,18 @@ Exact regressions are in `checkoutWatcherLifecycle.test.js`,
 fallback still lacks an independent live filesystem subject, as stated in
 [the coverage boundary](cutover-coverage.md#filesystemsource-view-boundary-and-unsupported-claims).
 Open/reconnect validation does not imply a new filesystem event producer.
+
+The absent-birth-time provider uses the bounded held-handle fallback in
+[the directory contract](../fs-tree-pages.md): 32 retained leases, absolute
+120-second expiry, refusal on eviction/expiry/replacement, and no relaxation
+of missing Unix device/inode identity. Real Rust provider tests and separately
+scripted SPA DTO recovery tests compose this boundary; no installed bridge
+or browser-to-Rust integration run is implied.
+
+Subsequent review corrections and their separate qualification status are
+tracked in [review round 2](review-round-2.md). The original matched cohort
+continues to describe its recorded `50d4a2647` source; those observations were
+not rerun merely because these contract fixes landed.
 
 ## Read coordination and priority audit
 

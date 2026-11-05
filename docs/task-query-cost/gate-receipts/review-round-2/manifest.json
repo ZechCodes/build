@@ -1,0 +1,184 @@
+{
+  "source": "df14cf15c28ced422842e1b718b729a30da1d517",
+  "js_behavioral_controls": {
+    "control_processes": 5,
+    "expected_test_exit_code": 1,
+    "timeline_outer_verification_exit_code": 0,
+    "review_hints_outer_verification_exit_code": 0,
+    "tree_parent_verification_exit_code": 0,
+    "tree_controls": [
+      {
+        "control": "truncated",
+        "behavior_exit_code": 1,
+        "wrapper_exit_code": 1,
+        "restoration_verified": true,
+        "named_failures": [
+          "refreshes only first pages of visible touched directories and leaves a folded directory cold",
+          "refreshes every visible expanded first page for a truncated hint while folded descendants stay cold"
+        ]
+      },
+      {
+        "control": "retention",
+        "behavior_exit_code": 1,
+        "wrapper_exit_code": 1,
+        "restoration_verified": true,
+        "named_failures": [
+          "retains a three-page selected row when a child hint refreshes the loaded directory window"
+        ]
+      },
+      {
+        "control": "reveal",
+        "behavior_exit_code": 1,
+        "wrapper_exit_code": 1,
+        "restoration_verified": true,
+        "named_failures": [
+          "reveals a requested file beyond the first directory page without draining after it is found"
+        ]
+      }
+    ]
+  },
+  "development_primary_red": {
+    "test": "ignores unrelated board state under root-free hints",
+    "actual_exit_code": 1,
+    "unrelated_filesystem_calls": 3,
+    "source_scope": "Saved pre-fix taskReviewFiles source; developing working tree based on4820977bc, not an exact whole-source482cohort.",
+    "old_watcher_sha256": "c0ea9b55b51b7a3f397b05c2a037a6a7ed4f7e63f83641bbd503ba94ca5f41cd"
+  },
+  "remaining": "Final guarded source-head qualification, browser11, build, fresh cost and static scans pending; df14 UI stopped before later stages.",
+  "artifacts_sha256": {
+    "first-js-controls-result.json": "823c7f5b81b1639c52aa3d98688c420ac11176797f3edd3e84458b3388fed35c",
+    "first-js-controls-commands.jsonl": "02d57b1246f2977997844154369b78c6a02b062779f9de7a9a96bb7fe19a8f8a",
+    "tree-controls-result.json": "095ae9b70a69e7e0222cbd2f576ac0c05a905e708b805d992e69a52d447c1d57",
+    "tree-controls-commands.jsonl": "f75a0e3237355c3ba54554933b9ef953a0e4f9a91e982f0d5bd0ce075dbae991",
+    "timeline-control-result.json": "72763b37067fffbfd2ecaf8591bf9e4fe3caeb30f80810d9ba93b808f807d016",
+    "timeline-control-commands.jsonl": "027a7ff6215d248551aabe7a9c4de631a12fdad812e019be3ab28a755eac1bc7",
+    "timeline-control.log.json": "f30c897fbee7a698d53feb610437e03bfe8982197e45674b96be81411bdc219c",
+    "review-hints-control-result.json": "ee079336ffb0a5d13e169d63c0a0c1bb9215aefae61f083b8c78efd09df025be",
+    "review-hints-control-commands.jsonl": "adf8ed513f97a5d63ef1cb94fe07ca27b40a9f4474b723980fc60d4a744a89ba",
+    "review-hints-control.log.json": "d8ea3dce05e23bbfcad2f5f63106fd153203867478573ac0aa4dc67fb37ed73c",
+    "tree-truncated-control-result.json": "1ef8a7abd50150a08e7f6f4b14502884b92bd46e6847fea049152c2774c7ae1c",
+    "tree-truncated-control.log.json": "4386aed0705cb0b0cee42462f1f15d1034b0b294a019a1d565b9e6bb91631513",
+    "tree-retention-control-result.json": "02e6d4a3ff20b17378c75360371641f787e9fc1449b8583a65dad991d2f94e54",
+    "tree-retention-control.log.json": "c5a2b97903e7d316bce10bb03d6d1c2b83a819f3a1d729939185193c07dec89b",
+    "tree-reveal-control-result.json": "402467abdfa65a8943436ac1c498c0508c112d9ebbb1cdfd9ef351f4ea14a7e9",
+    "tree-reveal-control.log.json": "2f3939d5f2c648e4601f7c228341fa6b43bea329109e55a3fcda54544681095f",
+    "tree-control-commands.jsonl": "e852d2a4095a0e1dbc804142fc50c6c51ee5feed2fa155cb58e58b7b7bfd2759",
+    "review-hints-development-red.log.json": "abb6b35ca317ca7a5a54ac3d442ae7bf230c4e792000f9cacaec17f7360b9ee2",
+    "affected-spa-manifest.json": "4d51431dc3f30a1f76ad44f0cd888c3ce22b24e3759c54d0ef7e1c13c7151e9b",
+    "affected-spa-unit.txt": "b621c3d9e6006b208b3a0fde30136b3c657b63b3514e6c3fc4c59f170bd35631",
+    "affected-spa-browser.txt": "33558a2cc9c9ea1d206c11b5130edf956294168ccc9d683daa742f1c729a7d6c",
+    "selection-commands.jsonl": "f3ff274c2c43f91f34f9ee842b5bf192199d9bcf518858678606a0f1fe250513",
+    "lease-weak-control.log.json": "bd7874a0ed435584775738611e56bd34234fada2a39e49703c5fd3c6a09ebf49",
+    "lease-weak-control-commands.jsonl": "f809f5f4ea6df0d23371dfe72d8ac1a5a2bca0ef54d44ae9841e392d0edb504f",
+    "revision-browser.txt": "867ecf3cd8c38c29184a50f2e8c50387e775beb82ed33dbf3ee7f4be3e2c5b01",
+    "revision-browser-reasons.json": "98b5ac8006f1aad149c8aeee7d72731cfd83a29a29badf726d4e7aa2be7f7ae3",
+    "backend-result.json": "30c7692d055f207f801ba0be0af21a09ec8812618239067147eed2b377683b19",
+    "backend-commands.jsonl": "2381572dfb3f9d38d88ba260fb60544d7a2847bbccf2ef88e8e1bdbce83bde15",
+    "backend-tree-pages.log.json": "94396ea271e446986eadb9f3c5e697e70a1c97d2f5d9534157d016673462f7a4",
+    "backend-filesystem.log.json": "4bd5d4b8f444b2df7a3bf20f0f0cc69c228b76679b4b2818c3f2d0dda2afba2f",
+    "backend-sql-reads.log.json": "8a4c6811542352e7ac04ffb6195ff8e48a24b2b83e3c3f5fa655259576bbf35e",
+    "backend-file-hints.log.json": "d192cf63ed0b35bae5d04ad1baf595bfdc95150afdf4ed3c79dd789187d52068",
+    "backend-format.log.json": "ea96d1f65d0505ed9c7db1507093d0fe337eb4bf29cbbb9011483dae34de8840",
+    "backend-clippy.log.json": "a0b18d6305d04e015dae9174766a77d1a52f4d26bc6a6c5c89d63d03b985796f",
+    "backend-qualification.json": "3f5e3471edcd83ef0a5e6fa4d27c8d14a4f1f6633e2af2e1a77527ba57ee03e5",
+    "pre-guard-ui-result.json": "11308f84e5ef9d9f1734437f8c4124863444bc9996e5540ea9a66a3a2580bce2",
+    "pre-guard-ui-commands.jsonl": "15997c2a50e0b998a6fe6a7d9bc86065b4602c9d53c3b6796008f73542c82799",
+    "pre-guard-ui-unit.log.json": "74a546b0d058c1cc7527d67ca494128c37c9572c260bcf30ccdf23cade593aaf",
+    "pre-guard-ui-lint.log.json": "afd3ba0d331dc9ae7714b6f3c47490af42ed1a9ce1863e81099e852558abce12",
+    "review-cursor-guard-development-red.log.json": "1c90007c16e291fcc3c650f50d75f2671e217e97719271cbec41707c93d9ef8d"
+  },
+  "raw_logs": "raw-log-storage.json",
+  "lease_weak_control": {
+    "expected_runtime_exit": 101,
+    "actual_runtime_exit": 101,
+    "successful_compile_before_runtime_failure": true,
+    "test": "app::fs::tree_pages::lease_tests::directory_lease_pages_a_cold_directory_without_creation_metadata",
+    "restoration": {
+      "event": "restoration_verified",
+      "head": "df14cf15c28ced422842e1b718b729a30da1d517",
+      "source_sha": "5bf2e578933f3881b3d5d55c7d860208b6c0645f1786e2f416888b9f6a803fcc",
+      "good_sha": "5bf2e578933f3881b3d5d55c7d860208b6c0645f1786e2f416888b9f6a803fcc",
+      "command_exits": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "parent_wrapper_exit_reported": 0
+  },
+  "revision_browser_selection": {
+    "count": 11,
+    "list": "revision-browser.txt",
+    "reasons": "revision-browser-reasons.json",
+    "conservative_full_task_browser_count": 76,
+    "wire_scope_fields_and_capabilities_changed_in_revision": false
+  },
+  "backend": {
+    "exit_code": 0,
+    "processes": 6,
+    "receipt": "backend-qualification.json",
+    "test_counts": {
+      "tree-pages": [
+        {
+          "passed": 10,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "filesystem": [
+        {
+          "passed": 69,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "sql-reads": [
+        {
+          "passed": 15,
+          "failed": 0,
+          "ignored": 1
+        }
+      ],
+      "file-hints": [
+        {
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0
+        }
+      ],
+      "format": [],
+      "clippy": []
+    }
+  },
+  "scheduling_deviation": "Potential earlier development fmt/Clippy launch overlap, parent-reported; no performance inference. Final backend serialized.",
+  "role": "Pre-guard df14 revision qualification; final cursor-notice-guard head will be qualified separately.",
+  "pre_guard_ui": {
+    "exit_code": 1,
+    "lint_exit_code": 0,
+    "unit_exit_code": 1,
+    "unit_files": 369,
+    "passed_files": 368,
+    "passed_tests": 6134,
+    "failed_tests": 1,
+    "failure": "test/changesReviewPane.test.js > workspace comments > anchors selected text with ambient context disabled",
+    "later_stages_not_executed": [
+      "browser",
+      "build",
+      "cost",
+      "semgrep"
+    ],
+    "fixture_disposition": "Parent reports painted-row readiness fix; focused22tests0. Final broader rerun pending."
+  },
+  "cursor_notice_guard_red": {
+    "exit_code": 1,
+    "test": "keeps cached live-review rows and preview quiet during a refused directory continuation",
+    "observed_notice": "synthetic expired directory cursor",
+    "assertion": "expected empty trf-status while replacement first page was pending; cached row/header/body checks passed first",
+    "guarded_source_sha256": "a663124a973570b145358b5d4964d487063842f9c67954a8803ba781d496ab77",
+    "positive_and_control_status": "prepared/pending; no exit inferred"
+  }
+}

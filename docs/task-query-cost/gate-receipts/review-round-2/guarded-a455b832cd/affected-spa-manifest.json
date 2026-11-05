@@ -1,0 +1,2178 @@
+{
+  "source_head": "a455b832cdfb5c213ccea901f3883141019bd9ad",
+  "selection_commands": "/home/zech/Projects/.agent-scratch/894/review-a455b832cd-selection-commands.jsonl",
+  "input_lists": [
+    "targeted-spa-unit.txt",
+    "targeted-spa-browser.txt",
+    "exact-spa-fixtures.txt",
+    "exact-spa-subscription-fixtures.txt",
+    "spa-task-affected-tests.txt"
+  ],
+  "changed_js_sources": [
+    "spa/src/core/agentRail.js",
+    "spa/src/core/bridgeApi/v1/index.js",
+    "spa/src/core/cacheSync.js",
+    "spa/src/core/changeEvents.js",
+    "spa/src/core/directoryPages.js",
+    "spa/src/core/directoryScope.js",
+    "spa/src/core/directoryWatcher.js",
+    "spa/src/core/fileDiffs.js",
+    "spa/src/core/fileRoots.js",
+    "spa/src/core/fileTree.js",
+    "spa/src/core/fileTreeModel.js",
+    "spa/src/core/gitPane.js",
+    "spa/src/core/scopedSyncRuntime.js",
+    "spa/src/core/scopedTaskBody.js",
+    "spa/src/core/scopedTaskSyncRecords.js",
+    "spa/src/core/syncPhases.js",
+    "spa/src/core/syncVisibleScopes.js",
+    "spa/src/core/taskCommentReplies.js",
+    "spa/src/core/taskContentAuthority.js",
+    "spa/src/core/taskReviewCache.js",
+    "spa/src/core/taskReviewFiles.js",
+    "spa/src/core/taskSummaryProjection.js",
+    "spa/src/core/taskTimelinePages.js",
+    "spa/src/core/taskTimelineWindow.js",
+    "spa/src/core/taskUnread.js",
+    "spa/src/core/taskUnreadDisplay.js",
+    "spa/src/core/trackerAttentionModel.js",
+    "spa/src/core/trackerCache.js",
+    "spa/src/core/trackerTaskDetailsFeed.js",
+    "spa/src/core/trackerTaskPage.js",
+    "spa/src/core/trackerTaskRender.js",
+    "spa/src/core/trackerWatch.js",
+    "spa/src/core/workspaceReviewEntry.js",
+    "spa/src/core/workspaceReviewReads.js",
+    "spa/src/core/workspaceReviewState.js",
+    "spa/src/views/files.js",
+    "spa/src/views/workspaceChanges.js"
+  ],
+  "unit_count": 369,
+  "browser_count": 76,
+  "excluded_serialized_suites": {
+    "test/syncTimingCutover.test.js": "serialized measured cohort, frozen fixture",
+    "test/compat335.test.js": "serialized exact-source 3.35 compatibility cohort",
+    "test/taskOpenCost.test.js": "serialized exact-source selected-task mount cohort"
+  },
+  "non_test_fixture_matches": [
+    "test/agentsOverviewFixture.js",
+    "test/browser/agentHeaderSeed.mjs",
+    "test/browser/captureActiveDashboard.mjs",
+    "test/browser/captureAgentsOverview.mjs",
+    "test/browser/captureAttachmentLightbox.mjs",
+    "test/browser/captureBacklogGroups.mjs",
+    "test/browser/captureBoard.mjs",
+    "test/browser/captureChatOverview.mjs",
+    "test/browser/captureDoneGroups.mjs",
+    "test/browser/captureHeadingSlots.mjs",
+    "test/browser/captureInboxBadgeSum.mjs",
+    "test/browser/captureInboxRows.mjs",
+    "test/browser/captureNewProjectFlow.mjs",
+    "test/browser/captureNewProjectPhone.mjs",
+    "test/browser/captureOpenUnread704.mjs",
+    "test/browser/capturePiPicker.mjs",
+    "test/browser/captureRepoPicker.mjs",
+    "test/browser/captureTaskCheckbox.mjs",
+    "test/browser/captureTaskUnread.mjs",
+    "test/browser/captureWatchedOnly.mjs",
+    "test/browser/captureWatching.mjs",
+    "test/browser/captureWebLinks.mjs",
+    "test/browser/captureWorkspaceNav.mjs",
+    "test/browser/chatMenuSeed.mjs",
+    "test/browser/chatOverviewSeed.mjs",
+    "test/browser/filesExplorerSeed.mjs",
+    "test/browser/inboxLayoutSeed.mjs",
+    "test/browser/inboxProjectLineageSeed.mjs",
+    "test/browser/inboxStatusDotSeed.mjs",
+    "test/browser/inputSurfaces.mjs",
+    "test/browser/interactionFixture.mjs",
+    "test/browser/liveSyncReplayHarness.mjs",
+    "test/browser/markdownSurfacesFixture.mjs",
+    "test/browser/modelBadgeSeed.mjs",
+    "test/browser/navigationBreadcrumbSeed.mjs",
+    "test/browser/projectWorkspaceFlowFixture.mjs",
+    "test/browser/projectWorkspaceTerminalFixture.mjs",
+    "test/browser/projectsFaceSeed.mjs",
+    "test/browser/pushReplayHarness.mjs",
+    "test/browser/selectSurfaces.mjs",
+    "test/browser/taskBlockedSeed.mjs",
+    "test/browser/taskCommentHeaderFixture.mjs",
+    "test/browser/taskReviewVerdictsFixture.mjs",
+    "test/browser/taskWaitingOnHarness.mjs",
+    "test/browser/taskWaitingOnJourneyHarness.mjs",
+    "test/browser/watchedTaskInboxSeed.mjs",
+    "test/browser/windowControlsSeed.mjs",
+    "test/diagnostics/cacheSyncReadiness.md",
+    "test/diagnostics/cacheSyncReadiness.mjs",
+    "test/fixtures/deviceSync.js",
+    "test/fixtures/httpClientWitness.mjs",
+    "test/taskUnreadDisplayFixture.js"
+  ],
+  "reasons": {
+    "test/activityRuns.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/adapterGreeting.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/agentLineageSupportWiring.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/agentOverviewDense.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "imports an exact-fixture/changed-module helper",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/agentRailContext.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/agentRailDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/agentRailHeader.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/agentRailIsolation.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/agentSurfacesOverlay.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/agentsOverviewFixture.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/apiContract.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/branchDeleteWiring.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/branchViewDom.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/branchViewResume.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/bridgeApi.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "exact-spa-subscription-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/bridgeApiWrites.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/bridgeUpdatePushPayload.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/bridgeUpdateWire.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/agentHeaderLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/agentHeaderSeed.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/agentOverviewHeaderInset.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/agentOverviewLayout.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "imports an exact-fixture/changed-module helper",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/browser/bridgeUpdateLayout.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/buildAgentsPanelLayout.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/buildChannelLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/captureActiveDashboard.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureAgentsOverview.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureAttachmentLightbox.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureBacklogGroups.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureBoard.mjs": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/browser/captureChatOverview.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureDoneGroups.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureHeadingSlots.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureInboxBadgeSum.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureInboxRows.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureNewProjectFlow.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureNewProjectPhone.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureOpenUnread704.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/capturePiPicker.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureRepoPicker.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureTaskCheckbox.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureTaskUnread.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureWatchedOnly.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureWatching.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureWebLinks.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/captureWorkspaceNav.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/chatMenuKeyboardLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/chatMenuSeed.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/chatOverviewSeed.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/chatWorkspaceLanding.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/chevronHitTargetLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/commitContextStability.test.js": [
+      "imports an exact-fixture/changed-module helper",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/browser/compactionMenuContinuity.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/compactionSliderLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/conversationResetLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/diffLinksLayout.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/filesExplorerLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/filesExplorerSeed.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/filesUploadActions.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/filesUploadTrayLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/floatingInboxBadgeHitLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/inboxCaptureEditor.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/inboxLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/inboxLayoutSeed.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/inboxOverlayFillLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/inboxProjectHoverLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/inboxProjectKeyboard.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/inboxProjectLineage.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/inboxProjectLineageSeed.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/inboxStatusDotLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/inboxStatusDotSeed.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/inboxTaskDestination.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/browser/inputStylesLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/inputSurfaces.mjs": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/browser/interactionFixture.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/interactionLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/liveSyncReplay.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/liveSyncReplayHarness.mjs": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/browser/liveSyncWarmCatchup.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/markdownHeadingLayout.test.js": [
+      "imports an exact-fixture/changed-module helper",
+      "targeted-spa-browser.txt"
+    ],
+    "test/browser/markdownPolishLayout.test.js": [
+      "imports an exact-fixture/changed-module helper",
+      "targeted-spa-browser.txt"
+    ],
+    "test/browser/markdownSurfacesFixture.mjs": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt"
+    ],
+    "test/browser/mediaBlobPlayback.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/modelBadge.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/modelBadgeSeed.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/navigationBarRegionLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/navigationBreadcrumbLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/navigationBreadcrumbSeed.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/navigationHoverLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/navigationPickerLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/pinnedInboxToolbarLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/projectFiles.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/projectWorkspaceAgents.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/projectWorkspaceChanges.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "imports an exact-fixture/changed-module helper",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/browser/projectWorkspaceFlow.test.js": [
+      "imports an exact-fixture/changed-module helper",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/browser/projectWorkspaceFlowFixture.mjs": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/browser/projectWorkspaceTerminal.test.js": [
+      "imports an exact-fixture/changed-module helper",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/browser/projectWorkspaceTerminalFixture.mjs": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/browser/projectsFaceLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/projectsFaceSeed.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/pushReplay.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/pushReplayHarness.mjs": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/browser/railHeadingTooltip.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/selectPickerLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/selectStylesLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/selectSurfaces.mjs": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/browser/syncBacklogReplay.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/taskBlockedSections.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/taskBlockedSeed.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/taskChecklistLayout.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/browser/taskCommentHeaderFixture.mjs": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt"
+    ],
+    "test/browser/taskCommentHeaderLayout.test.js": [
+      "imports an exact-fixture/changed-module helper",
+      "targeted-spa-browser.txt"
+    ],
+    "test/browser/taskCommentReplies.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-browser.txt"
+    ],
+    "test/browser/taskCommentTypingLayout.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-browser.txt"
+    ],
+    "test/browser/taskIdentityMounted.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-browser.txt"
+    ],
+    "test/browser/taskIdentityRemovalMounted.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/browser/taskPullRequestLayout.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/browser/taskRailLayout.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/browser/taskReadingContinuity.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-browser.txt"
+    ],
+    "test/browser/taskReviewLayout.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/taskReviewLoopLayout.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "imports an exact-fixture/changed-module helper",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/browser/taskReviewPageLayout.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/browser/taskReviewSummaryLayout.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/browser/taskReviewVerdictsFixture.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/taskReviewVerdictsLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/taskUnreadLayout.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/browser/taskWaitingOnEdges.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/taskWaitingOnHarness.mjs": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/browser/taskWaitingOnJourney.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/taskWaitingOnJourneyHarness.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/taskWaitingOnSharing.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/taskWorkReviewLayout.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/browser/threadFilteredPaging.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "imports an exact-fixture/changed-module helper",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/browser/threadLeanActivity.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "imports an exact-fixture/changed-module helper",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/browser/usageLimitSession.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/watchedTaskInboxLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/watchedTaskInboxSeed.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/windowControlsOverlayLayout.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/browser/windowControlsSeed.mjs": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/browser/workspaceReviewLayout.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/buttonVocabulary.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/cacheChanges.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/cacheConsole.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/cacheFiles.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/cacheOutageSurface.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/cacheReview.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/cacheSync.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "exact-spa-subscription-fixtures.txt",
+      "imports an exact-fixture/changed-module helper",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/cacheSyncCatchups.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/cacheSyncChanges.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/cacheSyncDelivery.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/cacheSyncForeground.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/cacheSyncLazyReads.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/cacheSyncPullRequests.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/cacheSyncReconnectDiff.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/cacheSyncRetainedFloor.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/cacheSyncSessionOwnership.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/changeEvents.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "exact-spa-subscription-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/changeSubscriptions.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/changesDom.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/changesReview.test.js": [
+      "targeted-spa-unit.txt"
+    ],
+    "test/changesReviewPane.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "targeted-spa-unit.txt"
+    ],
+    "test/chatCollapseOnTab.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/checkoutWatcherLifecycle.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/commandRefusal.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/commentPop.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/commitDiffLink.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/compactionCache.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/compactionContract.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/compat335.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "imports an exact-fixture/changed-module helper",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/complexityRatchet.test.js": [
+      "targeted-spa-unit.txt"
+    ],
+    "test/composerFocus.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/connectionGreeting.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/connectionOffline.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/connectionStatusIcon.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/connectionSync.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/connectionSyncRequests.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/connectionWriteCarrier.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/consoleDom.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/consoleModel.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/conversationCompactionDom.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/conversationDetailDom.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/conversationMenuGroupsDom.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/conversationResetAdmission.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/conversationResetDom.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/deviceSettingsDom.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/diagnostics/cacheSyncReadiness.md": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/diagnostics/cacheSyncReadiness.mjs": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/diffFolds.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/diffStackPaint.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/directoryHints.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/directoryLegacyRoot.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/directoryPages.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/directoryRail.test.js": [
+      "targeted-spa-unit.txt"
+    ],
+    "test/directoryScope.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/doneSinceLeftWiring.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/fileDiffs.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "targeted-spa-unit.txt"
+    ],
+    "test/fileLinks.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/fileTreeModel.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/fileTreePaging.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/fileUploadSupport.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/fileUploadSupportWiring.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/files.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/filesExplorer.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/filesRoots.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/filesRootsProvider.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/filesStandalone.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/filesUploadActions.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/filesUploadsHistory.test.js": [
+      "targeted-spa-unit.txt"
+    ],
+    "test/filesUploadsIntegration.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/fixtures/deviceSync.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/fixtures/httpClientWitness.mjs": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/gateBoot.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/gateOnboardingDom.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/gateVersionDom.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/gitPane.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/gitPaneDiffs.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/gitPaneDrafts.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/gitPaneLazyReads.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/gitPanePages.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/gitRepoControls.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/harnessInventoryEvents.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/httpGreetingOrder.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/inboxAwayRefusalDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/inboxBadgeSum183.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/inboxBadgeSum183Dom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/inboxDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/inboxFeedCacheDom.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/inboxSeenCacheDom.test.js": [
+      "imports an exact-fixture/changed-module helper"
+    ],
+    "test/inboxTaskUnread104.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/inboxUnread704.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/liveSyncReadAttribution.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/localCacheProjectionGuard.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/markdownTaskLabels.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/modelCatalogPush.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/namedCapabilitiesWiring.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/navigationTaskUnread.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/navigationUnread.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/needsYouRuleWiring.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/openInFiles.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/paintKeepingPlace.test.js": [
+      "targeted-spa-unit.txt"
+    ],
+    "test/paneAdoption.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/paneDrawer.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/paneLayout.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/peerUpgrade.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/projectAgentsDeviceSync.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/projectAgentsImportLifecycle.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/projectChanges.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/projectChangesRecovery.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/projectConsoleAuthority.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/projectFilesSupport.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/projectRailDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/projectRailState.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/projectTerminalRpc.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/projectViewDom.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/projectViewSizes.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/projectWorkerActivity.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/pushDeferredFences.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/pushKeySync.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/pushQueue.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/pushRefetch.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/pushTerminalPropagation.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/railBubbleTooltip.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/railComposerMenuClip.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/railComposerPinned.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/railComposerStillness.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/railProjectAgent.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/railRetireWire.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/railWatchSwitch.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/railWatchedOnlyWiring.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/railWorkspaceStamp.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/readRequests.test.js": [
+      "targeted-spa-unit.txt"
+    ],
+    "test/reconnectKeepsRouteWire.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/reconnectRepairWire.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/referenceIndexFeed.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/referenceLookupFreshness.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/referenceLookupIndex.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/referenceTargets.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/renderFromCacheViews.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/repoPickerDom.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/repoPickerSheets.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/reviewCommitReference.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/reviewLoopCache.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/reviewLoopColdCache.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/reviewLoopSurfaces.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/scopedDeviceCaptureConsumer.test.js": [
+      "imports an exact-fixture/changed-module helper",
+      "targeted-spa-unit.txt"
+    ],
+    "test/scopedDeviceDirectoryReads.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "targeted-spa-unit.txt"
+    ],
+    "test/scopedDeviceSyncCache.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "imports an exact-fixture/changed-module helper",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/scopedDeviceSyncPaint.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "imports an exact-fixture/changed-module helper",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/scopedProjectColumns.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/scopedSyncEngine.test.js": [
+      "targeted-spa-unit.txt"
+    ],
+    "test/scopedSyncImportLifecycle.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/scopedSyncPresenceGrace.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/scopedSyncPresenceRuntime.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/scopedSyncQueryAliases.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/scopedSyncReconnect.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/scopedSyncRecovery.test.js": [
+      "targeted-spa-unit.txt"
+    ],
+    "test/scopedSyncRegistry.test.js": [
+      "targeted-spa-unit.txt"
+    ],
+    "test/scopedSyncRuntime.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/scopedTaskBody.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/scopedTaskSyncCache.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/sessionRpc.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/sessionRpcTiming.test.js": [
+      "targeted-spa-unit.txt"
+    ],
+    "test/shellLinkedAgent.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/shellPersistence.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/shellProjectRail.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/shellProjectRailLanding.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/sourceEditSupportWiring.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/sourceRosterForeground.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/subscribeRefusalRetryWiring.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/syncBackgroundStreamsForeground.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/syncInboxAdmission.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/syncPhases.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "targeted-spa-unit.txt"
+    ],
+    "test/syncRosters.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/syncTaskPhases.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/syncTimingCutover.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "exact-spa-subscription-fixtures.txt",
+      "imports an exact-fixture/changed-module helper",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/syncTimingProfiles.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/syncTimingScale.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/syncVisibleReads.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/syncVisibleReadsLifecycle.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "targeted-spa-unit.txt"
+    ],
+    "test/syncVisibleScopes.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/task704UnreadCache.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskActionContentAuthority.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskActionContentFence.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskActionReplicaFloors.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "imports an exact-fixture/changed-module helper",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskActionSummaryCache.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "imports an exact-fixture/changed-module helper",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskAttachmentLightboxDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskAvatar.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskCanonicalWatchAuthority.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskChecklistMutationFence.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskChecklistSupportWiring.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskCommentReplies.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskCompactReviewOmissions.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskContentAuthority.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskContentChecklist.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskContentPublication.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskContentReviewOpening.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskCountFollower.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskCountMarkerParity.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskCountReaderRuntime.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/taskFeed.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/taskFilterChoices.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/taskFullContentPage.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskFullContentProducers.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskIdentityWiring.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskInboxWatchAuthority.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskLegacyWatchAuthority.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskListContentAuthority.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskListPaneAbsence.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskOpaqueMarkers.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskOpenCost.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/taskOptimisticContentFence.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskPageActionSummary.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskPageMutationFence.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskPageQueuedRepairOwnership.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskPageWatchOwnership.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskPagedWatchAuthority.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskPayloadPublication.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskPendingContentRecovery.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskPullRequestPage.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/taskReadSourceLease.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskReferenceLookups.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskReviewCache.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskReviewDrafts.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/taskReviewFeedback.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskReviewFiles.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskReviewFilesHints.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/taskReviewFilesNavigation.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/taskReviewLoop.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/taskReviewMerge.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/taskReviewNavigationDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/taskReviewPage.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskReviewReads.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/taskReviewReclaim.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/taskReviewSelection.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/taskReviewSummaryRender.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskReviewSupport.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/taskReviewTemplate.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskReviewTemplateDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskReviewTimelineLoop.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskStateMark.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskSummaryBasis.test.js": [
+      "imports an exact-fixture/changed-module helper",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskSummaryCache.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "imports an exact-fixture/changed-module helper",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskSummaryD2Guards.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskSummaryD2RetiredCommit.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskSummaryD2RetiredPage.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskSummaryD2Snapshot.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/taskSummaryGroups.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/taskSummaryMarkers.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "imports an exact-fixture/changed-module helper",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskSummaryMixedBasis.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskSummaryReader.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/taskSummarySelectors.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/taskTimelinePages.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskUnread.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskUnreadBubbles104.test.js": [
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskUnreadDisplayConsumerLifecycle.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskUnreadDisplayFixture.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/taskUnreadDisplayHydration.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskUnreadDisplayRetention.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskUnreadKinds183.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskUnreadTotals183.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskUnreadWiring104.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/taskViewDom.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/taskWaitingAssignment.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskWaitingAssignmentDowngrade.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskWaitingAssignmentHistory.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/taskWaitingOnActions.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/taskWaitingOnCache.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskWaitingOnCacheRetry.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskWaitingOnDispatch.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/taskWaitingOnIssuedReads.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskWaitingOnPage.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskWaitingOnPush.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/taskWatchBaselineUnread.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskWatchControlNotifications.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskWatchDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskWatchGate.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskWatchLineage.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskWatchSharedAuthority.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/taskWatchSnapshotGet.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/terminal.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/terminalFollowAuthority.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/terminalReconnectIntegration.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/thread.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/threadIdentity.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/threadLeanPaging.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/threadLeanRun.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/threadRetention.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/threadRetentionRepairs.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/threadScroll.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/threadSync.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/threadSyncLean.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/toolbarDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/toolbarReviewEntry.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/trackerActionLine.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/trackerActorName.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/trackerAgentTasksDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/trackerAssigneeDom.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/trackerAssignmentDetailRefresh.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/trackerAttentionModel.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/trackerCacheListRecords.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/trackerDashboardWiring.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/trackerFilterPendingSemantics.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/trackerNeedsYouStale.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/trackerPages.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/trackerPagesWiring.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/trackerPagingOutage.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/trackerPaneMutationFenceDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/trackerPendingChoiceDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/trackerPush.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/trackerRemoteChoicesDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/trackerReviewSummary.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/trackerTaskBodyRead.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/trackerTaskChecklistDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/trackerTaskDetailsFeed.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/trackerTaskDetailsGreeting.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "targeted-spa-unit.txt"
+    ],
+    "test/trackerTaskHostDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/trackerTaskPageChurn.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/trackerTaskPageDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/trackerTasksPaneChurn.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/trackerTasksPaneContentAuthority.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/trackerTasksPaneDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/trackerTasksPaneReadOrder.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/trackerUnread.test.js": [
+      "spa-task-affected-tests.txt"
+    ],
+    "test/trackerViewingContext.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/trackerWatch.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/trackerWatchGate.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/trackerWorkspaceTasksDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/userPaneCleanup.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/userPresence.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/viewingContextIntegration.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/watchedTaskFollowerProfile.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/watchedTaskInboxDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/watchedTaskInboxWire.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/workspaceAllChangesLive.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "new or changed test",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceChanges.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceChangesContext.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceChangesVisibility.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceLifecycleWiring.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/workspaceLockDom.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/workspaceNavWiring.test.js": [
+      "direct changed-module import/load/mock/source reference"
+    ],
+    "test/workspacePullReview.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceRailDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceReviewClear.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "new or changed test",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceReviewCreateRace.test.js": [
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceReviewEntry.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceReviewHydration.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceReviewLazyRead.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceReviewOrdering.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceReviewPush.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceReviewPushRace.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceReviewSinceFreshness.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceReviewTasks.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceReviewTimeline.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "new or changed test",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceSizesWiring.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "refreshed exact capability/greeting/record/subscription fixture search",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceTasksTabDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-subscription-fixtures.txt",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/workspaceViewDom.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ],
+    "test/writeOperationCache.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/writeOperationEffects.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "exact-spa-fixtures.txt",
+      "spa-task-affected-tests.txt",
+      "targeted-spa-unit.txt"
+    ],
+    "test/writeOperationRefresh.test.js": [
+      "direct changed-module import/load/mock/source reference",
+      "spa-task-affected-tests.txt"
+    ],
+    "test/writeOperations.test.js": [
+      "refreshed exact capability/greeting/record/subscription fixture search"
+    ]
+  }
+}

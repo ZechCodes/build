@@ -1,0 +1,132 @@
+{
+  "source": "907ae03e33c2bf39b108d721a3cff72a9ce3a8d6",
+  "qualification": "All positive and seven expected-negative control outcomes observed. Secret scan/publication are recorded separately by parent after artifact commit.",
+  "backend": {
+    "processes": 6,
+    "all_exit_codes": 0,
+    "tests": {
+      "tree_pages": 10,
+      "filesystem": 69,
+      "sql_reads": 15,
+      "sql_reads_ignored": 1,
+      "file_hints": 4
+    }
+  },
+  "ui": {
+    "lint": 0,
+    "unit_exit": 0,
+    "unit_files": 369,
+    "unit_tests": 6138,
+    "layout_exit": 0,
+    "layout_files": 11,
+    "layout_tests": 79,
+    "build": 0,
+    "cost": 0,
+    "semgrep": {
+      "exit": 0,
+      "targets": 85,
+      "rules_run": 200,
+      "findings": 0,
+      "timeout_warnings": 0
+    }
+  },
+  "controls": {
+    "outer_verification_exit": 0,
+    "results": [
+      {
+        "label": "timeline",
+        "exit_code": 0,
+        "expected_wrapper_exit": 0
+      },
+      {
+        "label": "watcher",
+        "exit_code": 0,
+        "expected_wrapper_exit": 0
+      },
+      {
+        "label": "cursor",
+        "exit_code": 0,
+        "expected_wrapper_exit": 0
+      },
+      {
+        "label": "truncated",
+        "exit_code": 1,
+        "expected_wrapper_exit": 1
+      },
+      {
+        "label": "retention",
+        "exit_code": 1,
+        "expected_wrapper_exit": 1
+      },
+      {
+        "label": "reveal",
+        "exit_code": 1,
+        "expected_wrapper_exit": 1
+      },
+      {
+        "label": "held-handle",
+        "exit_code": 0,
+        "expected_wrapper_exit": 0
+      }
+    ],
+    "javascript_test_exits": "six expected1",
+    "weak_runtime_exit": 101,
+    "all_restore_cp_touch_cmp_and_identity_checks": 0
+  },
+  "cost_manifest": "../../../cutover-review-907ae03e33/manifest.json",
+  "source_equivalence": "source-equivalence.json",
+  "raw_logs": "raw-log-storage.json",
+  "defective_sources": "defective-source-storage.json",
+  "artifacts_sha256": {
+    "source-equivalence.json": "bfaa53b65501ab6b7315722dff20c87ce8d597b4be57c81b6156b66a4707b1b5",
+    "source-equivalence-commands.jsonl": "d6895d0a82f30bfd9925ba23c64b66945de0ac91013ce2db68d12e6fe748240b",
+    "backend-result.json": "77908da2361a73231c2a7e7e44eceeb9b34ec3336eb71707cf0745c1de6ac407",
+    "backend-commands.jsonl": "bb84cd388776e954658e2b0bb8e6e08db84df497b499e821ab3bc499fac9215b",
+    "backend-tree-pages.log.json": "0a3920b4bccd21aef981343001e89d6b1e29cba89180f6f7ff87fe841a353d45",
+    "backend-filesystem.log.json": "92a4d03ef8e63f80ae2f80053e3052799a04271dd617b76f1f5c0417eb661442",
+    "backend-sql-reads.log.json": "295420b3b9feef154c04a331d71cc11e85545c2059c7f64a41072c1308df1880",
+    "backend-file-hints.log.json": "08526a16d2d9d26c2654825f3e7be8ad6c523252c32a6a73423ee8cb6e8936bf",
+    "backend-format.log.json": "b1595870ced21ede515d1b901e8ebe0b4d908fe5d22d64a19e7fba4a81feb2c1",
+    "backend-clippy.log.json": "c2638e1ad21640ba6252cbc080853c191be52b25912df05580f0cedba7f9796a",
+    "raw-log-storage.json": "a5c90ec4bb7ddb686917c83ec2e9694b422e8eb071e4ff7871e7fed718301980",
+    "ui-result.json": "2f4983fd16ba2974fed68d7f6999f4afbbd3f33ac4753854df029ecc97ccf2f9",
+    "ui-commands.jsonl": "7bd799ccd9c595a3f13c4273cb76d0d527432d80a711a40153409a942b361a84",
+    "master-result.json": "0b68ae946b63147d96f86dac75e00188efb10734e1d64b28c53dab1e2a1ee4c4",
+    "master-commands.jsonl": "2fb8eb025e7178aea4b13acaa397c808ebed95ef802ec94c2b2068a2f594d314",
+    "controls-result.json": "0ae849c5312b2464860c15048bfed0b8213454c48e94662c99aaa6d1ca4ef313",
+    "controls-commands.jsonl": "eb195b87d36d1be4a49259e318c5bf758dfdcf0b2accac16ebf997cc6bf63c85",
+    "ui-lint.log.json": "d42468ee596bb472f13b35672ff1f2c3671731b19effd10517d398fd29aa87f4",
+    "ui-unit.log.json": "6b81ef351a1c9c2b389d177f79063fc3489e4b673434b266cd72b32e954aa5e1",
+    "ui-layout.log.json": "3c8f7c361d60d37bb1f65442940850f7176990e3be6482cf454af5f20ced617e",
+    "ui-build.log.json": "87fe69c1f9fd585ddc5b771f2aa1672e4bb9e5531fdf39cde84f3c9187e4d341",
+    "ui-cost.log.json": "6af5efbc2f5da6616e501c3e79976f197cd05432c1fbad1433be99679576b2ff",
+    "ui-semgrep.log.json": "3363ed6d55b6894d0c5b97e68cde8ba4c096835d07d85ee62e21a1f8864b6ba9",
+    "timeline-control-result.json": "9d05e86d65542cf1beece2f8a2811ec39f8e334ab3283ff057282d088932cbd8",
+    "timeline-control-commands.jsonl": "5a2a95d9dc344df0cff80bb47f59ad377f860b00cc88f0480d06b0da74102e19",
+    "timeline-control.log.json": "b11246b7e6aa403e46393e271f922234f60236ca6e859bd2fadfcaf72030ab1c",
+    "timeline-defective.source.json": "b52456b2e4b13080af73ed9664425fc2c72b7a23f093b9d3a841d1d83e08c46f",
+    "watcher-control-result.json": "16628ca8999b53f1e082296b41623e4cc194ca91dd7557fb897368333a22342a",
+    "watcher-control-commands.jsonl": "ec4c067e4b43271414b080f3ad05518c202de2d53d4686462ef1f78b706c90ec",
+    "watcher-control.log.json": "0985bbb2e7adf30ba4e3043050a69f598b7ff2987c80c81c6e411f1ea4165bb8",
+    "watcher-defective.source.json": "e1d58062e4301ccb5e336716f717961ffccf5a00914e00d251ffec5696f7cb75",
+    "cursor-control-result.json": "16628ca8999b53f1e082296b41623e4cc194ca91dd7557fb897368333a22342a",
+    "cursor-control-commands.jsonl": "d2ae3ffe4ea475e2086f02c1bf68ef19617a72fa110edfbfb8034157ee6532f5",
+    "cursor-control.log.json": "ba59c6f262fd8948f74f33ba4fb7d496ae1b1c67263f15d3f4613c0ca0942ec5",
+    "cursor-defective.source.json": "156646ecd8ba013233799d0ee7dd32d1d85828037c0f69a5b46ef18dbe9324db",
+    "tree-truncated-control-result.json": "b0d48a5dde2f449727875f6c7efc7028971c31fb18db1e13db8b27266141ed60",
+    "tree-truncated-control.log.json": "1118c1064927fdf62fba77a4042d45bdd87cf333039ad6d462661d0d05b6a1f6",
+    "tree-truncated-defective.source.json": "ce3c08a301689b8cd2f854d51cade4cd0cd496ee5409ecdad90b1a244866450b",
+    "tree-retention-control-result.json": "8fa67bbed66c2785d23b10b682c6b2cf56aa8eec689cc29001a8dc081c084eb4",
+    "tree-retention-control.log.json": "2143c9df90a10606a83072019343762a13993e49e54d378f9007548ff059bd86",
+    "tree-retention-defective.source.json": "8644834447e7b96f45ff56935f3a5d148fdc024d40ae669a00e5cb6cf934af9a",
+    "tree-reveal-control-result.json": "2911b4e75a41bc020d48a747c172c8cf4b2ea858f7571c262d22c1cb78d433f6",
+    "tree-reveal-control.log.json": "7dcece415d94f88d8af56c374dbdf548022a64d5dcd1bf78f9be5ded9c117aed",
+    "tree-reveal-defective.source.json": "73b4400d26b5a395004e12435aa81aabca8517cbac5b312628235e33b45020f2",
+    "lease-weak-control-commands.jsonl": "f8bf1780a4a65f42d2b2526ea9090141bd4f6d1168e1c446008ccf73dd8f4f3d",
+    "lease-weak-control.log.json": "759db25c5d67806b79b723fb68965af72fad7c0558dd0acbb92965adab079e06",
+    "lease-weak-defective.source.json": "ee328db913f147c4c61811727f4ea21d8b65cabb33ea0bb5fd3bfecae1f82af6",
+    "defective-source-storage.json": "ed82786f50c153ed59c14ff0eefd048b7f9e52f8b1e15b489d50aa7c3f920425",
+    "post-controls-source-proof.jsonl": "b0b911ba2af1425b30772c6283ef88647fdf7c0ad524df567bf86553e945da76"
+  },
+  "post_controls_source_proof": "post-controls-source-proof.jsonl"
+}

@@ -1,0 +1,15 @@
+{
+  "expected_behavior_exit": 1,
+  "observed_behavior_exit": 1,
+  "named_failures": [
+    "does not reuse an unfenced cursor from a partially upgraded cached window",
+    "upgrades a 3.34 scoped head with the same incarnation but no paging cursor",
+    "upgrades a cached legacy-shaped head and loads its second page from Older history",
+    "upgrades a cursorless legacy head at offset 0 without losing the arriving continuation",
+    "upgrades a cursorless legacy head at offset 3 without losing the arriving continuation"
+  ],
+  "restored_and_compared": true,
+  "candidate_source_sha256": "def4dc65751c1479b14fbfb2e2df3be6e183f8fdee82d045f234c5583dba8483",
+  "whole_program_head": "907ae03e33c2bf39b108d721a3cff72a9ce3a8d6",
+  "commands": "/home/zech/Projects/.agent-scratch/894/timeline-oldmerge-907ae03e-fresh907-final-head-01/commands.jsonl"
+}

@@ -917,6 +917,9 @@ fn existing_audit_table_gains_group_fields_and_caller_index_on_reopen() {
     let path = dir.path().join("tasks/build.db");
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch("DROP INDEX secret_audit_by_caller; ALTER TABLE secret_audit DROP COLUMN attempt_count; ALTER TABLE secret_audit DROP COLUMN last_occurred_at;").unwrap();
+    // The old endpoint could retain arbitrarily many denial rows. Seed the
+    // pre-column table so reopening exercises the one-time migration trim.
+    conn.execute_batch("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<4100) INSERT INTO secret_audit(secret_id,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome) SELECT 'unavailable','synthetic-project','synthetic-owner','synthetic-legacy','synthetic-legacy','synthetic-generation','synthetic-session','synthetic-request',i,'secret_unavailable' FROM n").unwrap();
     drop(conn);
     let reopened = Store::new(dir.path().join("tasks")).unwrap();
     let rows = reopened
@@ -926,4 +929,44 @@ fn existing_audit_table_gains_group_fields_and_caller_index_on_reopen() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].attempt_count, 1);
     assert_eq!(rows[0].occurred_at, rows[0].last_occurred_at);
+    assert_eq!(rows[0].outcome, "released");
+    assert_eq!(rows[0].secret_id, rec.context.id);
+    let conn = reopened.writer_for_test();
+    let retained: (i64, i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*),MIN(occurred_at),MAX(occurred_at) FROM secret_audit WHERE outcome='secret_unavailable'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(retained, (4096, 5, 4100), "only oldest denials are trimmed");
+    let unbackfilled: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM secret_audit WHERE attempt_count!=1 OR last_occurred_at!=occurred_at",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        unbackfilled, 0,
+        "all legacy groups receive count and timestamp"
+    );
+    let release_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM secret_audit WHERE outcome='released'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(release_count, 1);
+    drop(conn);
+    assert_eq!(
+        reopened
+            .writer()
+            .secret_audit_summary(&rec.context.id)
+            .unwrap()
+            .unwrap()
+            .release_count,
+        1
+    );
 }

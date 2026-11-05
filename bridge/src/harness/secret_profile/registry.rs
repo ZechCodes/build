@@ -39,11 +39,15 @@ impl std::ops::Deref for AdmissionLock {
 }
 impl Drop for AdmissionLock {
     fn drop(&mut self) {
-        loop {
-            match self.file.unlock() {
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                _ => break,
-            }
+        unlock(&self.file);
+    }
+}
+
+fn unlock(file: &File) {
+    loop {
+        match file.unlock() {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            _ => break,
         }
     }
 }
@@ -187,11 +191,20 @@ impl Registry {
         if self.names()?.len() < limit {
             return Ok(());
         }
-        self.sweep_records()?;
-        if self.names()?.len() >= limit {
-            return Err(io::Error::other("secret profile registry full"));
+        let deadline = Instant::now() + ADMISSION_WAIT;
+        let mut retry = ADMISSION_RETRY;
+        loop {
+            self.sweep_records()?;
+            if self.names()?.len() < limit {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::Error::other("secret profile registry full"));
+            }
+            std::thread::sleep(remaining.min(retry));
+            retry = (retry * 2).min(Duration::from_millis(100));
         }
-        Ok(())
     }
 
     fn names(&self) -> io::Result<Vec<String>> {
@@ -377,6 +390,9 @@ impl RegistryGuard {
 impl Drop for RegistryGuard {
     fn drop(&mut self) {
         let _ = self.remove();
+        // No independent owner holds the metadata lease. End it explicitly so
+        // a forked child cannot make a crashed record look live until exec.
+        unlock(&self._metadata);
     }
 }
 

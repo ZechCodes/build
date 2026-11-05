@@ -120,6 +120,29 @@ fn live_profiles_hold_their_records_and_quota_prunes_only_stale_entries() {
     assert_eq!(records(&registry), 1);
     drop((second, file2));
 }
+
+#[test]
+fn quota_admission_waits_for_inherited_stale_profile_descriptors() {
+    let (_root, registry, home, directory) = fixture();
+    let (first, file1, name1) = tracked(&registry, &home, &directory);
+    let (second, file2, name2) = tracked(&registry, &home, &directory);
+    let inherited_profile = first._profile.try_clone().unwrap();
+    let inherited_metadata = first._metadata.try_clone().unwrap();
+    let inherited_child = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        drop(inherited_profile);
+    });
+
+    crash(first, file1);
+    registry.admit(2).unwrap();
+
+    inherited_child.join().unwrap();
+    assert!(inherited_metadata.metadata().is_ok());
+    assert!(!home.join(name1).exists());
+    assert!(home.join(name2).exists());
+    assert_eq!(records(&registry), 1);
+    drop((inherited_metadata, second, file2));
+}
 #[test]
 fn pending_and_final_registration_share_exact_inode_and_guard_cleanup() {
     let (_root, registry, home, directory) = fixture();

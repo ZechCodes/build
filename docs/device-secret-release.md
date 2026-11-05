@@ -118,7 +118,10 @@ enter launch argv.
 For the Codex TUI, a unique `build-secret-<uuid>.config.toml` profile in the
 existing `CODEX_HOME` carries this narrow shell configuration. This is an
 explicit on-disk exposure of the session capability, not a retrieved value.
-The profile is created with exclusive atomic 0600 permissions, used by plain
+A missing Codex home is created with 0700, without following path-component
+symlinks; its final directory must be owned by the current user. Profile writes
+and removal use a pinned directory handle. The profile is created with
+exclusive atomic 0600 permissions, used by plain
 profile name in argv, and removed on session end, process exit or failed spawn.
 Startup cleanup removes only unlocked regular files owned by the current user
 whose names match Build's UUID profile pattern. Live profiles are protected by

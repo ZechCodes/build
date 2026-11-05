@@ -803,7 +803,11 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
     // agent can create work in state that might be discarded. The local health
     // beat still proves the daemon initialized and its app lock is responsive.
     wait_for_update_probation(&runtime.config).await;
-    sweep_startup_artifacts(app.clone()).await;
+    sweep_startup_artifacts(
+        app.clone(),
+        build_bridge::harness::secret_profile_registry_root(&runtime.harness_context.state_root),
+    )
+    .await;
     // The relay socket, redialled for as long as the daemon runs, on the
     // liveness runtime. The main thread waits for the signal that ends the
     // daemon; the socket task is aborted then, which is the socket generation
@@ -1019,19 +1023,28 @@ fn spawn_resume_after_restart(
 }
 
 /// Stage cleanup is startup I/O and runs outside runtime workers.
-async fn sweep_startup_secret_profiles() {
-    // Only unlocked Build-owned profiles are orphans; another channel's live
-    // sessions retain their profile lock throughout this startup cleanup.
-    let sweep =
-        tokio::task::spawn_blocking(build_bridge::harness::sweep_codex_secret_profiles).await;
+async fn sweep_startup_secret_profiles(registry_root: std::path::PathBuf) {
+    use std::io::Write;
+    // Cleanup enumerates only private records and checks exact filesystem
+    // identities; user Codex directories are never pattern-scanned.
+    let sweep = tokio::task::spawn_blocking(move || {
+        build_bridge::harness::sweep_codex_secret_profiles(&registry_root)
+    })
+    .await;
     if !matches!(sweep, Ok(Ok(()))) {
-        eprintln!("secret profile cleanup unavailable");
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "secret profile cleanup unavailable"
+        );
     }
 }
 
 /// Transient artifact cleanup runs before agents resume, outside runtime workers.
-async fn sweep_startup_artifacts(app: Arc<std::sync::Mutex<AppState>>) {
-    sweep_startup_secret_profiles().await;
+async fn sweep_startup_artifacts(
+    app: Arc<std::sync::Mutex<AppState>>,
+    registry_root: std::path::PathBuf,
+) {
+    sweep_startup_secret_profiles(registry_root).await;
     let removed = tokio::task::spawn_blocking(move || app.lock().unwrap().sweep_stale_uploads())
         .await
         .expect("startup upload cleanup completed");

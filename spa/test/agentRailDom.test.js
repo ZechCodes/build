@@ -17,6 +17,29 @@ const lazy = vi.hoisted(() => ({ enabled: false }));
 vi.mock("../src/core/scopedSyncRuntime.js", async (original) => ({
   ...await original(), lazyViewReadsEnabled: () => lazy.enabled,
 }));
+// Observe completion without replacing cache or wire behavior. Only the
+// handoff witnesses enable these receipts; every promise is the real result.
+const conversationReadReceipts = vi.hoisted(() => ({ enabled: false, seeds: [], windows: [] }));
+vi.mock("../src/core/conversationCache.js", async (original) => {
+  const actual = await original();
+  return { ...actual, createConversationCache: (...args) => {
+    const cache = actual.createConversationCache(...args);
+    return { ...cache, seed: (...seedArgs) => {
+      const promise = cache.seed(...seedArgs);
+      if (conversationReadReceipts.enabled) conversationReadReceipts.seeds.push({ cache, promise });
+      return promise;
+    } };
+  } };
+});
+vi.mock("../src/core/threadSync.js", async (original) => {
+  const actual = await original();
+  return { ...actual, syncThreadWindow: (...args) => {
+    const promise = actual.syncThreadWindow(...args);
+    if (conversationReadReceipts.enabled) conversationReadReceipts.windows.push(promise);
+    return promise;
+  } };
+});
+
 /** What a bridge that carries watching says in its greeting. */
 const WATCHING_GREETING = Object.freeze({ api_version: "3.24.0", capabilities: ["tasks.watching"] });
 
@@ -268,6 +291,9 @@ const pushRow = async (row = payload) => {
 
 beforeEach(async () => {
   lazy.enabled = false;
+  conversationReadReceipts.enabled = false;
+  conversationReadReceipts.seeds = [];
+  conversationReadReceipts.windows = [];
   document.body.innerHTML = bodyHtml;
   // A standing panel has a viewport; jsdom otherwise measures it as hidden.
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {
@@ -1223,6 +1249,7 @@ describe("the rail over a machine that is asked nothing", () => {
 
   it.each(["before", "after"])("revalidates one logical conversation opening when its roster arrives %s the delayed first page", async (rosterArrival) => {
     lazy.enabled = true;
+    conversationReadReceipts.enabled = true;
     chatRepository.railView("workspace:ws-delayed-roster").chooseAgent("ag-1");
     await writeRailBoard({
       projects: [{ project_id: "p1", name: "build" }],
@@ -1252,23 +1279,33 @@ describe("the rail over a machine that is asked nothing", () => {
       if (rosterArrival === "after") {
         releasePage();
         await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Fresh open-time words"));
+        await Promise.all(conversationReadReceipts.windows);
       }
+      const firstReader = conversationReadReceipts.seeds.at(-1).cache;
+      const seedCount = conversationReadReceipts.seeds.length;
       // Publishing the roster replaces the transient history with its canonical
       // controller, while the visible conversation and opening stay the same.
       await writeRailWorkItem({ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false })] });
+      await vi.waitFor(() => expect(conversationReadReceipts.seeds.slice(seedCount).some(({ cache }) => cache !== firstReader)).toBe(true));
+      // watchConversation registered its await before this test. Once the real
+      // canonical seed resolves, its continuation has entered any new read.
+      await Promise.all(conversationReadReceipts.seeds.slice(seedCount).map(({ promise }) => promise));
       await vi.waitFor(() => expect(headWho()).toBe(TOPICS["ag-1"]));
       await vi.waitFor(() => expect(railHost().querySelector("#railinput")).not.toBeNull());
       expect(callsTo("workspace.get")).toHaveLength(0);
       expect(railHost().querySelector("#rail-body")?.textContent).toContain(rosterArrival === "before" ? "Cached before the roster" : "Fresh open-time words");
       expect(callsTo("thread.page")).toHaveLength(1);
       releasePage();
+      await Promise.all(conversationReadReceipts.windows);
       await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Fresh open-time words"));
       expect(callsTo("thread.page")).toHaveLength(1);
       expect(frames.length).toBeGreaterThan(0);
       expect(frames.some((frame) => frame.empty || !/Cached before the roster|Fresh open-time words/.test(frame.text))).toBe(false);
     } finally {
-      observer?.disconnect();
       releasePage();
+      await Promise.allSettled(conversationReadReceipts.windows);
+      observer?.disconnect();
+      conversationReadReceipts.enabled = false;
     }
   });
 

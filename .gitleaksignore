@@ -76,3 +76,8 @@ f9743f792a7a4b0854b24464cb0c890aa50be435:scripts/http-resource-coverage.test.mjs
 e8f22fde3b31141c5c7019ccdc7086a0eec99442:fixtures/bridge-http/device-proofs.json:jwt:3
 e8f22fde3b31141c5c7019ccdc7086a0eec99442:fixtures/bridge-http/device-proofs.json:jwt:5
 e8f22fde3b31141c5c7019ccdc7086a0eec99442:fixtures/bridge-http/device-proofs.json:jwt:7
+
+# #1003 public SHA-256 of a lexically inventoried capabilities return statement
+# beside push.registerKey in the HTTP coverage test. Recomputed by that test's
+# fingerprint(source) helper; not a credential. Exact introducing finding only.
+39d40cae2cf674b103884dd230d1cffeabcf3cd6:scripts/http-resource-coverage.test.mjs:generic-api-key:108

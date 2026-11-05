@@ -1,45 +1,45 @@
-//! Pin the Codex home without following path-component symlinks.
+//! Create only the private registry leaf beneath Build's trusted state root.
 use rustix::fs::{self, Mode, OFlags};
 use rustix::io::Errno;
-use std::ffi::OsStr;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io;
-use std::os::unix::fs::MetadataExt;
-use std::path::{Component, Path};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::path::Path;
 
-const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
-    .union(OFlags::DIRECTORY)
-    .union(OFlags::NOFOLLOW)
-    .union(OFlags::CLOEXEC);
-
-pub(super) fn open_or_create(home: &Path) -> io::Result<File> {
-    if !home.is_absolute() {
+pub(super) fn open_or_create(root: &Path) -> io::Result<File> {
+    if !root.is_absolute() {
         return Err(io::ErrorKind::InvalidInput.into());
     }
-    let mut directory = File::open("/")?;
-    for component in home.components() {
-        match component {
-            Component::RootDir => (),
-            Component::Normal(name) => directory = child(&directory, name)?,
-            _ => return Err(io::ErrorKind::InvalidInput.into()),
-        }
-    }
+    let parent = root.parent().ok_or(io::ErrorKind::InvalidInput)?;
+    let name = root.file_name().ok_or(io::ErrorKind::InvalidInput)?;
+    // State-root selection belongs to the trusted launch context. Normal path
+    // resolution here preserves the user's existing parent layout.
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+        .open(parent)?;
     // SAFETY: geteuid has no pointer arguments or preconditions.
-    if directory.metadata()?.uid() != unsafe { libc::geteuid() } {
+    let uid = unsafe { libc::geteuid() };
+    if directory.metadata()?.uid() != uid {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
-    Ok(directory)
-}
-
-fn child(parent: &File, name: &OsStr) -> io::Result<File> {
-    match fs::openat(parent, name, DIRECTORY_FLAGS, Mode::empty()) {
-        Ok(descriptor) => return Ok(descriptor.into()),
-        Err(Errno::NOENT) => (),
-        Err(error) => return Err(error.into()),
-    }
-    match fs::mkdirat(parent, name, Mode::from_bits_truncate(0o700)) {
+    match fs::mkdirat(&directory, name, Mode::from_bits_truncate(0o700)) {
         Ok(()) | Err(Errno::EXIST) => (),
         Err(error) => return Err(error.into()),
     }
-    Ok(fs::openat(parent, name, DIRECTORY_FLAGS, Mode::empty())?.into())
+    let leaf: File = fs::openat(
+        &directory,
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?
+    .into();
+    let metadata = leaf.metadata()?;
+    if metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    // Also sync an existing entry: another process may have created it just
+    // before this open and not yet completed its own parent fsync.
+    directory.sync_all()?;
+    Ok(leaf)
 }

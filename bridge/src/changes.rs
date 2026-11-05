@@ -3451,12 +3451,34 @@ mod subscriptions {
         assert_eq!(parsed.scope, Scope::Entity("run-7".into()));
         assert_eq!(
             parsed.kinds,
-            Kind::ALL
-                .into_iter()
-                .filter(|kind| *kind != Kind::CompactionChanged)
-                .collect()
+            [
+                Kind::State,
+                Kind::Thread,
+                Kind::Git,
+                Kind::Files,
+                Kind::Terminals,
+                Kind::Tasks
+            ]
+            .into_iter()
+            .collect()
         );
         assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
+    }
+
+    #[test]
+    fn file_hint_subscriptions_round_trip_alone_and_beside_legacy_files() {
+        for kinds in [vec!["files.hints"], vec!["files", "files.hints"]] {
+            let wire = json!({
+                "subscription_id": "synthetic-files-roundtrip",
+                "scope": { "kind": "entity", "id": "synthetic-run" },
+                "kinds": kinds,
+                "mode": "realtime",
+                "priority": "foreground",
+            });
+            let parsed: SubscriptionSpec = serde_json::from_value(wire.clone()).unwrap();
+            assert!(parsed.kinds.contains(Kind::FilesHints));
+            assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
+        }
     }
 
     /// The defaults and the clamp: a mode is realtime and a priority is

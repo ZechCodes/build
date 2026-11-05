@@ -774,6 +774,7 @@
     {
       "type": "changes",
       "subscription_id": "synthetic-files-hints",
+      "bridge_epoch": "synthetic-bridge-epoch",
       "items": [
         {
           "entity_id": "synthetic-run",

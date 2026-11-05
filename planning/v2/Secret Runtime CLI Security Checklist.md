@@ -13,9 +13,9 @@ to #1003 and are not changed here.
 | 2 | Explicit facade environment is mandatory and must match the launch channel. | Shared runtime/management facade contract tests; no registry or production management bypass. |
 | 3 | Exact stdout bytes, no newline, bounded value; fixed bounded stderr errors. | Whitespace/multiline/16 KiB, truncated payload, oversized header/body, untrusted error and non-UTF-8 argv regressions. |
 | 4 | No value or capability in argv, audit or incidental credential files. | Shared facade/socket tests, durable audit identifier regressions, profile argv assertions and provider qualification. Intentional stdout/transcript capture is an accepted boundary. |
-| 5 | Every harness receives its own shell capability and absolute runtime PATH. | Actual PTY, ADK and app-server carrier shell fixtures; all-provider spec matrix; prepared launch test. |
-| 6 | Codex keeps default credential filtering; only dedicated secret variables and PATH are restored. | Narrow policy test, filtered shell-child test and real Codex 0.166.0 shell calls against a loopback fake provider. MCP auth, other Bridge variables and AWS credentials remain absent. |
-| 7 | Known TUI capability-on-disk exposure is restricted and cleaned. | 0600 exclusive profile creation; user config byte identity, session-end/failed-spawn removal, owned canonical-prefix orphan sweep, symlink refusal and live-file locks. Startup calls the sweep off runtime workers. |
+| 5 | Every harness receives its own shell capability; a recognized private runtime directory is added only to agent PATH. | Actual PTY, ADK and app-server carrier shell fixtures; all-provider spec matrix; prepared launch test. |
+| 6 | Codex preserves the effective user policy, including inheritance, custom settings and filters; only six dedicated variables are overlaid, with no PATH set override. | Narrow policy test, filtered shell-child test and real Codex 0.166.0 shell calls against a loopback fake provider. MCP auth, other Bridge variables and AWS credentials remain absent. |
+| 7 | Known TUI capability-on-disk exposure is restricted and cleaned; fresh homes are owned 0700 directories opened without following symlinks. | 0600 exclusive profile creation; user config byte identity, session-end/failed-spawn removal, owned canonical-prefix orphan sweep, symlink refusal and live-file locks. Startup calls the sweep off runtime workers. |
 | 8 | App-server private thread config does not enter default provider persistence in the qualified version. | Completed initial and restarted/resumed turns with rotated capabilities; rollout/default-log scans found zero copies. TUI profile-selected exec likewise left no copy outside its expected profile. |
 | 9 | Child agents, probes and plain terminal tabs acquire no inherited secret authority. | Prefix removal through each process carrier, terminal and installed probe tests; independent session rotation/reset authority regressions. |
 | 10 | Private transport and denial persistence have bounded resource use, while releases remain individually auditable. | 250-ms pre-auth deadline, minute/session denial coalescing, 4,096-group cap, additive migration and indexed bounded caller reader; existing rate/concurrency/audit-before-release tests. |
@@ -32,7 +32,7 @@ provider qualification evidence. The full repository suite remains the serial
 merge gate; targeted checks skip nothing.
 
 
-## Validation — 2026-11-05
+## Initial validation — 2026-11-05, head 5b09aa024
 
 All commands ran under `nice -n 10`; TMPDIR and CARGO_TARGET_DIR remained under
 `/home/zech/Projects/.agent-scratch/secrets-d/`. No tests were skipped.
@@ -54,3 +54,46 @@ The initial all-harness test caught a fixture that incorrectly put Pi state
 inside its checkout. The corrected fixture separates those roots; its full
 matrix and the complete targeted secret group pass. No complexity ratchet
 annotations were added. Gitleaks and diff checks gate the final branch push.
+
+
+## Review revision — launcher integration and effective user policy
+
+Terra and Opus findings are covered by regressions before the fixes:
+legacy rollback/deploy/pinned binaries, occupied runtime destinations, missing
+Codex home and home symlinks, user-policy inheritance/filter replacement, and
+40-byte stdout writes to closed pipes or `/dev/full`. These reproduced the
+reported failures. No new complexity ratchet annotations were added.
+
+The runtime is now `<bin>/.build-runtime/buildctl`, resolving `../build-bridge`.
+Global BuildKit/management commands stay untouched. Foreign runtime destinations
+are skipped with a warning and never added to agent PATH. The shell installer
+prepares its embedded launcher and provenance before replacing the binary;
+helper failure preserves the old installation, and failed provenance publication
+restores it (or removes a fresh candidate). Historical binaries without the
+launcher subcommand still support rollback, old-ref deployment and pinned install.
+
+A bounded, authority-stripped native Codex config probe resolves the effective
+user policy before overlay. Both carriers preserve inheritance, custom set and
+legacy/modern filters, extending only the six dedicated names. Arbitrary user
+keys are safely TOML-serialized; the existing TOML display feature adds locked
+`toml_write` 0.1.2. Profile creation uses an owned no-follow directory descriptor.
+The delivery path itself is tested, including TUI-only profile publication,
+probe authority stripping, unchanged user config and clean checkout status.
+
+Current targeted functional checks: secret filter170, CLI8, private runtime7,
+updater25 and prepared launch1 — **211 distinct Rust tests**, all exit0. Tools
+pytest351 +13subtests (synthetic rehearsal, zero skips), installer32cases, ruff
+and Shellcheck pass. The final task report records clippy/fmt/security-scan and
+push results after the fixture complexity refactor.
+
+Four actual Codex 0.166.0 checks cover legacy/modern filters across both carriers.
+They validate completed command output and exit0, replacing the earlier weaker
+text-search assertion. The user policy remains intact; capability scans find
+only the expected live profile, and no copy after cleanup. The reproducible
+updated driver and evidence are attached to #1004. The early locale-based
+native red check is superseded; the two Rust inheritance failures are the valid
+policy red baseline. Initial persistence scans remain valid.
+
+Legacy migration coverage now seeds4100 denials and proves only the newest4096
+survive, while releases/totals and timestamp/counter backfills remain correct.
+The production audit schema/predicates and #1003 reconciliation are unchanged.

@@ -7,7 +7,7 @@ import { applyDirectoryHint, chooseFilePushKind } from "./directoryPages.js";
 const projectSource = (scope) => scope.project_id && scope.source_id && scope.source_path
   ? { kind: "project_source", project_id: scope.project_id, source_id: scope.source_id, source_path: scope.source_path } : null;
 
-function watchScope(scope, deviceId) {
+export function directoryWatchSpec(scope, deviceId) {
   const source = projectSource(scope);
   if (source && bridgeCapabilities(deviceId).changes?.projectSources) return { scope: source, kinds: [chooseFilePushKind(deviceId)] };
   const entity = scope.entity_id || scope.run_id || scope.worktree_id;
@@ -44,7 +44,7 @@ export function createDirectoryWatcher({ deviceId, scopeOf, entityIdOf, active =
     });
   };
   const bind = (force = false) => {
-    const spec = wantsSubscription() ? watchScope(scopeOf(), deviceId) : null;
+    const spec = wantsSubscription() ? directoryWatchSpec(scopeOf(), deviceId) : null;
     const next = spec ? JSON.stringify(spec) : null;
     if (!force && next === signature) return;
     retire(); signature = next;

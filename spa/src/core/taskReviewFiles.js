@@ -5,6 +5,7 @@ import { cacheFileBody } from "./cacheLifetime.js";
 import { pageFromAnswer } from "./bodyPages.js";
 import { mountFileTree } from "./fileTree.js";
 import { chooseFilePushKind, directoryPageParams, fileTouchedByHint, normalizedDirectoryHint } from "./directoryPages.js";
+import { directoryWatchSpec } from "./directoryWatcher.js";
 import { mountFileTabs } from "./fileTabs.js";
 import { fileBodyReading, isMediaPath } from "./fileViewer.js";
 import { mountPagedFile, sourceLinesPainter, wholeBytesPainter } from "./pagedFileView.js";
@@ -251,20 +252,29 @@ export function mountTaskReviewFiles(host, options) {
     return record;
   };
 
-  const refreshFile = async (name) => {
-    const serial = fileSerial;
+  const readIsCurrent = (active) => !active || active();
+  const selectionIsCurrent = (name, serial, active) => !disposed && selected === name
+    && serial === fileSerial && readIsCurrent(active);
+  const readFileIntoCache = async (name, active) => {
     const head = address(fileKind(live), name);
     const previous = await readCached(head);
+    if (!readIsCurrent(active)) return false;
+    const file = await readFile(name);
+    if (!readIsCurrent(active)) return false;
+    const written = recordWriteOf(previous);
+    await cacheFileBody({ deviceId, entityId: projectId, kind: head.kind, path: head.sub, file,
+      written, still: active, readPage: pageReader(name, file.mime) });
+    return true;
+  };
+  const refreshFile = async (name, active = null) => {
+    if (!readIsCurrent(active)) return;
+    const serial = fileSerial;
     try {
-      const file = await readFile(name);
-      const written = recordWriteOf(previous);
-      await cacheFileBody({ deviceId, entityId: projectId, kind: head.kind, path: head.sub, file,
-        written, readPage: pageReader(name, file.mime) });
-      if (disposed || selected !== name || serial !== fileSerial) return;
+      if (!(await readFileIntoCache(name, active)) || !selectionIsCurrent(name, serial, active)) return;
       setFileFailure(name, "");
       await paintHeldFile(name, serial);
     } catch (error) {
-      if (!disposed && selected === name && serial === fileSerial) setFileFailure(name, readError(error));
+      if (selectionIsCurrent(name, serial, active)) setFileFailure(name, readError(error));
     }
   };
 
@@ -346,11 +356,17 @@ export function mountTaskReviewFiles(host, options) {
   };
   preview.addEventListener("click", onPreviewClick);
 
-  const refreshLive = () => {
+  const refreshSelected = (active) => {
+    const name = selected, serial = fileSerial;
+    if (name && active()) void refreshFile(name, () => active() && selected === name && serial === fileSerial);
+  };
+  const refreshLive = (active = () => true) => {
     if (disposed) return;
     if (chooseFilePushKind(deviceId) === "files.hints") {
-      void tree.invalidate({ paths: [], truncated: true });
-      if (selected && syncPaneShown(host)) void refreshFile(selected);
+      const current = () => active() && !disposed && syncPaneShown(host);
+      if (!current()) return;
+      void tree.invalidate({ paths: [], truncated: true }, current);
+      refreshSelected(current);
       return;
     }
     tree.relist();
@@ -366,19 +382,38 @@ export function mountTaskReviewFiles(host, options) {
       if (paths.length || files.some((item) => item.root)) tree.relist(paths);
       if (selected && paths.includes(selected)) void refreshFile(selected);
   };
-  const liveChanges = (items) => {
+  const liveChanges = (items, active) => {
     if (chooseFilePushKind(deviceId) !== "files.hints") return legacyLiveChanges(items);
-    const hint = normalizedDirectoryHint(items.find((item) => item.files)?.files);
-    void tree.invalidate(hint);
-    if (selected && syncPaneShown(host) && fileTouchedByHint(selected, hint)) void refreshFile(selected);
+    const hints = items.map((item) => item.files).filter(Boolean).map(normalizedDirectoryHint);
+    if (!hints.length) return;
+    const hint = normalizedDirectoryHint({ paths: hints.flatMap((files) => files.paths), truncated: hints.some((files) => files.truncated) });
+    const current = () => active() && !disposed && syncPaneShown(host);
+    if (!current()) return;
+    void tree.invalidate(hint, current);
+    if (selected && fileTouchedByHint(selected, hint)) refreshSelected(current);
   };
   let liveWatcher = null;
+  let liveBinding = 0;
   const bindLiveWatcher = () => {
+    const binding = ++liveBinding;
     liveWatcher?.dispose();
-    if (!live) return;
-    const target = chooseFilePushKind(deviceId) === "files.hints"
-      ? { entity: null, kinds: ["state"] } : { entity: workspaceId, kinds: ["files"] };
-    liveWatcher = watchChanges({ deviceId, ...target, mode: "realtime", refresh: refreshLive, onChanges: liveChanges });
+    liveWatcher = null;
+    if (!live || disposed) return;
+    const active = () => !disposed && binding === liveBinding;
+    const modern = chooseFilePushKind(deviceId) === "files.hints";
+    const target = modern ? directoryWatchSpec({ project_id: projectId,
+      source_id: directory.source_id, source_path: directory.source_path, workspace_id: workspaceId }, deviceId)
+      : { entity: workspaceId, kinds: ["files"] };
+    liveWatcher = watchChanges({ deviceId, ...target, mode: "realtime",
+      refresh: () => { if (active()) refreshLive(active); },
+      onChanges: (items) => {
+        if (!active()) return;
+        // A workspace without a filesystem subject keeps only the reconnect
+        // refresh hook. Board state is not a file invalidation.
+        if (modern && target.kinds.includes("state")) return;
+        liveChanges(items, active);
+      },
+    });
   };
   const stopLiveGreeting = onBridgeGreeted((changed) => { if (changed === deviceId) bindLiveWatcher(); });
   bindLiveWatcher();
@@ -415,6 +450,7 @@ export function mountTaskReviewFiles(host, options) {
     },
     dispose() {
       disposed = true;
+      liveBinding++;
       selectionGeneration++;
       fileSerial += 1;
       unwatchFile?.();

@@ -378,6 +378,20 @@ mod tests {
             .unwrap()
     }
 
+    fn assert_denial_indexes(connection: &rusqlite::Connection) {
+        for (name, sql) in audit_indexes(connection) {
+            if name.contains("denial") {
+                assert!(
+                    sql.contains("secret_unavailable")
+                        && sql.contains("secret_expired")
+                        && sql.contains("secret_revoked"),
+                    "{sql}"
+                );
+                assert!(!sql.contains("!='released'"), "{sql}");
+            }
+        }
+    }
+
     fn assert_d_upgrade(alter_order: bool, missing_groups: bool) {
         let connection = rusqlite::Connection::open_in_memory().unwrap();
         let mut old = SCHEMA.replace(
@@ -414,17 +428,7 @@ mod tests {
         assert_eq!(audit_columns(&connection), audit_columns(&fresh));
         assert_eq!(audit_indexes(&connection), audit_indexes(&fresh));
         assert_eq!(audit_indexes(&connection).len(), 5);
-        for (name, sql) in audit_indexes(&connection) {
-            if name.contains("denial") {
-                assert!(
-                    sql.contains("secret_unavailable")
-                        && sql.contains("secret_expired")
-                        && sql.contains("secret_revoked"),
-                    "{sql}"
-                );
-                assert!(!sql.contains("!='released'"), "{sql}");
-            }
-        }
+        assert_denial_indexes(&connection);
         connection.execute("INSERT INTO secret_audit(secret_id,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,last_occurred_at,outcome) VALUES ('sec_synthetic','project-a','owner-a','agent-a','conversation-a','generation-a','device_user','synthetic-request',1020,1020,'created')",[]).unwrap();
         assert_eq!(connection.last_insert_rowid(), 901);
         initialize(&connection).unwrap();

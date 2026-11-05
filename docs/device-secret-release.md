@@ -35,7 +35,10 @@ including newline). Only these fields are accepted:
 {"agent_id":"agent-example","capability":"<launch capability>","secret_id":"sec_00000000-0000-4000-8000-000000000001","request_id":"00000000-0000-4000-8000-000000000002"}
 ```
 
-Request IDs are canonical UUIDs. The capability is authentication material; it
+Client request IDs are canonical UUIDs used only for bounded request admission;
+they are never copied into durable audit. Each audit event receives a fresh
+bridge-generated UUID, even when a client retries the same request ID.
+The capability is authentication material; it
 must never enter argv, diagnostics, message text, history or audit records.
 
 Success starts with `{"ok":true,"length":N}\n`, followed by exactly N raw bytes
@@ -63,8 +66,11 @@ FULL-committed to SQLite before any value bytes are sent. A failed audit write
 refuses the release. A release already committed may finish after revocation;
 a later release cannot pass its tombstone.
 
-Audit contains IDs, resolved caller/generation/session incarnation, request ID,
-time and outcome. It contains no values, value hashes, command arguments or
+Audit contains resolved metadata IDs, caller/generation/session incarnation,
+a bridge-generated audit request UUID, time and outcome. Unknown and wrong-scope
+targets use the fixed `unavailable` sentinel; neither their supplied secret IDs
+nor client request IDs enter audit. Known targets and summary keys come only
+from the authorized stored record. It contains no values, value hashes, command arguments or
 child output. Authorized releases remain individually attributable; invalid
 capability failures are coalesced. Maintenance drops detailed events older than
 90 days while retaining summaries (last release, count and status). It runs

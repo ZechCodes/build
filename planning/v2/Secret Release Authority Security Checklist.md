@@ -4,8 +4,9 @@ Scope: #1002, the private local session authority and audit layer, on top of
 #1001's encrypted vault. Public uploads, message admission, runtime CLI
 installation and SPA interaction remain separately reviewed slices.
 
-**Scoped score: 100/100.** All controls below are verified by the targeted
-implementation, tests and read-only security review. The final task report
+Scoped verification is being refreshed after the caller-controlled audit
+identifier review finding. The previous frozen head's validation is below;
+new regression evidence and the revised frozen head will be recorded on #1002. The final task report
 records the frozen commit, commands, actual exit codes and attached evidence.
 No public capability is advertised by this change.
 

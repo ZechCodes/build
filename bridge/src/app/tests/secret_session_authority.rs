@@ -191,3 +191,74 @@ fn secret_session_candidate_roster_is_denied_until_its_durable_save() {
         .unwrap();
     assert!(authority.authenticate(&new_agent, token).is_some());
 }
+
+#[test]
+fn audit_identifiers_never_persist_a_launch_capability_or_uuid_value_as_request_id() {
+    use crate::secrets::{GrantScope, SecretContext, SecretService, SecretValue, StageContext};
+    let mut fixture = Fixture::new();
+    let (authority, capability, caller) = fixture.launch();
+    let vault = tempfile::tempdir().unwrap();
+    let writer = fixture.app.store.as_ref().unwrap().writer();
+    let service = SecretService::open(vault.path(), "synthetic-device", writer.clone()).unwrap();
+    let value = uuid::Uuid::new_v4().to_string();
+    let record = service
+        .stage(
+            SecretContext {
+                id: format!("sec_{}", uuid::Uuid::new_v4()),
+                device_id: caller.device_id.clone(),
+                creator: "synthetic-user".into(),
+                name: "SYNTHETIC_UUID_TOKEN".into(),
+                ttl_seconds: None,
+                grant: GrantScope::Agent {
+                    agent_id: caller.agent_id.clone(),
+                    conversation_id: caller.conversation_id.clone(),
+                    generation: caller.generation.clone(),
+                },
+                stage: StageContext {
+                    owner_id: caller.owner_id.clone(),
+                    conversation_id: caller.conversation_id.clone(),
+                    generation: caller.generation.clone(),
+                    draft_id: None,
+                },
+            },
+            SecretValue::new(value.as_bytes().to_vec()).unwrap(),
+            uuid::Uuid::new_v4().to_string(),
+            "a".repeat(64),
+        )
+        .unwrap();
+    service
+        .attach(
+            std::slice::from_ref(&record.context.id),
+            "synthetic-message",
+        )
+        .unwrap();
+    for supplied_request in [&capability, &value, &capability] {
+        let released = service
+            .release(&caller, &record.context.id, supplied_request, || {
+                authority.revalidate(&caller)
+            })
+            .unwrap();
+        assert_eq!(released.as_bytes(), value.as_bytes());
+    }
+    let audit = writer
+        .secret_audit_page(&record.context.id, 0, 100)
+        .unwrap();
+    assert_eq!(audit.len(), 3);
+    let stored = serde_json::to_string(&audit).unwrap();
+    assert!(
+        !stored.contains(&capability),
+        "launch capability must never enter durable audit"
+    );
+    assert!(
+        !stored.contains(&value),
+        "UUID-shaped value must never enter durable audit"
+    );
+    let mut identities = std::collections::HashSet::new();
+    for event in audit {
+        assert!(uuid::Uuid::parse_str(&event.request_id).is_ok());
+        assert!(
+            identities.insert(event.request_id),
+            "every attempt gets a server identity"
+        );
+    }
+}

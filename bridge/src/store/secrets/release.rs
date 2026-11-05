@@ -10,12 +10,12 @@ impl StoreWriter {
         &self,
         caller: &SecretCaller,
         id: &str,
-        request_id: &str,
+        client_request_id: &str,
         observed_at: i64,
         is_current: impl FnOnce() -> bool,
         read: impl FnOnce(&Transaction<'_>, &SecretRecord) -> Result<T>,
     ) -> Result<T> {
-        validate_request(caller, request_id)?;
+        validate_request(caller, client_request_id)?;
         let result = writes::durable(self, |tx| {
             if !is_current() || !committed_member(tx, caller)? {
                 return Err(SecretError::Unauthorized);
@@ -35,13 +35,7 @@ impl StoreWriter {
                 None => Err(SecretError::Unavailable),
             };
             let outcome = outcome(&result);
-            // Do not persist attacker-controlled malformed identifiers.
-            let audit_id = if crate::secrets::validate_id(id).is_ok() {
-                id
-            } else {
-                "invalid"
-            };
-            audit::append_in(tx, caller, audit_id, authorized, request_id, outcome)?;
+            audit::append_in(tx, caller, authorized, outcome)?;
             Ok(result)
         })?;
         result

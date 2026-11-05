@@ -29,6 +29,7 @@ pub struct SecretAuditRecord {
     pub conversation_id: String,
     pub generation: String,
     pub session_incarnation: String,
+    /// Bridge-generated audit identity, independent of the client request ID.
     pub request_id: String,
     pub occurred_at: i64,
     pub outcome: String,

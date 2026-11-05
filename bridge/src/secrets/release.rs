@@ -12,6 +12,8 @@ impl SecretService {
     /// Only a private authenticated local endpoint may call this method.
     /// `is_current` must read the latest issued-session authority without the
     /// global app lock; it is evaluated at the metadata linearization point.
+    /// The client request ID is validated for admission only. Audit generates
+    /// an independent server identity and never persists that client input.
     pub fn release(
         &self,
         caller: &SecretCaller,

@@ -10,12 +10,15 @@ const DETAIL_RETENTION_SECONDS: i64 = 90 * 24 * 60 * 60;
 pub(super) fn append_in(
     tx: &Transaction<'_>,
     caller: &SecretCaller,
-    id: &str,
     record: Option<&SecretRecord>,
-    request_id: &str,
     outcome: &str,
 ) -> Result<()> {
     let now = records::highwater(tx)?;
+    // Only resolved, authorized metadata reaches the durable sink. Never
+    // persist an endpoint-supplied selector or correlation ID: either can be
+    // chosen to contain a capability or a UUID-shaped secret value.
+    let id = record.map_or("unavailable", |record| record.context.id.as_str());
+    let request_id = uuid::Uuid::new_v4().to_string();
     let creator = record.map(|record| record.context.creator.as_str());
     let changed=tx.execute("INSERT INTO secret_audit (secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",params![id,creator,caller.project_id,caller.owner_id,caller.agent_id,caller.conversation_id,caller.generation,caller.session_incarnation,request_id,now,outcome])?;
     if changed != 1 {

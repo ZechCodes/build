@@ -412,12 +412,15 @@ fn audit_pagination_is_bounded_and_every_release_is_individually_attributable() 
     assert!(writer.secret_audit_page(&rec.context.id, 0, 0).is_err());
     let page = writer.secret_audit_page(&rec.context.id, 0, 1).unwrap();
     assert_eq!(page.len(), 1);
-    assert_eq!(page[0].request_id, "synthetic-request-1");
+    assert!(uuid::Uuid::parse_str(&page[0].request_id).is_ok());
+    assert_ne!(page[0].request_id, "synthetic-request-1");
     assert_eq!(page[0].session_incarnation, f.caller.session_incarnation);
     let next = writer
         .secret_audit_page(&rec.context.id, page[0].sequence, 1)
         .unwrap();
-    assert_eq!(next[0].request_id, "synthetic-request-2");
+    assert!(uuid::Uuid::parse_str(&next[0].request_id).is_ok());
+    assert_ne!(next[0].request_id, "synthetic-request-2");
+    assert_ne!(page[0].request_id, next[0].request_id);
 }
 
 #[test]
@@ -750,4 +753,47 @@ fn schema_24_upgrade_adds_audit_without_changing_existing_metadata_or_value() {
         )
         .unwrap();
     assert_eq!(version, "25");
+}
+
+#[test]
+fn audit_identifiers_use_fixed_target_for_unknown_and_wrong_scope_requests() {
+    let f = Fixture::new();
+    let sensitive_uuid = uuid::Uuid::new_v4().to_string();
+    let unknown = format!("sec_{sensitive_uuid}");
+    let wrong_scope = f.secret(
+        GrantScope::Project {
+            project_id: "synthetic-other-project".into(),
+        },
+        None,
+    );
+    for supplied_id in [&unknown, &wrong_scope.context.id] {
+        assert!(matches!(
+            f.service
+                .release(&f.caller, supplied_id, &sensitive_uuid, || true),
+            Err(SecretError::Unavailable)
+        ));
+    }
+    let connection = f.store.writer_for_test();
+    let mut query = connection
+        .prepare("SELECT secret_id,request_id FROM secret_audit ORDER BY sequence")
+        .unwrap();
+    let identifiers = query
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(identifiers.len(), 2);
+    for (target, request_id) in identifiers {
+        assert_eq!(
+            target, "unavailable",
+            "denied audit targets must be independent of supplied selectors"
+        );
+        assert!(
+            !request_id.contains(&sensitive_uuid),
+            "client bytes must not enter audit request identifiers"
+        );
+        assert!(uuid::Uuid::parse_str(&request_id).is_ok());
+    }
 }

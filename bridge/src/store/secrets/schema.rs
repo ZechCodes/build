@@ -205,7 +205,6 @@ fn ensure_pending_key_column(connection: &rusqlite::Connection) -> rusqlite::Res
 fn ensure_audit_upgrades(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
     connection.execute_batch("SAVEPOINT secret_audit_upgrade")?;
     let result = (|| {
-        connection.execute_batch("DROP TRIGGER IF EXISTS secret_records_prune_lifecycle_audit")?;
         ensure_audit_group_columns(connection)?;
         ensure_lifecycle_audit(connection)?;
         ensure_audit_indexes(connection)?;
@@ -297,6 +296,7 @@ fn ensure_lifecycle_audit(connection: &rusqlite::Connection) -> rusqlite::Result
     {
         return Ok(());
     }
+    connection.execute_batch("DROP TRIGGER IF EXISTS secret_records_prune_lifecycle_audit")?;
     let revised = upgraded_audit_table()?;
     connection.execute_batch(&revised)?;
     connection.execute_batch(&format!(

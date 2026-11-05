@@ -165,8 +165,7 @@ fn extend_codex_policy(
         .entry("set")
         .or_insert_with(|| serde_json::json!({}))
         .as_object_mut()?;
-    // Other Build authority is never restored by a user's custom set map.
-    set.retain(|name, _| !name.to_ascii_uppercase().starts_with("BRIDGE_"));
+    // Explicit user settings remain theirs; replace only this launch's names.
     set.extend(launch);
     Some(policy.into())
 }
@@ -266,12 +265,13 @@ mod tests {
         .unwrap();
         let config = codex_thread_config(&spec, Some(serde_json::json!({"shell_environment_policy": {
             "inherit": "core", "ignore_default_excludes": false, "exclude": ["CORP_*"],
-            "include_only": ["PATH", "HOME", "LANG"], "set": {"CUSTOM_POLICY": "kept", "PATH": "/corporate/bin"}
+                "include_only": ["PATH", "HOME", "LANG"], "set": {"CUSTOM_POLICY": "kept", "BRIDGE_CUSTOM": "user-choice", "PATH": "/corporate/bin"}
         }}))).unwrap();
         let policy = &config["shell_environment_policy"];
         assert_eq!(policy["inherit"], "core");
         assert_eq!(policy["exclude"], serde_json::json!(["CORP_*", "BRIDGE_*"]));
         assert_eq!(policy["set"]["CUSTOM_POLICY"], "kept");
+        assert_eq!(policy["set"]["BRIDGE_CUSTOM"], "user-choice");
         assert_eq!(policy["set"]["PATH"], "/corporate/bin");
         let allowed = policy["include_only"].as_array().unwrap();
         for name in SECRET_ENVIRONMENT

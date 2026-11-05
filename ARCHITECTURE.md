@@ -841,7 +841,7 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
 
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.31.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.35.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   3.31.0 retires snapshot-mode creation and actions, removes legacy agent
   mutation tools and adds the compact `legacy_review` summary marker,
   independently announced by `tasks.review.snapshotRetired` (#974).

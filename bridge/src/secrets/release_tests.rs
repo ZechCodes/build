@@ -775,7 +775,9 @@ fn audit_identifiers_use_fixed_target_for_unknown_and_wrong_scope_requests() {
     }
     let connection = f.store.writer_for_test();
     let mut query = connection
-        .prepare("SELECT secret_id,request_id FROM secret_audit ORDER BY sequence")
+        // Lifecycle events now coexist in this table; this security assertion
+        // concerns the two denied attempts and their fixed unavailable target.
+        .prepare("SELECT secret_id,request_id FROM secret_audit WHERE outcome='secret_unavailable' ORDER BY sequence")
         .unwrap();
     let identifiers = query
         .query_map([], |row| {

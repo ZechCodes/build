@@ -803,8 +803,7 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
     // agent can create work in state that might be discarded. The local health
     // beat still proves the daemon initialized and its app lock is responsive.
     wait_for_update_probation(&runtime.config).await;
-    sweep_startup_secret_profiles().await;
-    sweep_startup_uploads(app.clone()).await;
+    sweep_startup_artifacts(app.clone()).await;
     // The relay socket, redialled for as long as the daemon runs, on the
     // liveness runtime. The main thread waits for the signal that ends the
     // daemon; the socket task is aborted then, which is the socket generation
@@ -1030,8 +1029,9 @@ async fn sweep_startup_secret_profiles() {
     }
 }
 
-/// Stage cleanup is startup I/O and runs outside runtime workers.
-async fn sweep_startup_uploads(app: Arc<std::sync::Mutex<AppState>>) {
+/// Transient artifact cleanup runs before agents resume, outside runtime workers.
+async fn sweep_startup_artifacts(app: Arc<std::sync::Mutex<AppState>>) {
+    sweep_startup_secret_profiles().await;
     let removed = tokio::task::spawn_blocking(move || app.lock().unwrap().sweep_stale_uploads())
         .await
         .expect("startup upload cleanup completed");

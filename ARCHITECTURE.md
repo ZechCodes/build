@@ -111,10 +111,11 @@ CLI version probes: they drop a parent agent's session markers
 ### Secret runtime command
 
 The installer, management deploy/rollback and self-update install the embedded
-`bridge/runtime/buildctl` launcher beside the bridge. Agent launches prepend
-that absolute directory to PATH; ordinary terminal tabs receive no agent
-capability. The launcher forwards `buildctl --env <channel> secrets get --id
-<id>` to its sibling bridge without a checkout or language runtime. The
+`bridge/runtime/buildctl` launcher at `<bin>/.build-runtime/buildctl`. Agent
+launches prepend only that private directory, after recognizing the Build
+wrapper; ordinary terminal PATH and global `buildctl` remain untouched. A
+foreign runtime destination is skipped with a warning. The launcher forwards `buildctl --env <channel> secrets get --id
+<id>` to `../build-bridge` without a checkout or language runtime. The
 repository management facade execs the launch-supplied absolute
 `BRIDGE_SECRET_BRIDGE` and retains its production management restrictions.
 
@@ -124,8 +125,9 @@ context, checks any explicit environment against that channel, sends one bounded
 request, buffers at most 16 KiB under an absolute I/O deadline, and writes exact
 value bytes with no added newline. Diagnostics use a fixed error allowlist.
 Values are intentionally visible to stdout consumers and their transcripts.
-Codex retains default credential-name filtering and restores only the dedicated
-secret variables and PATH. The TUI uses a unique 0600 profile under CODEX_HOME,
+Codex extends the user's effective shell policy, preserving inheritance,
+custom settings and filters while restoring only the six dedicated secret
+variables. Runtime PATH enters the harness environment, not the policy set. The TUI uses a unique 0600 profile under CODEX_HOME,
 removed on session end; startup sweeps unlocked owned Build profiles. App-server
 start/resume uses private stdio configuration. The known TUI capability-on-disk
 exposure and provider persistence qualification are recorded in

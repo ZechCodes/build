@@ -90,7 +90,8 @@ outside the global app lock.
 channel) writes the exact value bytes to stdout, with no added newline. Both
 the installed launcher and repository management facade exec the bridge's
 `secrets get` command. The installed launcher needs only a POSIX shell and its
-sibling bridge; it does not need Python, Cargo, Git or a checkout. Missing or
+parent-directory bridge (`../build-bridge`); it does not need Python, Cargo, Git
+or a checkout. Missing or
 stale capability context and an environment mismatch fail as `unauthorized`.
 Errors are fixed bounded stderr messages and never include values or envelopes.
 Production deployment restrictions in the management CLI remain unchanged.
@@ -101,7 +102,11 @@ absolute socket deadline, and writes no temporary credential file. Broken pipe,
 spawn failure and process termination leave no credential file to clean up.
 Retrieved bytes are deliberately printed; downstream tools/transcripts can
 capture them. The installer, self-update, deployment and rollback install the
-launcher beside the selected bridge, refusing to overwrite an unrelated CLI.
+launcher in the selected bridge's `.build-runtime/` subdirectory. It never
+writes a global `buildctl`. A foreign runtime destination is preserved and
+skipped with a warning; its directory is not added to agent PATH. Rollback,
+older-ref deployment and pinned installs tolerate older bridges that lack the
+launcher subcommand.
 
 This slice does not advertise public secret capabilities or enable uploads or
 message attachment admission. Those are separate slices.
@@ -110,9 +115,12 @@ message attachment admission. Those are separate slices.
 ## Codex shell capability and on-disk exposure
 
 Codex filters credential-shaped environment names before shell commands run.
-Build retains those default exclusions and excludes other `BRIDGE_*` variables,
-then restores only the six dedicated secret-launch variables and the launcher
-PATH. The MCP token is not part of that restored set. Capability bytes never
+Build extends the user's effective policy: inheritance and custom set values
+remain, `BRIDGE_*` joins exclusions, and the six dedicated names join any
+existing include allowlist. Only those six launch values are restored. The MCP
+token is not part of that restored set. PATH is prepended only in the harness
+process environment when the private Build launcher is present; user shell
+PATH policy remains authoritative. Capability bytes never
 enter launch argv.
 
 For the Codex TUI, a unique `build-secret-<uuid>.config.toml` profile in the

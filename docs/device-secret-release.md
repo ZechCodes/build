@@ -144,13 +144,19 @@ or retrieved value. The registry lives at `<harness-state>/secret-profiles`,
 with at most 4,096 records of at most 16 KiB each. Serialized admission prunes
 stale entries at the limit; live locks are retained. Concurrent admissions wait
 behind an in-process mutex, then retry the close-on-exec file lock for up to
-one second; release explicitly unlocks before close, including across sibling
-forks. Registry exhaustion or a lock held beyond the deadline degrades secret
-setup rather than agent startup.
+one second; admission release explicitly unlocks before close, including across
+sibling forks. Registry exhaustion or a lock held beyond the deadline degrades
+secret setup rather than agent startup.
 
 Session end removes exact matching entries through the held directory handle
-and retires the record. Startup enumerates only the Build-private registry,
-opens each recorded configured home normally (following the user's own links),
+and retires the record. Its metadata lease is explicitly unlocked, so an
+inherited close-on-exec duplicate cannot outlive the guard logically. A profile
+descriptor can also survive briefly between a concurrent fork and exec; quota
+admission boundedly resweeps all full-capacity records, while ordinary cleanup
+retries only records whose metadata guard has ended. A genuinely live profile
+keeps both its record and quota. Startup enumerates only the Build-private
+registry, opens each recorded configured home normally (following the user's
+own links),
 checks parent dev/ino, and uses no-follow fstatat plus exact file dev/ino before
 unlinkat. A missing, replaced or moved target drops only the record. No user
 Codex home is enumerated or pattern-deleted; unregistered files remain untouched.

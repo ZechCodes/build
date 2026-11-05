@@ -204,3 +204,26 @@ Twenty fresh default-parallel CLI runs pass 9/9 each, alongside 50 carrier and
 concurrent-spawn cycles (4/4 plus 1/1). Every run has zero ignored tests. Final
 all-target clippy, fmt, Semgrep and diff checks pass; logs preserve both the
 initial fixture failure and the passing proof.
+
+
+## Registry-quota follow-up — #1015
+
+A retained profile and metadata descriptor regression reproduced the serial-gate
+failure before the fix: quota admission returned `secret profile registry full`
+after its owning profile crashed. Close-on-exec does not close a descriptor
+between fork and exec, so this is a production lifecycle race rather than a test
+artifact.
+
+Guard teardown now explicitly ends the metadata lease. A full quota boundedly
+resweeps for the existing one-second contention window; ordinary cleanup retries
+only a profile whose metadata guard has already ended. Live profiles keep their
+record and quota, and a lock surviving the deadline retains the same bounded
+error. No quota, identity, ownership or unlink rule changes.
+
+Final qualification ran the default-parallel
+`cargo test --lib harness::secret_profile` command 30 consecutive times: 32/32
+passed in every run, for 960 executions (570 registry executions), zero failed
+or ignored. The all-target Clippy warnings gate, formatting, 51-rule Semgrep scan
+of both changed Rust files, gitleaks range scan and diff checks all exited zero.
+All test, lint and scan commands used the task's private temp/target roots where
+applicable and reduced priority.

@@ -133,6 +133,9 @@ with no secret environment, overlay or injected runtime PATH, and one fixed
 reason warning. The TUI uses a unique 0600 profile under CODEX_HOME, removed
 through a held handle on session end. A bounded private registry under harness
 state records exact names and parent/file dev/ino before capability publication.
+Registry metadata leases end explicitly; quota admission and orphan cleanup
+boundedly retry profile locks retained only through a child's fork-to-exec gap,
+while a live profile continues to keep its record.
 Startup enumerates only registry records and checks exact entry identity
 immediately before unlinkat; the remaining same-user check-to-unlink race is an
 accepted boundary (documented in `docs/device-secret-release.md`);

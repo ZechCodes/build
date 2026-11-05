@@ -281,7 +281,7 @@ const sourceFingerprintParts = {
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],
   "core/chatChoiceController.js": ["d257b6c5", "f32d9067", "226af14c", "bd8ec71e", "718bf188", "1e994ef1", "66edcceb", "4499fa61"],
-  "core/chatRepository.js": ["8b851e63", "5bb9167d", "0e29a00c", "687c7378", "1dc3c952", "d7932d72", "9a230b84", "e9b249d5"],
+  "core/chatRepository.js": ["131aafd6", "9d9e29b7", "defb8e63", "f70c3dc3", "3820671c", "541f4adc", "a8a08418", "7dcfa920"],
   // #997 compactionCache.js:57: use captured version authority without importing connection state into cache helpers.
   "core/compactionCache.js": ["4e4482a7", "24057b98", "0a358b45", "3beeb686", "8c8c7388", "79aecece", "7b4cc21b", "75595548"],
   // #997 runtime-board compose.js:236: branch options join scoped cached runs; producer method maps and RPC arguments unchanged.

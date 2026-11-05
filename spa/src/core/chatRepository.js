@@ -81,7 +81,8 @@ function hydrateSecretSupport(deviceId, current, apply) {
   }).catch(() => {});
 }
 const unresolvedSecretSupport = (active, support) => active && support === null;
-const announceControllers = (controllers) => controllers.forEach((controller) => controller.announce());
+const announceCapabilityChanges = (controllers) =>
+  controllers.forEach((controller) => controller.announceCapabilityChange());
 const deviceIdOf = (scope) => scope?.deviceId;
 const unsupportedSecretPost = () => Object.assign(new Error("This bridge cannot attach staged secrets"), {
   name: "ApiError", code: "unknown_method",
@@ -886,6 +887,17 @@ class ChatController {
     for (const listener of [...this.#listeners]) listener(this);
   }
 
+  announceCapabilityChange() {
+    const writer = this.#cacheDraft;
+    if (!writer) { this.announce(); return; }
+    // Capability hydration may finish while a typed draft is still in the
+    // debounce queue. Preserve the draft-cache contract: no controller
+    // announcement may expose that edit before its write can be read back.
+    void writer.flush().then(() => {
+      if (this.#repository.active && this.#cacheDraft === writer) this.announce();
+    }).catch(() => {});
+  }
+
   dispose({ discardDraft = false } = {}) {
     this.#cacheDraft?.dispose({ flushPending: !discardDraft });
     if (discardDraft) {
@@ -984,7 +996,7 @@ export function createChatRepository({
   }) : () => {};
   hydrateSecretSupport(deviceIdOf(scope), () => unresolvedSecretSupport(active, secretAttachments), (attachments) => {
     secretAttachments = attachments;
-    announceControllers(controllers);
+    announceCapabilityChanges(controllers);
   });
 
   const identityAtCurrentGeneration = (identity) => {
@@ -1161,7 +1173,7 @@ export function createChatRepository({
         metadataEvents: secretAttachments,
       } });
       viewingContext?.setEnabled?.(messageContext);
-      for (const controller of controllers.values()) controller.announce();
+      announceCapabilityChanges(controllers);
     },
 
     controller(identity) {

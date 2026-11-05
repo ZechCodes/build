@@ -251,3 +251,64 @@ fn registry_root_must_be_private_and_profiles_must_have_private_owned_metadata()
         .is_err());
     assert_eq!(records(&registry), 0);
 }
+
+#[test]
+fn home_lookup_failures_are_isolated_using_current_permissions() {
+    for mode in [0o000, 0o400, 0o500] {
+        let (root, registry, home, directory) = fixture();
+        let (guard, file, name) = tracked(&registry, &home, &directory);
+        crash(guard, file);
+        let healthy = root.path().join("healthy-codex");
+        std::fs::create_dir(&healthy).unwrap();
+        let healthy_directory = File::open(&healthy).unwrap();
+        let (guard, file, healthy_name) = tracked(&registry, &healthy, &healthy_directory);
+        crash(guard, file);
+        std::fs::write(home.join("permission-probe"), "").unwrap();
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(mode)).unwrap();
+        // Root can legitimately bypass these mode restrictions. Probe the real
+        // operation so every assertion also runs when tests execute as root.
+        let deletion_allowed =
+            fs::unlinkat(&directory, "permission-probe", AtFlags::empty()).is_ok();
+        let result = registry.sweep();
+        // Restore access before assertions so TempDir always removes the fixture.
+        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            result.is_ok(),
+            "home mode {mode:o} must not block registry cleanup: {result:?}"
+        );
+        assert_eq!(
+            home.join(name).exists(),
+            !deletion_allowed,
+            "home mode {mode:o}: preserve inaccessible profiles, clean accessible ones"
+        );
+        assert!(
+            !healthy.join(healthy_name).exists(),
+            "other registered homes are still cleaned"
+        );
+        assert_eq!(
+            records(&registry),
+            0,
+            "inaccessible stale metadata cannot consume quota"
+        );
+    }
+}
+
+#[test]
+fn guard_drops_registry_record_even_when_profile_permissions_change() {
+    let (_root, registry, home, directory) = fixture();
+    let (guard, file, name) = tracked(&registry, &home, &directory);
+    std::fs::write(home.join("permission-probe"), "").unwrap();
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let deletion_allowed = fs::unlinkat(&directory, "permission-probe", AtFlags::empty()).is_ok();
+    let result = guard.remove();
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(result.is_ok(), deletion_allowed);
+    assert_eq!(home.join(name).exists(), !deletion_allowed);
+    assert_eq!(
+        records(&registry),
+        0,
+        "session end always retires private metadata"
+    );
+    assert!(guard.removed.load(Ordering::Acquire));
+    drop(file);
+}

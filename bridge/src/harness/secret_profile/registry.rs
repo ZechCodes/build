@@ -157,7 +157,7 @@ impl Registry {
         }
         let record = read_record(&metadata);
         if let Ok(record) = record {
-            if !record.cleanup()? {
+            if !record.cleanup() {
                 return Ok(());
             }
         }
@@ -225,35 +225,31 @@ impl Record {
         })
     }
 
-    /// true means the record may be dropped; false preserves a live profile.
-    fn cleanup(&self) -> io::Result<bool> {
-        let home = match open_home(&self.home) {
-            Ok(home) => home,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-                ) =>
-            {
-                return Ok(true)
-            }
-            Err(error) => return Err(error),
+    /// Retain only a live profile. Lookup/cleanup failures retire this metadata
+    /// without touching unproven paths or blocking another registered home.
+    fn cleanup(&self) -> bool {
+        let Ok(home) = open_home(&self.home) else {
+            return true;
         };
-        let metadata = home.metadata()?;
+        let Ok(metadata) = home.metadata() else {
+            return true;
+        };
         if self.uid != uid()
             || metadata.uid() != uid()
             || !same(&metadata, self.parent_device, self.parent_inode)
         {
-            return Ok(true);
+            return true;
         }
-        let Some(file) = self.open_profile(&home)? else {
-            return Ok(true);
+        let Ok(Some(file)) = self.open_profile(&home) else {
+            return true;
         };
         if super::lock(&file).is_err() {
-            return Ok(false);
+            return false;
         }
-        self.unlink_profiles(&home)?;
-        Ok(true)
+        // Permission changes may prevent deletion even after identity checks.
+        // The exact registered entry is best effort; user files remain untouched.
+        let _ = self.unlink_profiles(&home);
+        true
     }
 
     fn open_profile(&self, home: &File) -> io::Result<Option<File>> {
@@ -292,11 +288,13 @@ impl RegistryGuard {
         if self.removed.load(Ordering::Acquire) {
             return Ok(());
         }
-        self.record.unlink_profiles(&self.home)?;
+        let profile_result = self.record.unlink_profiles(&self.home);
+        // Session end retires the private record even if user permissions now
+        // prevent deleting the profile. Its capability is revoked independently.
         unlink(&self.directory, &self.name)?;
         self.directory.sync_all()?;
         self.removed.store(true, Ordering::Release);
-        Ok(())
+        profile_result
     }
 }
 impl Drop for RegistryGuard {

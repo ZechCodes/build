@@ -153,7 +153,8 @@ and retires the record. Its metadata lease is explicitly unlocked, so an
 inherited close-on-exec duplicate cannot outlive the guard logically. A profile
 descriptor can also survive briefly between a concurrent fork and exec; quota
 admission boundedly resweeps all full-capacity records, while ordinary cleanup
-retries only records whose metadata guard has ended. A genuinely live profile
+retries only records whose metadata guard has ended. Cleanup's own metadata
+leases also unlock explicitly across every return. A genuinely live profile
 keeps both its record and quota. Startup enumerates only the Build-private
 registry, opens each recorded configured home normally (following the user's
 own links),

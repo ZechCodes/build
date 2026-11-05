@@ -214,15 +214,18 @@ after its owning profile crashed. Close-on-exec does not close a descriptor
 between fork and exec, so this is a production lifecycle race rather than a test
 artifact.
 
-Guard teardown now explicitly ends the metadata lease. A full quota boundedly
-resweeps for the existing one-second contention window; ordinary cleanup retries
-only a profile whose metadata guard has already ended. Live profiles keep their
-record and quota, and a lock surviving the deadline retains the same bounded
-error. No quota, identity, ownership or unlink rule changes.
+Guard teardown and every cleanup acquisition now explicitly end their metadata
+lease. A full quota boundedly resweeps for the existing one-second contention
+window; ordinary cleanup retries only a profile whose metadata guard has already
+ended. Live profiles keep their record and quota, and a lock surviving the
+deadline retains the same bounded error. No quota, identity, ownership or unlink
+rule changes. The admission regression releases its inherited descriptor only
+after the implementation reports observing the full registry; the sweep-lock
+regression likewise retains a duplicate through scoped release.
 
 Final qualification ran the default-parallel
-`cargo test --lib harness::secret_profile` command 30 consecutive times: 32/32
-passed in every run, for 960 executions (570 registry executions), zero failed
+`cargo test --lib harness::secret_profile` command 30 consecutive times: 33/33
+passed in every run, for 990 executions (600 registry executions), zero failed
 or ignored. The all-target Clippy warnings gate, formatting, 51-rule Semgrep scan
 of both changed Rust files, gitleaks range scan and diff checks all exited zero.
 All test, lint and scan commands used the task's private temp/target roots where

@@ -1247,7 +1247,7 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(railHost().querySelector("#railinput")).not.toBeNull();
   });
 
-  it.each(["before", "after"])("revalidates one logical conversation opening when its roster arrives %s the delayed first page", async (rosterArrival) => {
+  const delayedRosterHandoff = async (rosterArrival, threadId = null) => {
     lazy.enabled = true;
     conversationReadReceipts.enabled = true;
     chatRepository.railView("workspace:ws-delayed-roster").chooseAgent("ag-1");
@@ -1255,7 +1255,7 @@ describe("the rail over a machine that is asked nothing", () => {
       projects: [{ project_id: "p1", name: "build" }],
       workspaces: [{ id: "ws-delayed-roster", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
     });
-    await writeRailThread("run-3", "ag-1", { items: [said(1, "Cached before the roster")] });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "Cached before the roster")], ...(threadId ? { thread_id: threadId } : {}) });
     let deliverPage;
     const delayedPage = new Promise((resolve) => { deliverPage = resolve; });
     const original = bridge.call;
@@ -1264,7 +1264,7 @@ describe("the rail over a machine that is asked nothing", () => {
       calls.push({ method, params });
       return delayedPage;
     });
-    const releasePage = () => deliverPage({ items: [said(2, "Fresh open-time words")], has_more: false, thread_last_sequence: 2 });
+    const releasePage = () => deliverPage({ items: [said(2, "Fresh open-time words")], has_more: false, thread_last_sequence: 2, ...(threadId ? { thread_id: threadId } : {}) });
     const frames = [];
     let observer;
     try {
@@ -1285,7 +1285,7 @@ describe("the rail over a machine that is asked nothing", () => {
       const seedCount = conversationReadReceipts.seeds.length;
       // Publishing the roster replaces the transient history with its canonical
       // controller, while the visible conversation and opening stay the same.
-      await writeRailWorkItem({ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false })] });
+      await writeRailWorkItem({ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false, ...(threadId ? { thread_id: threadId } : {}) })] });
       await vi.waitFor(() => expect(conversationReadReceipts.seeds.slice(seedCount).some(({ cache }) => cache !== firstReader)).toBe(true));
       // watchConversation registered its await before this test. Once the real
       // canonical seed resolves, its continuation has entered any new read.
@@ -1305,6 +1305,47 @@ describe("the rail over a machine that is asked nothing", () => {
       releasePage();
       await Promise.allSettled(conversationReadReceipts.windows);
       observer?.disconnect();
+      conversationReadReceipts.enabled = false;
+    }
+  };
+
+  it.each(["before", "after"])("revalidates one logical conversation opening when its roster arrives %s the delayed first page", async (rosterArrival) => {
+    await delayedRosterHandoff(rosterArrival);
+  });
+
+  it.each(["before", "after"])("revalidates one cached incarnation when its matching roster arrives %s the delayed first page", async (rosterArrival) => {
+    await delayedRosterHandoff(rosterArrival, "cached-thread-a");
+    expect(callsTo("thread.page")[0].params.thread_id).toBe("cached-thread-a");
+  });
+
+  it("reads a different incarnation when the roster replaces a cached thread", async () => {
+    lazy.enabled = true;
+    conversationReadReceipts.enabled = true;
+    chatRepository.railView("workspace:ws-changed-thread").chooseAgent("ag-1");
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-changed-thread", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
+    });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "Cached incarnation A")], thread_id: "cached-thread-a", thread_generation_revision: 1 });
+    const original = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return original(method, params);
+      calls.push({ method, params });
+      return { thread_id: params.thread_id, thread_generation_revision: params.thread_id === "cached-thread-a" ? 1 : 2,
+        items: [said(2, params.thread_id === "cached-thread-a" ? "Fresh incarnation A" : "Fresh incarnation B")], has_more: false, thread_last_sequence: 2 };
+    });
+    try {
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-changed-thread" }));
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Fresh incarnation A"));
+      await Promise.all(conversationReadReceipts.windows);
+      await writeRailWorkItem({ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false, thread_id: "roster-thread-b", thread_generation_revision: 2 })] });
+      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+      await Promise.all(conversationReadReceipts.windows);
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Fresh incarnation B"));
+      expect(callsTo("thread.page").map(({ params }) => params.thread_id)).toEqual(["cached-thread-a", "roster-thread-b"]);
+      expect((await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" })).value.thread_id).toBe("roster-thread-b");
+    } finally {
+      await Promise.allSettled(conversationReadReceipts.windows);
       conversationReadReceipts.enabled = false;
     }
   });

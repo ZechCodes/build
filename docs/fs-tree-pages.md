@@ -44,9 +44,14 @@ subscriber never receives that body even when a legacy subscriber shares the
 same flush. Names remain confined relative paths, capped at 200 per flush.
 An invalid/oversized name makes the hint truncated instead of becoming an
 untrusted cache address.
-An older `files` frame with no named paths also means an unknown invalidation;
-scoped readers refresh one visible directory rather than consuming its root
-body as a complete paged listing.
+An older `files` frame with no named paths also means an unknown invalidation.
+When the current bridge lacks `changes.filesHints`, a complete legacy root
+listing already carried by the frame is written to the visible root cache
+before repainting, clearing any old paging continuation. That fulfilled root
+needs no duplicate RPC; touched visible deeper directories and selected files
+still refresh. Folded roots retain stale cache without admitting the body or
+reading. Greeting, visibility and cache-write fences guard root admission. A
+hint-capable bridge never authorizes root admission from a `files` payload.
 
 A file hint marks affected cached directories stale. Visible Files reads only
 the touched open directory's first page; folded directories stay cold. A

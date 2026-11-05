@@ -172,13 +172,14 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     return request;
   };
 
-  const load = async (dir, force = false, active = alwaysActive) => {
+  const load = async (dir, force = false, active = alwaysActive, fulfilled = false) => {
     if (!active()) return;
     const request = beginListing(dir);
     const record = await heldRecord(listingAddress(dir));
     if (!stillListing(dir, request, active)) return;
     if (record?.value) {
       takeListing(dir, record.value);
+      if (fulfilled && !record.value.stale) return;
       if (!force && !readsForItself() && !record.value.stale) return;
     }
     await listFromMachine(dir, request, recordWriteOf(record), force, active);
@@ -204,9 +205,9 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     const selected = cursorPath ? parentPath(cursorPath) : "";
     return [listings.has(selected) && shown(selected) ? selected : ""];
   };
-  const refreshShown = (active = alwaysActive, { files } = {}) => {
+  const refreshShown = (active = alwaysActive, { files, fulfilledDirectories = [] } = {}) => {
     const directories = files ? hintDirectories(normalizedDirectoryHint(files)) : ["", ...expanded].filter(shown);
-    return Promise.all(directories.map((dir) => load(dir, true, active)));
+    return Promise.all(directories.map((dir) => load(dir, true, active, fulfilledDirectories.includes(dir))));
   };
   const unregisterSyncRead = registerSyncRead(
     () => listingAddress(""), refreshShown,

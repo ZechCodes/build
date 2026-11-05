@@ -15,6 +15,10 @@ Installers and updates leave global `buildctl` commands untouched. An unrelated
 file or symlink at the private runtime destination skips launcher installation
 with a warning; the bridge installation and update still succeed, and agents do
 not add that foreign runtime directory to PATH.
+The standalone installer extracts the wrapper through the verified candidate
+before replacing the installed bridge. Helper or wrapper publication failures
+leave the previous binary and provenance intact; a failed final provenance
+publication restores that binary, or removes an unrecorded fresh candidate.
 From the repository checkout:
 
 ```bash

@@ -297,15 +297,8 @@ verify_signature() {
 
 install_runtime_launcher() {
     ir_status=0
-    "$INSTALL_DIR/build-bridge" install-runtime-launcher 2> runtime-launcher.stderr || ir_status=$?
-    if [ "$ir_status" = '0' ]; then
-        ir_warning=''
-        if IFS= read -r ir_warning < runtime-launcher.stderr \
-            && [ "$ir_warning" = 'runtime launcher destination is occupied; skipping' ]; then
-            detail "$ir_warning"
-        fi
-        return 0
-    fi
+    ./build-bridge install-runtime-launcher 2> runtime-launcher.stderr || ir_status=$?
+    [ "$ir_status" = '0' ] && return 0
     ir_first=''
     ir_second=''
     {
@@ -322,30 +315,99 @@ install_runtime_launcher() {
     fail "could not install the agent runtime launcher"
 }
 
+runtime_launcher_is_foreign() {
+    [ -L "$1" ] && return 0
+    [ -f "$1" ] || return 0
+    {
+        IFS= read -r rf_first
+        IFS= read -r rf_second
+    } < "$1" || return 0
+    [ "$rf_first" = '#!/bin/sh' ] || return 0
+    case "$rf_second" in '# Agent runtime facade.'*) return 1 ;; esac
+    return 0
+}
+
+publish_runtime_launcher() {
+    [ -f .build-runtime/buildctl ] || return 0
+    pl_directory="$INSTALL_DIR/.build-runtime"
+    if [ -L "$pl_directory" ] || { [ -e "$pl_directory" ] && [ ! -d "$pl_directory" ]; }; then
+        detail "runtime launcher destination is occupied; skipping"
+        return 0
+    fi
+    mkdir -p "$pl_directory" || fail "could not create the agent runtime directory"
+    pl_destination="$pl_directory/buildctl"
+    if { [ -e "$pl_destination" ] || [ -L "$pl_destination" ]; } \
+        && runtime_launcher_is_foreign "$pl_destination"; then
+        detail "runtime launcher destination is occupied; skipping"
+        return 0
+    fi
+    pl_temporary="$(mktemp "$pl_directory/.buildctl.XXXXXX")" \
+        || fail "could not stage the agent runtime launcher"
+    if ! { cp .build-runtime/buildctl "$pl_temporary" && chmod 0755 "$pl_temporary" \
+        && mv "$pl_temporary" "$pl_destination"; }; then
+        rm -f "$pl_temporary"
+        fail "could not publish the agent runtime launcher"
+    fi
+}
+
+restore_installation() {
+    if [ "$ib_had_binary" = '1' ]; then
+        mv previous-build-bridge "$ib_path" || fail "could not restore the previous bridge"
+    else
+        rm -f "$ib_path" || fail "could not remove the unrecorded bridge"
+    fi
+    if [ "$ib_had_marker" = '1' ]; then
+        mv previous-install-marker "$ib_marker" || fail "could not restore the previous bridge provenance"
+    else
+        rm -f "$ib_marker" || fail "could not remove the unrecorded bridge provenance"
+    fi
+}
+
 install_binary() {
     tar -xzf "$1" || fail "could not unpack $1 from $SOURCE_URL" "Run the installer again."
     [ -f build-bridge ] || fail "$1 from $SOURCE_URL does not contain a build-bridge binary" \
         "Run the installer again later, or pin an earlier release with BUILD_BRIDGE_VERSION."
+    chmod 0755 build-bridge
+    # Run only the verified candidate, before replacing any installed binary.
+    # Its embedded wrapper is staged in this temporary working directory.
+    install_runtime_launcher
     mkdir -p "$INSTALL_DIR" || fail "could not create $INSTALL_DIR" \
         "Set BUILD_BRIDGE_INSTALL_DIR to a directory you can write to, then run the installer again."
-    chmod 0755 build-bridge
-    mv build-bridge "$INSTALL_DIR/build-bridge" || fail "could not write $INSTALL_DIR/build-bridge" \
-        "Set BUILD_BRIDGE_INSTALL_DIR to a directory you can write to, then run the installer again."
-    install_runtime_launcher
-    # The updater only changes a binary this installer placed. Record the
-    # canonical path and its exact digest; a locally built replacement remains
-    # visible in Settings but cannot be overwritten from the app.
     ib_dir="$(cd "$INSTALL_DIR" && pwd -P)" || fail "could not resolve $INSTALL_DIR"
     case "$ib_dir" in *'
 '*) fail "install path contains a newline" ;; esac
     ib_path="$ib_dir/build-bridge"
-    ib_digest="$(actual_sum "$ib_path")"
+    ib_digest="$(actual_sum build-bridge)"
+    ib_marker="$HOME/.build/installed-bridge"
+    [ ! -d "$ib_path" ] && [ ! -d "$ib_marker" ] || fail "the installed bridge or provenance path is a directory"
+    publish_runtime_launcher
     mkdir -p "$HOME/.build" || fail "could not create $(shown "$HOME/.build")" \
         "Make your home directory writable, then run the installer again."
     umask 077
-    printf '%s\n%s\n' "$ib_path" "$ib_digest" > "$HOME/.build/installed-bridge" \
-        || fail "could not record installed bridge provenance in $(shown "$HOME/.build")" \
-            "Make $(shown "$HOME/.build") writable, then run the installer again."
+    ib_marker_stage="$(mktemp "$HOME/.build/.installed-bridge.XXXXXX")" \
+        || fail "could not stage installed bridge provenance"
+    printf '%s\n%s\n' "$ib_path" "$ib_digest" > "$ib_marker_stage" \
+        || { rm -f "$ib_marker_stage"; fail "could not stage installed bridge provenance"; }
+    ib_had_binary=0
+    ib_had_marker=0
+    if [ -e "$ib_path" ] || [ -L "$ib_path" ]; then
+        cp -pP "$ib_path" previous-build-bridge || { rm -f "$ib_marker_stage"; fail "could not retain the previous bridge"; }
+        ib_had_binary=1
+    fi
+    if [ -e "$ib_marker" ] || [ -L "$ib_marker" ]; then
+        cp -pP "$ib_marker" previous-install-marker || { rm -f "$ib_marker_stage"; fail "could not retain the previous bridge provenance"; }
+        ib_had_marker=1
+    fi
+    if ! mv build-bridge "$ib_path"; then
+        restore_installation
+        rm -f "$ib_marker_stage"
+        fail "could not write $INSTALL_DIR/build-bridge"
+    fi
+    if ! mv "$ib_marker_stage" "$ib_marker"; then
+        restore_installation
+        rm -f "$ib_marker_stage"
+        fail "could not publish installed bridge provenance"
+    fi
     step "Installed to $(shown "$ib_path")"
     case ":$PATH:" in
         *":$INSTALL_DIR:"*) ;;

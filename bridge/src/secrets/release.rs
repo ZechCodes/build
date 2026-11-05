@@ -27,6 +27,7 @@ impl SecretService {
         // Load and decrypt off the SQLite writer. The final transaction compares
         // this immutable context/revision again before it commits the audit.
         let candidate = self.release_candidate(caller, id);
+        let mut checked_revision = None;
         let result = self.inner.writer.secrets_release(
             caller,
             id,
@@ -34,6 +35,7 @@ impl SecretService {
             observed_at,
             is_current,
             |tx, record| {
+                checked_revision = Some(record.revision);
                 let observation = state.observe_in(tx)?;
                 self.release_status(record, &mut state, &observation, tx)?;
                 let (before, value) = candidate?.ok_or(SecretError::Unavailable)?;
@@ -44,7 +46,11 @@ impl SecretService {
             },
         );
         if let Ok(Some(record)) = self.inner.writer.secret_record(id) {
-            self.changed(&record);
+            // Audit-only releases and denials do not alter metadata. An expiry
+            // invalidates only after its revision change survives the commit.
+            if checked_revision.is_some_and(|before| record.revision != before) {
+                self.changed(&record);
+            }
         }
         result
     }

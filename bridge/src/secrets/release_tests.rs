@@ -972,3 +972,64 @@ fn existing_audit_table_gains_group_fields_and_caller_index_on_reopen() {
         1
     );
 }
+
+#[test]
+fn release_invalidations_require_a_committed_revision_change() {
+    let f = Fixture::new();
+    let record = f.secret(f.agent_grant(), Some(10));
+    let changes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = changes.clone();
+    f.service.set_change_observer(Arc::new(move |record| {
+        observed.lock().unwrap().push(record.revision);
+    }));
+
+    f.release(&record.context.id).unwrap();
+    f.release(&record.context.id).unwrap();
+    assert!(
+        changes.lock().unwrap().is_empty(),
+        "releases do not change metadata revision"
+    );
+    assert!(matches!(
+        f.service
+            .release(&f.caller, &record.context.id, "synthetic-denial", || false),
+        Err(SecretError::Unauthorized)
+    ));
+    assert!(
+        changes.lock().unwrap().is_empty(),
+        "denials do not change metadata revision"
+    );
+
+    f.clock.0.store(1010, Ordering::SeqCst);
+    f.clock.1.store(10, Ordering::SeqCst);
+    f.store.writer_for_test().execute_batch("CREATE TRIGGER synthetic_fail_expiry_audit BEFORE INSERT ON secret_audit BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END").unwrap();
+    assert!(f.release(&record.context.id).is_err());
+    assert!(
+        changes.lock().unwrap().is_empty(),
+        "rolled back expiry must not invalidate"
+    );
+    f.store
+        .writer_for_test()
+        .execute_batch("DROP TRIGGER synthetic_fail_expiry_audit")
+        .unwrap();
+    assert!(matches!(
+        f.release(&record.context.id),
+        Err(SecretError::Expired)
+    ));
+    let revision = f
+        .store
+        .writer()
+        .secret_record(&record.context.id)
+        .unwrap()
+        .unwrap()
+        .revision;
+    assert_eq!(*changes.lock().unwrap(), vec![revision]);
+    assert!(matches!(
+        f.release(&record.context.id),
+        Err(SecretError::Expired)
+    ));
+    assert_eq!(
+        *changes.lock().unwrap(),
+        vec![revision],
+        "repeated expiry does not invalidate again"
+    );
+}

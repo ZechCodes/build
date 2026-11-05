@@ -872,7 +872,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     readsForItself: () => rootReadsForItself(root),
     keepHeldOnError: Boolean(root.scope?.project_id) || lazyViewReadsEnabled(cacheScope?.deviceId),
     listDirectory: (dir, continuation) => callRpc("fs.tree", { ...root.scope, path: dir, ...directoryPageParams(cacheScope?.deviceId, continuation) }),
-    watchDirectory: () => createDirectoryWatcher({ deviceId: cacheScope?.deviceId,
+    watchDirectory: (visible, onVisible) => createDirectoryWatcher({ deviceId: cacheScope?.deviceId, visible, onVisible,
       scopeOf: () => root.scope, entityIdOf: () => rootAddress(root, "tree", "")?.entityId,
       active: () => !disposed && Boolean(cacheScope?.active()),
     }),

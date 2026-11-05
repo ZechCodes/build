@@ -112,6 +112,7 @@ export function mountFileRoots(listEl, { roots, collapsedAddress = null, treeFor
       headOf(root).setAttribute("aria-expanded", String(open));
       sectionOf(root).querySelector(".froot-list").hidden = !open;
       if (open) mountTree(root);
+      trees.get(root.id)?.setVisible?.(open);
       if (!rootReady(root)) sectionOf(root).querySelector(".froot-list").textContent = root.status;
     }
   };

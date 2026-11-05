@@ -67,3 +67,15 @@ existing bridge. It retains the board/state wake fallback; opening the source
 and reconnecting revalidate its visible data, but this fallback cannot promise
 a live event for an external edit. This change does not invent a workspace
 source producer or silently subscribe to a nonexistent entity.
+
+With scoped ownership on a 3.34 bridge, `files` still carries a full root.
+Its Files subscription is removed while that root is folded or the document
+is hidden. Showing it again restores the subscription and paints held data
+before refreshing visible first pages. Modern root-free hints can remain
+subscribed to mark hidden caches stale. Binding generations retire in-flight
+frames on unsubscribe or greeting changes, including hide/show races.
+Scoped Git panes release body subscriptions while their pane or document is
+hidden. Showing them restores the watcher and revalidates their owned
+status/history/unpushed metadata from cache. A mounted visible review owns its
+own diff refresh; a history-only pane does not warm working diffs. Selected
+changesets alone read hunks. Non-scoped/legacy 3.33 behavior is unchanged.

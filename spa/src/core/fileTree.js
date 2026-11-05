@@ -172,6 +172,9 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     return request;
   };
 
+  const cachedListingSuffices = (listing, force, fulfilled) =>
+    !listing.stale && (fulfilled || (!force && !readsForItself()));
+
   const load = async (dir, force = false, active = alwaysActive, fulfilled = false) => {
     if (!active()) return;
     const request = beginListing(dir);
@@ -179,8 +182,7 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     if (!stillListing(dir, request, active)) return;
     if (record?.value) {
       takeListing(dir, record.value);
-      if (fulfilled && !record.value.stale) return;
-      if (!force && !readsForItself() && !record.value.stale) return;
+      if (cachedListingSuffices(record.value, force, fulfilled)) return;
     }
     await listFromMachine(dir, request, recordWriteOf(record), force, active);
   };
@@ -213,7 +215,7 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     () => listingAddress(""), refreshShown,
     () => !disposed && syncPaneShown(listEl),
   );
-  const directoryWatcher = watchDirectory(() => !disposed && syncPaneShown(listEl));
+  const directoryWatcher = watchDirectory(() => !disposed && syncPaneShown(listEl), (active) => refreshShown(active));
 
   const stop = (dir) => {
     watches.get(dir)?.();
@@ -312,6 +314,7 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
   return {
     ready,
     more,
+    setVisible: () => directoryWatcher?.setVisible?.(),
     invalidate: (files) => syncPaneShown(listEl) ? refreshShown(alwaysActive, { files }) : Promise.resolve(),
     /** The file in the preview: highlighted wherever its row is drawn, and
      *  where the keyboard selection moves to. */

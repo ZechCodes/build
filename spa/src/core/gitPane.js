@@ -57,6 +57,7 @@ import { mountChangesComposer } from "./changesComposer.js";
 import { commitPaths, createReviewMarks } from "./reviewMarks.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { onBridgeGreeted, watchChanges } from "./changeEvents.js";
+import { lazyViewReadsEnabled } from "./scopedSyncRuntime.js";
 import { chooseFilePushKind } from "./directoryPages.js";
 import { writeDirectoryGit } from "./directoryGitCache.js";
 import { cachedSubKeys, mergeCached, mergeCachedRecordsTogether, readCached, readCachedMany, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
@@ -623,6 +624,9 @@ export function mountGitPane(
   let visible = true;
   let needsPaint = false;
   let checkoutRefreshPending = false;
+  const checkoutShown = () => visible && syncPaneShown(container);
+  const checkoutReadsAllowed = () => !lazyViewReadsEnabled(cacheScope?.deviceId) || checkoutShown();
+  const refreshAllowed = (active) => !disposed && active() && checkoutReadsAllowed();
   let renderedKey = null; // gitPollKey of the last painted payloads
   let bodiesUnpainted = false; // a body the pane draws landed unpainted: a file's, or a commit's patch
   let lastStatus = null;
@@ -1046,6 +1050,7 @@ export function mountGitPane(
    *  next turn the pane is free to paint. */
   const refreshBodies = () => {
     if (disposed || !visible || !lastStatus || selected !== "uncommitted") return;
+    if (!checkoutReadsAllowed()) return;
     const views = uncommittedViews();
     const folds = foldsOfOpenChangeset();
     const openPaths = new Set(
@@ -1336,11 +1341,12 @@ export function mountGitPane(
 
   /** Put wire answers into records. The record subscription owns production
    *  state and paint; no pulled object is assigned to the renderer here. */
-  const storeFrom = async (status, log, { statusBefore, logBefore, guarded = false, staleKinds = [] } = {}) => {
+  const storeFrom = async (status, log, { statusBefore, logBefore, guarded = false, staleKinds = [], active = alwaysActive } = {}) => {
     const [statusStored, logStored] = await Promise.all([
-      storeStatus(status, statusBefore, guarded, staleKinds),
-      storeLog(log, logBefore, guarded),
+      storeStatus(status, statusBefore, guarded, staleKinds, active),
+      storeLog(log, logBefore, guarded, active),
     ]);
+    if (!active()) return;
     clearConfirm();
     if (!statusStored || !logStored) {
       paintWithoutCache(status, log);
@@ -1361,7 +1367,8 @@ export function mountGitPane(
 
   /** Read the missing records on mount, or both after an invalidation/action.
    *  Every answer goes through the cache before it can paint. */
-  const forceRefresh = async (kinds = ["status", "log"], checkOnly = false) => {
+  const forceRefresh = async (kinds = ["status", "log"], checkOnly = false, active = alwaysActive) => {
+    if (!refreshAllowed(active)) return;
     // Capture the records before the pull without holding the pull behind an
     // IndexedDB turn. Besides keeping a cold mount quick, this matters for a
     // route on another device: its own caller must be reached as soon as the
@@ -1380,10 +1387,10 @@ export function mountGitPane(
       return;
     }
     const status = statusAfterRead(answer, lastStatus);
-    if (disposed) return;
+    if (!refreshAllowed(active)) return;
     scopeErrorShown = null;
     const staleKinds = checkOnly ? statusInvalidations(answer, statusBefore) : [];
-    await storeFrom(status, log, { statusBefore, logBefore, guarded: true, staleKinds });
+    await storeFrom(status, log, { statusBefore, logBefore, guarded: true, staleKinds, active });
     return true;
   };
 
@@ -1505,7 +1512,7 @@ export function mountGitPane(
    *  pages. */
   const showReads = new Set(); // the commits whose patch is being read
   const fetchShow = async (hash) => {
-    if (showReads.has(hash)) return;
+    if (showReads.has(hash) || !checkoutReadsAllowed()) return;
     showReads.add(hash);
     try {
       await readShow(hash, showKey(hash));
@@ -2281,15 +2288,21 @@ export function mountGitPane(
    */
   const watchedEntity = scope.entity_id || (scope.workspace_id ? null : scope.run_id || scope.worktree_id || null);
 
-  const refreshCheckout = (checkOnly = false) => {
-    if (!visible) {
-      checkoutRefreshPending = checkoutRefreshPending === "full" || !checkOnly ? "full" : "check";
+  const deferCheckoutRefresh = (checkOnly) => {
+    checkoutRefreshPending = checkoutRefreshPending === "full" || !checkOnly ? "full" : "check";
+  };
+  const refreshMountedReview = (active) => {
+    if (active() && reviewMounted) review?.refreshDiff?.();
+  };
+  const refreshCheckout = (checkOnly = false, active = alwaysActive) => {
+    if (!visible || !checkoutReadsAllowed()) {
+      deferCheckoutRefresh(checkOnly);
       return;
     }
     checkoutRefreshPending = false;
-    void forceRefresh(checkOnly ? ["status"] : ["status", "log"], checkOnly);
+    void forceRefresh(checkOnly ? ["status"] : ["status", "log"], checkOnly, active);
     // The plug over a workspace source reads the same uncovered checkout.
-    if (scope.workspace_id && reviewMounted) review?.refreshDiff?.();
+    if (scope.workspace_id) refreshMountedReview(active);
   };
 
   if (uiAddress) uiRecord = watchUiState(uiAddress, (saved) => {
@@ -2308,17 +2321,26 @@ export function mountGitPane(
   });
   void Promise.all([draftRecord?.ready, uiRecord?.ready]).then(standUp);
   const unwatchRecords = watchRecords();
+  const applyCheckoutSourceChanges = (items, current) => lazyViewReadsEnabled(cacheScope?.deviceId)
+    ? applyProjectSourceChanges(items, cacheScope?.deviceId, current)
+    : applyProjectSourceChanges(items, cacheScope?.deviceId);
   let checkoutWatcher = null;
+  let checkoutBinding = 0;
+  let checkoutBindingCurrent = alwaysActive;
   const bindCheckoutWatcher = () => {
+    const binding = ++checkoutBinding;
+    const current = () => !disposed && binding === checkoutBinding;
+    checkoutBindingCurrent = current;
     checkoutWatcher?.dispose();
     checkoutWatcher = null;
-    if (disposed || !readsForItself()) return;
+    if (disposed || !readsForItself() || !checkoutReadsAllowed()) return;
     const capabilities = bridgeCapabilities(cacheScope?.deviceId);
     checkoutWatcher = watchChanges({
         refresh: refreshCheckout,
         onChanges: async (items) => {
-          if (scope.project_id && scope.source_path) await applyProjectSourceChanges(items, cacheScope?.deviceId);
-          if (!disposed) refreshCheckout(true);
+          if (!current()) return;
+          if (scope.project_id && scope.source_path) await applyCheckoutSourceChanges(items, current);
+          if (current()) refreshCheckout(true, current);
         },
         deviceId: cacheScope?.deviceId,
         scope: projectSourceWatchScope(scope),
@@ -2337,9 +2359,31 @@ export function mountGitPane(
   const stopCheckoutGreeting = onBridgeGreeted((deviceId) => {
     if (deviceId === cacheScope?.deviceId) bindCheckoutWatcher();
   });
+  const refreshVisibleMetadata = async (binding) => {
+    const active = () => binding() && checkoutShown() && !disposed;
+    await Promise.all(Object.values(syncReaders).map((read) => read(active)));
+    refreshMountedReview(active);
+  };
+  const resumeCheckout = () => {
+    if (lazyViewReadsEnabled(cacheScope?.deviceId)) {
+      bindCheckoutWatcher();
+      checkoutRefreshPending = false;
+      void refreshVisibleMetadata(checkoutBindingCurrent).catch(showReadError);
+    } else if (checkoutRefreshPending) refreshCheckout(checkoutRefreshPending === "check");
+  };
+  const checkoutVisibilityChanged = () => {
+    if (!lazyViewReadsEnabled(cacheScope?.deviceId)) return;
+    if (!checkoutShown()) bindCheckoutWatcher();
+    else {
+      void rereadRecords();
+      resumeCheckout();
+    }
+  };
+  document.addEventListener("visibilitychange", checkoutVisibilityChanged);
   const editedTimeWatcher = watchEditedTimes(container);
 
   const hidePane = () => {
+    if (lazyViewReadsEnabled(cacheScope?.deviceId)) bindCheckoutWatcher();
     needsPaint = true;
     closeSplitMenusWithin(container);
     drawer?.setVisible(false);
@@ -2376,7 +2420,7 @@ export function mountGitPane(
     if (actionSettleReenables(inFlightActions)) reenableAllControls();
     scheduleViewingContext(true);
     if (requestedCommit) void openRequestedCommit();
-    if (checkoutRefreshPending) refreshCheckout(checkoutRefreshPending === "check");
+    resumeCheckout();
   };
 
   return {
@@ -2398,7 +2442,9 @@ export function mountGitPane(
       stopCommitMeasurement();
       stopToolbarMeasurement();
       unwatchRecords?.();
+      checkoutBinding += 1;
       stopCheckoutGreeting();
+      document.removeEventListener("visibilitychange", checkoutVisibilityChanged);
       checkoutWatcher?.dispose();
       disarmTimer();
       editedTimeWatcher.dispose();

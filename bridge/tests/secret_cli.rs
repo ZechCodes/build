@@ -229,7 +229,7 @@ fn both_facades_share_the_runtime_contract() {
 #[test]
 fn broken_stdout_and_termination_leave_no_files() {
     use std::process::Stdio;
-    for terminate in [false, true] {
+    for (terminate, length) in [(false, 40), (false, 16384), (true, 0)] {
         let root = tempfile::tempdir().unwrap();
         let socket = root.path().join("release.sock");
         let listener = UnixListener::bind(&socket).unwrap();
@@ -247,8 +247,8 @@ fn broken_stdout_and_termination_leave_no_files() {
             child.kill().unwrap();
         } else {
             drop(child.stdout.take());
-            writeln!(stream, "{{\"ok\":true,\"length\":16384}}").unwrap();
-            stream.write_all(&vec![b'x'; 16384]).unwrap();
+            writeln!(stream, "{{\"ok\":true,\"length\":{length}}}").unwrap();
+            stream.write_all(&vec![b'x'; length]).unwrap();
         }
         drop(stream);
         let output = child.wait_with_output().unwrap();
@@ -257,4 +257,32 @@ fn broken_stdout_and_termination_leave_no_files() {
         assert!(!output.stderr.windows(8).any(|s| s == b"xxxxxxxx"));
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn small_value_to_full_device_is_a_fixed_nonzero_error() {
+    use std::process::Stdio;
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("release.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+    let child = authorized(&socket)
+        .stdout(Stdio::from(full))
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (mut stream, _) = listener.accept().unwrap();
+    let mut line = String::new();
+    BufReader::new(stream.try_clone().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    stream.write_all(b"{\"ok\":true,\"length\":40}\n").unwrap();
+    stream.write_all(&[b'x'; 40]).unwrap();
+    drop(stream);
+    assert_error(child.wait_with_output().unwrap(), "secret_unavailable");
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
 }

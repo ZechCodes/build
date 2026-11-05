@@ -152,9 +152,10 @@ pub async fn run(args: &[String]) -> i32 {
         Err(error) => Err(error),
     };
     let result = result.and_then(|value| {
-        std::io::stdout()
-            .lock()
+        let mut stdout = std::io::stdout().lock();
+        stdout
             .write_all(&value)
+            .and_then(|_| stdout.flush())
             .map_err(|_| "secret_unavailable")
     });
     if let Err(error) = result {

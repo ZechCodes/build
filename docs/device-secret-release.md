@@ -19,7 +19,8 @@ raw output can enter tool transcripts or terminal history.
 The injected variables are `BRIDGE_SECRET_SOCKET` (exact local socket),
 `BRIDGE_SECRET_CHANNEL` (the CLI `--env` binding), `BRIDGE_SECRET_AGENT`
 (request `agent_id`), `BRIDGE_SECRET_OWNER` (informational only), and
-`BRIDGE_SECRET_TOKEN` (request `capability`). The server derives owner, project,
+`BRIDGE_SECRET_TOKEN` (request `capability`), plus `BRIDGE_SECRET_BRIDGE`
+(the absolute executable used by the repository facade). The server derives owner, project,
 device and generation from its issued record; those are never request selectors.
 
 ## Private socket protocol
@@ -83,6 +84,24 @@ failures are coalesced. Maintenance drops detailed events older than
 90 days while retaining summaries (last release, count and status). It runs
 outside the global app lock.
 
-This slice does not advertise public secret capabilities or enable uploads,
-message attachment admission or the installed `buildctl secrets get` facade.
-Those are separate slices.
+## Runtime command
+
+`buildctl --env dev secrets get --id sec_…` (or `--env prod` for that
+channel) writes the exact value bytes to stdout, with no added newline. Both
+the installed launcher and repository management facade exec the bridge's
+`secrets get` command. The installed launcher needs only a POSIX shell and its
+sibling bridge; it does not need Python, Cargo, Git or a checkout. Missing or
+stale capability context and an environment mismatch fail as `unauthorized`.
+Errors are fixed bounded stderr messages and never include values or envelopes.
+Production deployment restrictions in the management CLI remain unchanged.
+
+The CLI reads no device keys or daemon state and does not select an agent from
+CWD. It buffers a complete size-bounded response before writing stdout, uses an
+absolute socket deadline, and writes no temporary credential file. Broken pipe,
+spawn failure and process termination leave no credential file to clean up.
+Retrieved bytes are deliberately printed; downstream tools/transcripts can
+capture them. The installer, self-update, deployment and rollback install the
+launcher beside the selected bridge, refusing to overwrite an unrelated CLI.
+
+This slice does not advertise public secret capabilities or enable uploads or
+message attachment admission. Those are separate slices.

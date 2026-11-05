@@ -15,7 +15,7 @@ to #1003 and are not changed here.
 | 4 | No value or capability in argv, audit or incidental credential files. | Shared facade/socket tests, durable audit identifier regressions, profile argv assertions and provider qualification. Intentional stdout/transcript capture is an accepted boundary. |
 | 5 | Every harness receives its own shell capability; a recognized private runtime directory is added only to agent PATH. | Actual PTY, ADK and app-server carrier shell fixtures; all-provider spec matrix; prepared launch test. |
 | 6 | Codex preserves the effective user policy, including inheritance, custom settings and filters; only six dedicated variables are overlaid, with no PATH set override. | Narrow policy test, filtered shell-child test and real Codex 0.166.0 shell calls against a loopback fake provider. MCP auth, other Bridge variables and AWS credentials remain absent. |
-| 7 | Known TUI capability-on-disk exposure is restricted and cleaned; fresh homes are owned 0700 directories opened without following symlinks. | 0600 exclusive profile creation; user config byte identity, session-end/failed-spawn removal, owned canonical-prefix orphan sweep, symlink refusal and live-file locks. Startup calls the sweep off runtime workers. |
+| 7 | Known TUI capability-on-disk exposure is restricted and cleaned through exact registered identities. | 0600 exclusive publication; byte-identical user config, held-handle session cleanup, private bounded inode registry and no user-home enumeration. Symlinked homes and unavailable probes degrade to ordinary launches without secret authority. Startup cleanup runs off runtime workers. |
 | 8 | App-server private thread config does not enter default provider persistence in the qualified version. | Completed initial and restarted/resumed turns with rotated capabilities; rollout/default-log scans found zero copies. TUI profile-selected exec likewise left no copy outside its expected profile. |
 | 9 | Child agents, probes and plain terminal tabs acquire no inherited secret authority. | Prefix removal through each process carrier, terminal and installed probe tests; independent session rotation/reset authority regressions. |
 | 10 | Private transport and denial persistence have bounded resource use, while releases remain individually auditable. | 250-ms pre-auth deadline, minute/session denial coalescing, 4,096-group cap, additive migration and indexed bounded caller reader; existing rate/concurrency/audit-before-release tests. |
@@ -97,3 +97,39 @@ policy red baseline. Initial persistence scans remain valid.
 Legacy migration coverage now seeds4100 denials and proves only the newest4096
 survive, while releases/totals and timestamp/counter backfills remain correct.
 The production audit schema/predicates and #1003 reconciliation are unchanged.
+
+
+## Delta revision — optional setup and exact cleanup registry
+
+The fatal-setup regression and symlink-target sweep regression failed before
+the fixes. Codex secret setup is now optional: home symlinks, legacy profiles,
+unsupported/erroring config probes and probe timeouts launch the ordinary
+carrier with no secret overlay, secret environment or injected runtime PATH.
+Each failure emits one fixed reason warning without diagnostic values.
+
+Build enumerates only its private 0700 registry, bounded to 4096 records of at
+most 16 KiB. It durably records the exact profile and parent dev/ino before
+writing capability bytes or publishing the final entry. Session cleanup uses
+the held directory handle. Startup resolves the recorded user home normally,
+checks parent and no-follow entry identities, and removes only exact matches.
+Missing entries, user replacements, swapped link targets and inaccessible homes
+retire metadata without deleting user files. Live locks preserve active
+profiles. The user's CODEX_HOME is never enumerated or pattern-cleaned.
+
+No production audit, scope-check, schema or migration change is included in
+this revision; #1003 retains that merge reconciliation.
+
+Validation: Cargo-built serial secret filter191 (including registry15 and the
+12 degraded-carrier scenarios), CLI8, runtime7, updater25 and prepared-launch1:
+**232 distinct Rust tests**, zero ignored, all exit0. All-target clippy with
+warnings denied, fmt, changed-file Semgrep (51 rules/15 files), gitleaks and
+diff checks passed. The earlier Python351 +13subtests and installer32-case
+qualification is unchanged; this revision changes neither implementation.
+
+An exploratory parallel secret run reported187 passing/four failing: three
+fixture registry lock acquisitions and one inherited-carrier output assertion.
+A fork/flock reproduction confirms a pre-exec child can temporarily retain
+CLOEXEC lock descriptors after the parent's close. The serial run passes all
+191 with no skips. Runtime lock contention safely disables optional authority
+or delays stale cleanup; it does not block Codex startup. The parallel run is
+retained as evidence, rather than counted as passing.

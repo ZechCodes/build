@@ -1221,6 +1221,46 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(railHost().querySelector("#railinput")).not.toBeNull();
   });
 
+  it.each(["before", "after"])("revalidates one logical conversation opening when its roster arrives %s the delayed first page", async (rosterArrival) => {
+    lazy.enabled = true;
+    chatRepository.railView("workspace:ws-delayed-roster").chooseAgent("ag-1");
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-delayed-roster", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
+    });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "Cached before the roster")] });
+    let deliverPage;
+    const delayedPage = new Promise((resolve) => { deliverPage = resolve; });
+    const original = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return original(method, params);
+      calls.push({ method, params });
+      return delayedPage;
+    });
+    const releasePage = () => deliverPage({ items: [said(2, "Fresh open-time words")], has_more: false, thread_last_sequence: 2 });
+    try {
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-delayed-roster" }));
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Cached before the roster"));
+      await vi.waitFor(() => expect(callsTo("thread.page").length).toBeGreaterThan(0));
+      if (rosterArrival === "after") {
+        releasePage();
+        await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Fresh open-time words"));
+      }
+      // Publishing the roster replaces the transient history with its canonical
+      // controller, while the visible conversation and opening stay the same.
+      await writeRailWorkItem({ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false })] });
+      await vi.waitFor(() => expect(headWho()).toBe(TOPICS["ag-1"]));
+      await vi.waitFor(() => expect(railHost().querySelector("#railinput")).not.toBeNull());
+      expect(callsTo("workspace.get")).toHaveLength(0);
+      expect(callsTo("thread.page")).toHaveLength(1);
+      releasePage();
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Fresh open-time words"));
+      expect(callsTo("thread.page")).toHaveLength(1);
+    } finally {
+      releasePage();
+    }
+  });
+
   it.each([false, true])("paints and revalidates a cached unwatched conversation under lazy ownership (%s)", async (enabled) => {
     lazy.enabled = enabled;
     await wipeCache();

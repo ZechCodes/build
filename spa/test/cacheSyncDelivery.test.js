@@ -624,6 +624,9 @@ describe("a pass racing the wire", () => {
     });
     sync.startCacheSync();
     await settle();
+    // RPC quiet does not finish the pass's cache publication. Join the actual
+    // pass without starting a corrective read or waiting for a desired value.
+    await passesSettled(sync, "dev-1");
 
     expect(await agentsOf("run-1")).toEqual(["ag-1", "ag-2"]);
   });

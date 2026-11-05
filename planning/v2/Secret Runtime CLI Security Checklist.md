@@ -229,11 +229,13 @@ holds both inherited locks through the first sweep pass, and requires the same
 sweep call to clean them after release. A second sweep-path regression duplicates
 the sweeper's acquired metadata descriptor while a profile remains live, then
 proves scoped teardown unlocks it. Deliberately removing the retry loop fails the
-first control; replacing scoped unlock with a bare flock fails the second.
+first control; replacing scoped unlock with a bare flock fails the second. Both
+mutation controls exited 101 at their intended stale-record/`WouldBlock`
+assertions before the implementation was restored.
 
 Final qualification ran the default-parallel
-`cargo test --lib harness::secret_profile` command 30 consecutive times: 33/33
-passed in every run, for 990 executions (600 registry executions), zero failed
+`cargo test --lib harness::secret_profile` command 30 consecutive times: 35/35
+passed in every run, for 1,050 executions (660 registry executions), zero failed
 or ignored. The all-target Clippy warnings gate, formatting, 51-rule Semgrep scan
 of both changed Rust files, gitleaks range scan and diff checks all exited zero.
 All test, lint and scan commands used the task's private temp/target roots where

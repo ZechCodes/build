@@ -143,7 +143,7 @@ fn project_fixture(id: ProjectId, path: &Path, base: &str) -> Project {
         orch: Orchestrator::new(
             path,
             path.join(".registry-test-worktrees").join(&id),
-            Agent::Warm(HarnessSpec::new("true")),
+            Agent::Warm(Box::new(HarnessSpec::new("true"))),
             Templates::default(),
             PathBuf::from("/bin/true"),
         ),

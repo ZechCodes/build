@@ -1230,7 +1230,7 @@ fn abandon_closes_the_agent_even_when_the_worktree_survives() {
     state.project_at_mut(0).orch = Orchestrator::new(
         dir.path().join("not-a-repo"),
         dir.path().join("wt"),
-        Agent::Warm(HarnessSpec::new("true")),
+        Agent::Warm(Box::new(HarnessSpec::new("true"))),
         Templates::default(),
         test_bridge_exe(),
     );

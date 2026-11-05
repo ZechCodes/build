@@ -39,7 +39,7 @@ pub(super) fn orchestrator(dir: &tempfile::TempDir, repo: &Path) -> Orchestrator
     Orchestrator::new(
         repo.to_path_buf(),
         dir.path().join("worktrees"),
-        Agent::Warm(warm_harness()),
+        Agent::Warm(Box::new(warm_harness())),
         Templates::default(),
         std::fs::canonicalize(repo.join("README.md")).unwrap(),
     )
@@ -621,7 +621,7 @@ async fn resume_run_redispatches_single_stage_and_multi_stage_builds() {
     let orch2 = Orchestrator::new(
         repo.to_path_buf(),
         dir.path().join("worktrees2"),
-        Agent::Warm(HarnessSpec::new("true")),
+        Agent::Warm(Box::new(HarnessSpec::new("true"))),
         Templates::default(),
         std::fs::canonicalize(repo.join("README.md")).unwrap(),
     );

@@ -45,7 +45,7 @@ impl NativeReads {
         let orchestrator = Orchestrator::new(
             repository.clone(),
             directory.path().join("side"),
-            Agent::Warm(HarnessSpec::new("true")),
+            Agent::Warm(Box::new(HarnessSpec::new("true"))),
             Templates::default(),
             test_bridge_exe(),
         );

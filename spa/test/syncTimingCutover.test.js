@@ -20,7 +20,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({
   contextFor: () => context, homeContext: () => context, liveContexts: () => context ? [context] : [],
   canAnswer: () => true, creationDevice: () => "cutover",
   captureDeviceGreeting: () => context?.greeting,
-  deviceContextIdentity: () => context, deviceSession: () => context?.session,
+  deviceContextIdentity: () => context,
   whenGreeted: async (_context, dispatch) => ({ sent: dispatch(() => true), stands: () => true }),
   onDeviceStateChanged: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
 }));

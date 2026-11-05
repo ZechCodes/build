@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createBridgeEpoch } from "../src/core/bridgeEpoch.js";
 import epochGreeting from "../../fixtures/api/v1/writes/epoch-greeting.json";
+import secretsGreeting from "../../fixtures/api/v1/session.hello.json";
 
 vi.mock("../src/api.js", () => ({
   fetchGatewayToken: async () => "tok",
@@ -86,6 +87,25 @@ afterEach(() => {
 });
 
 describe("what a greeting settles on the device it greeted", () => {
+  it("refreshes tracked secret metadata through the persistent device context", async () => {
+    const greeting = {
+      ...secretsGreeting.result,
+      capabilities: [...secretsGreeting.result.capabilities,
+        "secrets.attachments", "secrets.sealedUpload", "secrets.metadataEvents"],
+    };
+    const session = bridgeAnswering("dev-secrets", greeting);
+    session.call.mockImplementation(async (method) => method === "session.hello"
+      ? greeting : { secrets: [], server_now: 1_800_000_000, next: null });
+    const context = adoptDeviceSession(session);
+    context.secretMetadataCache.track({ projectId: "project-secrets" });
+
+    await greetLiveBridge(context);
+
+    await vi.waitFor(() => expect(session.call).toHaveBeenCalledWith("secrets.list", {
+      scope: { project_id: "project-secrets" }, secret_ids: [], request_ids: [], after: null, limit: 100,
+    }));
+  });
+
   it("establishes the authoritative epoch before installing the adapter", async () => {
     const greeting = epochGreeting.result;
     const session = bridgeAnswering("dev-epoch", greeting);

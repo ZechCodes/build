@@ -2,13 +2,13 @@ import { expect, it, vi } from "vitest";
 import { createSecretDraftService, secretFeaturesAvailable } from "../src/core/secretDrafts.js";
 
 const recipient = () => ({
-  ownerId: "owner-draft", agentId: "agent-draft", conversationId: "agent-draft", generation: "thread-draft", draftId: null,
+  ownerId: "owner-draft", agentId: "agent-draft", conversationId: "conversation-draft", generation: "thread-draft", draftId: null,
 });
 const capabilities = () => ({ attachments: true, sealedUpload: true, metadataEvents: true });
 const projectMetadata = {
   secret_id: "sec_staged", request_id: "11111111-1111-4111-8111-111111111111", name: "TEST_TOKEN", ttl_seconds: null,
   grant: { scope: "project", project_id: "project-draft" },
-  scope: { owner_id: "owner-draft", conversation_id: "agent-draft", generation: "thread-draft", draft_id: null },
+  scope: { owner_id: "owner-draft", conversation_id: "conversation-draft", generation: "thread-draft", draft_id: null },
   created_at: 1_800_000_000, attached_at: null, expires_at: null, revoked_at: null, revision: 1, status: "staged",
 };
 
@@ -59,7 +59,7 @@ it("keeps the value out of every persistent sink and wipes modal memory after cr
 it("round-trips Agent scope and TTL through sealing, create, and the staged descriptor", async () => {
   const agentMetadata = {
     ...projectMetadata, ttl_seconds: 3600,
-    grant: { scope: "agent", agent_id: "agent-draft", conversation_id: "agent-draft", generation: "thread-draft" },
+    grant: { scope: "agent", agent_id: "agent-draft", conversation_id: "conversation-draft", generation: "thread-draft" },
   };
   const sinks = harness({ call: vi.fn(async () => agentMetadata) });
   await sinks.service.stage({ name: "TEST_TOKEN", value: "synthetic", scope: "agent", ttlSeconds: 3600 });
@@ -76,6 +76,22 @@ it("round-trips Agent scope and TTL through sealing, create, and the staged desc
   expect(sinks.entries()).toEqual([agentMetadata]);
 });
 
+it("snapshots the selected scope before an asynchronous upload begins", async () => {
+  let finishSeal;
+  const sealUpload = vi.fn(() => new Promise((resolve) => { finishSeal = resolve; }));
+  const sinks = harness({ sealUpload });
+  const input = { name: "TEST_TOKEN", value: "synthetic", scope: "project" };
+
+  const pending = sinks.service.stage(input);
+  await vi.waitFor(() => expect(sealUpload).toHaveBeenCalledOnce());
+  input.scope = "agent";
+  finishSeal("synthetic-sealed-envelope");
+  await expect(pending).resolves.toEqual(projectMetadata);
+  expect(sinks.call).toHaveBeenCalledWith("secrets.create", expect.objectContaining({
+    grant: { scope: "project", project_id: "project-draft" },
+  }));
+});
+
 it("resolves a timed-out create by request id and never creates twice", async () => {
   const timeout = Object.assign(new Error("transport timeout"), { timedOut: true, uncertain: true });
   const metadata = {
@@ -89,6 +105,58 @@ it("resolves a timed-out create by request id and never creates twice", async ()
   await expect(sinks.service.stage({ name: "TEST_TOKEN", value: "synthetic", scope: "project" })).resolves.toEqual(projectMetadata);
   expect(call).toHaveBeenCalledTimes(1);
   expect(metadata.refresh).toHaveBeenCalledWith(expect.any(Object), { requestIds: [projectMetadata.request_id] });
+});
+
+it("clears plaintext as soon as create settles, before reconciliation finishes", async () => {
+  let finishRefresh;
+  const refresh = vi.fn(() => new Promise((resolve) => { finishRefresh = resolve; }));
+  const metadata = {
+    upsert: vi.fn(async () => projectMetadata),
+    refresh,
+    findRequest: vi.fn(async () => projectMetadata),
+  };
+  const sinks = harness({ call: vi.fn(async () => { throw new Error("uncertain"); }), metadata });
+  const input = { name: "TEST_TOKEN", value: "synthetic", scope: "project", clearValue: vi.fn() };
+
+  const pending = sinks.service.stage(input);
+  await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+  expect(input.value).toBe("");
+  expect(input.clearValue).toHaveBeenCalledOnce();
+  finishRefresh([]);
+  await expect(pending).resolves.toEqual(projectMetadata);
+});
+
+it("clears plaintext before a delayed metadata cache write", async () => {
+  let finishUpsert;
+  const upsert = vi.fn(() => new Promise((resolve) => { finishUpsert = resolve; }));
+  const sinks = harness({ metadata: { upsert, refresh: vi.fn(), findRequest: vi.fn() } });
+  const input = { name: "TEST_TOKEN", value: "synthetic", scope: "project", clearValue: vi.fn() };
+
+  const pending = sinks.service.stage(input);
+  await vi.waitFor(() => expect(upsert).toHaveBeenCalledOnce());
+  expect(input.value).toBe("");
+  expect(input.clearValue).toHaveBeenCalledOnce();
+  finishUpsert(projectMetadata);
+  await expect(pending).resolves.toEqual(projectMetadata);
+});
+
+it("clears plaintext when request setup fails", async () => {
+  const sinks = harness({ recipient: () => { throw new Error("recipient unavailable"); } });
+  const input = { name: "TEST_TOKEN", value: "synthetic", scope: "agent", clearValue: vi.fn() };
+
+  await expect(sinks.service.stage(input)).rejects.toThrow("recipient unavailable");
+  expect(input.value).toBe("");
+  expect(input.clearValue).toHaveBeenCalledOnce();
+});
+
+it("clears plaintext when the selected scope is invalid", async () => {
+  const sinks = harness();
+  const input = { name: "TEST_TOKEN", value: "synthetic", scope: "workspace", clearValue: vi.fn() };
+
+  await expect(sinks.service.stage(input)).rejects.toMatchObject({ code: "invalid_scope" });
+  expect(input.value).toBe("");
+  expect(input.clearValue).toHaveBeenCalledOnce();
+  expect(sinks.sealUpload).not.toHaveBeenCalled();
 });
 
 it("uses a safe error that cannot stringify the value when create and lookup both fail", async () => {
@@ -115,7 +183,7 @@ it("removes a chip only through revoke and sends every staged id in one atomic p
   expect(sinks.call).toHaveBeenLastCalledWith("secrets.revoke", {
     scope: {
       project_id: "project-draft",
-      stage: { owner_id: "owner-draft", conversation_id: "agent-draft", generation: "thread-draft", draft_id: null },
+      stage: { owner_id: "owner-draft", conversation_id: "conversation-draft", generation: "thread-draft", draft_id: null },
     },
     secret_id: "sec_staged",
     operation_id: "22222222-2222-4222-8222-222222222222",

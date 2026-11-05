@@ -73,12 +73,13 @@ export const secretFeaturesAvailable = (features) => features?.attachments === t
 function normalizedScope(scope) {
   if (!presentText(scope?.projectId)) throw new Error("Secret metadata requires a project");
   if (!scope.conversationId) return Object.freeze({ projectId: scope.projectId });
-  if (![scope.ownerId, scope.conversationId, scope.generation].every(presentText)) {
+  if (![scope.ownerId, scope.agentId, scope.conversationId, scope.generation].every(presentText)) {
     throw new Error("Secret metadata requires an exact recipient generation");
   }
   return Object.freeze({
     projectId: scope.projectId,
     ownerId: scope.ownerId,
+    agentId: scope.agentId,
     conversationId: scope.conversationId,
     generation: scope.generation,
     draftId: scope.draftId ?? null,
@@ -90,7 +91,7 @@ const scopeKey = (scope) => JSON.stringify(normalizedScope(scope));
 export function secretMetadataAddress(deviceId, rawScope) {
   const scope = normalizedScope(rawScope);
   return scope.conversationId
-    ? { deviceId, entityId: scope.conversationId, kind: SECRET_METADATA_KIND, sub: `${scope.ownerId}:${scope.generation}` }
+    ? { deviceId, entityId: scope.conversationId, kind: SECRET_METADATA_KIND, sub: `${scope.ownerId}:${scope.agentId}:${scope.generation}` }
     : { deviceId, entityId: scope.projectId, kind: SECRET_METADATA_KIND, sub: "project" };
 }
 
@@ -116,6 +117,7 @@ function entryScope(metadata, queryScope) {
   return {
     projectId: queryScope.projectId,
     ownerId: stage.owner_id,
+    agentId: metadata.grant.agent_id,
     conversationId: stage.conversation_id,
     generation: stage.generation,
     draftId: stage.draft_id,
@@ -125,7 +127,7 @@ function entryScope(metadata, queryScope) {
 function belongsTo(metadata, scope) {
   if (metadata.grant.scope === "project") return metadata.grant.project_id === scope.projectId;
   return Boolean(scope.conversationId)
-    && metadata.grant.agent_id === scope.conversationId
+    && metadata.grant.agent_id === scope.agentId
     && metadata.grant.conversation_id === scope.conversationId
     && metadata.grant.generation === scope.generation
     && metadata.scope.owner_id === scope.ownerId
@@ -186,17 +188,21 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
   async function writePage(scope, page) {
     if (!page || !Array.isArray(page.secrets) || !Number.isSafeInteger(page.server_now)) throw safeReadError("invalid_metadata_page");
     const groups = new Map();
+    const accepted = [];
     for (const raw of page.secrets) {
-      const metadata = secretMetadataOf(raw);
-      if (!belongsTo(metadata, scope)) throw safeReadError("scope_mismatch");
+      let metadata;
+      try { metadata = secretMetadataOf(raw); } catch { continue; }
+      if (!belongsTo(metadata, scope)) continue;
+      accepted.push(metadata);
       const target = normalizedScope(entryScope(metadata, scope));
       const key = scopeKey(target);
       const group = groups.get(key) || { scope: target, entries: [] };
       group.entries.push(metadata);
       groups.set(key, group);
     }
-    if (!current()) return;
+    if (!current()) return [];
     await Promise.all([...groups.values()].map((group) => writeEntries(deviceId, group.scope, group.entries, page.server_now)));
+    return accepted;
   }
 
   async function readPage(scope, secretIds, requestIds, after) {
@@ -224,8 +230,7 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
     do {
       const page = await readPage(scope, secretIds, requestIds, after);
       if (!refreshCurrent(scope)) return [];
-      await writePage(scope, page);
-      entries.push(...page.secrets.map(secretMetadataOf));
+      entries.push(...await writePage(scope, page));
       after = nextCursor(page);
       if (!validCursor(after)) throw safeReadError("invalid_metadata_page");
     } while (after !== null);

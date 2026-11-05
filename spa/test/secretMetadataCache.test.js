@@ -10,7 +10,8 @@ import {
 const capabilities = () => ({ attachments: true, sealedUpload: true, metadataEvents: true });
 const projectScope = { projectId: "project-cache" };
 const agentScope = {
-  projectId: "project-cache", ownerId: "owner-cache", conversationId: "agent-cache", generation: "thread-cache", draftId: null,
+  projectId: "project-cache", ownerId: "owner-cache", agentId: "agent-cache",
+  conversationId: "conversation-cache", generation: "thread-cache", draftId: null,
 };
 const metadata = ({ id = "sec_project", scope = "project", revision = 1, status = "staged" } = {}) => ({
   secret_id: id,
@@ -19,8 +20,8 @@ const metadata = ({ id = "sec_project", scope = "project", revision = 1, status 
   ttl_seconds: null,
   grant: scope === "project"
     ? { scope: "project", project_id: "project-cache" }
-    : { scope: "agent", agent_id: "agent-cache", conversation_id: "agent-cache", generation: "thread-cache" },
-  scope: { owner_id: "owner-cache", conversation_id: "agent-cache", generation: "thread-cache", draft_id: null },
+    : { scope: "agent", agent_id: "agent-cache", conversation_id: "conversation-cache", generation: "thread-cache" },
+  scope: { owner_id: "owner-cache", conversation_id: "conversation-cache", generation: "thread-cache", draft_id: null },
   created_at: 1_800_000_000,
   attached_at: null,
   expires_at: null,
@@ -46,14 +47,14 @@ it("keys project grants by project and agent grants by generation", async () => 
   await cache.refresh(agentScope);
 
   expect(calls).toEqual([{ method: "secrets.list", params: {
-    scope: { project_id: "project-cache", stage: { owner_id: "owner-cache", conversation_id: "agent-cache", generation: "thread-cache", draft_id: null } },
+    scope: { project_id: "project-cache", stage: { owner_id: "owner-cache", conversation_id: "conversation-cache", generation: "thread-cache", draft_id: null } },
     secret_ids: [], request_ids: [], after: null, limit: 100,
   } }]);
   expect(secretMetadataAddress("device-cache", projectScope)).toEqual({
     deviceId: "device-cache", entityId: "project-cache", kind: "secret-metadata", sub: "project",
   });
   expect(secretMetadataAddress("device-cache", agentScope)).toEqual({
-    deviceId: "device-cache", entityId: "agent-cache", kind: "secret-metadata", sub: "owner-cache:thread-cache",
+    deviceId: "device-cache", entityId: "conversation-cache", kind: "secret-metadata", sub: "owner-cache:agent-cache:thread-cache",
   });
   expect((await readCachedSecrets("device-cache", projectScope)).map((entry) => entry.secret_id)).toEqual(["sec_project"]);
   expect((await readCachedSecrets("device-cache", agentScope)).map((entry) => entry.secret_id)).toEqual(["sec_agent"]);
@@ -83,6 +84,23 @@ it("refuses metadata from another project instead of poisoning that project's ca
   expect(await cache.read(projectScope)).toEqual([]);
 });
 
+it("keeps valid project grants when one descriptor no longer belongs to the queried draft", async () => {
+  const moved = {
+    ...metadata({ id: "sec_agent", scope: "agent" }),
+    scope: { ...metadata({ id: "sec_agent", scope: "agent" }).scope, draft_id: null },
+  };
+  const draftScope = { ...agentScope, draftId: "draft-old" };
+  const cache = createSecretMetadataCache({
+    deviceId: "device-mixed", capabilities,
+    call: vi.fn(async () => ({ secrets: [metadata(), moved], server_now: 1_800_000_000, next: null })),
+  });
+  caches.push(cache);
+
+  await expect(cache.refresh(draftScope)).resolves.toEqual([metadata()]);
+  expect((await cache.read(projectScope)).map((entry) => entry.secret_id)).toEqual(["sec_project"]);
+  expect(await cache.read(draftScope)).toEqual([]);
+});
+
 it("treats reordered events as refresh hints while revisions prevent rollback", async () => {
   const replies = [metadata({ revision: 4, status: "revoked" }), metadata({ revision: 3, status: "staged" })];
   const call = vi.fn(async () => ({ secrets: [replies.shift()], server_now: 1_800_000_000, next: null }));
@@ -96,6 +114,30 @@ it("treats reordered events as refresh hints while revisions prevent rollback", 
   secretsChangedOn("device-events", { scope: "project", project_id: "project-cache", revision: 3, secret_ids: ["sec_project"] });
   await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(2));
   await vi.waitFor(async () => expect((await cache.read(projectScope))[0]).toMatchObject({ revision: 4, status: "revoked" }));
+});
+
+it("refreshes only the invalidated project or agent scope", async () => {
+  const call = vi.fn(async (_method, params) => ({
+    secrets: params.scope.stage ? [metadata({ id: "sec_agent", scope: "agent" })] : [metadata()],
+    server_now: 1_800_000_000, next: null,
+  }));
+  const cache = createSecretMetadataCache({ deviceId: "device-scopes", capabilities, call });
+  caches.push(cache);
+  cache.track(projectScope);
+  cache.track(agentScope);
+
+  secretsChangedOn("device-scopes", {
+    scope: "agent", entity_id: "owner-cache", conversation_id: "conversation-cache",
+    thread_id: "thread-cache", generation: "thread-cache", revision: 1, secret_ids: ["sec_agent"],
+  });
+  await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+  expect(call.mock.calls[0][1].scope.stage).toBeDefined();
+
+  secretsChangedOn("device-scopes", {
+    scope: "project", project_id: "project-cache", revision: 2, secret_ids: ["sec_project"],
+  });
+  await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(2));
+  expect(call.mock.calls[1][1].scope).toEqual({ project_id: "project-cache" });
 });
 
 it("refreshes tracked scopes after event loss and refuses a stale generation reply", async () => {

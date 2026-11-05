@@ -8,6 +8,7 @@ import { normalizeViewingContext } from "./viewingContext.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { selectAdapter } from "./bridgeApi/index.js";
 import { secretFeaturesAvailable, secretMetadataOf } from "./secretMetadataCache.js";
+import { readSecretSupport, rememberSecretSupport } from "./secretSupport.js";
 
 const EMPTY_DRAFT = Object.freeze({ body: "", attachments: [], secrets: [] });
 export const CHAT_LOCAL_STATE_PREFIX = "build.chat.v1:";
@@ -63,12 +64,23 @@ const safeSecrets = (secrets = []) => secrets.flatMap((secret) => {
 const initialSecrets = (repository, saved) => repository.cacheDrafts
   ? [] : safeSecrets(Array.isArray(saved.draft?.secrets) ? saved.draft.secrets : []);
 const savedSecretsOf = (saved) => safeSecrets(Array.isArray(saved.secrets) ? saved.secrets : []);
+const submissionSecretIds = (submission) => safeSecrets(submission.originalDraft?.secrets || [])
+  .map((secret) => secret.secret_id);
 const secretsChangedBetween = (left, right) => JSON.stringify(left) !== JSON.stringify(right);
 const draftFieldsChanged = (savedBody, heldBody, attachmentsChanged, secretsChanged) =>
   [savedBody !== heldBody, attachmentsChanged, secretsChanged].some(Boolean);
 const ownsField = (input, field) => Boolean(input) && Object.hasOwn(input, field);
-const secretsForDraftWrite = (repository, replacing, secrets) => replacing && !repository.secretAttachments()
+const secretsForDraftWrite = (repository, replacing, secrets) => replacing && repository.secretAttachments() === false
   ? [] : cloneSecrets(secrets);
+function hydrateSecretSupport(deviceId, current, apply) {
+  if (!deviceId) return;
+  void readSecretSupport(deviceId).then((support) => {
+    if (current()) apply(support.attachments);
+  });
+}
+const unresolvedSecretSupport = (active, support) => active && support === null;
+const announceControllers = (controllers) => controllers.forEach((controller) => controller.announce());
+const deviceIdOf = (scope) => scope?.deviceId;
 // An upload in flight carries a Promise and often a megabyte thumbnail. Those
 // are live resources, not a durable draft; only its descriptor can survive a
 // reload. A pending upload returns as a retryable chip without cloning bytes.
@@ -80,13 +92,13 @@ const storedAttachments = (attachments = []) => attachments.map((attachment) => 
   descriptor: attachment.descriptor || null,
   error: attachment.status === "uploading" ? "Attach this file again" : attachment.error || "",
 }));
-const storedMessageDraft = (submission) => ({
-  body: submission.message.body,
-  attachments: submission.message.attachments.map((attachment) => attachment.status
+const storedMessageDraft = (submission, message = submission.message) => ({
+  body: message.body,
+  attachments: message.attachments.map((attachment) => attachment.status
     ? storedAttachments([attachment])[0]
     : { name: attachment.name, size: attachment.size, mime: attachment.mime, status: "ready", descriptor: attachment }),
   secrets: cloneSecrets(submission.originalDraft?.secrets),
-  message: submission.message,
+  message,
   choiceRevision: submission.choiceRevision,
 });
 const deepFreeze = (value) => {
@@ -359,7 +371,7 @@ class ChatController {
 
   readDraft() {
     const snapshot = draftSnapshot(this.#draft);
-    if (!this.#repository.secretAttachments()) snapshot.secrets = [];
+    if (this.#repository.secretAttachments() === false) snapshot.secrets = [];
     return snapshot;
   }
 
@@ -420,10 +432,10 @@ class ChatController {
     if (!this.#repository.isCurrentConversation(this.#identity)) throw new Error("Conversation was cleared");
     assertAddress(this.#identity);
     const operationId = this.#repository.createOperationId();
-    const staged = this.#repository.secretAttachments() ? safeSecrets(message.secrets || this.#draft.secrets) : [];
+    const staged = this.#repository.secretAttachments() === false ? [] : safeSecrets(message.secrets || this.#draft.secrets);
     const captured = messageSnapshot(this.#repository.contextualize({
       ...message,
-      ...(this.#repository.secretAttachments() ? { secret_ids: staged.map((secret) => secret.secret_id) } : {}),
+      ...(this.#repository.secretAttachments() === true ? { secret_ids: staged.map((secret) => secret.secret_id) } : {}),
     }));
     const originalDraft = { ...draftSnapshot(this.#draft), body: captured.body, attachments: captured.attachments, secrets: staged };
     const call = this.#repository.currentCall();
@@ -459,10 +471,10 @@ class ChatController {
     this.#repository.assertActive();
     if (this.#bound) throw new Error("Only an unresolved chat controller can capture a creation send");
     const operationId = this.#repository.createOperationId();
-    const staged = this.#repository.secretAttachments() ? safeSecrets(message.secrets || this.#draft.secrets) : [];
+    const staged = this.#repository.secretAttachments() === false ? [] : safeSecrets(message.secrets || this.#draft.secrets);
     const captured = messageSnapshot(this.#repository.contextualize({
       ...message,
-      ...(this.#repository.secretAttachments() ? { secret_ids: staged.map((secret) => secret.secret_id) } : {}),
+      ...(this.#repository.secretAttachments() === true ? { secret_ids: staged.map((secret) => secret.secret_id) } : {}),
     }));
     const originalDraft = { ...draftSnapshot(this.#draft), body: captured.body, attachments: captured.attachments, secrets: staged };
     const call = this.#repository.currentCall();
@@ -522,8 +534,12 @@ class ChatController {
     if (tracked) tracked.extra = { ...extra };
     let receipt;
     try {
+      const stagedIds = submissionSecretIds(submission);
+      const message = { ...submission.message };
+      if (this.#repository.secretAttachments() === true && stagedIds.length) message.secret_ids = stagedIds;
+      else delete message.secret_ids;
       const params = {
-        ...submission.message,
+        ...message,
         ...extra,
         entity_id: entityId,
         agent_id: agentId,
@@ -535,7 +551,7 @@ class ChatController {
       receipt = await call("thread.post", params, {
         operationId: submission.operationId,
         owner: { kind: "chat", ...submission.address },
-        draft: storedMessageDraft(submission),
+        draft: storedMessageDraft(submission, message),
       });
     } catch (error) {
       this.recordOperationFailure(submission, error);
@@ -938,7 +954,7 @@ export function createChatRepository({
   const retirementListeners = new Set();
   let threadPostOperations = null;
   let messageContext = false;
-  let secretAttachments = false;
+  let secretAttachments = null;
   const optimisticStore = createOptimisticStore();
   const stopWriteOperations = writeOperations?.subscribe(() => {
     if (active) for (const controller of controllers.values()) controller.syncDurableOperations();
@@ -949,6 +965,10 @@ export function createChatRepository({
       if (active && record?.value?.thread_id) repository.observeThreadGeneration(address.sub, record.value.thread_id, record.value.thread_generation_revision);
     });
   }) : () => {};
+  hydrateSecretSupport(deviceIdOf(scope), () => unresolvedSecretSupport(active, secretAttachments), (attachments) => {
+    secretAttachments = attachments;
+    announceControllers(controllers);
+  });
 
   const identityAtCurrentGeneration = (identity) => {
     const current = generations.get(identity.conversationId);
@@ -1111,6 +1131,11 @@ export function createChatRepository({
     configureCapabilities(greeting = {}) {
       repository.assertActive();
       ({ messageContext, threadPostOperations, secretAttachments } = chatCapabilitiesOf(greeting));
+      void rememberSecretSupport(scope?.deviceId, { secrets: {
+        attachments: secretAttachments,
+        sealedUpload: secretAttachments,
+        metadataEvents: secretAttachments,
+      } });
       viewingContext?.setEnabled?.(messageContext);
       for (const controller of controllers.values()) controller.announce();
     },

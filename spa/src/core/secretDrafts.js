@@ -32,6 +32,7 @@ function grantFor(scope, recipient, projectId) {
 const queryScope = (projectId, recipient) => ({
   projectId,
   ownerId: recipient.ownerId,
+  agentId: recipient.agentId,
   conversationId: recipient.conversationId,
   generation: recipient.generation,
   draftId: recipient.draftId ?? null,
@@ -97,9 +98,9 @@ export function createSecretDraftService(provided) {
     }
   }
 
-  async function createOrResolve(request, sealed) {
+  async function createOrResolve(request, sealed, createSettled) {
     try {
-      return await call("secrets.create", {
+      const answer = await call("secrets.create", {
         request_id: request.requestId,
         device_id: deviceId,
         creator,
@@ -109,7 +110,10 @@ export function createSecretDraftService(provided) {
         ttl_seconds: request.ttlSeconds,
         sealed_payload: sealed,
       });
+      createSettled();
+      return answer;
     } catch {
+      createSettled();
       const scopeAddress = queryScope(projectId, request.addressed);
       try { await metadata.refresh(scopeAddress, { requestIds: [request.requestId] }); } catch { /* The lookup below decides. */ }
       const answer = await metadata.findRequest?.(scopeAddress, request.requestId);
@@ -131,19 +135,23 @@ export function createSecretDraftService(provided) {
   }
 
   async function stage(input) {
-    if (!supported()) {
-      clearLiveValue(input);
-      return null;
-    }
-    const request = stageRequest(input);
+    let request;
     let sealed;
+    let cleared = false;
+    const clear = () => {
+      if (cleared) return;
+      cleared = true;
+      if (request) request.value = "";
+      clearLiveValue(input);
+    };
     try {
+      if (!supported()) return null;
+      request = stageRequest(input);
       sealed = await sealedRequest(request);
-      return await acceptStage(request, await createOrResolve(request, sealed));
+      return await acceptStage(request, await createOrResolve(request, sealed, clear));
     } finally {
       sealed = "";
-      request.value = "";
-      clearLiveValue(input);
+      clear();
     }
   }
 

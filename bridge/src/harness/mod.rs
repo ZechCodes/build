@@ -48,6 +48,8 @@ mod mcp_surface_tests;
 pub(crate) mod pi;
 pub mod pi_compaction;
 pub mod pi_telemetry;
+#[cfg(test)]
+mod secret_child_env_tests;
 mod session;
 pub mod shell_tail;
 #[cfg(test)]

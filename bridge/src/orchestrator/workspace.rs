@@ -531,7 +531,7 @@ impl AgentLaunch {
         }?;
         Ok(PreparedAgentLaunch {
             compaction_policy: self.compaction_policy.clone(),
-            spec,
+            spec: crate::harness::secret_launch::runtime_path(spec, &self.bridge_exe)?,
             pty_size: self.pty_size,
         })
     }

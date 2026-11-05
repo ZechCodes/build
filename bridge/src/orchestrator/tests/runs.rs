@@ -76,6 +76,35 @@ fn prepared_agent_launch_preserves_setup_errors() {
             if message == "injected Pi setup failure"
     ));
 }
+
+#[test]
+fn prepared_agent_launch_exposes_the_installed_runtime_bin() {
+    let (dir, repo) = init_repo();
+    let orchestrator = orchestrator(&dir, &repo);
+    let launch = orchestrator.agent_launch();
+    let prepared = launch
+        .prepare(
+            "agent-runtime-path",
+            crate::orchestrator::LaunchDirs::at(&repo),
+            &ModelChoice::default(),
+            false,
+            None,
+            "token",
+        )
+        .unwrap();
+    let path = prepared
+        .spec
+        .env
+        .iter()
+        .find(|(name, _)| name == "PATH")
+        .unwrap()
+        .1
+        .clone();
+    assert_eq!(
+        std::env::split_paths(&path).next().unwrap(),
+        launch.bridge_exe.parent().unwrap()
+    );
+}
 pub(super) fn manifest_entry(id: &str, title: &str, position: usize) -> StageManifestEntry {
     StageManifestEntry {
         id: id.into(),

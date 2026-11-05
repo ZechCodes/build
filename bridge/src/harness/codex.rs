@@ -22,6 +22,12 @@ use crate::pty::HarnessSpec;
 /// Reasoning-effort levels codex accepts, across all its models.
 pub const EFFORT_LEVELS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
+/// A Build agent's shell tools must inherit its dedicated runtime capability.
+/// Replace the complete policy so user filters cannot silently remove it.
+/// Only fixed policy flags enter argv; capability values stay in launch env.
+pub(super) const SECRET_SHELL_ENVIRONMENT: &str =
+    "shell_environment_policy={inherit=\"all\",ignore_default_excludes=true,exclude=[],include_only=[]}";
+
 // What the Codex CLI says when it runs out of usage is not known yet (task #58);
 // see `codex_app_server::protocol`, where a typed limit would be recognised.
 pub(super) fn models() -> Vec<ModelOption> {
@@ -232,6 +238,8 @@ impl Harness for CodexHarness {
             .submit_delay(REAL_TUI_SUBMIT_DELAY)
             .unset_all(INHERITED_AGENT_MARKERS)
             .unset_all(DAEMON_IDENTITY_VARS)
+            .arg("--config")
+            .arg(SECRET_SHELL_ENVIRONMENT)
             .arg("--dangerously-bypass-approvals-and-sandbox");
         for arg in self.model_args(choice) {
             spec = spec.arg(arg);

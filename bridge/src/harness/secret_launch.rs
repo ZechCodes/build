@@ -1,12 +1,13 @@
 //! The only secret authority transport into an agent is its launch environment.
 use crate::pty::HarnessSpec;
 
-pub const SECRET_ENVIRONMENT: [&str; 5] = [
+pub const SECRET_ENVIRONMENT: [&str; 6] = [
     "BRIDGE_SECRET_SOCKET",
     "BRIDGE_SECRET_CHANNEL",
     "BRIDGE_SECRET_AGENT",
     "BRIDGE_SECRET_OWNER",
     "BRIDGE_SECRET_TOKEN",
+    "BRIDGE_SECRET_BRIDGE",
 ];
 
 // Deliberately no Debug or Serialize: this owns an unlogged capability.
@@ -17,6 +18,7 @@ pub struct SecretLaunchEnvironment {
     agent: String,
     owner: String,
     token: String,
+    bridge: String,
 }
 
 impl SecretLaunchEnvironment {
@@ -26,6 +28,7 @@ impl SecretLaunchEnvironment {
         agent: String,
         owner: String,
         token: String,
+        bridge: String,
     ) -> Self {
         Self {
             socket,
@@ -33,6 +36,7 @@ impl SecretLaunchEnvironment {
             agent,
             owner,
             token,
+            bridge,
         }
     }
 }
@@ -62,11 +66,42 @@ pub(crate) fn apply(mut spec: HarnessSpec, launch: Option<SecretLaunchEnvironmen
             launch.agent,
             launch.owner,
             launch.token,
+            launch.bridge,
         ]) {
             spec = spec.env(key, value);
         }
     }
     spec
+}
+
+/// Every agent can find the installed runtime facade, independently of its checkout.
+pub(crate) fn runtime_path(
+    mut spec: HarnessSpec,
+    bridge: &std::path::Path,
+) -> Result<HarnessSpec, crate::harness::HarnessError> {
+    let bin = bridge
+        .parent()
+        .filter(|_| bridge.is_absolute())
+        .ok_or_else(|| {
+            crate::harness::HarnessError::Setup("runtime bridge path is not absolute".into())
+        })?;
+    let inherited = spec
+        .env
+        .iter()
+        .rev()
+        .find(|(key, _)| key == "PATH")
+        .map(|(_, value)| std::ffi::OsString::from(value))
+        .or_else(|| std::env::var_os("PATH"));
+    let mut paths = vec![bin.to_path_buf()];
+    if let Some(inherited) = inherited {
+        paths.extend(std::env::split_paths(&inherited));
+    }
+    let path = std::env::join_paths(paths)
+        .ok()
+        .and_then(|path| path.into_string().ok())
+        .ok_or_else(|| crate::harness::HarnessError::Setup("runtime PATH is invalid".into()))?;
+    spec.env.retain(|(key, _)| key != "PATH");
+    Ok(spec.env("PATH", path))
 }
 
 #[cfg(test)]
@@ -81,6 +116,7 @@ mod tests {
             "agent-a".into(),
             "owner-a".into(),
             "synthetic-token".into(),
+            "/installed/bin/build-bridge".into(),
         );
         let spec = apply(
             HarnessSpec::new("synthetic-harness")
@@ -88,7 +124,7 @@ mod tests {
                 .arg("fixture"),
             Some(launch),
         );
-        assert_eq!(spec.env.len(), 5);
+        assert_eq!(spec.env.len(), 6);
         assert!(!format!("{spec:?}").contains("synthetic-token"));
         assert!(spec
             .env
@@ -110,6 +146,26 @@ mod tests {
             None,
         );
         assert_eq!(spec.env, vec![("SAFE_FIXTURE".into(), "kept".into())]);
+    }
+
+    #[test]
+    fn runtime_bin_precedes_the_provider_path_and_never_changes_global_path() {
+        let original = std::env::var_os("PATH");
+        let spec = runtime_path(
+            HarnessSpec::new("fixture").env("PATH", "/fixture/bin:/usr/bin"),
+            std::path::Path::new("/installed bridge/bin/build-bridge"),
+        )
+        .unwrap();
+        assert_eq!(
+            spec.env.iter().find(|(key, _)| key == "PATH").unwrap().1,
+            "/installed bridge/bin:/fixture/bin:/usr/bin"
+        );
+        assert_eq!(std::env::var_os("PATH"), original);
+        assert!(runtime_path(
+            HarnessSpec::new("fixture"),
+            std::path::Path::new("relative/bridge")
+        )
+        .is_err());
     }
     #[test]
     fn every_provider_receives_only_its_dedicated_secret_launch_environment() {
@@ -144,6 +200,7 @@ mod tests {
                 "agent-fixture".into(),
                 "owner-fixture".into(),
                 "dedicated-secret-token".into(),
+                "/installed/bin/build-bridge".into(),
             );
             let spec = apply(spec, Some(launch));
             assert_eq!(
@@ -151,7 +208,7 @@ mod tests {
                     .iter()
                     .filter(|(key, _)| key.starts_with("BRIDGE_SECRET_"))
                     .count(),
-                5,
+                6,
                 "{provider:?}"
             );
             assert!(

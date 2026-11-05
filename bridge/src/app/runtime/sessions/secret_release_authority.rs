@@ -71,6 +71,11 @@ impl AppState {
             address.agent.clone(),
             address.owner.clone(),
             token.clone(),
+            std::env::current_exe()
+                .ok()?
+                .into_os_string()
+                .into_string()
+                .ok()?,
         );
         self.session_registry.install_secret_token(token, caller);
         Some(launch)

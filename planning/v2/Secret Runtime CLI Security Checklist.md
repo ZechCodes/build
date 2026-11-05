@@ -216,12 +216,20 @@ artifact.
 
 Guard teardown and every cleanup acquisition now explicitly end their metadata
 lease. A full quota boundedly resweeps for the existing one-second contention
-window; ordinary cleanup retries only a profile whose metadata guard has already
-ended. Live profiles keep their record and quota, and a lock surviving the
-deadline retains the same bounded error. No quota, identity, ownership or unlink
-rule changes. The admission regression releases its inherited descriptor only
-after the implementation reports observing the full registry; the sweep-lock
-regression likewise retains a duplicate through scoped release.
+window. Startup cleanup also retries metadata-locked records: a no-Drop crash can
+leave both metadata and profile flocks inherited until a child execs. Because a
+metadata lock is indistinguishable from a live peer bridge, that case deliberately
+waits up to one second under serialized admission; a lock surviving the deadline
+keeps the profile and record. No quota, identity, ownership or unlink rule changes.
+
+The admission regression releases its inherited descriptor only after the
+implementation reports observing the full registry. The no-Drop startup
+regression closes the parent's descriptors without running `RegistryGuard::drop`,
+holds both inherited locks through the first sweep pass, and requires the same
+sweep call to clean them after release. A second sweep-path regression duplicates
+the sweeper's acquired metadata descriptor while a profile remains live, then
+proves scoped teardown unlocks it. Deliberately removing the retry loop fails the
+first control; replacing scoped unlock with a bare flock fails the second.
 
 Final qualification ran the default-parallel
 `cargo test --lib harness::secret_profile` command 30 consecutive times: 33/33

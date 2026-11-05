@@ -184,10 +184,23 @@ impl Registry {
     }
 
     pub(super) fn sweep(&self) -> io::Result<()> {
+        self.sweep_with_observers(|_| {}, |_| {})
+    }
+
+    fn sweep_with_observers(
+        &self,
+        mut observe_retry: impl FnMut(bool),
+        mut observe_metadata: impl FnMut(&File),
+    ) -> io::Result<()> {
         let _admission = self.admission_lock()?;
         let deadline = Instant::now() + ADMISSION_WAIT;
         let mut retry = ADMISSION_RETRY;
-        while self.sweep_records()? {
+        loop {
+            let should_retry = self.sweep_records_observing(&mut observe_metadata)?;
+            observe_retry(should_retry);
+            if !should_retry {
+                break;
+            }
             if !wait_for_retry(deadline, &mut retry) {
                 break;
             }
@@ -264,17 +277,25 @@ impl Registry {
         Ok(names)
     }
 
-    /// Returns whether a guard has ended while its profile lock remains.
+    /// Returns whether any lock kept a record live for a possible bounded retry.
     fn sweep_records(&self) -> io::Result<bool> {
-        let mut orphaned_profile = false;
-        for name in self.names()? {
-            orphaned_profile |= self.sweep_record(&name)?;
-        }
-        self.directory.sync_all()?;
-        Ok(orphaned_profile)
+        self.sweep_records_observing(|_| {})
     }
 
-    fn sweep_record(&self, name: &str) -> io::Result<bool> {
+    fn sweep_records_observing(&self, mut observe_metadata: impl FnMut(&File)) -> io::Result<bool> {
+        let mut locked_record = false;
+        for name in self.names()? {
+            locked_record |= self.sweep_record(&name, &mut observe_metadata)?;
+        }
+        self.directory.sync_all()?;
+        Ok(locked_record)
+    }
+
+    fn sweep_record(
+        &self,
+        name: &str,
+        mut observe_metadata: impl FnMut(&File),
+    ) -> io::Result<bool> {
         let metadata: File = match fs::openat(&self.directory, name, READ_FLAGS, Mode::empty()) {
             Ok(fd) => fd.into(),
             Err(rustix::io::Errno::NOENT) => return Ok(false),
@@ -285,8 +306,9 @@ impl Registry {
         };
         let _metadata_lock = match ScopedFileLock::acquire(&metadata) {
             Ok(lock) => lock,
-            Err(_) => return Ok(false),
+            Err(_) => return Ok(true),
         };
+        observe_metadata(&metadata);
         let record = read_record(&metadata);
         if let Ok(record) = record {
             if !record.cleanup() {

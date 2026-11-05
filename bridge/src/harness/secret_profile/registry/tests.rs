@@ -16,6 +16,7 @@ fn registry_creates_only_private_leaf_and_preserves_normal_trusted_parent_links(
     assert!(!root.path().join("absent-parent").exists());
 }
 use super::*;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{symlink, PermissionsExt};
 
 fn fixture() -> (tempfile::TempDir, Registry, std::path::PathBuf, File) {
@@ -45,6 +46,23 @@ fn crash(guard: RegistryGuard, file: File) {
         .removed
         .store(true, std::sync::atomic::Ordering::SeqCst);
     drop((guard, file));
+}
+fn crash_without_drop(guard: RegistryGuard, file: File) -> (File, File) {
+    let inherited_metadata = guard._metadata.try_clone().unwrap();
+    let inherited_profile = file.try_clone().unwrap();
+    let guard = std::mem::ManuallyDrop::new(guard);
+    drop(file);
+    for descriptor in [
+        guard.home.as_raw_fd(),
+        guard.directory.as_raw_fd(),
+        guard._metadata.as_raw_fd(),
+        guard._profile.as_raw_fd(),
+    ] {
+        // SAFETY: each descriptor belongs to the leaked guard, is closed exactly
+        // once here, and neither the guard nor its File fields are accessed again.
+        assert_eq!(unsafe { libc::close(descriptor) }, 0);
+    }
+    (inherited_metadata, inherited_profile)
 }
 fn records(registry: &Registry) -> usize {
     registry.names().unwrap().len()
@@ -177,6 +195,71 @@ fn scoped_file_lock_releases_inherited_descriptors() {
     .into();
     super::super::lock(&contender).unwrap();
     drop((inherited, contender));
+}
+
+#[test]
+fn startup_sweep_waits_for_both_locks_inherited_across_a_real_crash() {
+    let (_root, registry, home, directory) = fixture();
+    let (guard, file, name) = tracked(&registry, &home, &directory);
+    let (inherited_metadata, inherited_profile) = crash_without_drop(guard, file);
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let inherited_child = std::thread::spawn(move || {
+        release_rx.recv().unwrap();
+        drop((inherited_metadata, inherited_profile));
+    });
+
+    let mut release_tx = Some(release_tx);
+    registry
+        .sweep_with_observers(
+            |_| {
+                if let Some(release_tx) = release_tx.take() {
+                    release_tx.send(()).unwrap();
+                }
+            },
+            |_| {},
+        )
+        .unwrap();
+    inherited_child.join().unwrap();
+
+    assert!(!home.join(name).exists());
+    assert_eq!(records(&registry), 0);
+}
+
+#[test]
+fn startup_sweep_explicitly_releases_its_inherited_metadata_lock() {
+    let (_root, registry, home, directory) = fixture();
+    let (guard, file, _name) = tracked(&registry, &home, &directory);
+    let record_name = guard.name.clone();
+    guard.removed.store(true, Ordering::SeqCst);
+    drop(guard);
+    let mut inherited_sweep_metadata = None;
+
+    registry
+        .sweep_with_observers(
+            |_| {},
+            |metadata| {
+                if inherited_sweep_metadata.is_none() {
+                    inherited_sweep_metadata = Some(metadata.try_clone().unwrap());
+                }
+            },
+        )
+        .unwrap();
+
+    let inherited_sweep_metadata = inherited_sweep_metadata.unwrap();
+    let contender: File = fs::openat(
+        &registry.directory,
+        record_name.as_str(),
+        READ_FLAGS,
+        Mode::empty(),
+    )
+    .unwrap()
+    .into();
+    super::super::lock(&contender).unwrap();
+    assert!(home.exists());
+    assert_eq!(records(&registry), 1);
+    drop((inherited_sweep_metadata, contender, file));
+    registry.sweep().unwrap();
+    assert_eq!(records(&registry), 0);
 }
 #[test]
 fn pending_and_final_registration_share_exact_inode_and_guard_cleanup() {

@@ -17,8 +17,8 @@ const lazy = vi.hoisted(() => ({ enabled: false }));
 vi.mock("../src/core/scopedSyncRuntime.js", async (original) => ({
   ...await original(), lazyViewReadsEnabled: () => lazy.enabled,
 }));
-// Observe completion without replacing cache or wire behavior. Only the
-// handoff witnesses enable these receipts; every promise is the real result.
+// Forward real cache and wire operations while recording their completion.
+// Explicit gates hold seed/notification timing only in the late-reader test.
 const conversationReadReceipts = vi.hoisted(() => ({ enabled: false, seeds: [], windows: [], caches: [], seedGate: null }));
 vi.mock("../src/core/conversationCache.js", async (original) => {
   const actual = await original();
@@ -1449,6 +1449,41 @@ describe("the rail over a machine that is asked nothing", () => {
       await Promise.all(conversationReadReceipts.windows);
       expect(callsTo("thread.page").map(({ params }) => params.thread_id)).toEqual(["session-thread-a", "session-thread-b"]);
       expect(railHost().querySelector("#rail-body")?.textContent).toContain("Session B cache");
+    } finally {
+      await Promise.allSettled(conversationReadReceipts.windows);
+      conversationReadReceipts.enabled = false;
+    }
+  });
+
+  it("forgets an evicted cached incarnation on a genuine no-roster reopen", async () => {
+    lazy.enabled = true;
+    conversationReadReceipts.enabled = true;
+    chatRepository.railView("workspace:ws-evicted-thread").chooseAgent("ag-1");
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-evicted-thread", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
+    });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "Paint retained after eviction")], thread_id: "evicted-thread-a" });
+    const original = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return original(method, params);
+      calls.push({ method, params });
+      return { ...(params.thread_id ? { thread_id: params.thread_id } : {}), items: [], has_more: false, thread_last_sequence: 1 };
+    });
+    try {
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-evicted-thread" }));
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Paint retained after eviction"));
+      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+      await Promise.all(conversationReadReceipts.windows);
+      await evictEntity("dev-1", "run-3");
+      expect(await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" })).toBeFalsy();
+      rail.collapse();
+      await vi.waitFor(() => expect(panel()?.getAttribute("aria-hidden")).toBe("true"));
+      bubbles()[0].click();
+      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+      await Promise.all(conversationReadReceipts.windows);
+      expect(callsTo("thread.page")[1].params.thread_id).toBeUndefined();
+      expect(railHost().querySelector("#rail-body")?.textContent).toContain("Paint retained after eviction");
     } finally {
       await Promise.allSettled(conversationReadReceipts.windows);
       conversationReadReceipts.enabled = false;

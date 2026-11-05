@@ -205,6 +205,7 @@ fn ensure_pending_key_column(connection: &rusqlite::Connection) -> rusqlite::Res
 fn ensure_audit_upgrades(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
     connection.execute_batch("SAVEPOINT secret_audit_upgrade")?;
     let result = (|| {
+        connection.execute_batch("DROP TRIGGER IF EXISTS secret_records_prune_lifecycle_audit")?;
         ensure_audit_group_columns(connection)?;
         ensure_lifecycle_audit(connection)?;
         ensure_audit_indexes(connection)?;
@@ -334,6 +335,26 @@ mod tests {
     #[test]
     fn lifecycle_audit_adds_group_columns_before_rebuilding_the_outcome_check() {
         assert_d_upgrade(false, true);
+    }
+
+    #[test]
+    fn lifecycle_audit_rebuild_reinstalls_an_existing_retention_trigger() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        let old = SCHEMA.replace(
+            "'secret_revoked','created','attached','expired','revoked'",
+            "'secret_revoked'",
+        );
+        connection.execute_batch(&old).unwrap();
+        ensure_lifecycle_retention(&connection).unwrap();
+        initialize(&connection).unwrap();
+        let trigger: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='secret_records_prune_lifecycle_audit')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(trigger);
     }
 
     #[test]

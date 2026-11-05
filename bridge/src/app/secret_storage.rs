@@ -15,6 +15,14 @@ impl AppState {
         self.secret_state_root = Some(state_root.to_path_buf());
         self.session_registry.set_secret_device(device_id);
         self.secret_service = None;
+        if let Some(store) = &self.store {
+            let changes = Arc::clone(&self.changes);
+            store
+                .writer()
+                .set_secret_change_observer(Arc::new(move |record| {
+                    changes.note_secret_records(std::slice::from_ref(record))
+                }));
+        }
         if self.validate_secret_storage_layout(state_root).is_err() {
             eprintln!("secret vault unavailable");
             return Ok(self);
@@ -30,14 +38,6 @@ impl AppState {
                 service.set_change_observer(Arc::new(move |record| {
                     changes.note_secret_records(std::slice::from_ref(record))
                 }));
-                let changes = Arc::clone(&self.changes);
-                self.store
-                    .as_ref()
-                    .expect("the secret service opened on this store")
-                    .writer()
-                    .set_secret_change_observer(Arc::new(move |record| {
-                        changes.note_secret_records(std::slice::from_ref(record))
-                    }));
                 self.secret_service = Some(service);
             }
             Err(_) => eprintln!("secret vault unavailable"),

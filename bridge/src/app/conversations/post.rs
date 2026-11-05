@@ -606,10 +606,9 @@ impl AppState {
                 &origin,
                 self.secret_environment(),
             ) {
-                active
-                    .agents
-                    .resolve_mut(Some(&address.conversation_id))?
-                    .thread = previous_thread;
+                if let Ok(agent) = active.agents.resolve_mut(Some(&address.conversation_id)) {
+                    agent.thread = previous_thread;
+                }
                 self.plans
                     .insert(address.conversation_entity_id.clone(), active);
                 return Err(error);
@@ -678,10 +677,9 @@ impl AppState {
             &origin,
             self.secret_environment(),
         ) {
-            active
-                .agents
-                .resolve_mut(Some(&address.conversation_id))?
-                .thread = previous_thread;
+            if let Ok(agent) = active.agents.resolve_mut(Some(&address.conversation_id)) {
+                agent.thread = previous_thread;
+            }
             self.runs
                 .insert(address.conversation_entity_id.clone(), active);
             return Err(error);

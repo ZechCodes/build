@@ -127,13 +127,12 @@ fn untrusted_error_and_partial_value_never_reach_output() {
 
 #[test]
 fn both_facades_share_the_runtime_contract() {
-    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::os::unix::fs::symlink;
     let root = tempfile::tempdir().unwrap();
     let binary = root.path().join("build-bridge");
     symlink(env!("CARGO_BIN_EXE_build-bridge"), &binary).unwrap();
-    let launcher = root.path().join("buildctl");
-    std::fs::write(&launcher, build_bridge::runtime_launcher::SOURCE).unwrap();
-    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+    build_bridge::runtime_launcher::install_sibling(&binary).unwrap();
+    let launcher = root.path().join(".build-runtime").join("buildctl");
     for facade in ["runtime", "management"] {
         let make_command = |environment: Option<&str>| {
             let mut cmd = if facade == "runtime" {

@@ -174,7 +174,20 @@ pub(in crate::store) fn initialize(connection: &rusqlite::Connection) -> rusqlit
     }
     ensure_pending_key_column(connection)?;
     ensure_audit_upgrades(connection)?;
+    ensure_lifecycle_retention(connection)?;
     Ok(())
+}
+
+fn ensure_lifecycle_retention(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS secret_records_prune_lifecycle_audit
+         AFTER DELETE ON secret_records
+         BEGIN
+             DELETE FROM secret_audit
+             WHERE secret_id=OLD.id
+             AND outcome IN ('created','attached','expired','revoked');
+         END;",
+    )
 }
 
 fn ensure_pending_key_column(connection: &rusqlite::Connection) -> rusqlite::Result<()> {

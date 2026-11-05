@@ -49,6 +49,7 @@ impl StoreWriter {
                 return Err(SecretError::Unavailable);
             }
             let before = records::required(tx, &asked.secret_id)?;
+            let transitioned = before.revoked_at.is_none();
             let (now, expired) = observe(tx, &before)?;
             prune_in(tx, now)?;
             let prior: Option<(String, String)> = tx.query_row(
@@ -76,7 +77,7 @@ impl StoreWriter {
             let json = serde_json::to_string(&response).map_err(|_| SecretError::Unavailable)?;
             tx.execute("INSERT INTO secret_revocations(device_id,creator,operation_id,request,response,secret_id,accepted_at) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![device,creator,asked.operation_id,request,json,asked.secret_id,now])?;
             cap_in(tx)?;
-            Ok((response, Some(record)))
+            Ok((response, transitioned.then_some(record)))
         })
     }
 }

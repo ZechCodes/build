@@ -101,6 +101,10 @@ and table rebuild, preserving every retained row and the AUTOINCREMENT
 high-water even when the highest old row was pruned. Lifecycle facts commit
 with their metadata mutation. Release/denial summaries retain their original
 meaning; creating or revoking a secret does not increment a denial count.
+Agent, conversation, owner and project retirement append `revoked` facts in the
+same transaction as their tombstones, then publish `secrets.changed` only after
+that transaction commits. Retrying retirement adds neither another fact nor an
+event.
 
 ## Schema compatibility
 
@@ -117,7 +121,10 @@ and SQLite's deleted-row AUTOINCREMENT high-water survive repeated initializatio
 Lifecycle appends set attempt count to one and last occurrence to the fact's
 timestamp. Only `secret_unavailable`, `secret_expired` and `secret_revoked` enter
 denial grouping and its 4,096-group cap. Retention cleanup excludes lifecycle
-facts. Internal release/denial readers exclude those facts; public audit pages
+facts while their secret record or tombstone exists. A secret-record deletion
+removes its lifecycle facts in the same SQLite transaction; the current
+permanent-tombstone policy therefore retains them for the tombstone's lifetime.
+Internal release/denial readers exclude those facts; public audit pages
 include them. Release/denial authorization and summary accounting retain their
 existing helper.
 

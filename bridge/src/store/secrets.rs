@@ -23,6 +23,14 @@ pub(super) use retirement::{
 };
 pub(super) use schema::initialize;
 
+pub(super) fn store_error(error: crate::secrets::SecretError) -> super::StoreError {
+    match error {
+        crate::secrets::SecretError::Database(error) => super::StoreError::Db(error),
+        crate::secrets::SecretError::Io(error) => super::StoreError::Io(error),
+        error => super::StoreError::Io(std::io::Error::other(error.to_string())),
+    }
+}
+
 #[cfg(test)]
 mod tests;
 

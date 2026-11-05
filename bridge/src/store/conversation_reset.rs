@@ -28,15 +28,19 @@ impl Store {
         attention: &HashMap<String, Attention>,
         summary_owners: &HashSet<String>,
     ) -> Result<(), StoreError> {
-        self.in_transaction(|tx| {
-            super::secrets::retire_conversation_in(tx, conversation_id)?;
+        let retired = self.in_transaction(|tx| {
+            let mut retired = super::secrets::retire_conversation_in(tx, conversation_id)
+                .map_err(super::secrets::store_error)?;
             super::sync::reset_device_conversation(tx, conversation_id)?;
             tx.execute("DELETE FROM conversation_retention WHERE agent_id = ?1", [conversation_id])?;
             tx.execute("DELETE FROM thread_items WHERE agent_id = ?1", [conversation_id])?;
             tx.execute("DELETE FROM operations WHERE conversation_id = ?1", [conversation_id])?;
             tx.execute("DELETE FROM conversation_attachment_uploads WHERE conversation_id = ?1", [conversation_id])?;
             for agent in agents {
-                super::secrets::retire_agent_in(tx, &agent.id)?;
+                retired.extend(
+                    super::secrets::retire_agent_in(tx, &agent.id)
+                        .map_err(super::secrets::store_error)?,
+                );
                 super::sync::reset_device_conversation(tx, &agent.id)?;
                 tx.execute("DELETE FROM conversation_retention WHERE agent_id = ?1", [&agent.id])?;
                 tx.execute("DELETE FROM thread_items WHERE agent_id = ?1", [&agent.id])?;
@@ -64,8 +68,10 @@ impl Store {
             let canonical=tx.prepare_cached("SELECT owner_id FROM agents WHERE id=?1")?.query_map([conversation_id],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
             owners.extend(canonical);
             super::sync::reset_device_sessions(tx,&owners)?;
-            Ok(())
-        })
+            Ok(retired)
+        })?;
+        self.writer.notify_secret_records(&retired);
+        Ok(())
     }
 
     fn reset_conversation_ids(&self, canonical: &str) -> Result<HashSet<String>, StoreError> {

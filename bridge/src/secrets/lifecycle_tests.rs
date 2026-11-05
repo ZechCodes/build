@@ -676,3 +676,39 @@ fn revoke_operation_preserves_expiry_when_only_monotonic_time_advances() {
         Some("expired")
     );
 }
+
+#[test]
+fn revoke_operation_with_a_new_id_does_not_republish_an_existing_tombstone() {
+    let (_dir, store, _clock, service) = fixture();
+    store.writer_for_test().execute("INSERT INTO device_project_ids(path,project_id) VALUES ('/synthetic/project','synthetic-project')", []).unwrap();
+    let record = stage(&service, None);
+    attach(&service, &record);
+    let changed = Arc::new(AtomicU64::new(0));
+    let observed = Arc::clone(&changed);
+    service.set_change_observer(Arc::new(move |_| {
+        observed.fetch_add(1, Ordering::SeqCst);
+    }));
+    let mut params = crate::api::v1::secrets::RevokeParams {
+        scope: crate::api::v1::secrets::SecretScope {
+            project_id: "synthetic-project".into(),
+            stage: None,
+        },
+        secret_id: record.context.id.clone(),
+        operation_id: uuid::Uuid::new_v4().to_string(),
+    };
+    let first = service.revoke_operation("synthetic-user", &params).unwrap();
+    params.operation_id = uuid::Uuid::new_v4().to_string();
+    let second = service.revoke_operation("synthetic-user", &params).unwrap();
+    assert_eq!(second.status, first.status);
+    assert_eq!(second.revoked_at, first.revoked_at);
+    assert_eq!(changed.load(Ordering::SeqCst), 1);
+    let audit: i64 = store
+        .writer_for_test()
+        .query_row(
+            "SELECT COUNT(*) FROM secret_audit WHERE secret_id=?1 AND outcome='revoked'",
+            [&record.context.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(audit, 1);
+}

@@ -597,7 +597,7 @@ impl AppState {
                 choice,
                 origin.operation_id.as_deref(),
             );
-            super::secrets::attach_post_metadata(
+            if let Err(error) = super::secrets::attach_post_metadata(
                 &mut active
                     .agents
                     .resolve_mut(Some(&address.conversation_id))?
@@ -605,7 +605,15 @@ impl AppState {
                 &mut payload,
                 &origin,
                 self.secret_environment(),
-            )?;
+            ) {
+                active
+                    .agents
+                    .resolve_mut(Some(&address.conversation_id))?
+                    .thread = previous_thread;
+                self.plans
+                    .insert(address.conversation_entity_id.clone(), active);
+                return Err(error);
+            }
             if let Some(error) = local_refusal {
                 active
                     .agents
@@ -661,7 +669,7 @@ impl AppState {
             choice,
             origin.operation_id.as_deref(),
         );
-        super::secrets::attach_post_metadata(
+        if let Err(error) = super::secrets::attach_post_metadata(
             &mut active
                 .agents
                 .resolve_mut(Some(&address.conversation_id))?
@@ -669,7 +677,15 @@ impl AppState {
             &mut payload,
             &origin,
             self.secret_environment(),
-        )?;
+        ) {
+            active
+                .agents
+                .resolve_mut(Some(&address.conversation_id))?
+                .thread = previous_thread;
+            self.runs
+                .insert(address.conversation_entity_id.clone(), active);
+            return Err(error);
+        }
         if let Some(error) = local_refusal {
             active
                 .agents

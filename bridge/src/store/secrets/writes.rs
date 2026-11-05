@@ -99,10 +99,9 @@ impl StoreWriter {
 
     /// Retire project grants before committing removal of its external config.
     pub fn secrets_retire_project(&self, project_id: &str) -> Result<()> {
-        durable(self, |tx| {
-            retirement::retire_project_in(tx, project_id)?;
-            Ok(())
-        })
+        let retired = durable(self, |tx| retirement::retire_project_in(tx, project_id))?;
+        self.notify_secret_records(&retired);
+        Ok(())
     }
 
     pub fn secrets_flush(&self) -> Result<()> {
@@ -149,7 +148,12 @@ pub(super) fn durable<T>(
 ) -> Result<T> {
     let mut connection = writer.connection();
     let previous: i64 = connection.pragma_query_value(None, "synchronous", |row| row.get(0))?;
-    connection.pragma_update(None, "synchronous", "FULL")?;
+    let restore = if previous == 2 {
+        None
+    } else {
+        connection.pragma_update(None, "synchronous", "FULL")?;
+        Some(previous)
+    };
     let result: Result<T> = (|| {
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         observe_in(&tx, 0)?;
@@ -157,10 +161,23 @@ pub(super) fn durable<T>(
         tx.commit()?;
         Ok(result)
     })();
-    let restored = connection.pragma_update(None, "synchronous", previous);
-    let value = result?;
-    restored?;
-    Ok(value)
+    let restored = restore.map_or(Ok(()), |previous| {
+        connection.pragma_update(None, "synchronous", previous)
+    });
+    match result {
+        Ok(value) => {
+            if let Err(error) = restored {
+                eprintln!("secret store: committed durable write but could not restore synchronous pragma: {error}");
+            }
+            Ok(value)
+        }
+        Err(error) => {
+            if let Err(restore_error) = restored {
+                eprintln!("secret store: failed write and could not restore synchronous pragma: {restore_error}");
+            }
+            Err(error)
+        }
+    }
 }
 
 fn validate_stage(record: &SecretRecord) -> Result<()> {

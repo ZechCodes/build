@@ -30,6 +30,14 @@ impl AppState {
                 service.set_change_observer(Arc::new(move |record| {
                     changes.note_secret_records(std::slice::from_ref(record))
                 }));
+                let changes = Arc::clone(&self.changes);
+                self.store
+                    .as_ref()
+                    .expect("the secret service opened on this store")
+                    .writer()
+                    .set_secret_change_observer(Arc::new(move |record| {
+                        changes.note_secret_records(std::slice::from_ref(record))
+                    }));
                 self.secret_service = Some(service);
             }
             Err(_) => eprintln!("secret vault unavailable"),

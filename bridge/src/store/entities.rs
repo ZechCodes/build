@@ -470,7 +470,8 @@ impl Store {
         tx: &rusqlite::Transaction,
         owner_id: &str,
         agents: &[Agent],
-    ) -> Result<(), StoreError> {
+    ) -> Result<Vec<crate::secrets::SecretRecord>, StoreError> {
+        let mut retired = Vec::new();
         let keep: HashSet<&str> = agents.iter().map(|agent| agent.id.as_str()).collect();
         let mut roster = tx.prepare("SELECT id FROM agents WHERE owner_id = ?1")?;
         let existing: Vec<String> = roster
@@ -478,7 +479,9 @@ impl Store {
             .collect::<Result<_, _>>()?;
         drop(roster);
         for gone in existing.iter().filter(|id| !keep.contains(id.as_str())) {
-            super::secrets::retire_agent_in(tx, gone)?;
+            retired.extend(
+                super::secrets::retire_agent_in(tx, gone).map_err(super::secrets::store_error)?,
+            );
             super::sync::touch_device_agent(tx, gone)?;
             // Removing an agent removes its conversation, but cannot erase the
             // time it contributed to the still-live workspace/project session.
@@ -578,7 +581,7 @@ impl Store {
                 delete_item.execute(rusqlite::params![agent.id, orphan])?;
             }
         }
-        Ok(())
+        Ok(retired)
     }
     /// Read one owner's agents back, conversations included, in rail order.
     /// A record's agents as their rows hold them — settings, names, rail
@@ -734,10 +737,12 @@ impl Store {
     /// rows and are not touched here — which is the point: saving a Task no
     /// longer rewrites every implementation inside it.
     pub fn save_task_plan(&self, record: &PersistedPlan) -> Result<(), StoreError> {
-        self.in_transaction(|tx| {
+        let retired = self.in_transaction(|tx| {
             write_task(tx, record)?;
             Store::write_agents(tx, &record.id, &record.agents)
-        })
+        })?;
+        self.writer.notify_secret_records(&retired);
+        Ok(())
     }
     /// Every Task with its implementations, oldest first.
     pub fn load_all_tasks(&self) -> Result<Vec<PersistedTask>, StoreError> {
@@ -789,7 +794,8 @@ impl Store {
     /// plan on disk forever with nothing referring to it.
     pub fn delete_plan(&self, plan_id: &str) -> Result<(), StoreError> {
         remove_dir_if_present(&self.task_dir(plan_id))?;
-        self.in_transaction(|tx| {
+        let retired = self.in_transaction(|tx| {
+            let mut retired = Vec::new();
             let mut owned = tx.prepare("SELECT id FROM implementations WHERE task_id = ?1")?;
             let runs: Vec<String> = owned
                 .query_map([plan_id], |row| row.get::<_, String>(0))?
@@ -798,7 +804,7 @@ impl Store {
             drop(owned);
             for owner in std::iter::once(plan_id.to_string()).chain(runs) {
                 super::sync::touch_device_owner(tx, &owner)?;
-                remove_owner_identities(tx, &owner)?;
+                retired.extend(remove_owner_identities(tx, &owner)?);
                 tx.execute(
                     "DELETE FROM inbox_retained_run_messages WHERE run_id = ?1",
                     [&owner],
@@ -812,15 +818,19 @@ impl Store {
             }
             tx.execute("DELETE FROM implementations WHERE task_id = ?1", [plan_id])?;
             tx.execute("DELETE FROM tasks WHERE id = ?1", [plan_id])?;
-            Ok(())
-        })
+            Ok(retired)
+        })?;
+        self.writer.notify_secret_records(&retired);
+        Ok(())
     }
     /// Write one run and its agents, whether or not it belongs to a Task.
     pub fn save_run(&self, record: &PersistedRun) -> Result<(), StoreError> {
-        self.in_transaction(|tx| {
+        let retired = self.in_transaction(|tx| {
             write_run(tx, record)?;
             Store::write_agents(tx, &record.id, &record.agents)
-        })
+        })?;
+        self.writer.notify_secret_records(&retired);
+        Ok(())
     }
     /// Runs belonging to `task_id`, or every run when it is `None`.
     pub(super) fn read_runs(
@@ -901,9 +911,9 @@ impl Store {
             .collect())
     }
     pub fn delete_run(&self, run_id: &str) -> Result<(), StoreError> {
-        self.in_transaction(|tx| {
+        let retired = self.in_transaction(|tx| {
             super::sync::touch_device_owner(tx, run_id)?;
-            remove_owner_identities(tx, run_id)?;
+            let retired = remove_owner_identities(tx, run_id)?;
             tx.execute(
                 "DELETE FROM inbox_retained_run_messages WHERE run_id = ?1",
                 [run_id],
@@ -915,8 +925,10 @@ impl Store {
             )?;
             tx.execute("DELETE FROM agents WHERE owner_id = ?1", [run_id])?;
             tx.execute("DELETE FROM implementations WHERE id = ?1", [run_id])?;
-            Ok(())
-        })
+            Ok(retired)
+        })?;
+        self.writer.notify_secret_records(&retired);
+        Ok(())
     }
     /// Done deletes the workspace conversation but keeps its message times in
     /// the project's session history. Copy and delete are one transaction so
@@ -926,10 +938,10 @@ impl Store {
         run_id: &str,
         project_id: &str,
     ) -> Result<(), StoreError> {
-        self.in_transaction(|tx| {
+        let retired = self.in_transaction(|tx| {
             super::sync::retain_device_owner(tx, run_id, project_id)?;
             super::sync::touch_device_owner(tx, run_id)?;
-            remove_owner_identities(tx, run_id)?;
+            let retired = remove_owner_identities(tx, run_id)?;
             tx.execute(
                 "INSERT INTO inbox_retained_messages (project_id, ts_ms) \
                  SELECT ?2, ts_ms FROM inbox_retained_run_messages WHERE run_id = ?1",
@@ -964,22 +976,27 @@ impl Store {
             )?;
             tx.execute("DELETE FROM agents WHERE owner_id = ?1", [run_id])?;
             tx.execute("DELETE FROM implementations WHERE id = ?1", [run_id])?;
-            Ok(())
-        })
+            Ok(retired)
+        })?;
+        self.writer.notify_secret_records(&retired);
+        Ok(())
     }
     /// A deleted project no longer has an inbox session. Clear all message
     /// times retained for it only after its configuration has been removed;
     /// until then a failed multi-step deletion can leave the project alive.
     pub fn clear_retained_project_messages(&self, project_id: &str) -> Result<(), StoreError> {
-        self.in_transaction(|tx| {
-            super::secrets::retire_project_in(tx, project_id)?;
+        let retired = self.in_transaction(|tx| {
+            let retired = super::secrets::retire_project_in(tx, project_id)
+                .map_err(super::secrets::store_error)?;
             tx.execute(
                 "DELETE FROM inbox_retained_messages WHERE project_id = ?1",
                 [project_id],
             )?;
             super::sync::clear_device_project(tx, project_id)?;
-            Ok(())
-        })
+            Ok(retired)
+        })?;
+        self.writer.notify_secret_records(&retired);
+        Ok(())
     }
     pub fn save_capture(&self, record: &crate::capture::Capture) -> Result<(), StoreError> {
         self.writer().sync_transaction(|tx, batch| {
@@ -1251,8 +1268,12 @@ pub(super) fn write_run(
 
 /// Capture roster IDs before deleting canonical rows so their bounded identity
 /// projections are removed in the same transaction as the owner.
-fn remove_owner_identities(tx: &rusqlite::Transaction, owner: &str) -> Result<(), StoreError> {
-    super::secrets::retire_owner_in(tx, owner)?;
+fn remove_owner_identities(
+    tx: &rusqlite::Transaction,
+    owner: &str,
+) -> Result<Vec<crate::secrets::SecretRecord>, StoreError> {
+    let retired =
+        super::secrets::retire_owner_in(tx, owner).map_err(super::secrets::store_error)?;
     super::sync::forget_device_owner(tx, owner)?;
     let ids = tx
         .prepare("SELECT id FROM agents WHERE owner_id=?1")?
@@ -1263,7 +1284,7 @@ fn remove_owner_identities(tx: &rusqlite::Transaction, owner: &str) -> Result<()
         super::sync::reset_device_conversation(tx, &id)?;
         super::task_summaries::identity_remove(tx, &id)?;
     }
-    Ok(())
+    Ok(retired)
 }
 
 /// One-way read migration from entity-owned choices and implicit transcript

@@ -157,27 +157,42 @@ fn directory_binding(root: &Path, target: &Path, path: &str) -> Result<String, S
     let created = metadata
         .created()
         .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_nanos());
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
+    let identity = stable_directory_identity(file_identity(&metadata), created)?;
     let bytes = serde_json::to_vec(&(
         canonical_root.as_os_str().as_encoded_bytes(),
         target.as_os_str().as_encoded_bytes(),
         path,
-        file_identity(&metadata),
-        created,
+        identity,
     ))
     .expect("directory identity serializes");
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+/// A reused inode is not a replacement fence without creation metadata.
+/// Refuse the negotiated paged read instead of producing an ambiguous cursor.
+fn stable_directory_identity(
+    file_id: Option<(u64, u64)>,
+    created: Option<std::time::Duration>,
+) -> Result<(u64, u64, u128), String> {
+    match (file_id, created) {
+        (Some((device, inode)), Some(created)) if device != 0 && inode != 0 => {
+            Ok((device, inode, created.as_nanos()))
+        }
+        _ => Err(errors::encode(ApiError::unavailable(
+            "Directory paging is unavailable: the filesystem cannot provide stable directory identity and creation metadata.",
+        ))),
+    }
+}
+
 #[cfg(unix)]
-fn file_identity(metadata: &Metadata) -> (u64, u64) {
+fn file_identity(metadata: &Metadata) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
-    (metadata.dev(), metadata.ino())
+    Some((metadata.dev(), metadata.ino()))
 }
 #[cfg(not(unix))]
-fn file_identity(_metadata: &Metadata) -> (u64, u64) {
-    (0, 0)
+fn file_identity(_metadata: &Metadata) -> Option<(u64, u64)> {
+    None
 }
 
 fn encode(binding: &str, after: &SortKey) -> String {
@@ -209,4 +224,39 @@ fn decode(token: &str, binding: &str) -> Result<SortKey, String> {
         return Err(refusal());
     }
     Ok(cursor.after)
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn assert_identity_unavailable(file_id: Option<(u64, u64)>, created: Option<Duration>) {
+        let error = stable_directory_identity(file_id, created)
+            .expect_err("unproven filesystem identity must refuse directory paging");
+        let refusal = crate::app::AppState::decode_file_error(&error)
+            .expect("identity refusal retains the standard filesystem API error shape");
+        assert_eq!(refusal.code(), "unavailable");
+    }
+
+    #[test]
+    fn directory_identity_requires_creation_proof_even_with_a_known_device_and_inode() {
+        assert_identity_unavailable(Some((7, 11)), None);
+    }
+
+    #[test]
+    fn directory_identity_requires_a_present_nonzero_platform_file_id() {
+        let created = Some(Duration::new(123, 456));
+        for file_id in [None, Some((0, 0)), Some((0, 11)), Some((7, 0))] {
+            assert_identity_unavailable(file_id, created);
+        }
+    }
+
+    #[test]
+    fn directory_identity_preserves_supported_file_and_creation_proof() {
+        assert_eq!(
+            stable_directory_identity(Some((7, 11)), Some(Duration::new(123, 456))).unwrap(),
+            (7, 11, 123_000_000_456_u128),
+        );
+    }
 }

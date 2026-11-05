@@ -27,7 +27,8 @@
     "not_found",
     "invalid_params",
     "conflict",
-    "internal"
+    "internal",
+    "unavailable"
   ],
   "project_sources": {
     "since": "3.9.0",
@@ -138,6 +139,9 @@
       "path",
       "directory_identity"
     ],
-    "continuation": "Live keyset after the previous page. Entries inserted before the cursor are seen by a new first-page read."
+    "continuation": "Live keyset after the previous page. Entries inserted before the cursor are seen by a new first-page read.",
+    "refused_with": {
+      "identity_unavailable": "unavailable"
+    }
   }
 }

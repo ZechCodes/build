@@ -16,8 +16,12 @@ inserting or deleting before the cursor cannot shift existing later entries
 out of the next page or repeat earlier entries.
 
 Cursors are opaque authenticated tokens. They bind the canonical scope root,
-requested path and directory identity (device/inode and creation time where
-available). A cursor for another path, a removed/replaced directory, a damaged
+requested path and directory identity. Paged reads require a nonzero Unix
+device/inode identity and usable creation metadata. If either cannot be
+established, the bridge refuses the paged read with the existing `unavailable`
+error; it emits no ambiguous cursor and does not fall back to an unpaged read.
+Unopted legacy directory reads retain their existing behavior.
+A cursor for another path, a removed/replaced directory, a damaged
 token or an earlier bridge process is refused as `invalid_params`; it never
 silently becomes a first page. Existing scope containment and source-binding
 fences still apply. The filesystem worker scans outside the application lock.

@@ -3749,23 +3749,6 @@ consumer, using Node 22.23.4/npm 12.0.2 and the install sequence in
 this same checkout; the Build commit pins the shipped transport. The Vite libsodium shim uses SPA-local libsodium 0.7.16, matching the
 transport lock; Node resolves the binding's dependencies from `transport/js`.
 
-### Secret runtime command
-
-The installer, management deploy/rollback and self-update install the embedded
-`bridge/runtime/buildctl` launcher beside the bridge. Agent launches prepend
-that absolute directory to PATH; ordinary terminal tabs receive no agent
-capability. The launcher forwards `buildctl --env <channel> secrets get --id
-<id>` to its sibling bridge without a checkout or language runtime. The
-repository management facade execs the launch-supplied absolute
-`BRIDGE_SECRET_BRIDGE` and retains its production management restrictions.
-
-`secret_cli.rs` dispatches before daemon configuration and never opens device
-state or keys. It requires the dedicated socket/channel/owner/agent/token
-context, checks any explicit environment against that channel, sends one bounded
-request, buffers at most 16 KiB under an absolute I/O deadline, and writes exact
-value bytes with no added newline. Diagnostics use a fixed error allowlist.
-Values are intentionally visible to stdout consumers and their transcripts.
-
 ### Module layout
 
 | Path | What it holds |

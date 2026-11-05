@@ -123,7 +123,7 @@ fn both_facades_share_the_runtime_contract() {
     std::fs::write(&launcher, build_bridge::runtime_launcher::SOURCE).unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
     for facade in ["runtime", "management"] {
-        let make_command = || {
+        let make_command = |environment: Option<&str>| {
             let mut cmd = if facade == "runtime" {
                 Command::new(&launcher)
             } else {
@@ -138,15 +138,42 @@ fn both_facades_share_the_runtime_contract() {
                     format!("{}/../tools/buildctl", env!("CARGO_MANIFEST_DIR")),
                 )
                 .env("PYTHONDONTWRITEBYTECODE", "1")
-                .env("BRIDGE_SECRET_BRIDGE", &binary)
-                .args(["--env", "dev", "secrets", "get", "--id", ID]);
+                .env("BRIDGE_SECRET_BRIDGE", &binary);
+            if let Some(environment) = environment {
+                cmd.args(["--env", environment]);
+            }
+            cmd.args(["secrets", "get", "--id", ID]);
             cmd
         };
-        assert_error(make_command().output().unwrap(), "unauthorized");
-        for response in [
-            b"{\"ok\":true,\"length\":8}\n a\nb \t\nz".as_slice(),
-            b"{\"ok\":false,\"error\":\"unauthorized\"}\n".as_slice(),
+        assert_error(make_command(Some("dev")).output().unwrap(), "unauthorized");
+        assert_error(make_command(None).output().unwrap(), "invalid_arguments");
+        assert_error(
+            make_command(Some("prod"))
+                .env("BRIDGE_SECRET_SOCKET", root.path().join("absent.sock"))
+                .env("BRIDGE_SECRET_CHANNEL", "dev")
+                .env("BRIDGE_SECRET_AGENT", "agent-fixture")
+                .env("BRIDGE_SECRET_OWNER", "owner-fixture")
+                .env("BRIDGE_SECRET_TOKEN", "synthetic-token")
+                .output()
+                .unwrap(),
+            "unauthorized",
+        );
+        let mut large = b"{\"ok\":true,\"length\":16384}\n".to_vec();
+        large.extend(vec![b'x'; 16384]);
+        for (response, expected) in [
+            (
+                b"{\"ok\":true,\"length\":8}\n a\nb \t\nz".to_vec(),
+                Some(b" a\nb \t\nz".to_vec()),
+            ),
+            (large, Some(vec![b'x'; 16384])),
+            (
+                b"{\"ok\":false,\"error\":\"unauthorized\"}\n".to_vec(),
+                None,
+            ),
+            (b"{\"ok\":true,\"length\":16385}\n".to_vec(), None),
+            (vec![b'z'; 257], None),
         ] {
+            let unauthorized = response.windows(12).any(|s| s == b"unauthorized");
             let socket = root.path().join("facade.sock");
             let listener = UnixListener::bind(&socket).unwrap();
             let server = std::thread::spawn(move || {
@@ -156,9 +183,9 @@ fn both_facades_share_the_runtime_contract() {
                     .read_line(&mut line)
                     .unwrap();
                 assert!(!line.contains(" a\nb"));
-                stream.write_all(response).unwrap();
+                stream.write_all(&response).unwrap();
             });
-            let output = make_command()
+            let output = make_command(Some("dev"))
                 .env("BRIDGE_SECRET_SOCKET", &socket)
                 .env("BRIDGE_SECRET_CHANNEL", "dev")
                 .env("BRIDGE_SECRET_AGENT", "agent-fixture")
@@ -168,12 +195,19 @@ fn both_facades_share_the_runtime_contract() {
                 .unwrap();
             server.join().unwrap();
             std::fs::remove_file(socket).unwrap();
-            if response.starts_with(b"{\"ok\":true") {
+            if let Some(expected) = expected {
                 assert!(output.status.success(), "{facade}");
-                assert_eq!(output.stdout, b" a\nb \t\nz");
+                assert_eq!(output.stdout, expected);
                 assert!(output.stderr.is_empty());
             } else {
-                assert_error(output, "unauthorized");
+                assert_error(
+                    output,
+                    if unauthorized {
+                        "unauthorized"
+                    } else {
+                        "secret_unavailable"
+                    },
+                );
             }
         }
     }

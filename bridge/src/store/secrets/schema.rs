@@ -1,3 +1,15 @@
+/// Durable audit outcomes shared by release and metadata lifecycle writers.
+pub(crate) const AUDIT_OUTCOMES: &[&str] = &[
+    "released",
+    "secret_unavailable",
+    "secret_expired",
+    "secret_revoked",
+    "created",
+    "attached",
+    "expired",
+    "revoked",
+];
+
 pub(in crate::store) const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS secret_records (
     id TEXT PRIMARY KEY,
@@ -142,13 +154,13 @@ fn ensure_lifecycle_audit(connection: &rusqlite::Connection) -> rusqlite::Result
         [],
         |row| row.get(0),
     )?;
-    if sql.contains("'created'") {
+    if AUDIT_OUTCOMES
+        .iter()
+        .all(|outcome| sql.contains(&format!("'{outcome}'")))
+    {
         return Ok(());
     }
-    let revised = sql.replace("secret_audit", "secret_audit_next").replace(
-        "'secret_revoked'",
-        "'secret_revoked','created','attached','expired','revoked'",
-    );
+    let revised = upgraded_audit_table();
     connection.execute_batch("SAVEPOINT secret_audit_upgrade")?;
     let result = (|| {
         connection.execute_batch(&revised)?;
@@ -162,15 +174,31 @@ fn ensure_lifecycle_audit(connection: &rusqlite::Connection) -> rusqlite::Result
     result
 }
 
+fn upgraded_audit_table() -> String {
+    let outcomes = AUDIT_OUTCOMES
+        .iter()
+        .map(|outcome| format!("'{outcome}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("CREATE TABLE secret_audit_next (sequence INTEGER PRIMARY KEY AUTOINCREMENT,secret_id TEXT NOT NULL,creator TEXT,project_id TEXT NOT NULL,owner_id TEXT NOT NULL,agent_id TEXT NOT NULL,conversation_id TEXT NOT NULL,generation TEXT NOT NULL,session_incarnation TEXT NOT NULL,request_id TEXT NOT NULL,occurred_at INTEGER NOT NULL,outcome TEXT NOT NULL CHECK (outcome IN ({outcomes})))")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn lifecycle_audit_upgrade_keeps_rows_and_deleted_sequence_highwater() {
+        upgrade_preserves_sequence("'secret_revoked'");
+    }
+    #[test]
+    fn lifecycle_audit_partial_upgrade_rebuilds_the_complete_outcome_set() {
+        upgrade_preserves_sequence("'secret_revoked','created'");
+    }
+    fn upgrade_preserves_sequence(old_outcomes: &str) {
         let connection = rusqlite::Connection::open_in_memory().unwrap();
         let old = SCHEMA.replace(
             "'secret_revoked','created','attached','expired','revoked'",
-            "'secret_revoked'",
+            old_outcomes,
         );
         connection.execute_batch(&old).unwrap();
         for sequence in [500, 900] {
@@ -180,6 +208,19 @@ mod tests {
             .execute("DELETE FROM secret_audit WHERE sequence=900", [])
             .unwrap();
         initialize(&connection).unwrap();
+        let ddl: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='secret_audit'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        for outcome in AUDIT_OUTCOMES {
+            assert!(
+                ddl.contains(&format!("'{outcome}'")),
+                "{outcome} missing from rebuilt CHECK"
+            );
+        }
         connection.execute("INSERT INTO secret_audit(secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome) VALUES ('sec_synthetic','device_user','project-a','owner-a','agent-a','conversation-a','generation-a','device_user','synthetic-request',1001,'created')",[]).unwrap();
         let rows = connection
             .prepare("SELECT sequence,outcome FROM secret_audit ORDER BY sequence")

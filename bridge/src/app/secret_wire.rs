@@ -172,16 +172,11 @@ impl AppState {
         params: RevokeParams,
     ) -> Result<Answer<SecretMetadata>, ApiError> {
         let caller = context.ok_or_else(|| ApiError::unavailable("unauthorized"))?;
-        let (device, creator) = self
+        let (_device, creator) = self
             .secret_user_context(caller)
             .map_err(ApiError::classify)?;
         canonical_uuid(&params.operation_id)?;
         self.authorize_secret_scope(&params.scope)?;
-        let writer = self
-            .store
-            .as_ref()
-            .ok_or_else(|| ApiError::unavailable("secret_unavailable"))?
-            .writer();
         let service = self
             .secret_service
             .clone()
@@ -191,26 +186,9 @@ impl AppState {
             if !caller.execution_is_live() {
                 return Err("unauthorized".into());
             }
-            let query = crate::api::v1::secrets::ListParams {
-                scope: params.scope,
-                secret_ids: vec![params.secret_id.clone()],
-                request_ids: vec![],
-                after: None,
-                limit: 1,
-            };
-            let mut metadata = writer
-                .secret_metadata_page(&device, &creator, &query)
-                .map_err(|error| error.to_string())?
-                .secrets
-                .into_iter()
-                .next()
-                .ok_or("secret_unavailable")?;
-            let record = service
-                .revoke(&params.secret_id)
+            let metadata = service
+                .revoke_operation(&creator, &params)
                 .map_err(|error| error.to_string())?;
-            metadata.revoked_at = record.revoked_at;
-            metadata.revision = record.revision;
-            metadata.status = "revoked".into();
             serde_json::to_value(metadata).map_err(|_| "secret_unavailable".into())
         })));
         answer(Ok(Value::Null))

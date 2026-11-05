@@ -119,24 +119,22 @@ fn tombstone(
     if now < 0 {
         return Err(SecretError::Invalid);
     }
-    durable(writer, |tx| {
-        let before = records::required(tx, id)?;
-        tx.execute("UPDATE secret_records SET revoked_at=?2,revocation_reason=?3,revision=revision+1 WHERE id=?1 AND revoked_at IS NULL",params![id,now,reason])?;
-        let record = records::required(tx, id)?;
-        if before.revoked_at.is_none() {
-            super::append_metadata_in(
-                tx,
-                &record,
-                if reason == "expired" {
-                    "expired"
-                } else {
-                    "revoked"
-                },
-                now,
-            )?;
-        }
-        Ok(record)
-    })
+    durable(writer, |tx| tombstone_in(tx, id, now, reason))
+}
+
+pub(super) fn tombstone_in(
+    tx: &Transaction<'_>,
+    id: &str,
+    now: i64,
+    reason: &'static str,
+) -> Result<SecretRecord> {
+    let before = records::required(tx, id)?;
+    tx.execute("UPDATE secret_records SET revoked_at=?2,revocation_reason=?3,revision=revision+1 WHERE id=?1 AND revoked_at IS NULL",params![id,now,reason])?;
+    let record = records::required(tx, id)?;
+    if before.revoked_at.is_none() {
+        super::append_metadata_in(tx, &record, reason, now)?;
+    }
+    Ok(record)
 }
 
 pub(super) fn observe_in(tx: &Transaction<'_>, now: i64) -> Result<()> {

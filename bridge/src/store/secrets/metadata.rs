@@ -160,7 +160,7 @@ fn cursor(params: &ListParams, id: String) -> Result<String> {
     .map_err(|_| SecretError::Invalid)?;
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
 }
-fn list(
+pub(super) fn list(
     connection: &Connection,
     device: &str,
     creator: &str,

@@ -214,3 +214,188 @@ fn upload_rechecks_committed_scope_after_encryption_and_before_metadata_acceptan
     );
     assert_eq!(f.app.secret_service().unwrap().sweep().unwrap().deleted, 1);
 }
+
+#[test]
+fn revoke_operation_replays_exact_response_and_refuses_retargeting() {
+    let mut f = fixture();
+    let first = create(&mut f).unwrap();
+    let mut params = json!({"secret_id":first["secret_id"],"operation_id":"33333333-3333-4333-8333-333333333333","scope":{"project_id":f.params["grant"]["project_id"]}});
+    let caller = CallContext::detached("owner");
+    let accepted = f
+        .app
+        .dispatch_api_with_context("secrets.revoke", &params, Some(&caller))
+        .unwrap();
+    assert_eq!(
+        f.app
+            .dispatch_api_with_context("secrets.revoke", &params, Some(&caller))
+            .unwrap(),
+        accepted
+    );
+    let reopened = rusqlite::Connection::open(f.root.path().join("tasks/build.db")).unwrap();
+    let persisted: String = reopened
+        .query_row(
+            "SELECT response FROM secret_revocations WHERE operation_id=?1",
+            [params["operation_id"].as_str().unwrap()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&persisted).unwrap(), accepted);
+    let mut changed_scope = params.clone();
+    changed_scope["scope"]["stage"] = f.params["scope"].clone();
+    assert_eq!(
+        f.app
+            .dispatch_api_with_context("secrets.revoke", &changed_scope, Some(&caller))
+            .err()
+            .unwrap()
+            .code(),
+        "conflict"
+    );
+    f.params["request_id"] = json!("44444444-4444-4444-8444-444444444444");
+    params["secret_id"] = create(&mut f).unwrap()["secret_id"].clone();
+    assert_eq!(
+        f.app
+            .dispatch_api_with_context("secrets.revoke", &params, Some(&caller))
+            .err()
+            .unwrap()
+            .code(),
+        "conflict"
+    );
+}
+
+#[test]
+fn revoke_reports_expired_even_before_the_sweeper_tombstones_it() {
+    let mut f = fixture();
+    let first = create(&mut f).unwrap();
+    let database = rusqlite::Connection::open(f.root.path().join("tasks/build.db")).unwrap();
+    database
+        .execute(
+            "UPDATE secret_records SET created_at=0 WHERE id=?1",
+            [first["secret_id"].as_str().unwrap()],
+        )
+        .unwrap();
+    let params = json!({"secret_id":first["secret_id"],"operation_id":"33333333-3333-4333-8333-333333333333","scope":{"project_id":f.params["grant"]["project_id"]}});
+    let result = f
+        .app
+        .dispatch_api_with_context(
+            "secrets.revoke",
+            &params,
+            Some(&CallContext::detached("owner")),
+        )
+        .unwrap();
+    assert_eq!(result["status"], "expired");
+    let reason: String = database
+        .query_row(
+            "SELECT revocation_reason FROM secret_records WHERE id=?1",
+            [first["secret_id"].as_str().unwrap()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reason, "expired");
+    let mut fresh_operation = params.clone();
+    fresh_operation["operation_id"] = json!("55555555-5555-4555-8555-555555555555");
+    let persisted_expiry = f
+        .app
+        .dispatch_api_with_context(
+            "secrets.revoke",
+            &fresh_operation,
+            Some(&CallContext::detached("owner")),
+        )
+        .unwrap();
+    assert_eq!(persisted_expiry["status"], "expired");
+    assert_eq!(persisted_expiry["revoked_at"], result["revoked_at"]);
+}
+
+#[test]
+fn revoke_receipt_failure_rolls_back_the_tombstone_and_audit() {
+    let mut f = fixture();
+    let first = create(&mut f).unwrap();
+    let database = rusqlite::Connection::open(f.root.path().join("tasks/build.db")).unwrap();
+    database.execute_batch("CREATE TRIGGER fail_revoke_receipt BEFORE INSERT ON secret_revocations BEGIN SELECT RAISE(ABORT,'synthetic receipt failure'); END").unwrap();
+    let params = json!({"secret_id":first["secret_id"],"operation_id":"33333333-3333-4333-8333-333333333333","scope":{"project_id":f.params["grant"]["project_id"]}});
+    let caller = CallContext::detached("owner");
+    assert!(f
+        .app
+        .dispatch_api_with_context("secrets.revoke", &params, Some(&caller))
+        .is_err());
+    let revoked: Option<i64> = database
+        .query_row(
+            "SELECT revoked_at FROM secret_records WHERE id=?1",
+            [first["secret_id"].as_str().unwrap()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(revoked.is_none());
+    let audit: i64 = database
+        .query_row(
+            "SELECT COUNT(*) FROM secret_audit WHERE outcome='revoked'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(audit, 0);
+    database
+        .execute_batch("DROP TRIGGER fail_revoke_receipt")
+        .unwrap();
+    assert_eq!(
+        f.app
+            .dispatch_api_with_context("secrets.revoke", &params, Some(&caller))
+            .unwrap()["status"],
+        "revoked"
+    );
+}
+
+#[test]
+fn revoke_receipts_are_bounded_without_blocking_revocation_and_pruned_on_sweep() {
+    let mut f = fixture();
+    let first = create(&mut f).unwrap();
+    let mut params = json!({"secret_id":first["secret_id"],"operation_id":"33333333-3333-4333-8333-333333333333","scope":{"project_id":f.params["grant"]["project_id"]}});
+    let caller = CallContext::detached("owner");
+    let accepted = f
+        .app
+        .dispatch_api_with_context("secrets.revoke", &params, Some(&caller))
+        .unwrap();
+    let database = rusqlite::Connection::open(f.root.path().join("tasks/build.db")).unwrap();
+    database.execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<4096) INSERT INTO secret_revocations(device_id,creator,operation_id,request,response,secret_id,accepted_at) SELECT 'synthetic-device','device_user',printf('00000000-0000-4000-8000-%012d',i),'{}',?1,?2,?3 FROM n",rusqlite::params![serde_json::to_string(&accepted).unwrap(),first["secret_id"].as_str().unwrap(),time::OffsetDateTime::now_utc().unix_timestamp()]).unwrap();
+    f.params["request_id"] = json!("44444444-4444-4444-8444-444444444444");
+    params["secret_id"] = create(&mut f).unwrap()["secret_id"].clone();
+    params["operation_id"] = json!("55555555-5555-4555-8555-555555555555");
+    assert_eq!(
+        f.app
+            .dispatch_api_with_context("secrets.revoke", &params, Some(&caller))
+            .unwrap()["status"],
+        "revoked"
+    );
+    let count: i64 = database
+        .query_row("SELECT COUNT(*) FROM secret_revocations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 4096);
+    let oldest: bool = database.query_row("SELECT EXISTS(SELECT 1 FROM secret_revocations WHERE operation_id='33333333-3333-4333-8333-333333333333')",[],|row|row.get(0)).unwrap();
+    assert!(!oldest);
+    let tombstone: bool = database
+        .query_row(
+            "SELECT revoked_at IS NOT NULL FROM secret_records WHERE id=?1",
+            [first["secret_id"].as_str().unwrap()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(tombstone, "receipt eviction never reopens a revoked secret");
+    database
+        .execute("UPDATE secret_revocations SET accepted_at=0", [])
+        .unwrap();
+    f.app.secret_service().unwrap().sweep().unwrap();
+    assert_eq!(
+        database
+            .query_row("SELECT COUNT(*) FROM secret_revocations", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        f.app
+            .dispatch_api_with_context("secrets.revoke", &params, Some(&caller))
+            .unwrap()["status"],
+        "revoked"
+    );
+}

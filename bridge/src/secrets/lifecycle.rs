@@ -293,6 +293,30 @@ impl SecretService {
         Ok(record)
     }
 
+    /// Freeze the accepted metadata response with its user operation identity.
+    pub fn revoke_operation(
+        &self,
+        creator: &str,
+        params: &crate::api::v1::secrets::RevokeParams,
+    ) -> Result<crate::api::v1::secrets::SecretMetadata> {
+        let mut state = self.state();
+        let (response, record) = self.inner.writer.secrets_revoke_operation(
+            &self.inner.device_id,
+            creator,
+            params,
+            |tx, record| {
+                let observation = state.observe_in(tx)?;
+                let expired = state.expired(record, &observation);
+                Ok((observation.effective_now, expired))
+            },
+        )?;
+        if let Some(record) = record {
+            self.delete_record(&record, &mut state);
+            self.changed(&record);
+        }
+        Ok(response)
+    }
+
     fn delete_record(&self, record: &SecretRecord, state: &mut ClockState) -> bool {
         let Ok(vault) = self.vault() else {
             return false;

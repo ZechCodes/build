@@ -46,8 +46,16 @@ agent grants for that exact stage/final recipient. Optional `secret_ids` and
 stage, TTL, timestamps, revision and status; no blob state, digest or value.
 
 `secrets.revoke` (`POST /v1/secrets/{secret_id}/revocations`) accepts scope,
-secret ID and a UUID operation ID. Revocation commits denial before unlink and
-is idempotent. `secrets.audit` (`POST /v1/secrets/{secret_id}/audit-queries`)
+secret ID and a UUID operation ID. Revocation commits denial and a metadata-only
+receipt together before unlink. The operation ID is bound to the device, creator,
+secret ID and exact scope: retries return the original accepted response, and
+reuse with a different secret or scope conflicts. Exact responses are retained
+for at most 90 days and the newest 4,096 revocation operations across the store.
+Older receipts are pruned during maintenance or evicted to keep revocation
+available; the permanent tombstone still denies release after a receipt expires.
+An already-expired secret remains expired, including when its expiry has not
+yet been swept.
+`secrets.audit` (`POST /v1/secrets/{secret_id}/audit-queries`)
 accepts scope, secret ID, nonnegative `after` sequence and limit 1–100. It
 returns metadata events, server time and nullable next sequence. List/audit
 execute in the shared bounded SQL lane.
@@ -97,7 +105,8 @@ meaning; creating or revoking a secret does not increment a denial count.
 ## Schema compatibility
 
 Store schema remains 25, extending the unadvertised foundation with final-binding
-metadata and the idempotent `ensure_lifecycle_audit` upgrade. The audit CHECK is
+metadata and idempotent `ensure_lifecycle_audit` / `ensure_revocation_receipts`
+upgrades within the shared `secret_audit_upgrade` savepoint. The audit CHECK is
 rebuilt from the complete known outcome set: `released`, `secret_unavailable`,
 `secret_expired`, `secret_revoked`, `created`, `attached`, `expired`, `revoked`.
 The savepoint upgrade preserves audit rows, sequence IDs and SQLite's deleted-row

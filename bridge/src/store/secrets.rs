@@ -13,6 +13,7 @@ mod key_state;
 mod metadata;
 mod records;
 mod retirement;
+mod revoke;
 mod schema;
 mod writes;
 

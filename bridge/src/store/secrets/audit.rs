@@ -93,6 +93,7 @@ impl StoreWriter {
         let mut total = 0;
         for _ in 0..8 {
             let removed = writes::durable(self, |tx| {
+                super::revoke::prune_in(tx, now)?;
                 Ok(tx.execute("DELETE FROM secret_audit WHERE sequence IN (SELECT sequence FROM secret_audit WHERE occurred_at<?1 ORDER BY occurred_at,sequence LIMIT 1000)",[now.saturating_sub(DETAIL_RETENTION_SECONDS)])?)
             })?;
             total += removed;

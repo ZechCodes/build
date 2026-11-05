@@ -10,6 +10,22 @@ pub(crate) const AUDIT_OUTCOMES: &[&str] = &[
     "revoked",
 ];
 
+const REVOCATION_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS secret_revocations (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT NOT NULL,
+    creator TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    secret_id TEXT NOT NULL,
+    accepted_at INTEGER NOT NULL CHECK (accepted_at >= 0),
+    request TEXT NOT NULL,
+    response TEXT NOT NULL,
+    UNIQUE(device_id,creator,operation_id)
+);
+CREATE INDEX IF NOT EXISTS secret_revocations_retention
+    ON secret_revocations(accepted_at,sequence);
+"#;
+
 pub(in crate::store) const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS secret_records (
     id TEXT PRIMARY KEY,
@@ -130,7 +146,7 @@ pub(in crate::store) fn initialize(connection: &rusqlite::Connection) -> rusqlit
         connection.execute_batch("ALTER TABLE secret_records ADD COLUMN revocation_reason TEXT CHECK (revocation_reason IS NULL OR revocation_reason IN ('key_lost','revoked','expired'))")?;
     }
     ensure_pending_key_column(connection)?;
-    ensure_lifecycle_audit(connection)?;
+    ensure_audit_upgrades(connection)?;
     Ok(())
 }
 
@@ -143,6 +159,25 @@ fn ensure_pending_key_column(connection: &rusqlite::Connection) -> rusqlite::Res
         connection.execute_batch("ALTER TABLE secret_vault_state ADD COLUMN pending_key_id TEXT CHECK (pending_key_id IS NULL OR active_key_id IS NULL)")?;
     }
     Ok(())
+}
+
+/// Receipts and the audit CHECK extension are one atomic schema-25 upgrade.
+fn ensure_audit_upgrades(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
+    connection.execute_batch("SAVEPOINT secret_audit_upgrade")?;
+    let result = (|| {
+        ensure_lifecycle_audit(connection)?;
+        ensure_revocation_receipts(connection)?;
+        connection.execute_batch("RELEASE secret_audit_upgrade")
+    })();
+    if result.is_err() {
+        let _ = connection
+            .execute_batch("ROLLBACK TO secret_audit_upgrade; RELEASE secret_audit_upgrade");
+    }
+    result
+}
+
+fn ensure_revocation_receipts(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(REVOCATION_SCHEMA)
 }
 
 /// Preserve sequence numbers, rows and the AUTOINCREMENT high-water while
@@ -161,17 +196,9 @@ fn ensure_lifecycle_audit(connection: &rusqlite::Connection) -> rusqlite::Result
         return Ok(());
     }
     let revised = upgraded_audit_table();
-    connection.execute_batch("SAVEPOINT secret_audit_upgrade")?;
-    let result = (|| {
-        connection.execute_batch(&revised)?;
-        connection.execute_batch("INSERT INTO secret_audit_next SELECT * FROM secret_audit; INSERT INTO sqlite_sequence(name,seq) SELECT 'secret_audit_next',seq FROM sqlite_sequence WHERE name='secret_audit' AND NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='secret_audit_next'); UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE((SELECT seq FROM sqlite_sequence WHERE name='secret_audit'),0)) WHERE name='secret_audit_next'; DROP TABLE secret_audit; ALTER TABLE secret_audit_next RENAME TO secret_audit; CREATE INDEX secret_audit_by_secret ON secret_audit(secret_id,sequence); CREATE INDEX secret_audit_retention ON secret_audit(occurred_at,sequence);")?;
-        connection.execute_batch("RELEASE secret_audit_upgrade")
-    })();
-    if result.is_err() {
-        let _ = connection
-            .execute_batch("ROLLBACK TO secret_audit_upgrade; RELEASE secret_audit_upgrade");
-    }
-    result
+    connection.execute_batch(&revised)?;
+    connection.execute_batch("INSERT INTO secret_audit_next SELECT * FROM secret_audit; INSERT INTO sqlite_sequence(name,seq) SELECT 'secret_audit_next',seq FROM sqlite_sequence WHERE name='secret_audit' AND NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='secret_audit_next'); UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE((SELECT seq FROM sqlite_sequence WHERE name='secret_audit'),0)) WHERE name='secret_audit_next'; DROP TABLE secret_audit; ALTER TABLE secret_audit_next RENAME TO secret_audit; CREATE INDEX secret_audit_by_secret ON secret_audit(secret_id,sequence); CREATE INDEX secret_audit_retention ON secret_audit(occurred_at,sequence);")?;
+    Ok(())
 }
 
 fn upgraded_audit_table() -> String {
@@ -186,6 +213,52 @@ fn upgraded_audit_table() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn revocation_receipt_ensure_runs_for_full_audit_schema_and_reopens() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        initialize(&connection).unwrap();
+        let columns = connection
+            .prepare("PRAGMA table_info(secret_revocations)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(columns.iter().any(|column| column == "accepted_at"));
+        assert!(columns.iter().any(|column| column == "secret_id"));
+        initialize(&connection).unwrap();
+        let index: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='secret_revocations_retention')",[],|row|row.get(0)).unwrap();
+        assert!(index);
+    }
+
+    #[test]
+    fn receipt_ensure_failure_rolls_back_the_audit_upgrade() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        let old = SCHEMA.replace(
+            "'secret_revoked','created','attached','expired','revoked'",
+            "'secret_revoked'",
+        );
+        connection.execute_batch(&old).unwrap();
+        connection.execute_batch("DROP TABLE IF EXISTS secret_revocations; CREATE TABLE secret_revocations(sentinel TEXT)").unwrap();
+        assert!(initialize(&connection).is_err());
+        let sql: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='secret_audit'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            !sql.contains("'created'"),
+            "receipt and audit upgrades must roll back together"
+        );
+        connection
+            .execute_batch("DROP TABLE secret_revocations")
+            .unwrap();
+        initialize(&connection).unwrap();
+    }
+
     #[test]
     fn lifecycle_audit_upgrade_keeps_rows_and_deleted_sequence_highwater() {
         upgrade_preserves_sequence("'secret_revoked'");

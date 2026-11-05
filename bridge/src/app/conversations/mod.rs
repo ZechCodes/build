@@ -12,8 +12,8 @@ mod read;
 mod reset;
 mod reset_files;
 mod retention;
-mod senders;
 mod secrets;
+mod senders;
 pub(in crate::app) mod sql_read;
 
 pub(in crate::app) use agent_to_agent::AgentSender;

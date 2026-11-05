@@ -35,11 +35,11 @@ mod rpc;
 mod rtc;
 mod runs;
 mod runtime;
+mod secret_reads;
 #[cfg(unix)]
 mod secret_release;
 mod secret_storage;
 mod secret_wire;
-mod secret_reads;
 mod session_summaries;
 mod snapshot_projection;
 mod streams;

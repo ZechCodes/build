@@ -17,7 +17,9 @@ keep their contract.
 `device_id`, `creator`, `scope` (StageContext), `grant` (GrantScope), `name`,
 nullable `ttl_seconds`, and `sealed_payload`. Unknown fields are refused. The
 entire request is capped at 64 KiB; the sealed inner frame is exactly 32 KiB.
-`@build/secure-transport` exports `sealSecretUpload` to construct this frame
+The value is UTF-8 encoded and represented as standard unpadded base64 inside
+the encrypted envelope, so even 16 KiB of JSON control characters fits without
+changing the padding size. `@build/secure-transport` exports `sealSecretUpload` to construct this frame
 before any generic adapter sees it. It uses the authenticated device transport
 public key and binds every outer field inside the versioned sealed box.
 
@@ -91,3 +93,21 @@ and table rebuild, preserving every retained row and the AUTOINCREMENT
 high-water even when the highest old row was pruned. Lifecycle facts commit
 with their metadata mutation. Release/denial summaries retain their original
 meaning; creating or revoking a secret does not increment a denial count.
+
+## Schema compatibility
+
+Store schema remains 25, extending the unadvertised foundation with final-binding
+metadata and the idempotent `ensure_lifecycle_audit` upgrade. The audit CHECK is
+rebuilt from the complete known outcome set: `released`, `secret_unavailable`,
+`secret_expired`, `secret_revoked`, `created`, `attached`, `expired`, `revoked`.
+The savepoint upgrade preserves audit rows, sequence IDs and SQLite's deleted-row
+AUTOINCREMENT high-water, and can run repeatedly. Lifecycle appends use a separate
+helper in the same metadata transaction; release/denial authorization and summary
+accounting retain their existing helper. The original internal release-only
+reader retains that outcome filter. Public audit pages include lifecycle events.
+
+If secret invalidation contexts exceed their bounded coalescing budget, a
+`scope:"device",truncated:true,secret_ids:[]` hint requests a full metadata
+refresh for existing secrets subscribers. Per-secret revisions are metadata
+versions, not a single scope-wide event cursor: do not discard one secret's
+invalidation merely because another secret has a higher revision.

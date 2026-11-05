@@ -56,6 +56,7 @@ impl StoreWriter {
 }
 
 pub(super) fn authorize(connection: &Connection, scope: &SecretScope) -> Result<()> {
+    scope.validate()?;
     let exists: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM device_project_ids WHERE project_id=?1)",
         [&scope.project_id],
@@ -330,6 +331,42 @@ mod tests {
             )
             .unwrap();
     }
+    #[test]
+    fn metadata_scopes_reject_noncanonical_drafts_empty_and_oversize_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        project(&store, "project-a");
+        let mut asked = params();
+        asked.scope.stage = Some(StageContext {
+            owner_id: "project-a".into(),
+            conversation_id: "provisional".into(),
+            generation: "provisional".into(),
+            draft_id: Some("not-a-uuid".into()),
+        });
+        assert!(matches!(
+            store
+                .writer()
+                .secret_metadata_page("device", "device_user", &asked),
+            Err(SecretError::Invalid)
+        ));
+        asked.scope.stage.as_mut().unwrap().draft_id = Some(uuid::Uuid::new_v4().to_string());
+        asked.scope.stage.as_mut().unwrap().generation.clear();
+        assert!(matches!(
+            store
+                .writer()
+                .secret_metadata_page("device", "device_user", &asked),
+            Err(SecretError::Invalid)
+        ));
+        asked.scope.stage = None;
+        asked.scope.project_id = "p".repeat(129);
+        assert!(matches!(
+            store
+                .writer()
+                .secret_metadata_page("device", "device_user", &asked),
+            Err(SecretError::Invalid)
+        ));
+    }
+
     #[test]
     fn timeout_lookup_by_request_and_scoped_paging_return_only_allowlisted_metadata() {
         let dir = tempfile::tempdir().unwrap();

@@ -43,6 +43,6 @@ mod recovery;
 mod release_model;
 pub use release_model::{SecretAuditRecord, SecretAuditSummary, SecretCaller};
 
-pub mod upload;
 mod post;
+pub mod upload;
 pub use post::SecretPostBinding;

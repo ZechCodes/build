@@ -32,6 +32,9 @@ impl AppState {
         &self,
         scope: &SecretScope,
     ) -> Result<(), ApiError> {
+        scope
+            .validate()
+            .map_err(|error| ApiError::classify(error.to_string()))?;
         if self.projects.get(&scope.project_id).is_none() {
             return Err(ApiError::not_found("secret_unavailable"));
         }

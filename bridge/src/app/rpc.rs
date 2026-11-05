@@ -679,7 +679,10 @@ impl AppState {
             observations.prepare(frame, connection)
         })
         .with_sql_reads(pool, move |sender, frame, _timer, connection| {
-            if matches!(frame.payload["method"].as_str(), Some("secrets.list" | "secrets.audit")) {
+            if matches!(
+                frame.payload["method"].as_str(),
+                Some("secrets.list" | "secrets.audit")
+            ) {
                 secret_reads.call(&sender, frame, connection)
             } else if matches!(
                 frame.payload["method"].as_str(),

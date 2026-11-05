@@ -24,6 +24,33 @@ pub struct SecretScope {
     pub stage: Option<StageContext>,
 }
 
+impl SecretScope {
+    pub fn validate(&self) -> crate::secrets::Result<()> {
+        let mut fields = vec![self.project_id.as_str()];
+        if let Some(stage) = &self.stage {
+            fields.extend([
+                stage.owner_id.as_str(),
+                stage.conversation_id.as_str(),
+                stage.generation.as_str(),
+            ]);
+            if let Some(draft) = &stage.draft_id {
+                let id = uuid::Uuid::parse_str(draft)
+                    .map_err(|_| crate::secrets::SecretError::Invalid)?;
+                if id.hyphenated().to_string() != *draft {
+                    return Err(crate::secrets::SecretError::Invalid);
+                }
+            }
+        }
+        if fields
+            .iter()
+            .any(|field| field.is_empty() || field.len() > 128 || field.contains('\0'))
+        {
+            return Err(crate::secrets::SecretError::Invalid);
+        }
+        Ok(())
+    }
+}
+
 // Upload bytes deliberately have no Debug implementation.
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

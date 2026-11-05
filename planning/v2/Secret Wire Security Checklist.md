@@ -5,7 +5,11 @@ public routes, invalidations and delivered message blocks. CLI execution and
 composer UX are qualified by their own slices. Agents intentionally retrieve
 raw values through the CLI; that output can enter their tool transcripts.
 
-Scoped verification is pending final integrated gates. Each row is 10 points.
+**Scoped score: 100/100.** Each row is 10 points. The final integrated run
+passed all 206 targeted secret tests with no failures or ignored tests. Eighteen
+assertions failed under reversible negative controls, then passed after byte-exact
+source restoration. Public contracts, SQL publication ownership, all five harness
+goldens, 336 targeted SPA tests and 19 HTTP coverage tests are verified.
 
 | # | Control | Targeted evidence |
 |---|---|---|

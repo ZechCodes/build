@@ -25,7 +25,7 @@ import { columns, task as wireTask } from "./trackerWireFixture.js";
 // must name that same project rather than the shared fixture's p1 default.
 const task = (over = {}) => wireTask({ project_id: "proj-1", ...over });
 const taskPublicFields = ({ __task_content_cache: _content, ...fields }) => fields;
-import { holds, painted } from "./waits.js";
+import { called, holds, painted } from "./waits.js";
 
 let watchers = [];
 // The real module refuses a registration that names a cadence — nothing in
@@ -1186,6 +1186,7 @@ describe("the filters", () => {
     await mount();
     call.mockClear();
     await chooseFilter("state", "open");
+    await called(call, () => listed("tasks.list").length > 0);
     expect(listed("tasks.list")[0][1]).toEqual({ project_id: "proj-1", state: "open" });
   });
 
@@ -1208,7 +1209,8 @@ describe("the filters", () => {
     call = vi.fn(async () => ({ tasks: [] }));
     await mount();
     await chooseFilter("state", "closed");
-    expect(host.querySelector(".task-empty").textContent).toContain("No task matches these filters");
+    await painted(holds(() => expect(host.querySelector(".task-empty").textContent)
+      .toContain("No task matches these filters")), host);
   });
 });
 
@@ -1775,7 +1777,7 @@ describe("the filter bar, mounted once", () => {
     // list, which is where the menus are built from.
     await chooseFilter("state", "closed");
     await openMenu("label");
-    expect(menuRows("label").map((one) => one.dataset.value)).toEqual(["bug", "spa"]);
+    await painted(holds(() => expect(menuRows("label").map((one) => one.dataset.value)).toEqual(["bug", "spa"])), host);
     expect(menuPress("label")).toBe(press);
     expect(menuRows("label")[0]).toBe(kept);
   });
@@ -1987,9 +1989,11 @@ describe("what the tab opens on", () => {
     call = listing();
     await mount();
     await chooseState("closed");
-    const row = host.querySelector(".task-row");
-    expect(row.querySelector(".task-closed").textContent).toBe("Closed");
-    expect(row.querySelector(".task-row-facts").firstElementChild.className).toBe("task-closed");
+    await painted(holds(() => {
+      const row = host.querySelector(".task-row");
+      expect(row.querySelector(".task-closed").textContent).toBe("Closed");
+      expect(row.querySelector(".task-row-facts").firstElementChild.className).toBe("task-closed");
+    }), host);
   });
 
   it("draws no such chip on the open rows it opens with", async () => {
@@ -2005,18 +2009,19 @@ describe("what the tab opens on", () => {
     await mount();
     expect(clearPress()).toBeNull();
     await chooseState("closed");
-    expect(clearPress()).not.toBeNull();
+    await painted(holds(() => expect(clearPress()).not.toBeNull()), host);
   });
 
   it("goes back to open tasks on Clear, not to everything", async () => {
     call = listing();
     await mount();
     await chooseState("");
-    expect(titles()).toEqual(["Still open", "Finished with"]);
+    await painted(holds(() => expect(titles()).toEqual(["Still open", "Finished with"])), host);
     clearPress().click();
-    await flush();
-    expect(titles()).toEqual(["Still open"]);
-    expect(clearPress()).toBeNull();
+    await painted(holds(() => {
+      expect(titles()).toEqual(["Still open"]);
+      expect(clearPress()).toBeNull();
+    }), host);
   });
 
   // A project with nothing in it is at its first state, not looking at a
@@ -2107,6 +2112,7 @@ it("registers a changed durable query before releasing the previous mounted quer
   await mount();
   const registrations = durable.register.mock.calls.length, releases = durable.release.mock.calls.length;
   await chooseFilter("state", "closed");
+  await called(durable.register, () => durable.register.mock.calls.length >= registrations + 1);
   expect(durable.register).toHaveBeenCalledTimes(registrations + 1);
   expect(durable.release).toHaveBeenCalledTimes(releases + 1);
   expect(durable.register.mock.invocationCallOrder.at(-1)).toBeLessThan(durable.release.mock.invocationCallOrder.at(-1));

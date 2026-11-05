@@ -1975,10 +1975,10 @@ describe("what the tab opens on", () => {
     expect(options).toEqual(["", "open", "closed"]);
 
     await chooseState("");
-    expect(titles()).toEqual(["Still open", "Finished with"]);
+    await painted(holds(() => expect(titles()).toEqual(["Still open", "Finished with"])), host);
 
     await chooseState("closed");
-    expect(titles()).toEqual(["Finished with"]);
+    await painted(holds(() => expect(titles()).toEqual(["Finished with"])), host);
   });
 
   // The row lost its state dot with the dots (#28), so once a closed task is

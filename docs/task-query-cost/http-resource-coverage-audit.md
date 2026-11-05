@@ -100,14 +100,21 @@ press/drop reopen admission path. The legacy call remains unchanged; the seed
 adapter only observes metadata before forwarding the same window seed. It
 adds no legacy RPC, cache read, cache write or paint.
 
-The reply-learned-ID witness also exposed that an append to an unversioned
-held window dropped the accepted page's generation metadata. Reviewed the
-small `heldGenerationMetadata` repair in threadSync: an existing held ID keeps
-its authority and revision; only a record without an ID adopts the arriving
-generation. The foreign-page merge refusal and retired-ID metadata remain
-unchanged. The existing gap-replacement path already kept this metadata and
-is pinned alongside append and reset cases. Only threadSync's full-source
-fingerprint changes; its dynamic sites, methods and request assignments do not.
+An unversioned window cannot prove that its rows or cursor belong to an
+ID-bearing page. The earlier in-place adoption is removed. After a forward
+probe discovers an ID, threadSync reads one bounded newest page pinned to
+that ID, without the old `after_sequence`, before replacing unproven history.
+An already-cold read can supply that newest page directly. Known-generation
+merges keep their existing behavior; ID-less legacy replies keep theirs too.
+
+The replacement transaction rejects captured or current retired IDs and any
+current foreign generation. It preserves the union of retirement authority,
+but takes no old cursor, items, history floor or repair debt from an unproven
+record. A matching, already-versioned concurrent record may keep its proven
+newer rows. Partial inline pages cannot append onto unproven history. The
+newest read uses the existing thread.page expansion, bounds and priority;
+there is no new RPC method, parameter shape or dynamic site. The additional
+bounded read is intentional for this cache-upgrade case.
 
 The adapter observes raw record identity before capability negotiation too,
 without using it to change legacy requests. It also records the actual legacy
@@ -116,3 +123,10 @@ the lazy opening inherits that pending or completed seed rather than treating
 an already-open seed's false return as missing incarnation metadata. A true
 reopen or new session still re-reads metadata once. The activation change moves
 only the rail source fingerprint; no further dynamic dispatch site is added.
+
+The window-seed adapter captures its own conversation object. It observes
+incarnation metadata only while that exact object remains current, and always
+forwards the seed to its bound history. A reset can leave the shared current
+conversation null while an older seed completes; the observer no longer reads
+that nullable shared pointer. The hidden-reset witness and historical control
+pin both the absence of a rejection and preservation of the seeded record.

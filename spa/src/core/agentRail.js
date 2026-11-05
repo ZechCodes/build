@@ -1244,12 +1244,12 @@ function mountRailOnContext(host, context, swap) {
 
   const createBoundConversationCache = () => {
     const boundThreadCache = threadCache;
-    return createConversationCache({
+    const boundConversation = createConversationCache({
       addressOf: cacheIdentity,
       threadCache: {
         ...boundThreadCache,
         seedWindow: (record) => {
-          if (standing() && boundThreadCache === threadCache) rememberConversationIncarnation(record, cacheIdentity(), conversationCache.address());
+          if (standing() && boundConversation === conversationCache) rememberConversationIncarnation(record, cacheIdentity(), boundConversation.address());
           return boundThreadCache.seedWindow(record);
         },
       },
@@ -1278,6 +1278,7 @@ function mountRailOnContext(host, context, swap) {
         paintSurfaceMenu();
       },
     });
+    return boundConversation;
   };
 
   const retainConversationWindow = (key, priorKey, held) =>

@@ -70,15 +70,64 @@ export async function syncThreadWindow(request) {
   const target = threadTarget(request);
   const held = (await readCached(target))?.value;
   const after = Number(held?.deliveredSequence || 0);
-  const response = await requestThreadPage(request, { ...threadPageParams(request.entityId, request.agentId || "", after), ...threadGenerationParam(threadIdFor(request, held)) }, !after);
+  const response = await readForwardThreadPage(request, held, after);
   if (!response) return false;
   const { page, lean } = response;
-  if (!requestIsActive(request)) return false;
+  if (refusedForwardThreadPage(request, held, page)) return false;
+  if (needsFreshThreadWindow(held, page, after)) {
+    return replaceUnversionedThread(request, target, held, response, after);
+  }
   const owed = changedUnderCursor(page, after, lean) ? Number(page.thread_last_sequence) : 0;
   await mergeCachedAtomically(target, (current) =>
     mergedThreadPage(request, current, page, after, owed, lean));
   await repairRecentItems(request, target);
   return true;
+}
+
+const readForwardThreadPage = (request, held, after) => requestThreadPage(request, {
+  ...threadPageParams(request.entityId, request.agentId || "", after),
+  ...threadGenerationParam(threadIdFor(request, held)),
+}, !after);
+
+const refusedForwardThreadPage = (request, held, page) => !requestIsActive(request)
+  || retiredThreadGeneration(held, page.thread_id) || refusedRequestedGeneration(request, page)
+  || Boolean(held?.thread_id && differentThreadGeneration(held, page));
+
+const needsFreshThreadWindow = (held, page, after) => Boolean(page.thread_id && (!after || unprovenThreadGeneration(held, page)));
+
+/** A cursor without a generation proves nothing about an ID-bearing page.
+ * Read the current tip without that cursor before installing the incarnation.
+ * The old cached window remains painted while this bounded read is in flight. */
+async function replaceUnversionedThread(request, target, held, response, after) {
+  const threadId = response.page.thread_id;
+  const pinned = { ...request, threadId };
+  const fresh = after ? await requestThreadPage(pinned, {
+    ...threadPageParams(request.entityId, request.agentId || "", 0),
+    ...threadGenerationParam(threadId),
+  }, true) : response;
+  if (!fresh || fresh.page.thread_id !== threadId || !requestIsActive(pinned)) return false;
+  const applied = await mergeCachedAtomically(target, (current) =>
+    freshGenerationWindow(pinned, held, current, fresh.page, fresh.lean));
+  if (applied) await repairRecentItems(pinned, target);
+  return applied;
+}
+
+const retiredThreadIds = (held, current) => [...new Set([
+  ...(held?.retired_thread_ids || []), ...(current?.retired_thread_ids || []),
+])];
+
+function freshGenerationWindow(request, held, current, page, lean) {
+  const retired = retiredThreadIds(held, current);
+  if (!requestIsActive(request) || retired.includes(page.thread_id)) return null;
+  if (current?.thread_id && differentThreadGeneration(current, page)) return null;
+  // Only a matching, already-versioned current record has proven rows/cursor.
+  // An unversioned record contributes retirement authority, never transcript.
+  const proven = current?.thread_id ? current : null;
+  const window = threadWindow(proven, page, { lean });
+  if (!window) return null;
+  return { ...forwardCoveredWindow(proven, window, page),
+    ...(retired.length ? { retired_thread_ids: retired } : {}),
+  };
 }
 
 /** The window the forward merge leaves, with the repair it owes written into
@@ -351,16 +400,12 @@ const appendedThreadWindow = (held, arrived, page) => ({
 });
 
 /** Reset authority belongs to the standing record even before its first
- * wire item arrives; a lean push may omit its generation revision. A legacy
- * record without an ID adopts the accepted page's generation. */
-const heldGenerationMetadata = (held, arrived) => {
-  const generation = held.thread_id ? held : arrived;
-  return {
-    ...(generation.thread_id ? { thread_id: generation.thread_id,
-      thread_generation_revision: Math.max(Number(generation.thread_generation_revision || 0), Number(arrived.thread_generation_revision || 0)) } : {}),
-    ...(held.retired_thread_ids ? { retired_thread_ids: held.retired_thread_ids } : {}),
-  };
-};
+ * wire item arrives; a lean push may omit its generation revision. */
+const heldGenerationMetadata = (held, arrived) => ({
+  ...(held.thread_id ? { thread_id: held.thread_id,
+    thread_generation_revision: Math.max(Number(held.thread_generation_revision || 0), Number(arrived.thread_generation_revision || 0)) } : {}),
+  ...(held.retired_thread_ids ? { retired_thread_ids: held.retired_thread_ids } : {}),
+});
 
 /** Replace a stale window with a newest-forward page that skipped a gap.
  *
@@ -386,7 +431,11 @@ const highestCreationSequence = (items) =>
   (items || []).reduce((highest, item) => Math.max(highest, Number(item?.data?.sequence || 0)), 0);
 
 export const threadGenerationParam = (threadId) => threadId ? { thread_id: threadId } : {};
-export const differentThreadGeneration = (held, page) => Boolean(held?.thread_id && page?.thread_id !== held.thread_id);
+const unprovenThreadGeneration = (held, page) => Boolean(held && !held.thread_id && page?.thread_id);
+const retiredThreadGeneration = (held, threadId) => Boolean(threadId && held?.retired_thread_ids?.includes(threadId));
+const refusedRequestedGeneration = (request, page) => Boolean(request.threadId && page?.thread_id !== request.threadId);
+export const differentThreadGeneration = (held, page) => retiredThreadGeneration(held, page?.thread_id)
+  || unprovenThreadGeneration(held, page) || Boolean(held?.thread_id && page?.thread_id !== held.thread_id);
 
 const threadIdFor = (request, held) => request.threadId || held?.thread_id;
 function mergedThreadPage(request, current, page, after, owed, lean) {

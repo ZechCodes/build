@@ -48,6 +48,8 @@ pub(in crate::app) struct SessionRegistry {
     waiting_screens: HashMap<TabKey, ScreenHandle>,
     mcp_tokens: HashMap<String, String>,
     mcp_read_authority: super::McpReadAuthority,
+    secret_authority: super::SecretSessionAuthority,
+    secret_launch: Option<(String, String, String)>,
     /// A failed roster save cannot undo an agent binding's actual retirement.
     /// Agent IDs are shared by aliases; owner IDs only support deletion cleanup.
     retired_bindings: HashMap<String, String>,
@@ -241,6 +243,8 @@ impl SessionRegistry {
             waiting_screens: HashMap::new(),
             mcp_tokens: HashMap::new(),
             mcp_read_authority: super::McpReadAuthority::new(),
+            secret_authority: super::SecretSessionAuthority::new(),
+            secret_launch: None,
             retired_bindings: HashMap::new(),
             next_terminal: 1,
             push_runtime: None,
@@ -262,6 +266,9 @@ impl SessionRegistry {
 
     fn remove_tab(&mut self, key: &TabKey) -> Option<Tab> {
         let tab = self.tabs.remove(key)?;
+        if let Some((_, agent)) = tab.role.agent() {
+            self.secret_authority.revoke(agent);
+        }
         if tab.role == TabRole::Shell {
             self.shell_generation += 1;
         }
@@ -465,6 +472,44 @@ impl SessionRegistry {
         McpTokenLease { agent_id, token }
     }
 
+    pub(in crate::app) fn configure_secret_context(
+        &mut self,
+        context: &crate::harness::HarnessContext,
+    ) {
+        self.secret_authority.clear();
+        self.secret_launch = Some((
+            String::new(),
+            context.channel.as_str().into(),
+            format!("{}.secrets", context.mcp_socket.display()),
+        ));
+    }
+
+    pub(in crate::app) fn set_secret_device(&mut self, device: &str) {
+        if let Some((held, _, _)) = &mut self.secret_launch {
+            if held != device {
+                self.secret_authority.clear();
+            }
+            *held = device.into();
+        }
+    }
+
+    pub(in crate::app) fn secret_launch_context(&self) -> Option<(&str, &str, &str)> {
+        let (device, channel, socket) = self.secret_launch.as_ref()?;
+        (!device.is_empty()).then_some((device.as_str(), channel.as_str(), socket.as_str()))
+    }
+
+    pub(in crate::app) fn install_secret_token(
+        &mut self,
+        token: String,
+        caller: crate::secrets::SecretCaller,
+    ) {
+        self.secret_authority.install(token, caller);
+    }
+
+    pub(in crate::app) fn secret_authority(&self) -> super::SecretSessionAuthority {
+        self.secret_authority.clone()
+    }
+
     pub(in crate::app) fn token_matches(&self, agent_id: &str, supplied: &str) -> bool {
         self.mcp_tokens
             .get(agent_id)
@@ -474,6 +519,7 @@ impl SessionRegistry {
     pub(in crate::app) fn revoke_mcp_token(&mut self, agent_id: &str) {
         self.mcp_tokens.remove(agent_id);
         self.mcp_read_authority.revoke(agent_id);
+        self.secret_authority.revoke(agent_id);
     }
 
     pub(in crate::app) fn mcp_read_authority(&self) -> super::McpReadAuthority {
@@ -959,6 +1005,7 @@ impl SessionRegistry {
             .map(|row| row.sequence)
             .collect();
         unanswered.sort_unstable();
+        self.secret_authority.revoke(&instance.agent_id);
         Some(unanswered)
     }
 
@@ -1004,6 +1051,7 @@ impl SessionRegistry {
         }
         tab.log_lifecycle(diagnostic);
         tab.live = false;
+        self.secret_authority.revoke(&instance.agent_id);
         true
     }
 

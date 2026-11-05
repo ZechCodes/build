@@ -316,3 +316,5 @@ mod tracker_query_behavior;
 mod tracker_query_exact_text;
 
 mod tracker_query_choice_roundtrip;
+
+mod secret_session_authority;

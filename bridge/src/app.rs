@@ -35,6 +35,8 @@ mod rpc;
 mod rtc;
 mod runs;
 mod runtime;
+#[cfg(unix)]
+mod secret_release;
 mod secret_storage;
 mod session_summaries;
 mod snapshot_projection;
@@ -684,6 +686,8 @@ impl AppState {
         };
         let state_root = context.state_root.clone();
         let bridge_exe = context.bridge_exe.clone();
+        let mut session_registry = SessionRegistry::new();
+        session_registry.configure_secret_context(&context);
         let agent = build_agent(qa_agent, context);
         let watchers = WorktreeWatchers::new();
         let facts_handle = FactsHandle::default();
@@ -774,7 +778,7 @@ impl AppState {
             term_shell: resolve_term_shell(),
             streams: HashMap::new(),
             uploads: HashMap::new(),
-            session_registry: SessionRegistry::new(),
+            session_registry,
             delivery_queue: Default::default(),
             review_verdict_poll_after: 0,
             watch_agent_filed_tasks: false,

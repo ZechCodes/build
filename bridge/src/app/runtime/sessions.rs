@@ -1,8 +1,12 @@
 mod capabilities;
 mod registry;
+mod secret_authority;
+mod secret_release_authority;
 pub(in crate::app) use capabilities::{
     McpAuthoritySnapshot, McpIssuer, McpReadAuthority, RouterAuthority,
 };
+pub(in crate::app) use secret_authority::SecretSessionAuthority;
+pub(crate) use secret_release_authority::SecretReleaseAuthority;
 #[cfg(test)]
 mod registry_tests;
 
@@ -456,3 +460,6 @@ impl AppState {
         crate::worktree::canonical_root(path)
     }
 }
+
+#[cfg(test)]
+mod secret_tests;

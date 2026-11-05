@@ -126,6 +126,9 @@ impl AdkSession {
         // thing — the same gate a terminal's child goes through.
         let mut child =
             ChildPlacement::current().spawn_command(spec.kind, &binary, &spec.args, |command| {
+                for key in crate::harness::secret_launch::inherited_keys() {
+                    command.env_remove(key);
+                }
                 for key in &spec.unset {
                     command.env_remove(key);
                 }

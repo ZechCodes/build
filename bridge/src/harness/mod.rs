@@ -18,6 +18,9 @@
 //! decide whether a provider is eligible for a role, such as router validation,
 //! remain separate from launch construction.
 
+pub(crate) mod secret_launch;
+pub use secret_launch::SecretLaunchEnvironment;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;

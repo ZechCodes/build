@@ -24,7 +24,7 @@ ownership/setup is in [README.md](README.md).
 | --- | --- | --- |
 | `E2E-MVP.md` | `984ddc9c7582a6340b073274602d03f3e50a889d2ae8deb42de9f3b7d4e35c38` | `c606c628deff57f5b357292f157e9e5559a84b490838c0522e57e7b285a22574` |
 | `LICENSE.md` | `964cd7fcc4be51375162c2bbcf1b814e264d6477a24469530e73e1b113e616f2` | `964cd7fcc4be51375162c2bbcf1b814e264d6477a24469530e73e1b113e616f2` |
-| `README.md` | `4794e30bbf5b744b5b05f1186cdd804185cc6fc673f6ec3d8fd4804f39e6d54e` | `d97c2062c83cbfc984613e2206d3fbc7a44216acf81aec869dfd7a912d487dba` |
+| `README.md` | `4794e30bbf5b744b5b05f1186cdd804185cc6fc673f6ec3d8fd4804f39e6d54e` | `a760ecf3796ad4061c178eafd722afc02cf5e234711108dfca135c8b387b7b7a` |
 | `js/README.md` | `5cc959b5d8fe9a31cb273a18eca62840debb441b4294680c0a878c955e0a75b1` | `5cc959b5d8fe9a31cb273a18eca62840debb441b4294680c0a878c955e0a75b1` |
 | `js/package-lock.json` | `fe06ddb52117f0767fba5e613167a446a13879ff07bfd5417a4c317dd3ebba5f` | `709c8ce1b4e4b13507a87cb8df4c5dba046f15122a530adaed73eda1bb074b21` |
 | `js/package.json` | `17ad3fb3cf0874c4c640295620113ad167741ce1d9a910f5d7519492c85a4208` | `5527f61d426144c6858879ae2fe0f35f96a94481766f722b3b1af44b5f2cbce4` |
@@ -129,6 +129,13 @@ permits this test amendment; the original source digest is preserved and only
 the current digest changes. Every other imported file, including crypto sources
 and dependencies, stays byte-identical to the preceding Build baseline. The JS
 suite has no corresponding last-character tamper pattern and is unchanged.
+
+## #1003 sealed upload documentation amendment
+
+`README.md` documents the Build-owned sealed secret upload helper, its bounded
+versioned payload and ephemeral request handling. The imported `js/README.md`
+remains byte-identical to its pinned baseline. The original root README source
+digest is preserved; only its current digest records this documentation change.
 
 ## Maintenance and future imports
 

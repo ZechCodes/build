@@ -1828,9 +1828,9 @@ async function writeSessionList(context, kind, incoming, before, options) {
 
 /** A record as a push carries it, marked so a read that was already out when
  *  it landed does not write its older answer over it. */
-function writePushed(address, value) {
+function writePushed(address, value, guard = null) {
   notePush(address);
-  return writeCached(address, value);
+  return guard ? mergeCachedAtomically(address, () => guard() ? value : null) : writeCached(address, value);
 }
 
 const pushQueues = new Map();
@@ -1959,11 +1959,25 @@ function enqueuePushRemainder(context, item) {
 
 /** Source subscriptions are owned by their mounted panes; writes still go
  * through the shared sync layer and the source's captured directory address. */
-export function applyProjectSourceChanges(items, deviceId) {
-  const context = syncContext(contextFor(deviceId));
-  if (!context) return Promise.resolve();
+export function applyProjectSourceChanges(items, deviceId, ownerActive = null) {
+  const original = syncContext(contextFor(deviceId));
+  if (!original) return Promise.resolve();
+  const context = sourcePushContext(original, ownerActive);
   context.pushing = true;
   return queuesFor(context).body.enqueueApplied(context, items.filter((item) => item.project_source));
+}
+
+function sourcePushContext(context, ownerActive) {
+  return ownerActive ? { ...context, ownerAdmission: true, active: () => context.active() && ownerActive() } : context;
+}
+
+function writeSourceValue(context, entityId, kind, value) {
+  return writePushed(addressOf(context, entityId, kind), value, context.ownerAdmission ? context.active : null);
+}
+
+function mergePushedValue(context, address, merge) {
+  const guarded = (current) => context.active() ? merge(current) : null;
+  return context.ownerAdmission ? mergeCachedAtomically(address, guarded) : mergeCached(address, guarded);
 }
 
 async function applyProjectSourceItem(context, item) {
@@ -1989,7 +2003,7 @@ async function invalidateSourceHistory(context, entityId, status) {
     if (!context.active()) return;
     const address = addressOf(context, entityId, kind);
     notePush(address);
-    await mergeCached(address, (current) => context.active() ? staleDiffRecord(current) : null);
+    await mergePushedValue(context, address, staleDiffRecord);
   }
 }
 
@@ -1998,13 +2012,13 @@ async function applySourceGit(context, entityId, git, source) {
   if (!context.active()) return;
   for (const [kind, value] of [["status", git.status], ["unpushed", git.unpushed && unpushedRecord(git.unpushed)]]) {
     if (!context.active()) return;
-    if (value) await writePushed(addressOf(context, entityId, kind), value);
+    if (value) await writeSourceValue(context, entityId, kind, value);
   }
   if (!context.active()) return;
   if (git.log) {
     const address = addressOf(context, entityId, "log");
     notePush(address);
-    await mergeCached(address, (current) => context.active() ? { ...windowedLog(current, git.log), stale: false } : null);
+    await mergePushedValue(context, address, (current) => ({ ...windowedLog(current, git.log), stale: false }));
   }
   if (!context.active()) return;
   await applySourceDiff(context, entityId, git.diff, source);
@@ -2015,7 +2029,7 @@ async function applySourceDiff(context, entityId, diff, source) {
   if (diff !== null) return;
   const address = addressOf(context, entityId, "diff");
   notePush(address);
-  await mergeCached(address, (current) => context.active() ? staleDiffRecord(current) : null);
+  await mergePushedValue(context, address, staleDiffRecord);
 }
 
 /** The board item: which entities left the board, and the two lists when they
@@ -2363,7 +2377,7 @@ async function applyLegacyGit(context, entityId, git) {
 async function writePushedDiff(context, entityId, diff, row) {
   const address = addressOf(context, entityId, "diff");
   notePush(address);
-  await mergeCached(address, (current) => context.active() ? diffRecord(current, diff, row) : null);
+  await mergePushedValue(context, address, (current) => diffRecord(current, diff, row));
 }
 
 async function pullWhatTheGitItemCouldNotCarry(context, entityId, git, row) {

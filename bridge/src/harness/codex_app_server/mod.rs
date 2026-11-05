@@ -196,9 +196,7 @@ impl Harness for CodexAppServerHarness {
             .unset_all(INHERITED_AGENT_MARKERS)
             .unset_all(DAEMON_IDENTITY_VARS)
             .arg("app-server")
-            .arg("--stdio")
-            .arg("--config")
-            .arg(codex::SECRET_SHELL_ENVIRONMENT);
+            .arg("--stdio");
         if let Some(effort) = &choice.effort {
             spec = spec.arg("--config").arg(format!(
                 "model_reasoning_effort={}",

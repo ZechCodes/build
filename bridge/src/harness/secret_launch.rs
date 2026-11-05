@@ -104,9 +104,77 @@ pub(crate) fn runtime_path(
     Ok(spec.env("PATH", path))
 }
 
+/// Private Codex thread configuration: restore only the launch capability after
+/// Codex's ordinary secret-name filtering. Never serialize this into argv.
+pub(crate) fn codex_thread_config(
+    spec: &HarnessSpec,
+    config: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let mut set = serde_json::Map::new();
+    for name in SECRET_ENVIRONMENT.into_iter().chain(["PATH"]) {
+        let value = spec
+            .env
+            .iter()
+            .rev()
+            .find(|(key, _)| key == name)?
+            .1
+            .clone();
+        set.insert(name.into(), value.into());
+    }
+    let mut config = config.unwrap_or_else(|| serde_json::json!({}));
+    config.as_object_mut()?.insert(
+        "shell_environment_policy".into(),
+        serde_json::json!({
+            "ignore_default_excludes": false,
+            "exclude": ["BRIDGE_*"],
+            "include_only": [],
+            "set": set,
+        }),
+    );
+    Some(config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_shell_policy_restores_only_secret_capability_and_path_after_default_filtering() {
+        let spec = runtime_path(
+            apply(
+                HarnessSpec::new("codex"),
+                Some(SecretLaunchEnvironment::new(
+                    "/fixture.sock".into(),
+                    "dev".into(),
+                    "agent".into(),
+                    "owner".into(),
+                    "secret-capability".into(),
+                    "/installed/bin/build-bridge".into(),
+                )),
+            ),
+            std::path::Path::new("/installed/bin/build-bridge"),
+        )
+        .unwrap()
+        .env("BRIDGE_MCP_TOKEN", "mcp-capability")
+        .env("BRIDGE_OTHER", "unrelated-context")
+        .env("AWS_SECRET_ACCESS_KEY", "unrelated-provider-key");
+        let config = codex_thread_config(
+            &spec,
+            Some(serde_json::json!({"model_auto_compact_token_limit": 123})),
+        )
+        .unwrap();
+        assert_eq!(config["model_auto_compact_token_limit"], 123);
+        let policy = &config["shell_environment_policy"];
+        assert_eq!(policy["ignore_default_excludes"], false);
+        assert!(policy.get("inherit").is_none());
+        assert_eq!(policy["exclude"], serde_json::json!(["BRIDGE_*"]));
+        let restored = policy["set"].as_object().unwrap();
+        assert_eq!(restored.len(), SECRET_ENVIRONMENT.len() + 1);
+        assert_eq!(restored["BRIDGE_SECRET_TOKEN"], "secret-capability");
+        for withheld in ["BRIDGE_MCP_TOKEN", "BRIDGE_OTHER", "AWS_SECRET_ACCESS_KEY"] {
+            assert!(!restored.contains_key(withheld));
+        }
+    }
 
     #[test]
     fn launch_injects_dedicated_environment_and_never_argv() {

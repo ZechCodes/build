@@ -182,6 +182,7 @@ pub struct HarnessSpec {
     pub submit_delay: Duration,
     pub known_session_id: Option<String>,
     pub compaction_sidecar: Option<PathBuf>,
+    pub(crate) secret_profile: Option<Arc<crate::harness::secret_profile::SecretProfile>>,
     pub pi_telemetry: Option<Box<crate::harness::pi_telemetry::PiTelemetryConfig>>,
     /// The Build agent this spec starts, when the harness logs anything that
     /// must name it (task #58: a usage limit in bridge.log says whose turn).
@@ -218,6 +219,7 @@ impl HarnessSpec {
             submit_delay: Duration::ZERO,
             known_session_id: None,
             compaction_sidecar: None,
+            secret_profile: None,
             pi_telemetry: None,
             agent_id: None,
             kind: ChildKind::Agent,
@@ -311,6 +313,7 @@ pub struct PtySession {
     identity: Option<crate::harness::SessionIdentitySource>,
     activity_rx: Mutex<Option<broadcast::Receiver<crate::harness::ActivityReport>>>,
     compaction_sidecar: Option<PathBuf>,
+    secret_profile: Option<Arc<crate::harness::secret_profile::SecretProfile>>,
     pi_telemetry: Option<Arc<crate::harness::pi_telemetry::PiTelemetry>>,
 }
 
@@ -465,6 +468,7 @@ impl PtySession {
             identity: None,
             activity_rx: Mutex::new(None),
             compaction_sidecar: spec.compaction_sidecar.clone(),
+            secret_profile: spec.secret_profile.clone(),
             pi_telemetry: spec
                 .pi_telemetry
                 .clone()
@@ -912,6 +916,9 @@ impl PtySession {
         if cached.is_none() {
             if let Ok(Some(status)) = self.child.lock().unwrap().try_wait() {
                 *cached = Some(status.exit_code() as i32);
+                if let Some(profile) = &self.secret_profile {
+                    profile.remove();
+                }
             }
         }
         *cached
@@ -924,6 +931,9 @@ impl PtySession {
         let mut child = self.child.lock().unwrap();
         let _ = child.kill();
         let _ = child.wait();
+        if let Some(profile) = &self.secret_profile {
+            profile.remove();
+        }
     }
 }
 

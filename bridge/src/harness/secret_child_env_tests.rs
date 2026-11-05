@@ -63,6 +63,54 @@ fn run_carrier(provider: AgentProvider, spec: &HarnessSpec, root: &Path, out: &P
     }
 }
 
+#[test]
+fn codex_filtered_shell_child_receives_secret_authority_without_mcp_or_other_bridge_auth() {
+    let spec = secret_launch::runtime_path(
+        secret_launch::apply(
+            HarnessSpec::new("codex"),
+            Some(SecretLaunchEnvironment::new(
+                "/fixture.sock".into(),
+                "dev".into(),
+                "agent".into(),
+                "owner".into(),
+                "own-capability".into(),
+                "/installed/bin/build-bridge".into(),
+            )),
+        ),
+        Path::new("/installed/bin/build-bridge"),
+    )
+    .unwrap()
+    .env("BRIDGE_MCP_TOKEN", "mcp-authority")
+    .env("BRIDGE_OTHER", "other-context")
+    .env("AWS_SECRET_ACCESS_KEY", "provider-credential");
+    let config = secret_launch::codex_thread_config(&spec, None).unwrap();
+    let policy = &config["shell_environment_policy"];
+    assert_eq!(policy["ignore_default_excludes"], false);
+    assert_eq!(policy["exclude"], serde_json::json!(["BRIDGE_*"]));
+    // Consumer fixture for Codex's documented policy order: built-in secret
+    // exclusions, explicit exclusions, then set. The real CLI's config/read
+    // and persistence path are qualified separately without API credentials.
+    let mut shell = std::process::Command::new("/bin/sh");
+    shell.env_clear();
+    for (key, value) in &spec.env {
+        let upper = key.to_ascii_uppercase();
+        if !["KEY", "SECRET", "TOKEN"]
+            .iter()
+            .any(|part| upper.contains(part))
+            && !upper.starts_with("BRIDGE_")
+        {
+            shell.env(key, value);
+        }
+    }
+    for (key, value) in policy["set"].as_object().unwrap() {
+        shell.env(key, value.as_str().unwrap());
+    }
+    let output = shell.args(["-c", "printf '%s,%s,%s,%s' \"$BRIDGE_SECRET_TOKEN\" \"${BRIDGE_MCP_TOKEN-unset}\" \"${BRIDGE_OTHER-unset}\" \"${AWS_SECRET_ACCESS_KEY-unset}\""]).output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"own-capability,unset,unset,unset");
+    assert!(output.stderr.is_empty());
+}
+
 #[tokio::test]
 async fn all_five_harness_shell_children_receive_their_own_capability_and_runtime_path() {
     let root = tempfile::tempdir().unwrap();
@@ -86,17 +134,6 @@ async fn all_five_harness_shell_children_receive_their_own_capability_and_runtim
         let spec = super::harness_for(provider)
             .spec(&choice, &options, &context)
             .unwrap();
-        if matches!(
-            provider,
-            AgentProvider::Codex | AgentProvider::CodexAppServer
-        ) {
-            assert!(
-                spec.args
-                    .windows(2)
-                    .any(|args| args == ["--config", super::codex::SECRET_SHELL_ENVIRONMENT]),
-                "{provider:?}"
-            );
-        }
         let spec = spec.env("BRIDGE_SECRET_FUTURE", "parent-capability");
         let launch = SecretLaunchEnvironment::new(
             "/fixture.sock".into(),

@@ -196,7 +196,11 @@ impl AgentSpawnPlan {
             .map_err(|refusal| refusal.to_string())?;
         Ok(ReadyToSpawn {
             compaction_policy: prepared.compaction_policy,
-            spec: crate::harness::secret_launch::apply(prepared.spec, self.secret_launch),
+            spec: crate::harness::secret_profile::prepare(crate::harness::secret_launch::apply(
+                prepared.spec,
+                self.secret_launch,
+            ))
+            .map_err(|error| error.to_string())?,
             size: prepared.pty_size,
             locator,
             resume_session_id,

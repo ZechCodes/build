@@ -11,7 +11,8 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::fs::{DirEntry, File, Metadata};
 use std::path::Path;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, Weak};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const DEFAULT_LIMIT: usize = 100;
@@ -19,8 +20,8 @@ const MAX_LIMIT: usize = 200;
 const MAX_CURSOR_BYTES: usize = 8192;
 const MAX_LEASES: usize = 32;
 const LEASE_TTL: Duration = Duration::from_secs(120);
-static LEASES: LazyLock<Mutex<LeaseRegistry>> =
-    LazyLock::new(|| Mutex::new(LeaseRegistry::new(MAX_LEASES, LEASE_TTL)));
+static LEASES: LazyLock<TimedLeaseRegistry> =
+    LazyLock::new(|| TimedLeaseRegistry::new(MAX_LEASES, LEASE_TTL));
 // A restarted bridge refuses its predecessor's directory cursors. Cached
 // entries still paint; opening the directory obtains a fresh first page.
 static CURSOR_KEY: LazyLock<hmac::Key> = LazyLock::new(|| {
@@ -54,6 +55,109 @@ struct LeaseRegistry {
     next_id: u64,
     capacity: usize,
     ttl: Duration,
+    cleanup: Option<Weak<LeaseCleanup>>,
+    stopped: bool,
+}
+
+struct TimedLeaseRegistry {
+    registry: Arc<Mutex<LeaseRegistry>>,
+    cleanup: Arc<LeaseCleanup>,
+}
+
+impl TimedLeaseRegistry {
+    fn new(capacity: usize, ttl: Duration) -> Self {
+        let registry = Arc::new(Mutex::new(LeaseRegistry::new(capacity, ttl)));
+        let cleanup = Arc::new(LeaseCleanup {
+            registry: Arc::downgrade(&registry),
+            wake: Condvar::new(),
+            worker: Mutex::new(None),
+        });
+        registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cleanup = Some(Arc::downgrade(&cleanup));
+        Self { registry, cleanup }
+    }
+}
+
+impl Drop for TimedLeaseRegistry {
+    fn drop(&mut self) {
+        {
+            let mut registry = self
+                .registry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            registry.stopped = true;
+            registry.entries.clear();
+            self.cleanup.wake.notify_all();
+        }
+        let worker = self
+            .cleanup
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(worker) = worker {
+            let _ = worker.join();
+        }
+    }
+}
+
+struct LeaseCleanup {
+    registry: Weak<Mutex<LeaseRegistry>>,
+    wake: Condvar,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+fn cleanup_unavailable() -> String {
+    errors::encode(ApiError::unavailable(
+        "Directory lease cleanup is unavailable.",
+    ))
+}
+
+impl LeaseCleanup {
+    fn start(self: &Arc<Self>) -> Result<(), String> {
+        let mut worker = self
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if worker.is_none() {
+            let cleanup = Arc::clone(self);
+            *worker = Some(
+                std::thread::Builder::new()
+                    .name("directory-lease-expiry".into())
+                    .spawn(move || cleanup.run())
+                    .map_err(|_| cleanup_unavailable())?,
+            );
+        }
+        Ok(())
+    }
+
+    fn run(&self) {
+        let Some(registry) = self.registry.upgrade() else {
+            return;
+        };
+        let mut held = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !held.stopped {
+            if held.expire(Instant::now()) {
+                self.wake.notify_all();
+            }
+            held = match held.entries.values().map(|lease| lease.expires).min() {
+                Some(deadline) => {
+                    self.wake
+                        .wait_timeout(held, deadline.saturating_duration_since(Instant::now()))
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0
+                }
+                None => self
+                    .wake
+                    .wait(held)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            };
+        }
+    }
 }
 
 impl LeaseRegistry {
@@ -64,14 +168,29 @@ impl LeaseRegistry {
             next_id: 0,
             capacity,
             ttl,
+            cleanup: None,
+            stopped: false,
         }
     }
 
-    fn expire(&mut self, now: Instant) {
+    fn expire(&mut self, now: Instant) -> bool {
+        let before = self.entries.len();
         self.entries.retain(|_, lease| lease.expires > now);
+        before != self.entries.len()
     }
 
-    fn insert(&mut self, handle: Arc<File>, now: Instant) -> u64 {
+    fn insert(&mut self, handle: Arc<File>, now: Instant) -> Result<u64, String> {
+        if self.stopped {
+            return Err(cleanup_unavailable());
+        }
+        let cleanup = self
+            .cleanup
+            .as_ref()
+            .map(|cleanup| cleanup.upgrade().ok_or_else(cleanup_unavailable))
+            .transpose()?;
+        if let Some(cleanup) = &cleanup {
+            cleanup.start()?;
+        }
         self.expire(now);
         if self.entries.len() >= self.capacity {
             self.entries.pop_first();
@@ -87,7 +206,10 @@ impl LeaseRegistry {
                 expires: now + self.ttl,
             },
         );
-        self.next_id
+        if let Some(cleanup) = cleanup {
+            cleanup.wake.notify_one();
+        }
+        Ok(self.next_id)
     }
 
     fn get(&mut self, id: u64, now: Instant) -> Result<Arc<File>, String> {
@@ -158,7 +280,14 @@ fn invalid(message: &str) -> String {
 }
 
 pub(super) fn listing(root: &Path, path: &str, params: &Value) -> Result<Value, String> {
-    listing_with_proof(root, path, params, &LEASES, Instant::now(), &creation_time)
+    listing_with_proof(
+        root,
+        path,
+        params,
+        &LEASES.registry,
+        Instant::now(),
+        &creation_time,
+    )
 }
 
 fn creation_time(metadata: &Metadata) -> Option<Duration> {
@@ -259,7 +388,7 @@ fn directory_proof(
         let id = leases
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(Arc::clone(&handle), now);
+            .insert(Arc::clone(&handle), now)?;
         Some((id, handle))
     } else {
         None
@@ -542,6 +671,75 @@ mod lease_tests {
         let error = answer.expect_err("a retired directory lease cannot continue");
         let refusal = crate::app::AppState::decode_file_error(&error).unwrap();
         assert_eq!(refusal.code(), "invalid_params");
+    }
+
+    #[test]
+    fn directory_lease_idle_expiry_releases_last_file_without_another_request() {
+        let root = fixture();
+        let retained = Arc::new(File::open(root.path()).unwrap());
+        let released = Arc::downgrade(&retained);
+        let timed = TimedLeaseRegistry::new(2, Duration::from_millis(30));
+        let mut registry = timed.registry.lock().unwrap();
+        registry.insert(retained, Instant::now()).unwrap();
+        assert_eq!(released.strong_count(), 1);
+        // Waiting observes the actual File owner's lifetime. No later registry
+        // get/insert can perform lazy cleanup and make this pass accidentally.
+        let (registry, _) = timed
+            .cleanup
+            .wake
+            .wait_timeout_while(registry, Duration::from_secs(2), |_| {
+                released.strong_count() != 0
+            })
+            .unwrap();
+        assert_eq!(
+            released.strong_count(),
+            0,
+            "idle timer must release the last retained directory File"
+        );
+        assert!(registry.entries.is_empty());
+    }
+
+    #[test]
+    fn directory_lease_owner_drop_stops_cleanup_and_releases_live_files() {
+        let root = fixture();
+        let retained = Arc::new(File::open(root.path()).unwrap());
+        let released = Arc::downgrade(&retained);
+        let timed = TimedLeaseRegistry::new(2, Duration::from_secs(120));
+        timed
+            .registry
+            .lock()
+            .unwrap()
+            .insert(retained, Instant::now())
+            .unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        let owner = std::thread::spawn(move || {
+            drop(timed);
+            sent.send(()).unwrap();
+        });
+        received
+            .recv_timeout(Duration::from_secs(2))
+            .expect("cleanup worker must stop promptly with its owner");
+        owner.join().unwrap();
+        assert_eq!(released.strong_count(), 0);
+    }
+
+    #[test]
+    fn directory_lease_birth_time_reads_do_not_start_a_cleanup_worker() {
+        let root = fixture();
+        fill(root.path());
+        let timed = TimedLeaseRegistry::new(2, Duration::from_secs(120));
+        let first = listing_with_proof(
+            root.path(),
+            "",
+            &json!({"limit":2}),
+            &timed.registry,
+            Instant::now(),
+            &|_| Some(Duration::new(123, 456)),
+        )
+        .unwrap();
+        assert!(first["has_more"].as_bool().unwrap());
+        assert!(timed.cleanup.worker.lock().unwrap().is_none());
+        assert!(timed.registry.lock().unwrap().entries.is_empty());
     }
 
     #[test]

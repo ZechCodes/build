@@ -128,8 +128,13 @@ can remain until the next sweep; revocation and session rotation still fence
 the old capability independently of file deletion.
 
 The Codex app server receives the same narrow configuration over private stdio
-at thread start and resume. It does not use a profile file. A documented offline
-provider persistence check covers rollout/session files and default logs; the
-ready report records the tested version and result. Custom provider logging,
+at thread start and resume. It does not use a profile file. Offline qualification on Codex 0.166.0 completed real shell-tool turns against
+a loopback fake Responses provider, then restarted and resumed with a rotated
+capability. Rollout/session and default-log scans found no copies of either
+capability. A profile-selected Codex exec turn likewise found the capability
+only in the expected TUI profile, and zero copies after removing that file.
+Shell commands verified that MCP auth, unrelated Bridge variables and an AWS
+credential were absent. The task's ready report retains the reproducible
+check drivers and scan evidence. Custom provider logging,
 OS-user access and an agent deliberately printing or saving its own capability
 are outside this storage boundary.

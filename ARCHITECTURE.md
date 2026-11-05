@@ -124,6 +124,12 @@ context, checks any explicit environment against that channel, sends one bounded
 request, buffers at most 16 KiB under an absolute I/O deadline, and writes exact
 value bytes with no added newline. Diagnostics use a fixed error allowlist.
 Values are intentionally visible to stdout consumers and their transcripts.
+Codex retains default credential-name filtering and restores only the dedicated
+secret variables and PATH. The TUI uses a unique 0600 profile under CODEX_HOME,
+removed on session end; startup sweeps unlocked owned Build profiles. App-server
+start/resume uses private stdio configuration. The known TUI capability-on-disk
+exposure and provider persistence qualification are recorded in
+`docs/device-secret-release.md`.
 
 ### Module layout
 

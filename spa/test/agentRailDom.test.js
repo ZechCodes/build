@@ -1256,8 +1256,8 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(railHost().querySelector("#railinput")).not.toBeNull();
   });
 
-  const delayedRosterHandoff = async (rosterArrival, threadId = null, replyThreadId = threadId) => {
-    lazy.enabled = true;
+  const delayedRosterHandoff = async (rosterArrival, threadId = null, replyThreadId = threadId, activateLazy = false) => {
+    lazy.enabled = !activateLazy;
     conversationReadReceipts.enabled = true;
     chatRepository.railView("workspace:ws-delayed-roster").chooseAgent("ag-1");
     await writeRailBoard({
@@ -1284,7 +1284,16 @@ describe("the rail over a machine that is asked nothing", () => {
         frames.push({ empty: !body || !!body.querySelector(".thread-empty"), text: body?.textContent || "" });
       });
       observer.observe(railHost(), { childList: true, subtree: true, characterData: true });
-      await vi.waitFor(() => expect(callsTo("thread.page").length).toBeGreaterThan(0));
+      if (activateLazy) {
+        const mountedReader = conversationReadReceipts.caches.at(-1).cache;
+        expect(callsTo("thread.page")).toHaveLength(0);
+        lazy.enabled = true;
+        // Repaint the existing cached conversation as ownership becomes lazy;
+        // no roster or replacement reader has been supplied by the greeting.
+        feedSubscribers.forEach((subscriber) => subscriber(feedSnapshot));
+        await vi.waitFor(() => expect(callsTo("thread.page").length).toBeGreaterThan(0));
+        expect(conversationReadReceipts.caches.at(-1).cache).toBe(mountedReader);
+      } else await vi.waitFor(() => expect(callsTo("thread.page").length).toBeGreaterThan(0));
       if (rosterArrival === "after") {
         releasePage();
         await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Fresh open-time words"));
@@ -1325,6 +1334,11 @@ describe("the rail over a machine that is asked nothing", () => {
   it.each(["before", "after"])("revalidates one cached incarnation when its matching roster arrives %s the delayed first page", async (rosterArrival) => {
     await delayedRosterHandoff(rosterArrival, "cached-thread-a");
     expect(callsTo("thread.page")[0].params.thread_id).toBe("cached-thread-a");
+  });
+
+  it.each(["before", "after"])("revalidates once when lazy ownership activates before the matching roster arrives %s the first reply", async (rosterArrival) => {
+    await delayedRosterHandoff(rosterArrival, "activated-thread-a", "activated-thread-a", true);
+    expect(callsTo("thread.page")[0].params.thread_id).toBe("activated-thread-a");
   });
 
   it("learns the incarnation supplied by the first reply before the matching roster arrives", async () => {

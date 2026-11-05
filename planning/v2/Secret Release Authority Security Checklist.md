@@ -4,9 +4,10 @@ Scope: #1002, the private local session authority and audit layer, on top of
 #1001's encrypted vault. Public uploads, message admission, runtime CLI
 installation and SPA interaction remain separately reviewed slices.
 
-Verification is in progress. The final task report records the frozen commit,
-commands, actual exit codes and attached evidence. No public capability is
-advertised by this change.
+**Scoped score: 100/100.** All controls below are verified by the targeted
+implementation, tests and read-only security review. The final task report
+records the frozen commit, commands, actual exit codes and attached evidence.
+No public capability is advertised by this change.
 
 | # | Control | Evidence |
 |---|---|---|
@@ -25,3 +26,25 @@ Raw values are intentionally released to trusted launched agents and descendants
 using their launch context. Such output may enter transcripts or terminal
 history. The at-rest and normal-delivery guarantees do not promise secrecy from
 that agent, the same OS user/root, debuggers or user-created disk snapshots.
+
+## Validation — 2026-11-05
+
+All commands ran under `nice -n 10`, with scratch, `TMPDIR` and Cargo target
+inside `/home/zech/Projects/.agent-scratch/secrets-b/`.
+
+- `cargo test --lib secret -j 2`: 146 passed, 0 failed or ignored, exit 0.
+- Cargo-built library binary: 23 focused probe, schema migration, session
+  registry and existing MCP authority checks passed; every process exited 0.
+- `cargo clippy --all-targets -j 2 -- -D warnings`, `cargo fmt --check`,
+  locked offline nested HTTP harness metadata, Semgrep and diff checks exited 0.
+- Gitleaks runs before the task-branch push; its exit and remote verification
+  are attached to the final task report.
+
+The initial integrated run recorded the coalesced-failure regression red;
+a production-source probe against the pre-fix library recorded cleanup of
+1,000 instead of 8,000 rows. Corrected tests verify both fixes. The stalled
+client regression confirms committed audit remains readable and maintenance
+can write while a real secret reply is blocked by socket backpressure.
+Independent security review closed the backlog, canonical-owner map and
+retention-throughput findings. No new complexity ratchet annotations were added.
+The full suite remains the coordinator's serial merge gate.

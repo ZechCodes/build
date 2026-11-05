@@ -16,6 +16,12 @@ context act as the parent agent. Terminal tabs and executable probes receive no
 agent secret capability. Build agents are trusted with values they retrieve;
 raw output can enter tool transcripts or terminal history.
 
+The injected variables are `BRIDGE_SECRET_SOCKET` (exact local socket),
+`BRIDGE_SECRET_CHANNEL` (the CLI `--env` binding), `BRIDGE_SECRET_AGENT`
+(request `agent_id`), `BRIDGE_SECRET_OWNER` (informational only), and
+`BRIDGE_SECRET_TOKEN` (request `capability`). The server derives owner, project,
+device and generation from its issued record; those are never request selectors.
+
 ## Private socket protocol
 
 The socket path is the configured MCP control path plus `.secrets`, mode 0600.

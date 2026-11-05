@@ -237,20 +237,7 @@ fn appending_one_message_writes_a_constant_row_budget_however_long_the_conversat
     for length in [1, 60, 4096] {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks")).expect("store opens");
-        store
-            .writer_for_test()
-            .execute(
-                "INSERT INTO device_project_ids VALUES('/repo','budget-project')",
-                [],
-            )
-            .unwrap();
-        let mut record = run_record("run-1", None, NOW);
-        for n in 0..length {
-            record.agents[0]
-                .thread
-                .post_user(format!("message {n}"), None, NOW);
-        }
-        store.save_run(&record).expect("the first save writes");
+        let mut record = append_cost_fixture(&store, length);
         let before = store.total_changes();
         let cost = write_cost::WriteCost::start(&store);
         record.agents[0]
@@ -272,15 +259,7 @@ fn appending_one_message_writes_a_constant_row_budget_however_long_the_conversat
             "append_sql length={length} connection=writer executions={} selects={} statements={:?}",
             executions.total, executions.selects, executions.statements
         );
-        assert!(executions.selects > 0, "append reads must be observed");
-        if let Some(ref short) = short_executions {
-            assert_eq!(
-                &executions, short,
-                "append SQL executions and every SQL count must stay constant across history lengths"
-            );
-        } else {
-            short_executions = Some(executions);
-        }
+        assert_constant_append_executions(&mut short_executions, executions);
         assert_eq!(
             rows.values().sum::<u64>(),
             written,
@@ -386,6 +365,39 @@ fn appending_one_message_writes_a_constant_row_budget_however_long_the_conversat
         );
         drop(quiet);
         profile_warm_appends(&store, &mut record, length, written);
+    }
+}
+
+fn append_cost_fixture(store: &Store, length: usize) -> PersistedRun {
+    store
+        .writer_for_test()
+        .execute(
+            "INSERT INTO device_project_ids VALUES('/repo','budget-project')",
+            [],
+        )
+        .unwrap();
+    let mut record = run_record("run-1", None, NOW);
+    for n in 0..length {
+        record.agents[0]
+            .thread
+            .post_user(format!("message {n}"), None, NOW);
+    }
+    store.save_run(&record).expect("the first save writes");
+    record
+}
+
+fn assert_constant_append_executions(
+    short_executions: &mut Option<write_cost::ExecutionCost>,
+    executions: write_cost::ExecutionCost,
+) {
+    assert!(executions.selects > 0, "append reads must be observed");
+    if let Some(short) = short_executions.as_ref() {
+        assert_eq!(
+            &executions, short,
+            "append SQL executions and every SQL count must stay constant across history lengths"
+        );
+    } else {
+        *short_executions = Some(executions);
     }
 }
 

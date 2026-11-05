@@ -72,23 +72,28 @@ it("ignores unrelated board state under root-free hints", async () => {
   expect(read).not.toHaveBeenCalled();
 });
 
-it("subscribes to the exact source and reads only visible demand named by its hints", async () => {
+it("ignores original project source hints for a copied workspace directory", async () => {
   await mount();
-  expect([...subscriptions.values()]).toEqual([expect.objectContaining({ scope: sourceScope, kinds: ["files.hints"] })]);
   hintPush(["src/live.txt"], { ...sourceScope, source_id: "unrelated-source" });
   hintPush(["src/live.txt"], { ...sourceScope, source_path: "/synthetic/replaced-source" });
-  hintPush(["docs/live.txt"]); await drain();
+  hintPush(["docs/live.txt"]);
+  hintPush(["src/live.txt"]); await drain();
   expect(read).not.toHaveBeenCalled();
+  expect([...subscriptions.values()]).toEqual([expect.objectContaining({ scope: { kind: "board" }, kinds: ["state"] })]);
+});
+
+it("refreshes expanded visible directories and the selected workspace body on reconnect", async () => {
+  await mount();
   text = "fresh selected bytes";
-  hintPush(["src/live.txt"]);
+  events.refetchEverything(deviceId);
   await vi.waitFor(() => expect(host.querySelector(".trf-preview")?.textContent).toContain(text));
   await drain();
   expect(read.mock.calls.map(([method, params]) => [method, params.path]).sort()).toEqual([
-    ["fs.read", "src/live.txt"], ["fs.tree", "src"],
+    ["fs.read", "src/live.txt"], ["fs.tree", ""], ["fs.tree", "src"],
   ]);
 });
 
-it.each([false, true])("keeps modern fallback state cold and refreshes explicitly (source capability %s)", async (capable) => {
+it.each([false, true])("keeps live workspace state cold and refreshes explicitly (source capability %s)", async (capable) => {
   projectSources = capable;
   await mount(capable ? { ...directory, source_path: undefined } : directory);
   expect([...subscriptions.values()]).toEqual([expect.objectContaining({ scope: { kind: "board" }, kinds: ["state"] })]);
@@ -110,12 +115,12 @@ it("keeps the legacy workspace files subscription and matching-file refresh", as
   expect(read.mock.calls.some(([method]) => method === "fs.read")).toBe(true);
 });
 
-it.each(["hidden", "disposed", "regreeted"])("rejects hint reads after their binding is %s", async (retired) => {
+it.each(["hidden", "disposed", "regreeted"])("rejects reconnect reads after their binding is %s", async (retired) => {
   await mount();
   const body = deferred(), tree = deferred();
   read.mockImplementation(async (method) => method === "fs.read" ? body.promise : tree.promise);
-  hintPush(["src/live.txt"]);
-  await vi.waitFor(() => expect(read.mock.calls.map(([method]) => method).sort()).toEqual(["fs.read", "fs.tree"]));
+  events.refetchEverything(deviceId);
+  await vi.waitFor(() => expect(read.mock.calls.map(([method]) => method).sort()).toEqual(["fs.read", "fs.tree", "fs.tree"]));
   if (retired === "hidden") host.hidden = true;
   else if (retired === "disposed") { view.dispose(); view = null; }
   else {

@@ -405,15 +405,16 @@ export function mountTaskReviewFiles(host, options) {
     if (!live || disposed) return;
     const active = () => !disposed && binding === liveBinding;
     const modern = chooseFilePushKind(deviceId) === "files.hints";
-    const target = modern ? directoryWatchSpec({ project_id: projectId,
-      source_id: directory.source_id, source_path: directory.source_path, workspace_id: workspaceId }, deviceId)
+    // Copied/plain workspace directories and secondary directories have no
+    // matching filesystem subject. The original source watches another path.
+    const target = modern ? directoryWatchSpec({ workspace_id: workspaceId }, deviceId)
       : { entity: workspaceId, kinds: ["files"] };
     liveWatcher = watchChanges({ deviceId, ...target, mode: "realtime",
       refresh: () => { if (active()) refreshLive(active); },
       onChanges: (items) => {
         if (!active()) return;
-        // A workspace without a filesystem subject keeps only the reconnect
-        // refresh hook. Board state is not a file invalidation.
+        // This registration retains explicit/reconnect refresh only. Board
+        // state and original project-source pushes are not file invalidations.
         if (modern && target.kinds.includes("state")) return;
         liveChanges(items, active);
       },

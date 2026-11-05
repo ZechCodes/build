@@ -39,12 +39,31 @@ impl std::ops::Deref for AdmissionLock {
 }
 impl Drop for AdmissionLock {
     fn drop(&mut self) {
-        loop {
-            match self.file.unlock() {
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                _ => break,
-            }
+        unlock(&self.file);
+    }
+}
+
+fn unlock(file: &File) {
+    loop {
+        match file.unlock() {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            _ => break,
         }
+    }
+}
+
+struct ScopedFileLock<'a>(&'a File);
+
+impl<'a> ScopedFileLock<'a> {
+    fn acquire(file: &'a File) -> io::Result<Self> {
+        super::lock(file)?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for ScopedFileLock<'_> {
+    fn drop(&mut self) {
+        unlock(self.0);
     }
 }
 
@@ -81,6 +100,16 @@ fn retry_until(deadline: Instant) -> io::Result<()> {
     }
     std::thread::sleep(remaining.min(ADMISSION_RETRY));
     Ok(())
+}
+
+fn wait_for_retry(deadline: Instant, retry: &mut Duration) -> bool {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return false;
+    }
+    std::thread::sleep(remaining.min(*retry));
+    *retry = (*retry * 2).min(Duration::from_millis(100));
+    true
 }
 
 #[derive(Serialize, Deserialize)]
@@ -155,8 +184,28 @@ impl Registry {
     }
 
     pub(super) fn sweep(&self) -> io::Result<()> {
+        self.sweep_with_observers(|_| {}, |_| {})
+    }
+
+    fn sweep_with_observers(
+        &self,
+        mut observe_retry: impl FnMut(bool),
+        mut observe_metadata: impl FnMut(&File),
+    ) -> io::Result<()> {
         let _admission = self.admission_lock()?;
-        self.sweep_records()
+        let deadline = Instant::now() + ADMISSION_WAIT;
+        let mut retry = ADMISSION_RETRY;
+        loop {
+            let should_retry = self.sweep_records_observing(&mut observe_metadata)?;
+            observe_retry(should_retry);
+            if !should_retry {
+                break;
+            }
+            if !wait_for_retry(deadline, &mut retry) {
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn admission_lock(&self) -> io::Result<AdmissionLock> {
@@ -184,14 +233,29 @@ impl Registry {
     }
 
     fn admit(&self, limit: usize) -> io::Result<()> {
+        self.admit_with_full_observer(limit, || {})
+    }
+
+    fn admit_with_full_observer(
+        &self,
+        limit: usize,
+        mut observe_full: impl FnMut(),
+    ) -> io::Result<()> {
         if self.names()?.len() < limit {
             return Ok(());
         }
-        self.sweep_records()?;
-        if self.names()?.len() >= limit {
-            return Err(io::Error::other("secret profile registry full"));
+        let deadline = Instant::now() + ADMISSION_WAIT;
+        let mut retry = ADMISSION_RETRY;
+        loop {
+            let _ = self.sweep_records()?;
+            if self.names()?.len() < limit {
+                return Ok(());
+            }
+            observe_full();
+            if !wait_for_retry(deadline, &mut retry) {
+                return Err(io::Error::other("secret profile registry full"));
+            }
         }
-        Ok(())
     }
 
     fn names(&self) -> io::Result<Vec<String>> {
@@ -213,29 +277,46 @@ impl Registry {
         Ok(names)
     }
 
-    fn sweep_records(&self) -> io::Result<()> {
-        for name in self.names()? {
-            self.sweep_record(&name)?;
-        }
-        self.directory.sync_all()
+    /// Returns whether any lock kept a record live for a possible bounded retry.
+    fn sweep_records(&self) -> io::Result<bool> {
+        self.sweep_records_observing(|_| {})
     }
 
-    fn sweep_record(&self, name: &str) -> io::Result<()> {
+    fn sweep_records_observing(&self, mut observe_metadata: impl FnMut(&File)) -> io::Result<bool> {
+        let mut locked_record = false;
+        for name in self.names()? {
+            locked_record |= self.sweep_record(&name, &mut observe_metadata)?;
+        }
+        self.directory.sync_all()?;
+        Ok(locked_record)
+    }
+
+    fn sweep_record(
+        &self,
+        name: &str,
+        mut observe_metadata: impl FnMut(&File),
+    ) -> io::Result<bool> {
         let metadata: File = match fs::openat(&self.directory, name, READ_FLAGS, Mode::empty()) {
             Ok(fd) => fd.into(),
-            Err(rustix::io::Errno::NOENT) => return Ok(()),
-            Err(_) => return unlink(&self.directory, name),
+            Err(rustix::io::Errno::NOENT) => return Ok(false),
+            Err(_) => {
+                unlink(&self.directory, name)?;
+                return Ok(false);
+            }
         };
-        if super::lock(&metadata).is_err() {
-            return Ok(());
-        }
+        let _metadata_lock = match ScopedFileLock::acquire(&metadata) {
+            Ok(lock) => lock,
+            Err(_) => return Ok(true),
+        };
+        observe_metadata(&metadata);
         let record = read_record(&metadata);
         if let Ok(record) = record {
             if !record.cleanup() {
-                return Ok(());
+                return Ok(true);
             }
         }
-        unlink(&self.directory, name)
+        unlink(&self.directory, name)?;
+        Ok(false)
     }
 }
 
@@ -377,6 +458,9 @@ impl RegistryGuard {
 impl Drop for RegistryGuard {
     fn drop(&mut self) {
         let _ = self.remove();
+        // No independent owner holds the metadata lease. End it explicitly so
+        // a forked child cannot make a crashed record look live until exec.
+        unlock(&self._metadata);
     }
 }
 

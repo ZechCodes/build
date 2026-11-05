@@ -96,8 +96,9 @@ response's ID; the existing threadSync method expansion and resource routes
 remain the same. No metadata exemption, scanner rule, namespace exemption,
 RPC verb, wire field or request shape is added. The rail's complete source
 fingerprint is re-pinned after reviewing this assignment edge and the shared
-press/drop reopen admission path. The legacy cache and call objects pass
-through unchanged.
+press/drop reopen admission path. The legacy call remains unchanged; the seed
+adapter only observes metadata before forwarding the same window seed. It
+adds no legacy RPC, cache read, cache write or paint.
 
 The reply-learned-ID witness also exposed that an append to an unversioned
 held window dropped the accepted page's generation metadata. Reviewed the
@@ -107,3 +108,11 @@ generation. The foreign-page merge refusal and retired-ID metadata remain
 unchanged. The existing gap-replacement path already kept this metadata and
 is pinned alongside append and reset cases. Only threadSync's full-source
 fingerprint changes; its dynamic sites, methods and request assignments do not.
+
+The adapter observes raw record identity before capability negotiation too,
+without using it to change legacy requests. It also records the actual legacy
+seed promise and result. When scoped ownership activates on the kept reader,
+the lazy opening inherits that pending or completed seed rather than treating
+an already-open seed's false return as missing incarnation metadata. A true
+reopen or new session still re-reads metadata once. The activation change moves
+only the rail source fingerprint; no further dynamic dispatch site is added.

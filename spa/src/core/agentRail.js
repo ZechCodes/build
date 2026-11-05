@@ -1246,13 +1246,13 @@ function mountRailOnContext(host, context, swap) {
     const boundThreadCache = threadCache;
     return createConversationCache({
       addressOf: cacheIdentity,
-      threadCache: lazyViewReadsEnabled(context.deviceId) ? {
+      threadCache: {
         ...boundThreadCache,
         seedWindow: (record) => {
           if (standing() && boundThreadCache === threadCache) rememberConversationIncarnation(record, cacheIdentity(), conversationCache.address());
           return boundThreadCache.seedWindow(record);
         },
-      } : boundThreadCache,
+      },
       onThreadSeeded: (seededFor) => {
         if (!standing() || (lazyViewReadsEnabled(context.deviceId) && boundThreadCache !== threadCache)) return;
         retainedConversationWindow = null;
@@ -2583,7 +2583,9 @@ function mountRailOnContext(host, context, swap) {
     const priorKey = conversationGenerationKey(address, priorThreadId);
     const admission = conversationReadAdmissions.get(priorKey);
     conversationIncarnation = { key: threadAddressKey(address), threadId: record.thread_id, ...conversationOpeningOwner(identity.deviceId) };
-    conversationCacheKey = conversationGenerationKey(address);
+    // Record identity exists before ownership negotiation. Remember it without
+    // changing legacy reads, so later lazy activation cannot relabel its paint.
+    conversationCacheKey = `${threadAddressKey(address)}:${record.thread_id}`;
     if (priorThreadId || !ownReplyIncarnation(admission, record.thread_id, identity.deviceId)) return;
     // Promote an unknown read only after its own reply has become the actual
     // cached incarnation. An unrelated producer cannot certify that read.
@@ -2594,16 +2596,21 @@ function mountRailOnContext(host, context, swap) {
     conversationReadAdmissions.set(nextKey, admission);
   };
 
-  const seedConversation = (conversation, deviceId) => {
-    const held = conversationSeedPromises.get(conversation);
-    if (sameConversationOpening(held, deviceId)) return held.promise;
-    // Reopens and new sessions re-read cache metadata once. Reader handoff
-    // within one logical opening continues to share its actual pending seed.
-    const promise = held ? conversation.reread() : conversation.seed();
+  const observeConversationSeed = (conversation, deviceId, promise) => {
     conversationSeedPromises.set(conversation, {
       stamp: conversationOpeningStamp(deviceId), session: contextFor(deviceId)?.session, promise,
     });
     return promise;
+  };
+
+  const seedConversation = (conversation, deviceId) => {
+    const held = conversationSeedPromises.get(conversation);
+    if (sameConversationOpening(held, deviceId)) return held.promise;
+    // Reopens and new sessions re-read cache metadata once. Reader handoff
+    // and lazy activation share the actual seed, including a legacy seed that
+    // is still in flight. Legacy callers continue receiving its real result.
+    const promise = held ? conversation.reread() : conversation.seed();
+    return observeConversationSeed(conversation, deviceId, promise);
   };
 
   const conversationOpeningStamp = (deviceId) => `${conversationOpening}:${deviceContextIdentity(deviceId)}`;
@@ -2679,7 +2686,8 @@ function mountRailOnContext(host, context, swap) {
       if (address) unwatchThread = subscribeCache(address, () => void conversation.reread());
     }
     if (lazyViewReadsEnabled(cacheIdentity()?.deviceId)) return watchLazyConversation(conversation, cacheIdentity(), address);
-    if (await conversation.seed()) return;
+    const seeded = observeConversationSeed(conversation, context.deviceId, conversation.seed());
+    if (await seeded) return;
     const identity = cacheIdentity();
     const askedKey = conversationGenerationKey(address);
     if (!identity || !address || !askedKey) return;

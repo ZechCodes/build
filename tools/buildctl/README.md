@@ -10,6 +10,8 @@ launch-supplied bridge path; neither facade selects identity from the checkout
 or registry. Missing or stale agent authority fails closed. Reads print exact
 value bytes without an added newline. This command does not change production
 deployment restrictions. Plain user terminal tabs receive no secret capability.
+The standalone installer refuses an unrelated sibling `buildctl` or symlink
+before replacing the installed bridge or updating its provenance or service.
 From the repository checkout:
 
 ```bash
@@ -106,7 +108,9 @@ previous build and performs the same verification; it requires a previous
 verified deployment. After a successful rollback, the previous/current records
 swap, allowing rollback to be reversed. Rollback replaces the pairing candidate
 with its target before installation, so even a failed attempt cannot leave pair
-pointing at a stale deployment candidate. There is no automatic rollback. Prune
+pointing at a stale deployment candidate. It preserves any launcher already
+beside that staged build; rollback to a bridge predating secrets does not require
+the newer runtime installation command. There is no automatic rollback. Prune
 keeps current, previous, any running managed build, and N newest build directories
 (default 3); it removes only directories inside the environment's binary root.
 

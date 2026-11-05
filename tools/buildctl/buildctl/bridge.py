@@ -236,13 +236,14 @@ class Bridge:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def activate(self, sha):
+    def activate(self, sha, *, install_runtime=True):
         self.env.require_mutation()
         child_env = self.env.bridge_env(os.environ)
         record = self.records()
         binary = self.binary(sha)
         expected = digest(binary)
-        self.runner.run([str(binary), "install-runtime-launcher"], env=child_env)
+        if install_runtime:
+            self.runner.run([str(binary), "install-runtime-launcher"], env=child_env)
         self.service.prepare_install()
         result = self.runner.run(
             [str(binary), "install-service"], env=child_env, check=False
@@ -290,7 +291,9 @@ class Bridge:
             atomic_write(
                 self.env, self.env.state_root / "buildctl-candidate", previous + "\n"
             )
-            return self.activate(previous)
+            # Historical staged binaries can predate the runtime command. Their
+            # existing launcher, if any, stays beside that exact staged binary.
+            return self.activate(previous, install_runtime=False)
 
     def pair(self):
         with management_lock(self.env):

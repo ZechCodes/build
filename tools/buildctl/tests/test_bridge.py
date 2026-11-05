@@ -35,6 +35,7 @@ class FakeRunner:
         self.rotate = False
         self.old_auth_on_stop = False
         self.stop_seen = False
+        self.legacy_binaries = set()
 
     def run(self, args, *, cwd=None, env=None, check=True, diagnostics=False):
         self.calls.append((args, cwd, env))
@@ -50,6 +51,8 @@ class FakeRunner:
             code = self.cargo(args, cwd, env)
         elif args[0] == "systemctl":
             output, code = self.systemctl(args)
+        elif args[-1] == "install-runtime-launcher" and Path(args[0]) in self.legacy_binaries:
+            output, code = "unknown command: install-runtime-launcher", 1
         elif args[-1] == "install-service":
             self.installed = Path(args[0])
             assert {k for k in env if k.startswith("BRIDGE_")} == {
@@ -168,6 +171,19 @@ def test_activation_installs_runtime_launcher_before_service(setup):
     bridge.deploy()
     commands = [args[-1] for args, _, _ in runner.calls]
     assert commands.index("install-runtime-launcher") < commands.index("install-service")
+
+
+def test_first_rollback_can_activate_a_bridge_without_runtime_launcher_command(setup):
+    bridge, runner, _ = setup
+    bridge.deploy()
+    previous = bridge.binary(A)
+    runner.legacy_binaries.add(previous)
+    runner.sha = B
+    bridge.deploy(B)
+    runner.calls.clear()
+    assert bridge.rollback()["current"] == A
+    assert runner.installed == previous
+    assert bridge.records() == {"current": A, "previous": B}
 
 
 def test_inherited_bridge_vars_stripped(setup, monkeypatch):

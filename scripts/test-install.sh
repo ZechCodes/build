@@ -130,7 +130,7 @@ new_sandbox() {
 printf '%s %s\n' "${BRIDGE_API_URL:-https://getbuild.ing}" "$*" >> "$HOME/bridge-apis"
 case "${1:-}" in
     install-runtime-launcher)
-        printf '#!/bin/sh\nexit 0\n' > "${0%/*}/buildctl"
+        printf '#!/bin/sh\n# Agent runtime facade. fixture\nexit 0\n' > "${0%/*}/buildctl"
         chmod 0755 "${0%/*}/buildctl"
         ;;
     pair)
@@ -258,6 +258,46 @@ installs_a_verified_tarball() {
         return 1
     fi
     pass "$name"
+}
+
+occupied_launcher_keeps_the_existing_installation_coherent() {
+    name="occupied_launcher_keeps_the_existing_installation_coherent"
+    root="$(new_sandbox "$name")"
+    mkdir -p "$root/home/.build"
+    printf 'existing bridge\n' > "$root/dest/build-bridge"
+    printf 'existing management command\n' > "$root/dest/buildctl"
+    printf 'existing provenance\n' > "$root/home/.build/installed-bridge"
+    printf 'existing service\n' > "$root/home/service"
+    status="$(CASE_SKIP_SERVICE=0 run_install "$root")"
+    assert_exit "$name" "$root" "$status" 1 || return 1
+    for oc_entry in 'dest/build-bridge:existing bridge' 'dest/buildctl:existing management command' \
+        'home/.build/installed-bridge:existing provenance' 'home/service:existing service'; do
+        [ "$(cat "$root/${oc_entry%%:*}")" = "${oc_entry#*:}" ] || {
+            fail "$name" "changed ${oc_entry%%:*}"; return 1;
+        }
+    done
+    [ ! -e "$root/home/bridge-calls" ] || { fail "$name" "changed service"; return 1; }
+    pass "$name"
+}
+
+an_existing_runtime_launcher_can_be_updated() {
+    name="an_existing_runtime_launcher_can_be_updated"
+    root="$(new_sandbox "$name")"
+    printf '#!/bin/sh\n# Agent runtime facade. old\n' > "$root/dest/buildctl"
+    status="$(run_install "$root")"
+    assert_exit "$name" "$root" "$status" 0 || return 1
+    assert_says "$name" "$root/dest/buildctl" '# Agent runtime facade. fixture' && pass "$name"
+}
+
+a_runtime_launcher_symlink_is_refused() {
+    name="a_runtime_launcher_symlink_is_refused"
+    root="$(new_sandbox "$name")"
+    printf '#!/bin/sh\n# Agent runtime facade. symlink target\n' > "$root/management"
+    ln -s "$root/management" "$root/dest/buildctl"
+    status="$(run_install "$root")"
+    assert_refused "$name" "$root" "$status" 1 || return 1
+    [ -L "$root/dest/buildctl" ] || { fail "$name" "replaced launcher symlink"; return 1; }
+    assert_says "$name" "$root/management" '# Agent runtime facade. symlink target' && pass "$name"
 }
 
 refuses_a_tampered_tarball() {
@@ -705,6 +745,9 @@ printf %s "${PATH%%:*}"' 2>/dev/null)" || true
 # says the case is over; the suite's verdict is FAILURES, not $?.
 for case_name in \
     installs_a_verified_tarball \
+    occupied_launcher_keeps_the_existing_installation_coherent \
+    an_existing_runtime_launcher_can_be_updated \
+    a_runtime_launcher_symlink_is_refused \
     refuses_a_tampered_tarball \
     refuses_an_asset_with_no_published_digest \
     refuses_when_cosign_rejects_the_bundle \

@@ -285,6 +285,17 @@ describe("forward coverage and repair cursors", () => {
     expect((await saved()).items.map((item) => item.data.sequence)).toEqual([1]);
   });
 
+  it.each([false, true])("retains the first versioned page's incarnation over an unversioned held window (gap: %s)", async (gap) => {
+    await cache.writeCached(address, windowAt(message(1, "legacy cached message")));
+    const call = vi.fn(async () => ({
+      thread_id: "learned-thread", thread_generation_revision: 4,
+      items: [message(2, "versioned message")], has_more: gap, thread_last_sequence: 2,
+    }));
+    expect(await sync(call)).toBe(true);
+    expect(await saved()).toMatchObject({ thread_id: "learned-thread", thread_generation_revision: 4 });
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves the generation revision when the first inline append omits it", async () => {
     const { threadWindow } = await import("../src/core/threadSync.js");
     const held = { ...windowAt(), thread_id: "thread-1", thread_generation_revision: 7, retired_thread_ids: ["retired"] };

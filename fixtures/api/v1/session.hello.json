@@ -277,6 +277,7 @@
         "thread",
         "git",
         "files",
+        "files.hints",
         "terminals",
         "tasks",
         "compaction.changed"

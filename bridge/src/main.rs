@@ -697,6 +697,17 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
         stored,
         ..
     } = loaded;
+    // The opener is the only secret-upload interface that holds this key.
+    // App snapshots and agent launches never receive its raw bytes.
+    let app = match build_bridge::secrets::upload::SealedUploadOpener::new(
+        &transport_keypair.private_key_b64,
+    ) {
+        Ok(opener) => app.with_secret_upload_opener(Arc::new(opener)),
+        Err(_) => {
+            eprintln!("secrets: upload opener unavailable");
+            app
+        }
+    };
     let repo_display = runtime
         .config
         .repo

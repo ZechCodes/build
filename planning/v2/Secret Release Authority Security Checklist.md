@@ -7,14 +7,13 @@ installation and SPA interaction remain separately reviewed slices.
 **Scoped score: 100/100.** Verification has been refreshed after the
 caller-controlled audit identifier review finding. The new regressions and
 revised validation below cover bridge-owned audit identities and resolved
-record targets. The final task report
-records the frozen commit, commands, actual exit codes and attached evidence.
+record targets. The final task report records the frozen commit, commands, actual exit codes and attached evidence.
 No public capability is advertised by this change.
 
 | # | Control | Evidence |
 |---|---|---|
 | 1 | Purpose-limited capability is independent of MCP and binds device/channel, canonical project/owner/conversation/generation and process incarnation. | `runtime/sessions/secret_authority.rs`, `secret_release_authority.rs`; token independence, selector spoof, device-rebind and same-generation restart tests. |
-| 2 | Authority derives from the issued record and current committed membership; no caller selector, CWD, path or task grants access. | `read_context/mcp_addresses.rs`, `store/secrets/release.rs`; saved/candidate membership, removed member, canonical and alias project rebind, durable generation regressions. |
+| 2 | Authority derives from the issued record and current committed membership; no caller selector, CWD, path or task grants access. | `read_context/mcp_addresses.rs`, `store/secrets/release.rs`; saved/candidate membership, removed member, canonical and alias project rebind, durable generation regressions; real AppState workspace-member and project-coordinator probes pass the SQL boundary. |
 | 3 | Agent grants require exact recipient/generation; Project grants allow current members including coordinator; cross-project and wrong-scope reads disclose no existence/status. | Scope and caller matrices in `secrets/release_tests.rs`; scope precedes expiry/revocation lookup outcomes. |
 | 4 | Capability material enters only dedicated launch environment. Every provider strips inherited capability prefixes; probes and ordinary terminal tabs acquire no agent authority. | `harness/secret_launch.rs`, PTY/ADK/app-server spawn integration, installed probe test; HarnessSpec Debug redacts argument and environment values. |
 | 5 | Private mode-0600 Unix socket is separate from MCP/HTTP/browser RPC. Live or full-backlog sockets are not replaced; arbitrary entries/symlinks are preserved. | `app/secret_release.rs`; protected binding and full-backlog bounded-probe tests. |
@@ -68,3 +67,21 @@ checks. Clippy all-targets `-D warnings`, fmt, the eight-path Semgrep scan,
 locked offline harness metadata and diff checks passed. Gitleaks runs before
 the revised task-branch push; the frozen-head report records its actual exit.
 Read-only follow-up review found no remaining audit identifier injection path.
+
+## Gating review follow-up — real membership probes
+
+Committed probes mint a real AppState workspace agent and the project
+coordinator, authenticate each issued capability, and call the durable writer
+release boundary with an unknown ID. Each returns `Unavailable`, proving it
+passed membership rather than returning `Unauthorized`. They do not seed SQL
+membership rows by hand. The launch context now uses named fields and explicit
+optional device identity; startup validates private Unix socket paths and
+reports an overlong/invalid path specifically.
+
+The final expanded targeted run passes **150 tests, 0 failed/ignored, exit 0**.
+Clippy all-targets `-D warnings`, fmt, the ten-path security scan, locked offline
+HTTP harness metadata and diff checks passed. Earlier 23 focused compatibility
+checks remain recorded on #1002. The pre-auth slot hold, authenticated-denial
+coalescing and runtime vault-capture follow-ups are unchanged, as directed for
+#1004. The final task report records the revised frozen head and Gitleaks before
+its push. The full suite remains the serial merge gate.

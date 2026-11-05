@@ -202,7 +202,7 @@ pub enum Kind {
 
 impl Kind {
     /// Every kind, in wire order.
-    pub const ALL: [Kind; 8] = [
+    pub const ALL: [Kind; 9] = [
         Kind::State,
         Kind::Thread,
         Kind::Git,

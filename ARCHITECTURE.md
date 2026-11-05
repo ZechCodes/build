@@ -1215,6 +1215,10 @@ survive their originating conversation; project deletion retires them. No
 value or sealed upload is a database field or journal payload. Future send
 integration must use `store::secrets::attach_in` inside the **same** transaction
 as message admission. The standalone service attach helper is not a wire send.
+Retirement also appends its lifecycle audit fact in that transaction and emits
+the scoped `secrets.changed` hint only after commit. Lifecycle facts share the
+secret record's retention: permanent tombstones retain them, and deleting a
+tombstone deletes its lifecycle rows atomically.
 
 The private `secrets/` directory contains a dedicated key and AES-256-GCM blobs.
 Build backups contain metadata only; migration excludes source vaults and

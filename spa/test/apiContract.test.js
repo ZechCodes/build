@@ -28,7 +28,7 @@ const eventExamples = fixtures
   .flatMap(({ name, body }) => body.events.map((event, index) => ({ where: `${name}[${index}]`, event })));
 
 describe("the v1 adapter against fixtures/api/v1", () => {
-  it("pins wire 3.34 device roster and pooled directory session facts", () => {
+  it("pins wire 3.36 device roster and pooled directory session facts", () => {
     expect(versions.current).toBe("3.36.0");
     const snapshot = methodFixtures.find(({ body }) => body.method === "sync.snapshot").body;
     const example = snapshot.examples.find((entry) => entry.since === "3.34.0");

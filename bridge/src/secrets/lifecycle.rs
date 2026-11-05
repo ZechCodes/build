@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-type ChangeObserver = Arc<dyn Fn(&SecretRecord) + Send + Sync>;
+pub(crate) type ChangeObserver = Arc<dyn Fn(&SecretRecord) + Send + Sync>;
 
 struct Inner {
     device_id: String,

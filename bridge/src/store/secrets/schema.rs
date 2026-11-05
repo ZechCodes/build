@@ -174,7 +174,20 @@ pub(in crate::store) fn initialize(connection: &rusqlite::Connection) -> rusqlit
     }
     ensure_pending_key_column(connection)?;
     ensure_audit_upgrades(connection)?;
+    ensure_lifecycle_retention(connection)?;
     Ok(())
+}
+
+fn ensure_lifecycle_retention(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
+    connection.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS secret_records_prune_lifecycle_audit
+         AFTER DELETE ON secret_records
+         BEGIN
+             DELETE FROM secret_audit
+             WHERE secret_id=OLD.id
+             AND outcome IN ('created','attached','expired','revoked');
+         END;",
+    )
 }
 
 fn ensure_pending_key_column(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
@@ -283,6 +296,7 @@ fn ensure_lifecycle_audit(connection: &rusqlite::Connection) -> rusqlite::Result
     {
         return Ok(());
     }
+    connection.execute_batch("DROP TRIGGER IF EXISTS secret_records_prune_lifecycle_audit")?;
     let revised = upgraded_audit_table()?;
     connection.execute_batch(&revised)?;
     connection.execute_batch(&format!(
@@ -321,6 +335,26 @@ mod tests {
     #[test]
     fn lifecycle_audit_adds_group_columns_before_rebuilding_the_outcome_check() {
         assert_d_upgrade(false, true);
+    }
+
+    #[test]
+    fn lifecycle_audit_rebuild_reinstalls_an_existing_retention_trigger() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        let old = SCHEMA.replace(
+            "'secret_revoked','created','attached','expired','revoked'",
+            "'secret_revoked'",
+        );
+        connection.execute_batch(&old).unwrap();
+        ensure_lifecycle_retention(&connection).unwrap();
+        initialize(&connection).unwrap();
+        let trigger: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='secret_records_prune_lifecycle_audit')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(trigger);
     }
 
     #[test]

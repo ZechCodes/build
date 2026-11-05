@@ -4,6 +4,8 @@ use serde_json::Value;
 mod agent_to_agent;
 mod attachments;
 mod inputs;
+#[cfg(test)]
+pub(in crate::app) use inputs::{parse_thread_post_messages, PostOrigin};
 mod legacy_delivery;
 mod native_delivery;
 pub(in crate::app) mod operation_ledger;

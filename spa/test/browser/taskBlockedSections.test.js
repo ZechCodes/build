@@ -28,7 +28,13 @@ for (const width of [390, 1280]) {
       expect(await taskIds(page, '[data-backlog-group="blocked"] [data-task]')).toEqual(["backlog-blocked-high", "backlog-blocked-low"]);
       expect(await taskIds(page, '[data-backlog-group="ready"] [data-task]')).toEqual(["backlog-ready-high", "backlog-ready-low"]);
       await page.locator('[data-task-view="board"]').click();
-      await page.locator('[data-column="backlog"] [data-backlog-group="blocked"]').waitFor();
+      // The board can paint the dashboard's rows before the open-state
+      // filter commits. Group headings also exist in that intermediate frame.
+      await page.waitForFunction((expected) => {
+        const rows = [...document.querySelectorAll('[data-column="backlog"] [data-task]')].map((row) => row.dataset.task);
+        return JSON.stringify(rows) === JSON.stringify(expected);
+      }, ["blocked-running", "backlog-blocked-high", "blocked-user", "blocked-missing",
+        "blocked-new-workspace", "backlog-blocked-low", "backlog-ready-high", "backlog-ready-low"]);
       expect(await groupIds(page, '[data-column="backlog"] [data-backlog-group]')).toEqual(["blocked", "ready"]);
       expect(await page.locator('[data-column="backlog"] a[href*="missing-blocker"]').count()).toBe(6);
       expect(await page.locator('[data-column="done"]').count()).toBe(1);

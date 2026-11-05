@@ -655,9 +655,17 @@ async fn assert_retires_nothing(api_url: &str) {
 
 #[tokio::test]
 async fn a_refused_connection_retires_nothing() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    // Binding without listening refuses connections while reserving the port:
+    // another test cannot reuse it to answer this request.
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )
+    .unwrap();
+    let address: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    socket.bind(&address.into()).unwrap();
+    let port = socket.local_addr().unwrap().as_socket().unwrap().port();
     assert_retires_nothing(&format!("http://127.0.0.1:{port}")).await;
 }
 

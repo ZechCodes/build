@@ -351,12 +351,16 @@ const appendedThreadWindow = (held, arrived, page) => ({
 });
 
 /** Reset authority belongs to the standing record even before its first
- * wire item arrives; a lean push may omit its generation revision. */
-const heldGenerationMetadata = (held, arrived) => ({
-  ...(held.thread_id ? { thread_id: held.thread_id,
-    thread_generation_revision: Math.max(Number(held.thread_generation_revision || 0), Number(arrived.thread_generation_revision || 0)) } : {}),
-  ...(held.retired_thread_ids ? { retired_thread_ids: held.retired_thread_ids } : {}),
-});
+ * wire item arrives; a lean push may omit its generation revision. A legacy
+ * record without an ID adopts the accepted page's generation. */
+const heldGenerationMetadata = (held, arrived) => {
+  const generation = held.thread_id ? held : arrived;
+  return {
+    ...(generation.thread_id ? { thread_id: generation.thread_id,
+      thread_generation_revision: Math.max(Number(generation.thread_generation_revision || 0), Number(arrived.thread_generation_revision || 0)) } : {}),
+    ...(held.retired_thread_ids ? { retired_thread_ids: held.retired_thread_ids } : {}),
+  };
+};
 
 /** Replace a stale window with a newest-forward page that skipped a gap.
  *

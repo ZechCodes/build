@@ -1236,15 +1236,23 @@ function mountRailOnContext(host, context, swap) {
 
   let conversationCache = null;
   let conversationCacheKey = null;
+  let conversationIncarnation = null;
   let retainedConversationWindow = null;
   let conversationOpening = 0;
   const conversationReadAdmissions = new Map();
+  const conversationSeedPromises = new WeakMap();
 
   const createBoundConversationCache = () => {
     const boundThreadCache = threadCache;
     return createConversationCache({
       addressOf: cacheIdentity,
-      threadCache,
+      threadCache: lazyViewReadsEnabled(context.deviceId) ? {
+        ...boundThreadCache,
+        seedWindow: (record) => {
+          if (standing() && boundThreadCache === threadCache) rememberConversationIncarnation(record, cacheIdentity(), conversationCache.address());
+          return boundThreadCache.seedWindow(record);
+        },
+      } : boundThreadCache,
       onThreadSeeded: (seededFor) => {
         if (!standing() || (lazyViewReadsEnabled(context.deviceId) && boundThreadCache !== threadCache)) return;
         retainedConversationWindow = null;
@@ -2011,7 +2019,7 @@ function mountRailOnContext(host, context, swap) {
       paint();
       refresh();
     }
-    if (!panelOut()) showPanel();
+    if (!panelOut()) reopenPanel();
     deliverDroppedFiles();
   };
 
@@ -2557,7 +2565,47 @@ function mountRailOnContext(host, context, swap) {
   /// Open the record this conversation is held in, and hear it move. Every
   /// write to it — a page the sync layer pulled, a push it applied, a message
   /// this panel just sent — is a repaint from the record and nothing else.
-  const conversationGenerationKey = (address, threadId = cacheIdentity()?.threadId) => `${threadAddressKey(address)}:${threadId || ""}`;
+  const effectiveConversationThreadId = (address, threadId) => threadId ||
+    (lazyViewReadsEnabled(context.deviceId) && conversationIncarnation?.key === threadAddressKey(address)
+      && sameConversationOpening(conversationIncarnation, context.deviceId) ? conversationIncarnation.threadId : "");
+  const conversationGenerationKey = (address, threadId = cacheIdentity()?.threadId) =>
+    `${threadAddressKey(address)}:${effectiveConversationThreadId(address, threadId) || ""}`;
+
+  const conversationOpeningOwner = (deviceId) => ({
+    stamp: conversationOpeningStamp(deviceId), session: contextFor(deviceId)?.session,
+  });
+  const ownReplyIncarnation = (admission, threadId, deviceId) => admission?.replyThreadId === threadId
+    && sameConversationOpening(admission, deviceId);
+
+  const rememberConversationIncarnation = (record, identity, address) => {
+    if (!record?.thread_id || !identity || !address) return;
+    const priorThreadId = effectiveConversationThreadId(address);
+    const priorKey = conversationGenerationKey(address, priorThreadId);
+    const admission = conversationReadAdmissions.get(priorKey);
+    conversationIncarnation = { key: threadAddressKey(address), threadId: record.thread_id, ...conversationOpeningOwner(identity.deviceId) };
+    conversationCacheKey = conversationGenerationKey(address);
+    if (priorThreadId || !ownReplyIncarnation(admission, record.thread_id, identity.deviceId)) return;
+    // Promote an unknown read only after its own reply has become the actual
+    // cached incarnation. An unrelated producer cannot certify that read.
+    const nextKey = conversationGenerationKey(address, record.thread_id);
+    if (admission.key === nextKey) return;
+    conversationReadAdmissions.delete(priorKey);
+    admission.key = nextKey;
+    conversationReadAdmissions.set(nextKey, admission);
+  };
+
+  const seedConversation = (conversation, deviceId) => {
+    const held = conversationSeedPromises.get(conversation);
+    if (sameConversationOpening(held, deviceId)) return held.promise;
+    // Reopens and new sessions re-read cache metadata once. Reader handoff
+    // within one logical opening continues to share its actual pending seed.
+    const promise = held ? conversation.reread() : conversation.seed();
+    conversationSeedPromises.set(conversation, {
+      stamp: conversationOpeningStamp(deviceId), session: contextFor(deviceId)?.session, promise,
+    });
+    return promise;
+  };
+
   const conversationOpeningStamp = (deviceId) => `${conversationOpening}:${deviceContextIdentity(deviceId)}`;
   const sameConversationOpening = (admission, deviceId) => admission?.stamp === conversationOpeningStamp(deviceId)
     && admission.session === contextFor(deviceId)?.session;
@@ -2569,9 +2617,9 @@ function mountRailOnContext(host, context, swap) {
     return !sameConversationOpening(conversationReadAdmissions.get(key), identity?.deviceId);
   };
 
-  const readConversationWindow = (identity, address, active) => syncThreadWindow({
+  const readConversationWindow = (identity, address, active, call = chatRepository.currentCall()) => syncThreadWindow({
     deviceId: identity.deviceId,
-    call: chatRepository.currentCall(),
+    call,
     active,
     entityId: identity.entityId,
     agentId: identity.agentId,
@@ -2581,23 +2629,43 @@ function mountRailOnContext(host, context, swap) {
     priority: "foreground",
   });
 
+  const conversationReadCall = (owner) => {
+    const call = chatRepository.currentCall();
+    let replied = false;
+    return async (method, ...args) => {
+      const answer = await call(method, ...args);
+      if (!replied && method === "thread.page") {
+        replied = true;
+        owner.replyThreadId = answer?.thread_id || "";
+      }
+      return answer;
+    };
+  };
+
+  const rememberConversationRead = (key, owner) => {
+    conversationReadAdmissions.delete(key);
+    conversationReadAdmissions.set(key, owner);
+    if (conversationReadAdmissions.size > 8) conversationReadAdmissions.delete(conversationReadAdmissions.keys().next().value);
+  };
+
   const watchLazyConversation = async (conversation, identity, address) => {
     if (!identity || !address) return;
-    const key = conversationGenerationKey(address, identity.threadId);
     const stamp = conversationOpeningStamp(identity.deviceId);
     const session = contextFor(identity.deviceId)?.session;
-    const admitted = sameConversationOpening(conversationReadAdmissions.get(key), identity.deviceId);
-    if (!admitted) {
-      // Reader replacement is still the same opening. Keep completed as well
-      // as in-flight admissions, bounded across the conversations visited here.
-      conversationReadAdmissions.delete(key);
-      conversationReadAdmissions.set(key, { stamp, session });
-      if (conversationReadAdmissions.size > 8) conversationReadAdmissions.delete(conversationReadAdmissions.keys().next().value);
-    }
-    await conversation.seed();
+    await seedConversation(conversation, identity.deviceId);
+    // A retired seed cedes admission to the canonical reader. An already
+    // admitted wire read keeps its logical owner across that same handoff.
+    if (conversation !== conversationCache) return;
+    const threadId = effectiveConversationThreadId(address, identity.threadId);
+    identity = threadId ? { ...identity, threadId } : identity;
+    const key = conversationGenerationKey(address, identity.threadId);
+    const owner = { stamp, session, key, replyThreadId: "" };
     const active = () => standing() && stamp === conversationOpeningStamp(identity.deviceId)
-      && session === contextFor(identity.deviceId)?.session && key === conversationGenerationKey(conversation.address());
-    if (!admitted && active()) await readConversationWindow(identity, address, active);
+      && session === contextFor(identity.deviceId)?.session && owner.key === conversationGenerationKey(conversation.address());
+    if (!active()) return;
+    const admitted = sameConversationOpening(conversationReadAdmissions.get(key), identity.deviceId);
+    if (!admitted) rememberConversationRead(key, owner);
+    if (!admitted && active()) await readConversationWindow(identity, address, active, conversationReadCall(owner));
   };
 
   const watchConversation = async () => {
@@ -4110,10 +4178,12 @@ function mountRailOnContext(host, context, swap) {
     const pressed = pressedSelection(type, agentId);
     if (!isSelected(pressed)) select(pressed);
     else if (panelOut()) closePanel({ restoreFocus: true });
-    else {
-      if (pressed.kind === "agent" && lazyViewReadsEnabled(context.deviceId)) conversationOpening += 1;
-      showPanel();
-    }
+    else reopenPanel();
+  };
+
+  const reopenPanel = () => {
+    if (selectedKind === "agent" && lazyViewReadsEnabled(context.deviceId)) conversationOpening += 1;
+    showPanel();
   };
 
   /** Put the panel on screen without touching the pin: docked it is already

@@ -79,3 +79,31 @@ capability exemption, dynamic producer or ownership edge is added. Only the
 rail's full-source fingerprint changes; the lexical scanner, metadata
 occurrences, method inventory, helper recognizers and all assertions are
 unchanged. Stress and lifetime tests retain the one-read expectation.
+
+## Cached incarnation handoff follow-up
+
+Reviewed the rail's lazy-only cache-seed adapter and first-reply observer.
+The adapter reads incarnation metadata from the same full record that seeds
+the displayed thread window, before paint. An explicit roster incarnation
+still takes precedence. An unknown opening may inherit a reply's incarnation
+only when that reply and the record actually seeded agree; foreign-generation
+cache-merge refusal remains in the existing thread read owner.
+
+The reply observer forwards the existing threadSync call, arguments and
+priority unchanged. Its one `call(method, ...args)` occurrence is added to the
+finite dynamic-site inventory. It only observes the first `thread.page`
+response's ID; the existing threadSync method expansion and resource routes
+remain the same. No metadata exemption, scanner rule, namespace exemption,
+RPC verb, wire field or request shape is added. The rail's complete source
+fingerprint is re-pinned after reviewing this assignment edge and the shared
+press/drop reopen admission path. The legacy cache and call objects pass
+through unchanged.
+
+The reply-learned-ID witness also exposed that an append to an unversioned
+held window dropped the accepted page's generation metadata. Reviewed the
+small `heldGenerationMetadata` repair in threadSync: an existing held ID keeps
+its authority and revision; only a record without an ID adopts the arriving
+generation. The foreign-page merge refusal and retired-ID metadata remain
+unchanged. The existing gap-replacement path already kept this metadata and
+is pinned alongside append and reset cases. Only threadSync's full-source
+fingerprint changes; its dynamic sites, methods and request assignments do not.

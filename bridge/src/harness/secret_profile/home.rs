@@ -5,6 +5,7 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
+#[derive(Debug)]
 pub(super) enum HomeError {
     Symlink,
     Unavailable,

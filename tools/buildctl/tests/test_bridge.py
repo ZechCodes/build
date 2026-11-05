@@ -36,10 +36,11 @@ class FakeRunner:
         self.old_auth_on_stop = False
         self.stop_seen = False
         self.legacy_binaries = set()
+        self.runtime_failure = None
 
     def run(self, args, *, cwd=None, env=None, check=True, diagnostics=False):
         self.calls.append((args, cwd, env))
-        output, code = "", 0
+        output, code, stderr = "", 0, "secret stderr"
         if "rev-parse" in args:
             output = self.sha
         elif "merge-base" in args:
@@ -52,7 +53,9 @@ class FakeRunner:
         elif args[0] == "systemctl":
             output, code = self.systemctl(args)
         elif args[-1] == "install-runtime-launcher" and Path(args[0]) in self.legacy_binaries:
-            output, code = "unknown command: install-runtime-launcher", 1
+            stderr, code = "unknown command: install-runtime-launcher\nusage: build-bridge [serve|pair]\n", 2
+        elif args[-1] == "install-runtime-launcher" and self.runtime_failure:
+            code, stderr = self.runtime_failure
         elif args[-1] == "install-service":
             self.installed = Path(args[0])
             assert {k for k in env if k.startswith("BRIDGE_")} == {
@@ -63,7 +66,7 @@ class FakeRunner:
             }
             assert env["BRIDGE_CHANNEL"] == "dev"
             code = 0 if self.install_ok else 1
-        result = subprocess.CompletedProcess(args, code, output, "secret stderr")
+        result = subprocess.CompletedProcess(args, code, output, stderr)
         if check and code:
             raise BuildctlError("command failed")
         return result
@@ -184,6 +187,29 @@ def test_first_rollback_can_activate_a_bridge_without_runtime_launcher_command(s
     assert bridge.rollback()["current"] == A
     assert runner.installed == previous
     assert bridge.records() == {"current": A, "previous": B}
+
+
+def test_deploy_can_activate_a_ref_without_runtime_launcher_command(setup):
+    bridge, runner, env = setup
+    runner.legacy_binaries.add(env.binary_dir / A / "build-bridge")
+    assert bridge.deploy(A)["current"] == A
+    assert runner.installed == bridge.binary(A)
+
+
+@pytest.mark.parametrize("failure", [(1, "runtime launcher installation failed"), (2, "invalid arguments")])
+def test_deploy_keeps_other_runtime_install_errors_fatal(setup, failure):
+    bridge, runner, _ = setup
+    runner.runtime_failure = failure
+    with pytest.raises(BuildctlError):
+        bridge.deploy(A)
+    assert runner.installed is None
+
+
+def test_skipped_private_launcher_warns_without_aborting_deployment(setup, capsys):
+    bridge, runner, _ = setup
+    runner.runtime_failure = (0, "runtime launcher destination is occupied; skipping\n")
+    assert bridge.deploy(A)["current"] == A
+    assert capsys.readouterr().err == "buildctl: runtime launcher destination is occupied; skipping\n"
 
 
 def test_inherited_bridge_vars_stripped(setup, monkeypatch):

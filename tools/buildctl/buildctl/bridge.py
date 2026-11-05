@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import time
 
@@ -243,7 +244,7 @@ class Bridge:
         binary = self.binary(sha)
         expected = digest(binary)
         if install_runtime:
-            self.runner.run([str(binary), "install-runtime-launcher"], env=child_env)
+            self.install_runtime(binary, child_env)
         self.service.prepare_install()
         result = self.runner.run(
             [str(binary), "install-service"], env=child_env, check=False
@@ -263,6 +264,19 @@ class Bridge:
             self.env, self.env.state_root / "buildctl.json", json.dumps(record) + "\n"
         )
         return {**record, "environment": self.env.name, "relay": "authenticated"}
+
+    def install_runtime(self, binary, child_env):
+        result = self.runner.run(
+            [str(binary), "install-runtime-launcher"], env=child_env, check=False
+        )
+        unsupported = result.returncode == 2 and result.stderr.startswith(
+            "unknown command: install-runtime-launcher\nusage: build-bridge "
+        )
+        if result.returncode and not unsupported:
+            raise BuildctlError("runtime launcher installation failed")
+        warning = "runtime launcher destination is occupied; skipping"
+        if not result.returncode and result.stderr.splitlines()[:1] == [warning]:
+            print("buildctl: " + warning, file=sys.stderr)
 
     def verify(self, expected, cursor):
         deadline = time.monotonic() + self.verify_timeout

@@ -130,8 +130,26 @@ new_sandbox() {
 printf '%s %s\n' "${BRIDGE_API_URL:-https://getbuild.ing}" "$*" >> "$HOME/bridge-apis"
 case "${1:-}" in
     install-runtime-launcher)
-        printf '#!/bin/sh\n# Agent runtime facade. fixture\nexit 0\n' > "${0%/*}/buildctl"
-        chmod 0755 "${0%/*}/buildctl"
+        if [ "${BUILD_TEST_RUNTIME_LEGACY:-0}" = "1" ]; then
+            printf 'unknown command: install-runtime-launcher\nusage: build-bridge [serve|pair]\n' >&2
+            exit 2
+        fi
+        if [ "${BUILD_TEST_RUNTIME_STATUS:-0}" != "0" ]; then
+            printf 'runtime installation refused\n' >&2
+            exit "$BUILD_TEST_RUNTIME_STATUS"
+        fi
+        runtime="${0%/*}/.build-runtime"
+        if [ -L "$runtime" ] || { [ -e "$runtime" ] && [ ! -d "$runtime" ]; }; then
+            printf 'runtime launcher destination is occupied; skipping\n' >&2
+            exit 0
+        fi
+        mkdir -p "$runtime"
+        if [ -e "$runtime/buildctl" ] || [ -L "$runtime/buildctl" ]; then
+            printf 'runtime launcher destination is occupied; skipping\n' >&2
+            exit 0
+        fi
+        printf '#!/bin/sh\n# Agent runtime facade. fixture\nexit 0\n' > "$runtime/buildctl"
+        chmod 0755 "$runtime/buildctl"
         ;;
     pair)
         printf '%s\n' "$*" >> "$HOME/bridge-calls"
@@ -219,9 +237,13 @@ run_install() {
         BUILD_TEST_PAIR_STATUS="${CASE_PAIR_STATUS:-0}"
         BUILD_TEST_RETIRED="${CASE_RETIRED:-0}"
         BUILD_TEST_SERVICE_STATUS="${CASE_SERVICE_STATUS:-0}"
+        BUILD_TEST_RUNTIME_LEGACY="${CASE_RUNTIME_LEGACY:-0}"
+        BUILD_TEST_RUNTIME_STATUS="${CASE_RUNTIME_STATUS:-0}"
         HOME="${CASE_HOME:-$ri_root/home}"
         export PATH BUILD_TEST_MIRROR BUILD_TEST_UNAME_S BUILD_TEST_UNAME_M BUILD_TEST_PAIR_STATUS BUILD_TEST_RETIRED
         export BUILD_TEST_SERVICE_STATUS
+        export BUILD_TEST_RUNTIME_LEGACY
+        export BUILD_TEST_RUNTIME_STATUS
         export BUILD_TEST_COSIGN_STATUS BUILD_BRIDGE_INSTALL_DIR BUILD_BRIDGE_SKIP_SERVICE HOME
         if [ "${CASE_TERMINAL:-0}" = "1" ]; then
             # A terminal that can show colour, whatever the one running the
@@ -242,7 +264,7 @@ installs_a_verified_tarball() {
     name="installs_a_verified_tarball"
     root="$(new_sandbox "$name")"
     status="$(run_install "$root")"
-    [ -x "$root/dest/buildctl" ] || { fail "$name" "runtime launcher not installed"; return 1; }
+    [ -x "$root/dest/.build-runtime/buildctl" ] || { fail "$name" "runtime launcher not installed"; return 1; }
     assert_exit "$name" "$root" "$status" 0 || return 1
     if [ ! -x "$root/dest/build-bridge" ]; then
         fail "$name" "no executable build-bridge in the install directory"
@@ -260,44 +282,71 @@ installs_a_verified_tarball() {
     pass "$name"
 }
 
-occupied_launcher_keeps_the_existing_installation_coherent() {
-    name="occupied_launcher_keeps_the_existing_installation_coherent"
+a_foreign_global_buildctl_survives_installation() {
+    name="a_foreign_global_buildctl_survives_installation"
     root="$(new_sandbox "$name")"
     mkdir -p "$root/home/.build"
     printf 'existing bridge\n' > "$root/dest/build-bridge"
     printf 'existing management command\n' > "$root/dest/buildctl"
     printf 'existing provenance\n' > "$root/home/.build/installed-bridge"
-    printf 'existing service\n' > "$root/home/service"
     status="$(CASE_SKIP_SERVICE=0 run_install "$root")"
-    assert_exit "$name" "$root" "$status" 1 || return 1
-    for oc_entry in 'dest/build-bridge:existing bridge' 'dest/buildctl:existing management command' \
-        'home/.build/installed-bridge:existing provenance' 'home/service:existing service'; do
-        [ "$(cat "$root/${oc_entry%%:*}")" = "${oc_entry#*:}" ] || {
-            fail "$name" "changed ${oc_entry%%:*}"; return 1;
-        }
-    done
-    [ ! -e "$root/home/bridge-calls" ] || { fail "$name" "changed service"; return 1; }
+    assert_exit "$name" "$root" "$status" 0 || return 1
+    [ "$(cat "$root/dest/buildctl")" = 'existing management command' ] || {
+        fail "$name" "changed global command"; return 1;
+    }
+    [ -x "$root/dest/.build-runtime/buildctl" ] || { fail "$name" "no private runtime"; return 1; }
+    [ "$(sed -n '2p' "$root/home/.build/installed-bridge")" = "$(digest_of "$root/dest/build-bridge")" ] \
+        || { fail "$name" "incoherent provenance"; return 1; }
+    [ "$(cat "$root/home/bridge-calls")" = "$(printf 'pair\ninstall-service')" ] \
+        || { fail "$name" "service not installed"; return 1; }
     pass "$name"
 }
 
-an_existing_runtime_launcher_can_be_updated() {
-    name="an_existing_runtime_launcher_can_be_updated"
+a_pinned_older_bridge_without_runtime_support_installs() {
+    name="a_pinned_older_bridge_without_runtime_support_installs"
     root="$(new_sandbox "$name")"
-    printf '#!/bin/sh\n# Agent runtime facade. old\n' > "$root/dest/buildctl"
-    status="$(run_install "$root")"
+    status="$(BUILD_BRIDGE_VERSION=v0.0.1 CASE_RUNTIME_LEGACY=1 CASE_SKIP_SERVICE=0 run_install "$root")"
     assert_exit "$name" "$root" "$status" 0 || return 1
-    assert_says "$name" "$root/dest/buildctl" '# Agent runtime facade. fixture' && pass "$name"
+    [ ! -e "$root/dest/.build-runtime/buildctl" ] || { fail "$name" "unexpected launcher"; return 1; }
+    [ "$(sed -n '2p' "$root/home/.build/installed-bridge")" = "$(digest_of "$root/dest/build-bridge")" ] \
+        || { fail "$name" "incoherent provenance"; return 1; }
+    [ "$(cat "$root/home/bridge-calls")" = "$(printf 'pair\ninstall-service')" ] \
+        || { fail "$name" "service not installed"; return 1; }
+    pass "$name"
 }
 
-a_runtime_launcher_symlink_is_refused() {
-    name="a_runtime_launcher_symlink_is_refused"
+other_runtime_installation_errors_stay_fatal() {
+    name="other_runtime_installation_errors_stay_fatal"
+    for or_status in 1 2; do
+        root="$(new_sandbox "$name-$or_status")"
+        status="$(CASE_RUNTIME_STATUS="$or_status" CASE_SKIP_SERVICE=0 run_install "$root")"
+        assert_exit "$name" "$root" "$status" 1 || return 1
+        [ ! -e "$root/home/bridge-calls" ] || { fail "$name" "service changed"; return 1; }
+    done
+    pass "$name"
+}
+
+a_foreign_private_launcher_is_skipped() {
+    name="a_foreign_private_launcher_is_skipped"
     root="$(new_sandbox "$name")"
-    printf '#!/bin/sh\n# Agent runtime facade. symlink target\n' > "$root/management"
-    ln -s "$root/management" "$root/dest/buildctl"
+    mkdir -p "$root/dest/.build-runtime"
+    printf 'foreign private command\n' > "$root/dest/.build-runtime/buildctl"
+    status="$(CASE_SKIP_SERVICE=0 run_install "$root")"
+    assert_exit "$name" "$root" "$status" 0 || return 1
+    [ "$(cat "$root/dest/.build-runtime/buildctl")" = 'foreign private command' ] \
+        || { fail "$name" "changed foreign private command"; return 1; }
+    assert_says "$name" "$root/stderr" 'runtime launcher destination is occupied; skipping' && pass "$name"
+}
+
+a_private_runtime_directory_symlink_is_skipped() {
+    name="a_private_runtime_directory_symlink_is_skipped"
+    root="$(new_sandbox "$name")"
+    mkdir "$root/foreign"
+    ln -s "$root/foreign" "$root/dest/.build-runtime"
     status="$(run_install "$root")"
-    assert_refused "$name" "$root" "$status" 1 || return 1
-    [ -L "$root/dest/buildctl" ] || { fail "$name" "replaced launcher symlink"; return 1; }
-    assert_says "$name" "$root/management" '# Agent runtime facade. symlink target' && pass "$name"
+    assert_exit "$name" "$root" "$status" 0 || return 1
+    [ ! -e "$root/foreign/buildctl" ] || { fail "$name" "followed runtime symlink"; return 1; }
+    assert_says "$name" "$root/stderr" 'runtime launcher destination is occupied; skipping' && pass "$name"
 }
 
 refuses_a_tampered_tarball() {
@@ -745,9 +794,11 @@ printf %s "${PATH%%:*}"' 2>/dev/null)" || true
 # says the case is over; the suite's verdict is FAILURES, not $?.
 for case_name in \
     installs_a_verified_tarball \
-    occupied_launcher_keeps_the_existing_installation_coherent \
-    an_existing_runtime_launcher_can_be_updated \
-    a_runtime_launcher_symlink_is_refused \
+    a_foreign_global_buildctl_survives_installation \
+    a_pinned_older_bridge_without_runtime_support_installs \
+    other_runtime_installation_errors_stay_fatal \
+    a_foreign_private_launcher_is_skipped \
+    a_private_runtime_directory_symlink_is_skipped \
     refuses_a_tampered_tarball \
     refuses_an_asset_with_no_published_digest \
     refuses_when_cosign_rejects_the_bundle \

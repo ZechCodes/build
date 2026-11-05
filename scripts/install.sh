@@ -295,38 +295,43 @@ verify_signature() {
     step "Verified the release signature"
 }
 
-check_runtime_destination() {
-    cr_launcher="$INSTALL_DIR/buildctl"
-    if [ ! -e "$cr_launcher" ] && [ ! -L "$cr_launcher" ]; then
+install_runtime_launcher() {
+    ir_status=0
+    "$INSTALL_DIR/build-bridge" install-runtime-launcher 2> runtime-launcher.stderr || ir_status=$?
+    if [ "$ir_status" = '0' ]; then
+        ir_warning=''
+        if IFS= read -r ir_warning < runtime-launcher.stderr \
+            && [ "$ir_warning" = 'runtime launcher destination is occupied; skipping' ]; then
+            detail "$ir_warning"
+        fi
         return 0
     fi
-    [ -f "$cr_launcher" ] && [ ! -L "$cr_launcher" ] \
-        || fail "the agent runtime launcher destination is occupied"
+    ir_first=''
+    ir_second=''
     {
-        IFS= read -r cr_first
-        IFS= read -r cr_second
-    } < "$cr_launcher" || fail "the agent runtime launcher destination is occupied"
-    [ "$cr_first" = '#!/bin/sh' ] \
-        || fail "the agent runtime launcher destination is occupied"
-    case "$cr_second" in
-        '# Agent runtime facade.'*) ;;
-        *) fail "the agent runtime launcher destination is occupied" ;;
-    esac
+        IFS= read -r ir_first
+        IFS= read -r ir_second
+    } < runtime-launcher.stderr || true
+    if [ "$ir_status" = '2' ] && [ "$ir_first" = 'unknown command: install-runtime-launcher' ]; then
+        case "$ir_second" in
+            'usage: build-bridge '*)
+                detail "This older bridge does not include the agent runtime launcher."
+                return 0 ;;
+        esac
+    fi
+    fail "could not install the agent runtime launcher"
 }
 
 install_binary() {
     tar -xzf "$1" || fail "could not unpack $1 from $SOURCE_URL" "Run the installer again."
     [ -f build-bridge ] || fail "$1 from $SOURCE_URL does not contain a build-bridge binary" \
         "Run the installer again later, or pin an earlier release with BUILD_BRIDGE_VERSION."
-    # Refuse an unrelated management command before touching the installed
-    # bridge, its provenance marker or its service.
-    check_runtime_destination
     mkdir -p "$INSTALL_DIR" || fail "could not create $INSTALL_DIR" \
         "Set BUILD_BRIDGE_INSTALL_DIR to a directory you can write to, then run the installer again."
     chmod 0755 build-bridge
     mv build-bridge "$INSTALL_DIR/build-bridge" || fail "could not write $INSTALL_DIR/build-bridge" \
         "Set BUILD_BRIDGE_INSTALL_DIR to a directory you can write to, then run the installer again."
-    "$INSTALL_DIR/build-bridge" install-runtime-launcher || fail "could not install the agent runtime launcher"
+    install_runtime_launcher
     # The updater only changes a binary this installer placed. Record the
     # canonical path and its exact digest; a locally built replacement remains
     # visible in Settings but cannot be overwritten from the app.

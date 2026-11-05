@@ -192,6 +192,9 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
     for (const raw of page.secrets) {
       let metadata;
       try { metadata = secretMetadataOf(raw); } catch { continue; }
+      // A staged descriptor can move to its final scope while this page is in
+      // flight. Leave the old copy to age out on a later authoritative pull;
+      // one moved entry must not discard the valid grants beside it.
       if (!belongsTo(metadata, scope)) continue;
       accepted.push(metadata);
       const target = normalizedScope(entryScope(metadata, scope));

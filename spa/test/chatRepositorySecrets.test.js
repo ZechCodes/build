@@ -73,7 +73,33 @@ it("restores and captures staged ids before a fresh repository greets", async ()
   expect(call).toHaveBeenCalledWith("thread.post", expect.objectContaining({ secret_ids: ["sec_chat"] }), expect.anything());
 });
 
-it("drops cached secret ids at dispatch when the current greeting does not support them", async () => {
+it("refuses cached secret support before any current greeting authorizes dispatch", async () => {
+  vi.resetModules();
+  setupIdb();
+  const [{ createChatRepository }, { rememberSecretSupport }] = await Promise.all([
+    import("../src/core/chatRepository.js"),
+    import("../src/core/secretSupport.js"),
+  ]);
+  await rememberSecretSupport("device-ungreeted", { secrets: {
+    attachments: true, sealedUpload: true, metadataEvents: true,
+  } });
+  const call = vi.fn(async () => ({ phase: "ack", operation_id: "op-ungreeted" }));
+  const repository = createChatRepository({
+    scope: { deviceId: "device-ungreeted" }, call, createOperationId: () => "op-ungreeted", storage: null,
+  });
+  const controller = repository.controller(identity);
+  await vi.waitFor(() => expect(repository.secretAttachments()).toBe(true));
+  controller.writeDraft({ body: "keep it", secrets: [descriptor] });
+  const submission = controller.captureSubmission();
+
+  await expect(controller.post(submission)).rejects.toMatchObject({ code: "unknown_method" });
+
+  expect(call).not.toHaveBeenCalled();
+  expect(controller.restoreRejected(submission, new Error("ungreeted"))).toBe("restored");
+  expect(controller.readDraft()).toMatchObject({ body: "keep it", secrets: [descriptor] });
+});
+
+it("refuses cached secret ids intact when the current greeting does not support them", async () => {
   vi.resetModules();
   setupIdb();
   const [{ createChatRepository }, { rememberSecretSupport }] = await Promise.all([
@@ -89,9 +115,13 @@ it("drops cached secret ids at dispatch when the current greeting does not suppo
   const submission = controller.captureSubmission();
   repository.configureCapabilities({ api_version: "3.34.0", capabilities: [] });
 
-  await controller.post(submission);
+  await expect(controller.post(submission)).rejects.toMatchObject({ code: "unknown_method" });
 
-  expect(call).toHaveBeenCalledWith("thread.post", expect.not.objectContaining({ secret_ids: expect.anything() }), expect.anything());
+  expect(call).not.toHaveBeenCalled();
+  expect(controller.restoreRejected(submission, new Error("unsupported"))).toBe("restored");
+  expect(controller.readDraft()).toMatchObject({ body: "ordinary", secrets: [descriptor] });
+  await expect(controller.post(controller.captureSubmission())).rejects.toMatchObject({ code: "unknown_method" });
+  expect(call).not.toHaveBeenCalled();
 });
 
 it("does not carry a secret draft into a replacement thread generation", async () => {

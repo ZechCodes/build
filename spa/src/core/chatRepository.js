@@ -64,8 +64,10 @@ const safeSecrets = (secrets = []) => secrets.flatMap((secret) => {
 const initialSecrets = (repository, saved) => repository.cacheDrafts
   ? [] : safeSecrets(Array.isArray(saved.draft?.secrets) ? saved.draft.secrets : []);
 const savedSecretsOf = (saved) => safeSecrets(Array.isArray(saved.secrets) ? saved.secrets : []);
-const submissionSecretIds = (submission) => safeSecrets(submission.originalDraft?.secrets || [])
-  .map((secret) => secret.secret_id);
+const submissionSecretIds = (submission) => {
+  const descriptors = safeSecrets(submission.originalDraft?.secrets || []);
+  return descriptors.length ? descriptors.map((secret) => secret.secret_id) : [...(submission.message.secret_ids || [])];
+};
 const secretsChangedBetween = (left, right) => JSON.stringify(left) !== JSON.stringify(right);
 const draftFieldsChanged = (savedBody, heldBody, attachmentsChanged, secretsChanged) =>
   [savedBody !== heldBody, attachmentsChanged, secretsChanged].some(Boolean);
@@ -76,11 +78,19 @@ function hydrateSecretSupport(deviceId, current, apply) {
   if (!deviceId) return;
   void readSecretSupport(deviceId).then((support) => {
     if (current()) apply(support.attachments);
-  });
+  }).catch(() => {});
 }
 const unresolvedSecretSupport = (active, support) => active && support === null;
 const announceControllers = (controllers) => controllers.forEach((controller) => controller.announce());
 const deviceIdOf = (scope) => scope?.deviceId;
+const unsupportedSecretPost = () => Object.assign(new Error("This bridge cannot attach staged secrets"), {
+  name: "ApiError", code: "unknown_method",
+});
+const dispatchPostNow = ({ hasSecrets, supported, send }) => {
+  if (hasSecrets && !supported) throw unsupportedSecretPost();
+  return send();
+};
+const postDispatcher = (provided) => provided || dispatchPostNow;
 // An upload in flight carries a Promise and often a megabyte thumbnail. Those
 // are live resources, not a durable draft; only its descriptor can survive a
 // reload. A pending upload returns as a retryable chip without cloning bytes.
@@ -370,9 +380,7 @@ class ChatController {
   }
 
   readDraft() {
-    const snapshot = draftSnapshot(this.#draft);
-    if (this.#repository.secretAttachments() === false) snapshot.secrets = [];
-    return snapshot;
+    return draftSnapshot(this.#draft);
   }
 
   writeDraft({ body = this.#draft.body, attachments = this.#draft.attachments, secrets = this.#draft.secrets } = {}) {
@@ -432,7 +440,7 @@ class ChatController {
     if (!this.#repository.isCurrentConversation(this.#identity)) throw new Error("Conversation was cleared");
     assertAddress(this.#identity);
     const operationId = this.#repository.createOperationId();
-    const staged = this.#repository.secretAttachments() === false ? [] : safeSecrets(message.secrets || this.#draft.secrets);
+    const staged = safeSecrets(message.secrets || this.#draft.secrets);
     const captured = messageSnapshot(this.#repository.contextualize({
       ...message,
       ...(this.#repository.secretAttachments() === true ? { secret_ids: staged.map((secret) => secret.secret_id) } : {}),
@@ -471,7 +479,7 @@ class ChatController {
     this.#repository.assertActive();
     if (this.#bound) throw new Error("Only an unresolved chat controller can capture a creation send");
     const operationId = this.#repository.createOperationId();
-    const staged = this.#repository.secretAttachments() === false ? [] : safeSecrets(message.secrets || this.#draft.secrets);
+    const staged = safeSecrets(message.secrets || this.#draft.secrets);
     const captured = messageSnapshot(this.#repository.contextualize({
       ...message,
       ...(this.#repository.secretAttachments() === true ? { secret_ids: staged.map((secret) => secret.secret_id) } : {}),
@@ -535,23 +543,30 @@ class ChatController {
     let receipt;
     try {
       const stagedIds = submissionSecretIds(submission);
-      const message = { ...submission.message };
-      if (this.#repository.secretAttachments() === true && stagedIds.length) message.secret_ids = stagedIds;
-      else delete message.secret_ids;
-      const params = {
-        ...message,
-        ...extra,
-        entity_id: entityId,
-        agent_id: agentId,
-        conversation_id: conversationId,
-        ...(threadId ? { thread_id: threadId } : {}),
-        choice_revision: submission.choiceRevision,
-        operation_id: submission.operationId,
+      const send = (selectedCall = call) => {
+        const message = { ...submission.message };
+        if (stagedIds.length) message.secret_ids = stagedIds;
+        else delete message.secret_ids;
+        const params = {
+          ...message,
+          ...extra,
+          entity_id: entityId,
+          agent_id: agentId,
+          conversation_id: conversationId,
+          ...(threadId ? { thread_id: threadId } : {}),
+          choice_revision: submission.choiceRevision,
+          operation_id: submission.operationId,
+        };
+        return selectedCall("thread.post", params, {
+          operationId: submission.operationId,
+          owner: { kind: "chat", ...submission.address },
+          draft: storedMessageDraft(submission, message),
+        });
       };
-      receipt = await call("thread.post", params, {
-        operationId: submission.operationId,
-        owner: { kind: "chat", ...submission.address },
-        draft: storedMessageDraft(submission, message),
+      receipt = await this.#repository.dispatchPost({
+        hasSecrets: stagedIds.length > 0,
+        supported: this.#repository.secretDispatchSupported() === true,
+        send,
       });
     } catch (error) {
       this.recordOperationFailure(submission, error);
@@ -922,6 +937,7 @@ export function createChatRepository({
   viewingContext = null,
   storage: providedStorage,
   writeOperations = null,
+  dispatchPost,
 } = {}) {
   if (typeof call !== "function") throw new Error("Chat repository requires an RPC call function");
   let active = true;
@@ -955,6 +971,7 @@ export function createChatRepository({
   let threadPostOperations = null;
   let messageContext = false;
   let secretAttachments = null;
+  let liveSecretAttachments = null;
   const optimisticStore = createOptimisticStore();
   const stopWriteOperations = writeOperations?.subscribe(() => {
     if (active) for (const controller of controllers.values()) controller.syncDurableOperations();
@@ -1107,6 +1124,12 @@ export function createChatRepository({
       return secretAttachments;
     },
 
+    secretDispatchSupported() {
+      return liveSecretAttachments;
+    },
+
+    dispatchPost: postDispatcher(dispatchPost),
+
     /// What this message says about where it was written: the reader's position,
     /// and whatever the surface sending it stamped on the message itself — the
     /// workspace a project rail was standing in. The stamp leads, because it is
@@ -1131,6 +1154,7 @@ export function createChatRepository({
     configureCapabilities(greeting = {}) {
       repository.assertActive();
       ({ messageContext, threadPostOperations, secretAttachments } = chatCapabilitiesOf(greeting));
+      liveSecretAttachments = secretAttachments;
       void rememberSecretSupport(scope?.deviceId, { secrets: {
         attachments: secretAttachments,
         sealedUpload: secretAttachments,

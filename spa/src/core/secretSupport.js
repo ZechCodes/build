@@ -13,6 +13,7 @@ export function rememberSecretSupport(deviceId, capabilities, current = () => tr
 }
 
 export async function readSecretSupport(deviceId) {
-  const held = deviceId ? (await readCached(secretSupportAddress(deviceId)))?.value : null;
-  return { attachments: held?.attachments === true };
+  const record = deviceId ? await readCached(secretSupportAddress(deviceId)) : null;
+  if (!record) return { attachments: null };
+  return { attachments: record.value?.attachments === true };
 }

@@ -386,8 +386,15 @@ const railStandingPlace = (context) => {
   return { fromWorkspace, composerViewingContext: stampedViewingContext(store, fromWorkspace) };
 };
 
-function createRailChatOwnership(repository, key, entityOf) {
+export function createRailChatOwnership(repository, key, entityOf, { metadataCache = null, projectId = null } = {}) {
   let provisional = null;
+  const metadataScopes = new Map();
+  const trackMetadata = (scope, active) => {
+    if (!metadataCache || !scope.projectId) return;
+    const scopeKey = JSON.stringify(scope);
+    if (!metadataScopes.has(scopeKey)) metadataScopes.set(scopeKey, metadataCache.track(scope, { active }));
+  };
+  trackMetadata({ projectId }, () => repository.active);
   const addressFor = (entity, agent) => {
     const execution = entity.executionContext;
     if (execution) {
@@ -407,6 +414,10 @@ function createRailChatOwnership(repository, key, entityOf) {
       if (!agent || !entity.entityId) return null;
       const address = addressFor(entity, agent);
       const controller = repository.controller(address);
+      if (address.threadId) trackMetadata({
+        projectId, ownerId: address.entityId, agentId: address.agentId,
+        conversationId: address.conversationId, generation: address.threadId, draftId: null,
+      }, () => repository.isCurrentConversation(address));
       const digest = entity.executionContext?.agent || agent;
       controller.absorbAgent({ ...digest, id: address.agentId });
       return controller;
@@ -426,6 +437,10 @@ function createRailChatOwnership(repository, key, entityOf) {
     },
     releaseProvisional() {
       provisional = null;
+    },
+    dispose() {
+      for (const stop of metadataScopes.values()) stop();
+      metadataScopes.clear();
     },
   };
 }
@@ -1211,7 +1226,10 @@ function mountRailOnContext(host, context, swap) {
   // entries, and more as the reader asks for them.
   const timelineSlice = createTimelineSlice();
   let seededSurfaces = null;
-  const chatOwnership = createRailChatOwnership(chatRepository, key, () => entity);
+  const chatOwnership = createRailChatOwnership(chatRepository, key, () => entity, {
+    metadataCache: context.secretMetadataCache,
+    projectId,
+  });
   // An optimistic agent is the provisional controller gaining a visible card,
   // not a second conversation. Keep its draft, pending sends, and eventual
   // resolved identity on the controller that created it.
@@ -4539,6 +4557,7 @@ function mountRailOnContext(host, context, swap) {
       window.removeEventListener("hashchange", dismissOnNavigation);
       window.removeEventListener("resize", cancelPanelMotion);
       unwatchResetSupport();
+      chatOwnership.dispose();
       if (ownsChatRepository) chatRepository.dispose();
       host.classList.remove(POPOVER_CLASS, COLLAPSED_CLASS, "rail-unpinned");
       host.innerHTML = "";

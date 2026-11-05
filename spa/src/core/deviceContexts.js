@@ -25,7 +25,7 @@ import { deviceWriteOperations } from "./writeOperationRuntime.js";
 import { resetTaskMutationFences, retireTaskMutationFence, retargetTaskMutationFence,
   wrapTaskMutationCall } from "./taskMutationFence.js";
 import { rememberTaskCountsSupport } from "./taskCountsSupport.js";
-import { createSecretMetadataCache } from "./secretMetadataCache.js";
+import { createSecretMetadataCache, secretFeaturesAvailable } from "./secretMetadataCache.js";
 
 const contexts = new Map(); // deviceId → context, in the order they were adopted
 const deviceLifecycles = createDeviceLifecycles();
@@ -513,7 +513,20 @@ function bindRepository(context, call) {
     scope: context.cacheScope,
     call,
     viewingContext: App.viewingContext,
+    dispatchPost: (post) => dispatchChatPost(context, post),
   });
+}
+
+async function dispatchChatPost(context, post) {
+  if (!post.hasSecrets) return post.send();
+  const request = await whenGreeted(context, () => {
+    if (!secretFeaturesAvailable(context.adapter?.capabilities?.secrets)) {
+      throw new ApiError("unknown_method", "This bridge cannot attach staged secrets");
+    }
+    return post.send(context.rpc);
+  });
+  if (!request) throw new Error(deviceAwayMark(context));
+  return request.sent;
 }
 
 /** Retire a device for good: its controllers and drafts go, its rows leave the

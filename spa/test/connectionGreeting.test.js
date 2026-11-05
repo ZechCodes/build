@@ -45,6 +45,8 @@ const { adoptDeviceSession, canAnswer, contextFor, resetDeviceContexts } = await
 );
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { greetLiveBridge } = await import("../src/connection.js");
+const { createRailChatOwnership } = await import("../src/core/agentRail.js");
+const { secretsChangedOn } = await import("../src/core/secretMetadataEvents.js");
 const { clearConnectionDiagnosticHistory, connectionDiagnosticHistory } = await import(
   "../src/core/connectionDiagnostics.js"
 );
@@ -97,13 +99,73 @@ describe("what a greeting settles on the device it greeted", () => {
     session.call.mockImplementation(async (method) => method === "session.hello"
       ? greeting : { secrets: [], server_now: 1_800_000_000, next: null });
     const context = adoptDeviceSession(session);
-    context.secretMetadataCache.track({ projectId: "project-secrets" });
+    const ownership = createRailChatOwnership(context.chatRepository, "rail-secrets", () => ({
+      entityId: "owner-secrets",
+    }), { metadataCache: context.secretMetadataCache, projectId: "project-secrets" });
+    ownership.controllerFor({
+      id: "agent-secrets", conversation_id: "conversation-secrets", thread_id: "thread-secrets",
+      thread_generation_revision: 1,
+    });
 
     await greetLiveBridge(context);
 
     await vi.waitFor(() => expect(session.call).toHaveBeenCalledWith("secrets.list", {
       scope: { project_id: "project-secrets" }, secret_ids: [], request_ids: [], after: null, limit: 100,
     }));
+    expect(session.call).toHaveBeenCalledWith("secrets.list", {
+      scope: { project_id: "project-secrets", stage: {
+        owner_id: "owner-secrets", conversation_id: "conversation-secrets",
+        generation: "thread-secrets", draft_id: null,
+      } },
+      secret_ids: [], request_ids: [], after: null, limit: 100,
+    });
+    session.call.mockClear();
+    secretsChangedOn("dev-secrets", {
+      scope: "agent", entity_id: "owner-secrets", conversation_id: "conversation-secrets",
+      thread_id: "thread-secrets", generation: "thread-secrets", secret_ids: ["sec_changed"], revision: 2,
+    });
+    await vi.waitFor(() => expect(session.call).toHaveBeenCalledWith("secrets.list", expect.objectContaining({
+      secret_ids: ["sec_changed"],
+    })));
+    ownership.dispose();
+    session.call.mockClear();
+    secretsChangedOn("dev-secrets", {
+      scope: "project", project_id: "project-secrets", secret_ids: ["sec_changed"], revision: 3,
+    });
+    await Promise.resolve();
+    expect(session.call).not.toHaveBeenCalledWith("secrets.list", expect.anything());
+  });
+
+  it("refuses a secret-bearing send intact when the authoritative greeting lacks support", async () => {
+    let finishHello;
+    const session = bridgeAnswering("dev-secret-race", {});
+    session.call.mockImplementation((method) => method === "session.hello"
+      ? new Promise((resolve) => { finishHello = resolve; })
+      : Promise.resolve({}));
+    const context = adoptDeviceSession(session);
+    const controller = context.chatRepository.controller({
+      entityId: "owner-race", agentId: "agent-race", conversationId: "conversation-race",
+      threadId: "thread-race", threadGenerationRevision: 1,
+    });
+    const descriptor = {
+      secret_id: "sec_race", request_id: "11111111-1111-4111-8111-111111111111", name: "RACE_TOKEN", ttl_seconds: null,
+      grant: { scope: "agent", agent_id: "agent-race", conversation_id: "conversation-race", generation: "thread-race" },
+      scope: { owner_id: "owner-race", conversation_id: "conversation-race", generation: "thread-race", draft_id: null },
+      created_at: 1, attached_at: null, expires_at: null, revoked_at: null, revision: 1, status: "staged",
+    };
+    controller.writeDraft({ body: "keep all", secrets: [descriptor] });
+    const submission = controller.captureSubmission();
+    const greeting = greetLiveBridge(context);
+    const posting = controller.post(submission);
+    await Promise.resolve();
+    expect(session.call.mock.calls.some(([method]) => method === "thread.post")).toBe(false);
+
+    finishHello({ api_version: "3.34.0", capabilities: [] });
+    await greeting;
+    await expect(posting).rejects.toMatchObject({ code: "unknown_method" });
+    expect(session.call.mock.calls.some(([method]) => method === "thread.post")).toBe(false);
+    expect(controller.restoreRejected(submission, new Error("unsupported"))).toBe("restored");
+    expect(controller.readDraft()).toMatchObject({ body: "keep all", secrets: [descriptor] });
   });
 
   it("establishes the authoritative epoch before installing the adapter", async () => {

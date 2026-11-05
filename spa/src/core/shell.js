@@ -203,7 +203,8 @@ function shellStanding(route, parts) {
 function keepLinkedPin(parts, context, key) {
   if (!key || !live || live.key === key || live.context !== context) return false;
   const kept = live.rail?.retarget?.({ ...parts.rail, call: context.rpc,
-    cacheScope: context.cacheScope, chatRepository: context.chatRepository });
+    cacheScope: context.cacheScope, chatRepository: context.chatRepository,
+    secretMetadataCache: context.secretMetadataCache });
   if (!kept) return false;
   ++generation;
   live.key = key;
@@ -402,6 +403,7 @@ function mountRail(descriptor, context) {
     call: context.rpc,
     cacheScope: context.cacheScope,
     chatRepository: context.chatRepository,
+    secretMetadataCache: context.secretMetadataCache,
     selection: live.selection,
     // One-shot, set right before navigating to a branch just cut from the
     // toolbar's create form. Read here because the rail is mounted here now,

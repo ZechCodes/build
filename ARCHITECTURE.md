@@ -68,6 +68,7 @@ the relay binary `bridge/src/bin/relay.rs`.
 | Subcommand | What it does |
 | --- | --- |
 | `serve` (default) | runs the daemon |
+| `secrets get --id <id> [--env <channel>]` | reads a value from the private release socket using only launch-supplied `BRIDGE_SECRET_*` context; exact stdout bytes, fixed stderr errors |
 | `mcp --task <owner>` | the stdio MCP server an agent's harness launches (`mcp_stdio`) |
 | `pair` | device-initiated pairing: prints a code, the short fingerprint and an approve link (`<web>/app/#/pair/<code>`), all within 80 columns, and waits for approval in Build (`bridge/src/pairing.rs`); an identity stored as approved that the api's status answer reports `revoked` or `unknown` (or, from an older api, just not approved) is renamed to `identity.json.retired-<device id>` and a new identity is paired in its place, when that answer comes from the api that approved it (`approved_by` in the identity file, recorded only when a pairing through that api completes, else the default api; urls compared by scheme, host and effective port) or `pair --retire` says so; another api's answer ends `pair` with the identity untouched and exit status 3, which `install.sh` answers with `pair --retire` |
 | `install-service` / `uninstall-service` | systemd user unit or launchd agent (`bridge/src/service/`); both gate on the same status answer as `pair`, and uninstalling keeps the identity file and says so |
@@ -106,6 +107,23 @@ CLI version probes: they drop a parent agent's session markers
 `BRIDGE_IDENTITY_FILE` and env-provisioned keys), both in
 `bridge/src/harness/mod.rs`. A user's own terminal tab keeps the identity, so
 `build-bridge pair` typed there finds the identity the daemon uses (#320).
+
+### Secret runtime command
+
+The installer, management deploy/rollback and self-update install the embedded
+`bridge/runtime/buildctl` launcher beside the bridge. Agent launches prepend
+that absolute directory to PATH; ordinary terminal tabs receive no agent
+capability. The launcher forwards `buildctl --env <channel> secrets get --id
+<id>` to its sibling bridge without a checkout or language runtime. The
+repository management facade execs the launch-supplied absolute
+`BRIDGE_SECRET_BRIDGE` and retains its production management restrictions.
+
+`secret_cli.rs` dispatches before daemon configuration and never opens device
+state or keys. It requires the dedicated socket/channel/owner/agent/token
+context, checks any explicit environment against that channel, sends one bounded
+request, buffers at most 16 KiB under an absolute I/O deadline, and writes exact
+value bytes with no added newline. Diagnostics use a fixed error allowlist.
+Values are intentionally visible to stdout consumers and their transcripts.
 
 ### Module layout
 
@@ -3730,6 +3748,23 @@ consumer, using Node 22.23.4/npm 12.0.2 and the install sequence in
 [AGENTS.md](AGENTS.md#working-rules). App and QA images build the binding from
 this same checkout; the Build commit pins the shipped transport. The Vite libsodium shim uses SPA-local libsodium 0.7.16, matching the
 transport lock; Node resolves the binding's dependencies from `transport/js`.
+
+### Secret runtime command
+
+The installer, management deploy/rollback and self-update install the embedded
+`bridge/runtime/buildctl` launcher beside the bridge. Agent launches prepend
+that absolute directory to PATH; ordinary terminal tabs receive no agent
+capability. The launcher forwards `buildctl --env <channel> secrets get --id
+<id>` to its sibling bridge without a checkout or language runtime. The
+repository management facade execs the launch-supplied absolute
+`BRIDGE_SECRET_BRIDGE` and retains its production management restrictions.
+
+`secret_cli.rs` dispatches before daemon configuration and never opens device
+state or keys. It requires the dedicated socket/channel/owner/agent/token
+context, checks any explicit environment against that channel, sends one bounded
+request, buffers at most 16 KiB under an absolute I/O deadline, and writes exact
+value bytes with no added newline. Diagnostics use a fixed error allowlist.
+Values are intentionally visible to stdout consumers and their transcripts.
 
 ### Module layout
 

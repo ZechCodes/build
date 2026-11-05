@@ -104,7 +104,14 @@ async fn dispatch() {
     }
     // Runtime retrieval must never resolve daemon configuration or open state.
     if std::env::args().nth(1).as_deref() == Some("secrets") {
-        let args: Vec<_> = std::env::args().skip(2).collect();
+        let args: Result<Vec<_>, _> = std::env::args_os()
+            .skip(2)
+            .map(|arg| arg.into_string())
+            .collect();
+        let Ok(args) = args else {
+            eprintln!("secret_invalid");
+            std::process::exit(1);
+        };
         std::process::exit(build_bridge::secret_cli::run(&args).await);
     }
     // Every dev command, including MCP, validates paths before accessing state.

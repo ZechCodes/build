@@ -31,13 +31,21 @@ view reads; this startup cohort does not substitute for them.
 ## Subsequent review corrections
 
 The original measured data and source identities below remain unchanged.
+[Review round 3](review-round-3.md) records the later copied-workspace watcher,
+internal continuation restart and idle lease cleanup corrections. It adds no
+performance cohort; the `907ae03e33` measurements below keep that source pin.
 [Review round 2](review-round-2.md) records the later contract fixes and their
 new qualification separately: truncated hints refresh all expanded visible
 directories, directory refresh replays at most 8 held pages per directory,
 and reveal permits at most 8 extra continuations across its ancestors. Hidden
-stale caches stay cold. Live review Files uses exact source hints where
-available and ignores ordinary board-state callbacks in its modern fallback;
-explicit/reconnect refresh remains. The absent-birth-time provider now has
+stale caches stay cold. Review round 2's original-source live-review watcher
+was subsequently corrected: modern live review uses a workspace-only
+board/state refresh registration and ignores all change callbacks. Original
+source hints watch another directory and cause no reads; open, explicit,
+reconnect and greeting refresh remain. No workspace filesystem producer was
+added: plain-only container coverage needs verified owner/root metadata and
+path translation, mixed runs cover their first Git directory, and no direct
+workspace-id producer exists. The absent-birth-time provider now has
 bounded real-directory handle leases with separately composed SPA contract
 tests. These changes are not an execution claim for a new startup, mounted-
 view, append-wall or release-carrier cost cohort.

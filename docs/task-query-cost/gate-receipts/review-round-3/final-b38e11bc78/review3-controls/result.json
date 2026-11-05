@@ -1,0 +1,21 @@
+{
+  "head": "b38e11bc78fd0b6925352425e54b931a249101ba",
+  "exit_code": 0,
+  "results": [
+    {
+      "label": "internal-cursor",
+      "exit_code": 1,
+      "expected_wrapper_exit": 1
+    },
+    {
+      "label": "workspace-source",
+      "exit_code": 0,
+      "expected_wrapper_exit": 0
+    },
+    {
+      "label": "idle-timer",
+      "exit_code": 0,
+      "expected_wrapper_exit": 0
+    }
+  ]
+}

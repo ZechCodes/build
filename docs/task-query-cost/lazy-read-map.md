@@ -143,13 +143,17 @@ document retires that body subscription. Returning reacquires the watcher
 and refreshes visible demand from cached content. Its generation predicate
 fences a frame that was awaiting cache admission when the owner changed.
 
-Live task-review Files reuses the exported `directoryWatchSpec` selector for
-exact `project_source` + `files.hints` ownership. If that subject is unavailable,
-its modern fallback registration serves explicit/reconnect refresh only;
-ordinary board state causes no filesystem reads. Matching hints read only
-visible touched directories and selected-file demand. Generation predicates
-reach `fileTree.invalidate` and the selected body's existing cache `still`
-guard; retired or currently hidden readers reject late hint answers. The legacy
+Modern live task-review Files calls the exported `directoryWatchSpec` with
+only `workspace_id`: its board/state registration serves open, explicit,
+reconnect and greeting refresh, ignoring every change item. Original
+`project_source` hints describe the original folder, while live reads use its
+copied workspace directory; those hints cause no filesystem reads. Copied/plain
+workspace and secondary directories have no directly matching producer.
+Plain-only container-run coverage needs verified owner/root metadata and path
+translation in follow-up; mixed runs instead watch their first Git directory;
+a direct workspace-id producer is absent. Generation predicates reach
+`fileTree.invalidate` and the selected body's existing cache `still` guard;
+retired or currently hidden readers reject late refresh answers. The legacy
 workspace/files watcher branch retains its existing behavior. Continuation
 `invalid_params` is not persisted as a review error: generic recovery keeps
 cached rows/preview painted while obtaining a new head. Genuine first-page

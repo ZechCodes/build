@@ -1,0 +1,14 @@
+{
+  "event": "complete",
+  "argv": [
+    "nice",
+    "-n",
+    "10",
+    "cargo",
+    "fmt",
+    "--check"
+  ],
+  "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+  "head": "105b2e4a2567f4d3cdf105b46780412676513364",
+  "exit_code": 0
+}

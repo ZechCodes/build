@@ -26,8 +26,11 @@ the authenticated opaque cursor. Each continuation compares the current
 path with the held handle and scans relative to that handle, so replacement
 cannot recycle the leased inode or substitute another directory's entries.
 Expired or evicted leases refuse continuations with `invalid_params`; a new
-first page remains available without an unbounded fallback. Idle expired
-handles are reclaimed on the next registry operation or process exit.
+first page remains available without an unbounded fallback. The first lease
+starts one cleanup worker for the registry; it waits until the next absolute
+expiry and releases expired handles even when no further reads arrive. It
+parks when empty, and owner shutdown wakes and joins it. Weak ownership links
+avoid a registry/worker cycle. Birth-time-only reads start no cleanup worker.
 Missing platform device/inode identity still refuses with `unavailable`.
 Unopted legacy directory reads retain their existing behavior.
 A cursor for another path, a removed/replaced directory, a damaged
@@ -43,7 +46,13 @@ from `ceil(entries.length / 100)`, still capped at 8. Refresh starts at page
 one and rebuilds toward the previously held tail sort key (directory-first
 bucket plus name), using at most the held page count capped at **8 pages per directory**.
 The rebuilt window publishes atomically, so a selected row within that window
-does not disappear during intermediate page reads. Reveal/deep-link demand
+does not disappear during intermediate page reads. If an internal continuation
+is refused as `invalid_params`, the reader restarts once from a fresh first
+page with the same captured owner and cache-write basis. This recovery is
+non-recursive: at most two bounded windows, or **16 reads per directory refresh**.
+A repeated internal refusal leaves the cached window painted without error or
+loading UI; a later reader action or invalidation can try again. Other read
+failures keep their ordinary handling. Reveal/deep-link demand
 may also page toward its requested row, stopping once found, with a shared
 maximum of **8 additional continuation reads** across the path's ancestors.
 Neither operation drains the directory. A selected file can remain open when
@@ -87,13 +96,23 @@ and reconnecting revalidate its visible data, but this fallback cannot promise
 a live event for an external edit. This change does not invent a workspace
 source producer or silently subscribe to a nonexistent entity.
 
-Live task-review Files reuses the same scope selector: when supported it
-subscribes to `files.hints` under the exact original `project_source` identity.
-Without that subject, its board registration retains explicit/reconnect
-refresh only; ordinary state items, including unrelated workspace/agent
-state, cause no directory or body reads. Its legacy workspace/files branch
-remains unchanged. Hint reads capture watcher generation, visibility and
-selected-file ownership so retired bindings cannot publish their late answers.
+Modern live task-review Files passes only `workspace_id` to the same scope
+selector. Its board/state registration retains open, explicit refresh,
+reconnect and greeting refresh; all change items are ignored. The selected
+plain directory is a workspace copy, so an original `project_source` hint
+observes another path and must cause zero directory or body reads. Saved Git
+review Files continues reading the saved commit. The legacy workspace/files
+branch remains unchanged. Refresh reads capture watcher generation,
+visibility and selected-file ownership so retired bindings cannot publish
+their late answers.
+
+The existing producer has three distinct limits. A plain-only workspace's
+conversation run may watch its container recursively, but using that coverage
+requires verified owner/root metadata and container-to-directory path
+translation; that is follow-up work. A mixed workspace's run watches its first
+Git directory, excluding copied plain siblings and other secondary directories.
+There is no direct workspace-id filesystem producer. This change does not add
+one or infer a workspace subscription from an original source identity.
 
 Absent-birth-time tests compose actual Rust directory I/O and the real
 bounded lease registry with separate SPA public-response/refusal-code tests.

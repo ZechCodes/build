@@ -1,0 +1,969 @@
+{
+  "source_head": "b38e11bc78fd0b6925352425e54b931a249101ba",
+  "status": "completed_receipts_only",
+  "completed": {
+    "review3-workspace-red": {
+      "event": "complete",
+      "argv": [
+        "nice",
+        "-n",
+        "10",
+        "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+        "node_modules/vitest/vitest.mjs",
+        "run",
+        "--project",
+        "unit",
+        "test/taskReviewFilesHints.test.js",
+        "-t",
+        "ignores original project source hints for a copied workspace directory"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa",
+      "head": "ffb8d5992a16f8cf3f08fc223d9df4c0f754c82b",
+      "exit_code": 1
+    },
+    "review3-tree-red": {
+      "event": "complete",
+      "argv": [
+        "nice",
+        "-n",
+        "10",
+        "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+        "node_modules/vitest/vitest.mjs",
+        "run",
+        "--project",
+        "unit",
+        "test/fileTreePaging.test.js",
+        "-t",
+        "internal continuation|retry boundary"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa",
+      "head": "ffb8d5992a16f8cf3f08fc223d9df4c0f754c82b",
+      "exit_code": 1
+    },
+    "review3-lease-compile-red": {
+      "event": "complete",
+      "argv": [
+        "nice",
+        "-n",
+        "10",
+        "cargo",
+        "test",
+        "--lib",
+        "app::fs::tree_pages::lease_tests::directory_lease_idle_expiry_releases_last_file_without_another_request",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+      "head": "ffb8d5992a16f8cf3f08fc223d9df4c0f754c82b",
+      "exit_code": 101
+    },
+    "review3-js-green": {
+      "event": "complete",
+      "argv": [
+        "nice",
+        "-n",
+        "10",
+        "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+        "node_modules/vitest/vitest.mjs",
+        "run",
+        "--project",
+        "unit",
+        "test/fileTreePaging.test.js",
+        "test/taskReviewFilesHints.test.js",
+        "test/directoryHints.test.js",
+        "test/directoryPages.test.js"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa",
+      "head": "ffb8d5992a16f8cf3f08fc223d9df4c0f754c82b",
+      "exit_code": 0
+    },
+    "review3-js-lint": {
+      "event": "complete",
+      "argv": [
+        "nice",
+        "-n",
+        "10",
+        "/home/zech/.local/share/mise/installs/node/22.23.4/bin/node",
+        "node_modules/eslint/bin/eslint.js",
+        "src"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa",
+      "head": "ffb8d5992a16f8cf3f08fc223d9df4c0f754c82b",
+      "exit_code": 0
+    },
+    "review3-rust-format": {
+      "event": "complete",
+      "argv": [
+        "nice",
+        "-n",
+        "10",
+        "cargo",
+        "fmt",
+        "--check"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+      "head": "105b2e4a2567f4d3cdf105b46780412676513364",
+      "exit_code": 0
+    },
+    "review3-rust-green": {
+      "event": "complete",
+      "argv": [
+        "nice",
+        "-n",
+        "10",
+        "cargo",
+        "test",
+        "--lib",
+        "app::fs::tree_pages::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "cwd": "/home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/bridge",
+      "head": "105b2e4a2567f4d3cdf105b46780412676513364",
+      "exit_code": 0
+    },
+    "review3-final-backend": {
+      "head": "b38e11bc78fd0b6925352425e54b931a249101ba",
+      "exit_code": 0,
+      "results": [
+        {
+          "label": "tree-pages",
+          "exit_code": 0
+        },
+        {
+          "label": "filesystem",
+          "exit_code": 0
+        },
+        {
+          "label": "sql-reads",
+          "exit_code": 0
+        },
+        {
+          "label": "file-hints",
+          "exit_code": 0
+        },
+        {
+          "label": "format",
+          "exit_code": 0
+        },
+        {
+          "label": "clippy",
+          "exit_code": 0
+        }
+      ]
+    },
+    "review3-final-ui": {
+      "head": "b38e11bc78fd0b6925352425e54b931a249101ba",
+      "exit_code": 0,
+      "results": [
+        {
+          "label": "lint",
+          "exit_code": 0
+        },
+        {
+          "label": "unit",
+          "exit_code": 0
+        },
+        {
+          "label": "layout",
+          "exit_code": 0
+        },
+        {
+          "label": "build",
+          "exit_code": 0
+        },
+        {
+          "label": "semgrep",
+          "exit_code": 0
+        }
+      ]
+    },
+    "review3-final": {
+      "head": "b38e11bc78fd0b6925352425e54b931a249101ba",
+      "exit_code": 0,
+      "results": [
+        {
+          "label": "backend",
+          "exit_code": 0
+        },
+        {
+          "label": "ui",
+          "exit_code": 0
+        }
+      ]
+    },
+    "review3-controls": {
+      "head": "b38e11bc78fd0b6925352425e54b931a249101ba",
+      "exit_code": 0,
+      "results": [
+        {
+          "label": "internal-cursor",
+          "exit_code": 1,
+          "expected_wrapper_exit": 1
+        },
+        {
+          "label": "workspace-source",
+          "exit_code": 0,
+          "expected_wrapper_exit": 0
+        },
+        {
+          "label": "idle-timer",
+          "exit_code": 0,
+          "expected_wrapper_exit": 0
+        }
+      ]
+    }
+  },
+  "files": [
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-workspace-red/commands.jsonl",
+      "original_sha256": "9c5b391dc4170507b1bc025d63fe4d067f2d4b32a61766fc8d37c68dcc6f2ba1",
+      "stored_path": "development/review3-workspace-red/commands.jsonl",
+      "stored_sha256": "9c5b391dc4170507b1bc025d63fe4d067f2d4b32a61766fc8d37c68dcc6f2ba1",
+      "original_bytes": 1773,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-workspace-red/result.json",
+      "original_sha256": "97a29eafb67d218e45780ae90d7742e8f2799644707be65a0d671f3c8a3c38b3",
+      "stored_path": "development/review3-workspace-red/result.json",
+      "stored_sha256": "97a29eafb67d218e45780ae90d7742e8f2799644707be65a0d671f3c8a3c38b3",
+      "original_bytes": 547,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-workspace-red/run.log",
+      "original_sha256": "b19ffd10d8f640843ee18e40d69713c2e6f17592368d3ec3e8f27cb17334cf39",
+      "stored_path": "development/review3-workspace-red/run.log.json",
+      "stored_sha256": "8f65631ed3df784d76a8bd1acf7f6f15dc2e43a133036f01420834b4db925086",
+      "original_bytes": 1635,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-tree-red/commands.jsonl",
+      "original_sha256": "20d088bb42f78f5c1c4ecc8205507110213a6f2a71868c3ec4a0ad254853fa04",
+      "stored_path": "development/review3-tree-red/commands.jsonl",
+      "stored_sha256": "20d088bb42f78f5c1c4ecc8205507110213a6f2a71868c3ec4a0ad254853fa04",
+      "original_bytes": 1694,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-tree-red/result.json",
+      "original_sha256": "3c0ac04c347f53963dc4a7d395b3a2b2c6e28d866e6ec0a7e4d012b216523310",
+      "stored_path": "development/review3-tree-red/result.json",
+      "stored_sha256": "3c0ac04c347f53963dc4a7d395b3a2b2c6e28d866e6ec0a7e4d012b216523310",
+      "original_bytes": 507,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-tree-red/run.log",
+      "original_sha256": "3664385f1651ff215f40a44e6d839aa57073e7c3f9c9ec54ab261fba80f5f5d1",
+      "stored_path": "development/review3-tree-red/run.log.json",
+      "stored_sha256": "0d419baa3ca4ce98fa87229c2f00d52bea2108e8ca57b698c5c251f0eacf1dd4",
+      "original_bytes": 3207,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-lease-compile-red/commands.jsonl",
+      "original_sha256": "2a8494f3c833b8d1d74e110298d7aea7314495fa8d3ffaea5891eac9a30ba69c",
+      "stored_path": "development/review3-lease-compile-red/commands.jsonl",
+      "stored_sha256": "2a8494f3c833b8d1d74e110298d7aea7314495fa8d3ffaea5891eac9a30ba69c",
+      "original_bytes": 1669,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-lease-compile-red/result.json",
+      "original_sha256": "c2ea99611c1793d869376b58d021733f5511c658ec49188aa33f8659129a53ce",
+      "stored_path": "development/review3-lease-compile-red/result.json",
+      "stored_sha256": "c2ea99611c1793d869376b58d021733f5511c658ec49188aa33f8659129a53ce",
+      "original_bytes": 496,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-lease-compile-red/run.log",
+      "original_sha256": "5dfdf657c3fd08030ec35a2bce528e84812a819793c58de745cd9e23e952a9e8",
+      "stored_path": "development/review3-lease-compile-red/run.log.json",
+      "stored_sha256": "cf8e233c9eb0250ee5ba039375fef38e11d47d25e345ce3ea5a4d992664c61a7",
+      "original_bytes": 1789,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-js-green/commands.jsonl",
+      "original_sha256": "facf400128bd36c0e38da28c61f59c5c5e5744903f3f2ce055ce6dda714c8726",
+      "stored_path": "development/review3-js-green/commands.jsonl",
+      "stored_sha256": "facf400128bd36c0e38da28c61f59c5c5e5744903f3f2ce055ce6dda714c8726",
+      "original_bytes": 1800,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-js-green/result.json",
+      "original_sha256": "1144e8201ee5a1b12de2d8d1c2d8d0501e89cdc3d43af83bbddf8fe67443804b",
+      "stored_path": "development/review3-js-green/result.json",
+      "stored_sha256": "1144e8201ee5a1b12de2d8d1c2d8d0501e89cdc3d43af83bbddf8fe67443804b",
+      "original_bytes": 564,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-js-green/run.log",
+      "original_sha256": "d3dad74184ef9c3187a7544641815a9a49f454481ff2764d12cca9288ca83461",
+      "stored_path": "development/review3-js-green/run.log.json",
+      "stored_sha256": "b9255ad46531db4478ec17a2cc8065f1a74e8ccce191feb071b9ea59934cc45f",
+      "original_bytes": 306,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-js-lint/commands.jsonl",
+      "original_sha256": "d2772d7249f1253e63421e0b3cd1a23dcba36cae4a9d2d72f21a70642d51618b",
+      "stored_path": "development/review3-js-lint/commands.jsonl",
+      "stored_sha256": "d2772d7249f1253e63421e0b3cd1a23dcba36cae4a9d2d72f21a70642d51618b",
+      "original_bytes": 1504,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-js-lint/result.json",
+      "original_sha256": "4ee23743cda5665e7a4c4539e2a918208182ee73444e897e9cd210b615b62ab0",
+      "stored_path": "development/review3-js-lint/result.json",
+      "stored_sha256": "4ee23743cda5665e7a4c4539e2a918208182ee73444e897e9cd210b615b62ab0",
+      "original_bytes": 392,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-js-lint/run.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "development/review3-js-lint/run.log.json",
+      "stored_sha256": "e7bfb97d1a3c6f2c74789df1fc3058d97b5270f5400ab0f6566904f943a8d394",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-rust-format/commands.jsonl",
+      "original_sha256": "790964ea21b1a6f4813c7a78f99f70fd1cd371ba85170adb68146799bfa8d2d5",
+      "stored_path": "development/review3-rust-format/commands.jsonl",
+      "stored_sha256": "790964ea21b1a6f4813c7a78f99f70fd1cd371ba85170adb68146799bfa8d2d5",
+      "original_bytes": 1350,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-rust-format/result.json",
+      "original_sha256": "bcbc2d35e2e80fc79122d18d1f546283f968881081445a478b100e8084cd518e",
+      "stored_path": "development/review3-rust-format/result.json",
+      "stored_sha256": "bcbc2d35e2e80fc79122d18d1f546283f968881081445a478b100e8084cd518e",
+      "original_bytes": 315,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-rust-format/run.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "development/review3-rust-format/run.log.json",
+      "stored_sha256": "80c7b4ce1655bed292fff49c6a721ba41ab8d8ad89cbb2464afa1e3964427bb9",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-rust-green/commands.jsonl",
+      "original_sha256": "8f22418e944135c9c0ab595d2423723840fcbdeac0254721697aeb691c77cd61",
+      "stored_path": "development/review3-rust-green/commands.jsonl",
+      "stored_sha256": "8f22418e944135c9c0ab595d2423723840fcbdeac0254721697aeb691c77cd61",
+      "original_bytes": 1479,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-rust-green/result.json",
+      "original_sha256": "63f7380b12e69f2a432dd7d9ee9a5a9d9d0d3252d0868ee4c9f2d478456f7c3b",
+      "stored_path": "development/review3-rust-green/result.json",
+      "stored_sha256": "63f7380b12e69f2a432dd7d9ee9a5a9d9d0d3252d0868ee4c9f2d478456f7c3b",
+      "original_bytes": 396,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-rust-green/run.log",
+      "original_sha256": "94c4b23f9450ff6505773db1f0b88a6d61d8179c334e853b8449ddb08eaf4bd8",
+      "stored_path": "development/review3-rust-green/run.log.json",
+      "stored_sha256": "6faffe8770527257dc95b7295dba0053747e2e60c5b5380fad61926dea32320c",
+      "original_bytes": 1920,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-backend/clippy.log",
+      "original_sha256": "d99777e5e39acaf7d8d63d2f80a750583df24b04eb537f286b1cd10b0b094372",
+      "stored_path": "final-b38e11bc78/review3-final-backend/clippy.log.json",
+      "stored_sha256": "d4161cd4b62767b825c8cebb181c18682144d9860d6bab5e9400e71a2cf09edb",
+      "original_bytes": 227,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-backend/commands.jsonl",
+      "original_sha256": "25ef583940375cde1038b02a875de216d1b95e38192687d363e97abe83e3bd34",
+      "stored_path": "final-b38e11bc78/review3-final-backend/commands.jsonl",
+      "stored_sha256": "25ef583940375cde1038b02a875de216d1b95e38192687d363e97abe83e3bd34",
+      "original_bytes": 5558,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-backend/file-hints.log",
+      "original_sha256": "0669dc96a6fe01bc3a395416ba3f00f9a2993bc4f3669fa55fc8e15ea02cb58a",
+      "stored_path": "final-b38e11bc78/review3-final-backend/file-hints.log.json",
+      "stored_sha256": "cd1dff3f161e2505c757460a0f107dcaf426782f088aec12418f7889813150d0",
+      "original_bytes": 677,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-backend/filesystem.log",
+      "original_sha256": "6adba9aaa78fde5cff32034197391197f85317c8bdde5964521a3789ca15a747",
+      "stored_path": "final-b38e11bc78/review3-final-backend/filesystem.log.json",
+      "stored_sha256": "f3f69d02454516f073205ec5975884bf901d874c5bbb876e67dfde91bbc44e8c",
+      "original_bytes": 61791,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-backend/format.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "final-b38e11bc78/review3-final-backend/format.log.json",
+      "stored_sha256": "b79e4f8166eeabd84274ddee765e045b4fe178468b349b8303d582f95047bf2d",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-backend/result.json",
+      "original_sha256": "457922832bb2c0a898bfcf88142394c34cd67d9a78939159403e2a22f98d8c33",
+      "stored_path": "final-b38e11bc78/review3-final-backend/result.json",
+      "stored_sha256": "457922832bb2c0a898bfcf88142394c34cd67d9a78939159403e2a22f98d8c33",
+      "original_bytes": 463,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-backend/sql-reads.log",
+      "original_sha256": "847fdcf25b2ec8f0cdb668ed970bbebbba9ae55d70458b6d3e6d2ee9b36f3242",
+      "stored_path": "final-b38e11bc78/review3-final-backend/sql-reads.log.json",
+      "stored_sha256": "22d860de42c2d1197a92820c980031696ce1ccf646c17523163b6ee9683dd8d5",
+      "original_bytes": 24505,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-backend/tree-pages.log",
+      "original_sha256": "cd040171f964dfd0b9320242c33b98100095bc0d0120548e53f5b9f2f5f50c78",
+      "stored_path": "final-b38e11bc78/review3-final-backend/tree-pages.log.json",
+      "stored_sha256": "46f1ae820f37264938fa48a14b22ea0c46047fa33b3fb08cebfa9ad9287f396f",
+      "original_bytes": 1765,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-ui/build.exit",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "stored_path": "final-b38e11bc78/review3-final-ui/build.exit",
+      "stored_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "original_bytes": 2,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-ui/build.log",
+      "original_sha256": "faeb0fca7104f6b8b71dee5d06f5f6e14f17a3499b94797453dcb83b6746eca5",
+      "stored_path": "final-b38e11bc78/review3-final-ui/build.log.json",
+      "stored_sha256": "423b8dc522d6b0fd30e7dd2fddfed1b25de37be9fb429ae0ef08ecd168aed269",
+      "original_bytes": 27187,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-ui/commands.jsonl",
+      "original_sha256": "241075c2d206b7de3dd7e93426afc29fb58dea3fe3a6df351b97e915645ef9f6",
+      "stored_path": "final-b38e11bc78/review3-final-ui/commands.jsonl",
+      "stored_sha256": "241075c2d206b7de3dd7e93426afc29fb58dea3fe3a6df351b97e915645ef9f6",
+      "original_bytes": 41841,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-ui/layout.exit",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "stored_path": "final-b38e11bc78/review3-final-ui/layout.exit",
+      "stored_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "original_bytes": 2,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-ui/layout.log",
+      "original_sha256": "702893c7363ce0153c876fea0a85fc8453ff8682dc6977c2f9324e7786e67291",
+      "stored_path": "final-b38e11bc78/review3-final-ui/layout.log.json",
+      "stored_sha256": "351e0572ce33f6598f686f63f3f16f7cb1ce69952bb0031797c39061b926a97b",
+      "original_bytes": 309,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-ui/lint.exit",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "stored_path": "final-b38e11bc78/review3-final-ui/lint.exit",
+      "stored_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "original_bytes": 2,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-ui/lint.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "final-b38e11bc78/review3-final-ui/lint.log.json",
+      "stored_sha256": "a861f6f6b8f3190a0b88d760d04a151a23e5e9d688017fafaed6ebdc4eb55c87",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-ui/result.json",
+      "original_sha256": "da20905fc85ce4d18ec8993b8fae0e4667a5ecd2e93ed56b2bbd09bf35f65a4a",
+      "stored_path": "final-b38e11bc78/review3-final-ui/result.json",
+      "stored_sha256": "da20905fc85ce4d18ec8993b8fae0e4667a5ecd2e93ed56b2bbd09bf35f65a4a",
+      "original_bytes": 385,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-ui/semgrep.exit",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "stored_path": "final-b38e11bc78/review3-final-ui/semgrep.exit",
+      "stored_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "original_bytes": 2,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-ui/semgrep.log",
+      "original_sha256": "fae06a9a435e6d8849b0fb9d7e7b53ff091ce6efa09170832beb48feadccbaed",
+      "stored_path": "final-b38e11bc78/review3-final-ui/semgrep.log.json",
+      "stored_sha256": "317cdc752a4415b0a397b7470df43daec29888dd565d0ca90a9ce317910ac2e0",
+      "original_bytes": 1670,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-ui/unit.exit",
+      "original_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "stored_path": "final-b38e11bc78/review3-final-ui/unit.exit",
+      "stored_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "original_bytes": 2,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-ui/unit.log",
+      "original_sha256": "040132dd185acae3da0436f4c96a388978f67d318788425bf22ad0951d741234",
+      "stored_path": "final-b38e11bc78/review3-final-ui/unit.log.json",
+      "stored_sha256": "cb79d9bb71da6d82e839a2153a9c703ccec6604dbeea50011c2ba598b91cb5b5",
+      "original_bytes": 2589,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final/backend.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "final-b38e11bc78/review3-final/backend.log.json",
+      "stored_sha256": "b108dbcac88f58034b7b090b086a9c90e0762b9858901ee5023a78c0f16159d3",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final/commands.jsonl",
+      "original_sha256": "8e81d43cb3ac152400488dab53a93173464c1a81a3a74fed782bd84beb37bbe1",
+      "stored_path": "final-b38e11bc78/review3-final/commands.jsonl",
+      "stored_sha256": "8e81d43cb3ac152400488dab53a93173464c1a81a3a74fed782bd84beb37bbe1",
+      "original_bytes": 642,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final/result.json",
+      "original_sha256": "dadc00d5d7fc95d435bce9b4745807b7b0d1f9f9e45796a28b0ae98bbf6aae83",
+      "stored_path": "final-b38e11bc78/review3-final/result.json",
+      "stored_sha256": "dadc00d5d7fc95d435bce9b4745807b7b0d1f9f9e45796a28b0ae98bbf6aae83",
+      "original_bytes": 209,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final/ui.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "final-b38e11bc78/review3-final/ui.log.json",
+      "stored_sha256": "996958c0b6ba0729ff31837475e393d3f4037981c72064c62fcbd3c5fc101202",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-controls/commands.jsonl",
+      "original_sha256": "9eaf33d4ce2531c7ea0335495a62387c56d4e1a282d67f1b4f8f7922542cb872",
+      "stored_path": "final-b38e11bc78/review3-controls/commands.jsonl",
+      "stored_sha256": "9eaf33d4ce2531c7ea0335495a62387c56d4e1a282d67f1b4f8f7922542cb872",
+      "original_bytes": 3683,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-controls/idle-timer.log",
+      "original_sha256": "1b01c8d3a89d4591be99d1370c248a6d7b47f2f58c2f7314b070cd8a30d0fe26",
+      "stored_path": "final-b38e11bc78/review3-controls/idle-timer.log.json",
+      "stored_sha256": "0b015dd2aed205e97c196ba1e05d9b6536cf45991accda5116c29901272b2ca5",
+      "original_bytes": 123,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-controls/internal-cursor.log",
+      "original_sha256": "dc1c16deebcbc7602ad0ff1fc04786e260f6f87b84d2a5de87052d36399c049c",
+      "stored_path": "final-b38e11bc78/review3-controls/internal-cursor.log.json",
+      "stored_sha256": "80f7a4680e560b38dc6b35760ef8d3f7e72a1e2104b08b2cd4e4e4f96fcdaaa5",
+      "original_bytes": 8242,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-controls/result.json",
+      "original_sha256": "4e271b5b5f4b48b58831634be25927ab55951f8e092909ef25dfba1f62718920",
+      "stored_path": "final-b38e11bc78/review3-controls/result.json",
+      "stored_sha256": "4e271b5b5f4b48b58831634be25927ab55951f8e092909ef25dfba1f62718920",
+      "original_bytes": 396,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-controls/workspace-source.log",
+      "original_sha256": "215b648892eee3eef831325f51f6b4a4c17959852b43bdf3897ed23f4e055a82",
+      "stored_path": "final-b38e11bc78/review3-controls/workspace-source.log.json",
+      "stored_sha256": "c0d6ad7727ee854328ef8eaac8166f0c131ba3e03a9833bf1a5be000ca6d6eb0",
+      "original_bytes": 141,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review-workspace-source-control-b38e11bc78/candidate-taskReviewFiles.js",
+      "original_sha256": "83db28dc66ec3f811bf00bfed2e1dc7b7b9ff81a04b9cc2326f9f9bbe21df135",
+      "stored_path": "controls/review-workspace-source-control-b38e11bc78/candidate-taskReviewFiles.js.json",
+      "stored_sha256": "3f4f1e125f86a4e11e6566774023468a329bbfd2bab23cd3e5a433c27ed306ae",
+      "original_bytes": 22706,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review-workspace-source-control-b38e11bc78/commands.jsonl",
+      "original_sha256": "2a23ac8ba8c4b2ef871b4ab02b5eca96629c939e90765835f41076343026e3a0",
+      "stored_path": "controls/review-workspace-source-control-b38e11bc78/commands.jsonl",
+      "stored_sha256": "2a23ac8ba8c4b2ef871b4ab02b5eca96629c939e90765835f41076343026e3a0",
+      "original_bytes": 10573,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review-workspace-source-control-b38e11bc78/negative.log",
+      "original_sha256": "f3bddef5ae3179fa5789126e2262b3e010d41e325f68005150dc0c0b9929997c",
+      "stored_path": "controls/review-workspace-source-control-b38e11bc78/negative.log.json",
+      "stored_sha256": "32008747c9efd8402926355ddd4365e7234dbe55d56fdf74acaf2cb2346e6caf",
+      "original_bytes": 1635,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review-workspace-source-control-b38e11bc78/result.json",
+      "original_sha256": "5d2352f3ea7ce2492b604e8a9482b19e56815c618479c47f4f4e2b1c08868fed",
+      "stored_path": "controls/review-workspace-source-control-b38e11bc78/result.json",
+      "stored_sha256": "5d2352f3ea7ce2492b604e8a9482b19e56815c618479c47f4f4e2b1c08868fed",
+      "original_bytes": 153,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/argv.jsonl",
+      "original_sha256": "c4307ded4ebf0cd59c36fc08f7f6b53518edbfe4ef4b84e4276367c99f5e44b0",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/argv.jsonl",
+      "stored_sha256": "c4307ded4ebf0cd59c36fc08f7f6b53518edbfe4ef4b84e4276367c99f5e44b0",
+      "original_bytes": 9195,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-01.log",
+      "original_sha256": "df5d57ec3317328131e4d6f35f463413ef6d5d0f79bbcad316e30f8b27571306",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-01.log.json",
+      "stored_sha256": "d9dba3e30d3476290c7e75356b2fea0b059b370b36d8e7817296674abe5cf4ae",
+      "original_bytes": 41,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-02.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-02.log.json",
+      "stored_sha256": "582f283176ff399c0bf20a676fba3af2ecd09ceef8e3facff1b72c99af32f444",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-03.log",
+      "original_sha256": "47e766192a0c5ad1d87d9fc88f52b322770827637022265ba17ed2a08da92576",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-03.log.json",
+      "stored_sha256": "ee65cd8e248879ad924189f7ca9ee6dfdde8c4c29a6fa561a5788ca2f98c051d",
+      "original_bytes": 30926,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-04.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-04.log.json",
+      "stored_sha256": "942b462a2885737e3926fa0bd4830a1a2966c39b8290c053b3ebe0da44384b6c",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-05.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-05.log.json",
+      "stored_sha256": "680f4a927966d6e7e6606a6c42dd3c8f4840bbf6b3adaad8ee6f6e999fb24ce4",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-06.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-06.log.json",
+      "stored_sha256": "34dc580a4b8ca0aa38dfa2925d1892c29afded79f142d0539a297be8499440b2",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-07.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-07.log.json",
+      "stored_sha256": "874d65b3ee20bebabc7509ec75ae0c0e0bf44e184742ca99b85d8262323c0fe1",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-08.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-08.log.json",
+      "stored_sha256": "8592ce61340470e9dc8ee497a47cb4fed34ca42b1926ab5ab8e6f455608699bf",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-09.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-09.log.json",
+      "stored_sha256": "e9e892a9ba38320ce92d3023b624638e13303fb5fa65b8434e2b60407c078a9e",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-11.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-11.log.json",
+      "stored_sha256": "abbbdba07b11a94fd848e98e26c347e367b8497e5527a5e68745210f5544b660",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-12.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-12.log.json",
+      "stored_sha256": "182bdb3565dc6b8503bbbfa030486984b3dbb78e3fe852a0ad5c87e0159e849f",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-13.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-13.log.json",
+      "stored_sha256": "75bbc504c2e8b71b602b24b44d846922360bbe21d8bc7a6da85122152dfa6895",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-14.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-14.log.json",
+      "stored_sha256": "9fa2d57bd6e239e8fb2f62efdc8a3047d4256cb6661242c8779ab0d69f077aa1",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-15.log",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-15.log.json",
+      "stored_sha256": "cc645072464f9ea94437b4508df72861ab762f186602f884fc5739540ee00c1e",
+      "original_bytes": 0,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-16.log",
+      "original_sha256": "df5d57ec3317328131e4d6f35f463413ef6d5d0f79bbcad316e30f8b27571306",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-16.log.json",
+      "stored_sha256": "2e23e4cf65ef80f502d3baf0eb1dbd9668178490fa978735a4af96c42f0b0978",
+      "original_bytes": 41,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/command-17.log",
+      "original_sha256": "47e766192a0c5ad1d87d9fc88f52b322770827637022265ba17ed2a08da92576",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/command-17.log.json",
+      "stored_sha256": "34c84f1f9c70447df210df5c222e1a299110db0a02395208e5aaddf3046be181",
+      "original_bytes": 30926,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-b38e11bc/saved-good.rs",
+      "original_sha256": "47e766192a0c5ad1d87d9fc88f52b322770827637022265ba17ed2a08da92576",
+      "stored_path": "controls/directory-lease-idle-no-worker-b38e11bc/saved-good.rs.json",
+      "stored_sha256": "444c4c3677bdc8f2766e4e06ca192018e7cf1b8e90a8307d42409cef57b45c93",
+      "original_bytes": 30926,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/spa-tree-internal_restart-negative-b38e11bc78fd.result.json",
+      "original_sha256": "adc969bbd0ab78253e8f82ed4c635392b0f7fd3f63ddea22d68388ac6fd07788",
+      "stored_path": "controls/spa-tree-internal_restart-negative-b38e11bc78fd.result.json",
+      "stored_sha256": "adc969bbd0ab78253e8f82ed4c635392b0f7fd3f63ddea22d68388ac6fd07788",
+      "original_bytes": 9534,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/spa-tree-internal_restart-negative-b38e11bc78fd.log",
+      "original_sha256": "2e4f083cc447e4547e2674422b835cb5b8035bb45ab7963caf11f39d902f0da1",
+      "stored_path": "controls/spa-tree-internal_restart-negative-b38e11bc78fd.log.json",
+      "stored_sha256": "b88ce4568a021098f8ec2642b7713a9ecd0bafaf4432245a2c04ac16067bbb48",
+      "original_bytes": 3522,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/tree-internal-cursor-commands.jsonl",
+      "original_sha256": "9f615797a6d0993d8b04bc02504d176f41d5d6e00ae3cdf4745694ef5dc10a2e",
+      "stored_path": "controls/tree-internal-cursor-commands.jsonl",
+      "stored_sha256": "9f615797a6d0993d8b04bc02504d176f41d5d6e00ae3cdf4745694ef5dc10a2e",
+      "original_bytes": 32331,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-control-b38e11bc.log",
+      "original_sha256": "45e615aff6b1904a8cb896031d2d6d3f53ad694cb2c9f5c0a6ece0fcb9d18f74",
+      "stored_path": "controls/directory-lease-idle-no-worker-control-b38e11bc.log.json",
+      "stored_sha256": "3b1dbe4fb080e02c27610f97f7665642c872f35d4eb1894ee66796b8576d5003",
+      "original_bytes": 1082,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-no-worker-control-b38e11bc-preparation.jsonl",
+      "original_sha256": "03ceaceda878386d61b66fb58bf229832f56ced694c5469113d9af4f462a475d",
+      "stored_path": "controls/directory-lease-idle-no-worker-control-b38e11bc-preparation.jsonl",
+      "stored_sha256": "03ceaceda878386d61b66fb58bf229832f56ced694c5469113d9af4f462a475d",
+      "original_bytes": 4095,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review-workspace-wrong-source-before.js",
+      "original_sha256": "a663124a973570b145358b5d4964d487063842f9c67954a8803ba781d496ab77",
+      "stored_path": "controls/mutation-inputs/review-workspace-wrong-source-before.js.json",
+      "stored_sha256": "07d71aac775f9f6d595e07596680dcc5d65a7d2958d082ec6b4e8679b8c4a42a",
+      "original_bytes": 22635,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/tree-internal-cursor-staging/fileTree-internal-restart.mutant.js",
+      "original_sha256": "4ef8c9e7793e569fc492a5d6ee2b519e3f8a83a132dc09a55eba58c6421f7e56",
+      "stored_path": "controls/mutation-inputs/fileTree-internal-restart.mutant.js.json",
+      "stored_sha256": "7a03f419d7b629bc2bc6a44406734b603e4f84ecc34b00d20ad4e78b223798e7",
+      "original_bytes": 19040,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-control-no-worker-b38e11bc.rs",
+      "original_sha256": "ecbcc3a708a862dc9339dc6c214bd30fe26cbef201eb6eecd2dfc0a0c09e7b13",
+      "stored_path": "controls/mutation-inputs/directory-lease-idle-control-no-worker-b38e11bc.rs.json",
+      "stored_sha256": "55bbbb1da4113654697ab0378e84e3cf4bc91a9ce371bffa6abd046d2516ed1a",
+      "original_bytes": 30493,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-control-no-worker-b38e11bc.patch",
+      "original_sha256": "70c23d3c2d4ae680d88fbbcac11ae586884d0b63b1e7231d98503678054da2ef",
+      "stored_path": "controls/mutation-inputs/directory-lease-idle-control-no-worker-b38e11bc.patch.json",
+      "stored_sha256": "ea569b9d796158306a9c8eeed7c1efcb5fc2b56dd96c8be7e135b7992a6a0f03",
+      "original_bytes": 728,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-selection.json",
+      "original_sha256": "f7bd7ca2525362e3f521966cf73bc6ee7710f767f6b3b16f7b1ce01f1bd39ff5",
+      "stored_path": "selection/review3-selection.json",
+      "stored_sha256": "f7bd7ca2525362e3f521966cf73bc6ee7710f767f6b3b16f7b1ce01f1bd39ff5",
+      "original_bytes": 4248,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-selection.commands.jsonl",
+      "original_sha256": "3f5c10036895e498a14fb228bcc6b18cbc02a5153e43617f2b9e244e0f2b4c8c",
+      "stored_path": "selection/review3-selection.commands.jsonl",
+      "stored_sha256": "3f5c10036895e498a14fb228bcc6b18cbc02a5153e43617f2b9e244e0f2b4c8c",
+      "original_bytes": 2325,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-affected-spa-unit.txt",
+      "original_sha256": "d07b0eea3ef9a90a28950c4dfb3e87418ead195e04031f518b8da42f864fc76d",
+      "stored_path": "selection/review3-affected-spa-unit.txt",
+      "stored_sha256": "d07b0eea3ef9a90a28950c4dfb3e87418ead195e04031f518b8da42f864fc76d",
+      "original_bytes": 12018,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-affected-spa-browser.txt",
+      "original_sha256": "7b4313f33e0148ca4ff0056b2190dc995d773e4489cb3c8998095399b6a65dc8",
+      "stored_path": "selection/review3-affected-spa-browser.txt",
+      "stored_sha256": "7b4313f33e0148ca4ff0056b2190dc995d773e4489cb3c8998095399b6a65dc8",
+      "original_bytes": 485,
+      "storage": "verbatim"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/run-review3-one.py",
+      "original_sha256": "5a5d737083f541e2ba42885c95d6114a58b3ca247be23a637da914fea0008f62",
+      "stored_path": "runners/run-review3-one.py.json",
+      "stored_sha256": "53c7cd0e5120b8614b2b4cc7b94f75c1da0ebed3f2b4c316e4676867f20796ed",
+      "original_bytes": 1574,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final.py",
+      "original_sha256": "ad8938d598046c359541a9ecdb0878d7af6d073369a3de800362c9ba2f82a991",
+      "stored_path": "runners/review3-final.py.json",
+      "stored_sha256": "853782504976978895497913d17cbf2721c481ed325e8a5b2494c8762980a83c",
+      "original_bytes": 1064,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-backend.py",
+      "original_sha256": "8b7a3c928c511bfa9b44b8d9c3ee8cd869d2641c254177898db948d4fe6215d8",
+      "stored_path": "runners/review3-final-backend.py.json",
+      "stored_sha256": "faf4f60169920dae28e02ecf33db15e770a648277c877fcc400190e365f9f8b2",
+      "original_bytes": 1892,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-ui.py",
+      "original_sha256": "b589d1850ffc57ab4416d58c47a9aeec8e00ad1e4487a9df2f0321eaaa58bad3",
+      "stored_path": "runners/review3-final-ui.py.json",
+      "stored_sha256": "dd502a080711ea54fbbbcdc8d3f80579fd8eeacdc2417fa8de86749cd9471455",
+      "original_bytes": 2994,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review3-controls.py",
+      "original_sha256": "4c1fd8306193989decab30aea2af5167a71b573c63b55a52cf7cf7d869e31dd2",
+      "stored_path": "runners/review3-controls.py.json",
+      "stored_sha256": "1ce9e47d33dd21bfac02f51c2f42068d9df413473d5bebedac40721e7f12d21f",
+      "original_bytes": 2596,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/review-workspace-source-control.py",
+      "original_sha256": "6777530564cf64b75186b28560f9bfe7c189c3245cd1b3f5a4564896bd6cd37b",
+      "stored_path": "runners/review-workspace-source-control.py.json",
+      "stored_sha256": "bef7298b50cb02af709911b8f1173458d38aacf3c70c3d6262e8f7fd0791f96c",
+      "original_bytes": 4982,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/tree-internal-cursor-staging/run-negative-control.py",
+      "original_sha256": "16902e86331492e1a781092b2364def48cc488f2aaca009a985f4d47d2752244",
+      "stored_path": "runners/tree-internal-cursor-staging/run-negative-control.py.json",
+      "stored_sha256": "615a6ae60b83f52bb71e6b02b28e2c6da2a73cd3416eae1575f69fc012f5acc4",
+      "original_bytes": 5946,
+      "storage": "lossless raw_utf8 JSON"
+    },
+    {
+      "original_path": "/home/zech/Projects/.agent-scratch/894/run-directory-lease-idle-no-worker-control-b38e11bc.py",
+      "original_sha256": "a7443486d820a4ea158da8b3c44c6679ccbf14e7d78b92e218cc4455c3dff17f",
+      "stored_path": "runners/run-directory-lease-idle-no-worker-control-b38e11bc.py.json",
+      "stored_sha256": "28d6ae3acf4011609edb0fd08a1473b78cc7765885b1c71432a158d8a4820850",
+      "original_bytes": 6992,
+      "storage": "lossless raw_utf8 JSON"
+    }
+  ],
+  "performance": "No new cohort; original907 measurements retain907 attribution.",
+  "development_scheduling_disclosure": "Child development Rust formatting reported <0.2s wall time without absolute timestamps; possible overlap is unknown. Functional evidence only. Final gates are strictly serial.",
+  "pending": []
+}

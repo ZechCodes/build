@@ -1,0 +1,5 @@
+{
+  "original_path": "/home/zech/Projects/.agent-scratch/894/review3-final-ui/layout.log",
+  "sha256": "702893c7363ce0153c876fea0a85fc8453ff8682dc6977c2f9324e7786e67291",
+  "raw_utf8": "\n RUN  v4.1.11 /home/zech/Projects/.build-worktrees/workspaces/proj-1/task-894-laz-9c889632-34a8-47b8-881f-8ed0a0a57e3c/Build/spa\n\n\n Test Files  12 passed (12)\n      Tests  80 passed (80)\n   Start at  01:12:22\n   Duration  125.98s (transform 359ms, setup 483ms, import 8.81s, tests 234.57s, environment 2ms)\n\n"
+}

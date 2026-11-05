@@ -1,0 +1,5 @@
+{
+  "original_path": "/home/zech/Projects/.agent-scratch/894/directory-lease-idle-control-no-worker-b38e11bc.patch",
+  "sha256": "70c23d3c2d4ae680d88fbbcac11ae586884d0b63b1e7231d98503678054da2ef",
+  "raw_utf8": "--- a/bridge/src/app/fs/tree_pages.rs\n+++ b/bridge/src/app/fs/tree_pages.rs\n@@ -117,19 +117,7 @@\n \n impl LeaseCleanup {\n     fn start(self: &Arc<Self>) -> Result<(), String> {\n-        let mut worker = self\n-            .worker\n-            .lock()\n-            .unwrap_or_else(std::sync::PoisonError::into_inner);\n-        if worker.is_none() {\n-            let cleanup = Arc::clone(self);\n-            *worker = Some(\n-                std::thread::Builder::new()\n-                    .name(\"directory-lease-expiry\".into())\n-                    .spawn(move || cleanup.run())\n-                    .map_err(|_| cleanup_unavailable())?,\n-            );\n-        }\n+        let _ = Self::run as fn(&Self);\n         Ok(())\n     }\n \n"
+}

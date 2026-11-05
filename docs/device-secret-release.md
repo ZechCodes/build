@@ -36,8 +36,8 @@ including newline). Only these fields are accepted:
 ```
 
 Client request IDs are canonical UUIDs used only for bounded request admission;
-they are never copied into durable audit. Each audit event receives a fresh
-bridge-generated UUID, even when a client retries the same request ID.
+they are never copied into durable audit. Each new audit group receives a fresh
+bridge-generated UUID, independent of the client request ID.
 The capability is authentication material; it
 must never enter argv, diagnostics, message text, history or audit records.
 
@@ -50,8 +50,8 @@ scope/project/generation and unavailable/corrupt vaults share
 `secret_unavailable`. Only an authenticated, currently authorized recipient may
 learn an expired/revoked status. No request or value is echoed.
 
-There are at most four active connections/jobs, a five-second input/output
-budget, 64 admitted requests per second in total, and 16 per capability per
+There are at most four active connections/jobs, a 250-ms pre-auth frame
+deadline, a five-second output budget, 64 admitted requests per second in total, and 16 per capability per
 second. Excess connections close immediately. Rate counters retain only a
 bounded set of capability digests for the current window, not capability text.
 A disconnected consumer can have a committed release audit without receiving
@@ -71,8 +71,15 @@ a bridge-generated audit request UUID, time and outcome. Unknown and wrong-scope
 targets use the fixed `unavailable` sentinel; neither their supplied secret IDs
 nor client request IDs enter audit. Known targets and summary keys come only
 from the authorized stored record. It contains no values, value hashes, command arguments or
-child output. Authorized releases remain individually attributable; invalid
-capability failures are coalesced. Maintenance drops detailed events older than
+child output. Authorized releases remain individually attributable. Authenticated denials
+coalesce per resolved caller/session, target and outcome in one-minute windows,
+with first/last timestamps and a saturating attempt count. Unknown and wrong-scope
+targets share the same fixed sentinel group. At most 4,096 denial groups are
+retained; insertion evicts the oldest denial group, preserving release rows and
+per-secret totals. Internal bounded keyset readers support per-secret and
+indexed per-caller audit pages, including `unavailable` targets. These readers
+carry metadata only and grant no retrieval authority. Invalid capability
+failures are coalesced. Maintenance drops detailed events older than
 90 days while retaining summaries (last release, count and status). It runs
 outside the global app lock.
 

@@ -32,6 +32,9 @@ pub struct SecretAuditRecord {
     /// Bridge-generated audit identity, independent of the client request ID.
     pub request_id: String,
     pub occurred_at: i64,
+    /// Coalesced attempts for denials; every release has count one.
+    pub attempt_count: i64,
+    pub last_occurred_at: i64,
     pub outcome: String,
 }
 

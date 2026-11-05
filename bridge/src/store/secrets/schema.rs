@@ -69,9 +69,14 @@ CREATE TABLE IF NOT EXISTS secret_audit (
     session_incarnation TEXT NOT NULL,
     request_id TEXT NOT NULL,
     occurred_at INTEGER NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 1 CHECK (attempt_count > 0),
+    last_occurred_at INTEGER NOT NULL DEFAULT 0,
     outcome TEXT NOT NULL CHECK (outcome IN ('released','secret_unavailable','secret_expired','secret_revoked'))
 );
 CREATE INDEX IF NOT EXISTS secret_audit_by_secret ON secret_audit(secret_id,sequence);
+CREATE INDEX IF NOT EXISTS secret_audit_by_caller ON secret_audit(agent_id,sequence);
+CREATE INDEX IF NOT EXISTS secret_audit_denial_order ON secret_audit(sequence) WHERE outcome!='released';
+CREATE INDEX IF NOT EXISTS secret_audit_denial_group ON secret_audit(agent_id,secret_id,outcome,occurred_at) WHERE outcome!='released';
 CREATE INDEX IF NOT EXISTS secret_audit_retention ON secret_audit(occurred_at,sequence);
 CREATE TABLE IF NOT EXISTS secret_audit_summaries (
     secret_id TEXT PRIMARY KEY,
@@ -89,9 +94,9 @@ CREATE TABLE IF NOT EXISTS secret_unauthenticated_summary (
 
 "#;
 
-/// Schema 24 was unadvertised before key-loss recovery was revised. Upgrade
-/// those same-version databases too; an absent identity is never adopted while
-/// unretired grants remain.
+/// The private vault/release schemas were unadvertised before recovery and
+/// bounded denial audit were revised. Upgrade those same-version databases too;
+/// an absent identity is never adopted while unretired grants remain.
 pub(in crate::store) fn initialize(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
     connection.execute_batch(SCHEMA)?;
     let columns = connection
@@ -102,6 +107,7 @@ pub(in crate::store) fn initialize(connection: &rusqlite::Connection) -> rusqlit
         connection.execute_batch("ALTER TABLE secret_records ADD COLUMN revocation_reason TEXT CHECK (revocation_reason IS NULL OR revocation_reason IN ('key_lost','revoked','expired'))")?;
     }
     ensure_pending_key_column(connection)?;
+    ensure_audit_group_columns(connection)?;
     Ok(())
 }
 
@@ -112,6 +118,22 @@ fn ensure_pending_key_column(connection: &rusqlite::Connection) -> rusqlite::Res
         .collect::<rusqlite::Result<Vec<_>>>()?;
     if !columns.iter().any(|column| column == "pending_key_id") {
         connection.execute_batch("ALTER TABLE secret_vault_state ADD COLUMN pending_key_id TEXT CHECK (pending_key_id IS NULL OR active_key_id IS NULL)")?;
+    }
+    Ok(())
+}
+
+fn ensure_audit_group_columns(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
+    let columns = connection
+        .prepare("PRAGMA table_info(secret_audit)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !columns.iter().any(|column| column == "attempt_count") {
+        let tx = connection.unchecked_transaction()?;
+        tx.execute_batch("ALTER TABLE secret_audit ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 1 CHECK (attempt_count > 0); ALTER TABLE secret_audit ADD COLUMN last_occurred_at INTEGER NOT NULL DEFAULT 0; UPDATE secret_audit SET last_occurred_at=occurred_at;")?;
+        // One-time upgrade cleanup of pre-cap denial detail. Release events and
+        // persistent per-secret counts are preserved atomically with the columns.
+        tx.execute_batch("DELETE FROM secret_audit WHERE sequence IN (SELECT sequence FROM secret_audit WHERE outcome!='released' ORDER BY sequence DESC LIMIT -1 OFFSET 4096)")?;
+        tx.commit()?;
     }
     Ok(())
 }

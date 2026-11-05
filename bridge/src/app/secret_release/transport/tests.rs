@@ -293,3 +293,24 @@ async fn failed_audit_sends_only_fixed_error_without_value_or_request() {
         b"{\"ok\":false,\"error\":\"secret_unavailable\"}\n"
     );
 }
+
+#[tokio::test]
+async fn idle_pre_auth_clients_release_all_slots_within_one_second() {
+    let plane = Arc::new(Plane::new(Arc::new(Fixture(AtomicUsize::new(0)))));
+    let mut clients = Vec::new();
+    let mut tasks = Vec::new();
+    for _ in 0..MAX_CONNECTIONS {
+        let (server, client) = UnixStream::pair().unwrap();
+        clients.push(client);
+        tasks.push(tokio::spawn(handle(server, plane.clone())));
+    }
+    tokio::time::timeout(Duration::from_secs(1), async {
+        for task in tasks {
+            task.await.unwrap();
+        }
+    })
+    .await
+    .expect("idle pre-auth streams must not monopolize release capacity");
+    assert_eq!(plane.connections.available_permits(), MAX_CONNECTIONS);
+    drop(clients);
+}

@@ -13,6 +13,7 @@ const MAX_FRAME_BYTES: usize = 2048;
 const MAX_CONNECTIONS: usize = 4;
 const GLOBAL_PER_SECOND: u32 = 64;
 const PER_CAPABILITY_PER_SECOND: u32 = 16;
+const PRE_AUTH_BUDGET: Duration = Duration::from_millis(250);
 const IO_BUDGET: Duration = Duration::from_secs(5);
 
 // No Debug/Serialize: capability material never enters diagnostics.
@@ -156,7 +157,7 @@ async fn handle_admitted(mut stream: UnixStream, plane: Arc<Plane>, permit: Owne
 async fn read_request(stream: &mut UnixStream) -> Option<Request> {
     let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(MAX_FRAME_BYTES));
     let mut reader = tokio::io::BufReader::new(stream.take((MAX_FRAME_BYTES + 1) as u64));
-    let count = tokio::time::timeout(IO_BUDGET, reader.read_until(b'\n', &mut bytes))
+    let count = tokio::time::timeout(PRE_AUTH_BUDGET, reader.read_until(b'\n', &mut bytes))
         .await
         .ok()?
         .ok()?;

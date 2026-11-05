@@ -784,7 +784,7 @@ fn audit_identifiers_use_fixed_target_for_unknown_and_wrong_scope_requests() {
         .unwrap()
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
-    assert_eq!(identifiers.len(), 2);
+    assert_eq!(identifiers.len(), 1);
     for (target, request_id) in identifiers {
         assert_eq!(
             target, "unavailable",
@@ -796,4 +796,134 @@ fn audit_identifiers_use_fixed_target_for_unknown_and_wrong_scope_requests() {
         );
         assert!(uuid::Uuid::parse_str(&request_id).is_ok());
     }
+}
+
+#[test]
+fn denial_audit_coalesces_and_caller_reader_includes_unavailable_targets() {
+    let f = Fixture::new();
+    let rec = f.secret(f.agent_grant(), None);
+    f.service.revoke(&rec.context.id).unwrap();
+    for _ in 0..20 {
+        assert!(matches!(
+            f.release(&rec.context.id),
+            Err(SecretError::Revoked)
+        ));
+        assert!(matches!(
+            f.release("sec_00000000-0000-4000-8000-000000000001"),
+            Err(SecretError::Unavailable)
+        ));
+    }
+    let writer = f.store.writer();
+    let page = writer
+        .secret_audit_by_caller_page(&f.caller.agent_id, 0, 100)
+        .unwrap();
+    assert_eq!(page.len(), 2);
+    assert!(page.iter().all(|row| row.attempt_count == 20));
+    assert!(page.iter().any(|row| row.secret_id == "unavailable"));
+    assert_eq!(
+        writer
+            .secret_audit_summary(&rec.context.id)
+            .unwrap()
+            .unwrap()
+            .denial_count,
+        20
+    );
+    assert_eq!(
+        writer
+            .secret_audit_by_caller_page(&f.caller.agent_id, page[0].sequence, 1)
+            .unwrap(),
+        page[1..]
+    );
+    assert!(writer
+        .secret_audit_by_caller_page(&f.caller.agent_id, 0, 101)
+        .is_err());
+    assert!(writer.secret_audit_by_caller_page("", 0, 1).is_err());
+    let conn = f.store.writer_for_test();
+    let plan: String = conn.query_row("EXPLAIN QUERY PLAN SELECT sequence FROM secret_audit WHERE agent_id=?1 AND sequence>?2 ORDER BY sequence LIMIT 100", rusqlite::params![f.caller.agent_id, 0], |row| row.get(3)).unwrap();
+    assert!(plan.contains("secret_audit_by_caller"), "{plan}");
+}
+
+#[test]
+fn denial_detail_cap_preserves_release_rows_and_totals() {
+    let f = Fixture::new();
+    let rec = f.secret(f.agent_grant(), None);
+    f.release(&rec.context.id).unwrap();
+    f.store.writer_for_test().execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<4096) INSERT INTO secret_audit(secret_id,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,last_occurred_at,outcome) SELECT 'unavailable','synthetic-project','synthetic-owner','synthetic-other','synthetic-other','synthetic-generation','synthetic-session','synthetic-request',0,0,'secret_unavailable' FROM n", []).unwrap();
+    f.service.revoke(&rec.context.id).unwrap();
+    assert!(matches!(
+        f.release(&rec.context.id),
+        Err(SecretError::Revoked)
+    ));
+    let conn = f.store.writer_for_test();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM secret_audit WHERE outcome!='released'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 4096);
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM secret_audit WHERE outcome='released'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn denial_groups_separate_windows_and_sessions_without_coalescing_releases() {
+    let f = Fixture::new();
+    let rec = f.secret(f.agent_grant(), None);
+    f.release(&rec.context.id).unwrap();
+    f.release(&rec.context.id).unwrap();
+    f.service.revoke(&rec.context.id).unwrap();
+    assert!(f.release(&rec.context.id).is_err());
+    f.clock.0.store(1020, Ordering::SeqCst);
+    assert!(f.release(&rec.context.id).is_err());
+    let mut restarted = f.caller.clone();
+    restarted.session_incarnation = "synthetic-restart".into();
+    assert!(f
+        .service
+        .release(&restarted, &rec.context.id, "synthetic-request", || true)
+        .is_err());
+    let rows = f
+        .store
+        .writer()
+        .secret_audit_page(&rec.context.id, 0, 100)
+        .unwrap();
+    assert_eq!(rows.len(), 5);
+    assert!(rows.iter().all(|row| row.attempt_count == 1));
+    assert_eq!(
+        rows.iter().filter(|row| row.outcome == "released").count(),
+        2
+    );
+}
+
+#[test]
+fn existing_audit_table_gains_group_fields_and_caller_index_on_reopen() {
+    let f = Fixture::new();
+    let rec = f.secret(f.agent_grant(), None);
+    f.release(&rec.context.id).unwrap();
+    let Fixture {
+        _dir: dir,
+        store,
+        service,
+        ..
+    } = f;
+    drop((service, store));
+    let path = dir.path().join("tasks/build.db");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("DROP INDEX secret_audit_by_caller; ALTER TABLE secret_audit DROP COLUMN attempt_count; ALTER TABLE secret_audit DROP COLUMN last_occurred_at;").unwrap();
+    drop(conn);
+    let reopened = Store::new(dir.path().join("tasks")).unwrap();
+    let rows = reopened
+        .writer()
+        .secret_audit_by_caller_page("synthetic-agent", 0, 100)
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].attempt_count, 1);
+    assert_eq!(rows[0].occurred_at, rows[0].last_occurred_at);
 }

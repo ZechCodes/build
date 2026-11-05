@@ -1,4 +1,4 @@
-//! Device-local encrypted secret storage. No RPC or capability exposes this foundation.
+//! Device-local encrypted secret storage and private issued-session releases.
 mod model;
 pub mod vault;
 pub use model::*;
@@ -18,6 +18,12 @@ pub enum SecretError {
     Limit,
     #[error("secret_unavailable")]
     Unavailable,
+    #[error("unauthorized")]
+    Unauthorized,
+    #[error("secret_expired")]
+    Expired,
+    #[error("secret_revoked")]
+    Revoked,
     #[error("secret_conflict")]
     Conflict,
     #[error("secret_clock_rollback")]
@@ -33,3 +39,6 @@ mod sweeper;
 pub use sweeper::SweeperHandle;
 
 mod recovery;
+
+mod release_model;
+pub use release_model::{SecretAuditRecord, SecretAuditSummary, SecretCaller};

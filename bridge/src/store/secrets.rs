@@ -2,6 +2,9 @@
 //! Trusted service callers supply authorized canonical contexts. Message admission
 //! must call `attach_in` inside its own main-store operation transaction.
 mod attach;
+mod audit;
+mod release;
+pub(crate) use release::{clock_observe_in, expire_in, scope_allows};
 mod key_state;
 mod records;
 mod retirement;

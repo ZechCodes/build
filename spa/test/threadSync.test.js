@@ -285,7 +285,7 @@ describe("forward coverage and repair cursors", () => {
     expect((await saved()).items.map((item) => item.data.sequence)).toEqual([1]);
   });
 
-  it.each([false, true])("retains the first versioned page's incarnation over an unversioned held window (gap: %s)", async (gap) => {
+  it.each([false, true])("replaces an unversioned held window from a bounded newest page (gap: %s)", async (gap) => {
     await cache.writeCached(address, windowAt(message(1, "legacy cached message")));
     const call = vi.fn(async () => ({
       thread_id: "learned-thread", thread_generation_revision: 4,
@@ -293,7 +293,89 @@ describe("forward coverage and repair cursors", () => {
     }));
     expect(await sync(call)).toBe(true);
     expect(await saved()).toMatchObject({ thread_id: "learned-thread", thread_generation_revision: 4 });
+    expect((await saved()).items.map((item) => item.data.body)).toEqual(["versioned message"]);
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(call.mock.calls[1][1]).not.toHaveProperty("after_sequence");
+    expect(call.mock.calls[1][1].thread_id).toBe("learned-thread");
+  });
+
+  it.each([false, true])("does not relabel a pre-id cursor after an unseen reset (probe has items: %s)", async (hasItems) => {
+    await cache.writeCached(address, { ...windowAt(message(100, "retired transcript")), historyStartSequence: 75,
+      repairThrough: 150, retired_thread_ids: ["already-retired"], knownTotalItems: 1000 });
+    const newestItems = hasItems ? [message(101, "new transcript"), message(102, "new tail")] : [message(1, "new transcript"), message(2, "new tail")];
+    const call = vi.fn(async (_method, params) => ({ thread_id: "reset-incarnation", thread_generation_revision: 2,
+      items: Object.hasOwn(params, "after_sequence") ? (hasItems ? newestItems : []) : newestItems,
+      thread_last_sequence: newestItems.at(-1).data.sequence, thread_total: 2, has_more: false }));
+    expect(await sync(call)).toBe(true);
+    const window = await saved();
+    expect(window.items).toEqual(newestItems);
+    expect(window.deliveredSequence).toBe(newestItems.at(-1).data.sequence);
+    expect(window.knownTotalItems).toBe(2);
+    expect(window.historyStartSequence).toBeUndefined();
+    expect(window.repairThrough).toBeUndefined();
+    expect(window.retired_thread_ids).toEqual(["already-retired"]);
+    expect(call.mock.calls.map(([, params]) => params.after_sequence)).toEqual([100, undefined]);
+    expect(call.mock.calls[1][1]).toEqual(expect.objectContaining({ thread_id: "reset-incarnation" }));
+    expect(call.mock.calls[1][1]).not.toHaveProperty("after_sequence");
+  });
+
+  it("refuses a retired arriving id before replacing an unversioned window", async () => {
+    const held = { ...windowAt(message(100, "still cached")), retired_thread_ids: ["retired-incarnation"] };
+    await cache.writeCached(address, held);
+    const call = vi.fn(async () => ({ thread_id: "retired-incarnation", items: [message(1, "retired reply")], thread_last_sequence: 1 }));
+    expect(await sync(call)).toBe(false);
+    expect(await saved()).toEqual(held);
     expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a generation reset that lands during the newest upgrade read", async () => {
+    await cache.writeCached(address, windowAt(message(100, "old unversioned")));
+    const reset = { ...windowAt(message(1, "canonical C")), thread_id: "generation-c", thread_generation_revision: 3 };
+    const call = vi.fn(async (_method, params) => {
+      if (!Object.hasOwn(params, "after_sequence")) await cache.writeCached(address, reset);
+      return { thread_id: "generation-b", items: [], thread_last_sequence: 0 };
+    });
+    expect(await sync(call)).toBe(false);
+    expect(await saved()).toEqual(reset);
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses an incarnation retired while the newest upgrade page is in flight", async () => {
+    const held = windowAt(message(100, "old unversioned"));
+    await cache.writeCached(address, held);
+    const retired = { ...held, retired_thread_ids: ["generation-b"] };
+    const call = vi.fn(async (_method, params) => {
+      if (!Object.hasOwn(params, "after_sequence")) await cache.writeCached(address, retired);
+      return { thread_id: "generation-b", items: [], thread_last_sequence: 0 };
+    });
+    expect(await sync(call)).toBe(false);
+    expect(await saved()).toEqual(retired);
+  });
+
+  it("preserves captured retirement authority when a concurrent legacy rewrite omits it", async () => {
+    await cache.writeCached(address, { ...windowAt(message(100, "old unversioned")), retired_thread_ids: ["generation-a"] });
+    const call = vi.fn(async (_method, params) => {
+      if (!Object.hasOwn(params, "after_sequence")) await cache.writeCached(address, windowAt(message(101, "concurrent legacy")));
+      return { thread_id: "generation-b", items: [message(1, "new B")], thread_last_sequence: 1 };
+    });
+    expect(await sync(call)).toBe(true);
+    expect(await saved()).toMatchObject({ thread_id: "generation-b", deliveredSequence: 1, retired_thread_ids: ["generation-a"] });
+    expect((await saved()).items.map((item) => item.data.body)).toEqual(["new B"]);
+  });
+
+  it("rejects a foreign reply to an explicitly pinned incarnation", async () => {
+    const held = windowAt(message(100, "unversioned cached"));
+    await cache.writeCached(address, held);
+    const call = vi.fn(async () => ({ thread_id: "foreign-thread", items: [], thread_last_sequence: 0 }));
+    expect(await syncThreadWindow({ ...address, conversationId: address.sub, threadId: "expected-thread", call })).toBe(false);
+    expect(await saved()).toEqual(held);
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not append an unproven versioned inline push onto legacy history", async () => {
+    const { threadWindow } = await import("../src/core/threadSync.js");
+    const held = windowAt(message(100, "unproven legacy"));
+    expect(threadWindow(held, { thread_id: "new-thread", items: [message(1, "partial push")] })).toBeNull();
   });
 
   it("preserves the generation revision when the first inline append omits it", async () => {

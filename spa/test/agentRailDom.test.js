@@ -1256,6 +1256,56 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(railHost().querySelector("#railinput")).not.toBeNull();
   });
 
+  it("finishes an in-flight cache seed after the selected hidden chat resets its reader", async () => {
+    lazy.enabled = true;
+    conversationReadReceipts.enabled = true;
+    payload = branchRow({ agents: [agent({ watched: true })] });
+    const cachedItems = [said(1, "Seeded while the chat is hidden")];
+    await writeRailWorkItem(payload);
+    await writeRailThread("run-3", "ag-1", { items: cachedItems });
+    const cache = await import("../src/core/localCache.js");
+    const originalRead = cache.readCached;
+    let releaseRead;
+    const readGate = new Promise((resolve) => { releaseRead = resolve; });
+    const heldReads = [];
+    const readSpy = vi.spyOn(cache, "readCached").mockImplementation((address) => {
+      const read = originalRead(address);
+      if (address.entityId !== "run-3" || address.kind !== "thread" || address.sub !== "ag-1") return read;
+      return read.then(async (record) => {
+        heldReads.push(record);
+        await readGate;
+        return record;
+      });
+    });
+    const hidden = vi.spyOn(document, "hidden", "get");
+    try {
+      rail = mountAgentRail(railHost(), railAddress({ openAgentId: "ag-1", panelOpen: true }));
+      await vi.waitFor(() => expect(conversationReadReceipts.seeds.length).toBeGreaterThan(0));
+      await vi.waitFor(() => expect(heldReads.length).toBeGreaterThan(0));
+      const boundHistory = chatRepository.history("ag-1").threadCache;
+      expect(boundHistory.readWindow()).toBeNull();
+      const seeded = Promise.allSettled(conversationReadReceipts.seeds.map(({ promise }) => promise));
+      hidden.mockReturnValue(true);
+      railHost().querySelector(".rail-overview-toggle").click();
+      await vi.waitFor(() => expect(panel()?.querySelector(".rail-overview-list")).not.toBeNull());
+      // This is a real same-agent openConversation reset. Hidden chat painting
+      // returns before binding a replacement, leaving the old read in flight.
+      railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+      expect(railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').classList.contains("active")).toBe(true);
+      releaseRead();
+      expect((await seeded).every(({ status }) => status === "fulfilled")).toBe(true);
+      expect(boundHistory.readWindow()?.items).toEqual(cachedItems);
+      expect(callsTo("thread.page")).toHaveLength(0);
+    } finally {
+      releaseRead();
+      await Promise.allSettled(conversationReadReceipts.seeds.map(({ promise }) => promise));
+      await Promise.allSettled(conversationReadReceipts.windows);
+      readSpy.mockRestore();
+      hidden.mockRestore();
+      conversationReadReceipts.enabled = false;
+    }
+  });
+
   const delayedRosterHandoff = async (rosterArrival, threadId = null, replyThreadId = threadId, activateLazy = false) => {
     lazy.enabled = !activateLazy;
     conversationReadReceipts.enabled = true;

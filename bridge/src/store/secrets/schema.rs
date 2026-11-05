@@ -57,6 +57,36 @@ CREATE TABLE IF NOT EXISTS secret_bindings (
     secret_ids TEXT NOT NULL,
     attached_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS secret_audit (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    secret_id TEXT NOT NULL,
+    creator TEXT,
+    project_id TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    generation TEXT NOT NULL,
+    session_incarnation TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    occurred_at INTEGER NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('released','secret_unavailable','secret_expired','secret_revoked'))
+);
+CREATE INDEX IF NOT EXISTS secret_audit_by_secret ON secret_audit(secret_id,sequence);
+CREATE INDEX IF NOT EXISTS secret_audit_retention ON secret_audit(occurred_at,sequence);
+CREATE TABLE IF NOT EXISTS secret_audit_summaries (
+    secret_id TEXT PRIMARY KEY,
+    release_count INTEGER NOT NULL,
+    denial_count INTEGER NOT NULL,
+    last_released_at INTEGER,
+    last_outcome TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS secret_unauthenticated_summary (
+    singleton INTEGER PRIMARY KEY CHECK (singleton=1),
+    attempt_count INTEGER NOT NULL,
+    first_at INTEGER NOT NULL,
+    last_at INTEGER NOT NULL
+);
+
 "#;
 
 /// Schema 24 was unadvertised before key-loss recovery was revised. Upgrade

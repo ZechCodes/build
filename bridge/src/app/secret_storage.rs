@@ -12,6 +12,7 @@ impl AppState {
         device_id: &str,
     ) -> Result<Self, SecretError> {
         self.secret_state_root = Some(state_root.to_path_buf());
+        self.session_registry.set_secret_device(device_id);
         self.secret_service = None;
         if self.validate_secret_storage_layout(state_root).is_err() {
             eprintln!("secret vault unavailable");

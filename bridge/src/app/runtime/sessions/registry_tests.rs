@@ -286,3 +286,38 @@ fn shell_tabs_preserve_the_agent_projection_layout_through_capacity_growth() {
         }
     }
 }
+
+#[test]
+fn ending_or_removing_the_exact_session_revokes_its_secret_capability() {
+    let root = Path::new("/synthetic/root");
+    let mut registry = SessionRegistry::new();
+    let (key, session, instance) =
+        insert_agent(&mut registry, root, "owner-a", "agent-a", "agent-a");
+    let caller = super::secret_tests::caller();
+    registry.install_secret_token("synthetic-token".into(), caller.clone());
+    let authority = registry.secret_authority();
+    assert!(authority
+        .authenticate("agent-a", "synthetic-token")
+        .is_some());
+    assert!(registry.mark_agent_ended_if_current(
+        &key,
+        &session,
+        &instance,
+        LifecycleDiagnostic {
+            event: "synthetic_end",
+            origin: "test",
+            reason: None,
+            operation_id: None,
+            provider_thread_id: None,
+            caller: None,
+        }
+    ));
+    assert!(authority
+        .authenticate("agent-a", "synthetic-token")
+        .is_none());
+    registry.install_secret_token("synthetic-replacement".into(), caller);
+    registry.test_remove_tab(&key);
+    assert!(authority
+        .authenticate("agent-a", "synthetic-replacement")
+        .is_none());
+}

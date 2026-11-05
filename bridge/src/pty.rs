@@ -141,7 +141,7 @@ impl SubmitKey {
 }
 
 /// The whole harness adapter contract: how to spawn it and how to submit a prompt.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HarnessSpec {
     /// The binary to exec (e.g. `claude`, `codex`).
     pub binary: String,
@@ -189,6 +189,20 @@ pub struct HarnessSpec {
     /// An agent's harness or the user's own shell: where it runs, and behind
     /// whom (`crate::priority`).
     pub kind: ChildKind,
+}
+
+// Launch environments and provider config argv can carry capabilities. Debug
+// keeps only structural diagnostics, never their bytes.
+impl std::fmt::Debug for HarnessSpec {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HarnessSpec")
+            .field("binary", &self.binary)
+            .field("argument_count", &self.args.len())
+            .field("environment_count", &self.env.len())
+            .field("agent_id", &self.agent_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl HarnessSpec {
@@ -314,6 +328,9 @@ fn spawn_child(
         .map_err(|error| HarnessError::Session(error.to_string()))?;
     let mut cmd = CommandBuilder::new(&launch.program);
     cmd.args(&launch.args);
+    for key in crate::harness::secret_launch::inherited_keys() {
+        cmd.env_remove(key);
+    }
     for key in &spec.unset {
         cmd.env_remove(key);
     }

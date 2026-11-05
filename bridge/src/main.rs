@@ -798,6 +798,7 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
         reachable.clone(),
     ));
     AppState::spawn_done_socket(app.clone(), runtime.mcp_socket.clone());
+    AppState::spawn_secret_release_socket(app.clone(), runtime.mcp_socket.clone());
     let idle_threshold = std::env::var("BRIDGE_IDLE_SECONDS")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())

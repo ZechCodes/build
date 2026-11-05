@@ -73,6 +73,24 @@ impl ClockState {
         })
     }
 
+    pub fn wall_now(&self) -> i64 {
+        self.clock.wall_seconds()
+    }
+
+    /// Release already holds the metadata writer: sample and persist the clock
+    /// in that same transaction so a queued release cannot cross an expiry.
+    pub fn observe_in(&mut self, tx: &rusqlite::Transaction<'_>) -> Result<Observation> {
+        let now = self.clock.wall_seconds();
+        let (valid, highwater) = crate::store::secrets::clock_observe_in(tx, now)?;
+        self.highwater = self.highwater.max(highwater);
+        Ok(Observation {
+            now,
+            effective_now: self.highwater,
+            monotonic: self.clock.monotonic_seconds(),
+            rollback: !valid,
+        })
+    }
+
     pub fn expired(&mut self, record: &SecretRecord, observation: &Observation) -> bool {
         let absolute = match record.attached_at {
             None => Some(record.created_at.saturating_add(STAGED_LIFETIME_SECONDS)),

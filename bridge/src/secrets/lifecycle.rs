@@ -17,10 +17,11 @@ struct Inner {
     closed: AtomicBool,
     state: Mutex<ClockState>,
     jobs: Arc<tokio::sync::Semaphore>,
+    unauthenticated: Mutex<release::UnauthenticatedFailures>,
 }
 
-/// Internal storage only. Call from blocking work outside the application lock.
-/// The release-authority and audit layer must guard every externally usable read.
+/// Device-local storage service. Call from blocking work outside the app lock.
+/// Externally usable reads must use the scoped, audited `release` method.
 #[derive(Clone)]
 pub struct SecretService {
     inner: Arc<Inner>,
@@ -75,6 +76,7 @@ impl SecretService {
                 closed: AtomicBool::new(false),
                 state: Mutex::new(ClockState::new(clock, highwater)),
                 jobs: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_JOBS)),
+                unauthenticated: Mutex::new(release::UnauthenticatedFailures::default()),
             }),
         };
         if service.sweep().is_err() {
@@ -264,11 +266,15 @@ impl SecretService {
     }
 
     pub fn sweep(&self) -> Result<SweepReport> {
+        let mut state = self.state();
+        let observation = state.observe(&self.inner.writer)?;
+        self.flush_unauthenticated_failures(observation.effective_now, true);
+        self.inner
+            .writer
+            .secrets_audit_maintain(observation.effective_now)?;
         let Ok(vault) = self.vault() else {
             return Ok(SweepReport::default());
         };
-        let mut state = self.state();
-        let observation = state.observe(&self.inner.writer)?;
         let records = self.inner.writer.secret_records()?;
         let mut retained = HashSet::new();
         let mut report = SweepReport::default();
@@ -326,3 +332,10 @@ mod tests;
 #[cfg(test)]
 #[path = "startup_sweep_tests.rs"]
 mod startup_sweep_tests;
+
+#[cfg(test)]
+#[path = "release_tests.rs"]
+mod release_tests;
+
+#[path = "release.rs"]
+mod release;

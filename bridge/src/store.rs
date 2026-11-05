@@ -291,7 +291,7 @@ pub enum StoreError {
 /// 21 adds durable review verdict and revision delivery journals.
 /// 22 adds the separate scoped sync journal and retained stream floors.
 /// 24 adds device-local secret metadata, attachment bindings and clock high-water.
-pub const SCHEMA_VERSION: i64 = 24;
+pub const SCHEMA_VERSION: i64 = 25;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.

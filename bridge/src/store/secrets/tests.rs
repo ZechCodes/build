@@ -85,7 +85,7 @@ fn metadata_survives_restart_and_migrates_existing_database_without_history_chan
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(version, "24");
+    assert_eq!(version, "25");
 }
 
 #[test]

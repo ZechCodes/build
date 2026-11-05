@@ -42,7 +42,7 @@ impl Context {
 fn required(key: &str) -> Result<String> {
     std::env::var(key)
         .ok()
-        .filter(|value| !value.is_empty() && !value.contains('\0'))
+        .filter(|value| !value.is_empty() && value.len() <= 128 && !value.contains('\0'))
         .ok_or("unauthorized")
 }
 

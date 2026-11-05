@@ -26,6 +26,18 @@ fn missing_context_is_unauthorized_before_daemon_configuration() {
 }
 
 #[test]
+fn invalid_unicode_arguments_have_fixed_diagnostics() {
+    use std::os::unix::ffi::OsStringExt;
+    assert_error(
+        command()
+            .arg(std::ffi::OsString::from_vec(vec![0xff]))
+            .output()
+            .unwrap(),
+        "secret_invalid",
+    );
+}
+
+#[test]
 fn exact_output_and_fixed_errors_over_private_socket() {
     for value in [
         b" \t leading\nsecond line\n ".to_vec(),

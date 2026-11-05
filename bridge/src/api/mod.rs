@@ -124,7 +124,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "conversations.settings",
     "diffs.perFile",
     "errors.codes",
-    "fs.treePaged", // Since 3.35.0: bounded directory entries on demand (#894).
+    "fs.treePaged",     // Since 3.35.0: bounded directory entries on demand (#894).
     "fs.mediaRawPages", // Since 1.30.0: exact binary ranges for Blob media reads, through 64 MiB.
     "fs.projectSourcePath", // Since 3.17.0: source_path refuses a moved project source (#360).
     "fs.projectSources", // Since 3.9.0: project_id + source_id on fs.tree/read/write (#359).

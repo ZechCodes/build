@@ -46,7 +46,7 @@ test('secret upload rejects malformed context and out-of-bounds values before se
   await sodium.ready;
   const keys = sodium.crypto_box_keypair();
   const deviceTransportPublicKeyB64 = sodium.to_base64(keys.publicKey, sodium.base64_variants.ORIGINAL_NO_PADDING);
-  for (const value of ['', 'bad\0value', 'x'.repeat(16385)]) {
+  for (const value of ['', null, 42, 'bad\0value', 'x'.repeat(16385)]) {
     await assert.rejects(sealSecretUpload({ deviceTransportPublicKeyB64, context, value }), /secret_invalid/);
   }
   for (const change of [{ unknown: true }, { request_id: 'bad' }, { ttl_seconds: 0 }, { ttl_seconds: 2592001 }, { name: 'bad name' }, { grant: { scope: 'world' } }]) {

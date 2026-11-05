@@ -19,7 +19,7 @@ vi.mock("../src/core/scopedSyncRuntime.js", async (original) => ({
 }));
 // Forward real cache and wire operations while recording their completion.
 // Explicit gates hold seed/notification timing only in the late-reader test.
-const conversationReadReceipts = vi.hoisted(() => ({ enabled: false, seeds: [], windows: [], caches: [], seedGate: null }));
+const conversationReadReceipts = vi.hoisted(() => ({ enabled: false, seeds: [], windows: [], caches: [], seedGate: null, readingCache: null, readingWindow: false, cacheReads: [], windowRequests: [] }));
 vi.mock("../src/core/conversationCache.js", async (original) => {
   const actual = await original();
   return { ...actual, createConversationCache: (options) => {
@@ -31,8 +31,17 @@ vi.mock("../src/core/conversationCache.js", async (original) => {
     } });
     receipt.cache = cache;
     if (conversationReadReceipts.enabled) conversationReadReceipts.caches.push(receipt);
-    return { ...cache, seed: (...seedArgs) => {
-      const promise = receipt.seedGate ? receipt.seedGate.then(() => cache.seed(...seedArgs)) : cache.seed(...seedArgs);
+    const invoke = (method, args) => {
+      const previous = conversationReadReceipts.readingCache;
+      conversationReadReceipts.readingCache = cache;
+      try {
+        const promise = cache[method](...args);
+        if (conversationReadReceipts.enabled) conversationReadReceipts.cacheReads.push({ cache, method, promise });
+        return promise;
+      } finally { conversationReadReceipts.readingCache = previous; }
+    };
+    return { ...cache, reread: (...args) => invoke("reread", args), seed: (...seedArgs) => {
+      const promise = receipt.seedGate ? receipt.seedGate.then(() => invoke("seed", seedArgs)) : invoke("seed", seedArgs);
       if (conversationReadReceipts.enabled) conversationReadReceipts.seeds.push({ cache, promise });
       return promise;
     } };
@@ -41,8 +50,15 @@ vi.mock("../src/core/conversationCache.js", async (original) => {
 vi.mock("../src/core/threadSync.js", async (original) => {
   const actual = await original();
   return { ...actual, syncThreadWindow: (...args) => {
-    const promise = actual.syncThreadWindow(...args);
-    if (conversationReadReceipts.enabled) conversationReadReceipts.windows.push(promise);
+    const previous = conversationReadReceipts.readingWindow;
+    conversationReadReceipts.readingWindow = true;
+    let promise;
+    try { promise = actual.syncThreadWindow(...args); }
+    finally { conversationReadReceipts.readingWindow = previous; }
+    if (conversationReadReceipts.enabled) {
+      conversationReadReceipts.windows.push(promise);
+      conversationReadReceipts.windowRequests.push(args[0]);
+    }
     return promise;
   } };
 });
@@ -303,6 +319,10 @@ beforeEach(async () => {
   conversationReadReceipts.windows = [];
   conversationReadReceipts.caches = [];
   conversationReadReceipts.seedGate = null;
+  conversationReadReceipts.readingCache = null;
+  conversationReadReceipts.readingWindow = false;
+  conversationReadReceipts.cacheReads = [];
+  conversationReadReceipts.windowRequests = [];
   document.body.innerHTML = bodyHtml;
   // A standing panel has a viewport; jsdom otherwise measures it as hidden.
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {
@@ -1254,6 +1274,190 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(body.textContent).toContain("workspace fallback words");
     expect(panel().querySelector(".rail-who-name").textContent).toBe("Agent 1");
     expect(railHost().querySelector("#railinput")).not.toBeNull();
+  });
+
+  const settleCapturedConversationReads = async () => {
+    for (let round = 0; round < 8; round += 1) {
+      const count = conversationReadReceipts.cacheReads.length + conversationReadReceipts.windows.length;
+      await Promise.allSettled(conversationReadReceipts.cacheReads.map(({ promise }) => promise));
+      await Promise.allSettled(conversationReadReceipts.windows);
+      if (count === conversationReadReceipts.cacheReads.length + conversationReadReceipts.windows.length) return;
+    }
+  };
+
+  it("keeps the current incarnation B when a retired same-address seed A completes late", async () => {
+    lazy.enabled = true;
+    conversationReadReceipts.enabled = true;
+    chatRepository.railView("workspace:ws-reordered-seed").chooseAgent("ag-1");
+    await writeRailBoard({ projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-reordered-seed", project_id: "p1", name: "Quiet work", entity_id: "run-3" }] });
+    const cache = await import("../src/core/localCache.js");
+    const originalRead = cache.readCached;
+    const heldSeeds = [];
+    let releaseObservers, releaseWire;
+    const observerGate = new Promise((resolve) => { releaseObservers = resolve; });
+    const wireGate = new Promise((resolve) => { releaseWire = resolve; });
+    const readSpy = vi.spyOn(cache, "readCached").mockImplementation((address) => {
+      const reader = conversationReadReceipts.readingCache;
+      const windowRead = conversationReadReceipts.readingWindow;
+      const reading = originalRead(address);
+      if (address.kind !== "thread" || address.entityId !== "run-3" || address.sub !== "ag-1" || windowRead) return reading;
+      // Repository generation observations legitimately lag the visible cache
+      // reader. Hold their real read results, not generation checks themselves.
+      if (!reader) return reading.then(async (record) => { await observerGate; return record; });
+      return reading.then(async (record) => {
+        if (record?.value?.thread_id !== "incarnation-a") return record;
+        let release;
+        const gate = new Promise((resolve) => { release = resolve; });
+        heldSeeds.push({ reader, release });
+        await gate;
+        return record;
+      });
+    });
+    const originalCall = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return originalCall(method, params);
+      calls.push({ method, params });
+      return wireGate.then(() => ({ thread_id: params.thread_id, items: [said(2, "Current B wire reply")], has_more: false, thread_last_sequence: 2 }));
+    });
+    try {
+      await writeRailThread("run-3", "ag-1", { items: [said(1, "Retired incarnation A")], thread_id: "incarnation-a" });
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-reordered-seed" }));
+      await vi.waitFor(() => expect(heldSeeds.length).toBeGreaterThan(0));
+      const oldReader = conversationReadReceipts.seeds.at(-1).cache;
+      const cacheCount = conversationReadReceipts.caches.length;
+      await writeRailWorkItem({ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false })] });
+      await vi.waitFor(() => expect(conversationReadReceipts.caches.length).toBeGreaterThan(cacheCount));
+      const canonical = conversationReadReceipts.caches.at(-1).cache;
+      await vi.waitFor(() => expect(heldSeeds.some(({ reader }) => reader === canonical)).toBe(true));
+      // The old watcher has been retired before B is published, so its pending
+      // A read remains a genuine same-address, ID-less read rather than stale
+      // work invalidated by its own reread serial or a different-agent check.
+      await writeRailThread("run-3", "ag-1", { items: [said(1, "Current incarnation B")], thread_id: "incarnation-b" });
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Current incarnation B"));
+      heldSeeds.filter(({ reader }) => reader === canonical).forEach(({ release }) => release());
+      await Promise.all(conversationReadReceipts.seeds.filter(({ cache }) => cache === canonical).map(({ promise }) => promise));
+      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+      expect(callsTo("thread.page")[0].params.thread_id).toBe("incarnation-b");
+      heldSeeds.filter(({ reader }) => reader === oldReader).forEach(({ release }) => release());
+      await Promise.all(conversationReadReceipts.seeds.filter(({ cache }) => cache === oldReader).map(({ promise }) => promise));
+      feedSubscribers.forEach((subscriber) => subscriber(feedSnapshot));
+      // Await dispatch for every real window-read invocation already admitted;
+      // never infer completion from the old cached text still being painted.
+      await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(conversationReadReceipts.windowRequests.length));
+      expect(conversationReadReceipts.windowRequests.map(({ threadId }) => threadId)).toEqual(["incarnation-b"]);
+      expect(callsTo("thread.page").map(({ params }) => params.thread_id)).toEqual(["incarnation-b"]);
+      expect(railHost().querySelector("#rail-body")?.textContent).toContain("Current incarnation B");
+      expect(railHost().querySelector("#rail-body")?.textContent).not.toContain("Retired incarnation A");
+    } finally {
+      heldSeeds.forEach(({ release }) => release());
+      releaseObservers(); releaseWire();
+      await settleCapturedConversationReads();
+      readSpy.mockRestore();
+      conversationReadReceipts.enabled = false;
+    }
+  });
+
+  it("rejects an agent A seed after the selected conversation switches to agent B", async () => {
+    lazy.enabled = true;
+    conversationReadReceipts.enabled = true;
+    payload = branchRow({ agents: [agent({ watched: true, thread_id: "agent-a-thread" }), agent({ id: "ag-2", ordinal: 2, watched: true, thread_id: "agent-b-thread" })] });
+    await writeRailWorkItem(payload);
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "Agent A history")], thread_id: "agent-a-thread" });
+    await writeRailThread("run-3", "ag-2", { items: [said(1, "Agent B history")], thread_id: "agent-b-thread" });
+    const cache = await import("../src/core/localCache.js");
+    const originalRead = cache.readCached;
+    let releaseA;
+    const gate = new Promise((resolve) => { releaseA = resolve; });
+    let waiting = false;
+    const readSpy = vi.spyOn(cache, "readCached").mockImplementation((address) => {
+      const reading = originalRead(address);
+      if (!conversationReadReceipts.readingCache || address.kind !== "thread" || address.sub !== "ag-1") return reading;
+      waiting = true;
+      return reading.then(async (record) => { await gate; return record; });
+    });
+    const originalCall = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return originalCall(method, params);
+      calls.push({ method, params });
+      return { thread_id: params.thread_id, items: [], has_more: false, thread_last_sequence: 1 };
+    });
+    try {
+      rail = mountAgentRail(railHost(), railAddress({ openAgentId: "ag-1", panelOpen: true }));
+      await vi.waitFor(() => expect(waiting).toBe(true));
+      await vi.waitFor(() => expect(railHost().querySelector('[data-bubble="agent"][data-agent="ag-2"]')).not.toBeNull());
+      railHost().querySelector('[data-bubble="agent"][data-agent="ag-2"]').click();
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Agent B history"));
+      releaseA();
+      await settleCapturedConversationReads();
+      expect(railHost().querySelector("#rail-body")?.textContent).toContain("Agent B history");
+      expect(railHost().querySelector("#rail-body")?.textContent).not.toContain("Agent A history");
+      expect(callsTo("thread.page").map(({ params }) => params.agent_id)).toEqual(["ag-2"]);
+    } finally {
+      releaseA();
+      await settleCapturedConversationReads();
+      readSpy.mockRestore();
+      conversationReadReceipts.enabled = false;
+    }
+  });
+
+  it("shares the actual pending legacy seed when lazy ownership activates on a warm mounted conversation", async () => {
+    conversationReadReceipts.enabled = true;
+    payload = branchRow({ agents: [agent({ watched: true, thread_id: "warm-thread" })] });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "Unbroken warm cached paint")], thread_id: "warm-thread" });
+    await mount({ openAgentId: "ag-1", panelOpen: true });
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Unbroken warm cached paint"));
+    await settleCapturedConversationReads();
+    railHost().querySelector(".rail-overview-toggle").click();
+    await vi.waitFor(() => expect(panel()?.querySelector(".rail-overview-list")).not.toBeNull());
+    await settleCapturedConversationReads();
+    conversationReadReceipts.seeds = []; conversationReadReceipts.cacheReads = [];
+    conversationReadReceipts.windows = []; conversationReadReceipts.windowRequests = [];
+    const cache = await import("../src/core/localCache.js");
+    const originalRead = cache.readCached;
+    let releaseRead;
+    const gate = new Promise((resolve) => { releaseRead = resolve; });
+    let actualSeedReads = 0;
+    const readSpy = vi.spyOn(cache, "readCached").mockImplementation((address) => {
+      const reading = originalRead(address);
+      if (!conversationReadReceipts.readingCache || address.kind !== "thread" || address.sub !== "ag-1") return reading;
+      actualSeedReads += 1;
+      return reading.then(async (record) => { await gate; return record; });
+    });
+    const frames = [];
+    let observer;
+    const originalCall = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return originalCall(method, params);
+      calls.push({ method, params });
+      return { thread_id: params.thread_id, items: [], has_more: false, thread_last_sequence: 1 };
+    });
+    try {
+      // A real return from overview resets the reader after the existing rail
+      // has settled its owner and already painted this canonical history.
+      await vi.waitFor(() => expect(railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]')).not.toBeNull());
+      railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+      await vi.waitFor(() => expect(actualSeedReads).toBe(1));
+      expect(railHost().querySelector("#rail-body")?.textContent).toContain("Unbroken warm cached paint");
+      frames.push(railHost().querySelector("#rail-body").textContent);
+      observer = new MutationObserver(() => frames.push(railHost().querySelector("#rail-body")?.textContent || ""));
+      observer.observe(railHost(), { childList: true, subtree: true, characterData: true });
+      expect(callsTo("thread.page")).toHaveLength(0);
+      lazy.enabled = true;
+      feedSubscribers.forEach((subscriber) => subscriber(feedSnapshot));
+      expect(actualSeedReads).toBe(1);
+      releaseRead();
+      await settleCapturedConversationReads();
+      expect(callsTo("thread.page")).toHaveLength(1);
+      expect(railHost().querySelector("#rail-body")?.textContent).toContain("Unbroken warm cached paint");
+      expect(frames.every((text) => text.includes("Unbroken warm cached paint"))).toBe(true);
+    } finally {
+      releaseRead();
+      await settleCapturedConversationReads();
+      observer?.disconnect();
+      readSpy.mockRestore();
+      conversationReadReceipts.enabled = false;
+    }
   });
 
   it("finishes an in-flight cache seed after the selected hidden chat resets its reader", async () => {

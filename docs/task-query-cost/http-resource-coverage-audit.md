@@ -95,6 +95,12 @@ their one dynamic call site. The retained window may cross an unknown-to-known
 handoff only at the same address and opening/session; a known A never carries
 over into B. It does not assign an ID or overwrite the canonical record.
 
+The retired-reader early return is also removed as redundant. After seeding,
+the captured address, incarnation, opening and actual session still have to
+pass active(), and the logical admission map is shared. Any replaced reader
+that passes sends the same normalised request; reader object identity grants
+no separate read or publication authority.
+
 The shared threadSync.js and its original test are restored byte-for-byte to
 a42b94508. The attempted upgrade replacement is retired: it dropped concurrent
 provisional sends and blocked direct required-write refreshes over ID-less

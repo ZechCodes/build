@@ -2643,9 +2643,9 @@ function mountRailOnContext(host, context, swap) {
     const stamp = conversationOpeningStamp(identity.deviceId);
     const session = contextFor(identity.deviceId)?.session;
     await seedConversation(conversation, identity.deviceId);
-    // A retired seed cedes admission to the canonical reader. An already
-    // admitted wire read keeps its logical owner across that same handoff.
-    if (conversation !== conversationCache) return;
+    // Admission belongs to the logical opening, not a reader object. A
+    // replaced reader can share it only if the address, incarnation, opening
+    // and session still pass active() below.
     const threadId = effectiveConversationThreadId(address, identity.threadId);
     identity = threadId ? { ...identity, threadId } : identity;
     const key = conversationGenerationKey(address, identity.threadId);

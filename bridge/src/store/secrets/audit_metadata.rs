@@ -24,7 +24,7 @@ pub(crate) fn append_metadata_in(
         GrantScope::Project { .. } => context.stage.conversation_id.as_str(),
     };
     let request_id = uuid::Uuid::new_v4().to_string();
-    let changed=tx.execute("INSERT INTO secret_audit(secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome) VALUES (?1,?2,?3,?4,?5,?6,?7,'device_user',?8,?9,?10)",params![context.id,context.creator,project,context.stage.owner_id,agent,context.stage.conversation_id,context.stage.generation,request_id,now,outcome])?;
+    let changed=tx.execute("INSERT INTO secret_audit(secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,attempt_count,last_occurred_at,outcome) VALUES (?1,?2,?3,?4,?5,?6,?7,'device_user',?8,?9,1,?9,?10)",params![context.id,context.creator,project,context.stage.owner_id,agent,context.stage.conversation_id,context.stage.generation,request_id,now,outcome])?;
     if changed != 1 {
         return Err(SecretError::Unavailable);
     }

@@ -3,7 +3,7 @@ use super::records;
 use crate::api::v1::secrets::{
     AuditPage, AuditParams, ListParams, MetadataPage, SecretMetadata, SecretScope,
 };
-use crate::secrets::{Result, SecretAuditRecord, SecretError, StageContext};
+use crate::secrets::{Result, SecretError, StageContext};
 use crate::store::{ReadTransaction, StoreWriter};
 use base64::Engine;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -268,26 +268,11 @@ fn audit(
     {
         return Err(SecretError::Unavailable);
     }
-    let mut statement=connection.prepare("SELECT sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome FROM secret_audit WHERE secret_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3")?;
+    let mut statement=connection.prepare("SELECT sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome,attempt_count,last_occurred_at FROM secret_audit WHERE secret_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3")?;
     let mut events = statement
         .query_map(
             params![asked.secret_id, asked.after, asked.limit as i64 + 1],
-            |row| {
-                Ok(SecretAuditRecord {
-                    sequence: row.get(0)?,
-                    secret_id: row.get(1)?,
-                    creator: row.get(2)?,
-                    project_id: row.get(3)?,
-                    owner_id: row.get(4)?,
-                    agent_id: row.get(5)?,
-                    conversation_id: row.get(6)?,
-                    generation: row.get(7)?,
-                    session_incarnation: row.get(8)?,
-                    request_id: row.get(9)?,
-                    occurred_at: row.get(10)?,
-                    outcome: row.get(11)?,
-                })
-            },
+            super::audit::audit_row,
         )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let has_more = events.len() > asked.limit;

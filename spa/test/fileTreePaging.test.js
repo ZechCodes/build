@@ -120,3 +120,91 @@ it("keeps the reading place when repaint restores keyboard focus after loading m
   expect(host.scrollTop).toBe(75);
   expect(host.querySelector('[data-path="a.txt"]')?.getAttribute("aria-current")).toBe("true");
 });
+
+const directoryWindow = (from, next_cursor = null) => ({ path: "",
+  entries: Array.from({ length: 100 }, (_, index) => ({ name: `file-${String(from + index).padStart(3, "0")}.txt`, kind: "file", size: 1 })),
+  has_more: Boolean(next_cursor), next_cursor });
+const browsingPages = (_dir, continuation) => !continuation?.cursor
+  ? directoryWindow(0, "opaque-window-100")
+  : continuation.cursor === "opaque-window-100" ? directoryWindow(100, "opaque-window-200") : directoryWindow(200);
+
+it("retains a three-page selected row when a child hint refreshes the loaded directory window", async () => {
+  const listing = vi.fn(async (...args) => browsingPages(...args));
+  mount(listing);
+  await vi.waitFor(() => expect(paths()).toHaveLength(100));
+  await tree.more("");
+  await vi.waitFor(() => expect(paths()).toHaveLength(200));
+  await tree.more("");
+  await vi.waitFor(() => expect(paths()).toHaveLength(300));
+  tree.setOpenPath("file-250.txt");
+  listing.mockClear();
+  const missingSelection = [];
+  const observer = new MutationObserver(() => {
+    if (!host.querySelector('[data-path="file-250.txt"][aria-current="true"]')) missingSelection.push(true);
+  });
+  observer.observe(host, { childList: true, subtree: true });
+  try {
+    await tree.invalidate({ paths: ["file-050.txt"], truncated: false });
+    await vi.waitFor(() => expect(host.querySelector('[data-path="file-250.txt"]')?.getAttribute("aria-current")).toBe("true"));
+    expect(listing.mock.calls).toEqual([[""], ["", { cursor: "opaque-window-100" }], ["", { cursor: "opaque-window-200" }]]);
+    expect((await cache.readCached(address(""))).value.entries).toHaveLength(300);
+    expect(missingSelection).toEqual([]);
+  } finally { observer.disconnect(); }
+});
+
+it("reveals a requested file beyond the first directory page without draining after it is found", async () => {
+  const listing = vi.fn(async (...args) => browsingPages(...args));
+  mount(listing);
+  await vi.waitFor(() => expect(paths()).toHaveLength(100));
+  await tree.reveal("file-250.txt");
+  await vi.waitFor(() => expect(host.querySelector('[data-path="file-250.txt"]')).not.toBeNull());
+  expect(listing.mock.calls).toEqual([[""], ["", { cursor: "opaque-window-100" }], ["", { cursor: "opaque-window-200" }]]);
+});
+
+it("preserves the selected window when an older paged cache has no saved page count", async () => {
+  const cached = { path: "", entries: [0, 100, 200].flatMap((from) => directoryWindow(from).entries),
+    has_more: false, next_cursor: null };
+  await cache.writeCached(address(""), cached);
+  let release;
+  const first = new Promise((resolve) => { release = resolve; });
+  const listing = vi.fn(async (dir, continuation) => {
+    if (!continuation?.cursor) await first;
+    return browsingPages(dir, continuation);
+  });
+  try {
+    mount(listing);
+    tree.setOpenPath("file-250.txt");
+    await vi.waitFor(() => expect(paths()).toHaveLength(300));
+    expect(host.querySelector('[data-path="file-250.txt"]')?.getAttribute("aria-current")).toBe("true");
+    release();
+    await vi.waitFor(() => expect(listing).toHaveBeenCalledTimes(3));
+    expect((await cache.readCached(address(""))).value.entries).toHaveLength(300);
+    expect(host.querySelector('[data-path="file-250.txt"]')?.getAttribute("aria-current")).toBe("true");
+  } finally { release(); }
+});
+
+it("retains the loaded sort window when the old tail file becomes a same-name directory", async () => {
+  let changed = false;
+  const listing = vi.fn(async (dir, continuation) => {
+    if (!changed) return browsingPages(dir, continuation);
+    if (continuation?.cursor === "opaque-sort-99") return directoryWindow(99, "opaque-sort-199");
+    if (continuation?.cursor === "opaque-sort-199") return directoryWindow(199);
+    return { ...directoryWindow(0, "opaque-sort-99"), entries: [
+      { name: "file-299.txt", kind: "dir" }, ...directoryWindow(0).entries.slice(0, 99),
+    ] };
+  });
+  mount(listing);
+  await vi.waitFor(() => expect(paths()).toHaveLength(100));
+  await tree.more("");
+  await vi.waitFor(() => expect(paths()).toHaveLength(200));
+  await tree.more("");
+  await vi.waitFor(() => expect(paths()).toHaveLength(300));
+  tree.setOpenPath("file-250.txt");
+  changed = true; listing.mockClear();
+  await tree.invalidate({ paths: ["file-299.txt"], truncated: false });
+  expect(listing.mock.calls).toEqual([[""], ["", { cursor: "opaque-sort-99" }], ["", { cursor: "opaque-sort-199" }]]);
+  await vi.waitFor(() => expect(host.querySelector('[data-path="file-250.txt"]')?.getAttribute("aria-current")).toBe("true"));
+  const entries = (await cache.readCached(address(""))).value.entries;
+  expect(entries.find(({ name }) => name === "file-299.txt").kind).toBe("dir");
+  expect(entries.some(({ name }) => name === "file-250.txt")).toBe(true);
+});

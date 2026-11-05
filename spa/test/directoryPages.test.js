@@ -90,3 +90,64 @@ it("drops cached paged continuations on a 3.35 → legacy → 3.35 capability ro
   expect(call).toHaveBeenLastCalledWith("fs.tree", { run_id: "synthetic-run", path: "", paged: true, limit: 100 });
   expect((await cache.readCached(address)).value.next_cursor).toBe("fresh-cursor");
 });
+
+// The absent-birthtime provider has the same wire DTO as every provider. These
+// scripted contract responses compose with Rust's real held-handle/TTL tests;
+// the SPA never sees provider metadata and does not simulate its lease registry.
+it("opens an absent-birthtime provider cold and reads its bounded pages to completion only on demand", async () => {
+  const names = Array.from({ length: 205 }, (_, index) => `file-${String(index).padStart(3, "0")}.txt`);
+  const response = (from, to, next_cursor = null) => ({ path: "",
+    entries: names.slice(from, to).map((name) => ({ name, kind: "file", size: 1 })),
+    has_more: Boolean(next_cursor), next_cursor });
+  const call = vi.fn().mockResolvedValueOnce(response(0, 100, "opaque-held-directory-page-1"))
+    .mockResolvedValueOnce(response(100, 200, "opaque-held-directory-page-2"))
+    .mockResolvedValueOnce(response(200, 205));
+  mount(call);
+  await vi.waitFor(() => expect(host.querySelectorAll(".ffile")).toHaveLength(100));
+  expect(call.mock.calls).toEqual([["fs.tree", { run_id: "synthetic-run", path: "", paged: true, limit: 100 }]]);
+  host.querySelector("[data-tree-more]").click();
+  await vi.waitFor(() => expect(host.querySelectorAll(".ffile")).toHaveLength(200));
+  expect(call).toHaveBeenCalledTimes(2);
+  host.querySelector("[data-tree-more]").click();
+  await vi.waitFor(() => expect(host.querySelectorAll(".ffile")).toHaveLength(205));
+  expect(call.mock.calls.map(([, params]) => params)).toEqual([
+    { run_id: "synthetic-run", path: "", paged: true, limit: 100 },
+    { run_id: "synthetic-run", path: "", paged: true, limit: 100, cursor: "opaque-held-directory-page-1" },
+    { run_id: "synthetic-run", path: "", paged: true, limit: 100, cursor: "opaque-held-directory-page-2" },
+  ]);
+  expect(host.querySelector("[data-tree-more]")).toBeNull();
+  const record = (await cache.readCached(address)).value;
+  expect(record.entries.map(({ name }) => name)).toEqual(names);
+  expect(record).toMatchObject({ has_more: false, next_cursor: null });
+});
+
+it.each(["replaced", "evicted", "expired"])("quietly refreshes an absent-birthtime provider's %s cursor while retaining cached Files rows", async (refusal) => {
+  const held = tree("cached.txt", `opaque-${refusal}-cursor`);
+  await cache.writeCached(address, held);
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const message = `synthetic ${refusal} directory cursor`;
+  const call = vi.fn().mockResolvedValueOnce(held)
+    .mockRejectedValueOnce(Object.assign(new Error(message), { code: "invalid_params" }))
+    .mockImplementationOnce(() => pending);
+  const paintedFailures = [];
+  const observer = new MutationObserver(() => {
+    if (host.textContent.includes(message) || host.querySelector('.throbber[aria-label="loading"]')) paintedFailures.push(host.textContent);
+  });
+  observer.observe(host, { childList: true, subtree: true });
+  try {
+    mount(call);
+    await vi.waitFor(() => expect(host.querySelector("[data-tree-more]")).not.toBeNull());
+    host.querySelector("[data-tree-more]").click();
+    await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(3));
+    expect(host.querySelector('[data-path="cached.txt"]')).not.toBeNull();
+    expect((await cache.readCached(address)).value).toEqual(held);
+    expect(call.mock.calls[1]).toEqual(["fs.tree", { run_id: "synthetic-run", path: "", paged: true, limit: 100, cursor: held.next_cursor }]);
+    expect(call.mock.calls[2]).toEqual(["fs.tree", { run_id: "synthetic-run", path: "", paged: true, limit: 100 }]);
+    release(tree("fresh.txt", "opaque-fresh-cursor"));
+    await vi.waitFor(() => expect(host.querySelector('[data-path="fresh.txt"]')).not.toBeNull());
+    expect((await cache.readCached(address)).value.next_cursor).toBe("opaque-fresh-cursor");
+    expect(paintedFailures).toEqual([]);
+    expect(call).toHaveBeenCalledTimes(3);
+  } finally { release(tree("fresh.txt", "opaque-fresh-cursor")); observer.disconnect(); }
+});

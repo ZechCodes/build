@@ -17,12 +17,27 @@
 
 import { mergeCachedRecordsTogether, readCached, recordWriteOf, subscribeCache } from "./localCache.js";
 import { watchUiState } from "./localUiState.js";
-import { ancestorsOf, fileTreeHtml, parentPath, treeEdge, treeKeyMove, visibleTreeRows } from "./fileTreeModel.js";
+import { ancestorsOf, fileTreeHtml, treeEdge, treeKeyMove, visibleTreeRows } from "./fileTreeModel.js";
 import { registerSyncRead, registerSyncTree, syncPaneShown } from "./syncVisibleScopes.js";
 import { appendDirectoryPage, directoryListing, directoryTouchedByHint, normalizedDirectoryHint } from "./directoryPages.js";
 
 const heldRecord = (address) => (address ? readCached(address) : Promise.resolve(undefined));
 const alwaysActive = () => true;
+const DIRECTORY_PAGE_CAP = 8;
+const heldPageCount = (listing) => {
+  // Earlier paged caches kept entries but no depth; infer their 100-row pages.
+  const inferred = Math.ceil((listing?.entries?.length || 0) / 100);
+  return Math.min(DIRECTORY_PAGE_CAP, Math.max(1, Math.trunc(Number(listing?.loaded_pages) || inferred)));
+};
+const countedListing = (listing, count) => count > 1 ? { ...listing, loaded_pages: Math.min(count, DIRECTORY_PAGE_CAP) } : listing;
+const containsEntry = (listing, name) => listing?.entries?.some((entry) => entry.name === name);
+const sameDirectoryKey = (left, right) => left.name === right.name
+  && (left.kind === "dir") === (right.kind === "dir");
+const containsHeldTail = (listing, tail) => listing.entries.some((entry) => sameDirectoryKey(entry, tail));
+const needsHeldTail = (listing, tail, count, budget) => Boolean(tail && listing.next_cursor)
+  && count < budget && !containsHeldTail(listing, tail);
+const mergedListing = (held, arriving, cursor) => cursor
+  ? countedListing(appendDirectoryPage(held, arriving, cursor), heldPageCount(held) + 1) : arriving;
 
 const readExpanded = (value) =>
   new Set((Array.isArray(value?.expanded) ? value.expanded : []).filter((dir) => typeof dir === "string" && dir));
@@ -78,6 +93,7 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
   const watches = new Map(); // shown directory → unwatch
   const requests = new Map(); // shown directory → the read its paints still speak for
   const paging = new Map();
+  const loading = new Map();
 
   const focusCursor = (options) => {
     const row = rowsIn(listEl).find((candidate) => candidate.dataset.path === cursorPath);
@@ -141,21 +157,40 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     return true;
   };
 
-  const listFromMachine = async (dir, request, previousWrite, quiet = false, active = alwaysActive, cursor = null) => {
+  const readHeldWindow = async (dir, request, active, first, previous) => {
+    let listing = first, count = 1;
+    const tail = previous?.entries?.at(-1), budget = heldPageCount(previous);
+    while (needsHeldTail(listing, tail, count, budget)) {
+      if (!stillListing(dir, request, active)) return null;
+      const page = await askMachine(dir, listing.next_cursor);
+      if (page.error) return page;
+      listing = appendDirectoryPage(listing, page, listing.next_cursor);
+      count += 1;
+    }
+    return countedListing(listing, count);
+  };
+
+  const readListingWindow = async (dir, request, active, cursor, previous) => {
+    const first = await askMachine(dir, cursor);
+    return cursor || first.error ? first : readHeldWindow(dir, request, active, first, previous);
+  };
+
+  const handleListingError = async (dir, previousWrite, active, listing, cursor, quiet) => {
+    if (cursor && await recoverRefusedCursor(dir, previousWrite, active, listing)) return;
+    showListingError(dir, listing, quiet);
+  };
+
+  const listFromMachine = async (dir, request, previousWrite, quiet = false, active = alwaysActive, cursor = null, previous = null) => {
     if (!stillListing(dir, request, active)) return;
-    const listing = await askMachine(dir, cursor);
-    if (!stillListing(dir, request, active)) return;
+    const listing = await readListingWindow(dir, request, active, cursor, previous);
+    if (!listing || !stillListing(dir, request, active)) return;
     const address = listingAddress(dir);
     // An error is this mount's news, not the directory's: it never replaces a record.
-    if (listing.error) {
-      if (cursor && await recoverRefusedCursor(dir, previousWrite, active, listing)) return;
-      showListingError(dir, listing, quiet);
-      return;
-    }
-    if (!address) return takeListing(dir, appendDirectoryPage(listings.get(dir), listing, cursor));
+    if (listing.error) return handleListingError(dir, previousWrite, active, listing, cursor, quiet);
+    if (!address) return takeListing(dir, mergedListing(listings.get(dir), listing, cursor));
     await mergeCachedRecordsTogether([address], ([record]) => [
       stillListing(dir, request, active) && recordWriteOf(record) === previousWrite
-        ? appendDirectoryPage(record?.value, listing, cursor) : null,
+        ? mergedListing(record?.value, listing, cursor) : null,
     ]);
   };
 
@@ -175,7 +210,7 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
   const cachedListingSuffices = (listing, force, fulfilled) =>
     !listing.stale && (fulfilled || (!force && !readsForItself()));
 
-  const load = async (dir, force = false, active = alwaysActive, fulfilled = false) => {
+  const loadListing = async (dir, force = false, active = alwaysActive, fulfilled = false) => {
     if (!active()) return;
     const request = beginListing(dir);
     const record = await heldRecord(listingAddress(dir));
@@ -184,7 +219,14 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
       takeListing(dir, record.value);
       if (cachedListingSuffices(record.value, force, fulfilled)) return;
     }
-    await listFromMachine(dir, request, recordWriteOf(record), force, active);
+    await listFromMachine(dir, request, recordWriteOf(record), force, active, null, record?.value);
+  };
+  const load = (dir, ...options) => {
+    const reading = loadListing(dir, ...options);
+    loading.set(dir, reading);
+    const done = () => { if (loading.get(dir) === reading) loading.delete(dir); };
+    void reading.then(done, done);
+    return reading;
   };
 
   const readMore = async (dir) => {
@@ -193,7 +235,7 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     const request = beginListing(dir);
     const record = await heldRecord(listingAddress(dir));
     if (record && record.value?.next_cursor !== cursor) return;
-    await listFromMachine(dir, request, recordWriteOf(record), true, alwaysActive, cursor);
+    await listFromMachine(dir, request, recordWriteOf(record), true, alwaysActive, cursor, record?.value);
   };
   const more = (dir) => {
     if (paging.has(dir)) return paging.get(dir);
@@ -202,11 +244,35 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     return pending;
   };
 
-  const hintDirectories = (files) => {
-    if (!files.truncated) return ["", ...expanded].filter(shown).filter((dir) => directoryTouchedByHint(dir, files));
-    const selected = cursorPath ? parentPath(cursorPath) : "";
-    return [listings.has(selected) && shown(selected) ? selected : ""];
+  const canRevealMore = (dir) => !disposed && shown(dir) && syncPaneShown(listEl)
+    && Boolean(listings.get(dir)?.next_cursor);
+  const revealInDirectory = async (dir, name, remaining) => {
+    await loading.get(dir);
+    if (!listings.has(dir)) await load(dir);
+    while (remaining > 0 && !containsEntry(listings.get(dir), name)) {
+      if (!canRevealMore(dir)) break;
+      await more(dir);
+      await reread(dir, requests.get(dir));
+      remaining -= 1;
+    }
+    return remaining;
   };
+
+  const revealPath = async (path) => {
+    await ready;
+    if (disposed) return;
+    const ancestors = ancestorsOf(path), missing = ancestors.filter((dir) => !expanded.has(dir));
+    if (missing.length) await commitExpanded(new Set([...expanded, ...missing]));
+    let remaining = DIRECTORY_PAGE_CAP;
+    for (const dir of ["", ...ancestors]) {
+      const name = (dir ? path.slice(dir.length + 1) : path).split("/")[0];
+      remaining = await revealInDirectory(dir, name, remaining);
+      if (!containsEntry(listings.get(dir), name)) break;
+    }
+  };
+
+  const hintDirectories = (files) => ["", ...expanded].filter(shown)
+    .filter((dir) => directoryTouchedByHint(dir, files));
   const refreshShown = (active = alwaysActive, { files, fulfilledDirectories = [] } = {}) => {
     const directories = files ? hintDirectories(normalizedDirectoryHint(files)) : ["", ...expanded].filter(shown);
     return Promise.all(directories.map((dir) => load(dir, true, active, fulfilledDirectories.includes(dir))));
@@ -315,7 +381,7 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     ready,
     more,
     setVisible: () => directoryWatcher?.setVisible?.(),
-    invalidate: (files) => syncPaneShown(listEl) ? refreshShown(alwaysActive, { files }) : Promise.resolve(),
+    invalidate: (files, active = alwaysActive) => active() && syncPaneShown(listEl) ? refreshShown(active, { files }) : Promise.resolve(),
     /** The file in the preview: highlighted wherever its row is drawn, and
      *  where the keyboard selection moves to. */
     setOpenPath(path) {
@@ -337,12 +403,7 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
       return Boolean(row);
     },
     /** Expand every directory above `path`, so its row is drawn. */
-    async reveal(path) {
-      await ready;
-      if (disposed) return;
-      const missing = ancestorsOf(path).filter((dir) => !expanded.has(dir));
-      if (missing.length) await commitExpanded(new Set([...expanded, ...missing]));
-    },
+    reveal: revealPath,
     /** Read every shown directory again — the scope under the tree moved. */
     relist(paths = null) {
       ["", ...expanded].filter((dir) => shown(dir) && (!paths || !dir || paths.some((path) => path === dir || path.startsWith(`${dir}/`))))

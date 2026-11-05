@@ -218,7 +218,7 @@ fn secret_post_refuses_partial_sets_and_unauthenticated_or_agent_posts() {
 fn secret_post_persistence_failure_does_not_claim_or_acknowledge() {
     let mut f = Fixture::new();
     let id = f.stage(None, false);
-    let params = f.params(&[id.clone()]);
+    let params = f.params(std::slice::from_ref(&id));
     f.app.store.as_ref().unwrap().fail_next_write();
     assert!(f.send(&params).is_err());
     assert!(f.app.operation_receipt("secret-send").unwrap().is_none());
@@ -240,7 +240,7 @@ fn secret_post_persistence_failure_does_not_claim_or_acknowledge() {
 fn secret_post_binds_provisional_recipient_without_rewriting_encrypted_context() {
     let mut f = Fixture::new();
     let id = f.stage(Some(60), true);
-    let mut params = f.params(&[id.clone()]);
+    let mut params = f.params(std::slice::from_ref(&id));
     assert!(f.send(&params).is_err());
     params["draft_id"] = json!("30ed4ff2-bab5-4baa-8373-912c03f88ba5");
     assert!(f.send(&params).is_ok());

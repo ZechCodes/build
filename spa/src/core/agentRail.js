@@ -1236,6 +1236,7 @@ function mountRailOnContext(host, context, swap) {
 
   let conversationCache = null;
   let conversationCacheKey = null;
+  let conversationCacheOpening = null;
   let conversationIncarnation = null;
   let retainedConversationWindow = null;
   let conversationOpening = 0;
@@ -1281,8 +1282,9 @@ function mountRailOnContext(host, context, swap) {
     return boundConversation;
   };
 
-  const retainConversationWindow = (key, priorKey, held) =>
-    lazyViewReadsEnabled(context.deviceId) && key === priorKey ? held : null;
+  const retainConversationWindow = (address, key, priorKey, held, opening) =>
+    lazyViewReadsEnabled(context.deviceId) && sameConversationOpening(opening, context.deviceId)
+      && (key === priorKey || priorKey === `${threadAddressKey(address)}:`) ? held : null;
 
   const bindConversationCache = () => {
     const controller = controllerForAgent(agentOf(selectedId));
@@ -1290,6 +1292,7 @@ function mountRailOnContext(host, context, swap) {
     if (conversationCache && threadCache === wantedThreadCache) return conversationCache;
     const held = threadCache.readWindow() || retainedConversationWindow;
     const priorKey = conversationCacheKey;
+    const priorOpening = conversationCacheOpening;
     // Roster hydration can replace the transient reader with the canonical
     // history at the same address. Its subscription must follow that reader.
     unwatchThread?.();
@@ -1300,7 +1303,11 @@ function mountRailOnContext(host, context, swap) {
     paintedChat = null;
     conversationCache = createBoundConversationCache();
     conversationCacheKey = conversationGenerationKey(conversationCache.address());
-    retainedConversationWindow = retainConversationWindow(conversationCacheKey, priorKey, held);
+    // An unversioned cache cannot certify the roster's ID. Keep its paint
+    // across this same-opening handoff, without relabelling it or sharing the
+    // unknown and known admissions. A known A never carries over into B.
+    retainedConversationWindow = retainConversationWindow(conversationCache.address(), conversationCacheKey, priorKey, held, priorOpening);
+    conversationCacheOpening = conversationOpeningOwner(context.deviceId);
     seededSurfaces = null;
     return conversationCache;
   };
@@ -1308,6 +1315,7 @@ function mountRailOnContext(host, context, swap) {
   const resetConversationCache = () => {
     conversationCache = null;
     conversationCacheKey = null;
+    conversationCacheOpening = null;
     retainedConversationWindow = null;
     seededSurfaces = null;
     olderItemsAwaitingPaint = false;
@@ -2575,26 +2583,13 @@ function mountRailOnContext(host, context, swap) {
   const conversationOpeningOwner = (deviceId) => ({
     stamp: conversationOpeningStamp(deviceId), session: contextFor(deviceId)?.session,
   });
-  const ownReplyIncarnation = (admission, threadId, deviceId) => admission?.replyThreadId === threadId
-    && sameConversationOpening(admission, deviceId);
-
   const rememberConversationIncarnation = (record, identity, address) => {
     if (!record?.thread_id || !identity || !address) return;
-    const priorThreadId = effectiveConversationThreadId(address);
-    const priorKey = conversationGenerationKey(address, priorThreadId);
-    const admission = conversationReadAdmissions.get(priorKey);
     conversationIncarnation = { key: threadAddressKey(address), threadId: record.thread_id, ...conversationOpeningOwner(identity.deviceId) };
-    // Record identity exists before ownership negotiation. Remember it without
-    // changing legacy reads, so later lazy activation cannot relabel its paint.
+    // Only actual cached identity normalises a transient reader. A reply to
+    // an ID-less legacy cursor cannot prove continuity, so it never promotes
+    // that opening's admission; the roster may require its own read.
     conversationCacheKey = `${threadAddressKey(address)}:${record.thread_id}`;
-    if (priorThreadId || !ownReplyIncarnation(admission, record.thread_id, identity.deviceId)) return;
-    // Promote an unknown read only after its own reply has become the actual
-    // cached incarnation. An unrelated producer cannot certify that read.
-    const nextKey = conversationGenerationKey(address, record.thread_id);
-    if (admission.key === nextKey) return;
-    conversationReadAdmissions.delete(priorKey);
-    admission.key = nextKey;
-    conversationReadAdmissions.set(nextKey, admission);
   };
 
   const observeConversationSeed = (conversation, deviceId, promise) => {
@@ -2637,19 +2632,6 @@ function mountRailOnContext(host, context, swap) {
     priority: "foreground",
   });
 
-  const conversationReadCall = (owner) => {
-    const call = chatRepository.currentCall();
-    let replied = false;
-    return async (method, ...args) => {
-      const answer = await call(method, ...args);
-      if (!replied && method === "thread.page") {
-        replied = true;
-        owner.replyThreadId = answer?.thread_id || "";
-      }
-      return answer;
-    };
-  };
-
   const rememberConversationRead = (key, owner) => {
     conversationReadAdmissions.delete(key);
     conversationReadAdmissions.set(key, owner);
@@ -2667,13 +2649,13 @@ function mountRailOnContext(host, context, swap) {
     const threadId = effectiveConversationThreadId(address, identity.threadId);
     identity = threadId ? { ...identity, threadId } : identity;
     const key = conversationGenerationKey(address, identity.threadId);
-    const owner = { stamp, session, key, replyThreadId: "" };
+    const owner = { stamp, session, key };
     const active = () => standing() && stamp === conversationOpeningStamp(identity.deviceId)
       && session === contextFor(identity.deviceId)?.session && owner.key === conversationGenerationKey(conversation.address());
     if (!active()) return;
     const admitted = sameConversationOpening(conversationReadAdmissions.get(key), identity.deviceId);
     if (!admitted) rememberConversationRead(key, owner);
-    if (!admitted && active()) await readConversationWindow(identity, address, active, conversationReadCall(owner));
+    if (!admitted && active()) await readConversationWindow(identity, address, active);
   };
 
   const watchConversation = async () => {

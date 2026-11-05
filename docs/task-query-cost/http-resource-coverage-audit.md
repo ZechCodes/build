@@ -82,39 +82,30 @@ unchanged. Stress and lifetime tests retain the one-read expectation.
 
 ## Cached incarnation handoff follow-up
 
-Reviewed the rail's lazy-only cache-seed adapter and first-reply observer.
+Reviewed the rail's cache-seed adapter and logical-opening admission.
 The adapter reads incarnation metadata from the same full record that seeds
 the displayed thread window, before paint. An explicit roster incarnation
-still takes precedence. An unknown opening may inherit a reply's incarnation
-only when that reply and the record actually seeded agree; foreign-generation
-cache-merge refusal remains in the existing thread read owner.
+still takes precedence. Matching known IDs share one read across reader
+handoff. An ID-less legacy opening does not certify a versioned reply as its
+incarnation: unknown and known admissions remain separate, allowing at most
+two reads while a display-only retained window holds cached paint.
 
-The reply observer forwards the existing threadSync call, arguments and
-priority unchanged. Its one `call(method, ...args)` occurrence is added to the
-finite dynamic-site inventory. It only observes the first `thread.page`
-response's ID; the existing threadSync method expansion and resource routes
-remain the same. No metadata exemption, scanner rule, namespace exemption,
-RPC verb, wire field or request shape is added. The rail's complete source
-fingerprint is re-pinned after reviewing this assignment edge and the shared
-press/drop reopen admission path. The legacy call remains unchanged; the seed
-adapter only observes metadata before forwarding the same window seed. It
-adds no legacy RPC, cache read, cache write or paint.
+The first-reply observer and admission promotion are removed, together with
+their one dynamic call site. The retained window may cross an unknown-to-known
+handoff only at the same address and opening/session; a known A never carries
+over into B. It does not assign an ID or overwrite the canonical record.
 
-An unversioned window cannot prove that its rows or cursor belong to an
-ID-bearing page. The earlier in-place adoption is removed. After a forward
-probe discovers an ID, threadSync reads one bounded newest page pinned to
-that ID, without the old `after_sequence`, before replacing unproven history.
-An already-cold read can supply that newest page directly. Known-generation
-merges keep their existing behavior; ID-less legacy replies keep theirs too.
+The shared threadSync.js and its original test are restored byte-for-byte to
+a42b94508. The attempted upgrade replacement is retired: it dropped concurrent
+provisional sends and blocked direct required-write refreshes over ID-less
+records. Standalone witnesses exercise both real cache/write paths and guard
+that restoration. Existing known-generation, gap and reset behavior remains
+owned by the restored shared merge path; the rail does not extend it.
 
-The replacement transaction rejects captured or current retired IDs and any
-current foreign generation. It preserves the union of retirement authority,
-but takes no old cursor, items, history floor or repair debt from an unproven
-record. A matching, already-versioned concurrent record may keep its proven
-newer rows. Partial inline pages cannot append onto unproven history. The
-newest read uses the existing thread.page expansion, bounds and priority;
-there is no new RPC method, parameter shape or dynamic site. The additional
-bounded read is intentional for this cache-upgrade case.
+The fingerprints cover this complete rail revision and exact shared-module
+restoration. The finite dynamic inventory removes the retired observer site.
+No RPC verb, request shape, resource mapping, metadata exemption, lexical
+scanner rule, namespace exemption or wire field is added or changed.
 
 The adapter observes raw record identity before capability negotiation too,
 without using it to change legacy requests. It also records the actual legacy

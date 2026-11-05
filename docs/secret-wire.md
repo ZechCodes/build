@@ -109,11 +109,17 @@ metadata and idempotent `ensure_lifecycle_audit` / `ensure_revocation_receipts`
 upgrades within the shared `secret_audit_upgrade` savepoint. The audit CHECK is
 rebuilt from the complete known outcome set: `released`, `secret_unavailable`,
 `secret_expired`, `secret_revoked`, `created`, `attached`, `expired`, `revoked`.
-The savepoint upgrade preserves audit rows, sequence IDs and SQLite's deleted-row
-AUTOINCREMENT high-water, and can run repeatedly. Lifecycle appends use a separate
-helper in the same metadata transaction; release/denial authorization and summary
-accounting retain their existing helper. The original internal release-only
-reader retains that outcome filter. Public audit pages include lifecycle events.
+The savepoint upgrade adds CLI audit grouping columns before rebuilding the
+CHECK, copies all 14 columns by name, and derives the table and five indexes
+from the canonical schema. Both fresh and ALTER-upgraded CLI column orders
+preserve their data and converge on the same schema. Audit rows, sequence IDs
+and SQLite's deleted-row AUTOINCREMENT high-water survive repeated initialization.
+Lifecycle appends set attempt count to one and last occurrence to the fact's
+timestamp. Only `secret_unavailable`, `secret_expired` and `secret_revoked` enter
+denial grouping and its 4,096-group cap. Retention cleanup excludes lifecycle
+facts. Internal release/denial readers exclude those facts; public audit pages
+include them. Release/denial authorization and summary accounting retain their
+existing helper.
 
 If secret invalidation contexts exceed their bounded coalescing budget, a
 `scope:"device",truncated:true,secret_ids:[]` hint requests a full metadata

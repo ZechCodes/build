@@ -5,11 +5,14 @@ public routes, invalidations and delivered message blocks. CLI execution and
 composer UX are qualified by their own slices. Agents intentionally retrieve
 raw values through the CLI; that output can enter their tool transcripts.
 
-**Scoped score: 100/100.** Each row is 10 points. The final integrated run
-passed all 206 targeted secret tests with no failures or ignored tests. Eighteen
-assertions failed under reversible negative controls, then passed after byte-exact
-source restoration. Public contracts, SQL publication ownership, all five harness
-goldens, 336 targeted SPA tests and 19 HTTP coverage tests are verified.
+**Scoped score: 100/100.** Each row is 10 points. The wire-3.36 rebase passed
+270 targeted secret tests, 69 API contracts, three HTTP manifest tests and 52
+subscription tests with no failures or ignored tests. SQL publication ownership,
+all five harness goldens, 370 targeted SPA tests and 19 HTTP coverage tests are
+verified. The original reversible negative controls failed 18 assertions before
+byte-exact restoration. The added audit migration and denial-isolation regressions
+also failed before their fixes, covering both CLI column orders and lifecycle
+facts surviving the denial cap and retention cleanup.
 
 | # | Control | Targeted evidence |
 |---|---|---|

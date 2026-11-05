@@ -855,6 +855,7 @@ impl Thread {
             agent_reply: None,
             links,
             attachments: Vec::new(),
+            secrets: Vec::new(),
             options: Vec::new(),
             selected_options: Vec::new(),
             answers_options_of: None,

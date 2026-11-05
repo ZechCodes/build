@@ -81,6 +81,7 @@ fn payload(messages: Vec<ThreadMessage>) -> OperationPayload {
         prior_context: "The previous revision changed the parser.".to_string(),
         ask_to_name: false,
         tells_sender_context: false,
+        secret_environment: None,
     }
 }
 
@@ -201,6 +202,16 @@ fn compact_command() -> ThreadMessage {
     message(serde_json::json!({"body": "/compact"}))
 }
 
+fn secret_message() -> ThreadMessage {
+    message(serde_json::json!({
+        "body": "Use these credentials for the deployment.",
+        "secrets": [
+            {"name": "TEST_TOKEN", "secret_id": "sec_00000000-0000-4000-8000-000000000001", "scope": "project", "ttl_seconds": null, "expires_at": null},
+            {"name": "DEPLOY_TOKEN", "secret_id": "sec_00000000-0000-4000-8000-000000000002", "scope": "agent", "ttl_seconds": 3600, "expires_at": "2026-11-02T13:00:00Z"}
+        ]
+    }))
+}
+
 pub(crate) fn scenarios() -> Vec<Scenario> {
     let native = |name, messages, cold| Scenario {
         name,
@@ -236,6 +247,15 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
         legacy("task_moved", vec![moved_notice()]),
         native("user_assignment", vec![user_assignment()], false),
         native("attachment_only", vec![attachment_only()], false),
+        Scenario {
+            name: "attached_secrets",
+            payload: OperationPayload {
+                secret_environment: Some(crate::thread::SecretEnvironment::Dev),
+                ..payload(vec![secret_message()])
+            },
+            scope: Scope::Native("op-1"),
+            cold: false,
+        },
         Scenario {
             name: "agent_report_to_project_agent",
             payload: OperationPayload {

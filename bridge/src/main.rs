@@ -93,6 +93,20 @@ fn run_main_runtime(work: impl std::future::Future<Output = ()>) {
 }
 
 async fn dispatch() {
+    if std::env::args().nth(1).as_deref() == Some("install-runtime-launcher") {
+        let result = std::env::current_exe()
+            .and_then(|binary| build_bridge::runtime_launcher::install_sibling(&binary));
+        if result.is_err() {
+            eprintln!("runtime launcher installation failed");
+            std::process::exit(1);
+        }
+        return;
+    }
+    // Runtime retrieval must never resolve daemon configuration or open state.
+    if std::env::args().nth(1).as_deref() == Some("secrets") {
+        let args: Vec<_> = std::env::args().skip(2).collect();
+        std::process::exit(build_bridge::secret_cli::run(&args).await);
+    }
     // Every dev command, including MCP, validates paths before accessing state.
     let dev_config = match config::Channel::resolve(std::env::var("BRIDGE_CHANNEL").ok().as_deref())
     {

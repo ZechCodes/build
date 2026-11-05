@@ -60,3 +60,22 @@ use existing `tasks.get`; directory pages use existing `fs.tree`. The three
 capability names and `files.hints` push kind are not HTTP operations. The
 17-test guard run is still owned by the coordinator; its actual post-repair
 receipt will determine the result.
+
+## Logical conversation opening admission follow-up
+
+The rail now admits lazy revalidation once per logical opening, using the
+existing thread address and incarnation, selection generation, and actual
+device session. The bounded per-mount admission registry survives a transient
+reader being replaced by canonical history. A display-only held window keeps
+cached words painted during that same-address handoff until canonical cache
+seeding completes; it never overwrites canonical history. Real reselection,
+reopening, session replacement and thread-incarnation changes remain new reads.
+The legacy seeded-cache short circuit stays in its non-lazy branch.
+
+Reviewed the complete agentRail change and its outgoing call assignments:
+readConversationWindow extracts the same syncThreadWindow request fields and
+foreground priority. No RPC verb, parameter shape, resource mapping,
+capability exemption, dynamic producer or ownership edge is added. Only the
+rail's full-source fingerprint changes; the lexical scanner, metadata
+occurrences, method inventory, helper recognizers and all assertions are
+unchanged. Stress and lifetime tests retain the one-read expectation.

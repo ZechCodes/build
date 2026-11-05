@@ -1238,9 +1238,16 @@ describe("the rail over a machine that is asked nothing", () => {
       return delayedPage;
     });
     const releasePage = () => deliverPage({ items: [said(2, "Fresh open-time words")], has_more: false, thread_last_sequence: 2 });
+    const frames = [];
+    let observer;
     try {
       rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-delayed-roster" }));
       await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Cached before the roster"));
+      observer = new MutationObserver(() => {
+        const body = railHost().querySelector("#rail-body");
+        frames.push({ empty: !body || !!body.querySelector(".thread-empty"), text: body?.textContent || "" });
+      });
+      observer.observe(railHost(), { childList: true, subtree: true, characterData: true });
       await vi.waitFor(() => expect(callsTo("thread.page").length).toBeGreaterThan(0));
       if (rosterArrival === "after") {
         releasePage();
@@ -1252,13 +1259,82 @@ describe("the rail over a machine that is asked nothing", () => {
       await vi.waitFor(() => expect(headWho()).toBe(TOPICS["ag-1"]));
       await vi.waitFor(() => expect(railHost().querySelector("#railinput")).not.toBeNull());
       expect(callsTo("workspace.get")).toHaveLength(0);
+      expect(railHost().querySelector("#rail-body")?.textContent).toContain(rosterArrival === "before" ? "Cached before the roster" : "Fresh open-time words");
       expect(callsTo("thread.page")).toHaveLength(1);
       releasePage();
       await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Fresh open-time words"));
       expect(callsTo("thread.page")).toHaveLength(1);
+      expect(frames.length).toBeGreaterThan(0);
+      expect(frames.some((frame) => frame.empty || !/Cached before the roster|Fresh open-time words/.test(frame.text))).toBe(false);
     } finally {
+      observer?.disconnect();
       releasePage();
     }
+  });
+
+  const mountLazyCachedConversations = async () => {
+    lazy.enabled = true;
+    payload = branchRow({ agents: [agent({ watched: true }), agent({ id: "ag-2", ordinal: 2, watched: true })] });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "First cached conversation")] });
+    await writeRailThread("run-3", "ag-2", { items: [said(1, "Second cached conversation")] });
+    const original = bridge.call;
+    bridge.call = vi.fn((method, params) => {
+      if (method !== "thread.page") return original(method, params);
+      calls.push({ method, params });
+      return { items: [], has_more: false, thread_last_sequence: 1 };
+    });
+    await mount({ openAgentId: "ag-1", panelOpen: true });
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("First cached conversation"));
+  };
+
+  it("revalidates a genuine conversation reselection after leaving its cached address", async () => {
+    await mountLazyCachedConversations();
+    railHost().querySelector('[data-bubble="agent"][data-agent="ag-2"]').click();
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Second cached conversation"));
+    railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(3));
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("First cached conversation"));
+    expect(callsTo("thread.page").map(({ params }) => params.agent_id)).toEqual(["ag-1", "ag-2", "ag-1"]);
+  });
+
+  it("revalidates a conversation selected again after roster replacement", async () => {
+    await mountLazyCachedConversations();
+    await writeRailWorkItem(branchRow({ agents: [agent({ id: "ag-2", ordinal: 2, watched: true })] }));
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Second cached conversation"));
+    await writeRailWorkItem(branchRow({ agents: [agent({ watched: true })] }));
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(3));
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("First cached conversation"));
+    expect(callsTo("thread.page").map(({ params }) => params.agent_id)).toEqual(["ag-1", "ag-2", "ag-1"]);
+  });
+
+  it("revalidates a reopened cached conversation on the same agent", async () => {
+    await mountLazyCachedConversations();
+    rail.collapse();
+    await vi.waitFor(() => expect(panel()?.getAttribute("aria-hidden")).toBe("true"));
+    railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+    expect(callsTo("thread.page").map(({ params }) => params.agent_id)).toEqual(["ag-1", "ag-1"]);
+  });
+
+  it("revalidates a cached conversation after its actual device session is replaced", async () => {
+    await mountLazyCachedConversations();
+    const previous = contextFor("dev-1").session;
+    adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "2.0.0" }, null);
+    expect(contextFor("dev-1").session).not.toBe(previous);
+    await writeRailWorkItem(payload);
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+    expect(callsTo("thread.page").map(({ params }) => params.agent_id)).toEqual(["ag-1", "ag-1"]);
+  });
+
+  it("revalidates a cached conversation when its thread incarnation changes", async () => {
+    await mountLazyCachedConversations();
+    payload = branchRow({ agents: [agent({ watched: false, thread_id: "thread-next", thread_generation_revision: 1 })] });
+    await writeRailWorkItem(payload);
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+    expect(callsTo("thread.page")[1].params.thread_id).toBe("thread-next");
   });
 
   it.each([false, true])("paints and revalidates a cached unwatched conversation under lazy ownership (%s)", async (enabled) => {

@@ -91,7 +91,7 @@ import { createChatReadReporter, hasReadProgress } from "./chatReadReporter.js";
 import { onReaderReturns } from "./readerPresence.js";
 import { notifyError, notifySuccess } from "./notify.js";
 import { COMPACTION_SAVED } from "./compactionPresentation.js";
-import { deviceFeedView } from "./deviceContexts.js";
+import { contextFor, deviceContextIdentity, deviceFeedView } from "./deviceContexts.js";
 import { deviceCatalog, followDeviceCatalog } from "./inboxDevices.js";
 import { createConversationCache, withdrawProvisionalMessage, writeProvisionalMessage } from "./conversationCache.js";
 import { applyConversationReset, conversationResetSupportAddress, cachedConversationThreadId } from "./conversationReset.js";
@@ -1235,39 +1235,52 @@ function mountRailOnContext(host, context, swap) {
   };
 
   let conversationCache = null;
+  let conversationCacheKey = null;
+  let retainedConversationWindow = null;
+  let conversationOpening = 0;
+  const conversationReadAdmissions = new Map();
 
-  const createBoundConversationCache = () => createConversationCache({
-    addressOf: cacheIdentity,
-    threadCache,
-    onThreadSeeded: (seededFor) => {
-      if (!standing()) return;
-      threadAgentId = seededFor;
-      // Edits and local delivery changes can keep the same cursor/count.
-      // Compare only the drawn tail, preserving the unchanged-record fast path.
-      if (paintedChat !== null && loadedConversationItems().length === paintedChatItemCount
-        && paintedChatContent !== drawnChatContent()) paintedChat = null;
-      paintChat();
-      // The line above the composer is drawn from the conversation too — what
-      // the agent is doing, and what started it — so a window arriving moves
-      // it as much as it moves the timeline.
-      paintRailStatus();
-    },
-    onSurfacesSeeded: (seen) => {
-      if (!standing()) return;
-      seededSurfaces = {
-        surfaces: surfacesAfterGrace(seen.surfaces, seen.at, Date.now()),
-        generation: seen.generation,
-        at: seen.at,
-      };
-      syncSurfaces();
-      paintSurfaceMenu();
-    },
-  });
+  const createBoundConversationCache = () => {
+    const boundThreadCache = threadCache;
+    return createConversationCache({
+      addressOf: cacheIdentity,
+      threadCache,
+      onThreadSeeded: (seededFor) => {
+        if (!standing() || (lazyViewReadsEnabled(context.deviceId) && boundThreadCache !== threadCache)) return;
+        retainedConversationWindow = null;
+        threadAgentId = seededFor;
+        // Edits and local delivery changes can keep the same cursor/count.
+        // Compare only the drawn tail, preserving the unchanged-record fast path.
+        if (paintedChat !== null && loadedConversationItems().length === paintedChatItemCount
+          && paintedChatContent !== drawnChatContent()) paintedChat = null;
+        paintChat();
+        // The line above the composer is drawn from the conversation too — what
+        // the agent is doing, and what started it — so a window arriving moves
+        // it as much as it moves the timeline.
+        paintRailStatus();
+      },
+      onSurfacesSeeded: (seen) => {
+        if (!standing()) return;
+        seededSurfaces = {
+          surfaces: surfacesAfterGrace(seen.surfaces, seen.at, Date.now()),
+          generation: seen.generation,
+          at: seen.at,
+        };
+        syncSurfaces();
+        paintSurfaceMenu();
+      },
+    });
+  };
+
+  const retainConversationWindow = (key, priorKey, held) =>
+    lazyViewReadsEnabled(context.deviceId) && key === priorKey ? held : null;
 
   const bindConversationCache = () => {
     const controller = controllerForAgent(agentOf(selectedId));
     const wantedThreadCache = controller?.history.threadCache || transientThreadCache;
     if (conversationCache && threadCache === wantedThreadCache) return conversationCache;
+    const held = threadCache.readWindow() || retainedConversationWindow;
+    const priorKey = conversationCacheKey;
     // Roster hydration can replace the transient reader with the canonical
     // history at the same address. Its subscription must follow that reader.
     unwatchThread?.();
@@ -1277,12 +1290,16 @@ function mountRailOnContext(host, context, swap) {
     threadAgentId = null;
     paintedChat = null;
     conversationCache = createBoundConversationCache();
+    conversationCacheKey = conversationGenerationKey(conversationCache.address());
+    retainedConversationWindow = retainConversationWindow(conversationCacheKey, priorKey, held);
     seededSurfaces = null;
     return conversationCache;
   };
 
   const resetConversationCache = () => {
     conversationCache = null;
+    conversationCacheKey = null;
+    retainedConversationWindow = null;
     seededSurfaces = null;
     olderItemsAwaitingPaint = false;
   };
@@ -1339,6 +1356,7 @@ function mountRailOnContext(host, context, swap) {
   const agentIdOf = (agent) => agent.id;
 
   const openConversation = (agentId) => {
+    if (selectedId === (agentId || null)) conversationOpening += 1;
     chooseAgent(agentId);
     resetConversationCache();
     // Let threadWindow bind the selected controller's canonical history before
@@ -1379,7 +1397,10 @@ function mountRailOnContext(host, context, swap) {
   /** Open this agent's conversation, and tell everything else on screen: the
    *  bubble strip is the selector for the whole work item, not just the rail. */
   const chooseAgent = (id) => {
-    if (selectedId !== (id || null)) leaveUnreadMarker();
+    if (selectedId !== (id || null)) {
+      leaveUnreadMarker();
+      conversationOpening += 1;
+    }
     selectedId = id || null;
     syncWatchFromAgent();
     railView.chooseAgent(selectedId);
@@ -2523,20 +2544,61 @@ function mountRailOnContext(host, context, swap) {
   /// across a remount (core/chatRepository.js).
   const threadWindow = () => {
     bindConversationCache();
-    if (threadAgentId !== selectedId) {
+    if (threadAgentId !== selectedId || lazyConversationReadWanted()) {
       threadAgentId = selectedId;
       // Fire and forget: the seed paints when it lands, and until it does the
       // panel shows the conversation it is already holding rather than a gap.
       void watchConversation();
     }
-    const held = threadCache.readWindow();
+    const held = threadCache.readWindow() || retainedConversationWindow;
     return held ? { items: held.items, activityDigests: held.activityDigests } : null;
   };
 
   /// Open the record this conversation is held in, and hear it move. Every
   /// write to it — a page the sync layer pulled, a push it applied, a message
   /// this panel just sent — is a repaint from the record and nothing else.
-  const conversationGenerationKey = (address) => `${threadAddressKey(address)}:${cacheIdentity()?.threadId || ""}`;
+  const conversationGenerationKey = (address, threadId = cacheIdentity()?.threadId) => `${threadAddressKey(address)}:${threadId || ""}`;
+  const conversationOpeningStamp = (deviceId) => `${conversationOpening}:${deviceContextIdentity(deviceId)}`;
+  const sameConversationOpening = (admission, deviceId) => admission?.stamp === conversationOpeningStamp(deviceId)
+    && admission.session === contextFor(deviceId)?.session;
+
+  const lazyConversationReadWanted = () => {
+    const identity = cacheIdentity();
+    if (!lazyViewReadsEnabled(identity?.deviceId)) return false;
+    const key = conversationGenerationKey(conversationCache.address(), identity?.threadId);
+    return !sameConversationOpening(conversationReadAdmissions.get(key), identity?.deviceId);
+  };
+
+  const readConversationWindow = (identity, address, active) => syncThreadWindow({
+    deviceId: identity.deviceId,
+    call: chatRepository.currentCall(),
+    active,
+    entityId: identity.entityId,
+    agentId: identity.agentId,
+    conversationId: identity.conversationId,
+    threadId: identity.threadId,
+    address,
+    priority: "foreground",
+  });
+
+  const watchLazyConversation = async (conversation, identity, address) => {
+    if (!identity || !address) return;
+    const key = conversationGenerationKey(address, identity.threadId);
+    const stamp = conversationOpeningStamp(identity.deviceId);
+    const session = contextFor(identity.deviceId)?.session;
+    const admitted = sameConversationOpening(conversationReadAdmissions.get(key), identity.deviceId);
+    if (!admitted) {
+      // Reader replacement is still the same opening. Keep completed as well
+      // as in-flight admissions, bounded across the conversations visited here.
+      conversationReadAdmissions.delete(key);
+      conversationReadAdmissions.set(key, { stamp, session });
+      if (conversationReadAdmissions.size > 8) conversationReadAdmissions.delete(conversationReadAdmissions.keys().next().value);
+    }
+    await conversation.seed();
+    const active = () => standing() && stamp === conversationOpeningStamp(identity.deviceId)
+      && session === contextFor(identity.deviceId)?.session && key === conversationGenerationKey(conversation.address());
+    if (!admitted && active()) await readConversationWindow(identity, address, active);
+  };
 
   const watchConversation = async () => {
     const conversation = bindConversationCache();
@@ -2548,21 +2610,13 @@ function mountRailOnContext(host, context, swap) {
       watchedThreadKey = generationKey;
       if (address) unwatchThread = subscribeCache(address, () => void conversation.reread());
     }
-    if (await conversation.seed() && !lazyViewReadsEnabled(cacheIdentity()?.deviceId)) return;
+    if (lazyViewReadsEnabled(cacheIdentity()?.deviceId)) return watchLazyConversation(conversation, cacheIdentity(), address);
+    if (await conversation.seed()) return;
     const identity = cacheIdentity();
     const askedKey = conversationGenerationKey(address);
     if (!identity || !address || !askedKey) return;
-    await syncThreadWindow({
-      deviceId: identity.deviceId,
-      call: chatRepository.currentCall(),
-      active: () => standing() && askedKey === conversationGenerationKey(conversation.address()),
-      entityId: identity.entityId,
-      agentId: identity.agentId,
-      conversationId: identity.conversationId,
-      threadId: identity.threadId,
-      address,
-      priority: "foreground",
-    });
+    await readConversationWindow(identity, address,
+      () => standing() && askedKey === conversationGenerationKey(conversation.address()));
   };
 
   const threadFor = () => {
@@ -4056,7 +4110,10 @@ function mountRailOnContext(host, context, swap) {
     const pressed = pressedSelection(type, agentId);
     if (!isSelected(pressed)) select(pressed);
     else if (panelOut()) closePanel({ restoreFocus: true });
-    else showPanel();
+    else {
+      if (pressed.kind === "agent" && lazyViewReadsEnabled(context.deviceId)) conversationOpening += 1;
+      showPanel();
+    }
   };
 
   /** Put the panel on screen without touching the pin: docked it is already

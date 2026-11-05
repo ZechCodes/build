@@ -128,3 +128,77 @@ it.each(["hidden", "disposed", "regreeted"])("rejects hint reads after their bin
   expect((await cache.readCached(address("task-review-live-file", "src/live.txt"))).value.file.content_b64).toBe(btoa("held selected bytes"));
   expect((await cache.readCached(address("task-review-live-tree", "src"))).value.entries.map(({ name }) => name)).toEqual(["live.txt"]);
 });
+
+
+const leaseRoot = (fresh = false) => ({ path: "",
+  entries: Array.from({ length: 100 }, (_, i) => entry(fresh && i === 99 ? "fresh.txt" : `cached-${String(i).padStart(3, "0")}.txt`)),
+  has_more: !fresh, next_cursor: fresh ? null : "opaque-directory-lease" });
+const mountCursorReview = async (readDirectory) => {
+  read.mockImplementation(async (method, params) => method === "fs.tree"
+    ? readDirectory(params) : file(params.path, "held lease preview"));
+  await greet();
+  view = mountTaskReviewFiles(host, { deviceId, projectId, taskId: "synthetic-task", workspaceId,
+    snapshot, directory, callRpc: wire });
+  await vi.waitFor(() => expect(host.querySelector('[data-path="cached-000.txt"]')).not.toBeNull());
+  await view.open("cached-000.txt");
+  await vi.waitFor(() => expect(host.querySelector(".trf-preview")?.textContent).toContain("held lease preview"));
+  await events.subscriptionsSettled(); await drain(); read.mockClear();
+};
+
+it("keeps cached live-review rows and preview quiet during a refused directory continuation", async () => {
+  const replacement = deferred();
+  const message = "synthetic expired directory cursor";
+  let recovering = false, replacementReads = 0;
+  await mountCursorReview(async (params) => {
+    if (params.cursor) {
+      recovering = true;
+      throw Object.assign(new Error(message), { code: "invalid_params" });
+    }
+    if (recovering) { replacementReads++; return replacement.promise; }
+    return leaseRoot();
+  });
+  const header = host.querySelector(".trf-file-head").textContent;
+  const notices = [];
+  const observer = new MutationObserver(() => {
+    if (host.querySelector(".trf-status").textContent.includes(message)) notices.push(message);
+  });
+  observer.observe(host, { subtree: true, childList: true, characterData: true });
+  try {
+    host.querySelector("[data-tree-more]").click();
+    await vi.waitFor(() => expect(replacementReads).toBe(1));
+    const failure = await cache.readCached(address("task-review-tree-error", ""));
+    await drain();
+    expect(host.querySelector('[data-path="cached-000.txt"]')).not.toBeNull();
+    expect(host.querySelector(".trf-file-head").textContent).toBe(header);
+    expect(host.querySelector(".trf-preview").textContent).toContain("held lease preview");
+    expect(host.querySelector(".trf-status").textContent).toBe("");
+    expect(failure?.value?.message || "").toBe("");
+    expect(host.querySelector('.throbber[aria-label="loading"]')).toBeNull();
+    expect(notices).toEqual([]);
+    replacement.resolve(leaseRoot(true));
+    await vi.waitFor(() => expect(host.querySelector('[data-path="fresh.txt"]')).not.toBeNull());
+    expect(host.querySelector(".trf-file-head").textContent).toBe(header);
+    expect(host.querySelector("[data-tree-more]")).toBeNull();
+    expect(notices).toEqual([]);
+    expect(read.mock.calls.filter(([method]) => method === "fs.tree").map(([, params]) => params.cursor || null))
+      .toEqual(["opaque-directory-lease", null]);
+  } finally { replacement.resolve(leaseRoot(true)); observer.disconnect(); }
+});
+
+it.each([
+  { demand: "first-page", code: "invalid_params" },
+  { demand: "continuation", code: "unavailable" },
+])("keeps ordinary $demand directory errors visible in live review", async ({ demand, code }) => {
+  const message = `synthetic ordinary ${demand} directory failure`;
+  let fail = false;
+  await mountCursorReview(async (params) => {
+    if (fail && (demand === "first-page" || params.cursor)) throw Object.assign(new Error(message), { code });
+    return leaseRoot();
+  });
+  fail = true;
+  if (demand === "first-page") view.refresh();
+  else host.querySelector("[data-tree-more]").click();
+  await vi.waitFor(() => expect(host.querySelector(".trf-status").textContent).toContain(message));
+  expect(host.querySelector('[data-path="cached-000.txt"]')).not.toBeNull();
+  expect(host.querySelector(".trf-preview").textContent).toContain("held lease preview");
+});

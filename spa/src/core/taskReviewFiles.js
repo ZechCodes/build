@@ -319,7 +319,11 @@ export function mountTaskReviewFiles(host, options) {
     keepHeldOnError: true, keepReadingPlace,
     listDirectory: async (name, continuation) => {
       try { const listing = await listDirectory(name, continuation); setTreeFailure(""); return listing; }
-      catch (error) { setTreeFailure(readError(error)); throw error; }
+      catch (error) {
+        const cursorRefused = continuation?.cursor && (error?.code || error?.error_code) === "invalid_params";
+        if (!cursorRefused) setTreeFailure(readError(error));
+        throw error;
+      }
     },
     finePointer: () => window.matchMedia?.("(pointer: fine)").matches === true,
     onOpen: (name) => void open(name),

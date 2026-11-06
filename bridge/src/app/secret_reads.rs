@@ -319,6 +319,15 @@ mod tests {
                 "unavailable"
             );
         }
+        // Independent reads can sample different seconds; compare all other metadata exactly.
+        for reply in audits.iter_mut().chain(&mut cross_conversation_denials) {
+            assert!(reply
+                .as_object_mut()
+                .unwrap()
+                .remove("server_now")
+                .unwrap()
+                .is_i64());
+        }
         assert_eq!(accepted[0], accepted[1]);
         assert_eq!(accepted[0][0]["secret_id"], secret.context.id);
         assert_eq!(audits[0], audits[1]);

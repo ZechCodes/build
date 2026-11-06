@@ -831,9 +831,9 @@ runtime that starts them.
 
 Secret attachment wire 3.36.0 (#1003) registers sealed uploads, metadata
 queries, revocation and audit queries, plus optional secret references on
-`thread.post`. The three secrets feature capabilities and four method names
-remain explicitly unadvertised until UI enablement. The hello event and change-kind
-lists withhold `secrets.changed` behind the same `secrets.metadataEvents` capability.
+`thread.post`. The bridge advertises the three secrets feature capabilities,
+the four method names and `secrets.changed`; the event and change kind remain
+gated by `secrets.metadataEvents` for older clients.
 Upload values are sealed
 before the generic adapter, opened through an injected narrow startup handle,
 and stored only in the device vault. Sends commit final bindings, frozen
@@ -1201,8 +1201,8 @@ that grace period; its transactions remain atomic and cleanup remains resumable.
 #### Device secret vault foundation (#1001)
 
 `bridge/src/secrets/` owns device-local encrypted values separately from the
-history database. The public feature remains unadvertised: no secret RPC,
-version change or runtime CLI is enabled. Private session release authority is
+history database. Wire 3.36 exposes only sealed upload and metadata operations;
+the installed runtime CLI is the deliberate raw-value retrieval boundary. Private session release authority is
 implemented separately from the MCP control plane. `SecretService` is constructed from
 `BridgeConfig.state_root`, the authenticated device ID and the existing store
 writer before the app is shared. Its startup/periodic sweeper captures no app
@@ -1235,8 +1235,8 @@ unavailable. Pending initialization without a key can retry after the retirement
 barrier. Recovery uses a tested count-only diagnostic; metadata Debug redacts
 names, and expiry records reason `expired` independently from explicit `revoked`.
 See [device vault storage and lifetime](docs/device-secret-vault.md) for the file format, limits and clock
-policy. Sealed upload validation and message admission belong to subsequent
-slices and must precede public feature advertisement.
+policy. Sealed upload validation and atomic message admission sit above this
+storage layer and precede the now-enabled greeting capabilities.
 
 #### Private session secret release (#1002)
 
@@ -4128,6 +4128,17 @@ The shared attachment loader fills missing bodies; the same image lightbox and
 download controls serve all three. Message role and connection status do not
 gate attachment display.
 
+Secret attachments follow the same cache rule without sharing the file path.
+`secretComposer.js` owns the accessible Agent/Project and TTL modal; the live
+value exists only in its password field and the immediate sealed request.
+`secretDrafts.js` stages and revokes descriptors, while `secretMetadataCache.js`
+stores metadata-only project and conversation-generation records. The composer
+menu reads cached support, and current-greeting capability checks authorize
+the actual create/revoke/post calls. Draft and sent chips resolve exact IDs from
+the metadata cache; `secrets.changed` only invalidates a scope and causes an
+authoritative `secrets.list` refresh. No value enters IndexedDB, thread history,
+push content or chip markup.
+
 **How it is built:**
 
 - **The cache** is `spa/src/core/localCache.js`: one IndexedDB database
@@ -4992,6 +5003,14 @@ refuses when that device cannot answer.
   requirement. No new source selectors go to an older bridge. Sync base uses
   `sources.syncBase`; its captured-path precondition additionally requires
   `sources.syncBasePath`.
+- Secret UI support is persisted per device in `secret-support`. The composer
+  always offers Files or images and adds Secret only when cached support says
+  all of `secrets.attachments`, `secrets.sealedUpload` and
+  `secrets.metadataEvents` are present. Dispatch rechecks the current greeting;
+  a held secret post may cross a reconnect with its unchanged `operation_id`,
+  which `thread.post` deduplicates. Project and exact agent-generation metadata
+  scopes are tracked for every rail, including task/branch rails that learn
+  their project from the cached work item after mounting.
 - Conversation requests preserve their captured generation and exact agent,
   conversation and thread selectors. App dispatch waits for the current
   greeting and adapter; there is no pre-greeting legacy-shape conversion.

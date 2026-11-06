@@ -124,6 +124,13 @@
       "run.git_action",
       "run.message",
       "run.request_changes",
+      "secrets.attachments",
+      "secrets.audit",
+      "secrets.create",
+      "secrets.list",
+      "secrets.metadataEvents",
+      "secrets.revoke",
+      "secrets.sealedUpload",
       "session.hello",
       "settings.get",
       "settings.projectAgent",
@@ -266,6 +273,7 @@
       "harnesses.changed",
       "models.changed",
       "rtc.diagnostics",
+      "secrets.changed",
       "writes.confirmed"
     ],
     "coalesce_window_ms": 250,
@@ -280,7 +288,8 @@
         "files.hints",
         "terminals",
         "tasks",
-        "compaction.changed"
+        "compaction.changed",
+        "secrets.changed"
       ],
       "items": "bodies",
       "batch_ms": {

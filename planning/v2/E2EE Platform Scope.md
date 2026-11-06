@@ -1,5 +1,20 @@
 # Build v1 — Scope Document
 
+## Secret attachments — #1006 implementation amendment (2026-11-05)
+
+The conversation attachment button is a keyboard-accessible menu. Files or
+images retain their existing upload path; Secret appears only for a device that
+advertises the complete wire-3.36 secret capability set. The modal accepts a
+validated name, a masked non-persisted value, Agent (default) or Project scope,
+and optional expiry. TTL begins at durable message acceptance. Removing a
+staged chip revokes it; sent chips are metadata-only cache renderings.
+
+Values are sealed to the paired device before generic transport and encrypted
+under a dedicated local vault key. Authorized agents intentionally retrieve an
+exact value with `buildctl --env <env> secrets get --id sec_…`; that stdout is
+the explicit disclosure boundary. Values never enter message history, browser
+cache, push content, logs or Git automatically.
+
 ## Project workspace scope — #522 implementation amendment (2026-10-13)
 
 Implemented by #529–#536 under the settled decisions in
@@ -266,7 +281,7 @@ Already built. v1 adds no relay features. (The streaming-crypto upgrade — pair
 
 ## 7. Auth & Billing Posture
 
-- Harness sign-in credentials remain local to the harness. The unadvertised #1001 device-vault foundation separately stores user-supplied secret values encrypted on the device; it currently exposes no upload or retrieval route. The planned secret attachment feature intentionally lets authorized agents retrieve those values. This supersedes the historical claim that Build never handles vendor credentials. Users authenticate harnesses locally (`claude /login`, API keys in their own env). Model traffic goes direct from the user's machine to the vendor; the relay never carries it.
+- Harness sign-in credentials remain local to the harness. The secret attachment feature separately stores user-supplied values encrypted in the device vault and intentionally lets authorized agents retrieve them through the installed CLI. This supersedes the historical claim that Build never handles vendor credentials. Users authenticate harnesses locally (`claude /login`, API keys in their own env). Model traffic goes direct from the user's machine to the vendor; the relay never carries it.
 - The integration-mode switch is named by **mechanism** (PTY session vs. SDK), not by compliance posture. Build's job is to tell the user what each mode does and which billing bucket it draws from. The user's relationship with their vendor is their own.
 - In v1, every prompt an agent receives is human-initiated: a dispatch, an approval, a batched review round, or terminal input. There is no Build-originated prompting in v1 — not as policy enforcement, but because auto-dispatch is deferred to the SDK path in v1.x where it belongs technically.
 - Defaults steer: subscription-detected → PTY mode (the only v1 mode anyway). When SDK mode ships, key/credit-detected defaults there for automation features. Overrides always available, always with the relevant details displayed.

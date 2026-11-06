@@ -236,7 +236,7 @@ async fn the_greeting_announces_push_events() {
     let hello = call(&handler, "session.hello", json!({}));
     assert_eq!(hello["ok"], true, "{hello:?}");
     assert_eq!(hello["result"]["push_events"], true, "{hello:?}");
-    assert!(!hello["result"]["capabilities"]
+    assert!(hello["result"]["capabilities"]
         .as_array()
         .unwrap()
         .iter()
@@ -269,7 +269,8 @@ async fn the_greeting_announces_push_events() {
             "models.changed",
             "rtc.diagnostics",
             "harnesses.changed",
-            "compaction.changed"
+            "compaction.changed",
+            "secrets.changed"
         ]),
         "{hello:?}"
     );
@@ -282,7 +283,7 @@ async fn the_greeting_announces_push_events() {
         json!({
             "subscriptions": true,
             "mode": "subscriptions",
-            "kinds": ["state", "thread", "git", "files", "files.hints", "terminals", "tasks", "compaction.changed"],
+            "kinds": ["state", "thread", "git", "files", "files.hints", "terminals", "tasks", "compaction.changed", "secrets.changed"],
             "items": "bodies",
             "batch_ms": { "min": 1000, "max": 600_000 },
         }),

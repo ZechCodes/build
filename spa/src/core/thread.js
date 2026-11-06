@@ -922,8 +922,7 @@ function messageCardHtml(message, agentLabel, context) {
       ${messageContextHtml(message)}
       ${handedTaskHtml(message, context)}
       ${body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(body, { place: context.place, taskLabelScope: `message:${messageKey(message)}` })}</div>` : ""}
-      ${attachmentsHtml(message.attachments, threadState)}
-      ${messageSecretsHtml(message, context.secretMetadata)}
+      ${attachmentsHtml(message.attachments, threadState)}${messageSecretsHtml(message, context.secretMetadata)}
       ${linksHtml(message.links)}
       ${optionsHtml(message, live, offer, threadState)}
       ${messageFooterHtml(message)}
@@ -2135,6 +2134,7 @@ export function chatPaintFingerprint({
   unreadFrom,
   detailLevel,
   agentLabels,
+  secretMetadata,
   slice,
 }) {
   return [
@@ -2152,6 +2152,7 @@ export function chatPaintFingerprint({
     // A tracking notice names an agent, and that name comes off the feed: a
     // rename has to repaint a line that is already on screen.
     agentLabels || "",
+    secretMetadata || "",
     // What the reference index can answer for (#229). A list lands after the
     // first paint, and when it does, prose becomes links; the version covers
     // every project, so a reference to another project's workspace repaints.
@@ -2657,6 +2658,20 @@ function mountViewingContext(root, inputId, viewingContext) {
   return unsubscribe;
 }
 
+const EMPTY_SECRET_COMPOSER = Object.freeze({
+  open() {},
+  chipsHtml: () => "",
+  wire() {},
+  entries: () => [],
+});
+
+const activeSecretComposer = (secretComposer) => secretComposer || EMPTY_SECRET_COMPOSER;
+
+const mountThreadAttachments = (root, upload, options) => {
+  if (!upload) return null;
+  return mountComposerAttachments(root, { ...options, upload });
+};
+
 export function wireThreadComposer(root, {
   ids,
   onSubmit,
@@ -2670,6 +2685,8 @@ export function wireThreadComposer(root, {
   writeAttachments,
   submissionOwnsDraft = false,
   viewingContext = null,
+  secretComposer = null,
+  secretAttachable = false,
 }) {
   if (!root) return null;
   const input = root.querySelector(`#${ids.input}`);
@@ -2678,6 +2695,7 @@ export function wireThreadComposer(root, {
   const hint = ids.hint ? root.querySelector(`#${ids.hint}`) : null;
   if (!input || !send) return null;
   const unsubscribeContext = mountViewingContext(root, ids.input, viewingContext);
+  const secrets = activeSecretComposer(secretComposer);
 
   const say = (message) => {
     if (hint && hint.textContent !== message) hint.textContent = message;
@@ -2701,16 +2719,18 @@ export function wireThreadComposer(root, {
     }
     setPressable(true);
   };
-  tray = upload
-    ? mountComposerAttachments(root, {
-        ids,
-        upload,
-        readAttachments,
-        writeAttachments,
-        onError: say,
-        onChange: () => queueMicrotask(paintAction),
-      })
-    : null;
+  tray = mountThreadAttachments(root, upload, {
+    ids,
+    readAttachments,
+    writeAttachments,
+    onError: say,
+    onChange: () => queueMicrotask(paintAction),
+    secretAttachable,
+    onSecret: () => secrets.open(),
+    extraChipsHtml: () => secrets.chipsHtml(),
+    wireExtraChips: (trayRoot) => secrets.wire(trayRoot),
+    hasExtra: () => Boolean(secrets.entries().length),
+  });
 
   input.value = readDraft();
   input.oninput = () => {
@@ -2816,6 +2836,13 @@ export function wireThreadComposer(root, {
   return {
     setCanInterrupt,
     setBlocked,
+    setSecretAttachable(enabled) {
+      tray?.setSecretAttachable(enabled);
+    },
+    refreshSecrets() {
+      tray?.refresh();
+      paintAction();
+    },
     syncDraft() {
       if (!input.value && readDraft()) {
         input.value = readDraft();

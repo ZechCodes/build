@@ -27,7 +27,7 @@ import {
   ICON_SQUARE,
   ICON_X,
 } from "./icons.js";
-import { menuButtonMarkup, mountSplitMenu } from "./splitButton.js";
+import { menuButtonMarkup, mountMenuIfChanged, mountSplitMenu } from "./splitButton.js";
 import { setMotionRowHtml } from "./motion.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import {
@@ -216,6 +216,25 @@ export const composerPartIds = (inputId) => ({
   gauge: `${inputId}gauge`,
 });
 
+const attachmentMenuOptions = (secretAttachable) => [
+  { id: "files", label: "Files or images", description: "Choose a file or image from this device" },
+  ...(secretAttachable
+    ? [{ id: "secret", label: "Secret", description: "Seal a value for this agent" }]
+    : []),
+];
+
+const attachmentMenuMarkup = (secretAttachable) =>
+  menuButtonMarkup("Attach", attachmentMenuOptions(secretAttachable), {
+    title: "Attach",
+    iconHtml: ICON_PAPERCLIP,
+  });
+
+const composerAttachmentControls = (parts, attachable, secretAttachable) => {
+  if (!attachable) return "";
+  return `<input type="file" id="${esc(parts.file)}" class="composer-file" multiple hidden>
+       <div class="composer-attach" id="${esc(parts.attach)}">${attachmentMenuMarkup(secretAttachable)}</div>`;
+};
+
 /// The right-hand action is an arrow while there is something to send. When a
 /// turn is active and the draft is empty, the same stable button becomes Stop.
 export function sendControlHtml({ sendId, canInterrupt = false, hasDraft = false }) {
@@ -239,14 +258,12 @@ export function composerHtml({
   hintId,
   placeholder,
   attachable = false,
+  secretAttachable = false,
   canInterrupt = false,
   modelMenu = false,
 }) {
   const parts = composerPartIds(inputId);
-  const attachControls = attachable
-    ? `<input type="file" id="${esc(parts.file)}" class="composer-file" multiple hidden>
-       <button type="button" class="composer-attach" id="${esc(parts.attach)}" aria-label="Attach files" title="Attach files">${ICON_PAPERCLIP}</button>`
-    : "";
+  const attachControls = composerAttachmentControls(parts, attachable, secretAttachable);
   return `<div class="thread-composer">
     <div class="composer-context" id="${esc(parts.context)}" hidden></div>
     ${attachable ? `<div class="composer-tray" id="${esc(parts.tray)}" hidden></div>` : ""}
@@ -407,12 +424,18 @@ export function mountComposerAttachments(root, {
   readAttachments = null,
   writeAttachments = null,
   accepting = () => true,
+  secretAttachable = false,
+  onSecret = () => {},
+  extraChipsHtml = () => "",
+  wireExtraChips = () => {},
+  hasExtra = () => false,
 }) {
   const parts = composerPartIds(ids.input);
   const composer = root.querySelector(".composer");
   const tray = root.querySelector(`#${parts.tray}`);
   const input = root.querySelector(`#${ids.input}`);
   const picker = root.querySelector(`#${parts.file}`);
+  const attach = root.querySelector(`#${parts.attach}`);
   if (!composer || !tray || !input) return null;
 
   // The entries are the draft: the same array objects survive a repaint, which
@@ -423,7 +446,7 @@ export function mountComposerAttachments(root, {
   };
 
   const render = () => {
-    setMotionRowHtml(tray, entries.map(chipHtml).join(""));
+    setMotionRowHtml(tray, `${entries.map(chipHtml).join("")}${extraChipsHtml()}`);
     tray.querySelectorAll(":scope > .composer-chip .composer-chip-remove").forEach((button) => {
       button.onclick = () => {
         entries = entries.filter((_, index) => index !== Number(button.dataset.index));
@@ -432,6 +455,7 @@ export function mountComposerAttachments(root, {
         onChange();
       };
     });
+    wireExtraChips(tray);
     onChange();
   };
 
@@ -493,15 +517,25 @@ export function mountComposerAttachments(root, {
     render();
   };
 
+  let secretEnabled = secretAttachable === true;
+  const paintAttachmentMenu = () => {
+    if (!attach) return;
+    mountMenuIfChanged(attach, attachmentMenuMarkup(secretEnabled), {
+      onChoose: (action) => {
+        if (action === "files") picker?.click();
+        if (action === "secret" && secretEnabled) onSecret();
+      },
+    });
+  };
+
   if (picker) {
     picker.onchange = () => {
       addFiles(picker.files || []);
       // Re-picking the same file must fire change again.
       picker.value = "";
     };
-    const attach = root.querySelector(`#${parts.attach}`);
-    if (attach) attach.onclick = () => picker.click();
   }
+  paintAttachmentMenu();
 
   input.addEventListener("paste", (event) => {
     if (!accepting()) return;
@@ -560,7 +594,7 @@ export function mountComposerAttachments(root, {
     /// Whether the tray holds anything at all — including a chip still going
     /// up, which is what makes an empty-bodied send worth waiting for.
     isEmpty() {
-      return entries.length === 0;
+      return entries.length === 0 && !hasExtra();
     },
     clear() {
       entries = [];
@@ -568,6 +602,12 @@ export function mountComposerAttachments(root, {
       render();
     },
     addFiles,
+    setSecretAttachable(enabled) {
+      const next = enabled === true;
+      if (next === secretEnabled) return;
+      secretEnabled = next;
+      paintAttachmentMenu();
+    },
     restoreDraft() {
       if (entries.length || !readAttachments) return;
       const saved = readAttachments();
@@ -575,6 +615,7 @@ export function mountComposerAttachments(root, {
       entries = saved;
       render();
     },
+    refresh: render,
   };
 }
 

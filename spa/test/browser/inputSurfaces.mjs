@@ -75,8 +75,9 @@ export const INPUT_FILE_SOURCES = {
   "core/taskComposer.js": "hidden task attachment picker",
   "core/trackerTaskRender.js": "hidden task comment attachment picker",
 };
-// No production renderer currently creates a radio input.
-export const INPUT_RADIO_SOURCES = {};
+export const INPUT_RADIO_SOURCES = {
+  "core/secretComposer.js": "secret scope and expiry choices (covered by secretComposerLayout)",
+};
 
 export const INPUT_SURFACES = [
   { name: "device settings", selectSurface: "device settings", selectors: ['input[name="model"]', "#workspaceidlehours"] },

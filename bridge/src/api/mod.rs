@@ -182,8 +182,8 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "settings.projectAgent",
     "settings.roleModels",
     "settings.workspaceLifecycle",
-    "secrets.attachments",   // Since 3.36.0: metadata-only secret attachments (#1003).
-    "secrets.sealedUpload",  // Since 3.36.0: device-sealed staged uploads (#1003).
+    "secrets.attachments", // Since 3.36.0: metadata-only secret attachments (#1003).
+    "secrets.sealedUpload", // Since 3.36.0: device-sealed staged uploads (#1003).
     "secrets.metadataEvents", // Since 3.36.0: scoped metadata invalidations (#1003).
     "sources.syncBasePath", // Since 3.21.0: captured source_path on project.sync_source (#530).
     "sources.syncBase", // Since 3.3.0: sync_base/sync on source rows, sync_base on project.update_source (#267).

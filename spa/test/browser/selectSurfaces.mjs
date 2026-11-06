@@ -217,6 +217,7 @@ export async function mountSelectSurface(page, basePath, name, theme, { preserve
     if (name === "new conversation") await page.locator('[data-bubble="add"]').click();
     else {
       await page.locator(".rail-surface-menu .caret").click();
+      await settled(page);
       await page.locator('[data-action="conversation:clear"]').click();
       await page.locator("[data-confirm-ok]").click();
     }

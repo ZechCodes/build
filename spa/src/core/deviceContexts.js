@@ -312,7 +312,7 @@ export function captureDeviceGreeting(context) {
   const session = context.session, epoch = session.bridgeEpoch?.current();
   if (!epoch) return null;
   return Object.freeze({
-    epoch,
+    epoch: epoch.bridge_epoch,
     capabilities: context.adapter?.capabilities,
     current: () => authority.stands() && context.session === session && session.bridgeEpoch.current() === epoch,
   });

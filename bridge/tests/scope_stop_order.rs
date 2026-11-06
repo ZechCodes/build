@@ -202,6 +202,17 @@ fn restarting_the_bridge_unit_signals_the_bridge_first_and_leaves_no_orphan() {
     assert!(systemctl(&["restart", &units.service]));
     assert_the_bridge_saw_its_agent_alive(dir.path());
     assert_the_agent_was_stopped(dir.path());
+    let service = units.service.clone();
+    let scope = units.scope.clone();
+    drop(units);
+    assert!(
+        !systemctl(&["is-active", "--quiet", &service]),
+        "fixture cleanup left {service} running"
+    );
+    assert!(
+        !systemctl(&["is-active", "--quiet", &scope]),
+        "fixture cleanup left {scope} running"
+    );
 }
 
 /// A bridge that dies without a shutdown (SIGKILL, a panic that aborts)

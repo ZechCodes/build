@@ -8,11 +8,13 @@ import json
 
 from .migrate_paths import PROSE_KEYS, references
 from .migrate_store import classified_references, connect, rows, table_names
+from .migrate_registry import historical_receivers, is_live_path, receiver_reference
 
 HISTORY_KINDS = ('reclaimed_workspaces', 'finished_runs', 'closed_tasks',
                  'session_lineage', 'archived_worktrees', 'cancelled_deliveries',
-                 'undeliverable_stale_operations', 'undeliverable_stale_deliveries')
-CHECKOUT_KEYS = {'worktree_path', 'checkout', 'cwd', 'root', 'path', 'workspace_path', 'working_repository',
+                 'undeliverable_stale_operations', 'undeliverable_stale_deliveries',
+                 'deleted_workspaces', 'review_receivers')
+CHECKOUT_KEYS = {'worktree_path', 'checkout', 'checkout_path', 'cwd', 'root', 'path', 'workspace_path', 'working_repository',
                  'source_path', 'common_git_dir'}
 TERMINAL_RUNS = {'Merged', 'Abandoned', 'Archived'}
 
@@ -167,11 +169,6 @@ def stale_entity_evidence(entries, reclaimed_ids):
     return stale
 
 
-def is_live_path(value, live_paths):
-    return isinstance(value, str) and any(root and (value == root or value.startswith(root + '/'))
-                                          for root in live_paths)
-
-
 def stale_operations(entries, stale_entities, live_paths):
     result = []
     for table, raw, _ in entries:
@@ -199,15 +196,17 @@ def stale_deliveries(entries, reclaimed_ids, live_ids, registry_known):
     return result
 
 
-def classify(database, live_workspaces=None):
+def classify(database, live_workspaces=None, *, deleted_workspace_paths=(), receiver_roots=()):
     """Return required refs and historical refs grouped by evidence kind.
 
     Sets contain ``(field_name, original_path)`` pairs compatible with the
     migration store scanner. No filesystem path is tested by this module.
     """
     entries = list(records(database))
-    live = list(live_workspaces or ()) + [record for table, _, record in entries if table == 'workspaces']
+    live = (list(live_workspaces) if live_workspaces is not None else
+            [record for table, _, record in entries if table == 'workspaces'])
     live_paths = set().union(*(live_workspace_paths(record) for record in live)) if live else set()
+    receivers = historical_receivers(entries, live, live_paths, receiver_roots)
     reclaimed_ids, reclaimed_paths = reclaimed_evidence(entries)
     reclaimed_ids.difference_update(record.get('id') for record in live)
     reclaimed_paths.update(reclaimed_review_paths(entries, reclaimed_ids))
@@ -230,11 +229,15 @@ def classify(database, live_workspaces=None):
                 kind = 'undeliverable_stale_operations'
             if record.get('id') in stale_delivery_ids and ref[0] in CHECKOUT_KEYS:
                 kind = 'undeliverable_stale_deliveries'
+            if ref[0] in CHECKOUT_KEYS and is_live_path(ref[1], deleted_workspace_paths):
+                kind = kind or 'deleted_workspaces'
             if is_live_path(ref[1], live_paths):
                 kind = None
             elif (ref[0] in CHECKOUT_KEYS and ref[1] in reclaimed_paths
                   and kind not in {'undeliverable_stale_operations', 'undeliverable_stale_deliveries'}):
                 kind = 'reclaimed_workspaces'
+            if receiver := receiver_reference(ref, receiver_roots):
+                kind = 'review_receivers' if receiver in receivers else None
             (history[kind] if kind else required).add(ref)
     required_paths = {value for _, value in required}
     for kind in history:

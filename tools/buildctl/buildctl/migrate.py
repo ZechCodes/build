@@ -12,7 +12,8 @@ import uuid
 
 from .migrate_fs import copy_open, open_directory, open_relative, verify_copied
 from .migrate_sqlite import backup_database_fd, preview_input
-from .migrate_lifecycle import classify
+from .migrate_lifecycle import CHECKOUT_KEYS, classify
+from .migrate_registry import RECEIVER_POLICY, receiver_root, workspace_root
 from .migrate_git import apply_remotes, plan_remotes
 from .migrate_paths import Paths, references, scratch_directory
 from .migrate_store import rewrite_database, scan_database, verify_database
@@ -145,7 +146,13 @@ class Migrator:
 
     def lifecycle(self, expected):
         workspaces = live_workspaces(self.worktrees)
-        lifecycle = classify(expected['database'], live_workspaces=workspaces)
+        receiver_roots = (str(self.source_prefix / 'review-receivers'), '~/.build/review-receivers')
+        deleted = {root for key, value in expected['references'] if key in CHECKOUT_KEYS
+                   and (root := workspace_root(value, self.worktrees)) is not None
+                   and not root.exists()}
+        lifecycle = classify(expected['database'], live_workspaces=workspaces,
+                             deleted_workspace_paths={str(root) for root in deleted},
+                             receiver_roots=receiver_roots)
         historical = {}
         missing_paths = set()
         for kind, refs in lifecycle['historical'].items():
@@ -155,7 +162,7 @@ class Migrator:
             expected['references'].difference_update(ref for ref in refs if ref[1] in missing)
         for workspace in workspaces:
             expected['references'].update((key, value) for key, value in references(workspace)
-                                          if key in {'root', 'path'})
+                                          if key in {'root', 'path'} or receiver_root(value, receiver_roots))
         expected['undeliverable_stale_operations'] = lifecycle.get('undeliverable_stale_operations', [])
         expected['undeliverable_stale_deliveries'] = lifecycle.get('undeliverable_stale_deliveries', [])
         expected['historical_missing_paths'] = missing_paths
@@ -182,6 +189,7 @@ class Migrator:
                     'sample': expected['historical_operation_roots'][:10]},
                 'historical_worktrees': expected['historical_worktrees'],
                 'live_workspaces': expected['live_workspaces'],
+                'review_receiver_policy': RECEIVER_POLICY,
                 'undeliverable_stale_operations': expected['undeliverable_stale_operations'],
                 'undeliverable_stale_deliveries': expected['undeliverable_stale_deliveries']}
 
@@ -247,8 +255,10 @@ class Migrator:
         try:
             self.refuse_target_vault()
             if self.target.exists():
-                with open_directory(self.target) as descriptor:
-                    verify_copied(stage, copy_open(descriptor, stage, exclude={'secrets'}))
+                with open_directory(self.target, source_kind='target') as descriptor:
+                    hashes = copy_open(descriptor, stage, exclude={'secrets'},
+                                       source_kind='target', skip_sockets=True)
+                    verify_copied(stage, hashes)
             copied_hashes = self.copy_state(stage, entries)
             verify_copied(stage, copied_hashes)
             rewrite_database(stage / 'tasks/build.db', self.paths)

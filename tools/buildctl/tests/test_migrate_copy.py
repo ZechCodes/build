@@ -1,7 +1,9 @@
 """Copy-time race regressions use only synthetic temporary state."""
 
 from pathlib import Path
+import os
 import shutil
+import socket
 
 import pytest
 
@@ -80,3 +82,55 @@ def test_private_database_recovery_does_not_publish_original_journal(state):
     (source / 'tasks/build.db-journal').write_bytes(b'\0' * 64)
     migrator.run(prod_stopped=True)
     assert not (target / 'tasks/build.db-journal').exists()
+
+
+def stale_socket(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Bind through a short descriptor path to stay within AF_UNIX's path limit
+    # even when pytest's temporary root has a long task/workspace prefix.
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as endpoint:
+            endpoint.bind(f'/proc/self/fd/{descriptor}/{path.name}')
+    finally:
+        os.close(descriptor)
+
+
+def test_force_skips_target_sockets_and_retains_them_for_rollback(state):
+    migrator, _, target, _, _, _ = state
+    sockets = [Path('mcp.sock'), Path('mcp.sock.secrets'), Path('nested/old.sock')]
+    for relative in sockets:
+        stale_socket(target / relative)
+    (target / 'old-file').write_bytes(b'retained target file')
+    before = tree_bytes(target)
+
+    result = migrator.run(prod_stopped=True, force=True)
+
+    assert result['verified']
+    assert (target / 'old-file').read_bytes() == b'retained target file'
+    backup = Path(result['backup'])
+    for relative in sockets:
+        assert not (target / relative).exists()
+        assert (backup / relative).is_socket()
+    migrator.rollback(backup)
+    assert tree_bytes(target) == before
+    for relative in sockets:
+        assert (target / relative).is_socket()
+
+
+def test_source_socket_still_fails_closed(state):
+    migrator, source, target, _, _, _ = state
+    stale_socket(source / 'projects/mcp.sock')
+    before = tree_bytes(target)
+    with pytest.raises(BuildctlError, match='migration source'):
+        migrator.run(prod_stopped=True)
+    assert_not_published(target, before)
+
+
+def test_target_fifo_still_fails_closed_with_target_error(state):
+    migrator, _, target, _, _, _ = state
+    os.mkfifo(target / 'not-a-socket')
+    before = tree_bytes(target)
+    with pytest.raises(BuildctlError, match='migration target'):
+        migrator.run(prod_stopped=True, force=True)
+    assert_not_published(target, before)

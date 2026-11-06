@@ -186,4 +186,25 @@ describe("secret composer controller", () => {
     await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce());
     expect(failed).not.toHaveBeenCalled();
   });
+
+  it("keeps a cached chip and reports when revocation produces no result", async () => {
+    const service = {
+      entries: vi.fn(() => [{ secret_id: "sec_cached", name: "TOKEN", grant: { scope: "agent" }, ttl_seconds: null }]),
+      stage: vi.fn(),
+      remove: vi.fn(async () => null),
+    };
+    const changed = vi.fn();
+    const failed = vi.fn();
+    const composer = createSecretComposer({ service, onChange: changed, onError: failed });
+    document.body.innerHTML = `<div id="tray">${composer.chipsHtml()}</div>`;
+    composer.wire(document.querySelector("#tray"));
+    const remove = document.querySelector("[data-secret-remove]");
+
+    remove.click();
+    await vi.waitFor(() => expect(failed).toHaveBeenCalledOnce());
+    expect(failed.mock.calls[0][0].message).toContain("could not be revoked");
+    expect(changed).not.toHaveBeenCalled();
+    expect(remove.disabled).toBe(false);
+    expect(document.querySelector('[data-secret-id="sec_cached"]')).toBeTruthy();
+  });
 });

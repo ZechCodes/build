@@ -251,7 +251,8 @@ export function createSecretComposer({ service, onChange = () => {}, onError = (
       button.onclick = async () => {
         button.disabled = true;
         try {
-          await service.remove(button.dataset.secretRemove);
+          const revoked = await service.remove(button.dataset.secretRemove);
+          if (!revoked) throw new Error("The secret could not be revoked");
           if (!disposed) onChange();
         } catch (error) {
           if (!disposed) {

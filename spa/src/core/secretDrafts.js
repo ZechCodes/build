@@ -158,7 +158,7 @@ export function createSecretDraftService(provided) {
   }
 
   async function remove(secretId) {
-    if (!wireSupported()) return null;
+    if (!wireSupported()) throw safeError("revoke_unavailable", "The secret could not be revoked");
     const held = entries().find((entry) => entry.secret_id === secretId);
     if (!held) return null;
     const addressed = recipient();

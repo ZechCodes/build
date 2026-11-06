@@ -214,6 +214,23 @@ it("keeps a cached-support draft visible before live capabilities arrive", () =>
   expect(sinks.service.submission()).toEqual({ secret_ids: [projectMetadata.secret_id] });
 });
 
+it("rejects an unavailable cached-draft revoke without removing the chip", async () => {
+  const draft = { read: vi.fn(() => [projectMetadata]), write: vi.fn() };
+  const call = vi.fn();
+  const sinks = harness({
+    capabilities: () => ({}),
+    cachedSupport: () => true,
+    draft,
+    call,
+  });
+
+  await expect(sinks.service.remove(projectMetadata.secret_id))
+    .rejects.toMatchObject({ name: "SecretDraftError", code: "revoke_unavailable" });
+  expect(call).not.toHaveBeenCalled();
+  expect(draft.write).not.toHaveBeenCalled();
+  expect(sinks.service.entries()).toEqual([projectMetadata]);
+});
+
 it("refuses a stale generation before writing the returned descriptor", async () => {
   let current = true;
   let resolve;

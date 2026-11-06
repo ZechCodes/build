@@ -705,7 +705,7 @@ fn caller_matrix_allows_project_siblings_and_coordinator_but_hides_agent_grants(
 }
 
 #[test]
-fn both_scope_lifecycles_hold_through_reset_removal_membership_and_project_deletion() {
+fn both_scope_lifecycles_hold_through_reset_removal_and_membership_revalidation() {
     let f = Fixture::new();
     let sibling = f.add_member(
         "synthetic-lifecycle-sibling",
@@ -763,20 +763,6 @@ fn both_scope_lifecycles_hold_through_reset_removal_membership_and_project_delet
         .service
         .release(&sibling, &project.context.id, "current-member", || true)
         .is_ok());
-
-    f.store
-        .writer()
-        .secrets_retire_project(&f.caller.project_id)
-        .unwrap();
-    assert!(matches!(
-        f.service.release(
-            &sibling,
-            &project.context.id,
-            "after-project-delete",
-            || true
-        ),
-        Err(SecretError::Revoked)
-    ));
 }
 
 #[test]

@@ -171,6 +171,46 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path()).unwrap();
         store.writer_for_test().execute("INSERT INTO device_project_ids(path,project_id) VALUES ('/synthetic/project','project-a')",[]).unwrap();
+        for (path, owner) in [
+            ("/synthetic/project", "synthetic-owner-a"),
+            ("/synthetic/project", "synthetic-owner-b"),
+        ] {
+            store
+                .writer_for_test()
+                .execute(
+                    "INSERT INTO device_owner_projects(owner_id,project_path) VALUES (?1,?2)",
+                    rusqlite::params![owner, path],
+                )
+                .unwrap();
+        }
+        let agent_a = crate::agent::Agent::new(
+            "synthetic-agent-a",
+            "synthetic-owner-a",
+            crate::models::ModelChoice::default(),
+            1,
+            "2026-11-06T00:00:00Z",
+        );
+        let agent_b = crate::agent::Agent::new(
+            "synthetic-agent-b",
+            "synthetic-owner-b",
+            crate::models::ModelChoice::default(),
+            2,
+            "2026-11-06T00:00:00Z",
+        );
+        for agent in [&agent_a, &agent_b] {
+            store
+                .writer_for_test()
+                .execute(
+                    "INSERT INTO agents(id,owner_id,ordinal,record) VALUES (?1,?2,?3,?4)",
+                    rusqlite::params![
+                        agent.id,
+                        agent.owner_id,
+                        agent.ordinal,
+                        serde_json::to_string(agent).unwrap()
+                    ],
+                )
+                .unwrap();
+        }
         let secret = crate::secrets::SecretRecord {
             context: crate::secrets::SecretContext {
                 id: format!("sec_{}", uuid::Uuid::new_v4()),
@@ -200,6 +240,21 @@ mod tests {
             blob_present: true,
         };
         store.writer().secrets_stage(&secret).unwrap();
+        let mut agent_secret = secret.clone();
+        agent_secret.context.id = format!("sec_{}", uuid::Uuid::new_v4());
+        agent_secret.context.grant = GrantScope::Agent {
+            agent_id: agent_a.id.clone(),
+            conversation_id: agent_a.conversation_id().to_string(),
+            generation: agent_a.thread.id.clone(),
+        };
+        agent_secret.context.stage = crate::secrets::StageContext {
+            owner_id: agent_a.owner_id.clone(),
+            conversation_id: agent_a.conversation_id().to_string(),
+            generation: agent_a.thread.id.clone(),
+            draft_id: None,
+        };
+        agent_secret.upload_request_id = uuid::Uuid::new_v4().to_string();
+        store.writer().secrets_stage(&agent_secret).unwrap();
         let service = SecretReadService {
             device: Some("synthetic-device".into()),
             admission: None,
@@ -220,6 +275,9 @@ mod tests {
         );
         let webrtc = VerifiedCaller::verified_relay("synthetic-device", Opening::new());
         let mut accepted = Vec::new();
+        let mut audits = Vec::new();
+        let mut wrong_project_denials = Vec::new();
+        let mut cross_conversation_denials = Vec::new();
         for caller in [http, webrtc] {
             let session = sessions.open(caller).unwrap();
             let request = sessions.request(&session, Arc::new(Sink), None).unwrap();
@@ -230,6 +288,27 @@ mod tests {
                 .read(&context, &payload, Some(&mut connection))
                 .unwrap();
             accepted.push(result["secrets"].clone());
+            let audit = json!({"method":"secrets.audit","params":{"scope":{"project_id":"project-a"},"secret_id":secret.context.id}});
+            audits.push(
+                service
+                    .read(&context, &audit, Some(&mut connection))
+                    .unwrap(),
+            );
+            let wrong_project = json!({"method":"secrets.list","params":{"scope":{"project_id":"wrong-project"},"secret_ids":[secret.context.id]}});
+            wrong_project_denials.push(
+                service
+                    .read(&context, &wrong_project, Some(&mut connection))
+                    .err()
+                    .unwrap()
+                    .code()
+                    .to_string(),
+            );
+            let cross_conversation = json!({"method":"secrets.list","params":{"scope":{"project_id":"project-a","stage":{"owner_id":agent_b.owner_id,"conversation_id":agent_b.conversation_id(),"generation":agent_b.thread.id}},"secret_ids":[agent_secret.context.id]}});
+            let cross = service
+                .read(&context, &cross_conversation, Some(&mut connection))
+                .unwrap();
+            assert_eq!(cross["secrets"], json!([]));
+            cross_conversation_denials.push(cross);
             sessions.close(&session);
             assert_eq!(
                 service
@@ -242,5 +321,8 @@ mod tests {
         }
         assert_eq!(accepted[0], accepted[1]);
         assert_eq!(accepted[0][0]["secret_id"], secret.context.id);
+        assert_eq!(audits[0], audits[1]);
+        assert_eq!(wrong_project_denials, ["unavailable", "unavailable"]);
+        assert_eq!(cross_conversation_denials[0], cross_conversation_denials[1]);
     }
 }

@@ -1,5 +1,18 @@
 use super::*;
+use crate::execution::CallContext;
+use crate::secrets::upload::{UploadContext, UploadOpener};
 use crate::secrets::{GrantScope, SecretContext, SecretValue, StageContext};
+use std::sync::Arc;
+
+struct SyntheticSweepOpener;
+impl UploadOpener for SyntheticSweepOpener {
+    fn open(&self, sealed: &str, _: &UploadContext) -> crate::secrets::Result<SecretValue> {
+        if sealed != "synthetic-sweep-ciphertext" {
+            return Err(crate::secrets::SecretError::Invalid);
+        }
+        SecretValue::new(b"synthetic-test-value".to_vec())
+    }
+}
 
 struct Fixture {
     state: tempfile::TempDir,
@@ -16,7 +29,8 @@ impl Fixture {
         let (owner, agent) = super::super::project_agent::project_agent(&mut app, &project);
         app = app
             .with_secret_vault(state.path(), "synthetic-device")
-            .unwrap();
+            .unwrap()
+            .with_secret_upload_opener(Arc::new(SyntheticSweepOpener));
         assert!(app.secret_service().is_some());
         Self {
             state,
@@ -83,6 +97,37 @@ impl Fixture {
     fn params(&self, ids: &[String]) -> Value {
         json!({"entity_id":self.owner,"agent_id":self.agent,"conversation_id":self.agent,"thread_id":self.generation(),"operation_id":"secret-send","body":"Use these test credentials","secret_ids":ids})
     }
+    fn stage_wire(&mut self) -> String {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let generation = self.generation();
+        let created = self
+            .app
+            .dispatch_api_with_context(
+                "secrets.create",
+                &json!({
+                    "request_id": request_id,
+                    "device_id": "synthetic-device",
+                    "creator": "device_user",
+                    "scope": {
+                        "owner_id": self.owner,
+                        "conversation_id": self.agent,
+                        "generation": generation
+                    },
+                    "grant": {
+                        "scope": "agent",
+                        "agent_id": self.agent,
+                        "conversation_id": self.agent,
+                        "generation": generation
+                    },
+                    "name": "SYNTHETIC_SWEEP_TOKEN",
+                    "ttl_seconds": null,
+                    "sealed_payload": "synthetic-sweep-ciphertext"
+                }),
+                Some(&CallContext::detached("synthetic-owner")),
+            )
+            .unwrap();
+        created["secret_id"].as_str().unwrap().to_string()
+    }
     fn caller(&self) -> crate::secrets::SecretCaller {
         let thread = &self.app.runs[&self.owner]
             .agents
@@ -109,19 +154,50 @@ impl Fixture {
             .thread_post_authenticated(params, &SessionSender::detached("synthetic-user"))
     }
 
-    fn assert_no_incidental_secret(&self, needle: &[u8], id: &str) {
-        let synthetic_leak = self.repo.path().join("qualification-negative-control");
+    fn assert_no_incidental_secret(&self, needle: &[u8], id: &str, pushes: &[Value]) {
+        let negative = tempfile::tempdir().unwrap();
+        git(negative.path(), &["init"]);
+        let synthetic_leak = negative.path().join("qualification-negative-control");
         std::fs::write(&synthetic_leak, needle).unwrap();
-        let negative_root = self.repo.path().to_owned();
+        git(negative.path(), &["add", "qualification-negative-control"]);
+        git(
+            negative.path(),
+            &[
+                "-c",
+                "user.name=Synthetic Qualification",
+                "-c",
+                "user.email=synthetic@example.invalid",
+                "commit",
+                "-m",
+                "synthetic negative control",
+            ],
+        );
+        git(negative.path(), &["rm", "qualification-negative-control"]);
+        git(
+            negative.path(),
+            &[
+                "-c",
+                "user.name=Synthetic Qualification",
+                "-c",
+                "user.email=synthetic@example.invalid",
+                "commit",
+                "-m",
+                "remove synthetic negative control",
+            ],
+        );
+        let negative_root = negative.path().to_owned();
         let negative_needle = needle.to_vec();
         assert!(std::panic::catch_unwind(move || {
-            assert_tree_excludes(&negative_root, &negative_needle)
+            assert_git_excludes(&negative_root, &negative_needle)
         })
         .is_err());
-        std::fs::remove_file(&synthetic_leak).unwrap();
 
         assert_tree_excludes(self.state.path(), needle);
         assert_tree_excludes(self.repo.path(), needle);
+        assert_git_excludes(
+            &self.app.projects.get(&self.project).unwrap().repo_path,
+            needle,
+        );
         let writer = self.app.store.as_ref().unwrap().writer();
         let audit = writer.secret_audit_page(id, 0, 100).unwrap();
         assert!(!serde_json::to_vec(&audit)
@@ -139,27 +215,58 @@ impl Fixture {
                 .windows(needle.len())
                 .any(|part| part == needle));
         }
-        let (browser, mut rx, key) = SessionSender::observable("qualification-push");
-        self.app.changes.subscribe(
-            &browser,
-            crate::changes::SubscriptionSpec {
-                id: "qualification-push".into(),
-                scope: crate::changes::Scope::All,
-                kinds: [crate::changes::Kind::SecretsChanged].into_iter().collect(),
-                mode: Default::default(),
-                priority: Default::default(),
-            },
+        assert!(pushes.iter().any(push_has_secret_change));
+        assert_pushes_exclude(pushes, needle);
+        let leaking_push = json!({
+            "type": "synthetic.negative_control",
+            "payload": String::from_utf8(needle.to_vec()).unwrap()
+        });
+        let negative_needle = needle.to_vec();
+        assert!(std::panic::catch_unwind(move || {
+            assert_pushes_exclude(&[leaking_push], &negative_needle)
+        })
+        .is_err());
+    }
+}
+
+fn git(root: &std::path::Path, args: &[&str]) -> Vec<u8> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "synthetic git command failed");
+    output.stdout
+}
+
+fn assert_git_excludes(root: &std::path::Path, needle: &[u8]) {
+    for args in [
+        &["log", "-p", "--all", "--no-ext-diff", "--binary"][..],
+        &["cat-file", "--batch-all-objects", "--batch"][..],
+    ] {
+        let decoded = git(root, args);
+        assert!(
+            !decoded.windows(needle.len()).any(|part| part == needle),
+            "synthetic secret found in decoded git history"
         );
-        self.app.changes.note_secret_change(json!({
-            "type":"secrets.changed", "scope":"project", "project_id":self.project,
-            "revision":1, "secret_ids":[id]
-        }));
-        assert_eq!(self.app.changes.flush(), 1);
-        let push = SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
-        assert!(!serde_json::to_vec(&push)
-            .unwrap()
-            .windows(needle.len())
-            .any(|part| part == needle));
+    }
+}
+
+fn push_has_secret_change(push: &Value) -> bool {
+    push["type"] == "secrets.changed"
+        || push["items"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["kind"] == "secrets"))
+}
+
+fn assert_pushes_exclude(pushes: &[Value], needle: &[u8]) {
+    for push in pushes {
+        let encoded = serde_json::to_vec(push).unwrap();
+        assert!(
+            !encoded.windows(needle.len()).any(|part| part == needle),
+            "synthetic secret found in decrypted push"
+        );
     }
 }
 
@@ -258,9 +365,22 @@ fn secret_post_atomically_claims_multiple_and_replays_the_original_message() {
 #[test]
 fn accepted_secret_leak_sweep_excludes_every_incidental_bridge_artifact() {
     let mut fixture = Fixture::new();
-    let id = fixture.stage(None, false);
+    let (browser, mut rx, key) = SessionSender::observable("qualification-push");
+    fixture.app.changes.subscribe(
+        &browser,
+        crate::changes::SubscriptionSpec {
+            id: "qualification-push".into(),
+            scope: crate::changes::Scope::All,
+            kinds: crate::changes::Kind::ALL.into_iter().collect(),
+            mode: Default::default(),
+            priority: Default::default(),
+        },
+    );
+    let id = fixture.stage_wire();
+    fixture.app.changes.flush();
     let params = fixture.params(std::slice::from_ref(&id));
     fixture.send(&params).unwrap();
+    fixture.app.changes.flush();
     let value = fixture
         .app
         .secret_service()
@@ -268,7 +388,82 @@ fn accepted_secret_leak_sweep_excludes_every_incidental_bridge_artifact() {
         .release(&fixture.caller(), &id, "qualification-release", || true)
         .unwrap();
     assert_eq!(value.as_bytes(), b"synthetic-test-value");
-    fixture.assert_no_incidental_secret(b"synthetic-test-value", &id);
+    fixture.app.changes.flush();
+    fixture.app.secret_service().unwrap().revoke(&id).unwrap();
+    fixture.app.changes.flush();
+    let mut pushes = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        pushes.push(SessionSender::decrypt_push(&key, &envelope));
+    }
+    fixture.assert_no_incidental_secret(b"synthetic-test-value", &id, &pushes);
+}
+
+#[test]
+fn project_delete_entry_point_revokes_project_scoped_secret() {
+    let mut fixture = Fixture::new();
+    let id = format!("sec_{}", uuid::Uuid::new_v4());
+    let generation = fixture.generation();
+    let caller = fixture.caller();
+    fixture
+        .app
+        .secret_service()
+        .unwrap()
+        .stage(
+            SecretContext {
+                id: id.clone(),
+                device_id: "synthetic-device".into(),
+                creator: "device_user".into(),
+                name: "SYNTHETIC_PROJECT_DELETE_TOKEN".into(),
+                ttl_seconds: None,
+                grant: GrantScope::Project {
+                    project_id: fixture.project.clone(),
+                },
+                stage: StageContext {
+                    owner_id: fixture.owner.clone(),
+                    conversation_id: fixture.agent.clone(),
+                    generation,
+                    draft_id: None,
+                },
+            },
+            SecretValue::new(b"synthetic-project-delete-value".to_vec()).unwrap(),
+            uuid::Uuid::new_v4().to_string(),
+            "b".repeat(64),
+        )
+        .unwrap();
+    fixture
+        .app
+        .secret_service()
+        .unwrap()
+        .attach(std::slice::from_ref(&id), "synthetic-project-delete-send")
+        .unwrap();
+    assert!(fixture
+        .app
+        .secret_service()
+        .unwrap()
+        .release(&caller, &id, "before-project-delete", || true)
+        .is_ok());
+
+    let deleted = fixture.app.handle(req(
+        "project.delete",
+        json!({"project_id": fixture.project, "confirm": true}),
+    ));
+    assert_eq!(deleted["ok"], true, "{deleted:?}");
+    let record = fixture
+        .app
+        .store
+        .as_ref()
+        .unwrap()
+        .writer()
+        .secret_record(&id)
+        .unwrap()
+        .unwrap();
+    assert!(record.revoked_at.is_some());
+    assert!(fixture
+        .app
+        .secret_service()
+        .unwrap()
+        .release(&caller, &id, "after-project-delete", || true)
+        .is_err());
 }
 
 #[test]

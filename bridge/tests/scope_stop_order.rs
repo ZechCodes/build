@@ -59,12 +59,45 @@ struct Units {
     service: String,
     scope: String,
     harness: Option<Child>,
+    // Fields are dropped after Units::drop, so the traps can still write.
+    dir: tempfile::TempDir,
+}
+
+impl Units {
+    fn new(test: &str) -> Option<Self> {
+        if !user_manager_answers() {
+            eprintln!("skipped: no user systemd manager to ask");
+            return None;
+        }
+        let tag = format!("{test}-{}", std::process::id());
+        Some(Self {
+            service: format!("build-test-213-bridge-{tag}.service"),
+            scope: format!("build-test-213-agent-{tag}.scope"),
+            harness: None,
+            dir: tempfile::tempdir().unwrap(),
+        })
+    }
+
+    fn start_harness(&mut self) {
+        // Own the child before scope admission, which can fail or panic.
+        self.harness = Some(
+            Command::new("bash")
+                .args(["-c", &noting_term(self.dir.path(), "harness")])
+                .stdin(Stdio::null())
+                .spawn()
+                .expect("the stand-in harness starts"),
+        );
+    }
 }
 
 impl Drop for Units {
     fn drop(&mut self) {
-        systemctl(&["stop", &self.scope, &self.service]);
-        systemctl(&["reset-failed", &self.scope, &self.service]);
+        // A restart collects the old scope. Combining it with the service
+        // makes systemctl reject the whole stop request when that scope is gone.
+        for unit in [&self.service, &self.scope] {
+            systemctl(&["stop", unit]);
+            systemctl(&["reset-failed", unit]);
+        }
         if let Some(mut harness) = self.harness.take() {
             let _ = harness.kill();
             let _ = harness.wait();
@@ -101,6 +134,11 @@ fn stand_in_bridge(dir: &Path, service: &str, scope: &str) {
     );
     let started = Command::new("systemd-run")
         .args(["--user", "--quiet", "--collect", "--unit", service])
+        // Also bound a stand-in left behind by an aborted test runner.
+        .args([
+            "--property=RuntimeMaxSec=60s",
+            "--property=TimeoutStopSec=5s",
+        ])
         .args(["bash", "-c", &script])
         .stdin(Stdio::null())
         .status()
@@ -115,13 +153,14 @@ fn stand_in_bridge(dir: &Path, service: &str, scope: &str) {
     });
 }
 
-fn stand_in_harness_in_scope(dir: &Path, scope: &str, service: &str) -> Child {
-    let harness = Command::new("bash")
-        .args(["-c", &noting_term(dir, "harness")])
-        .stdin(Stdio::null())
-        .spawn()
-        .expect("the stand-in harness starts");
-    let argv = start_transient_unit_arguments(scope, ChildKind::Agent, harness.id(), Some(service));
+fn stand_in_harness_in_scope(units: &mut Units) {
+    units.start_harness();
+    let argv = start_transient_unit_arguments(
+        &units.scope,
+        ChildKind::Agent,
+        units.harness.as_ref().unwrap().id(),
+        Some(&units.service),
+    );
     let placed = Command::new("busctl")
         .args(&argv)
         .stdin(Stdio::null())
@@ -130,37 +169,45 @@ fn stand_in_harness_in_scope(dir: &Path, scope: &str, service: &str) -> Child {
         .expect("busctl runs");
     assert!(placed.success(), "the manager started the scope");
     wait_until("the scope to be active", || {
-        systemctl(&["is-active", "--quiet", scope])
+        systemctl(&["is-active", "--quiet", &units.scope])
     });
     // Scope admission says nothing about how far the harness has executed.
     wait_until("the harness's SIGTERM trap to be ready", || {
-        dir.join("harness-ready").exists()
+        units.dir.path().join("harness-ready").exists()
     });
-    harness
 }
 
 /// A stand-in bridge running as a service, with a stand-in harness in a
 /// scope bound to it the way the bridge binds its agents' scopes. `None`
 /// where there is no user manager to ask.
-fn bridge_with_an_agent(test: &str) -> Option<(tempfile::TempDir, Units)> {
-    if !user_manager_answers() {
-        eprintln!("skipped: no user systemd manager to ask");
-        return None;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let tag = format!("{test}-{}", std::process::id());
-    let mut units = Units {
-        service: format!("build-test-213-bridge-{tag}.service"),
-        scope: format!("build-test-213-agent-{tag}.scope"),
-        harness: None,
-    };
-    stand_in_bridge(dir.path(), &units.service, &units.scope);
-    units.harness = Some(stand_in_harness_in_scope(
-        dir.path(),
-        &units.scope,
-        &units.service,
-    ));
-    Some((dir, units))
+fn bridge_with_an_agent(test: &str) -> Option<Units> {
+    let mut units = Units::new(test)?;
+    stand_in_bridge(units.dir.path(), &units.service, &units.scope);
+    stand_in_harness_in_scope(&mut units);
+    Some(units)
+}
+
+fn assert_unit_stopped(unit: &str) {
+    let state = Command::new("systemctl")
+        .args(["--user", "show", "--property=ActiveState", "--value", unit])
+        .stdin(Stdio::null())
+        .output()
+        .expect("systemctl shows the unit state");
+    assert!(state.status.success(), "could not inspect {unit}");
+    // Collected units also report inactive; deactivating is not enough.
+    assert_eq!(
+        String::from_utf8(state.stdout).unwrap().trim(),
+        "inactive",
+        "fixture cleanup left {unit} running"
+    );
+}
+
+fn assert_fixture_cleanup(units: Units) {
+    let service = units.service.clone();
+    let scope = units.scope.clone();
+    drop(units);
+    assert_unit_stopped(&service);
+    assert_unit_stopped(&scope);
 }
 
 fn assert_the_bridge_saw_its_agent_alive(dir: &Path) {
@@ -183,12 +230,13 @@ fn assert_the_agent_was_stopped(dir: &Path) {
 /// names who was working; the scope is stopped after it, by `BindsTo=`.
 #[test]
 fn stopping_the_bridge_unit_signals_the_bridge_before_its_agents_scopes() {
-    let Some((dir, units)) = bridge_with_an_agent("stop") else {
+    let Some(units) = bridge_with_an_agent("stop") else {
         return;
     };
     assert!(systemctl(&["stop", &units.service]));
-    assert_the_bridge_saw_its_agent_alive(dir.path());
-    assert_the_agent_was_stopped(dir.path());
+    assert_the_bridge_saw_its_agent_alive(units.dir.path());
+    assert_the_agent_was_stopped(units.dir.path());
+    assert_fixture_cleanup(units);
 }
 
 /// A plain restart is a stop and a start: the same order. The manager does
@@ -196,23 +244,13 @@ fn stopping_the_bridge_unit_signals_the_bridge_before_its_agents_scopes() {
 /// it is the bridge's own way down that stops the scope: no orphan.
 #[test]
 fn restarting_the_bridge_unit_signals_the_bridge_first_and_leaves_no_orphan() {
-    let Some((dir, units)) = bridge_with_an_agent("restart") else {
+    let Some(units) = bridge_with_an_agent("restart") else {
         return;
     };
     assert!(systemctl(&["restart", &units.service]));
-    assert_the_bridge_saw_its_agent_alive(dir.path());
-    assert_the_agent_was_stopped(dir.path());
-    let service = units.service.clone();
-    let scope = units.scope.clone();
-    drop(units);
-    assert!(
-        !systemctl(&["is-active", "--quiet", &service]),
-        "fixture cleanup left {service} running"
-    );
-    assert!(
-        !systemctl(&["is-active", "--quiet", &scope]),
-        "fixture cleanup left {scope} running"
-    );
+    assert_the_bridge_saw_its_agent_alive(units.dir.path());
+    assert_the_agent_was_stopped(units.dir.path());
+    assert_fixture_cleanup(units);
 }
 
 /// A bridge that dies without a shutdown (SIGKILL, a panic that aborts)
@@ -220,9 +258,50 @@ fn restarting_the_bridge_unit_signals_the_bridge_first_and_leaves_no_orphan() {
 /// not weaken `BindsTo=`.
 #[test]
 fn a_bridge_that_dies_takes_its_agents_scopes_with_it() {
-    let Some((dir, units)) = bridge_with_an_agent("crash") else {
+    let Some(units) = bridge_with_an_agent("crash") else {
         return;
     };
     assert!(systemctl(&["kill", "--signal=KILL", &units.service]));
-    assert_the_agent_was_stopped(dir.path());
+    assert_the_agent_was_stopped(units.dir.path());
+    assert_fixture_cleanup(units);
+}
+
+#[test]
+fn a_panic_after_restart_stops_the_restarted_service() {
+    let Some(units) = bridge_with_an_agent("restart-panic") else {
+        return;
+    };
+    assert!(systemctl(&["restart", &units.service]));
+    let service = units.service.clone();
+    let scope = units.scope.clone();
+    let result = std::panic::catch_unwind(move || {
+        let _units = units;
+        panic!("simulate an assertion failure after restart");
+    });
+    assert!(result.is_err());
+    assert_unit_stopped(&service);
+    assert_unit_stopped(&scope);
+}
+
+#[test]
+fn a_panic_before_scope_admission_stops_the_service_and_reaps_the_harness() {
+    let Some(mut units) = Units::new("setup-panic") else {
+        return;
+    };
+    stand_in_bridge(units.dir.path(), &units.service, &units.scope);
+    units.start_harness();
+    let harness_pid = units.harness.as_ref().unwrap().id();
+    let service = units.service.clone();
+    let scope = units.scope.clone();
+    let result = std::panic::catch_unwind(move || {
+        let _units = units;
+        panic!("simulate an assertion failure before scope admission");
+    });
+    assert!(result.is_err());
+    assert_unit_stopped(&service);
+    assert_unit_stopped(&scope);
+    assert!(
+        !Path::new(&format!("/proc/{harness_pid}")).exists(),
+        "fixture cleanup did not reap its unscoped harness"
+    );
 }

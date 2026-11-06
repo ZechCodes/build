@@ -21,6 +21,8 @@ from .runtime import BuildctlError, Runner
 
 # Device-vault keys and values are never a migration/rollback payload.
 IMPORTED = ('config.json', 'projects', 'provider-recovery', 'review-receivers', 'harness', 'tasks')
+DEVICE_TASK_FILES = {'http-endpoint.json', 'http-endpoint.json.lock'}
+DEVICE_TASK_PATHS = {Path('tasks') / name for name in DEVICE_TASK_FILES}
 
 OPERATIONAL = {'identity.json', 'log', 'builds', 'buildctl.json', 'buildctl-candidate', 'buildctl.lock'}
 WORKTREE_KEYS = {'worktree_path', 'checkout', 'checkout_path', 'working_repository', 'root', 'cwd'}
@@ -55,6 +57,17 @@ def remove(path):
         shutil.rmtree(path)
     elif path.exists():
         path.unlink()
+
+
+def clear_imported(target, relative):
+    # Staging already contains the target's operational state. Replace imported
+    # tasks while retaining endpoint generations bound to its device identity.
+    if relative == Path('tasks') and target.is_dir():
+        for child in target.iterdir():
+            if child.name not in DEVICE_TASK_FILES:
+                remove(child)
+    else:
+        remove(target)
 
 
 
@@ -287,9 +300,10 @@ class Migrator:
             for relative in entries:
                 relative = copy_entry(relative)
                 target = stage / relative
-                remove(target)
+                clear_imported(target, relative)
                 with open_relative(source_fd, relative) as descriptor:
-                    excluded = {'build.db', 'build.db-wal', 'build.db-shm', 'build.db-journal'} if relative == Path('tasks') else set()
+                    excluded = ({'build.db', 'build.db-wal', 'build.db-shm', 'build.db-journal'}
+                                | DEVICE_TASK_FILES) if relative == Path('tasks') else set()
                     hashes.update(copy_open(descriptor, target, relative=relative, exclude=excluded))
                     if relative == Path('tasks'):
                         backup_database_fd(descriptor, target / 'build.db')
@@ -401,7 +415,8 @@ def files(root):
 def rewrite_files(stage, entries, paths):
     for entry in entries:
         for path in files(stage / entry):
-            if 'attachments' in path.relative_to(stage).parts:
+            relative = path.relative_to(stage)
+            if 'attachments' in relative.parts or relative in DEVICE_TASK_PATHS:
                 continue
             if path.suffix in {'.json', '.jsonl'}:
                 rewrite_json_file(path, paths)

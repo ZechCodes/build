@@ -2218,11 +2218,7 @@ a.md-link::after { content:"\2197" / ""; margin-left:.12em; font-size:.8em; opac
 .modal-secret h3 { margin:0; }
 .secret-modal-intro { margin:5px 0 16px; }
 .secret-field-label { display:block; margin:11px 0 5px; color:var(--ink2); font-size:12px; font-weight:600; }
-.modal-secret > input, .modal-secret > select, .secret-value-field { width:100%; box-sizing:border-box; }
-.secret-value-field { display:flex; align-items:center; gap:6px; }
-.secret-value-field input { flex:1 1 auto; min-width:0; }
-.secret-reveal { flex:none; width:34px; height:34px; color:var(--dim); }
-.secret-reveal svg { width:16px; height:16px; }
+.modal-secret > input, .modal-secret > select { width:100%; box-sizing:border-box; }
 .secret-scope { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin:14px 0 0; padding:0; border:0; }
 .secret-scope legend { grid-column:1 / -1; margin:0 0 1px; color:var(--ink2); font-size:12px; font-weight:600; }
 .secret-scope label { display:flex; align-items:flex-start; gap:8px; padding:9px; border:1px solid var(--line);

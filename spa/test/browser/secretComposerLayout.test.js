@@ -77,10 +77,9 @@ it("opens the capability-gated attach menu and sends cache-rendered secret metad
     const value = modal.locator("#secret-value");
     expect(await value.getAttribute("type")).toBe("password");
     expect(await value.getAttribute("autocomplete")).toBe("off");
+    expect(await modal.locator("[data-secret-reveal]").count()).toBe(0);
     await modal.locator("#secret-key").fill("DEPLOY_TOKEN");
     await value.fill("synthetic-browser-value");
-    await modal.locator("[data-secret-reveal]").click();
-    expect(await value.getAttribute("type")).toBe("text");
     await modal.locator('[name="secret-scope"][value="project"]').check();
     await modal.locator("#secret-ttl").selectOption("3600");
     await modal.locator("[data-secret-submit]").click();

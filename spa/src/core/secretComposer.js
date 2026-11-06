@@ -4,7 +4,7 @@
 // one after submission or dismissal.
 
 import { fieldTraits } from "./fieldTraits.js";
-import { ICON_EYE, ICON_EYE_OFF, ICON_LOCK, ICON_X } from "./icons.js";
+import { ICON_LOCK, ICON_X } from "./icons.js";
 import { modalDialogHtml, openModal } from "./modal.js";
 import { secretChipLabel } from "./secretLabels.js";
 import { esc } from "./text.js";
@@ -55,10 +55,7 @@ function secretModalBodyHtml({ scope = "agent", ttl = "none", busy = false }) {
     <label class="secret-field-label" for="secret-key">Name</label>
     <input id="secret-key" name="secret-key" type="text" maxlength="64" placeholder="TEST_TOKEN" ${fieldTraits("identifier")} />
     <label class="secret-field-label" for="secret-value">Value</label>
-    <div class="secret-value-field">
-      <input id="secret-value" name="secret-value" type="password" ${fieldTraits("identifier")} />
-      <button type="button" class="iconbtn secret-reveal" data-secret-reveal aria-label="Show secret" aria-pressed="false">${ICON_EYE}</button>
-    </div>
+    <input id="secret-value" name="secret-value" type="password" ${fieldTraits("identifier")} />
     <fieldset class="secret-scope">
       <legend>Scope</legend>
       <label><input type="radio" name="secret-scope" value="agent"${scope === "agent" ? " checked" : ""} />
@@ -158,15 +155,6 @@ export function openSecretModal({ stage, onChange = () => {}, host = document.bo
   ttlField.onchange = () => {
     customTtlField.hidden = ttlField.value !== "custom";
     if (!customTtlField.hidden) customTtlField.focus();
-  };
-  body.querySelector("[data-secret-reveal]").onclick = (event) => {
-    const button = event.currentTarget;
-    const revealed = valueField.type === "password";
-    valueField.type = revealed ? "text" : "password";
-    button.setAttribute("aria-pressed", String(revealed));
-    button.setAttribute("aria-label", revealed ? "Hide secret" : "Show secret");
-    button.innerHTML = revealed ? ICON_EYE_OFF : ICON_EYE;
-    valueField.focus();
   };
   cancelButton.onclick = close;
 

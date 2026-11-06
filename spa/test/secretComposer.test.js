@@ -59,27 +59,19 @@ const dialog = () => document.querySelector("[role=dialog]");
 const field = (name) => dialog().querySelector(`[name="${name}"]`);
 
 describe("secret modal", () => {
-  it("is labelled, focuses Name, masks the non-autofilled value, and defaults to Agent with scope explanations", async () => {
+  it("is labelled, focuses Name, keeps the value masked, and defaults to Agent with scope explanations", async () => {
     const modal = openSecretModal({ stage: vi.fn() });
     await motionSettled();
     await vi.waitFor(() => expect(document.activeElement).toBe(field("secret-key")));
     expect(dialog().getAttribute("aria-labelledby")).toBe("secret-modal-title");
     expect(field("secret-value").type).toBe("password");
     expect(field("secret-value").autocomplete).toBe("off");
+    expect(dialog().querySelector("[data-secret-reveal]")).toBeNull();
     expect(dialog().querySelector('[name="secret-scope"][value="agent"]').checked).toBe(true);
     expect(dialog().textContent).toContain("Limited to this agent’s conversation");
     expect(dialog().textContent).toContain("Available to current agents in this project");
     expect(dialog().textContent).toContain("starts when the message is sent");
 
-    const value = field("secret-value");
-    value.value = "synthetic modal secret";
-    const reveal = dialog().querySelector("[data-secret-reveal]");
-    reveal.click();
-    expect(value.type).toBe("text");
-    expect(reveal.getAttribute("aria-pressed")).toBe("true");
-    reveal.click();
-    expect(value.type).toBe("password");
-    expect(reveal.getAttribute("aria-pressed")).toBe("false");
     modal.close();
   });
 

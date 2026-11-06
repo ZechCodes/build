@@ -16,6 +16,68 @@ use crate::execution::ExecutionService;
 use crate::identity::StoredIdentity;
 
 const STATE_RETRIES: usize = 3;
+const REGISTRATION_RETRY_MIN: Duration = Duration::from_secs(2);
+const REGISTRATION_RETRY_MAX: Duration = Duration::from_secs(300);
+
+/// Prepare HTTP independently of daemon startup. Registration can remain
+/// unavailable indefinitely without delaying relay, MCP or agent services.
+/// Cancellation during preparation drops the reserved, non-serving socket;
+/// once serving, shutdown goes through the runtime's authority fence.
+pub async fn run(
+    settings: Option<HttpSettings>,
+    identity: StoredIdentity,
+    issuer: String,
+    default_allowed_origin: String,
+    state_path: PathBuf,
+    execution: Arc<ExecutionService>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<(), String> {
+    let preparation = async {
+        match settings {
+            Some(settings) => PreparedHttp::prepare(
+                settings,
+                &identity,
+                &issuer,
+                &default_allowed_origin,
+                state_path,
+                execution,
+            )
+            .await
+            .map(Some),
+            None => reconcile_disabled(&identity, state_path)
+                .await
+                .map(|()| None),
+        }
+    };
+    match prepare_or_shutdown(preparation, &mut shutdown).await {
+        Some(Ok(Some(prepared))) => prepared.serve(shutdown).await,
+        Some(Ok(None)) => {
+            wait_for_shutdown(&mut shutdown).await;
+            Ok(())
+        }
+        Some(Err(error)) => Err(error),
+        None => Ok(()),
+    }
+}
+
+async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    while !*shutdown.borrow_and_update() {
+        if shutdown.changed().await.is_err() {
+            break;
+        }
+    }
+}
+
+async fn prepare_or_shutdown<T>(
+    preparation: impl std::future::Future<Output = T>,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        () = wait_for_shutdown(shutdown) => None,
+        result = preparation => Some(result),
+    }
+}
 
 pub struct PreparedHttp {
     listener: tokio::net::TcpListener,
@@ -73,9 +135,9 @@ impl PreparedHttp {
             return Err("HTTP endpoint intent is disabled".into());
         }
         // Reserve the configured address before publishing readiness. Merely
-        // binding does not accept traffic; if hosted registration fails the
-        // socket is dropped, and a later bind failure can never leave a
-        // freshly advertised endpoint behind.
+        // binding does not accept traffic. During registration retries the
+        // socket stays non-serving and is dropped if preparation is canceled;
+        // a bind failure can never leave a freshly advertised endpoint behind.
         let listener = tokio::net::TcpListener::bind(settings.bind)
             .await
             .map_err(|error| format!("cannot bind HTTP listener: {error}"))?;
@@ -92,9 +154,7 @@ impl PreparedHttp {
             .map_err(|error| format!("cannot construct HTTP verifier: {error}"))?;
         let registrar = EndpointRegistrar::new(signer.clone())
             .map_err(|error| format!("cannot construct endpoint registrar: {error}"))?;
-        register_generation(&registrar, &record, true)
-            .await
-            .map_err(|error| format!("HTTP endpoint registration failed: {error}"))?;
+        register_generation(&registrar, &record, true).await;
         acknowledge_record(&state_path, record).await?;
 
         let runtime = runtime::mount(execution, verifier).with_discovery(signer);
@@ -156,9 +216,7 @@ pub async fn reconcile_disabled(
     );
     let registrar = EndpointRegistrar::new(signer)
         .map_err(|error| format!("cannot construct endpoint registrar: {error}"))?;
-    register_generation(&registrar, &record, false)
-        .await
-        .map_err(|error| format!("HTTP endpoint deactivation remains pending: {error}"))?;
+    register_generation(&registrar, &record, false).await;
     acknowledge_record(&state_path, record).await
 }
 
@@ -186,9 +244,7 @@ impl DisableContext {
         };
         let result = async {
             let registrar = EndpointRegistrar::new(signer).map_err(|error| error.to_string())?;
-            register_generation(&registrar, &record, false)
-                .await
-                .map_err(|error| error.to_string())?;
+            register_generation(&registrar, &record, false).await;
             acknowledge_record(&self.state_path, record).await
         }
         .await;
@@ -200,20 +256,39 @@ impl DisableContext {
 
 /// Atomically name every bounded generation this exact device/issuer may have
 /// committed, including the desired generation for response-loss recovery.
-/// The hosted CAS refuses any unknown external generation. Only transport
-/// uncertainty is retried, with the identical signed candidate set.
+/// The hosted CAS refuses any unknown external generation. Backoff retries
+/// reuse this prepared record and candidate set, including after Conflict.
 async fn register_generation(
     registrar: &EndpointRegistrar,
     record: &EndpointRecord,
     enabled: bool,
-) -> Result<(), ProofError> {
-    reconcile_registration(record, |predecessors| async move {
+) {
+    retry_registration(record, |predecessors| async move {
         registrar
             .register_candidates(&predecessors, enabled)
             .await
             .map(|_| ())
     })
-    .await
+    .await;
+}
+
+async fn retry_registration<F, Fut>(record: &EndpointRecord, register: F)
+where
+    F: Fn(Vec<Option<String>>) -> Fut,
+    Fut: std::future::Future<Output = Result<(), ProofError>>,
+{
+    let mut backoff = crate::backoff::Backoff::new(REGISTRATION_RETRY_MIN, REGISTRATION_RETRY_MAX);
+    loop {
+        match reconcile_registration(record, &register).await {
+            Ok(()) => return,
+            Err(error) => eprintln!(
+                "HTTP is off: endpoint registration failed: {error}; retrying in {}s; relay, MCP and agents continue",
+                backoff.current().as_secs(),
+            ),
+        }
+        tokio::time::sleep(backoff.current()).await;
+        backoff.increase();
+    }
 }
 
 async fn reconcile_registration<F, Fut>(
@@ -303,6 +378,94 @@ mod tests {
         })
         .await;
         (result, attempts.into_inner().unwrap())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn persistent_conflict_retries_with_a_cap_without_rotating_the_prepared_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("endpoint.json");
+        let acknowledged = EndpointRecord::prepare(&path, Some(record().policy))
+            .unwrap()
+            .unwrap();
+        acknowledged.acknowledge(&path).unwrap();
+        let mut policy = acknowledged.policy;
+        policy.certificate_fingerprint = "new-certificate".into();
+        let prepared = EndpointRecord::prepare(&path, Some(policy))
+            .unwrap()
+            .unwrap();
+        let original_bytes = std::fs::read(&path).unwrap();
+        let attempts = std::sync::Mutex::new(Vec::new());
+        let started = tokio::time::Instant::now();
+
+        retry_registration(&prepared, |candidates| {
+            assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+            assert_eq!(candidates, prepared.registration_predecessors());
+            let mut attempts = attempts.lock().unwrap();
+            attempts.push(started.elapsed().as_secs());
+            std::future::ready(if attempts.len() <= 12 {
+                Err(ProofError::Conflict)
+            } else {
+                Ok(())
+            })
+        })
+        .await;
+
+        assert_eq!(
+            *attempts.lock().unwrap(),
+            vec![0, 2, 6, 14, 30, 62, 126, 254, 510, 810, 1110, 1410, 1710]
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+        assert_eq!(prepared.unacknowledged_epochs, Vec::<String>::new());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn every_registration_failure_keeps_http_off_until_a_retry_succeeds() {
+        let outcomes = std::sync::Mutex::new(VecDeque::from([
+            Err(ProofError::Conflict),
+            Err(ProofError::Refused),
+            Err(ProofError::Unavailable),
+            Err(ProofError::Unavailable),
+            Ok(()),
+        ]));
+        let (stop, mut shutdown) = watch::channel(false);
+        let ready = std::sync::atomic::AtomicBool::new(false);
+        let prepare = async {
+            retry_registration(&record(), |_| {
+                std::future::ready(outcomes.lock().unwrap().pop_front().unwrap())
+            })
+            .await;
+            ready.store(true, std::sync::atomic::Ordering::SeqCst);
+        };
+        tokio::pin!(prepare);
+        assert!(tokio::time::timeout(Duration::from_secs(5), &mut prepare)
+            .await
+            .is_err());
+        assert!(!ready.load(std::sync::atomic::Ordering::SeqCst));
+        prepare.await;
+        assert!(ready.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(outcomes.lock().unwrap().is_empty());
+        stop.send(true).unwrap();
+        wait_for_shutdown(&mut shutdown).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_cancels_pending_registration_without_waiting_for_backoff_or_network() {
+        for stall_network in [false, true] {
+            let (stop, mut shutdown) = watch::channel(false);
+            let record = record();
+            let pending = retry_registration(&record, |_| async {
+                if stall_network {
+                    std::future::pending::<()>().await;
+                }
+                Err(ProofError::Conflict)
+            });
+            tokio::pin!(pending);
+            assert!(tokio::time::timeout(Duration::from_secs(1), &mut pending)
+                .await
+                .is_err());
+            stop.send(true).unwrap();
+            assert!(prepare_or_shutdown(pending, &mut shutdown).await.is_none());
+        }
     }
 
     #[tokio::test]

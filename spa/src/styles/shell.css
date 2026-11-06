@@ -322,7 +322,8 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    margin rather than as the same list at a narrower width. */
 /* Resting rows borrow the enclosing fill. Hover darkens it translucently;
    masks use the composited tone so they cover, rather than double tint, it. */
-.inbox-entry { background:var(--inbox-row-background, var(--inbox-rest-fill));
+/* More specific than the shared .srow base, regardless of bundle CSS order. */
+.srow.inbox-entry { background:var(--inbox-row-background, var(--inbox-rest-fill));
   align-items:flex-start; gap:8px; padding:10px 13px; margin-bottom:0; }
 .srow.inbox-entry.active { background:var(--inbox-standing-fill, var(--accent-soft));
   --inbox-rest-fill:var(--inbox-standing-fill, var(--accent-soft));
@@ -334,7 +335,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   width:3px; border-radius:0 3px 3px 0; background:var(--accent-fill, var(--accent)); }
 .inbox-entry[role="link"]:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
 /* Ungrouped rows repay the list gutter; project children are already full width. */
-.inbox-entry { border-radius:0;
+.srow.inbox-entry { border-radius:0;
   margin-left:calc(-1 * var(--inbox-row-inset-left)); margin-right:calc(-1 * var(--inbox-row-inset-right));
   padding-left:calc(13px + var(--inbox-row-inset-left)); padding-right:calc(13px + var(--inbox-row-inset-right)); }
 /* The overlays that sit on the row's right edge keep to the column the words

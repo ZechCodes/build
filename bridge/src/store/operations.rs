@@ -86,14 +86,16 @@ impl Store {
         agents: &[Agent],
         receipt: &OperationReceipt,
     ) -> Result<OperationReceipt, StoreError> {
-        self.in_waiting_on_transaction(|tx| {
+        let (receipt, retired) = self.in_waiting_on_transaction(|tx| {
             if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
-                return Ok(existing);
+                return Ok((existing, Vec::new()));
             }
-            Store::write_agents(tx, conversation_owner_id, agents)?;
+            let retired = Store::write_agents(tx, conversation_owner_id, agents)?;
             insert_operation(tx, receipt)?;
-            Ok(receipt.clone())
-        })
+            Ok((receipt.clone(), retired))
+        })?;
+        self.writer.notify_secret_records(&retired);
+        Ok(receipt)
     }
     /// An immutable receipt by its client-generated id.
     pub fn operation(&self, operation_id: &str) -> Result<Option<OperationReceipt>, StoreError> {
@@ -395,16 +397,19 @@ impl Store {
         receipt: &OperationReceipt,
         secrets: Option<&crate::secrets::SecretPostBinding>,
     ) -> Result<OperationReceipt, StoreError> {
-        self.in_waiting_on_transaction_with_durability(secrets.is_some(), |tx| {
-            if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
-                return Ok(existing);
-            }
-            secret_acceptance::claim_secrets_in(tx, secrets, receipt)?;
-            write_task(tx, record)?;
-            Store::write_agents(tx, &record.id, &record.agents)?;
-            insert_operation(tx, receipt)?;
-            Ok(receipt.clone())
-        })
+        let (receipt, retired) =
+            self.in_waiting_on_transaction_with_durability(secrets.is_some(), |tx| {
+                if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
+                    return Ok((existing, Vec::new()));
+                }
+                secret_acceptance::claim_secrets_in(tx, secrets, receipt)?;
+                write_task(tx, record)?;
+                let retired = Store::write_agents(tx, &record.id, &record.agents)?;
+                insert_operation(tx, receipt)?;
+                Ok((receipt.clone(), retired))
+            })?;
+        self.writer.notify_secret_records(&retired);
+        Ok(receipt)
     }
     /// Run-owned counterpart of
     /// [`save_task_plan_accepting_operation`](Self::save_task_plan_accepting_operation).
@@ -422,16 +427,19 @@ impl Store {
         receipt: &OperationReceipt,
         secrets: Option<&crate::secrets::SecretPostBinding>,
     ) -> Result<OperationReceipt, StoreError> {
-        self.in_waiting_on_transaction_with_durability(secrets.is_some(), |tx| {
-            if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
-                return Ok(existing);
-            }
-            secret_acceptance::claim_secrets_in(tx, secrets, receipt)?;
-            write_run(tx, record)?;
-            Store::write_agents(tx, &record.id, &record.agents)?;
-            insert_operation(tx, receipt)?;
-            Ok(receipt.clone())
-        })
+        let (receipt, retired) =
+            self.in_waiting_on_transaction_with_durability(secrets.is_some(), |tx| {
+                if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
+                    return Ok((existing, Vec::new()));
+                }
+                secret_acceptance::claim_secrets_in(tx, secrets, receipt)?;
+                write_run(tx, record)?;
+                let retired = Store::write_agents(tx, &record.id, &record.agents)?;
+                insert_operation(tx, receipt)?;
+                Ok((receipt.clone(), retired))
+            })?;
+        self.writer.notify_secret_records(&retired);
+        Ok(receipt)
     }
     /// Refuse to start when the imported JSON has been written to since the
     /// import.

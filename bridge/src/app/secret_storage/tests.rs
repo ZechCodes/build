@@ -41,6 +41,74 @@ fn secrets_startup_degrades_for_registered_source_and_directory_root_overlaps() 
 }
 
 #[test]
+fn degraded_secret_storage_still_publishes_metadata_retirement() {
+    use crate::secrets::{GrantScope, SecretContext, SecretRecord, StageContext};
+    let root = tempfile::tempdir().unwrap();
+    let mut state = app(root.path());
+    let record = SecretRecord {
+        context: SecretContext {
+            id: format!("sec_{}", uuid::Uuid::new_v4()),
+            device_id: "synthetic-device".into(),
+            creator: "synthetic-user".into(),
+            name: "SYNTHETIC_DEGRADED_TOKEN".into(),
+            ttl_seconds: None,
+            grant: GrantScope::Project {
+                project_id: "synthetic-project".into(),
+            },
+            stage: StageContext {
+                owner_id: "synthetic-project".into(),
+                conversation_id: "synthetic-conversation".into(),
+                generation: "synthetic-generation".into(),
+                draft_id: None,
+            },
+        },
+        created_at: 1_800_000_000,
+        attached_at: None,
+        expires_at: None,
+        revoked_at: None,
+        revocation_reason: None,
+        revision: 1,
+        message_operation_id: None,
+        upload_request_id: uuid::Uuid::new_v4().to_string(),
+        upload_digest: "ab".repeat(32),
+        blob_present: true,
+    };
+    state
+        .store
+        .as_ref()
+        .unwrap()
+        .writer()
+        .secrets_stage(&record)
+        .unwrap();
+    state.projects_dir = root.path().to_path_buf();
+    let state = state
+        .with_secret_vault(root.path(), "synthetic-device")
+        .unwrap();
+    assert!(state.secret_service().is_none());
+    let (browser, mut rx, key) = crate::carrier::SessionSender::observable("degraded-secret");
+    state.changes.subscribe(
+        &browser,
+        crate::changes::SubscriptionSpec {
+            id: "degraded-secret".into(),
+            scope: crate::changes::Scope::All,
+            kinds: [crate::changes::Kind::SecretsChanged].into_iter().collect(),
+            mode: Default::default(),
+            priority: Default::default(),
+        },
+    );
+    state
+        .store
+        .as_ref()
+        .unwrap()
+        .writer()
+        .secrets_retire_project("synthetic-project")
+        .unwrap();
+    assert_eq!(state.changes.flush(), 1);
+    let event = crate::carrier::SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+    assert_eq!(event["secret_ids"], json!([record.context.id]));
+}
+
+#[test]
 fn secrets_startup_degrades_for_parked_primary_and_secondary_sources() {
     for secondary in [false, true] {
         let root = tempfile::tempdir().unwrap();

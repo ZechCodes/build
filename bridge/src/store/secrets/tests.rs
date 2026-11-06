@@ -248,6 +248,15 @@ fn reset_and_project_delete_have_independent_scope_lifetimes() {
             .revoked_at,
         None
     );
+    let agent_revocations: i64 = writer
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM secret_audit WHERE secret_id=?1 AND outcome='revoked'",
+            [&agent.context.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(agent_revocations, 1);
     store
         .clear_retained_project_messages("synthetic-project")
         .unwrap();
@@ -257,6 +266,15 @@ fn reset_and_project_delete_have_independent_scope_lifetimes() {
         .unwrap()
         .revoked_at
         .is_some());
+    let project_revocations: i64 = writer
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM secret_audit WHERE secret_id=?1 AND outcome='revoked'",
+            [&project.context.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(project_revocations, 1);
 }
 
 #[test]
@@ -318,7 +336,43 @@ fn removing_roster_member_or_owner_retires_agent_grants_and_preserves_project_gr
                 .revoked_at,
             None
         );
+        let revocations: i64 = writer
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM secret_audit WHERE secret_id=?1 AND outcome='revoked'",
+                [&a.context.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(revocations, 1);
     }
+}
+
+#[test]
+fn lifecycle_audit_rows_are_deleted_with_their_secret_tombstone() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let writer = store.writer();
+    let rec = record("synthetic-user", agent_grant());
+    writer.secrets_stage(&rec).unwrap();
+    writer.secrets_revoke(&rec.context.id, NOW + 1).unwrap();
+    writer.secrets_mark_deleted(&rec.context.id).unwrap();
+    let lifecycle_rows = |writer: &crate::store::StoreWriter| {
+        writer
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM secret_audit WHERE secret_id=?1 AND outcome IN ('created','attached','expired','revoked')",
+                [&rec.context.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(lifecycle_rows(&writer), 2);
+    writer
+        .connection()
+        .execute("DELETE FROM secret_records WHERE id=?1", [&rec.context.id])
+        .unwrap();
+    assert_eq!(lifecycle_rows(&writer), 0);
 }
 
 #[test]

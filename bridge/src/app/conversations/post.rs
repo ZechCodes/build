@@ -597,7 +597,7 @@ impl AppState {
                 choice,
                 origin.operation_id.as_deref(),
             );
-            super::secrets::attach_post_metadata(
+            if let Err(error) = super::secrets::attach_post_metadata(
                 &mut active
                     .agents
                     .resolve_mut(Some(&address.conversation_id))?
@@ -605,7 +605,14 @@ impl AppState {
                 &mut payload,
                 &origin,
                 self.secret_environment(),
-            )?;
+            ) {
+                if let Ok(agent) = active.agents.resolve_mut(Some(&address.conversation_id)) {
+                    agent.thread = previous_thread;
+                }
+                self.plans
+                    .insert(address.conversation_entity_id.clone(), active);
+                return Err(error);
+            }
             if let Some(error) = local_refusal {
                 active
                     .agents
@@ -622,7 +629,7 @@ impl AppState {
             if let Some(delivery) = delivery.as_mut() {
                 delivery.payload = payload;
             }
-            let receipt = self.stage_post_acceptance(
+            let receipt = match self.stage_post_acceptance(
                 params,
                 origin,
                 address,
@@ -630,7 +637,17 @@ impl AppState {
                 sequence,
                 delivery,
                 local_refusal,
-            )?;
+            ) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    if let Ok(agent) = active.agents.resolve_mut(Some(&address.conversation_id)) {
+                        agent.thread = previous_thread;
+                    }
+                    self.plans
+                        .insert(address.conversation_entity_id.clone(), active);
+                    return Err(error);
+                }
+            };
             if let Err(error) =
                 self.finish_plan_mutation(address.conversation_entity_id.clone(), active)
             {
@@ -661,7 +678,7 @@ impl AppState {
             choice,
             origin.operation_id.as_deref(),
         );
-        super::secrets::attach_post_metadata(
+        if let Err(error) = super::secrets::attach_post_metadata(
             &mut active
                 .agents
                 .resolve_mut(Some(&address.conversation_id))?
@@ -669,7 +686,14 @@ impl AppState {
             &mut payload,
             &origin,
             self.secret_environment(),
-        )?;
+        ) {
+            if let Ok(agent) = active.agents.resolve_mut(Some(&address.conversation_id)) {
+                agent.thread = previous_thread;
+            }
+            self.runs
+                .insert(address.conversation_entity_id.clone(), active);
+            return Err(error);
+        }
         if let Some(error) = local_refusal {
             active
                 .agents
@@ -687,7 +711,7 @@ impl AppState {
         if let Some(delivery) = delivery.as_mut() {
             delivery.payload = payload;
         }
-        let receipt = self.stage_post_acceptance(
+        let receipt = match self.stage_post_acceptance(
             params,
             origin,
             address,
@@ -695,7 +719,17 @@ impl AppState {
             sequence,
             delivery,
             local_refusal,
-        )?;
+        ) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                if let Ok(agent) = active.agents.resolve_mut(Some(&address.conversation_id)) {
+                    agent.thread = previous_thread;
+                }
+                self.runs
+                    .insert(address.conversation_entity_id.clone(), active);
+                return Err(error);
+            }
+        };
         if let Err(error) = self.finish_run_mutation(address.conversation_entity_id.clone(), active)
         {
             self.runs

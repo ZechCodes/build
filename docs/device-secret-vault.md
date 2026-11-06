@@ -75,6 +75,10 @@ removal retires them. Project grants bind canonical project identity, survive
 originating conversation reset/removal, and retire on project deletion. A
 changed device identity cannot reopen old grants. The authorization slice must
 also validate current committed agent membership on every release.
+Each newly retired grant records one lifecycle `revoked` audit fact atomically
+and publishes a metadata-only invalidation after commit. Lifecycle facts remain
+with the retained tombstone and are deleted atomically if that secret record is
+ever pruned.
 
 Revoke commits a durable tombstone before attempting unlink. Startup and
 periodic cleanup run without the app lock and remove orphaned, revoked,

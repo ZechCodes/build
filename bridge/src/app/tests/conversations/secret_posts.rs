@@ -237,6 +237,249 @@ fn secret_post_persistence_failure_does_not_claim_or_acknowledge() {
 }
 
 #[test]
+fn post_metadata_failure_restores_the_taken_run() {
+    let mut f = Fixture::new();
+    let id = f.stage(None, false);
+    let params = f.params(&[]);
+    let address = f
+        .app
+        .resolve_conversation_params(&f.owner, &params)
+        .unwrap();
+    let choice_revision = f
+        .app
+        .entity_agents(&f.owner)
+        .unwrap()
+        .resolve(Some(&f.agent))
+        .unwrap()
+        .choice_revision;
+    let previous_thread = f.app.runs[&f.owner]
+        .agents
+        .by_id(&f.agent)
+        .unwrap()
+        .thread
+        .clone();
+    let record = f
+        .app
+        .store
+        .as_ref()
+        .unwrap()
+        .writer()
+        .secret_record(&id)
+        .unwrap()
+        .unwrap();
+    let origin = crate::app::conversations::PostOrigin {
+        operation_id: Some("post-metadata-failure".into()),
+        secret_metadata: vec![crate::thread::MessageSecret::from_record(&record).unwrap()],
+        ..Default::default()
+    };
+    let messages = crate::app::conversations::parse_thread_post_messages(
+        &params,
+        crate::thread::ArtifactKind::Diff,
+        false,
+    )
+    .unwrap();
+    f.app.session_registry.set_secret_device("");
+    let error = f
+        .app
+        .append_addressed_post(
+            &params,
+            &address,
+            choice_revision,
+            origin,
+            messages,
+            Vec::new(),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(error, "secret environment unavailable");
+    assert_eq!(
+        f.app.runs[&f.owner].agents.by_id(&f.agent).unwrap().thread,
+        previous_thread
+    );
+}
+
+#[test]
+fn post_metadata_failure_restores_the_taken_plan() {
+    let mut f = Fixture::new();
+    let id = f.stage(None, false);
+    let plan = file_legacy_task(&mut f.app, "secret metadata rollback");
+    let agent = f.app.plans[&plan].agents.sole().id.clone();
+    let generation = f.app.plans[&plan].agents.sole_thread().id.clone();
+    let params = json!({
+        "entity_id": plan,
+        "agent_id": agent,
+        "conversation_id": agent,
+        "thread_id": generation,
+        "operation_id": "plan-post-metadata-failure",
+        "body": "Use this test credential"
+    });
+    let address = f.app.resolve_conversation_params(&plan, &params).unwrap();
+    let choice_revision = f.app.plans[&plan]
+        .agents
+        .resolve(Some(&agent))
+        .unwrap()
+        .choice_revision;
+    let previous_thread = f.app.plans[&plan].agents.sole_thread().clone();
+    let record = f
+        .app
+        .store
+        .as_ref()
+        .unwrap()
+        .writer()
+        .secret_record(&id)
+        .unwrap()
+        .unwrap();
+    let origin = crate::app::conversations::PostOrigin {
+        operation_id: Some("plan-post-metadata-failure".into()),
+        secret_metadata: vec![crate::thread::MessageSecret::from_record(&record).unwrap()],
+        ..Default::default()
+    };
+    let messages = crate::app::conversations::parse_thread_post_messages(
+        &params,
+        crate::thread::ArtifactKind::Plan,
+        false,
+    )
+    .unwrap();
+    f.app.session_registry.set_secret_device("");
+    let error = f
+        .app
+        .append_addressed_post(
+            &params,
+            &address,
+            choice_revision,
+            origin,
+            messages,
+            Vec::new(),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(error, "secret environment unavailable");
+    assert_eq!(f.app.plans[&plan].agents.sole_thread(), &previous_thread);
+}
+
+#[test]
+fn post_acceptance_failure_restores_the_taken_run() {
+    let mut f = Fixture::new();
+    let params = f.params(&[]);
+    let address = f
+        .app
+        .resolve_conversation_params(&f.owner, &params)
+        .unwrap();
+    let choice_revision = f.app.runs[&f.owner]
+        .agents
+        .resolve(Some(&f.agent))
+        .unwrap()
+        .choice_revision;
+    let previous_thread = f.app.runs[&f.owner].agents.sole_thread().clone();
+    let error = f
+        .app
+        .append_addressed_post(
+            &params,
+            &address,
+            choice_revision,
+            crate::app::conversations::PostOrigin {
+                operation_id: Some("post-acceptance-failure".into()),
+                ..Default::default()
+            },
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(error, "thread.post did not append a message");
+    assert_eq!(f.app.runs[&f.owner].agents.sole_thread(), &previous_thread);
+}
+
+#[test]
+fn post_acceptance_failure_restores_the_taken_plan() {
+    let mut f = Fixture::new();
+    let plan = file_legacy_task(&mut f.app, "post acceptance rollback");
+    f.app
+        .plans
+        .get_mut(&plan)
+        .unwrap()
+        .agents
+        .sole_thread_mut()
+        .items
+        .clear();
+    let agent = f.app.plans[&plan].agents.sole().id.clone();
+    let generation = f.app.plans[&plan].agents.sole_thread().id.clone();
+    let params = json!({
+        "entity_id": plan,
+        "agent_id": agent,
+        "conversation_id": agent,
+        "thread_id": generation,
+        "operation_id": "plan-post-acceptance-failure",
+        "body": "This message is intentionally omitted"
+    });
+    let address = f.app.resolve_conversation_params(&plan, &params).unwrap();
+    let choice_revision = f.app.plans[&plan]
+        .agents
+        .resolve(Some(&agent))
+        .unwrap()
+        .choice_revision;
+    let previous_thread = f.app.plans[&plan].agents.sole_thread().clone();
+    let error = f
+        .app
+        .append_addressed_post(
+            &params,
+            &address,
+            choice_revision,
+            crate::app::conversations::PostOrigin {
+                operation_id: Some("plan-post-acceptance-failure".into()),
+                ..Default::default()
+            },
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(error, "thread.post did not append a message");
+    assert_eq!(f.app.plans[&plan].agents.sole_thread(), &previous_thread);
+}
+
+#[test]
+fn conversation_retirement_immediately_publishes_secret_changes() {
+    let f = Fixture::new();
+    let id = f.stage(None, false);
+    let (browser, mut rx, key) = SessionSender::observable("secret-retirement");
+    f.app.changes.subscribe(
+        &browser,
+        crate::changes::SubscriptionSpec {
+            id: "secret-retirement".into(),
+            scope: crate::changes::Scope::All,
+            kinds: [crate::changes::Kind::SecretsChanged].into_iter().collect(),
+            mode: Default::default(),
+            priority: Default::default(),
+        },
+    );
+    let agent = f.app.runs[&f.owner].agents.by_id(&f.agent).unwrap().clone();
+    f.app
+        .store
+        .as_ref()
+        .unwrap()
+        .reset_conversation(
+            &f.agent,
+            &[agent],
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
+    assert_eq!(f.app.changes.flush(), 1);
+    let event = SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+    assert_eq!(event["type"], "secrets.changed");
+    assert_eq!(event["secret_ids"], json!([id]));
+}
+
+#[test]
 fn secret_post_binds_provisional_recipient_without_rewriting_encrypted_context() {
     let mut f = Fixture::new();
     let id = f.stage(Some(60), true);

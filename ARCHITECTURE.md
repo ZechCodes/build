@@ -3260,7 +3260,12 @@ relay, MCP and agent startup (`http/supervisor.rs`). Hosted endpoint registratio
 failures, including predecessor conflicts, keep HTTP off and retry after 2 seconds,
 doubling to a five-minute cap. Retries retain the prepared endpoint epoch and
 predecessor candidates; they never discard the hosted CAS fence or manufacture
-new generations to resolve a conflict. Shutdown cancels pending registration;
+new generations to resolve a conflict. Persistent conflicts require out-of-band
+recovery of local endpoint state or reconciliation of the hosted registration.
+The port is bound without listening during preparation; TCP connections are
+refused until registration and durable acknowledgment both succeed. Retry logs
+distinguish registration from deactivation, including during shutdown.
+Shutdown cancels pending registration;
 an active listener still shuts down through its authority fence. An unexpected
 HTTP task failure is logged without terminating the daemon. Endpoint records and
 their sibling locks belong to the device identity: buildctl migration retains

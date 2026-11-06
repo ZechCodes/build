@@ -94,6 +94,42 @@ struct DisableContext {
     state_path: PathBuf,
 }
 
+async fn prepare_listener<F, Fut>(
+    bind: std::net::SocketAddr,
+    register_and_acknowledge: F,
+) -> Result<tokio::net::TcpListener, String>
+where
+    F: FnOnce(std::net::SocketAddr) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    // Reserve the address before any hosted publication, without listening:
+    // TCP connections must be refused throughout registration retries.
+    let socket = if bind.is_ipv4() {
+        tokio::net::TcpSocket::new_v4()
+    } else {
+        tokio::net::TcpSocket::new_v6()
+    }
+    .map_err(|error| format!("cannot create HTTP socket: {error}"))?;
+    // Match TcpListener::bind on Unix so a roll can rebind while accepted
+    // connections from the previous listener are still in TIME_WAIT.
+    #[cfg(unix)]
+    socket
+        .set_reuseaddr(true)
+        .map_err(|error| format!("cannot configure HTTP socket: {error}"))?;
+    socket
+        .bind(bind)
+        .map_err(|error| format!("cannot bind HTTP listener: {error}"))?;
+    let address = socket
+        .local_addr()
+        .map_err(|error| format!("cannot inspect HTTP socket: {error}"))?;
+    register_and_acknowledge(address).await?;
+    // Start accepting connections only after hosted registration and its
+    // durable local acknowledgment have both succeeded.
+    socket
+        .listen(1024)
+        .map_err(|error| format!("cannot listen on HTTP socket: {error}"))
+}
+
 impl PreparedHttp {
     /// Complete persisted intent and hosted registration before binding is
     /// made reachable. Disabled settings never call this constructor.
@@ -134,13 +170,6 @@ impl PreparedHttp {
         if !record.enabled {
             return Err("HTTP endpoint intent is disabled".into());
         }
-        // Reserve the configured address before publishing readiness. Merely
-        // binding does not accept traffic. During registration retries the
-        // socket stays non-serving and is dropped if preparation is canceled;
-        // a bind failure can never leave a freshly advertised endpoint behind.
-        let listener = tokio::net::TcpListener::bind(settings.bind)
-            .await
-            .map_err(|error| format!("cannot bind HTTP listener: {error}"))?;
         let signer = Arc::new(
             DeviceProofSigner::new(
                 identity,
@@ -154,8 +183,11 @@ impl PreparedHttp {
             .map_err(|error| format!("cannot construct HTTP verifier: {error}"))?;
         let registrar = EndpointRegistrar::new(signer.clone())
             .map_err(|error| format!("cannot construct endpoint registrar: {error}"))?;
-        register_generation(&registrar, &record, true).await;
-        acknowledge_record(&state_path, record).await?;
+        let listener = prepare_listener(settings.bind, |_| async {
+            register_generation(&registrar, &record, true).await;
+            acknowledge_record(&state_path, record).await
+        })
+        .await?;
 
         let runtime = runtime::mount(execution, verifier).with_discovery(signer);
         Ok(Self {
@@ -263,7 +295,12 @@ async fn register_generation(
     record: &EndpointRecord,
     enabled: bool,
 ) {
-    retry_registration(record, |predecessors| async move {
+    let phase = if enabled {
+        "registration"
+    } else {
+        "deactivation"
+    };
+    retry_registration(record, phase, |predecessors| async move {
         registrar
             .register_candidates(&predecessors, enabled)
             .await
@@ -272,7 +309,7 @@ async fn register_generation(
     .await;
 }
 
-async fn retry_registration<F, Fut>(record: &EndpointRecord, register: F)
+async fn retry_registration<F, Fut>(record: &EndpointRecord, phase: &str, register: F)
 where
     F: Fn(Vec<Option<String>>) -> Fut,
     Fut: std::future::Future<Output = Result<(), ProofError>>,
@@ -281,14 +318,23 @@ where
     loop {
         match reconcile_registration(record, &register).await {
             Ok(()) => return,
-            Err(error) => eprintln!(
-                "HTTP is off: endpoint registration failed: {error}; retrying in {}s; relay, MCP and agents continue",
-                backoff.current().as_secs(),
-            ),
+            Err(error) => eprintln!("{}", retry_message(phase, error, backoff.current())),
         }
         tokio::time::sleep(backoff.current()).await;
         backoff.increase();
     }
+}
+
+fn retry_message(phase: &str, error: ProofError, delay: Duration) -> String {
+    let hint = if error == ProofError::Conflict {
+        "; persistent conflicts require out-of-band recovery of local endpoint state or the hosted registration"
+    } else {
+        ""
+    };
+    format!(
+        "HTTP endpoint {phase} remains pending: {error}; retrying in {}s{hint}",
+        delay.as_secs(),
+    )
 }
 
 async fn reconcile_registration<F, Fut>(
@@ -380,6 +426,172 @@ mod tests {
         (result, attempts.into_inner().unwrap())
     }
 
+    #[tokio::test]
+    async fn reserved_port_refuses_connections_while_registration_retries() {
+        for bind in ["127.0.0.1:0", "[::1]:0"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("endpoint.json");
+            let record = prepare_record(&path, Some(record().policy))
+                .await
+                .unwrap()
+                .unwrap();
+            let epoch = record.endpoint_epoch.clone();
+            let listener = prepare_listener(bind.parse().unwrap(), |address| {
+                let record = record.clone();
+                let path = path.clone();
+                async move {
+                    let allow_registration = std::sync::atomic::AtomicBool::new(false);
+                    let attempts = std::sync::atomic::AtomicUsize::new(0);
+                    let registration = retry_registration(&record, "registration", |_| {
+                        attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        std::future::ready(
+                            if allow_registration.load(std::sync::atomic::Ordering::SeqCst) {
+                                Ok(())
+                            } else {
+                                Err(ProofError::Conflict)
+                            },
+                        )
+                    });
+                    tokio::pin!(registration);
+                    assert!(
+                        tokio::time::timeout(Duration::from_millis(1), &mut registration)
+                            .await
+                            .is_err()
+                    );
+                    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+                    let connection = tokio::time::timeout(
+                        Duration::from_secs(1),
+                        tokio::net::TcpStream::connect(address),
+                    )
+                    .await
+                    .expect("connection to the reserved port must fail promptly");
+                    let error = connection
+                        .expect_err("pending registration must not accept TCP connections");
+                    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+                    allow_registration.store(true, std::sync::atomic::Ordering::SeqCst);
+                    registration.await;
+                    acknowledge_record(&path, record.clone()).await
+                }
+            })
+            .await
+            .unwrap();
+            let acknowledged = prepare_record(&path, Some(record.policy.clone()))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(acknowledged.registered_epoch, Some(epoch));
+            let client = tokio::time::timeout(
+                Duration::from_secs(1),
+                tokio::net::TcpStream::connect(listener.local_addr().unwrap()),
+            )
+            .await
+            .expect("acknowledged endpoint starts listening")
+            .unwrap();
+            let (_accepted, _) = listener.accept().await.unwrap();
+            drop(client);
+        }
+    }
+
+    #[tokio::test]
+    async fn bind_failure_prevents_registration_and_advertisement() {
+        for bind in ["127.0.0.1:0", "[::1]:0"] {
+            let occupied = tokio::net::TcpListener::bind(bind).await.unwrap();
+            let advertised = std::sync::atomic::AtomicBool::new(false);
+            let error = prepare_listener(occupied.local_addr().unwrap(), |_| async {
+                advertised.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+            assert!(error.starts_with("cannot bind HTTP listener:"), "{error}");
+            assert!(!advertised.load(std::sync::atomic::Ordering::SeqCst));
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_acknowledgment_never_starts_listening() {
+        for bind in ["127.0.0.1:0", "[::1]:0"] {
+            let address = std::cell::Cell::new(None);
+            let error = prepare_listener(bind.parse().unwrap(), |reserved| {
+                address.set(Some(reserved));
+                std::future::ready(Err("acknowledgment failed".into()))
+            })
+            .await
+            .unwrap_err();
+            assert_eq!(error, "acknowledgment failed");
+            let connection = tokio::time::timeout(
+                Duration::from_secs(1),
+                tokio::net::TcpStream::connect(address.get().unwrap()),
+            )
+            .await
+            .expect("failed acknowledgment releases the reserved port");
+            assert_eq!(
+                connection.unwrap_err().kind(),
+                std::io::ErrorKind::ConnectionRefused
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn listener_can_restart_while_closed_connections_are_in_time_wait() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for bind in ["127.0.0.1:0", "[::1]:0"] {
+            let listener = prepare_listener(bind.parse().unwrap(), |_| async { Ok(()) })
+                .await
+                .unwrap();
+            let address = listener.local_addr().unwrap();
+            let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+            let (mut server, _) = listener.accept().await.unwrap();
+            // The server actively closes first, so its port retains TIME_WAIT
+            // after both halves finish their FIN exchange.
+            server.shutdown().await.unwrap();
+            let mut byte = [0];
+            assert_eq!(client.read(&mut byte).await.unwrap(), 0);
+            client.shutdown().await.unwrap();
+            assert_eq!(server.read(&mut byte).await.unwrap(), 0);
+            drop(server);
+            drop(client);
+            drop(listener);
+
+            let restarted = prepare_listener(address, |_| async { Ok(()) })
+                .await
+                .expect("HTTP must be able to rebind immediately after a roll");
+            assert_eq!(restarted.local_addr().unwrap(), address);
+        }
+    }
+
+    #[test]
+    fn deactivation_retry_log_names_its_phase_without_claiming_services_are_running() {
+        let message = retry_message(
+            "deactivation",
+            ProofError::Unavailable,
+            Duration::from_secs(2),
+        );
+        assert!(
+            message.starts_with("HTTP endpoint deactivation remains pending:"),
+            "{message}"
+        );
+        assert!(!message.contains("HTTP is off"), "{message}");
+        assert!(!message.contains("agents continue"), "{message}");
+    }
+
+    #[test]
+    fn conflict_retry_log_requires_out_of_band_recovery() {
+        for phase in ["registration", "deactivation"] {
+            let message = retry_message(phase, ProofError::Conflict, Duration::from_secs(300));
+            assert!(message.contains(phase), "{message}");
+            assert!(message.contains("out-of-band"), "{message}");
+        }
+        let transient = retry_message(
+            "registration",
+            ProofError::Unavailable,
+            Duration::from_secs(2),
+        );
+        assert!(!transient.contains("out-of-band"), "{transient}");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn persistent_conflict_retries_with_a_cap_without_rotating_the_prepared_generation() {
         let directory = tempfile::tempdir().unwrap();
@@ -397,7 +609,7 @@ mod tests {
         let attempts = std::sync::Mutex::new(Vec::new());
         let started = tokio::time::Instant::now();
 
-        retry_registration(&prepared, |candidates| {
+        retry_registration(&prepared, "registration", |candidates| {
             assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
             assert_eq!(candidates, prepared.registration_predecessors());
             let mut attempts = attempts.lock().unwrap();
@@ -430,7 +642,7 @@ mod tests {
         let (stop, mut shutdown) = watch::channel(false);
         let ready = std::sync::atomic::AtomicBool::new(false);
         let prepare = async {
-            retry_registration(&record(), |_| {
+            retry_registration(&record(), "registration", |_| {
                 std::future::ready(outcomes.lock().unwrap().pop_front().unwrap())
             })
             .await;
@@ -453,7 +665,7 @@ mod tests {
         for stall_network in [false, true] {
             let (stop, mut shutdown) = watch::channel(false);
             let record = record();
-            let pending = retry_registration(&record, |_| async {
+            let pending = retry_registration(&record, "registration", |_| async {
                 if stall_network {
                     std::future::pending::<()>().await;
                 }

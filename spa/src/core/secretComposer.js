@@ -4,7 +4,7 @@
 // one after submission or dismissal.
 
 import { fieldTraits } from "./fieldTraits.js";
-import { ICON_LOCK, ICON_X } from "./icons.js";
+import { ICON_EYE, ICON_EYE_OFF, ICON_LOCK, ICON_X } from "./icons.js";
 import { modalDialogHtml, openModal } from "./modal.js";
 import { secretChipLabel } from "./secretLabels.js";
 import { esc } from "./text.js";
@@ -55,7 +55,10 @@ function secretModalBodyHtml({ scope = "agent", ttl = "none", busy = false }) {
     <label class="secret-field-label" for="secret-key">Name</label>
     <input id="secret-key" name="secret-key" type="text" maxlength="64" placeholder="TEST_TOKEN" ${fieldTraits("identifier")} />
     <label class="secret-field-label" for="secret-value">Value</label>
-    <input id="secret-value" name="secret-value" type="password" ${fieldTraits("identifier")} />
+    <div class="secret-value-field">
+      <input id="secret-value" name="secret-value" type="password" ${fieldTraits("identifier")} />
+      <button type="button" class="iconbtn secret-reveal" data-secret-reveal aria-label="Show secret" aria-pressed="false">${ICON_EYE}</button>
+    </div>
     <fieldset class="secret-scope">
       <legend>Scope</legend>
       <label><input type="radio" name="secret-scope" value="agent"${scope === "agent" ? " checked" : ""} />
@@ -110,9 +113,15 @@ export function openSecretModal({ stage, onChange = () => {}, host = document.bo
   let modal;
   let body;
   let valueField;
+  let revealButton;
 
   const wipeValue = () => {
-    if (valueField) valueField.value = "";
+    if (!valueField) return;
+    valueField.value = "";
+    valueField.type = "password";
+    revealButton?.setAttribute("aria-pressed", "false");
+    revealButton?.setAttribute("aria-label", "Show secret");
+    if (revealButton) revealButton.innerHTML = ICON_EYE;
   };
   const closed = () => {
     dismissed = true;
@@ -129,6 +138,7 @@ export function openSecretModal({ stage, onChange = () => {}, host = document.bo
   body = modal.body;
   body.setAttribute("aria-labelledby", "secret-modal-title");
   valueField = body.querySelector("#secret-value");
+  revealButton = body.querySelector("[data-secret-reveal]");
 
   const errorField = body.querySelector("[data-secret-error]");
   const submitButton = body.querySelector("[data-secret-submit]");
@@ -155,6 +165,15 @@ export function openSecretModal({ stage, onChange = () => {}, host = document.bo
   ttlField.onchange = () => {
     customTtlField.hidden = ttlField.value !== "custom";
     if (!customTtlField.hidden) customTtlField.focus();
+  };
+  revealButton.onclick = (event) => {
+    const button = event.currentTarget;
+    const revealed = valueField.type === "password";
+    valueField.type = revealed ? "text" : "password";
+    button.setAttribute("aria-pressed", String(revealed));
+    button.setAttribute("aria-label", revealed ? "Hide secret" : "Show secret");
+    button.innerHTML = revealed ? ICON_EYE_OFF : ICON_EYE;
+    valueField.focus();
   };
   cancelButton.onclick = close;
 

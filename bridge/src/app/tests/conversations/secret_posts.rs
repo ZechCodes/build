@@ -2,8 +2,8 @@ use super::*;
 use crate::secrets::{GrantScope, SecretContext, SecretValue, StageContext};
 
 struct Fixture {
-    _state: tempfile::TempDir,
-    _repo: tempfile::TempDir,
+    state: tempfile::TempDir,
+    repo: tempfile::TempDir,
     app: AppState,
     project: String,
     owner: String,
@@ -19,8 +19,8 @@ impl Fixture {
             .unwrap();
         assert!(app.secret_service().is_some());
         Self {
-            _state: state,
-            _repo: repo,
+            state,
+            repo,
             app,
             project,
             owner,
@@ -108,6 +108,76 @@ impl Fixture {
         self.app
             .thread_post_authenticated(params, &SessionSender::detached("synthetic-user"))
     }
+
+    fn assert_no_incidental_secret(&self, needle: &[u8], id: &str) {
+        let synthetic_leak = self.repo.path().join("qualification-negative-control");
+        std::fs::write(&synthetic_leak, needle).unwrap();
+        let negative_root = self.repo.path().to_owned();
+        let negative_needle = needle.to_vec();
+        assert!(std::panic::catch_unwind(move || {
+            assert_tree_excludes(&negative_root, &negative_needle)
+        })
+        .is_err());
+        std::fs::remove_file(&synthetic_leak).unwrap();
+
+        assert_tree_excludes(self.state.path(), needle);
+        assert_tree_excludes(self.repo.path(), needle);
+        let writer = self.app.store.as_ref().unwrap().writer();
+        let audit = writer.secret_audit_page(id, 0, 100).unwrap();
+        assert!(!serde_json::to_vec(&audit)
+            .unwrap()
+            .windows(needle.len())
+            .any(|part| part == needle));
+        let receipt = self.app.operation_receipt("secret-send").unwrap().unwrap();
+        let saved = serde_json::to_vec(&receipt).unwrap();
+        assert!(!saved.windows(needle.len()).any(|part| part == needle));
+        let payload = receipt.delivery.as_ref().unwrap().payload.as_ref().unwrap();
+        for provider in crate::models::AgentProvider::ALL {
+            let prompt = payload.delivery_prompt("secret-send", false, provider);
+            assert!(!prompt
+                .as_bytes()
+                .windows(needle.len())
+                .any(|part| part == needle));
+        }
+        let (browser, mut rx, key) = SessionSender::observable("qualification-push");
+        self.app.changes.subscribe(
+            &browser,
+            crate::changes::SubscriptionSpec {
+                id: "qualification-push".into(),
+                scope: crate::changes::Scope::All,
+                kinds: [crate::changes::Kind::SecretsChanged].into_iter().collect(),
+                mode: Default::default(),
+                priority: Default::default(),
+            },
+        );
+        self.app.changes.note_secret_change(json!({
+            "type":"secrets.changed", "scope":"project", "project_id":self.project,
+            "revision":1, "secret_ids":[id]
+        }));
+        assert_eq!(self.app.changes.flush(), 1);
+        let push = SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+        assert!(!serde_json::to_vec(&push)
+            .unwrap()
+            .windows(needle.len())
+            .any(|part| part == needle));
+    }
+}
+
+fn assert_tree_excludes(root: &std::path::Path, needle: &[u8]) {
+    for entry in std::fs::read_dir(root).unwrap() {
+        let entry = entry.unwrap();
+        let file_type = entry.file_type().unwrap();
+        if file_type.is_dir() {
+            assert_tree_excludes(&entry.path(), needle);
+        } else if file_type.is_file() {
+            let bytes = std::fs::read(entry.path()).unwrap();
+            assert!(
+                !bytes.windows(needle.len()).any(|part| part == needle),
+                "synthetic secret found in incidental artifact {}",
+                entry.path().display()
+            );
+        }
+    }
 }
 
 #[test]
@@ -183,6 +253,22 @@ fn secret_post_atomically_claims_multiple_and_replays_the_original_message() {
     assert!(!serde_json::to_string(&receipt)
         .unwrap()
         .contains("synthetic-test-value"));
+}
+
+#[test]
+fn accepted_secret_leak_sweep_excludes_every_incidental_bridge_artifact() {
+    let mut fixture = Fixture::new();
+    let id = fixture.stage(None, false);
+    let params = fixture.params(std::slice::from_ref(&id));
+    fixture.send(&params).unwrap();
+    let value = fixture
+        .app
+        .secret_service()
+        .unwrap()
+        .release(&fixture.caller(), &id, "qualification-release", || true)
+        .unwrap();
+    assert_eq!(value.as_bytes(), b"synthetic-test-value");
+    fixture.assert_no_incidental_secret(b"synthetic-test-value", &id);
 }
 
 #[test]

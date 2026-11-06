@@ -5,11 +5,11 @@ HTTP and WebRTC share the same typed methods and execution authority. The
 creator binding is the bridge's single-owner principal, `device_user`, rather
 than a transient opening ID. The device ID must match the local vault.
 
-The three feature names (`secrets.attachments`, `secrets.sealedUpload`, and
-`secrets.metadataEvents`) and four methods are declared but withheld from the
-session greeting. The UI enablement slice must explicitly advertise them only
-when the installed CLI and composer are ready. Existing text/file messages
-keep their contract.
+The session greeting advertises the three feature names
+(`secrets.attachments`, `secrets.sealedUpload`, and `secrets.metadataEvents`),
+the four methods and `secrets.changed` because the installed runtime CLI and
+composer are shipped together. Clients require the complete capability set
+before enabling Secret; existing text/file messages keep their contract.
 
 ## Upload and reconciliation
 

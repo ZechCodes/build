@@ -179,6 +179,12 @@ it("keeps a staged value out of IndexedDB, local storage, and the post intent", 
   vi.resetModules();
   setupIdb();
   localStorage.clear();
+  const broadcasts = [];
+  vi.stubGlobal("BroadcastChannel", class {
+    postMessage(message) { broadcasts.push(structuredClone(message)); }
+    addEventListener() {}
+    close() {}
+  });
   const [
     { createChatRepository }, { createSecretDraftService },
     { createSecretMetadataCache, secretMetadataAddress }, { readUiRecord }, { readCached }, diagnostics,
@@ -227,6 +233,8 @@ it("keeps a staged value out of IndexedDB, local storage, and the post intent", 
   expect(JSON.stringify({ stored, metadataStored, localValues })).not.toContain(sentinel);
   expect(JSON.stringify(diagnostics.connectionDiagnosticHistory())).not.toContain(sentinel);
   expect(JSON.stringify(consoleSpies.flatMap((spy) => spy.mock.calls))).not.toContain(sentinel);
+  expect(JSON.stringify(broadcasts)).not.toContain(sentinel);
+  expect(JSON.stringify(broadcasts)).not.toContain("synthetic-sealed-envelope");
   const submission = controller.captureSubmission({ ...controller.readDraft(), body: "use the secret" });
   await controller.post(submission);
   const post = call.mock.calls.find(([method]) => method === "thread.post");
@@ -234,6 +242,7 @@ it("keeps a staged value out of IndexedDB, local storage, and the post intent", 
   expect(JSON.stringify(post)).not.toContain("synthetic-sealed-envelope");
   metadata.dispose();
   consoleSpies.forEach((spy) => spy.mockRestore());
+  vi.unstubAllGlobals();
 });
 
 it("submits a secret-bearing post immediately through ack-then-confirm", async () => {

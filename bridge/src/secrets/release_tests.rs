@@ -705,6 +705,81 @@ fn caller_matrix_allows_project_siblings_and_coordinator_but_hides_agent_grants(
 }
 
 #[test]
+fn both_scope_lifecycles_hold_through_reset_removal_membership_and_project_deletion() {
+    let f = Fixture::new();
+    let sibling = f.add_member(
+        "synthetic-lifecycle-sibling",
+        "synthetic-lifecycle-sibling-owner",
+        &f.caller.project_id,
+        false,
+    );
+    let agent_before_reset = f.secret(f.agent_grant(), None);
+    let project = f.secret(
+        GrantScope::Project {
+            project_id: f.caller.project_id.clone(),
+        },
+        None,
+    );
+    f.store
+        .reset_conversation(
+            &f.caller.conversation_id,
+            &[],
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
+    assert!(matches!(
+        f.release(&agent_before_reset.context.id),
+        Err(SecretError::Revoked)
+    ));
+    assert_eq!(
+        f.service
+            .release(&sibling, &project.context.id, "after-reset", || true)
+            .unwrap()
+            .as_bytes(),
+        b"synthetic-value-only"
+    );
+
+    let agent_before_removal = f.secret(f.agent_grant(), None);
+    f.store.delete_run(&f.caller.owner_id).unwrap();
+    assert!(f
+        .store
+        .writer()
+        .secret_record(&agent_before_removal.context.id)
+        .unwrap()
+        .unwrap()
+        .revoked_at
+        .is_some());
+    assert!(matches!(
+        f.release(&agent_before_removal.context.id),
+        Err(SecretError::Unauthorized)
+    ));
+    assert!(matches!(
+        f.service
+            .release(&f.caller, &project.context.id, "removed-member", || true),
+        Err(SecretError::Unauthorized)
+    ));
+    assert!(f
+        .service
+        .release(&sibling, &project.context.id, "current-member", || true)
+        .is_ok());
+
+    f.store
+        .writer()
+        .secrets_retire_project(&f.caller.project_id)
+        .unwrap();
+    assert!(matches!(
+        f.service.release(
+            &sibling,
+            &project.context.id,
+            "after-project-delete",
+            || true
+        ),
+        Err(SecretError::Revoked)
+    ));
+}
+
+#[test]
 fn schema_24_upgrade_adds_audit_without_changing_existing_metadata_or_value() {
     let f = Fixture::new();
     let rec = f.secret(f.agent_grant(), None);

@@ -1213,9 +1213,10 @@ Schema 24 adds dedicated metadata and clock tables. Agent grants bind agent,
 canonical conversation and generation; reset/removal tombstones them in the
 existing domain transaction. Project grants bind the canonical project ID and
 survive their originating conversation; project deletion retires them. No
-value or sealed upload is a database field or journal payload. Future send
-integration must use `store::secrets::attach_in` inside the **same** transaction
-as message admission. The standalone service attach helper is not a wire send.
+value or sealed upload is a database field or journal payload. Secret-bearing
+sends use `store::secrets::attach_in` inside the **same** FULL transaction as
+message admission, frozen descriptors and the operation receipt. The standalone
+service attach helper remains test-only convenience, not a wire send.
 Retirement also appends its lifecycle audit fact in that transaction and emits
 the scoped `secrets.changed` hint only after commit. Lifecycle facts share the
 secret record's retention: permanent tombstones retain them, and deleting a
@@ -4134,8 +4135,11 @@ download controls serve all three. Message role and connection status do not
 gate attachment display.
 
 Secret attachments follow the same cache rule without sharing the file path.
-`secretComposer.js` owns the accessible Agent/Project and TTL modal; the live
-value exists only in its password field and the immediate sealed request.
+`secretComposer.js` owns the accessible Agent/Project and TTL modal. Its live
+value exists only in the password field and the immediate sealed request: it is
+masked by default, a user-controlled toggle can reveal only the value still
+being typed, and close or submit wipes and re-masks the field. No later UI can
+retrieve a value.
 `secretDrafts.js` stages and revokes descriptors, while `secretMetadataCache.js`
 stores metadata-only project and conversation-generation records. The composer
 menu reads cached support, and current-greeting capability checks authorize

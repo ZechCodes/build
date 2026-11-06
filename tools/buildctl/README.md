@@ -194,7 +194,8 @@ staging or retain it in a rollback backup alongside a replaced metadata DB.
 Rollback also refuses a `secrets/` entry in either its current target or its
 backup, before changing shared remotes or renaming either state tree. It checks
 again at restore admission, including entries created after rollback preflight.
-Missing referenced worktrees are a hard verification failure. Rehearsal reads
+Missing references needed by live registered workspaces are a hard verification
+failure. Deleted workspace and receiver exceptions are described below. Rehearsal reads
 the supplied snapshot and checks existence of shared worktree directories;
 it never edits shared repository configuration. Review receiver Git URLs in shared repositories also need
 the reversible migration update. Source repositories and worktrees under
@@ -238,7 +239,10 @@ At the selected window, from a checkout containing this command:
 3. Apply and save the printed backup path and verification report. Keep the
    sibling `<backup-path>.json` rollback manifest with the backup directory. A non-fresh
    target is refused unless its replacement is intentional; add `--force` only
-   after reviewing what will be replaced. `--prod-stopped` is an assertion in
+   after reviewing what will be replaced. Target Unix sockets (including
+   `mcp.sock` and `mcp.sock.secrets`) are skipped during staging because the
+   bridge recreates them; the rollback backup retains the original target.
+   Source sockets and all other unsupported file types still fail copying. `--prod-stopped` is an assertion in
    addition to the checked service states:
 
    ```bash
@@ -275,9 +279,31 @@ another process’s Git locks.
 
 The report separates missing roots of terminal operations, finished runs, closed
 tasks, reclaimed workspaces, archived worktrees, historical session lineage and
-cancelled deliveries, with counts and samples. Workspace manifests and persisted
-run/task/reclaim evidence determine lifecycle; reclaim eligibility alone is not
-deletion. Live workspace paths always remain mandatory. Queued/uncertain
+cancelled deliveries, with counts and samples. `historical_worktrees` also
+reports `deleted_workspaces` and `review_receivers`. The live workspace manifests
+are authoritative; stale database workspace rows do not make a workspace live.
+A checkout reference below `workspaces/<project>/<workspace>` is historical
+when that whole workspace folder is missing and no live manifest requires it,
+even when linked tasks remain open. A missing child checkout inside an existing
+workspace still fails. Persisted run/task/reclaim evidence continues to apply;
+reclaim eligibility alone is not deletion. Live workspace paths always remain
+mandatory. Historical records are preserved and their structured paths are
+still rewritten.
+
+The report includes `review_receiver_policy`: a missing receiver below the
+source state’s `review-receivers/<name>.git` is historical if no live workspace
+uses it, or all linked PRs are merged. This follows the bridge’s receiver
+retention rules: closed/rejected PRs with live workspaces can still need their
+receivers; legacy snapshot reviews and nonterminal/unknown PR statuses also
+retain them when linked to a live workspace. Reviews, bindings and task workspace
+links establish live use. Pending/failed/interrupted openings on live workspaces
+retain their recovery receiver. Pending capture candidates also retain it;
+non-succeeded merge intents are conservatively treated as unsettled, and
+succeeded intents with requested external pushes need matching successful push
+steps before their receiver can be historical. Any direct receiver reference in a live manifest
+is mandatory, and any live use wins when several reviews share a receiver.
+Existing receivers still verify normally. Missing attachments and paths outside
+these checkout/receiver exceptions remain strict failures. Queued/uncertain
 operations and retryable failed intents whose target workspace has gone are
 listed as undeliverable stale records with IDs and targets, without changing
 statuses. Missing roots for live or unknown targets fail verification.

@@ -506,13 +506,36 @@ fn a_create_that_cannot_clone_falls_back_and_says_so_on_the_conversation() {
     );
 }
 
+/// Both isolation backends publish the branch and work through the board.
+fn assert_run_stat_on_board(state: &mut AppState, run_id: &str) {
+    // `board.list` reads published snapshots (1db9b5ea8). This fixture seeds
+    // its run directly, so explicitly run the observation producer first.
+    state.board_list();
+    state.publish_snapshot_projection();
+    let board = state.handle(req("board.list", json!({})));
+    let row = board["result"]["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["run_id"] == json!(run_id))
+        .unwrap_or_else(|| panic!("the run is on the feed: {board:?}"));
+    assert_eq!(
+        row["stat"]["branch"], row["branch"],
+        "the feed reads the checkout's own branch: {row:?}"
+    );
+    assert!(
+        row["stat"]["files_changed"].as_u64().unwrap() >= 2,
+        "the feed counts the checkout's work: {row:?}"
+    );
+}
+
 /// The whole feature, end to end, on a volume that clones: the account
 /// chooses cloning, the run that follows lives in a clone of the project
 /// rather than a linked worktree, every surface that reads its work still
 /// reads it, and Done refuses to remove the clone.
 ///
-/// This only runs where the volume clones: under a tmpfs `TMPDIR` the probe
-/// skips it, which is how a stale refusal here went unnoticed.
+/// This only runs where the installed Rift backend can materialize a clone.
+/// The linked-worktree test below covers board stats when Rift is unavailable.
 #[test]
 fn a_run_dispatched_under_cloning_lives_in_a_clone_and_finish_refuses_it() {
     let (dir, repo) = init_repo();
@@ -550,21 +573,7 @@ fn a_run_dispatched_under_cloning_lives_in_a_clone_and_finish_refuses_it() {
         "{files:?}"
     );
 
-    let board = state.handle(req("board.list", json!({})));
-    let row = board["result"]["runs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["run_id"] == json!(run_id.clone()))
-        .unwrap_or_else(|| panic!("the run is on the feed: {board:?}"));
-    assert_eq!(
-        row["stat"]["branch"], row["branch"],
-        "the feed reads the clone's own branch: {row:?}"
-    );
-    assert!(
-        row["stat"]["files_changed"].as_u64().unwrap() >= 2,
-        "the feed counts the clone's work: {row:?}"
-    );
+    assert_run_stat_on_board(&mut state, &run_id);
 
     // A run's checkout is a legacy record: Done adopts it rather than owning
     // it, and ownership is read before anything else, so Done refuses it as
@@ -592,9 +601,9 @@ fn a_run_dispatched_under_cloning_lives_in_a_clone_and_finish_refuses_it() {
     );
 }
 
-/// The same refusal for a run in a linked worktree, which every volume can
-/// make: the clone test above skips wherever reflinks are unavailable, and
-/// this one keeps the rule measured there.
+/// The same board stat and finish refusal for a linked worktree, which every
+/// volume can make: the clone test skips wherever Rift is unavailable, and
+/// this one keeps both contracts measured there.
 #[test]
 fn a_run_in_a_worktree_is_refused_by_done_as_an_adopted_checkout() {
     let (dir, repo) = init_repo();
@@ -606,6 +615,8 @@ fn a_run_in_a_worktree_is_refused_by_done_as_an_adopted_checkout() {
         Some(Isolation::Worktree),
         "{checkout:?}"
     );
+
+    assert_run_stat_on_board(&mut state, &run_id);
 
     let finished = state.handle(req(
         "branch.finish",

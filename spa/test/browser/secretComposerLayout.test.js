@@ -89,6 +89,35 @@ it("opens the capability-gated attach menu and sends cache-rendered secret metad
     expect((await page.locator(".secret-chip-label").textContent()).trim())
       .toBe("DEPLOY_TOKEN · Project · 1 hour after sending");
     expect(await page.evaluate(() => JSON.stringify(window.__secretComposer.cache))).not.toContain("synthetic-browser-value");
+    const browserSinkContains = async (needle) => page.evaluate(async (value) => {
+      const held = [document.documentElement.outerHTML, ...Object.values(localStorage), ...Object.values(sessionStorage)];
+      for (const name of await caches.keys()) {
+        const cache = await caches.open(name);
+        for (const request of await cache.keys()) held.push(await (await cache.match(request)).text());
+      }
+      for (const { name } of await indexedDB.databases()) {
+        const database = await new Promise((resolve, reject) => {
+          const request = indexedDB.open(name);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        for (const store of database.objectStoreNames) {
+          const transaction = database.transaction(store, "readonly");
+          held.push(JSON.stringify(await new Promise((resolve, reject) => {
+            const request = transaction.objectStore(store).getAll();
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+          })));
+        }
+        database.close();
+      }
+      return held.some((entry) => String(entry).includes(value));
+    }, needle);
+    expect(await browserSinkContains("synthetic-browser-value")).toBe(false);
+    await page.evaluate(() => localStorage.setItem("secret-negative-control", "synthetic-browser-value"));
+    expect(await browserSinkContains("synthetic-browser-value")).toBe(true);
+    await page.evaluate(() => localStorage.removeItem("secret-negative-control"));
+    expect(await browserSinkContains("synthetic-browser-value")).toBe(false);
     await page.locator("#secret-chat").fill("Deploy this build");
     await page.locator("#secret-send").click();
     expect((await page.locator(".thread-secret-chip").textContent()).trim())

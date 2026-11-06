@@ -73,7 +73,7 @@ fn attach(service: &SecretService, record: &SecretRecord) {
         .unwrap();
 }
 #[test]
-fn value_limits_and_no_plaintext_debug_or_serialization() {
+fn value_limits_reject_oversize_and_nul_bytes() {
     assert!(SecretValue::new(vec![b'x'; MAX_VALUE_BYTES]).is_ok());
     assert!(SecretValue::new(vec![b'x'; MAX_VALUE_BYTES + 1]).is_err());
     assert!(SecretValue::new(b"synthetic\0data".to_vec()).is_err());

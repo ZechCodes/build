@@ -113,9 +113,15 @@ export function openSecretModal({ stage, onChange = () => {}, host = document.bo
   let modal;
   let body;
   let valueField;
+  let revealButton;
 
   const wipeValue = () => {
-    if (valueField) valueField.value = "";
+    if (!valueField) return;
+    valueField.value = "";
+    valueField.type = "password";
+    revealButton?.setAttribute("aria-pressed", "false");
+    revealButton?.setAttribute("aria-label", "Show secret");
+    if (revealButton) revealButton.innerHTML = ICON_EYE;
   };
   const closed = () => {
     dismissed = true;
@@ -132,6 +138,7 @@ export function openSecretModal({ stage, onChange = () => {}, host = document.bo
   body = modal.body;
   body.setAttribute("aria-labelledby", "secret-modal-title");
   valueField = body.querySelector("#secret-value");
+  revealButton = body.querySelector("[data-secret-reveal]");
 
   const errorField = body.querySelector("[data-secret-error]");
   const submitButton = body.querySelector("[data-secret-submit]");
@@ -159,7 +166,7 @@ export function openSecretModal({ stage, onChange = () => {}, host = document.bo
     customTtlField.hidden = ttlField.value !== "custom";
     if (!customTtlField.hidden) customTtlField.focus();
   };
-  body.querySelector("[data-secret-reveal]").onclick = (event) => {
+  revealButton.onclick = (event) => {
     const button = event.currentTarget;
     const revealed = valueField.type === "password";
     valueField.type = revealed ? "text" : "password";

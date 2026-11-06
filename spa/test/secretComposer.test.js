@@ -90,6 +90,8 @@ describe("secret modal", () => {
     field("secret-key").value = "DEPLOY_TOKEN";
     const value = field("secret-value");
     value.value = "synthetic stage value";
+    dialog().querySelector("[data-secret-reveal]").click();
+    expect(value.type).toBe("text");
     field("secret-ttl").value = "3600";
     dialog().querySelector("[data-secret-submit]").click();
 
@@ -98,6 +100,7 @@ describe("secret modal", () => {
     expect(submitted).toMatchObject({ name: "DEPLOY_TOKEN", scope: "agent", ttlSeconds: 3600 });
     expect(submitted.value).toBe("synthetic stage value");
     expect(value.value).toBe("");
+    expect(value.type).toBe("password");
     expect(changed).toHaveBeenCalledOnce();
     await vi.waitFor(() => expect(dialog()).toBeNull());
   });
@@ -161,8 +164,11 @@ describe("secret modal", () => {
     openSecretModal({ stage: vi.fn() });
     const value = field("secret-value");
     value.value = "synthetic dismissed value";
+    dialog().querySelector("[data-secret-reveal]").click();
+    expect(value.type).toBe("text");
     dialog().querySelector("[data-secret-cancel]").click();
     expect(value.value).toBe("");
+    expect(value.type).toBe("password");
     await vi.waitFor(() => expect(dialog()).toBeNull());
   });
 });

@@ -6,7 +6,10 @@
 import { fieldTraits } from "./fieldTraits.js";
 import { ICON_EYE, ICON_EYE_OFF, ICON_LOCK, ICON_X } from "./icons.js";
 import { modalDialogHtml, openModal } from "./modal.js";
+import { secretChipLabel } from "./secretLabels.js";
 import { esc } from "./text.js";
+
+export { secretChipLabel } from "./secretLabels.js";
 
 const MIN_TTL_SECONDS = 60;
 const MAX_TTL_SECONDS = 2_592_000;
@@ -27,28 +30,7 @@ export function secretTtlSeconds(choice, customSeconds) {
   return seconds;
 }
 
-function ttlLabel(seconds) {
-  if (seconds === null) return "No expiry";
-  const units = [
-    [86_400, "day"],
-    [3_600, "hour"],
-    [60, "minute"],
-    [1, "second"],
-  ];
-  const [unitSeconds, unit] = units.find(([size]) => seconds % size === 0);
-  const count = seconds / unitSeconds;
-  return `${count} ${unit}${count === 1 ? "" : "s"} after sending`;
-}
-
-const scopeName = (metadata) => {
-  const scope = metadata?.grant?.scope || metadata?.scope;
-  return scope === "project" ? "Project" : "Agent";
-};
-
-/** The exact human-readable metadata carried by both staged and sent chips. */
-export function secretChipLabel(metadata) {
-  return `${metadata?.name || ""} · ${scopeName(metadata)} · ${ttlLabel(metadata?.ttl_seconds ?? null)}`;
-}
+export const secretComposerAvailable = (cachedSupport, threadId) => cachedSupport === true && Boolean(threadId);
 
 const secretChipHtml = (metadata, removable) => {
   const label = secretChipLabel(metadata);
@@ -70,8 +52,8 @@ const selected = (held, wanted) => held === wanted ? " selected" : "";
 function secretModalBodyHtml({ scope = "agent", ttl = "none", busy = false }) {
   return `<h3 id="secret-modal-title">Attach a secret</h3>
     <p class="sub secret-modal-intro">The value is sealed to this device and is not included in the message.</p>
-    <label class="secret-field-label" for="secret-name">Name</label>
-    <input id="secret-name" name="secret-name" type="text" maxlength="64" placeholder="TEST_TOKEN" ${fieldTraits("identifier")} />
+    <label class="secret-field-label" for="secret-key">Name</label>
+    <input id="secret-key" name="secret-key" type="text" maxlength="64" placeholder="TEST_TOKEN" ${fieldTraits("identifier")} />
     <label class="secret-field-label" for="secret-value">Value</label>
     <div class="secret-value-field">
       <input id="secret-value" name="secret-value" type="password" ${fieldTraits("identifier")} />
@@ -110,7 +92,7 @@ export function secretModalHtml(state = {}) {
 const nameError = "Use 1–64 letters, numbers, _, . or -; start with a letter or _.";
 
 function modalSubmission(body, value, ttlField, customTtlField, clearValue) {
-  const name = body.querySelector("#secret-name").value.trim();
+  const name = body.querySelector("#secret-key").value.trim();
   if (!validSecretName(name)) throw new Error(nameError);
   if (!value) throw new Error("Enter a secret value.");
   const scope = body.querySelector('[name="secret-scope"]:checked')?.value || "agent";
@@ -143,6 +125,7 @@ export function openSecretModal({ stage, onChange = () => {}, host = document.bo
     dialogHtml: secretModalHtml(),
     scrimId: "secret-scrim",
     host,
+    initialFocus: "#secret-key",
     canDismiss: () => !busy,
     onClose: closed,
   });
@@ -225,8 +208,6 @@ export function openSecretModal({ stage, onChange = () => {}, host = document.bo
     event.preventDefault();
     void submit();
   };
-  body.querySelector("#secret-name").focus();
-
   return { body, close, submit };
 }
 

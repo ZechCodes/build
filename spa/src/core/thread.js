@@ -36,12 +36,13 @@ import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { scrollWithin } from "./scrollWithin.js";
 import { buildNoticeSummary, noticeHasMore } from "./buildNoticeLine.js";
 import { attachMediaSource, createMediaBody, createMediaUrl } from "./mediaBlob.js";
+import { secretChipLabel } from "./secretLabels.js";
+
+export { secretChipLabel, secretTtlLabel } from "./secretLabels.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
-const HOUR_SECONDS = 60 * 60;
-const DAY_SECONDS = 24 * HOUR_SECONDS;
 
 function ordinal(day) {
   const lastTwoDigits = day % 100;
@@ -712,29 +713,6 @@ const secretMetadataById = (source, secretId) => {
   if (Array.isArray(source)) return source.find((entry) => entry?.secret_id === secretId);
   return source && typeof source === "object" ? source[secretId] : null;
 };
-
-const plural = (amount, unit) => `${amount} ${unit}${amount === 1 ? "" : "s"}`;
-
-/** The lifetime stamped on a metadata-only secret chip. TTL begins only once
- * the bridge durably accepts the message, so every finite label says so. */
-export function secretTtlLabel(ttlSeconds) {
-  if (ttlSeconds === null) return "No expiry";
-  const seconds = Number(ttlSeconds);
-  if (!Number.isSafeInteger(seconds) || seconds <= 0) return "";
-  if (seconds % DAY_SECONDS === 0) return `${plural(seconds / DAY_SECONDS, "day")} after sending`;
-  if (seconds % HOUR_SECONDS === 0) return `${plural(seconds / HOUR_SECONDS, "hour")} after sending`;
-  if (seconds % 60 === 0) return `${plural(seconds / 60, "minute")} after sending`;
-  return `${plural(seconds, "second")} after sending`;
-}
-
-/** Exact visible chip copy from a validated cache descriptor. */
-export function secretChipLabel(metadata) {
-  const name = metadata?.name;
-  const scope = { agent: "Agent", project: "Project" }[metadata?.grant?.scope];
-  const ttl = secretTtlLabel(metadata?.ttl_seconds);
-  if (![name, scope, ttl].every(Boolean)) return "";
-  return `${name} · ${scope} · ${ttl}`;
-}
 
 /** Sent rows name only secret ids. Metadata and display copy come from the
  * cache snapshot supplied by the surface; history cannot fabricate a chip. */

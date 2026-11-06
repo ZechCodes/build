@@ -4,7 +4,7 @@ export function modalDialogHtml(innerHtml, { className = "" } = {}) {
   return `<div class="modal${className ? ` ${className}` : ""}" role="dialog" aria-modal="true">${innerHtml}</div>`;
 }
 
-export function openModal({ dialogHtml, scrimId = "", onClose = null, canDismiss = () => true, host = document.body }) {
+export function openModal({ dialogHtml, scrimId = "", onClose = null, canDismiss = () => true, host = document.body, initialFocus = "button" }) {
   const scrim = document.createElement("div");
   scrim.className = host === document.body ? "modal-scrim" : "modal-scrim modal-scrim-local";
   if (scrimId) scrim.id = scrimId;
@@ -40,7 +40,7 @@ export function openModal({ dialogHtml, scrimId = "", onClose = null, canDismiss
 
   onScreen.then(() => {
     if (closing || !visible || interrupted || scrim.contains(document.activeElement)) return;
-    dialog.querySelector("button")?.focus();
+    dialog.querySelector(initialFocus)?.focus();
   });
 
   // Retained surfaces detach their modal synchronously. Countermand any reveal

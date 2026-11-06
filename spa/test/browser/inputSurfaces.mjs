@@ -76,7 +76,7 @@ export const INPUT_FILE_SOURCES = {
   "core/trackerTaskRender.js": "hidden task comment attachment picker",
 };
 export const INPUT_RADIO_SOURCES = {
-  "core/secretComposer.js": "secret scope and expiry choices (covered by secretComposerLayout)",
+  "core/secretComposer.js": "secret scope choices (covered by secretComposerLayout)",
 };
 
 export const INPUT_SURFACES = [

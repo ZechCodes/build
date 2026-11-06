@@ -9,6 +9,7 @@ import {
   secretTtlSeconds,
   validSecretName,
 } from "../src/core/secretComposer.js";
+import { motionSettled } from "../src/core/motion.js";
 
 afterEach(() => {
   document.body.innerHTML = "";
@@ -35,18 +36,18 @@ describe("secret composer metadata", () => {
   });
 
   it.each([
-    [{ name: "TEST_TOKEN", scope: "project", ttl_seconds: null }, "TEST_TOKEN · Project · No expiry"],
+    [{ name: "TEST_TOKEN", grant: { scope: "project" }, ttl_seconds: null }, "TEST_TOKEN · Project · No expiry"],
     [{ name: "DEPLOY_TOKEN", grant: { scope: "agent" }, ttl_seconds: 3600 }, "DEPLOY_TOKEN · Agent · 1 hour after sending"],
     [{ name: "MINUTE_TOKEN", grant: { scope: "project" }, ttl_seconds: 120 }, "MINUTE_TOKEN · Project · 2 minutes after sending"],
-    [{ name: "DAY_TOKEN", scope: "agent", ttl_seconds: 172800 }, "DAY_TOKEN · Agent · 2 days after sending"],
-    [{ name: "ODD_TOKEN", scope: "agent", ttl_seconds: 61 }, "ODD_TOKEN · Agent · 61 seconds after sending"],
+    [{ name: "DAY_TOKEN", grant: { scope: "agent" }, ttl_seconds: 172800 }, "DAY_TOKEN · Agent · 2 days after sending"],
+    [{ name: "ODD_TOKEN", grant: { scope: "agent" }, ttl_seconds: 61 }, "ODD_TOKEN · Agent · 61 seconds after sending"],
   ])("formats the exact metadata-only chip %s", (metadata, label) => {
     expect(secretChipLabel(metadata)).toBe(label);
     expect(secretChipsHtml([metadata], { removable: false })).toContain(label);
   });
 
   it("escapes chip metadata and gives staged chips a revoke control", () => {
-    const html = secretChipsHtml([{ secret_id: "sec_1", name: '<img src=x onerror="bad">', scope: "agent", ttl_seconds: null }]);
+    const html = secretChipsHtml([{ secret_id: "sec_1", name: '<img src=x onerror="bad">', grant: { scope: "agent" }, ttl_seconds: null }]);
     expect(html).not.toContain("<img");
     expect(html).toContain("&lt;img");
     expect(html).toContain('data-secret-remove="sec_1"');
@@ -58,8 +59,10 @@ const dialog = () => document.querySelector("[role=dialog]");
 const field = (name) => dialog().querySelector(`[name="${name}"]`);
 
 describe("secret modal", () => {
-  it("is labelled, masks the non-autofilled value, and defaults to Agent with scope explanations", () => {
+  it("is labelled, focuses Name, masks the non-autofilled value, and defaults to Agent with scope explanations", async () => {
     const modal = openSecretModal({ stage: vi.fn() });
+    await motionSettled();
+    await vi.waitFor(() => expect(document.activeElement).toBe(field("secret-key")));
     expect(dialog().getAttribute("aria-labelledby")).toBe("secret-modal-title");
     expect(field("secret-value").type).toBe("password");
     expect(field("secret-value").autocomplete).toBe("off");
@@ -84,7 +87,7 @@ describe("secret modal", () => {
     const stage = vi.fn(async () => ({ secret_id: "sec_1" }));
     const changed = vi.fn();
     openSecretModal({ stage, onChange: changed });
-    field("secret-name").value = "DEPLOY_TOKEN";
+    field("secret-key").value = "DEPLOY_TOKEN";
     const value = field("secret-value");
     value.value = "synthetic stage value";
     field("secret-ttl").value = "3600";
@@ -102,7 +105,7 @@ describe("secret modal", () => {
   it("submits Project scope with a bounded custom TTL", async () => {
     const stage = vi.fn(async () => ({ secret_id: "sec_project" }));
     openSecretModal({ stage });
-    field("secret-name").value = "PROJECT_TOKEN";
+    field("secret-key").value = "PROJECT_TOKEN";
     field("secret-value").value = "synthetic project value";
     dialog().querySelector('[name="secret-scope"][value="project"]').click();
     field("secret-ttl").value = "custom";
@@ -120,7 +123,7 @@ describe("secret modal", () => {
   ])("validates without staging and wipes the submitted value", async (name, rawValue, error) => {
     const stage = vi.fn();
     openSecretModal({ stage });
-    field("secret-name").value = name;
+    field("secret-key").value = name;
     const value = field("secret-value");
     value.value = rawValue;
     dialog().querySelector("[data-secret-submit]").click();
@@ -133,7 +136,7 @@ describe("secret modal", () => {
   it("wipes a rejected submission and reports only the safe error", async () => {
     const stage = vi.fn(async () => { throw new Error("Upload could not be confirmed"); });
     openSecretModal({ stage });
-    field("secret-name").value = "FAILED_TOKEN";
+    field("secret-key").value = "FAILED_TOKEN";
     const value = field("secret-value");
     value.value = "synthetic rejected value";
     dialog().querySelector("[data-secret-submit]").click();
@@ -144,7 +147,7 @@ describe("secret modal", () => {
 
   it("keeps the modal open and reports a stage that produced no secret", async () => {
     openSecretModal({ stage: vi.fn(async () => null) });
-    field("secret-name").value = "COLD_START_TOKEN";
+    field("secret-key").value = "COLD_START_TOKEN";
     field("secret-value").value = "synthetic cold-start value";
     dialog().querySelector("[data-secret-submit]").click();
 

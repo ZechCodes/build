@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { composerHtml, mountComposerAttachments } from "../src/core/composer.js";
+import { secretComposerAvailable } from "../src/core/secretComposer.js";
 
 const IDS = { input: "chat-input", send: "chat-send", hint: "chat-hint" };
 
@@ -36,10 +37,17 @@ describe("the composer attachment menu", () => {
       .toEqual(["Files or imagesChoose a file or image from this device"]);
   });
 
+  it("does not offer Secret until the selected conversation has a thread", () => {
+    expect(secretComposerAvailable(true, null)).toBe(false);
+    expect(secretComposerAvailable(true, "thread-1")).toBe(true);
+    expect(secretComposerAvailable(false, "thread-1")).toBe(false);
+  });
+
   it("shows Secret only when supported and routes both actions without changing file input behavior", () => {
     const { picker, onSecret } = mount({ secretAttachable: true });
     const rows = [...document.querySelectorAll(".composer-attach [role=menuitem]")];
     expect(rows.map((row) => row.querySelector(".mt").textContent)).toEqual(["Files or images", "Secret"]);
+    expect(rows[1].querySelector(".md").textContent).toBe("Seal a value for an agent or project");
     rows[0].click();
     expect(picker.click).toHaveBeenCalledOnce();
     rows[1].click();

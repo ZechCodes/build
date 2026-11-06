@@ -219,7 +219,7 @@ export const composerPartIds = (inputId) => ({
 const attachmentMenuOptions = (secretAttachable) => [
   { id: "files", label: "Files or images", description: "Choose a file or image from this device" },
   ...(secretAttachable
-    ? [{ id: "secret", label: "Secret", description: "Seal a value for this agent" }]
+    ? [{ id: "secret", label: "Secret", description: "Seal a value for an agent or project" }]
     : []),
 ];
 

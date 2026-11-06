@@ -106,7 +106,7 @@ import {
 } from "./threadSend.js";
 import { createChatRepository } from "./chatRepository.js";
 import { createSecretDraftService } from "./secretDrafts.js";
-import { createSecretComposer } from "./secretComposer.js";
+import { createSecretComposer, secretComposerAvailable } from "./secretComposer.js";
 import { createSecretMetadataBinding } from "./secretMetadataBinding.js";
 import { createAgentRailContext } from "./agentRailContext.js";
 import { hashFromRoute, routeFromHash } from "./router.js";
@@ -417,7 +417,7 @@ export function createRailChatOwnership(repository, key, entityOf, { metadataCac
     controllerFor(agent) {
       const entity = entityOf();
       if (!agent || !entity.entityId) return null;
-      const scopeProjectId = projectId || entity.projectId || null;
+      const scopeProjectId = entity.projectId || projectId || null;
       trackProjectMetadata(scopeProjectId);
       const address = addressFor(entity, agent);
       const controller = repository.controller(address);
@@ -3263,6 +3263,9 @@ function mountRailOnContext(host, context, swap) {
   const composerPlaceholder = () =>
     visibleAgents().length && !addingAgent() ? "Send a message to this agent…" : "Send a message to start an agent here…";
 
+  const canAttachSecret = (controller = controllerInFocus()) =>
+    secretComposerAvailable(chatRepository.secretAttachments(), controller?.identity?.threadId);
+
   /// The box you write in, pinned below the conversation instead of sitting at
   /// the end of it. It is a SIBLING of the scroller, so reading back through a
   /// long thread never takes the box off screen, and the growth of a box being
@@ -3287,7 +3290,7 @@ function mountRailOnContext(host, context, swap) {
         hintId: COMPOSER_IDS.hint,
         placeholder: composerPlaceholder(),
         attachable: true,
-        secretAttachable: chatRepository.secretAttachments() === true,
+        secretAttachable: canAttachSecret(),
         modelMenu: true,
         canInterrupt: agentCanInterrupt(agentOf(selectedId)),
       })}</div>
@@ -3329,7 +3332,7 @@ function mountRailOnContext(host, context, swap) {
     if (composerControl) {
       composerControl.setCanInterrupt(agentCanInterrupt(agentInFocus()));
       composerControl.setBlocked(composerController?.choice().pending, "Applying model…");
-      composerControl.setSecretAttachable(chatRepository.secretAttachments() === true);
+      composerControl.setSecretAttachable(canAttachSecret(composerController));
     }
     syncChatRecovery();
     syncContextGauge();
@@ -3508,7 +3511,7 @@ function mountRailOnContext(host, context, swap) {
       submissionOwnsDraft: true,
       viewingContext: composerViewingContext,
       secretComposer: composerSecrets,
-      secretAttachable: chatRepository.secretAttachments() === true,
+      secretAttachable: canAttachSecret(controller),
       // Attaching lands the bytes before the message names them — which needs a
       // conversation to store them against, so it adopts exactly as sending
       // does: choosing a file for a message is the same intent, one keystroke

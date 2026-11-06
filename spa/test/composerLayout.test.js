@@ -17,10 +17,12 @@ const markup = (over = {}) =>
 describe("the composer action row", () => {
   it("groups the attach and send controls together", () => {
     const html = markup();
-    const actions = html.match(/<div class="composer-actions">[\s\S]*?<\/div>/);
-    expect(actions, "the actions share one container").not.toBeNull();
-    expect(actions[0]).toContain('id="iattach"');
-    expect(actions[0]).toContain('id="s"');
+    const actions = html.indexOf('<div class="composer-actions">');
+    const attach = html.indexOf('id="iattach"');
+    const send = html.indexOf('id="s"');
+    expect(actions).toBeGreaterThan(-1);
+    expect(attach).toBeGreaterThan(actions);
+    expect(send).toBeGreaterThan(attach);
   });
 
   it("keeps contextual rows above the bordered input and omits visual shortcut and menu arrows", () => {
@@ -68,7 +70,7 @@ describe("the composer action row", () => {
 // turn with no draft, otherwise send.
 describe("the send control", () => {
   it("is the plain button, unchanged, where there is nothing to interrupt", () => {
-    const html = markup();
+    const html = sendControlHtml({ sendId: "s" });
     expect(html).toContain('class="btn primary composer-send" id="s"');
     expect(html).not.toContain("splitbtn");
     expect(html).not.toContain("splitmenu");

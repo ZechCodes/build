@@ -54,6 +54,7 @@ vi.mock("@build/secure-transport", () => ({
   openSessionAccept: async ({ envelope }) => ({ sessionId: envelope.session_id }),
   encryptFrame: async ({ outerFields, frameFields }) => ({ outerFields, frameFields }),
   decryptEnvelope: async ({ envelope }) => ({ payload: envelope.frameFields.payload }),
+  sealSecretUpload: vi.fn(async () => { throw new Error("Unexpected secret upload in peer upgrade test"); }),
 }));
 vi.mock("../src/devices.js", () => ({
   paintDevicePicker: () => {},

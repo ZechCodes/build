@@ -261,7 +261,9 @@ const sourceFingerprintParts = {
   "core/adoption.js": ["350b90d5", "9e535f4b", "15adf2ef", "7eacd8c0", "fb946020", "b6130cb8", "ce729fed", "bb90597e"],
   "core/agentDefaults.js": ["f856d23d", "2c446c14", "c6e4d78e", "e11e737d", "75e1fbc1", "fa79564d", "2ef20a2b", "1cdbbcb0"],
   "core/agentModes.js": ["5764f59d", "200944fd", "e1fb485f", "a1b58c05", "633b7f0f", "f9b7cbcd", "4e62b9db", "31bcb3a8"],
-  "core/agentRail.js": ["f085acd7", "ccc8371b", "d3377115", "758c5ef0", "439246d2", "c1d2aad1", "5672225b", "316cd6d7"],
+  // #1006 secret draft service forwards only secrets.create/secrets.revoke;
+  // cached capability rendering does not widen the transport contract.
+  "core/agentRail.js": ["9aabb9f2", "26f1e8ce", "ca461195", "d457e4eb", "54e1906d", "17a0eae4", "e03db199", "65200a2e"],
   "core/agentRailContext.js": ["e175542d", "376171c6", "e04b61df", "847af2cf", "a3a2c56e", "8fbeb913", "9593b4cb", "50809f5c"],
   "core/agentRolesPanel.js": ["c05b7c96", "5849ec7f", "0d258bc2", "96a7795e", "2a4663f4", "57e78316", "de145b90", "699b4a91"],
   "core/agentSurfacesModel.js": ["546cf5aa", "3a478c63", "4a0f02f5", "4eafcae5", "53a5ffd3", "3ad4f563", "c075aa93", "dcbbef9d"],
@@ -293,7 +295,9 @@ const sourceFingerprintParts = {
   "core/conversationDetail.js": ["a54ac9f8", "f54c61d4", "cea363a5", "b098964f", "16ecc016", "490b853d", "76d94602", "ad5a773a"],
   "core/createWork.js": ["42444ebc", "8ae4117e", "ba2cdde6", "7d740ba3", "1850d7a6", "a63c9fd2", "50784964", "18d57196"],
   "core/defaultHarness.js": ["b7ed5ad6", "9fdfdc35", "84dd803d", "3c0e95fd", "72904016", "4cb29938", "97723e94", "2ace812d"],
-  "core/deviceContexts.js": ["4e9c3990", "7dee88ec", "810274f7", "2defd5bf", "c24f8902", "bf38503f", "54f61680", "b4cf4fd1"],
+  // #1006 held secret posts use the current session safely because thread.post
+  // deduplicates the preserved operation_id; the dispatch methods are unchanged.
+  "core/deviceContexts.js": ["3f6ac6fe", "228f3ab0", "1d53be68", "63246b69", "0b20a630", "296beea5", "acf2ecfe", "2b6168b7"],
   "core/diffSort.js": ["9ef743b8", "16f0a5ae", "1d9ec36a", "455f0e76", "c04a0902", "8deca6c7", "70acd150", "dbe96ac6"],
   "core/directoryRail.js": ["98080c38", "f2152285", "3e025868", "10652120", "d12c8ead", "cfa571c6", "6c3476c8", "b6b56ef2"],
   "core/fileDiffs.js": ["708cce52", "81bbdc00", "82791bce", "f9d05524", "b3b3b017", "d283e106", "e977da82", "b3b2707e"],
@@ -339,7 +343,9 @@ const sourceFingerprintParts = {
   // #997 review scopedSyncEngine.js:62,147: declined publications retry bounded recovery through the same three sync queries; no new dispatch site.
   "core/scopedSyncEngine.js": ["2f3ab7a1", "b5bad14b", "d4f774c0", "dbbec9c6", "124d8d1d", "05076d00", "a441b99d", "2b2a333e"],
   // #1005: staged-secret draft metadata and cache reads use explicit secrets.* methods.
-  "core/secretDrafts.js": ["01e542b2", "d8c57354", "063745c8", "2080e155", "a6da123d", "385ff991", "4c59203c", "17e171c0"],
+  // #1006 stage/revoke are the two finite methods forwarded by agentRail's
+  // reviewed secret draft dispatcher; unavailable live capability rejects.
+  "core/secretDrafts.js": ["8d98dad3", "bcad794d", "d621f14a", "9e6a58b6", "e36e2e52", "5b82c46b", "6f82d443", "d4712ffb"],
   "core/secretMetadataCache.js": ["06759ad6", "c728c4c1", "2c49dcb7", "bff92033", "da9b45f7", "99cccfe5", "496164ab", "3c96c0e1"],
   "core/session.js": ["3d180500", "f13f38ec", "64d5d01d", "ec44e3c7", "ef80b3cc", "85470f82", "ad7080e1", "69c47137"],
   "core/sessionRpc.js": ["5d583ef2", "0faaf478", "09fbf975", "ab15af9f", "a78fd5f8", "fc4bab2e", "49d4ef64", "4e13ad2d"],
@@ -447,6 +453,8 @@ const dynamicSites = {
     "producer `settings.agent_modes.${family} is missing or malformed`"
   ],
   "core/agentRail.js": [
+    // Secret draft dispatch expands only to secrets.create and secrets.revoke.
+    ". currentCall ( ) ( ... args )",
     ". currentCall ( ) ( method )",
     ". currentCall ( ) ( method )",
     ". currentCall ( ) ( method )",

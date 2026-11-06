@@ -25,10 +25,8 @@ parameter placement, limits and terminal/signaling/QA exclusions. The sealed-onl
 `secrets.create` request is capped at 64 KiB; value retrieval has no public HTTP
 route. Create bypasses the generic persisted write-intent journal. All four
 secrets verbs and `secrets.attachments`, `secrets.sealedUpload` and
-`secrets.metadataEvents` remain explicitly withheld from greeting capabilities
-until slice F enables the complete feature. `UNADVERTISED_CAPABILITIES` in
-`bridge/src/api/mod.rs` names that gate; enabling it requires moving the three
-feature names into `FEATURE_CAPABILITIES` and removing their method exclusions.
+`secrets.metadataEvents` are advertised by wire 3.36 now that the composer UI,
+installed CLI and metadata invalidation path ship together.
 Future manifest changes require regenerating both HTTP artifacts and reviewing
 the exact hash and operation list together.
 

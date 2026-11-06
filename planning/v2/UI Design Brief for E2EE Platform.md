@@ -1,5 +1,14 @@
 # Build v1 — UI Design Brief & User Stories
 
+## Secret composer — #1006 implementation amendment (2026-11-05)
+
+The paperclip opens a themed ARIA menu with Files or images and, on capable
+devices, Secret. Secret opens a modal for Name, masked Value with reveal,
+Agent/Project scope (Agent by default), and optional expiry. The copy says the
+TTL starts when the message is sent. Chips use the exact form
+`NAME · Scope · No expiry` or `NAME · Scope · 1 hour after sending`; staged
+chips can be removed and sent chips contain metadata only.
+
 ## Conversation identity — #651 implementation amendment (2026-10-17)
 
 The rail conversation header shows the agent's name on the large first line

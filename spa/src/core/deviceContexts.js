@@ -523,6 +523,7 @@ async function dispatchChatPost(context, post) {
     if (!secretFeaturesAvailable(context.adapter?.capabilities?.secrets)) {
       throw new ApiError("unknown_method", "This bridge cannot attach staged secrets");
     }
+    // thread.post deduplicates by operation_id, so this held post may safely follow a newer greeted session.
     return post.send(context.rpc);
   });
   if (!request) throw new Error(deviceAwayMark(context));

@@ -196,9 +196,39 @@ it("does not expose or dispatch the feature unless all capabilities are present"
   expect(secretFeaturesAvailable({ attachments: true, sealedUpload: true, metadataEvents: false })).toBe(false);
   const call = vi.fn();
   const sinks = harness({ capabilities: () => ({ attachments: true, sealedUpload: false, metadataEvents: true }), call });
-  await expect(sinks.service.stage({ name: "TEST_TOKEN", value: "synthetic", scope: "project" })).resolves.toBeNull();
+  await expect(sinks.service.stage({ name: "TEST_TOKEN", value: "synthetic", scope: "project" }))
+    .rejects.toMatchObject({ code: "stage_unavailable" });
   expect(call).not.toHaveBeenCalled();
   expect(sinks.service.submission()).toEqual({ secret_ids: [] });
+});
+
+it("keeps a cached-support draft visible before live capabilities arrive", () => {
+  const draft = { read: vi.fn(() => [projectMetadata]), write: vi.fn() };
+  const sinks = harness({
+    capabilities: () => ({}),
+    cachedSupport: () => true,
+    draft,
+  });
+
+  expect(sinks.service.entries()).toEqual([projectMetadata]);
+  expect(sinks.service.submission()).toEqual({ secret_ids: [projectMetadata.secret_id] });
+});
+
+it("rejects an unavailable cached-draft revoke without removing the chip", async () => {
+  const draft = { read: vi.fn(() => [projectMetadata]), write: vi.fn() };
+  const call = vi.fn();
+  const sinks = harness({
+    capabilities: () => ({}),
+    cachedSupport: () => true,
+    draft,
+    call,
+  });
+
+  await expect(sinks.service.remove(projectMetadata.secret_id))
+    .rejects.toMatchObject({ name: "SecretDraftError", code: "revoke_unavailable" });
+  expect(call).not.toHaveBeenCalled();
+  expect(draft.write).not.toHaveBeenCalled();
+  expect(sinks.service.entries()).toEqual([projectMetadata]);
 });
 
 it("refuses a stale generation before writing the returned descriptor", async () => {

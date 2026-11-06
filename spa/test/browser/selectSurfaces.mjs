@@ -18,6 +18,7 @@ export const SELECT_SOURCES = {
   "core/isolation.js": "device settings / project settings",
   "core/projectAgentSetting.js": "device settings",
   "core/projectConsole.js": "project Terminal",
+  "core/secretComposer.js": "secret composer",
   "core/taskReviewMerge.js": "PR merge",
   "core/taskReviewRender.js": "task review",
   "core/taskWaitingOnRender.js": "task controls / Waiting on prerequisite",
@@ -43,6 +44,7 @@ export const SELECT_SURFACES = [
   { name: "PR merge", selectors: ["[data-pr-merge-remote]"] },
   { name: "new conversation", selectors: ["[data-new-agent-role]"] },
   { name: "clear conversation", selectors: ["[data-clear-detail]", "[data-clear-compact]"] },
+  { name: "secret composer", selectors: ["#secret-ttl"] },
 ];
 
 const catalog = {
@@ -66,6 +68,7 @@ const modules = {
   reviewLifecycle: "src/core/taskReviewLifecycle.js",
   waiting: "src/core/taskWaitingOnRender.js",
   httpControls: "src/core/httpTransportControls.js",
+  secretUi: "src/core/secretComposer.js",
 };
 
 async function loadSurfaceModules(page, basePath) {
@@ -133,6 +136,10 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
     m.compose.initCompose();
     m.compose.openCompose();
     disposers.push(() => m.compose.closeCompose());
+  }
+  if (name === "secret composer") {
+    const modal = m.secretUi.openSecretModal({ stage: async () => ({ secret_id: "select-secret" }) });
+    disposers.push(() => modal.close());
   }
   if (name === "workspace settings") {
     disposers.push(m.workspace.openWorkspaceSettings({ id: "workspace-1", name: "Select styling", workspaceKey: `${device.id}/workspace-1` }, { callRpc, catalog, deviceId: device.id }));

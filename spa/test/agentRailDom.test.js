@@ -1140,6 +1140,38 @@ describe("the rail over a machine that is asked nothing", () => {
     stops.forEach((stop) => expect(stop).toHaveBeenCalledOnce());
   });
 
+  it("registers metadata scopes when a task rail learns its project from the task", async () => {
+    payload = {
+      task_id: "plan-1", project_id: "p1",
+      agents: [agent({ conversation_id: "conversation-task-secret", thread_id: "thread-task-secret" })],
+      thread: { items: [], sessions: [] },
+    };
+    const stops = [];
+    const secretMetadataCache = {
+      track: vi.fn(() => {
+        const stop = vi.fn();
+        stops.push(stop);
+        return stop;
+      }),
+    };
+
+    rail = mountAgentRail(railHost(), railAddress({
+      kind: "task", projectId: null, taskId: "plan-1", secretMetadataCache,
+    }));
+
+    await vi.waitFor(() => expect(secretMetadataCache.track).toHaveBeenCalledWith(
+      { projectId: "p1" }, expect.any(Object),
+    ));
+    expect(secretMetadataCache.track).toHaveBeenCalledWith({
+      projectId: "p1", ownerId: "plan-1", agentId: "ag-1",
+      conversationId: "conversation-task-secret", generation: "thread-task-secret", draftId: null,
+    }, expect.any(Object));
+    rail.dispose();
+    rail = null;
+    expect(stops).toHaveLength(2);
+    stops.forEach((stop) => expect(stop).toHaveBeenCalledOnce());
+  });
+
   it("tracks a branch route's secret scopes without adding project overview UI", async () => {
     payload = branchRow({
       agents: [agent({ conversation_id: "conversation-branch", thread_id: "thread-branch" })],

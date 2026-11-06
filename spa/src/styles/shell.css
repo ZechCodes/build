@@ -1340,7 +1340,7 @@ body .toolbar button.tb-switch:active:not(:disabled, [aria-disabled="true"]) { b
   box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 .rail-composer .composer textarea { flex:1 1 auto; min-height:36px; max-height:40vh; overflow-y:auto; }
 .rail-composer .composer-bar { flex:none; padding:2px 5px 5px; }
-.rail-composer .composer-send,.rail-composer .composer-attach { width:30px; height:30px; }
+.rail-composer .composer-send,.rail-composer .composer-attach .caret { width:30px; height:30px; }
 /* The context gauge ticks as the agent works, so it lives in the footer, out of
    the box being typed in, and reads out over the room the bar keeps for it
    beside the paperclip. The room is as wide as the widest total and the

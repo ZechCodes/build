@@ -36,6 +36,9 @@ import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { scrollWithin } from "./scrollWithin.js";
 import { buildNoticeSummary, noticeHasMore } from "./buildNoticeLine.js";
 import { attachMediaSource, createMediaBody, createMediaUrl } from "./mediaBlob.js";
+import { secretChipLabel } from "./secretLabels.js";
+
+export { secretChipLabel, secretTtlLabel } from "./secretLabels.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -170,6 +173,7 @@ export const provisionalThreadItem = ({ operationId, message = {}, sequence = nu
     sequence,
     body: message.body || "",
     attachments: message.attachments || [],
+    ...(Array.isArray(message.secret_ids) ? { secret_ids: [...message.secret_ids] } : {}),
     ...(message.viewing_context ? { viewing_context: message.viewing_context } : {}),
     created_at: new Date().toISOString(),
     delivery_status: deliveryStatus,
@@ -704,6 +708,23 @@ function outcomeMarkerHtml(outcome, agentLabel) {
 const messageContextHtml = (message) => message.viewing_context?.items?.length
   ? `<div class="message-viewing-context">${viewingContextChipsHtml(message.viewing_context)}</div>` : "";
 
+const secretMetadataById = (source, secretId) => {
+  if (source instanceof Map) return source.get(secretId);
+  if (Array.isArray(source)) return source.find((entry) => entry?.secret_id === secretId);
+  return source && typeof source === "object" ? source[secretId] : null;
+};
+
+/** Sent rows name only secret ids. Metadata and display copy come from the
+ * cache snapshot supplied by the surface; history cannot fabricate a chip. */
+function messageSecretsHtml(message, secretMetadata) {
+  if (!Array.isArray(message.secret_ids)) return "";
+  const chips = message.secret_ids.flatMap((secretId) => {
+    const label = secretChipLabel(secretMetadataById(secretMetadata, secretId));
+    return label ? [`<span class="thread-secret-chip">${esc(label)}</span>`] : [];
+  });
+  return chips.length ? `<div class="thread-secret-chips">${chips.join("")}</div>` : "";
+}
+
 const DELIVERY_STATUS_META = {
   queued: { label: "Queued", description: "Queued for the agent" },
   submitted: { label: "Queued", description: "Queued for the agent" },
@@ -879,7 +900,7 @@ function messageCardHtml(message, agentLabel, context) {
       ${messageContextHtml(message)}
       ${handedTaskHtml(message, context)}
       ${body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(body, { place: context.place, taskLabelScope: `message:${messageKey(message)}` })}</div>` : ""}
-      ${attachmentsHtml(message.attachments, threadState)}
+      ${attachmentsHtml(message.attachments, threadState)}${messageSecretsHtml(message, context.secretMetadata)}
       ${linksHtml(message.links)}
       ${optionsHtml(message, live, offer, threadState)}
       ${messageFooterHtml(message)}
@@ -1725,12 +1746,12 @@ const drawsNoRow = (message) =>
   // would be the same words a second time.
   || !!message.answers_options_of;
 
-function messageRow(item, index, agentLabel, { threadId, spoken, threadState, place, agentLabels, agentModels }) {
+function messageRow(item, index, agentLabel, { threadId, spoken, threadState, place, agentLabels, agentModels, secretMetadata }) {
   const message = item.data || {};
   if (drawsNoRow(message)) return [];
   const offer = offerKey(threadId, message.id);
   const live = spoken && !threadState.isSending(offer);
-  const context = { live, offer, threadState, place, agentLabels, agentModels };
+  const context = { live, offer, threadState, place, agentLabels, agentModels, secretMetadata };
   return [withLazyHtml({ key: rowKey(message, index), item }, () => messageHtml(message, agentLabel, context))];
 }
 
@@ -1763,11 +1784,13 @@ function timelineOf(sourceItems, agentLabel, place) {
 /// each item sits in the whole timeline, so a row drawn from a slice is the row
 /// the whole would have drawn.
 function rowsOfTimeline({ agentLabel, folding, topLevelItems, lastSpoken }, from, threadId, view) {
-  const { threadState, place, agentLabels, agentModels } = view;
+  const { threadState, place, agentLabels, agentModels, secretMetadata } = view;
   return topLevelItems.slice(from).flatMap((item, offset) => {
     const index = from + offset;
     return item.type === "message"
-      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken, threadState, place, agentLabels, agentModels })
+      ? messageRow(item, index, agentLabel, {
+          threadId, spoken: index === lastSpoken, threadState, place, agentLabels, agentModels, secretMetadata,
+        })
       : [activityRow(item, index, agentLabel, folding)];
   });
 }
@@ -1868,6 +1891,7 @@ export function timelineEntries(
     // tracking notice's "X did Y" — and X has to be a name the reader knows.
     agentLabels = {},
     agentModels = {},
+    secretMetadata,
     workspaces,
     hiddenByLevel = 0,
     // How much of the conversation to draw (core/timelineSlice.js): none draws
@@ -1883,6 +1907,7 @@ export function timelineEntries(
     agentLabel,
     agentLabels,
     agentModels,
+    secretMetadata,
     workspaces,
     threadId,
     threadState,
@@ -2087,6 +2112,7 @@ export function chatPaintFingerprint({
   unreadFrom,
   detailLevel,
   agentLabels,
+  secretMetadata,
   slice,
 }) {
   return [
@@ -2104,6 +2130,7 @@ export function chatPaintFingerprint({
     // A tracking notice names an agent, and that name comes off the feed: a
     // rename has to repaint a line that is already on screen.
     agentLabels || "",
+    secretMetadata || "",
     // What the reference index can answer for (#229). A list lands after the
     // first paint, and when it does, prose becomes links; the version covers
     // every project, so a reference to another project's workspace repaints.
@@ -2609,6 +2636,20 @@ function mountViewingContext(root, inputId, viewingContext) {
   return unsubscribe;
 }
 
+const EMPTY_SECRET_COMPOSER = Object.freeze({
+  open() {},
+  chipsHtml: () => "",
+  wire() {},
+  entries: () => [],
+});
+
+const activeSecretComposer = (secretComposer) => secretComposer || EMPTY_SECRET_COMPOSER;
+
+const mountThreadAttachments = (root, upload, options) => {
+  if (!upload) return null;
+  return mountComposerAttachments(root, { ...options, upload });
+};
+
 export function wireThreadComposer(root, {
   ids,
   onSubmit,
@@ -2622,6 +2663,8 @@ export function wireThreadComposer(root, {
   writeAttachments,
   submissionOwnsDraft = false,
   viewingContext = null,
+  secretComposer = null,
+  secretAttachable = false,
 }) {
   if (!root) return null;
   const input = root.querySelector(`#${ids.input}`);
@@ -2630,6 +2673,7 @@ export function wireThreadComposer(root, {
   const hint = ids.hint ? root.querySelector(`#${ids.hint}`) : null;
   if (!input || !send) return null;
   const unsubscribeContext = mountViewingContext(root, ids.input, viewingContext);
+  const secrets = activeSecretComposer(secretComposer);
 
   const say = (message) => {
     if (hint && hint.textContent !== message) hint.textContent = message;
@@ -2653,16 +2697,18 @@ export function wireThreadComposer(root, {
     }
     setPressable(true);
   };
-  tray = upload
-    ? mountComposerAttachments(root, {
-        ids,
-        upload,
-        readAttachments,
-        writeAttachments,
-        onError: say,
-        onChange: () => queueMicrotask(paintAction),
-      })
-    : null;
+  tray = mountThreadAttachments(root, upload, {
+    ids,
+    readAttachments,
+    writeAttachments,
+    onError: say,
+    onChange: () => queueMicrotask(paintAction),
+    secretAttachable,
+    onSecret: () => secrets.open(),
+    extraChipsHtml: () => secrets.chipsHtml(),
+    wireExtraChips: (trayRoot) => secrets.wire(trayRoot),
+    hasExtra: () => Boolean(secrets.entries().length),
+  });
 
   input.value = readDraft();
   input.oninput = () => {
@@ -2768,6 +2814,13 @@ export function wireThreadComposer(root, {
   return {
     setCanInterrupt,
     setBlocked,
+    setSecretAttachable(enabled) {
+      tray?.setSecretAttachable(enabled);
+    },
+    refreshSecrets() {
+      tray?.refresh();
+      paintAction();
+    },
     syncDraft() {
       if (!input.value && readDraft()) {
         input.value = readDraft();

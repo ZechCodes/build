@@ -2429,13 +2429,13 @@ fn workspace_legacy_review_markers_survive_typed_serialization() {
 }
 
 #[test]
-fn secrets_contract_is_known_but_withheld_until_the_complete_feature_ships() {
+fn secrets_contract_is_advertised_with_the_complete_feature() {
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
     for names in [
         &greeting["result"]["events"],
         &greeting["result"]["changes"]["kinds"],
     ] {
-        assert!(!names
+        assert!(names
             .as_array()
             .unwrap()
             .iter()
@@ -2451,21 +2451,15 @@ fn secrets_contract_is_known_but_withheld_until_the_complete_feature_ships() {
         "secrets.audit",
     ] {
         assert!(registered.contains(method), "missing {method}");
-        assert!(UNADVERTISED_CAPABILITIES.contains(&method));
-        assert!(
-            !advertised.contains(method),
-            "prematurely advertised {method}"
-        );
+        assert!(!UNADVERTISED_CAPABILITIES.contains(&method));
+        assert!(advertised.contains(method), "missing advertised {method}");
     }
     for feature in [
         "secrets.attachments",
         "secrets.sealedUpload",
         "secrets.metadataEvents",
     ] {
-        assert!(UNADVERTISED_CAPABILITIES.contains(&feature));
-        assert!(
-            !advertised.contains(feature),
-            "prematurely advertised {feature}"
-        );
+        assert!(!UNADVERTISED_CAPABILITIES.contains(&feature));
+        assert!(advertised.contains(feature), "missing advertised {feature}");
     }
 }

@@ -105,6 +105,9 @@ import {
   settleProvisional,
 } from "./threadSend.js";
 import { createChatRepository } from "./chatRepository.js";
+import { createSecretDraftService } from "./secretDrafts.js";
+import { createSecretComposer, secretComposerAvailable } from "./secretComposer.js";
+import { createSecretMetadataBinding } from "./secretMetadataBinding.js";
 import { createAgentRailContext } from "./agentRailContext.js";
 import { hashFromRoute, routeFromHash } from "./router.js";
 import { notifyThreadReaders, registerSyncThread, syncPaneShown, threadReaderIsHere } from "./syncVisibleScopes.js";
@@ -394,7 +397,9 @@ export function createRailChatOwnership(repository, key, entityOf, { metadataCac
     const scopeKey = JSON.stringify(scope);
     if (!metadataScopes.has(scopeKey)) metadataScopes.set(scopeKey, metadataCache.track(scope, { active }));
   };
-  trackMetadata({ projectId }, () => repository.active);
+  const trackProjectMetadata = (scopeProjectId) =>
+    trackMetadata({ projectId: scopeProjectId }, () => repository.active);
+  trackProjectMetadata(projectId);
   const addressFor = (entity, agent) => {
     const execution = entity.executionContext;
     if (execution) {
@@ -412,10 +417,12 @@ export function createRailChatOwnership(repository, key, entityOf, { metadataCac
     controllerFor(agent) {
       const entity = entityOf();
       if (!agent || !entity.entityId) return null;
+      const scopeProjectId = entity.projectId || projectId || null;
+      trackProjectMetadata(scopeProjectId);
       const address = addressFor(entity, agent);
       const controller = repository.controller(address);
       if (address.threadId) trackMetadata({
-        projectId, ownerId: address.entityId, agentId: address.agentId,
+        projectId: scopeProjectId, ownerId: address.entityId, agentId: address.agentId,
         conversationId: address.conversationId, generation: address.threadId, draftId: null,
       }, () => repository.isCurrentConversation(address));
       const digest = entity.executionContext?.agent || agent;
@@ -1368,6 +1375,8 @@ function mountRailOnContext(host, context, swap) {
   const disposeComposerModelMenu = () => composerModelMenu?.dispose();
   let composerGauge = null;
   let composerController = null;
+  let composerSecrets = null;
+  let secretMetadata = [];
   let unsubscribeComposerController = null;
   let surfacesBlock = null;
   let observationBlock = null;
@@ -1384,6 +1393,38 @@ function mountRailOnContext(host, context, swap) {
   });
   const withRollups = (agents) => agents.map(lineage.decorate);
   let surfaceOverlay = null; // the surface a menu option opened, over the panel
+
+  const secretMetadataSignature = () => secretMetadata
+    .map((entry) => `${entry.secret_id}:${entry.revision}`).sort().join(",");
+
+  const secretMetadataBinding = createSecretMetadataBinding({
+    cache: context.secretMetadataCache,
+    onPublish: (next) => {
+      if (JSON.stringify(next) === JSON.stringify(secretMetadata)) return;
+      secretMetadata = next;
+      paintedChat = null;
+      paintChat();
+    },
+  });
+
+  const releaseSecretMetadata = () => {
+    secretMetadataBinding.release();
+    secretMetadata = [];
+  };
+
+  const bindSecretMetadata = (controller) => {
+    releaseSecretMetadata();
+    const projectIdForSecrets = entity.projectId || projectOfRail(context, projectId);
+    const identity = controller?.identity;
+    if (!context.secretMetadataCache || typeof context.secretMetadataCache.read !== "function"
+      || typeof context.secretMetadataCache.subscribe !== "function" || !projectIdForSecrets || !identity?.threadId) return;
+    const scopes = [
+      { projectId: projectIdForSecrets },
+      { projectId: projectIdForSecrets, ownerId: identity.entityId, agentId: identity.agentId,
+        conversationId: identity.conversationId, generation: identity.threadId, draftId: identity.draftId || null },
+    ];
+    secretMetadataBinding.bind(scopes);
+  };
   let closeSurfaceMenu = null; // shuts the head's ⋯, and with it its outside-press watch
   let panelMotion = null;
 
@@ -2375,11 +2416,14 @@ function mountRailOnContext(host, context, swap) {
     disposeComposerClearance = null;
     closeSurfaceMenu?.();
     composerControl?.dispose?.();
+    composerSecrets?.dispose?.();
+    releaseSecretMetadata();
     disposeComposerModelMenu();
     unsubscribeComposerController?.();
     unsubscribeComposerController = null;
     composerController = null;
     composerControl = null;
+    composerSecrets = null;
     composerModelMenu = null;
     composerGauge = null;
   };
@@ -3028,6 +3072,7 @@ function mountRailOnContext(host, context, swap) {
       unreadFrom,
       detailLevel: detailLevel(),
       agentLabels: `${agentLabelsSignature()}:${agentModelsSignature(conversationAgentModels())}`,
+      secretMetadata: secretMetadataSignature(),
       slice: `${timelineSlice.signature()}:${threadCache.hasOlderItems()}`,
       ...threadOfferState(threadState),
     });
@@ -3089,6 +3134,7 @@ function mountRailOnContext(host, context, swap) {
         workspace.projectKey === deviceKey(conversationPlace().deviceId, conversationPlace().projectId)),
       agentLabels: conversationAgentLabels(),
       agentModels: conversationAgentModels(),
+      secretMetadata,
       // So a timeline the level emptied says so, rather than claiming the
       // conversation has nothing on the record.
       hiddenByLevel: held.length - shown.length,
@@ -3217,6 +3263,9 @@ function mountRailOnContext(host, context, swap) {
   const composerPlaceholder = () =>
     visibleAgents().length && !addingAgent() ? "Send a message to this agent…" : "Send a message to start an agent here…";
 
+  const canAttachSecret = (controller = controllerInFocus()) =>
+    secretComposerAvailable(chatRepository.secretAttachments(), controller?.identity?.threadId);
+
   /// The box you write in, pinned below the conversation instead of sitting at
   /// the end of it. It is a SIBLING of the scroller, so reading back through a
   /// long thread never takes the box off screen, and the growth of a box being
@@ -3241,6 +3290,7 @@ function mountRailOnContext(host, context, swap) {
         hintId: COMPOSER_IDS.hint,
         placeholder: composerPlaceholder(),
         attachable: true,
+        secretAttachable: canAttachSecret(),
         modelMenu: true,
         canInterrupt: agentCanInterrupt(agentOf(selectedId)),
       })}</div>
@@ -3279,8 +3329,11 @@ function mountRailOnContext(host, context, swap) {
 
   const syncComposer = () => {
     syncComposerDraft();
-    if (composerControl) composerControl.setCanInterrupt(agentCanInterrupt(agentInFocus()));
-    if (composerControl) composerControl.setBlocked(composerController?.choice().pending, "Applying model…");
+    if (composerControl) {
+      composerControl.setCanInterrupt(agentCanInterrupt(agentInFocus()));
+      composerControl.setBlocked(composerController?.choice().pending, "Applying model…");
+      composerControl.setSecretAttachable(canAttachSecret(composerController));
+    }
     syncChatRecovery();
     syncContextGauge();
     if (!composerModelMenu) return;
@@ -3416,7 +3469,39 @@ function mountRailOnContext(host, context, swap) {
   const wireComposer = (panel) => {
     const controller = controllerInFocus();
     composerController = controller;
+    bindSecretMetadata(controller);
     const binding = controller.bindDraft();
+    const secretProjectId = entity.projectId || projectOfRail(context, projectId);
+    if (context.secretMetadataCache && typeof context.secretMetadataCache.upsert === "function" && secretProjectId) {
+      const secretService = createSecretDraftService({
+        deviceId: context.deviceId,
+        creator: "device_user",
+        projectId: secretProjectId,
+        recipient: () => {
+          const identity = controller.identity;
+          if (!identity.agentId || !identity.threadId) throw new Error("Start this agent before attaching a secret");
+          return {
+            ownerId: identity.entityId,
+            agentId: identity.agentId,
+            conversationId: identity.conversationId,
+            generation: identity.threadId,
+            draftId: identity.draftId || null,
+          };
+        },
+        capabilities: () => bridgeCapabilities(context.deviceId).secrets,
+        cachedSupport: () => chatRepository.secretAttachments() === true,
+        deviceTransportPublicKey: () => App.devices.find((device) => device.id === context.deviceId)?.transport_public_key_b64 || "",
+        call: (...args) => chatRepository.currentCall()(...args),
+        draft: controller.secretDraft(),
+        metadata: context.secretMetadataCache,
+        active: () => chatRepository.active,
+      });
+      composerSecrets = createSecretComposer({
+        service: secretService,
+        onChange: () => composerControl?.refreshSecrets(),
+        onError: (error) => notifyError("Secret failed", error.message),
+      });
+    }
     composerControl = wireThreadComposer(panel, {
       ids: COMPOSER_IDS,
       readDraft: binding.readDraft,
@@ -3425,6 +3510,8 @@ function mountRailOnContext(host, context, swap) {
       writeAttachments: binding.writeAttachments,
       submissionOwnsDraft: true,
       viewingContext: composerViewingContext,
+      secretComposer: composerSecrets,
+      secretAttachable: canAttachSecret(controller),
       // Attaching lands the bytes before the message names them — which needs a
       // conversation to store them against, so it adopts exactly as sending
       // does: choosing a file for a message is the same intent, one keystroke

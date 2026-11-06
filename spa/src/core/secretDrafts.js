@@ -49,6 +49,7 @@ const DEFAULTS = Object.freeze({
   createRequestId: () => crypto.randomUUID(),
   createOperationId: () => crypto.randomUUID(),
   active: () => true,
+  cachedSupport: () => false,
 });
 
 function assertBindings({ recipient, capabilities, deviceTransportPublicKey, call, draft, metadata }) {
@@ -67,13 +68,14 @@ export function createSecretDraftService(provided) {
   assertBindings(options);
   const {
     deviceId, creator, projectId, recipient, capabilities, deviceTransportPublicKey, call,
-    draft, metadata, sealUpload, createRequestId, createOperationId, active,
+    draft, metadata, sealUpload, createRequestId, createOperationId, active, cachedSupport,
   } = options;
   const current = () => active() === true;
-  const supported = () => current() && secretFeaturesAvailable(capabilities());
+  const wireSupported = () => current() && secretFeaturesAvailable(capabilities());
+  const displaySupported = () => current() && (cachedSupport() === true || wireSupported());
 
   function entries() {
-    return supported() ? cloneEntries(draft.read()) : [];
+    return displaySupported() ? cloneEntries(draft.read()) : [];
   }
 
   function stageRequest({ name, value, scope = "agent", ttlSeconds = null }) {
@@ -145,7 +147,7 @@ export function createSecretDraftService(provided) {
       clearLiveValue(input);
     };
     try {
-      if (!supported()) return null;
+      if (!wireSupported()) throw safeError("stage_unavailable", "The secret could not be attached");
       request = stageRequest(input);
       sealed = await sealedRequest(request);
       return await acceptStage(request, await createOrResolve(request, sealed, clear));
@@ -156,7 +158,7 @@ export function createSecretDraftService(provided) {
   }
 
   async function remove(secretId) {
-    if (!supported()) return null;
+    if (!wireSupported()) return null;
     const held = entries().find((entry) => entry.secret_id === secretId);
     if (!held) return null;
     const addressed = recipient();

@@ -202,7 +202,8 @@ export function openSecretModal({ stage, onChange = () => {}, host = document.bo
     }
     setBusy(true);
     try {
-      await stage(input);
+      const staged = await stage(input);
+      if (!staged) throw new Error("The secret could not be attached");
       value = "";
       if (dismissed) return;
       onChange();

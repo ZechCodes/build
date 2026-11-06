@@ -107,6 +107,7 @@ import {
 import { createChatRepository } from "./chatRepository.js";
 import { createSecretDraftService } from "./secretDrafts.js";
 import { createSecretComposer } from "./secretComposer.js";
+import { createSecretMetadataBinding } from "./secretMetadataBinding.js";
 import { createAgentRailContext } from "./agentRailContext.js";
 import { hashFromRoute, routeFromHash } from "./router.js";
 import { notifyThreadReaders, registerSyncThread, syncPaneShown, threadReaderIsHere } from "./syncVisibleScopes.js";
@@ -1376,7 +1377,6 @@ function mountRailOnContext(host, context, swap) {
   let composerController = null;
   let composerSecrets = null;
   let secretMetadata = [];
-  let stopSecretMetadata = [];
   let unsubscribeComposerController = null;
   let surfacesBlock = null;
   let observationBlock = null;
@@ -1397,9 +1397,18 @@ function mountRailOnContext(host, context, swap) {
   const secretMetadataSignature = () => secretMetadata
     .map((entry) => `${entry.secret_id}:${entry.revision}`).sort().join(",");
 
+  const secretMetadataBinding = createSecretMetadataBinding({
+    cache: context.secretMetadataCache,
+    onPublish: (next) => {
+      if (JSON.stringify(next) === JSON.stringify(secretMetadata)) return;
+      secretMetadata = next;
+      paintedChat = null;
+      paintChat();
+    },
+  });
+
   const releaseSecretMetadata = () => {
-    stopSecretMetadata.forEach((stop) => stop());
-    stopSecretMetadata = [];
+    secretMetadataBinding.release();
     secretMetadata = [];
   };
 
@@ -1414,21 +1423,7 @@ function mountRailOnContext(host, context, swap) {
       { projectId: projectIdForSecrets, ownerId: identity.entityId, agentId: identity.agentId,
         conversationId: identity.conversationId, generation: identity.threadId, draftId: identity.draftId || null },
     ];
-    const publish = async () => {
-      const lists = await Promise.all(scopes.map((scope) => context.secretMetadataCache.read(scope)));
-      const byId = new Map();
-      for (const entry of lists.flat()) {
-        const held = byId.get(entry.secret_id);
-        if (!held || entry.revision > held.revision) byId.set(entry.secret_id, entry);
-      }
-      const next = [...byId.values()];
-      if (JSON.stringify(next) === JSON.stringify(secretMetadata)) return;
-      secretMetadata = next;
-      paintedChat = null;
-      paintChat();
-    };
-    stopSecretMetadata = scopes.map((scope) => context.secretMetadataCache.subscribe(scope, () => void publish()));
-    void publish();
+    secretMetadataBinding.bind(scopes);
   };
   let closeSurfaceMenu = null; // shuts the head's ⋯, and with it its outside-press watch
   let panelMotion = null;
@@ -3491,6 +3486,7 @@ function mountRailOnContext(host, context, swap) {
           };
         },
         capabilities: () => bridgeCapabilities(context.deviceId).secrets,
+        cachedSupport: () => chatRepository.secretAttachments() === true,
         deviceTransportPublicKey: () => App.devices.find((device) => device.id === context.deviceId)?.transport_public_key_b64 || "",
         call: (...args) => chatRepository.currentCall()(...args),
         draft: controller.secretDraft(),

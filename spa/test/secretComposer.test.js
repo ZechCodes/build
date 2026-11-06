@@ -142,6 +142,18 @@ describe("secret modal", () => {
     expect(dialog().textContent).not.toContain("synthetic rejected value");
   });
 
+  it("keeps the modal open and reports a stage that produced no secret", async () => {
+    openSecretModal({ stage: vi.fn(async () => null) });
+    field("secret-name").value = "COLD_START_TOKEN";
+    field("secret-value").value = "synthetic cold-start value";
+    dialog().querySelector("[data-secret-submit]").click();
+
+    await vi.waitFor(() => expect(dialog().querySelector("[data-secret-error]").textContent)
+      .toContain("could not be attached"));
+    expect(dialog()).toBeTruthy();
+    expect(field("secret-value").value).toBe("");
+  });
+
   it("wipes the live field when dismissed", async () => {
     openSecretModal({ stage: vi.fn() });
     const value = field("secret-value");

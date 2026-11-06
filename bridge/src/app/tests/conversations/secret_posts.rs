@@ -14,6 +14,14 @@ impl UploadOpener for SyntheticSweepOpener {
     }
 }
 
+struct LeakEvidence<'a> {
+    id: &'a str,
+    pushes: &'a [Value],
+    store_pushes: &'a [Value],
+    receipt: &'a [u8],
+    prompts: &'a [String],
+}
+
 struct Fixture {
     state: tempfile::TempDir,
     repo: tempfile::TempDir,
@@ -154,43 +162,35 @@ impl Fixture {
             .thread_post_authenticated(params, &SessionSender::detached("synthetic-user"))
     }
 
-    fn assert_no_incidental_secret(&self, needle: &[u8], id: &str, pushes: &[Value]) {
-        let negative = tempfile::tempdir().unwrap();
-        git(negative.path(), &["init"]);
-        let synthetic_leak = negative.path().join("qualification-negative-control");
-        std::fs::write(&synthetic_leak, needle).unwrap();
-        git(negative.path(), &["add", "qualification-negative-control"]);
-        git(
-            negative.path(),
-            &[
-                "-c",
-                "user.name=Synthetic Qualification",
-                "-c",
-                "user.email=synthetic@example.invalid",
-                "commit",
-                "-m",
-                "synthetic negative control",
-            ],
-        );
-        git(negative.path(), &["rm", "qualification-negative-control"]);
-        git(
-            negative.path(),
-            &[
-                "-c",
-                "user.name=Synthetic Qualification",
-                "-c",
-                "user.email=synthetic@example.invalid",
-                "commit",
-                "-m",
-                "remove synthetic negative control",
-            ],
-        );
-        let negative_root = negative.path().to_owned();
-        let negative_needle = needle.to_vec();
-        assert!(std::panic::catch_unwind(move || {
-            assert_git_excludes(&negative_root, &negative_needle)
-        })
-        .is_err());
+    fn assert_no_incidental_bytes(
+        &self,
+        needle: &[u8],
+        evidence: &LeakEvidence<'_>,
+        negative_controls: bool,
+    ) {
+        if negative_controls {
+            let negative = tempfile::tempdir().unwrap();
+            let negative_repo =
+                crate::git_fixture::init_repo_named(negative.path(), "negative-control");
+            crate::git_fixture::configure_repo(&negative_repo);
+            let synthetic_leak = negative_repo.join("qualification-negative-control");
+            std::fs::write(&synthetic_leak, needle).unwrap();
+            git(&negative_repo, &["add", "qualification-negative-control"]);
+            git(
+                &negative_repo,
+                &["commit", "-m", "synthetic negative control"],
+            );
+            git(&negative_repo, &["rm", "qualification-negative-control"]);
+            git(
+                &negative_repo,
+                &["commit", "-m", "remove synthetic negative control"],
+            );
+            let negative_needle = needle.to_vec();
+            assert!(std::panic::catch_unwind(move || {
+                assert_git_excludes(&negative_repo, &negative_needle)
+            })
+            .is_err());
+        }
 
         assert_tree_excludes(self.state.path(), needle);
         assert_tree_excludes(self.repo.path(), needle);
@@ -199,41 +199,41 @@ impl Fixture {
             needle,
         );
         let writer = self.app.store.as_ref().unwrap().writer();
-        let audit = writer.secret_audit_page(id, 0, 100).unwrap();
+        let audit = writer.secret_audit_page(evidence.id, 0, 100).unwrap();
         assert!(!serde_json::to_vec(&audit)
             .unwrap()
             .windows(needle.len())
             .any(|part| part == needle));
-        let receipt = self.app.operation_receipt("secret-send").unwrap().unwrap();
-        let saved = serde_json::to_vec(&receipt).unwrap();
-        assert!(!saved.windows(needle.len()).any(|part| part == needle));
-        let payload = receipt.delivery.as_ref().unwrap().payload.as_ref().unwrap();
-        for provider in crate::models::AgentProvider::ALL {
-            let prompt = payload.delivery_prompt("secret-send", false, provider);
+        assert!(!evidence
+            .receipt
+            .windows(needle.len())
+            .any(|part| part == needle));
+        for prompt in evidence.prompts {
             assert!(!prompt
                 .as_bytes()
                 .windows(needle.len())
                 .any(|part| part == needle));
         }
-        assert!(pushes.iter().any(push_has_secret_change));
-        assert_pushes_exclude(pushes, needle);
-        let leaking_push = json!({
-            "type": "synthetic.negative_control",
-            "payload": String::from_utf8(needle.to_vec()).unwrap()
-        });
-        let negative_needle = needle.to_vec();
-        assert!(std::panic::catch_unwind(move || {
-            assert_pushes_exclude(&[leaking_push], &negative_needle)
-        })
-        .is_err());
+        assert!(evidence.pushes.iter().any(push_has_secret_change));
+        assert_pushes_exclude(evidence.pushes, needle);
+        assert!(evidence.store_pushes.iter().any(push_has_secret_change));
+        assert_pushes_exclude(evidence.store_pushes, needle);
+        if negative_controls {
+            let leaking_push = json!({
+                "type": "synthetic.negative_control",
+                "payload": String::from_utf8(needle.to_vec()).unwrap()
+            });
+            let negative_needle = needle.to_vec();
+            assert!(std::panic::catch_unwind(move || {
+                assert_pushes_exclude(&[leaking_push], &negative_needle)
+            })
+            .is_err());
+        }
     }
 }
 
 fn git(root: &std::path::Path, args: &[&str]) -> Vec<u8> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
+    let output = crate::git_fixture::git_command(root, args)
         .output()
         .unwrap();
     assert!(output.status.success(), "synthetic git command failed");
@@ -395,7 +395,77 @@ fn accepted_secret_leak_sweep_excludes_every_incidental_bridge_artifact() {
     while let Ok(envelope) = rx.try_recv() {
         pushes.push(SessionSender::decrypt_push(&key, &envelope));
     }
-    fixture.assert_no_incidental_secret(b"synthetic-test-value", &id, &pushes);
+    let receipt = fixture
+        .app
+        .operation_receipt("secret-send")
+        .unwrap()
+        .unwrap();
+    let saved_receipt = serde_json::to_vec(&receipt).unwrap();
+    let payload = receipt.delivery.as_ref().unwrap().payload.as_ref().unwrap();
+    let prompts: Vec<_> = crate::models::AgentProvider::ALL
+        .into_iter()
+        .map(|provider| payload.delivery_prompt("secret-send", false, provider))
+        .collect();
+
+    let store_fixture = Fixture::new();
+    let store_id = store_fixture.stage(None, false);
+    let (store_browser, mut store_rx, store_key) =
+        SessionSender::observable("qualification-store-push");
+    store_fixture.app.changes.subscribe(
+        &store_browser,
+        crate::changes::SubscriptionSpec {
+            id: "qualification-store-push".into(),
+            scope: crate::changes::Scope::All,
+            kinds: [crate::changes::Kind::SecretsChanged].into_iter().collect(),
+            mode: Default::default(),
+            priority: Default::default(),
+        },
+    );
+    let agent = store_fixture.app.runs[&store_fixture.owner]
+        .agents
+        .by_id(&store_fixture.agent)
+        .unwrap()
+        .clone();
+    store_fixture
+        .app
+        .store
+        .as_ref()
+        .unwrap()
+        .reset_conversation(
+            &store_fixture.agent,
+            &[agent],
+            &std::collections::HashMap::new(),
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
+    assert!(store_fixture
+        .app
+        .store
+        .as_ref()
+        .unwrap()
+        .writer()
+        .secret_record(&store_id)
+        .unwrap()
+        .unwrap()
+        .revoked_at
+        .is_some());
+    store_fixture.app.changes.flush();
+    let mut store_pushes = Vec::new();
+    while let Ok(envelope) = store_rx.try_recv() {
+        store_pushes.push(SessionSender::decrypt_push(&store_key, &envelope));
+    }
+    pushes.extend(store_pushes.iter().cloned());
+    let evidence = LeakEvidence {
+        id: &id,
+        pushes: &pushes,
+        store_pushes: &store_pushes,
+        receipt: &saved_receipt,
+        prompts: &prompts,
+    };
+    fixture.assert_no_incidental_bytes(b"synthetic-test-value", &evidence, true);
+    fixture.assert_no_incidental_bytes(b"synthetic-sweep-ciphertext", &evidence, false);
+    assert_tree_excludes(store_fixture.state.path(), b"synthetic-test-value");
+    assert_tree_excludes(store_fixture.state.path(), b"synthetic-sweep-ciphertext");
 }
 
 #[test]

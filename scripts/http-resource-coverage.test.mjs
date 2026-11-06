@@ -297,7 +297,8 @@ const sourceFingerprintParts = {
   "core/defaultHarness.js": ["b7ed5ad6", "9fdfdc35", "84dd803d", "3c0e95fd", "72904016", "4cb29938", "97723e94", "2ace812d"],
   // #1006 held secret posts use the current session safely because thread.post
   // deduplicates the preserved operation_id; the dispatch methods are unchanged.
-  "core/deviceContexts.js": ["3f6ac6fe", "228f3ab0", "1d53be68", "63246b69", "0b20a630", "296beea5", "acf2ecfe", "2b6168b7"],
+  // #1026 greeted epoch projection changes no RPC/producer aliases or assignment edges.
+  "core/deviceContexts.js": ["60eec962", "33ad7c40", "7757cb5b", "2947fb31", "25131dfc", "894c0f7c", "9f34926a", "62782eae"],
   "core/diffSort.js": ["9ef743b8", "16f0a5ae", "1d9ec36a", "455f0e76", "c04a0902", "8deca6c7", "70acd150", "dbe96ac6"],
   "core/directoryRail.js": ["98080c38", "f2152285", "3e025868", "10652120", "d12c8ead", "cfa571c6", "6c3476c8", "b6b56ef2"],
   "core/fileDiffs.js": ["708cce52", "81bbdc00", "82791bce", "f9d05524", "b3b3b017", "d283e106", "e977da82", "b3b2707e"],

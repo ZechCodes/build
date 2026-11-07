@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { availableParallelism } from "node:os";
 import { defineConfig } from "vite";
+import { channelIconsPlugin } from "./channelIcons.js";
 
 // libsodium-wrappers' ESM build imports "./libsodium.mjs", which actually lives
 // in its sibling `libsodium` package — point the bundler at the real file.
@@ -64,7 +65,7 @@ export function versionStampPlugin(version) {
 // Every dependency is bundled locally — no CDN at runtime.
 export default defineConfig({
   base: "/app/static/",
-  plugins: [libsodiumShim, versionStampPlugin(buildVersion)],
+  plugins: [libsodiumShim, versionStampPlugin(buildVersion), channelIconsPlugin(process.env.VITE_BUILD_CHANNEL)],
   build: {
     outDir: "../skriftapp/buildapp/static",
     emptyOutDir: true,

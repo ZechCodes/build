@@ -84,6 +84,13 @@ describe("channel icons in the built SPA", () => {
       short_name: "Build Dev",
       icons: production.icons.map((icon) => ({ ...icon, src: icon.src.replace("icon-", "icon-dev-") })),
     });
+    // Installed PWAs retain their manifest URL; existing tabs and the push
+    // worker can also request the original icon URLs after a dev deployment.
+    for (const [original, dev] of [["manifest.webmanifest", "manifest-dev.webmanifest"],
+      ["favicon.svg", "favicon-dev.svg"], ["icon-192.png", "icon-dev-192.png"],
+      ["icon-512.png", "icon-dev-512.png"], ["apple-touch-icon.png", "apple-touch-icon-dev.png"]]) {
+      expect(await readFile(join(outDir, original)), original).toEqual(await readFile(join(outDir, dev)));
+    }
 
     // A real browser decoder validates the complete PNG stream, then samples
     // both flat fills, rather than trusting just the dimensions in its header.

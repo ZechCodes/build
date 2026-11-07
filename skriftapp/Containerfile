@@ -85,6 +85,9 @@ COPY --from=spa /build/repo/skriftapp/buildapp/static ./buildapp/static
 # The generated homepage, after buildapp/ so it lands inside the landing
 # directory the asset route already serves.
 COPY --from=landing /build/repo/skriftapp/buildapp/landing/generated ./buildapp/landing/generated
+# The auth pages, public shell and generated homepage share these landing URLs.
+# Pick their icon bytes once for the image; production assets stay untouched.
+RUN .venv/bin/python -m buildapp.channel_icons "$APP_CONFIG"
 RUN chmod +x /app/entrypoint.sh \
  && useradd --create-home --uid 10001 appuser \
  && chown -R appuser:appuser /app

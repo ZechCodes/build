@@ -98,6 +98,7 @@ assertion gate, not a pixel comparison against historical screenshots.
   `VITE_RELAY_URL=wss://relay.getbuild.ing npm run build`.
 - `VITE_BUILD_CHANNEL` — the build-time channel. `dev` shows a persistent
   `Dev` badge and sets the title to `Build Dev — review is the product`.
+  Dev builds also use mint-on-black tab, touch and PWA icons and the `Build Dev` install name.
   Unset or `prod` shows no badge and keeps the original title. The label comes
   from build configuration only, independent of connection or device state.
 

@@ -21,12 +21,14 @@ Companions: `Project Workspace Spec.md` (#522), `Navigation Spec.md` (#523,
 - **Workspace** = unchanged. A checkout of its project's effective sources
   (environment sources plus the project's added folders), cut as today.
 
-The user creates a **workspace** through a wizard. Picking an environment there
+The user creates a **workspace** through a wizard. Its first page lists
+**existing projects first, then environments**. Picking a project adds a
+workspace to that line of work and its task board. Picking an environment
 creates a **new project** in it (a fresh task board) and the first workspace of
 that project in one step; the project is implicit. "New workspace in this
-project" from the top nav adds a second workspace to the **same** line of work
-and the same task board. A project with folders of its own ("diverged") is
-listed in the wizard as its own environment, as Zech asked.
+project" from the top nav is the same as picking the project on page 1. A
+project with folders of its own ("diverged") is marked as such in that list
+and picked as itself.
 
 Zech's ask, in one paragraph: a layer above projects, **environments**, owns
 source directories and secrets. Projects are created from environments and may
@@ -113,8 +115,7 @@ follows by default). Overlap refusal (a path that is, contains, or sits inside
 another registered source; a remote already registered; a path inside the
 secrets vault; `source_request`, `bridge/src/app/projects/requests.rs:285-365`)
 moves up to the environment and applies across every environment and every
-project's added sources on the device, with one relaxation for sibling
-projects (below).
+project's added sources on the device, with no relaxation.
 
 **Project**: keeps `id`, `name`, `orch`, `isolation`, compaction, agents, and
 gains `environment_id: String`, `project_key: String` (1.6) and
@@ -132,8 +133,9 @@ inbox block head, the crumb and the task board are titled.
 projects with no added folders except their tasks, agents and workspaces. There
 is no "base" or canonical project; "create a workspace in E" always creates a
 **new project** in E (2.2 `environment.create_project`). A second workspace in
-an existing line of work comes from "New workspace in this project" (3.3),
-which is today's `workspace.create`.
+an existing line of work comes from picking that project on the wizard's
+first page or from "New workspace in this project" (3.3); both are today's
+`workspace.create`.
 
 **Diverged project.** A project **diverges from its environment iff
 `added_sources` is non-empty**. Nothing else counts: an isolation override, a
@@ -143,14 +145,12 @@ a workspace cut from it contains, and a new project created from the wizard
 never inherits any of them (project secrets belong to that line of work, 1.3).
 Detection is on the bridge: `project.diverged = !project.added_sources.is_empty()`,
 carried on the wire as `diverged: bool` on every project row, never computed
-client-side from sources. A diverged project is listed in the wizard as
-"Environment › Project" and acts as a **template**: picking it creates a new
-project in the same environment whose `added_sources` are copies of the
-template's (same paths, new ids from the environment counter). To allow that,
-overlap refusal accepts a path that is **exactly** equal to an added source of
-another project in the **same** environment (containment and remotes are still
-refused as today; cross-environment duplicates are still refused). Removing a
-project's last added folder simply makes it a non-diverged project.
+client-side from sources. In the wizard a diverged project is listed like any
+other project, in the Projects section as "E › P (+K folders)", and picking
+it adds a workspace to it; it is not a template for new projects, so overlap
+refusal is unchanged (a folder is an added source of at most one project).
+Removing a project's last added folder simply makes it a non-diverged
+project.
 
 **Workspaces are unchanged.** A workspace still names its `project_id` and
 snapshots the project's effective sources when it is cut. `environment_id` is
@@ -279,7 +279,7 @@ New family file `bridge/src/api/v1/environment.rs` registered with
 | --- | --- | --- | --- |
 | `environment.list` | `{}` | `{environments: [EnvironmentRow]}` | row: `environment_id, name, home_path, is_git, base_branch, sources[], isolation, isolation_effective, project_ids[], unread_count` |
 | `environment.create` | `{name?, sources: [{path\|remote, name?, base_branch?}], isolation?, parent?}` | `{environment: EnvironmentRow}` | creates the environment only; `parent` as `project.create` has it (`board.rs:206`). The wizard follows it with `environment.create_project` |
-| `environment.create_project` | `{environment_id, name, from_project_id?, workspace?: {name?, isolation?}}` | `{project: ProjectRow, workspace?: WorkspaceRow}` | the wizard's call: mints the project (`project_key = project:<uuid>`, `added_sources` copied from `from_project_id` when it names a diverged project of the same environment), then cuts the first workspace by the same path as `workspace.create` (`WorkspaceCreateParams`, `api/v1/workspace.rs:248`, untouched). One effect, one audit line |
+| `environment.create_project` | `{environment_id, name, workspace?: {name?, isolation?}}` | `{project: ProjectRow, workspace?: WorkspaceRow}` | the wizard's call: mints the project (`project_key = project:<uuid>`, `added_sources = []`), then cuts the first workspace by the same path as `workspace.create` (`WorkspaceCreateParams`, `api/v1/workspace.rs:248`, untouched). One effect, one audit line |
 | `environment.rename` | `{environment_id, name}` | `{environment}` | display name only; never a folder |
 | `environment.delete` | `{environment_id}` | `{}` | refused while any project belongs to it (delete the projects first, 5.2); revokes environment-scoped secrets |
 | `environment.add_source` / `remove_source` / `update_source` / `sync_source` | as the `project.*` twins (`board.rs:206-240`) with `environment_id` | as today | forward-looking, same checks as today's project sources |
@@ -436,24 +436,31 @@ sub:"visits"})`).
   `toolbarModel.js:93`).
 - **Recent** section: targets interacted with in the last 24 h
   (`RECENT_AFTER_MS`, `inboxOrdering.js:3`), newest first, at most 5. A target
-  is an environment or a diverged project. Its interaction time is
-  `max(visit time of any project or workspace in it, last_activity_ms of any
-  of its workspaces, created_at of any of its workspaces or projects)`, all
-  already in the cache (`sessionSpans.js:16-24`). Empty: the section is
-  omitted, not shown empty.
-- **All** section: environments alphabetically, each a row with its identity
-  badge (3.4), name, device tag when names clash, and "N projects · M
-  workspaces"; diverged projects as indented rows "› Project (+K folders)"
-  under their environment. Non-diverged projects are **not** listed here:
-  picking an environment starts a new line of work, and existing lines of
-  work are reached through the switcher (3.3). A project of an old bridge
-  (no `environments` capability) is listed as itself.
+  is a project or an environment; a project row and an environment row look
+  different (3.4) so the user sees which kind they are picking. Interaction
+  time is `max(visit time of the project or of any workspace in it,
+  last_activity_ms of any of its workspaces, created_at of any of its
+  workspaces or projects)`, all already in the cache
+  (`sessionSpans.js:16-24`). Empty: the section is omitted, not shown empty.
+- **Projects** section, first: every existing project, sorted by recency,
+  each a row with its project badge, "E › P", "+K folders" when diverged, and
+  "W workspaces · T open tasks". Picking one is **a new workspace in that
+  project** (page 3 in fixed-project mode, today's `workspace.create`). A
+  project of an old bridge (no `environments` capability) is listed here as
+  itself.
+- **Environments** section, after it: environments alphabetically, each a row
+  with its environment badge, name, device tag when names clash, and "N
+  projects · M workspaces". Picking one is **a new project** in it. Diverged
+  projects are not repeated here; they live in the Projects section with
+  their "+K folders" mark (5.1).
 - Last row: **"New environment…"** → page 2.
 - Keyboard: ↑/↓/Enter, Esc closes; first row focused when opened from the
   keyboard shortcut.
-- Empty (no environments, no projects anywhere): the list is just "New
-  environment…" with a line "Build keeps your code in environments. Make one
-  from a folder or a Git URL." Offline device: rows still show (cache); the
+- Empty states: no projects yet (a fresh environment) omits the Projects
+  section and opens on Environments; no environments and no projects
+  anywhere shows just "New environment…" with a line "Build keeps your code
+  in environments. Make one from a folder or a Git URL." Recent is omitted
+  when nothing was touched in the last day. Offline device: rows still show (cache); the
   device tag reads "Offline" as in the inbox (`OFFLINE_TAG`); choosing one
   proceeds and the pending write surfaces the error on page 3.
 
@@ -466,21 +473,22 @@ page 1 with the draft kept. "Create" calls `environment.create` and goes to
 page 3 with the new environment selected. Error: inline under the folder list,
 exactly the bridge's refusal text (plain user-facing errors), draft kept.
 
-**Page 3, "What are you working on?"**: title "New workspace in E" (or "in
-E › P" for a template). One required **name** field ("Fix the inbox sort",
+**Page 3, "What are you working on?"**: title "New workspace in E". One
+required **name** field ("Fix the inbox sort",
 "Environments plan") that names the new line of work; the workspace takes the
 same name and the branch preview `build/<slug>` (`branchNamePreview`,
 `toolbarModel.js`) follows it. Isolation select with "Inherit E's setting", and
 a read-only list of the directories the workspace will contain (effective
 sources). "Create" calls `environment.create_project {environment_id, name,
-from_project_id?, workspace}` through `deviceCall`, upserts the `projects` and
+workspace}` through `deviceCall`, upserts the `projects` and
 `workspaces` lists (`cacheCreatedWorkspace`, `createWork.js:47-52`, plus a
 project upsert) and navigates to the workspace. Loading: the button shows
 "Creating…" and the row appears in the inbox as *provisioning* from the
 pending write (`writeOperations.js`). Error: the modal stays open with the
-refusal under the button; the pending rows are removed. When opened with a
-project fixed (project view "+", nav footer), the title is "New workspace in
-P", the name is optional as today, and the call is `workspace.create`.
+refusal under the button; the pending rows are removed. When a project is
+fixed (a project row on page 1, the project view "+", the nav footer), the
+title is "New workspace in E › P", the name is optional as today, and the
+call is `workspace.create`.
 
 The word "project" does not appear on page 3; the user names the work. The
 project exists afterwards as the crumb, the inbox block and the task board
@@ -611,9 +619,9 @@ the nav; the model is migrated; nothing an old client does breaks.
 | --- | --- | --- | --- |
 | 1.1 | **Bridge: environment model + config migration** (`app/environments/`, `Project.environment_id/project_key/added_sources`, `config_value_with_project`, load; `tracker_project_path` and the path-keyed stores read `project_key`) | every existing project loads as one project under its own environment; config round-trips; second load is a no-op; a pre-change bridge still loads the written file; every task, run and scratch folder of a migrated project resolves as before | `config_migration_tests.rs`: fixture with 2 projects (one parked, one isolation override) → environments; idempotence; legacy reload; `next_source` continuity; `sources_for` = env ++ added; `migrated_project_key_is_home_path`; `tasks_readable_after_migration` |
 | 1.2 | **Bridge: wire 3.37.0** (`environment.list/create/create_project/*_source`, `project.rename`, `project.list` fields, `board.list.environments`, capabilities, board-scope push, fixtures, manifest) | all `api_contract.rs` tests pass; `project.create` without `environment_id` makes an implicit environment; `environment.create_project` returns a project with a fresh key and its first workspace; two projects created in one environment number tasks independently from #1 | contract fixtures for the new verbs; `implicit_environment_from_legacy_project_create`; `create_project_mints_fresh_key_and_workspace`; `sibling_projects_number_tasks_independently`; push test that an `environment.create` lands as a board change |
-| 1.3 | **Bridge: diverged projects** (`project.create {environment_id, sources}`, `project.*_source` on added sources, `diverged` flag, refusal of editing env sources via project verbs with the old-client routing of 5.9, template copy via `from_project_id`, exact-duplicate relaxation of overlap within an environment, key-derived scratch folder) | adding a folder to a project flips `diverged`; env-source ids refused through `project.remove_source`; a project created from a template has the same added paths under new ids; the same folder as an added source in two environments is still refused; a new project's coordinator and runs recover to that project after a restart | `added_source_makes_project_diverged`; `project_verbs_refuse_environment_source_ids`; `template_copies_added_sources_with_new_ids`; `added_source_duplicate_allowed_within_environment_only`; `new_project_runs_recover_to_their_project`; `migrated_project_keeps_legacy_scratch_dir` |
+| 1.3 | **Bridge: diverged projects** (`project.create {environment_id, sources}`, `project.*_source` on added sources, `diverged` flag, refusal of editing env sources via project verbs with the old-client routing of 5.9, key-derived scratch folder) | adding a folder to a project flips `diverged`; env-source ids refused through `project.remove_source`; the same folder as an added source of a second project, in any environment, is refused; a new project's coordinator and runs recover to that project after a restart | `added_source_makes_project_diverged`; `project_verbs_refuse_environment_source_ids`; `added_source_overlap_refused_across_projects`; `new_project_runs_recover_to_their_project`; `migrated_project_keeps_legacy_scratch_dir` |
 | 1.4 | **SPA: capability + cache plumbing** (`environment-support` record, `capabilitiesOf().environments`, `NO_CAPABILITIES`, `environments` session list, `writePushedBoard` third list, `readSyncLists` asks `environment.list` when supported) | a greeting with the capability writes the record; a board push updates the cached environments list; without the capability nothing new is asked | `environmentSupportWiring.test.js`, `cacheSyncChanges.test.js` additions, `namedCapabilitiesWiring.test.js` |
-| 1.5 | **SPA: wizard pages 1 and 3** (`core/createWorkspaceWizard.js`, target model `environmentTargets()` with recents, replaces `createWork.js` modal; every caller switched; fixed-project mode for "new workspace in this project") | opens from switcher, inbox, project view, Ctrl/Cmd-N; recents last 24 h on top; diverged projects nested, plain projects not listed; old bridge lists projects and creates a workspace in one; create lands on the new workspace with the new project in the cache; fixed-project mode calls `workspace.create`; offline device shows the pending row then the error | `createWorkspaceWizardModel.test.js` (recents, nesting, fallback, fixed mode), `createWorkspaceWizardDom.test.js` (pages, keyboard, error, pending rows), `createWork.test.js` retargeted |
+| 1.5 | **SPA: wizard pages 1 and 3** (`core/createWorkspaceWizard.js`, target model `environmentTargets()` with recents, replaces `createWork.js` modal; every caller switched; fixed-project mode for "new workspace in this project") | opens from switcher, inbox, project view, Ctrl/Cmd-N; recents last 24 h on top; projects listed first by recency with "E › P" and the diverged mark, then environments; a project row calls `workspace.create`, an environment row `environment.create_project`; no projects yet opens on Environments; old bridge lists projects only; create lands on the new workspace with the new project in the cache; offline device shows the pending row then the error | `createWorkspaceWizardModel.test.js` (recents, section order, empty sections, fallback, fixed mode), `createWorkspaceWizardDom.test.js` (pages, keyboard, error, pending rows), `createWork.test.js` retargeted |
 | 1.6 | **SPA: wizard page 2** (`newRepo.js` reshaped into `environment.create`, draft address renamed, Back keeps the draft) | a folder or URL creates an environment and the wizard continues to page 3 with it selected; old bridge falls back to `project.create` | `newProjectDom.test.js` → `newEnvironmentDom.test.js`; draft persistence test |
 | 1.7 | **SPA: top nav** (switcher lists projects grouped by environment with recents, "E › P" crumb, workspace selector by recency, "New workspace in this project") | project rows grouped and sorted by recency; workspace rows sorted by `last_activity_ms` desc then visit; current first; finished folded; #523/#618/#631 geometry tests still pass | `toolbarModel.test.js` (new `switcherModel` grouping, `workspaceMenuModel` order), `toolbarDom.test.js`, `navigationPicker.test.js`, `test/browser/pinnedInboxToolbarLayout.test.js` unchanged |
 | 1.8 | **SPA: settings page MVP** (`#/account/environments`, list with every project nested, environment settings sheet with General + Sources + Projects, project sheet amendments incl. editable name) | every existing project appears under its environment; sources edit via `environment.*_source`; project sheet shows inherited vs added and renames; old-bridge notice | `environmentsSettingsDom.test.js`, `projectSettings.test.js` amendments, router test for the new route |
@@ -636,7 +644,7 @@ and `project.list` for a migrated device shows every project with
 | 2.5 | **SPA: environment rename/delete/isolation and project delete in settings**; project sheet "New project with extra folders…" | refusal reasons shown verbatim and the button disabled; project delete confirm names the task and workspace counts; rename repaints every crumb and block head from the cache | `environmentsSettingsDom.test.js` additions, `projectSettings.test.js` |
 | 2.6 | **SPA: inbox** (block heads "E › P", adjacency sort, "New workspace", block "+") | grouped face shows environment and project names with badges; sort stable | `inboxProjects.test.js`, `inboxDom.test.js` |
 | 2.7 | **SPA: badges** (tokens, `identityBadgeHtml`, placements of 3.4) | identical hue across tabs for one environment; sibling projects share the hue and differ by glyph; both themes pass contrast on the badge glyph | `identityBadge.test.js`, theme token test |
-| 2.8 | **SPA: wizard "Add a folder to this work only"** on page 3, creating the new project diverged in the same `environment.create_project` call (added `sources` param) | creating with an extra folder yields `diverged: true` in one flow; the project then appears as a template row in the wizard | `createWorkspaceWizardModel.test.js` (diverge path), `createWorkspaceWizardDom.test.js`; contract fixture for the new param |
+| 2.8 | **SPA: wizard "Add a folder to this work only"** on page 3, creating the new project diverged in the same `environment.create_project` call (added `sources` param) | creating with an extra folder yields `diverged: true` in one flow; the project then shows "+K folders" in the wizard's Projects section | `createWorkspaceWizardModel.test.js` (diverge path), `createWorkspaceWizardDom.test.js`; contract fixture for the new param |
 
 ### Stage 3: polish
 
@@ -671,14 +679,14 @@ Each with a recommended answer. Items marked **(Zech)** are still open and
 need his call before the slice that depends on them starts; the rest are
 recorded decisions he can overturn.
 
-1. **Picking a diverged project in the wizard.** Zech lists it "as its own
-   environment", so picking it must behave like picking an environment: a
-   **new** project (new task board) whose added folders are copied from it,
-   with the diverged project acting as a template (1.2). The alternative,
-   "a new workspace in that project", would put new work on an old task
-   board, which is what this change exists to stop. *Recommend* template
-   semantics; the overlap rule is relaxed only for exact duplicates inside one
-   environment. **(Zech)**: confirm before 1.3.
+1. **Diverged project in the wizard** (settled 2026-11-07 by Zech's comment
+   that page 1 lists existing projects first). A diverged project is picked
+   as itself in the Projects section, marked "+K folders"; picking it adds a
+   workspace to it. The earlier "template" reading (a second row under its
+   environment that spawned a new project with copies of its folders) is
+   dropped, along with the overlap relaxation it needed. If a new line of
+   work needs the same extra folders, the user creates it from the
+   environment and adds them (2.8, 5.10).
 2. **Project delete and its tasks.** A project is one line of work, and after
    this change a new project's key is never reused, so "re-add the folder and
    find the tasks" no longer applies to it. *Recommend*: `project.delete` is
@@ -725,7 +733,7 @@ recorded decisions he can overturn.
    `attached_secrets.md` rendering), and sibling projects are now the common
    case. *Recommend*: a negative test per mechanism (release authority, list,
    attach, audit), the override rule being project-wins only, and no copying
-   of project secrets into a project created from a template. Moving an
+   of project secrets into any project the wizard creates. Moving an
    existing project-scoped secret "up" to the environment is **not offered**
    (re-create instead) so no value is ever re-sealed by the bridge.
 9. **`project.create` and `project.*_source` compatibility.** An old SPA's
@@ -826,7 +834,7 @@ New rows for `Project Sources Security Checklist.md` (Stage 1) and
 
 | checklist | control | test |
 | --- | --- | --- |
-| Project Sources | Overlap refusal spans every environment and every project's added sources on the device; the only relaxation is an exactly equal path as an added source of two projects in the **same** environment; containment, remotes and cross-environment duplicates stay refused | `source_overlap_refused_across_environments`; `added_source_duplicate_allowed_within_environment_only` |
+| Project Sources | Overlap refusal spans every environment and every project's added sources on the device, with no relaxation; containment, remotes and duplicates stay refused across environments and across sibling projects | `source_overlap_refused_across_environments`; `added_source_overlap_refused_across_projects` |
 | Project Sources | `project.*_source` verbs cannot edit or remove an environment source through a diverged project; the refusal names the environment | `project_verbs_refuse_environment_source_ids` |
 | Project Sources | Config migration writes nothing until every project is assigned; a failure leaves the old file intact (atomic temp + rename, `persistence.rs:86-104`) | `migration_failure_leaves_config_untouched` |
 | Project Sources | Environment and project rename are bounded one-line text with no control characters and never a path | `rename_is_one_bounded_line` |

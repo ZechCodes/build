@@ -1,15 +1,14 @@
-import { constants } from "node:fs";
-import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { createServer } from "vite";
+import { chromiumExecutable } from "./chromiumExecutable.mjs";
 
 const spaRoot = fileURLToPath(new URL("../../", import.meta.url));
 // The fonts every check measures in, whatever the machine's defaults (fonts.conf).
 const pinnedFonts = fileURLToPath(new URL("./fonts.conf", import.meta.url));
-const chromiumNames = ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
 
 function moduleRequestUrl(requestUrl, basePath) {
   const url = new URL(requestUrl);
@@ -17,24 +16,6 @@ function moduleRequestUrl(requestUrl, basePath) {
   const normalized = decodeURI(`${path}${url.search}`).replace("__x00__", "\0")
     .replace(/(\?|&)import=?(?=&|$)/, "$1").replace(/[?&]$/, "");
   return normalized.startsWith("/@id/") ? normalized.slice(5) : normalized;
-}
-
-async function chromiumExecutable() {
-  const configured = process.env.CHROMIUM_PATH;
-  if (configured) {
-    await access(configured, constants.X_OK);
-    return configured;
-  }
-  for (const directory of (process.env.PATH || "").split(delimiter)) {
-    for (const name of chromiumNames) {
-      const candidate = join(directory, name);
-      try {
-        await access(candidate, constants.X_OK);
-        return candidate;
-      } catch { /* Try the next browser location. */ }
-    }
-  }
-  throw new Error("Browser layout tests require Chromium or Chrome on PATH (or CHROMIUM_PATH)");
 }
 
 /** Run a real Chromium layout check against the SPA's production renderers and

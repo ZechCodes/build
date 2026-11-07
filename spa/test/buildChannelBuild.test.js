@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { chromium } from "playwright-core";
 import { build } from "vite";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { chromiumExecutable } from "./browser/chromiumExecutable.mjs";
 
 it.each(["dev", "prod"])("bakes %s into an output that needs no runtime environment", async (channel) => {
   const output = await build({
@@ -94,7 +95,9 @@ describe("channel icons in the built SPA", () => {
 
     // A real browser decoder validates the complete PNG stream, then samples
     // both flat fills, rather than trusting just the dimensions in its header.
-    const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || "/usr/bin/chromium", headless: true });
+    const browser = await chromium.launch({
+      executablePath: await chromiumExecutable(), headless: true, args: ["--no-sandbox"],
+    });
     try {
       const page = await browser.newPage();
       for (const [file, size] of [["favicon-dev.png", 32], ["apple-touch-icon-dev.png", 180],

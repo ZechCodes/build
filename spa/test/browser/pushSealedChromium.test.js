@@ -14,14 +14,14 @@
 // Both write what Chromium showed to a proof log (BUILD_PUSH_PROOF_DIR, default
 // $TMPDIR/build-push-proof): the decrypted title and body, never a key.
 
-import { constants } from "node:fs";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { afterAll, beforeAll, expect, it } from "vitest";
+import { chromiumExecutable } from "./chromiumExecutable.mjs";
 
 const spaRoot = fileURLToPath(new URL("../../", import.meta.url));
 const fixturePath = fileURLToPath(new URL("../../../fixtures/push/sealed-v1.json", import.meta.url));
@@ -38,23 +38,6 @@ const ROUTES = {
 };
 const PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>Build push proof</title></head>
 <body><pre id="shown"></pre></body></html>`;
-
-async function chromiumExecutable() {
-  const configured = process.env.CHROMIUM_PATH;
-  if (configured) {
-    await access(configured, constants.X_OK);
-    return configured;
-  }
-  for (const directory of (process.env.PATH || "").split(delimiter)) {
-    for (const name of ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"]) {
-      try {
-        await access(join(directory, name), constants.X_OK);
-        return join(directory, name);
-      } catch { /* the next one */ }
-    }
-  }
-  throw new Error("the push proof needs Chromium on PATH (or CHROMIUM_PATH)");
-}
 
 let server;
 let origin;

@@ -60,7 +60,7 @@ def test_dev_favicon_preserves_svg_geometry_and_has_a_32_pixel_png():
 
 def test_image_installs_channel_icons_after_copying_both_static_and_landing_assets():
     source = (Path(__file__).resolve().parents[1] / "Containerfile").read_text()
-    assembly = source.index('python -m buildapp.channel_icons "$APP_CONFIG"')
+    assembly = source.index('python -B -m buildapp.channel_icons "$APP_CONFIG"')
     assert source.index("COPY skriftapp/buildapp ./buildapp") < assembly
     assert source.index("COPY --from=spa /build/repo/skriftapp/buildapp/static") < assembly
     assert source.index("ARG APP_CONFIG=app.yaml") < assembly

@@ -112,7 +112,13 @@ is the environment's name.
 `added_sources` is non-empty**. Nothing else counts: an isolation override, a
 compaction override, a project agent roster or project-scoped secrets do not
 make a project its own thing in the wizard, because none of them changes what
-a workspace cut from it contains. Detection is on the bridge:
+a workspace cut from it contains. Project-scoped secrets in particular cannot
+count: under the one-base rule a project that differs only in secrets is the
+base project, and migration (2.4) keeps every existing project's
+`GrantScope::Project` rows where they are, so counting them would turn every
+migrated project that owns a secret into a diverged project with no base, and
+the first "create in E" would spawn an empty base without those secrets
+(5.22). Detection is on the bridge:
 `project.diverged = !project.added_sources.is_empty()`, carried on the wire as
 `diverged: bool` on every project row, never computed client-side from
 sources. A diverged project is listed in the wizard and the switcher as
@@ -577,17 +583,17 @@ the inbox in three clicks, an old SPA tab still lists and creates projects, and
 | 2.7 | **SPA: environment rename/delete/isolation in settings**; project sheet "New project with extra folders…" | reasons for refused delete shown verbatim and the button disabled; rename repaints every crumb and block head from the cache | `environmentsSettingsDom.test.js` additions |
 | 2.8 | **SPA: inbox** (block heads by environment, adjacency sort, "New workspace", block "+") | grouped face shows environment names and badges; sort stable | `inboxProjects.test.js`, `inboxDom.test.js` |
 | 2.9 | **SPA: badges** (tokens, `identityBadgeHtml`, placements of 3.4) | identical hue across tabs for one key; both themes pass contrast on the badge glyph | `identityBadge.test.js`, theme token test |
+| 2.10 | **SPA: wizard "Add a folder to this workspace only"** on page 3, creating a diverged project inline through `project.create {environment_id, sources}` (1.3) with the project name defaulted to the folder's name (5.5); the row then appears nested in the wizard and switcher | creating with an extra folder yields `diverged: true` and a named project in one flow; without the extra folder the base project is reused | `createWorkspaceWizardModel.test.js` (diverge path, name default), `createWorkspaceWizardDom.test.js` |
 
 ### Stage 3: polish
 
 | # | slice | acceptance | TDD tests |
 | --- | --- | --- | --- |
 | 3.1 | Wizard recents across devices with device tags; keyboard-only path; mobile sheet motion; reduced-motion | a11y audit of the dialog passes; ≤760 px layout screenshot test | browser layout test |
-| 3.2 | Wizard: optional "Add a folder to this workspace's project" on page 3 that creates a diverged project inline (needs a project name field; see 5.5) | creating with an extra folder yields `diverged: true` and a named project | wizard model + DOM tests |
-| 3.3 | Workspace selector: "Finished" fold, counts, empty copy ("No workspaces in E yet") | | `toolbarDom.test.js` |
-| 3.4 | Environment view (`#/environment/<id>` → base project view with an "Environment" tab listing projects and sources); redirects keep `#/project/<id>` working | | router + view tests |
-| 3.5 | Discoverability: first-run hint on the wizard ("A workspace is a copy of your environment's folders you can work in"), empty-state copy on the inbox | copy approved by Zech | DOM tests |
-| 3.6 | `docs/using.md` and `ARCHITECTURE.md` terminology pass; Terminology Audit amended with retained contracts (RPC names unchanged, routes unchanged) | | n/a |
+| 3.2 | Workspace selector: "Finished" fold, counts, empty copy ("No workspaces in E yet") | | `toolbarDom.test.js` |
+| 3.3 | Environment view (`#/environment/<id>` → base project view with an "Environment" tab listing projects and sources); redirects keep `#/project/<id>` working | | router + view tests |
+| 3.4 | Discoverability: first-run hint on the wizard ("A workspace is a copy of your environment's folders you can work in"), empty-state copy on the inbox | copy approved by Zech | DOM tests |
+| 3.5 | `docs/using.md` and `ARCHITECTURE.md` terminology pass; Terminology Audit amended with retained contracts (RPC names unchanged, routes unchanged) | | n/a |
 
 ### Stage 4: cleanup of old systems
 
@@ -636,7 +642,7 @@ the slice that depends on them starts.
    for projects; confirm this is wanted). **(Zech)**
 5. **Diverged projects need a name.** A base project's name is the
    environment's; a diverged project is "E › ?" The wizard's MVP creates no
-   diverged projects (settings or MCP do); Stage 3.2 adds an inline path.
+   diverged projects (settings or MCP do); slice 2.10 adds the inline path.
    *Recommend*: default the name to the first added folder's name, editable.
 6. **Secrets security.** Checklist rows 8 and 11 generalise cleanly; the new
    risk is **widening**: a project-scoped secret must not become readable by a
@@ -717,6 +723,26 @@ the slice that depends on them starts.
     `environment_id` on `workspace.create`. *Recommend* the new verb: it keeps
     the existing fixture and `params.strict` shape untouched and makes the
     implicit project creation a named, auditable operation.
+21. **The switcher lists environments, not projects.** Zech's words were "the
+    existing up arrow that lists projects". This plan lists environments there
+    with diverged projects nested, the same rows as wizard page 1, because
+    Zech's wizard sentence lists "projects that diverge from their environment
+    as their own environment" and a base project and its environment are one
+    row to a user. The two readings differ only when an environment has
+    diverged projects: nested rows versus a flat list. *Recommend* nested, as
+    3.3 describes. **(Zech)**: confirm before 1.7.
+22. **Secret overrides do not make a project diverge.** Raised in review: two
+    projects could differ in secrets and still look like one environment. They
+    cannot: the one-base rule (1.2) means a project with no added sources is
+    the base project, so a project that differs only in secrets does not exist
+    as a second target; its project-scoped secrets are the defaults for
+    workspaces cut from that environment and are listed in environment
+    settings under "This project only" (2.5). A diverged project's overrides
+    are already on their own row. Counting secrets would also break migration
+    (every migrated project with a secret would diverge with no base). The
+    wizard still shows the difference where it exists: a diverged project's
+    row carries "N secrets override E" once 2.1 ships. *Recommend* keep
+    divergence = added sources, and make the wizard hint part of 2.5.
 
 ---
 

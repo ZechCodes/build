@@ -600,7 +600,7 @@ async fn observe_http_service(
     }
 }
 
-async fn start_http_service(
+fn start_http_service(
     runtime: &RuntimePaths,
     stored: Option<&identity::StoredIdentity>,
     execution: Arc<ExecutionService>,
@@ -610,44 +610,24 @@ async fn start_http_service(
         build_bridge::http::settings::HttpSettings::resolve(|name| std::env::var(name).ok())
             .unwrap_or_else(|error| exit_startup(format!("invalid HTTP configuration: {error}")));
     let state_path = runtime.tasks_dir.join("http-endpoint.json");
-    let prepared = match settings {
-        None => {
-            if let Some(stored) = stored {
-                if let Err(error) =
-                    build_bridge::http::supervisor::reconcile_disabled(stored, state_path.clone())
-                        .await
-                {
-                    eprintln!("HTTP endpoint deactivation remains pending: {error}");
-                }
-            }
-            None
-        }
-        Some(settings) => {
-            let stored = stored.unwrap_or_else(|| {
-                exit_startup(
-                    "HTTP requires the file-backed paired identity; provisioned relay-only keys are insufficient"
-                        .into(),
-                )
-            });
-            Some(
-                build_bridge::http::supervisor::PreparedHttp::prepare(
-                    settings,
-                    stored,
-                    &runtime.config.api_url,
-                    &runtime.config.web_url,
-                    state_path,
-                    execution,
-                )
-                .await
-                .unwrap_or_else(|error| exit_startup(format!("cannot start HTTP: {error}"))),
-            )
-        }
+    let stored = match (settings.as_ref(), stored) {
+        (_, Some(stored)) => stored.clone(),
+        (None, None) => return None,
+        (Some(_), None) => exit_startup(
+            "HTTP requires the file-backed paired identity; provisioned relay-only keys are insufficient".into(),
+        ),
     };
-    prepared.map(|prepared| {
-        let (stop, stopped) = tokio::sync::watch::channel(false);
-        let task = liveness.spawn(async move { prepared.serve(stopped).await });
-        (stop, task)
-    })
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let task = liveness.spawn(build_bridge::http::supervisor::run(
+        settings,
+        stored,
+        runtime.config.api_url.clone(),
+        runtime.config.web_url.clone(),
+        state_path,
+        execution,
+        stopped,
+    ));
+    Some((stop, task))
 }
 
 async fn await_daemon_stop(
@@ -655,20 +635,20 @@ async fn await_daemon_stop(
     relay_socket: &mut tokio::task::JoinHandle<()>,
     http_service: &mut Option<HttpService>,
 ) {
-    tokio::select! {
-        // Biased so a SIGTERM that lands while the relay task is also ready
-        // is still the branch taken: systemd is about to send SIGKILL, and
-        // one more reconnect is worth nothing next to the roster.
-        biased;
-        () = signals.recv() => {}
-        _ = relay_socket => {}
-        http = observe_http_service(http_service) => {
-            http_service.take();
-            match http {
-                Some(Ok(Ok(()))) => eprintln!("HTTP supervisor stopped unexpectedly"),
-                Some(Ok(Err(error))) => eprintln!("HTTP supervisor failed: {error}"),
-                Some(Err(error)) => eprintln!("HTTP supervisor ended: {error}"),
-                None => unreachable!(),
+    loop {
+        tokio::select! {
+            // A shutdown signal takes precedence over any ready service task.
+            biased;
+            () = signals.recv() => return,
+            _ = &mut *relay_socket => return,
+            http = observe_http_service(http_service) => {
+                http_service.take();
+                match http {
+                    Some(Ok(Ok(()))) => eprintln!("HTTP supervisor stopped unexpectedly; daemon continues"),
+                    Some(Ok(Err(error))) => eprintln!("HTTP is off: supervisor failed: {error}; daemon continues"),
+                    Some(Err(error)) => eprintln!("HTTP is off: supervisor ended: {error}; daemon continues"),
+                    None => unreachable!(),
+                }
             }
         }
     }
@@ -783,7 +763,7 @@ async fn run_daemon(runtime: RuntimePaths, loaded: LoadedIdentity, app: AppState
     let intake = FrameIntake::with_ledger(handler, transport_keypair, ledger);
     let execution = intake.execution();
     let mut http_service =
-        start_http_service(&runtime, stored.as_ref(), execution.clone(), &liveness).await;
+        start_http_service(&runtime, stored.as_ref(), execution.clone(), &liveness);
     let reaper_execution = execution.clone();
     let _execution_reaper = liveness.handle().spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -1627,6 +1607,48 @@ mod tests {
         drop(release);
         thread.join().unwrap();
         assert!(completed, "runtime teardown waited for stuck blocking work");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http_failure_does_not_stop_the_daemon_or_its_other_services() {
+        let (stop, _) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(async {
+            Err::<(), _>(
+                "HTTP endpoint registration failed: endpoint registration predecessor changed"
+                    .to_string(),
+            )
+        });
+        let mut service = Some((stop, task));
+        let (relay_stop, relay_stopped) = tokio::sync::oneshot::channel();
+        let mut relay = tokio::spawn(async {
+            let _ = relay_stopped.await;
+        });
+        let mut signals = super::ShutdownSignals {
+            term: None,
+            interrupt: None,
+        };
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                super::await_daemon_stop(&mut signals, &mut relay, &mut service),
+            )
+            .await
+            .is_err(),
+            "optional HTTP failure must leave the daemon running"
+        );
+        assert!(
+            service.is_none(),
+            "failed HTTP task must be observed and retired"
+        );
+        assert!(!relay.is_finished(), "relay remains live after HTTP fails");
+        relay_stop.send(()).unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            super::await_daemon_stop(&mut signals, &mut relay, &mut service),
+        )
+        .await
+        .expect("relay termination still ends the daemon");
     }
 
     #[tokio::test]

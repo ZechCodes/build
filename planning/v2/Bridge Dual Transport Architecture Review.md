@@ -183,6 +183,13 @@ draft requirement on #904. Existing direct-session availability remains intact.
 
 ## HTTP identity, listener and discovery
 
+Implementation amendment (#1021): hosted registration runs independently of
+daemon startup. Registration failures keep HTTP off while relay, MCP and agents
+continue. Retry the same prepared epoch and predecessor set with exponential
+backoff from 2 seconds to a five-minute cap; Conflict never authorizes replacing
+an unknown hosted generation. Pending registration is canceled at shutdown.
+Target-device endpoint records and locks survive buildctl state migration.
+
 HTTP is opt-in and independent of WebRTC. Disabled means no listener and no
 usable endpoint advertisement. Initial delivery uses native HTTPS with explicit
 bind/origin/certificate/key configuration; reverse-proxy termination is deferred

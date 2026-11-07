@@ -179,7 +179,10 @@ live state or services. Do not test against live roots; pytest uses temporary
 homes and the separately authorized snapshot is for offline rehearsal only.
 
 The source is `~/.build`; the target is `~/.local/state/build-dev`. Dev keeps its
-own identity and pairing. Migration copies config, projects, provider recovery,
+own identity and pairing, including `tasks/http-endpoint.json` and its sibling
+`http-endpoint.json.lock`. These device-owned files retain the target's bytes
+and permissions; source endpoint records and locks are excluded even when the
+target has none. Migration copies config, projects, provider recovery,
 review receivers, task state and attachments, resume rosters and local harness
 sessions. It uses SQLite's online backup API, rewrites prod state paths, verifies
 table counts/record IDs, worktree references and attachment hashes, and retains

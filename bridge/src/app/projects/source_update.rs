@@ -183,6 +183,7 @@ impl AppState {
     ) -> Result<PathBuf, String> {
         let candidate = canonical_source_path(&expand_tilde(path.trim()))?;
         self.validate_secret_source(&candidate)?;
+        self.refuse_source_directory_claim(&candidate)?;
         if candidate == source.path {
             return Ok(candidate);
         }
@@ -277,6 +278,7 @@ impl AppState {
             return Err("source directory changed while its edit was being prepared".into());
         }
         self.validate_secret_source(&candidate)?;
+        self.refuse_source_directory_claim(&candidate)?;
         self.refuse_source_duplicate(&address.project_id, &candidate, &address.source_id)?;
         self.refuse_source_containment(&candidate, Some((&address.project_id, &address.source_id)))
     }
@@ -380,6 +382,7 @@ impl crate::lifecycle::WorktreeMutation for SerializedSourceUpdate {
             let app = state.lock().unwrap();
             app.validate_source_location(&self.captured)?;
             if let Some(candidate) = &self.mutation.new_path {
+                app.refuse_source_directory_claim(candidate)?;
                 app.refuse_source_duplicate(
                     &self.captured.project_id,
                     candidate,

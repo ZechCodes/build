@@ -1694,11 +1694,22 @@ reservations, so concurrent preparations cannot publish duplicate identities.
 Hidden references are never replaced by the fallback.
 Source references use canonical directory paths as their location identity.
 Different environments or projects may reference the same directory; one
-project's effective sources may include it only once. Admission checks owning
-environment and project-added records, including parked references, rather
-than only the live projections. Strict containment remains refused, as do
-vault overlap, a managed clone destination overlapping a source, and cloning
-an already registered remote. Linked worktrees remain distinct directories.
+project's effective sources may include it only once. Admission and settlement
+check owning environment and project-added records, including parked
+references, rather than only the live projections. Before configuration is
+written, settlement rechecks canonical paths, vault and containment fences,
+effective membership and clone remotes against the current registry. This
+includes repoints, additions and new projects. Linked worktrees remain distinct
+directories.
+Managed clone destinations have in-memory claims through preparation and
+settlement. While a batch is being written, other Build source registrations
+cannot enter its destinations. A fully prepared clone may be referenced by
+another owner at the same directory; containment and competing clones remain
+refused. Failed-registration cleanup keeps any checkout now referenced by a
+source or workspace. Otherwise it takes a deletion claim under the app lock,
+then removes the checkout off-lock. Source admission and settlement refuse
+overlap with that claim until cleanup releases it. These claims coordinate
+Build's registration and cleanup; they do not replace Git's repository lock.
 Unlinking a reference never deletes its folder, even for the last reference
 to a managed clone. Reference settings update their owning record and its
 dependent project projections; other references to the directory keep their

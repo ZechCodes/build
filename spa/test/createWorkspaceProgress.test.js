@@ -95,6 +95,40 @@ describe("workspace creation progress", () => {
     held.writeOperations.update(completed()); await vi.advanceTimersByTimeAsync(900);
     expect(document.activeElement).toBe(elsewhere); expect(onOpenWorkspace).not.toHaveBeenCalled();
   });
+  it("keeps a failed workspace in an acceptance payload nonterminal", () => {
+    const model = createWorkspaceProgressModel(operation({ state: "accepted", ack: { result: { workspace: { workspace_id: "w1", project_id: "p1", status: "failed" } } } }));
+    expect(model.phase).toBe("creating");
+    expect(model.actions).toEqual([]);
+  });
+  it("preserves the bare workspace.create wire fields for Open workspace", async () => {
+    const result = { workspace_id: "wire-ws", project_id: "p1", name: "Wire", directories: [] };
+    const onOpenWorkspace = vi.fn();
+    open(operation({ state: "succeeded", request: { method: "workspace.create", params: {} }, confirmation: { result } }), { onOpenWorkspace });
+    document.querySelector('[data-progress-action="open"]').click(); await flush();
+    expect(onOpenWorkspace).toHaveBeenCalledWith(expect.objectContaining({ workspace: result }));
+  });
+  it("focuses Close while provisioning and traps Tab inside the progress dialog", () => {
+    open(operation());
+    const close = document.querySelector('[data-progress-action="close"]');
+    expect(document.activeElement).toBe(close);
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    close.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true); expect(document.activeElement).toBe(close);
+  });
+  it("wraps focus backwards from the first terminal action to Close", () => {
+    open(failed());
+    const retry = document.querySelector('[data-progress-action="retry"]'); retry.focus();
+    retry.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(document.querySelector('[data-progress-action="close"]'));
+  });
+  it("preserves kind, dim device identity and task board outcome in the target summary", () => {
+    open(operation(), { target: { kind: "project", name: "Payments", summaryLabel: "Sources › Payments", deviceLabel: "Laptop", offline: true, taskText: "7 open tasks" } });
+    const summary = document.querySelector(".create-target-summary");
+    expect(summary.querySelector('.create-kind[aria-hidden="true"]')).not.toBeNull();
+    expect(summary.querySelector(".dim.inbox-device").textContent).toBe("Laptop");
+    expect(summary.textContent).toContain("Offline");
+    expect(document.body.textContent).toContain("Uses Payments's task board · 7 open tasks");
+  });
   it("does not auto-open when focus has moved elsewhere", async () => {
     vi.useFakeTimers(); const onOpenWorkspace = vi.fn(); open(completed(), { onOpenWorkspace, autoOpenDelay: 900 });
     const elsewhere = document.createElement("button"); document.body.append(elsewhere); elsewhere.focus();

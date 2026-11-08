@@ -18,7 +18,7 @@ function resourcesOf(record) {
   const result = operationResult(record);
   const details = operationError(record)?.details || {};
   return { project: result.project || details.project || null,
-    workspace: result.workspace || (result.project_id && result.id ? result : null) };
+    workspace: result.workspace || (result.project_id && (result.workspace_id || result.id) ? result : null) };
 }
 
 function progressSteps(record, phase, project) {
@@ -40,9 +40,9 @@ function inferredStepState(step, phase, project, firstStep) {
   return step === firstStep ? "failed" : "waiting";
 }
 
-function outcomePhase(record, workspace) {
+function outcomePhase(record) {
   if (!record || record.unresolved || UNKNOWN_STATES.has(record.state)) return "checking";
-  if (record.state === "failed" || workspace?.status === "failed") return "failed";
+  if (record.state === "failed") return "failed";
   if (record.state === "succeeded") return "done";
   return "creating";
 }
@@ -57,7 +57,7 @@ function failureText(record, workspace) {
  * A transport acknowledgment alone never means that provisioning has finished. */
 export function createWorkspaceProgressModel(record) {
   const { project, workspace } = resourcesOf(record);
-  const phase = outcomePhase(record, workspace);
+  const phase = outcomePhase(record);
   const steps = progressSteps(record, phase, project);
   const status = { done: "Done", failed: "Failed", checking: "Checking…", creating: "Creating…" }[phase];
   const error = phase === "failed" ? failureText(record, workspace) : "";
@@ -84,9 +84,32 @@ function stepHtml({ step, label, state, detail }) {
     <span class="sub">${esc(state)}</span>${detail ? `<div class="sub create-progress-detail">${esc(detail)}</div>` : ""}</li>`;
 }
 
-function progressBodyHtml(model, targetSummary, actionError) {
-  return `<h3 id="create-workspace-progress-title">${esc(model.status)}</h3>
-    <p class="sub create-target-summary">${esc(targetSummary)}</p>
+function targetSummaryHtml(target, fallback) {
+  if (!target) return esc(fallback);
+  const glyph = target.kind === "project" ? "◇" : "▣";
+  return `<span class="create-kind" aria-hidden="true">${glyph}</span><span>${esc(target.summaryLabel || target.label || target.name || target.id)}</span>
+    ${target.deviceLabel ? `<span class="dim inbox-device">${esc(target.deviceLabel)}</span>` : ""}
+    ${target.offline ? '<span class="dim inbox-away">Offline</span>' : ""}`;
+}
+
+function targetOutcomeHtml(target) {
+  if (!target) return "";
+  const text = target.kind === "project" ? `Uses ${target.name}'s task board · ${target.taskText || "0 tasks"}` : "Creates a new task board";
+  return `<p class="sub create-target-outcome">${esc(text)}</p>`;
+}
+
+function trapProgressTab(event, body) {
+  if (event.key !== "Tab") return;
+  const controls = [...body.querySelectorAll("button:not(:disabled)")];
+  const edge = event.shiftKey ? controls[0] : controls.at(-1);
+  if (document.activeElement !== edge) return;
+  event.preventDefault();
+  (event.shiftKey ? controls.at(-1) : controls[0])?.focus();
+}
+
+function progressBodyHtml(model, targetSummary, actionError, target) {
+  return `<h3 id="create-workspace-progress-title" aria-live="polite">${esc(model.status)}</h3>
+    <p class="create-target-summary">${targetSummaryHtml(target, targetSummary)}</p>${targetOutcomeHtml(target)}
     <ol class="create-progress-steps" aria-label="Creation steps">${model.steps.map(stepHtml).join("")}</ol>
     <p role="status" aria-live="polite">${esc(model.message)}</p>
     ${model.error ? `<p class="warn create-error">${esc(model.error)}</p>` : ""}
@@ -106,10 +129,11 @@ export function openCreateWorkspaceProgress(options) {
   let model = createWorkspaceProgressModel(record);
   let previousPhase = null;
   const modal = openModal({
-    dialogHtml: modalDialogHtml(progressBodyHtml(model, targetSummary, actionError), { className: "modal-create create-workspace-sheet create-workspace-progress" }),
+    dialogHtml: modalDialogHtml(progressBodyHtml(model, targetSummary, actionError, options.target), { className: "modal-create create-workspace-sheet create-workspace-progress" }),
     scrimId: "create-workspace-progress-scrim", onClose: detachedView, initialFocus: ":not(*)",
   });
   modal.body.setAttribute("aria-labelledby", "create-workspace-progress-title");
+  modal.body.onkeydown = event => trapProgressTab(event, modal.body);
   const unsubscribe = service?.subscribe(sync) || NOOP;
   paint();
   const ready = Promise.resolve(service?.get(operationId)).then(row => {
@@ -141,7 +165,7 @@ export function openCreateWorkspaceProgress(options) {
     model = createWorkspaceProgressModel(record);
     const terminalChange = model.phase !== previousPhase && ["done", "failed"].includes(model.phase);
     const focusedAction = modal.body.contains(document.activeElement) ? document.activeElement.dataset.progressAction : null;
-    modal.body.innerHTML = progressBodyHtml(model, targetSummary, actionError);
+    modal.body.innerHTML = progressBodyHtml(model, targetSummary, actionError, options.target);
     modal.body.querySelectorAll("[data-progress-action]").forEach(button => {
       button.disabled = acting;
       button.onclick = () => { void act(button.dataset.progressAction); };
@@ -151,7 +175,7 @@ export function openCreateWorkspaceProgress(options) {
     previousPhase = model.phase;
   }
   function restoreFocus(terminalChange, focusedAction) {
-    if (terminalChange && mayFocusOutcome()) modal.body.querySelector("[data-progress-action]")?.focus();
+    if (previousPhase === null || (terminalChange && mayFocusOutcome())) modal.body.querySelector("[data-progress-action]")?.focus();
     else if (focusedAction) modal.body.querySelector(`[data-progress-action="${focusedAction}"]`)?.focus();
   }
   function mayFocusOutcome() {

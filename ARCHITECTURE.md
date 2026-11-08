@@ -3435,9 +3435,11 @@ work is active; journaled workspace admission holds that fence until its durable
 reservation exists. A configuration failure publishes no archive state.
 
 `app/projects/archive_guard.rs` shares one archived-project refusal across
-routed/session RPCs, MCP mutations and final agent spawn reservation. RPC write
-classification comes from the effect registry, with project scope resolved from
-project, workspace, task or conversation identities; upload calls resolve their
+routed/session RPCs, MCP mutations and final agent spawn reservation. Framed
+routing checks archive admission inside its existing routed/session mutation
+guards; clock-only snapshots and global presence gain no app-mutex acquisition.
+RPC write classification comes from the effect registry, with project scope
+resolved from project, workspace, task or conversation identities; upload calls resolve their
 retained scope after owner validation. Reads and screen-attachment bookkeeping
 remain available. Restore and project deletion remain allowed. Environment
 reference maintenance can still update archived projects' effective sources.

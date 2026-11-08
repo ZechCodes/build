@@ -63,7 +63,7 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> Result<(), ApiError> {
-        if !is_project_mutation(method) {
+        if !archive_guard_required(method) {
             return Ok(());
         }
         if let Some(id) = params.get("project_id").and_then(Value::as_str) {
@@ -141,7 +141,7 @@ pub(in crate::app) fn archive_error_string(error: ApiError) -> String {
     )
 }
 
-fn is_project_mutation(method: &str) -> bool {
+pub(in crate::app) fn archive_guard_required(method: &str) -> bool {
     effects::requires_write_scope(method) == Some(true)
         && !matches!(
             method,

@@ -232,10 +232,6 @@ pub(in crate::app) fn dispatch_frame(
         );
     }
 
-    if let Err(error) = timer.lock(state).guard_archived_rpc(&method, &params) {
-        return api::reply(id, Err(error));
-    }
-
     if let Some(metadata) = frame.payload.get("write") {
         return super::creation::dispatch(state, &sender, id, &method, params, metadata.clone());
     }
@@ -361,6 +357,25 @@ pub(crate) fn pong() -> Value {
     })
 }
 
+/// Reuse session mutation admission's app guard. Clock-only reads and
+/// attachment controls must not acquire a guard just to discover they are exempt.
+fn session_mutation_preflight(
+    state: &Arc<Mutex<AppState>>,
+    method: &str,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Result<(), ApiError> {
+    let deletion_allowed = allowed_during_project_deletion(method);
+    if deletion_allowed && !super::projects::archive_guard_required(method) {
+        return Ok(());
+    }
+    let app = timer.lock(state);
+    if !deletion_allowed && app.project_deletion_in_progress {
+        return Err(ApiError::unavailable(PROJECT_DELETION_IN_PROGRESS));
+    }
+    app.guard_archived_rpc(method, params)
+}
+
 /// The verbs that cannot go through [`AppState::route`]: each needs the
 /// caller's own [`SessionSender`] (somewhere to push to) or the shared `Arc`
 /// (a background producer or pump to spawn). `None` means "not one of mine",
@@ -388,8 +403,8 @@ fn session_scoped(
     ) {
         return None;
     }
-    if !allowed_during_project_deletion(method) && timer.lock(state).project_deletion_in_progress {
-        return Some(Err(ApiError::unavailable(PROJECT_DELETION_IN_PROGRESS)));
+    if let Err(error) = session_mutation_preflight(state, method, params, timer) {
+        return Some(Err(error));
     }
     if !sender.execution_is_live() {
         return Some(Err(ApiError::unavailable(
@@ -470,6 +485,9 @@ fn routed(
         if !allowed_during_project_deletion(method) && app.project_deletion_in_progress {
             return Err(ApiError::unavailable(PROJECT_DELETION_IN_PROGRESS));
         }
+        // Archive admission precedes deferred-work/queue capture, under the
+        // dispatch guard already held by this route rather than a new entry.
+        app.guard_archived_rpc(method, params)?;
         app.dispatch_deferring_with_context(method, params, Some(context))
     };
     #[cfg(test)]

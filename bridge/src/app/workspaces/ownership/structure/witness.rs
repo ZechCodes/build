@@ -243,3 +243,29 @@ fn source_row() {
     #[cfg(test)]
     super::super::work_counts::source_row();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn environments_extra_identity_ownership_witness_tracks_project_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::harness::HarnessContext::resolved(
+            dir.path().join("mcp.sock"),
+            dir.path().to_path_buf(),
+        )
+        .unwrap();
+        let mut app =
+            AppState::new_unrooted_configured(dir.path().join("worktrees"), "main", true, context);
+        app.add_project(dir.path().to_path_buf(), "main".into());
+        app.initialize_snapshot_projection();
+        let witness = Witness::capture(&app, &inputs::Inputs::capture(&app)).unwrap();
+        assert!(witness.matches(&app));
+        app.projects.at_mut(0).project_key = format!("project:{}", uuid::Uuid::new_v4());
+        assert!(
+            !witness.matches(&app),
+            "a new identity changes scratch ownership even at the same home"
+        );
+    }
+}

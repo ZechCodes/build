@@ -24,24 +24,26 @@ impl AppState {
                 };
                 let observed = reader.load(&result.workspace_id);
                 let mut app = state.lock().unwrap();
-                let Some(project) = app
-                    .projects
-                    .iter()
-                    .find(|project| project.repo_path.to_string_lossy() == result.project_path)
-                    .map(|project| project.id.clone())
-                else {
-                    return;
-                };
-                app.publish_review_observation(
-                    &project,
-                    &result.task_id,
-                    &result.workspace_id,
-                    observed,
-                );
-                app.changes.note_kind(&result.workspace_id, Kind::State);
-                app.changes.note_board_lists(BoardLists::WORKSPACES);
+                app.apply_review_sync_result(&result, observed);
             }),
         ))
+    }
+    fn apply_review_sync_result(
+        &mut self,
+        result: &sync::reconcile::SyncResult,
+        observed: Option<crate::app::snapshot_projection::WorkspaceReviewObservation>,
+    ) {
+        let Some(project) = self
+            .projects
+            .iter()
+            .find(|project| project.repo_path.to_string_lossy() == result.project_path)
+            .map(|project| project.id.clone())
+        else {
+            return;
+        };
+        self.publish_review_observation(&project, &result.task_id, &result.workspace_id, observed);
+        self.changes.note_kind(&result.workspace_id, Kind::State);
+        self.changes.note_board_lists(BoardLists::WORKSPACES);
     }
 }
 
@@ -49,6 +51,33 @@ impl AppState {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn environments_extra_identity_review_sync_routes_uuid_keyed_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::harness::HarnessContext::resolved(
+            dir.path().join("mcp.sock"),
+            dir.path().to_path_buf(),
+        )
+        .unwrap();
+        let mut app =
+            AppState::new_unrooted_configured(dir.path().join("worktrees"), "main", true, context);
+        let migrated = app.add_project(dir.path().to_path_buf(), "main".into());
+        let sibling = crate::app::projects::test_support::register_sibling(&mut app, &migrated);
+        let result = sync::reconcile::SyncResult {
+            project_path: app.project(&sibling).unwrap().project_key.clone(),
+            task_id: "review-task".into(),
+            workspace_id: "review-workspace".into(),
+            persisted: true,
+            retry: false,
+        };
+        let before = app.changes.board_revision();
+        app.apply_review_sync_result(&result, None);
+        assert!(
+            app.changes.board_revision() > before,
+            "UUID-keyed review sync must publish its task and workspace invalidation"
+        );
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn startup_waits_for_app_mutex_off_the_runtime_worker() {

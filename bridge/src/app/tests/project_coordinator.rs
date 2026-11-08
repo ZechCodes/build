@@ -741,3 +741,129 @@ fn a_scratch_deleted_while_running_never_archives_the_owner() {
     let mut state = booted(&state_root);
     the_owner_stands(&mut state, &owner, &pin);
 }
+
+async fn archived_roster_roundtrip(keep_agents: bool) {
+    let (_home, repo) = a_repo();
+    let (_tmp, root) = a_state_root();
+    let mut state = booted(&root);
+    let project = added_project(&mut state, &repo);
+    let owner = ensure(&mut state, &project);
+    let old_pin = state.project_pin(&owner).unwrap().to_string();
+    let archived = state.handle(req("project.archive", json!({"project_id":project})));
+    assert_eq!(archived["ok"], true, "{archived}");
+    drop(state);
+    store_as_legacy(&root, &owner, keep_agents);
+    let store = crate::store::Store::new(root.join("store")).unwrap();
+    let before = serde_json::to_value(store.load_all_runs().unwrap()).unwrap();
+    let state = booted(&root);
+    assert_eq!(serde_json::to_value(store.load_all_runs().unwrap()).unwrap(), before,
+        "archived boot must not repair a pin or mint a coordinator");
+    let shared = state.shared();
+    assert_eq!(shared.lock().unwrap().handle(req("project.restore", json!({"project_id":project})))["ok"], true);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if shared.lock().unwrap().project_pin(&owner).is_some() {break;}
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("restore must settle the deferred roster");
+    let app = shared.lock().unwrap();
+    assert_eq!(coordinators(&app, &owner).len(), 1);
+    if keep_agents {assert_eq!(app.project_pin(&owner), Some(old_pin.as_str()));}
+    assert_eq!(app.entity_agents(&owner).unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn archive_round_archived_boot_preserves_legacy_roster_until_restore() {
+    archived_roster_roundtrip(true).await;
+}
+#[tokio::test]
+async fn archive_round_archived_boot_preserves_empty_roster_until_restore() {
+    archived_roster_roundtrip(false).await;
+}
+
+#[test]
+fn archive_round_settling_wake_blocks_archive_until_delivery_settles() {
+    let (_home, repo) = a_repo();
+    let (_tmp, root) = a_state_root();
+    let mut state = booted(&root);
+    let project = added_project(&mut state, &repo);
+    let owner = ensure(&mut state, &project);
+    let pin = state.project_pin(&owner).unwrap().to_string();
+    state.post_from_build_and_wake_as(&owner, &pin, ("archive-regression", None), |thread, now| {
+        thread.post_user_from_build("Durable unread notice", now.to_string());
+    }).unwrap();
+    let refused = state.handle(req("project.archive", json!({"project_id":project})));
+    assert_eq!(refused["error_code"], "conflict", "{refused}");
+    assert!(refused["error"].as_str().unwrap().contains("wake"), "{refused}");
+    state.delivery_queue.lapse_settle_windows();
+    let mut turns = state.take_pending_turns();
+    let (_, mark) = turns.next_turn().expect("the real settling wake");
+    mark.settle(&mut state);
+    assert!(turns.next_turn().is_none());
+    assert_eq!(state.handle(req("project.archive", json!({"project_id":project})))["ok"], true);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn archive_round_ready_owner_keeps_settling_wake_until_recovery() {
+    let (_home, repo) = a_repo();
+    let (_tmp, root) = a_state_root();
+    let mut state = booted(&root);
+    let project = added_project(&mut state, &repo);
+    let owner = ensure(&mut state, &project);
+    let pin = state.project_pin(&owner).unwrap().to_string();
+    state.post_from_build_and_wake_as(&owner, &pin, ("archive-regression", None), |thread, now| {
+        thread.post_user_from_build("Keep this settling wake", now.to_string());
+    }).unwrap();
+    // Model an existing wake arriving at the restore boundary, before its Git claim.
+    state.projects.at_mut(0).archived_at = Some(1);
+    state.restored_recovery.deferred.insert(owner.clone());
+    let (gate, handle) = crate::app::OffLockGate::new();
+    state.off_lock_gate = Some(gate);
+    let shared = state.shared();
+    let spawns = record_spawns(&shared);
+    assert_eq!(shared.lock().unwrap().handle(req("project.restore", json!({"project_id":project})))["ok"], true);
+    let handle = tokio::task::spawn_blocking(move || {handle.wait_for_arrival(); handle}).await.unwrap();
+    let held = {
+        let mut app = shared.lock().unwrap();
+        app.delivery_queue.lapse_settle_windows();
+        let mut turns = app.take_pending_turns();
+        let held = turns.is_empty();
+        while let Some((_, mark)) = turns.next_turn() {mark.settle(&mut app);}
+        app.off_lock_gate = None;
+        held
+    };
+    handle.release();
+    assert!(held, "a ready owner's real settling wake must remain in the queue");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if !spawns.lock().unwrap().is_empty() {break;}
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("settling recovery must release and deliver the held wake");
+    let app = shared.lock().unwrap();
+    assert_eq!(spawns.lock().unwrap().len(), 1);
+    assert!(app.runs[&owner].last_error.is_none());
+    assert!(app.entity_agents(&owner).unwrap().by_id(&pin).unwrap().start_error.is_none());
+}
+
+#[tokio::test]
+async fn archive_round_final_spawn_hold_requeues_without_start_error() {
+    let (_home, repo) = a_repo();
+    let (_tmp, root) = a_state_root();
+    let mut state = booted(&root);
+    let project = added_project(&mut state, &repo);
+    let owner = ensure(&mut state, &project);
+    let pin = state.project_pin(&owner).unwrap().to_string();
+    state.post_from_build_and_wake_as(&owner, &pin, ("archive-regression", None), |thread, now| {
+        thread.post_user_from_build("Already claimed wake", now.to_string());
+    }).unwrap();
+    state.delivery_queue.lapse_settle_windows();
+    let turns = state.take_pending_turns();
+    // Policy changes after dequeue and before final spawn admission.
+    state.projects.at_mut(0).archived_at = Some(1);
+    let shared = state.shared();
+    crate::app::DeliveryRunner::run(&shared, turns);
+    let app = shared.lock().unwrap();
+    assert!(!app.delivery_queue.is_idle(), "a policy hold must requeue the claimed wake");
+    assert!(app.entity_agents(&owner).unwrap().by_id(&pin).unwrap().start_error.is_none());
+}

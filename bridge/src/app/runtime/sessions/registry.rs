@@ -44,6 +44,8 @@ pub(in crate::app) struct SessionRegistry {
     shell_generation: u64,
     spawn_claims: HashSet<TabKey>,
     shell_checkout_holds: HashMap<TabKey, ShellCheckoutHold>,
+    /// Accepted project attribution retained when a shell's claim settles.
+    shell_projects: HashMap<TabKey, String>,
     spawn_finished: Arc<Condvar>,
     waiting_screens: HashMap<TabKey, ScreenHandle>,
     mcp_tokens: HashMap<String, String>,
@@ -245,6 +247,7 @@ impl SessionRegistry {
             shell_generation: 0,
             spawn_claims: HashSet::new(),
             shell_checkout_holds: HashMap::new(),
+            shell_projects: HashMap::new(),
             spawn_finished: Arc::new(Condvar::new()),
             waiting_screens: HashMap::new(),
             mcp_tokens: HashMap::new(),
@@ -259,6 +262,7 @@ impl SessionRegistry {
 
     fn insert_tab(&mut self, key: TabKey, tab: Tab) -> Option<Tab> {
         let shell = tab.role == TabRole::Shell;
+        self.shell_projects.remove(&key);
         let previous = self.tabs.insert(key, tab);
         if shell
             || previous
@@ -272,6 +276,7 @@ impl SessionRegistry {
 
     fn remove_tab(&mut self, key: &TabKey) -> Option<Tab> {
         let tab = self.tabs.remove(key)?;
+        self.shell_projects.remove(key);
         if let Some((_, agent)) = tab.role.agent() {
             self.secret_authority.revoke(agent);
         }
@@ -321,6 +326,16 @@ impl SessionRegistry {
         self.shell_checkout_holds
             .values()
             .any(|hold| hold.project_id == project_id)
+    }
+
+    pub(in crate::app) fn live_shell_for_project(&self, project_id: &str) -> bool {
+        self.shell_projects.iter().any(|(key, project)| {
+            project == project_id
+                && self
+                    .tabs
+                    .get(key)
+                    .is_some_and(|tab| tab.role == TabRole::Shell && tab.session_is_live())
+        })
     }
 
     pub(in crate::app) fn pending_shell_for_workspace(&self, workspace_id: &str) -> bool {
@@ -461,7 +476,12 @@ impl SessionRegistry {
 
     /// The adapter must call this before an under-lock RAII wrapper is dropped.
     pub(in crate::app) fn settle_spawn_claim(&mut self, claim: SpawnClaimToken) {
-        self.shell_checkout_holds.remove(&claim.key);
+        if let Some(hold) = self.shell_checkout_holds.remove(&claim.key) {
+            if self.tab_is_shell(&claim.key) {
+                self.shell_projects
+                    .insert(claim.key.clone(), hold.project_id);
+            }
+        }
         self.spawn_claims.remove(&claim.key);
         self.spawn_finished.notify_all();
     }

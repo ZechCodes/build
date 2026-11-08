@@ -16,6 +16,9 @@ impl AppState {
         if self.session_registry.pending_shell_for_project(id) {
             blockers.push("wait for terminal creation to finish".into());
         }
+        if self.session_registry.live_shell_for_project(id) {
+            blockers.push("close the open terminal in this project".into());
+        }
         if let Some(store) = &self.store {
             blockers.extend(
                 store

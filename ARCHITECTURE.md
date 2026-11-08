@@ -3439,7 +3439,9 @@ routed/session RPCs, MCP mutations and final agent spawn reservation. Framed
 routing checks archive admission inside its existing routed/session mutation
 guards; clock-only snapshots and global presence gain no app-mutex acquisition.
 Shell reservation and final registration recheck archive under their existing
-guards; a pending shell reservation blocks archive until it settles. Agent
+guards; pending shell reservations and registered live shells block archive.
+The registry retains the reservation's project attribution at registration;
+exited shell rows do not block while awaiting cleanup. Agent
 start checks its addressed owner before resolving or changing the roster.
 RPC write classification comes from the effect registry, with project scope
 resolved from project, workspace, task or conversation identities; upload calls resolve their

@@ -427,7 +427,8 @@ const sourceFingerprintParts = {
   "core/writeOperationEffects.js": ["d30332d1", "89b12c79", "150580d0", "aede7e2b", "d2e23499", "d6003a79", "f13412fe", "b895c728"],
   "core/writeOperationIntent.js": ["5476394a", "087dc5ce", "5c71e673", "8b977ba3", "e665bf53", "fa9529be", "78bf2c38", "48f27991"],
   "core/writeOperationRefresh.js": ["b5d241f8", "64bba629", "58a8bbab", "6673dafa", "0c5490bc", "2e70cbc9", "d0048bf4", "20e4c528"],
-  "core/writeOperations.js": ["d58bf74a", "b4686c2a", "014911e0", "26a9705c", "66fccfb4", "d28f2488", "bc4a631b", "740a0d93"],
+  // #1052: nested creation execution evidence changes display state; transport method edges stay unchanged.
+  "core/writeOperations.js": ["8dd06f02", "c7f3f56e", "ae6bcbca", "76665c9a", "452af3df", "6352b83c", "113b36cc", "193b6b1b"],
   "push.js": ["c7a3eb27", "240e0a4d", "3e314aee", "369bea39", "25bf83e0", "f105e41a", "0e4ed716", "4e53028b"],
   "sheets/browser.js": ["e226c6fb", "9689c6bc", "39ba311b", "335481c7", "f444e696", "36c5c8b6", "013588ec", "bd2a4dbe"],
   "sheets/newRepo.js": ["e1addf8b", "abc706f6", "ca74fa24", "7e1f3208", "aae3d460", "37157135", "21e46d2f", "f187cdfa"],
@@ -442,8 +443,10 @@ const sourceFingerprintParts = {
   "views/archive.js": ["6f4a7962", "88f34292", "73eafead", "5dc6229b", "5b040b7a", "09baf137", "8cbbce83", "6c83d400"],
   "views/branchView.js": ["bd60fcf4", "7c212e82", "4972bdd1", "5b4a3563", "54913179", "782e8a54", "ea8d0a73", "30816a7d"],
   // #997 deviceProjects.js:82: the existing project.list loader delegates to owned device recovery.
-  "views/deviceProjects.js": ["8ff87af9", "bead4587", "20c4bc9d", "89c548aa", "9a137b45", "4cb5741b", "880a3013", "429a0844"],
+  "views/deviceProjects.js": ["4e4add8c", "613568da", "f8200bad", "b7b27066", "84e7ddaa", "62bfbbbe", "cee788f9", "586de842"],
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
+  // #1052: device-scoped project.list/environment.list reads only; settings delegate to the existing sheet.
+  "views/environmentsSettings.js": ["c19e07f6", "17c650fb", "4997d318", "802bb3e5", "e6e9c250", "3053bc4d", "c7dad211", "60a65fe6"],
   "views/files.js": ["bc4913c5", "865b9dd0", "e28f655f", "242c9011", "456a4139", "b2cfd372", "6498e15b", "f3116261"],
   "views/projectChanges.js": ["e195b594", "3a7689fe", "14bfc899", "18ada18d", "ab36cd52", "ad96ba97", "a877c4da", "c9c3b78f"],
   "views/projectView.js": ["76123138", "7ded30d0", "0893b5ef", "5d880782", "137464b9", "5b123e76", "48f1a9d5", "28144478"],
@@ -455,7 +458,7 @@ const sourceFingerprintParts = {
   "core/directoryWatcher.js": ["3016199e", "f2ebe782", "5731fa24", "665dba3a", "6fd96a9e", "f5a4ee11", "c6841b70", "db07db4f"],
   "core/taskTimelinePages.js": ["da2840fb", "5992d7ce", "038bbc4d", "9c01a8ab", "c320a6f3", "7592e5be", "d5cbf08c", "4fcf8220"],
 
-  "core/createWorkspaceProgress.js": ["922a8bc9", "b3e85951", "e842198f", "d17a5a65", "43189650", "e6884023", "c72af97b", "98af5057"],
+  "core/createWorkspaceProgress.js": ["23545d1a", "2869a6af", "bf4236b1", "fe88db74", "0d1ef48f", "26ef00cc", "59429500", "927a7ad7"],
   "core/createWorkspaceTargets.js": ["a069d309", "99c91164", "1312556e", "14af5950", "01144734", "5b805997", "5b7b7161", "22f1e394"],
   "core/writeOperationProgress.js": ["1092c480", "f4c49dde", "dbbef23b", "5cdbfadb", "2beab767", "146717b7", "ddf2e984", "9ba42bcb"],
 };

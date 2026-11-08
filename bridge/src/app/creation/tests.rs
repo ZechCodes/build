@@ -2,6 +2,36 @@ use super::*;
 use crate::harness::HarnessContext;
 use tempfile::TempDir;
 
+mod admission_recovery;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Boundary {
+    AdmissionPrepared,
+    ProjectCheckpointed,
+    ProjectPersisted,
+}
+type BoundaryObserver = Box<dyn FnMut(Boundary)>;
+thread_local! {
+    static BOUNDARY: std::cell::RefCell<Option<BoundaryObserver>> = const { std::cell::RefCell::new(None) };
+}
+struct BoundaryGuard;
+impl Drop for BoundaryGuard {
+    fn drop(&mut self) {
+        BOUNDARY.with_borrow_mut(|observer| *observer = None);
+    }
+}
+fn observe_boundary(observer: impl FnMut(Boundary) + 'static) -> BoundaryGuard {
+    BOUNDARY.with_borrow_mut(|saved| *saved = Some(Box::new(observer)));
+    BoundaryGuard
+}
+pub(super) fn at_boundary(boundary: Boundary) {
+    let observer = BOUNDARY.with_borrow_mut(Option::take);
+    if let Some(mut observer) = observer {
+        observer(boundary);
+        BOUNDARY.with_borrow_mut(|saved| *saved = Some(observer));
+    }
+}
+
 struct Fixture {
     _root: TempDir,
     state: Arc<Mutex<AppState>>,
@@ -139,23 +169,7 @@ fn create_project_mints_fresh_key_and_workspace() {
 }
 #[test]
 fn crash_between_steps_reconciles_without_duplicate() {
-    let f = Fixture::new();
-    let id = operation(3);
-    let record = f.admit(&id);
-    assert!(f.store.writer().claim_mutation(PRINCIPAL, &id).unwrap());
-    let evidence = project_step(&f.state, &record).unwrap();
-    assert_eq!(f.state.lock().unwrap().projects.len(), 2);
-    // No post-project checkpoint: replay finds the config's reserved opaque key.
-    f.store
-        .writer()
-        .park_creation(PRINCIPAL, &id, "unknown", evidence)
-        .unwrap();
-    let f = f.reopen();
-    let record = f.record(&id);
-    execute(&f.state, record).unwrap();
-    assert_eq!(f.record(&id).state, "succeeded");
-    assert_eq!(f.state.lock().unwrap().projects.len(), 2);
-    assert_eq!(f.state.lock().unwrap().workspaces.list(None).len(), 1);
+    admission_recovery::crash_before_post_project_checkpoint();
 }
 #[test]
 fn unknown_outcome_blocks_conflicting_retry() {

@@ -35,6 +35,8 @@ pub(in crate::app) fn admit(
         Some(record) => (record.acceptance, record.reservations),
         None => reserve_attempt(state, method, &params, &owner)?,
     };
+    #[cfg(test)]
+    tests::at_boundary(tests::Boundary::AdmissionPrepared);
     writer
         .admit_mutation(&MutationAdmission {
             principal: PRINCIPAL.into(),

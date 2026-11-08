@@ -216,6 +216,8 @@ pub(super) fn project_step(
             .checkpoint_creation(PRINCIPAL, &record.operation_id, evidence.clone())
             .map_err(string)?;
     }
+    #[cfg(test)]
+    tests::at_boundary(tests::Boundary::ProjectCheckpointed);
     state.lock().unwrap().create_environment_project(
         record.params["environment_id"]
             .as_str()
@@ -224,6 +226,8 @@ pub(super) fn project_step(
         evidence["project_key"].as_str().ok_or("key missing")?,
         evidence["project_id"].as_str().ok_or("id missing")?,
     )?;
+    #[cfg(test)]
+    tests::at_boundary(tests::Boundary::ProjectPersisted);
     set_step(&mut evidence, "project", "done", None);
     writer
         .checkpoint_creation(PRINCIPAL, &record.operation_id, evidence.clone())

@@ -12,7 +12,7 @@ import { publicationReadAddresses, publicationGuardMatches, publicationIsActive,
   taskPublicationApplicable, taskPublicationEvidenceAddresses } from "./writeOperationPublication.js";
 import { TRACKER_TASK_KIND, taskAddress } from "./trackerCache.js";
 import { threadCacheAddress } from "./conversationCache.js";
-import { normalizeWriteProgress } from "./writeOperationProgress.js";
+import { nextCreationEvidence, normalizeWriteProgress } from "./writeOperationProgress.js";
 
 const notifications = createAnnouncer("build-write-operations");
 const terminalStates = new Set(["succeeded", "failed"]);
@@ -260,7 +260,7 @@ export function createWriteOperationCache(scope) {
     return update(operationId, (previous) => {
       if (!previous || isTerminal(previous) || previous.state === "result_expired") return null;
       if (previous.journalIncarnation !== journalIncarnation) return null;
-      return { ...previous, progress: steps, ...(previous.checking ? { checking: false } : {}) };
+      return { ...previous, progress: steps, creationEvidence: nextCreationEvidence(previous), ...(previous.checking ? { checking: false } : {}) };
     }, { accept });
   }
 

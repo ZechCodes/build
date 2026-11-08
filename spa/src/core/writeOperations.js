@@ -1,6 +1,7 @@
 import { createWriteOperationCache } from "./writeOperationCache.js";
 import { createWriteOperationWorker } from "./writeOperationWorker.js";
-import { creationNeverSent, creationTransportIntent, creationWritesSupported, isCreationWrite, normalizeWriteProgress, unsupportedCreationOutcome } from "./writeOperationProgress.js";
+import { creationNeverSent, creationSendEvidenceMatches, creationTransportIntent, creationWritesSupported,
+  isCreationWrite, nextCreationEvidence, normalizeWriteProgress, unsupportedCreationOutcome } from "./writeOperationProgress.js";
 import {
   copyIntent, needsWriteStatus, terminalWrite, writeDependencies, writeRefusal, provenExpiredFailure, expiredOperationFailure,
   wireOperationId, wireRevision, writeSummaryFrame, writeSubmissionOrder, knownWriteSummary, operationFailure, WRITE_STATUS_LIMIT,
@@ -21,6 +22,7 @@ export function createWriteOperationService(options) {
   let snapshot = [];
   let binding = null;
   let serial = Promise.resolve();
+  let creationSendSequence = 0;
   let stopped = false;
   let detach = () => {};
   const worker = createWriteOperationWorker({ cache, tabId, run: statusPass, hasWork: runnableWork,
@@ -229,39 +231,47 @@ export function createWriteOperationService(options) {
   async function send(row, held, leaseActive = () => true) {
     if (!eligibleToSend(row, held)) return;
     sending.set(row.operationId, held);
+    let sent = row;
     try {
       if (row.awaitPredecessorAck && !await prepareBatchSend(row, held)) return;
-      if (isCreationWrite(row.request.method) && !await prepareCreationTransport(row, held, leaseActive)) return;
+      if (isCreationWrite(row.request.method)) {
+        sent = await prepareCreationTransport(row, held, leaseActive);
+        if (!sent) return;
+      }
       const frame = await raw(held, row.request.method, row.request.params, { write: { operation_id: row.operationId, after: row.after }, assertCurrent: () => assertLease(leaseActive) });
       if (current(held)) await handleFrame(frame, held);
     } catch (error) {
-      await sendFailed(row, error, held);
+      await sendFailed(sent, error, held);
     } finally {
       if (sending.get(row.operationId) === held) sending.delete(row.operationId);
       worker.wake();
     }
   }
   async function prepareCreationTransport(row, held, leaseActive) {
+    const creationSendToken = `${tabId}:${++creationSendSequence}`;
     const saved = await cache.update(row.operationId, value => {
       if (!value || terminalWrite(value) || value.acknowledged || value.unresolved) return null;
       if (value.journalIncarnation !== held.greeting.journal_incarnation) return null;
-      return { ...value, transportAttempted: true };
+      return { ...value, transportAttempted: true, creationSendToken };
     }, { accept: () => current(held) && leaseActive() });
-    return Boolean(saved?.transportAttempted && !terminalWrite(saved) && !saved.acknowledged && !saved.unresolved && current(held) && leaseActive());
+    const ready = saved?.creationSendToken === creationSendToken && !terminalWrite(saved) && !saved.acknowledged && !saved.unresolved && current(held) && leaseActive();
+    return ready ? saved : null;
   }
   async function sendFailed(row, error, held) {
-    if (!current(held)) return;
-    if (definitiveRefusal(error)) return refused(row, error, held);
+    if (stopped) return;
+    if (current(held) && definitiveRefusal(error)) return refused(row, error, held);
     if (!isCreationWrite(row.request.method)) return;
-    await setCreationChecking(row, true, held);
+    await cache.update(row.operationId, value => {
+      if (!value || terminalWrite(value) || !creationSendEvidenceMatches(value, row)) return null;
+      return { ...value, checking: true };
+    }, { accept: () => !stopped });
     await refreshSnapshot();
   }
-  function setCreationChecking(row, checking, held) {
+  function recordCreationEvidence(row, held) {
     if (!isCreationWrite(row.request.method)) return;
     return cache.update(row.operationId, value => {
       if (!value || terminalWrite(value) || value.journalIncarnation !== held.greeting.journal_incarnation) return null;
-      if (Boolean(value.checking) === checking) return null;
-      return { ...value, checking };
+      return { ...value, creationEvidence: nextCreationEvidence(value), ...(value.checking ? { checking: false } : {}) };
     }, { accept: () => current(held) });
   }
   function eligibleToSend(row, held) {
@@ -364,7 +374,7 @@ export function createWriteOperationService(options) {
     catch { return {}; }
   }
   async function accept(frame, row, held) {
-    await setCreationChecking(row, false, held);
+    await recordCreationEvidence(row, held);
     const effects = await normalizedEffects(options.normalizeAckEffects, frame, row);
     if (!current(held)) return;
     await cache.accept(row.operationId, { ...effects, ack: frame, owners: frame.write.owners, revision: wireRevision(frame), acceptedEpoch: frame.write.accepted_epoch,
@@ -518,7 +528,7 @@ export function createWriteOperationService(options) {
   }
   async function recordSummaryProgress(summary, row, held) {
     if (!["accepted", "executing"].includes(summary.state)) return;
-    await setCreationChecking(row, false, held);
+    await recordCreationEvidence(row, held);
     if (Object.hasOwn(summary, "progress")) return recordProgress(summary, held);
   }
   async function recordExpired(summary, row, held) {

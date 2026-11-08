@@ -4,6 +4,13 @@ const progressStates = new Set(["running", "done", "failed"]);
 
 export const isCreationWrite = method => creationMethods.has(method);
 export const creationTransportIntent = method => isCreationWrite(method) ? { transportAttempted: false } : {};
+export const nextCreationEvidence = row => (row.creationEvidence || 0) + 1;
+
+export function creationSendEvidenceMatches(retained, sent) {
+  return retained.journalIncarnation === sent.journalIncarnation && retained.creationSendToken === sent.creationSendToken
+    && retained.revision === sent.revision && retained.state === sent.state && retained.acknowledged === sent.acknowledged
+    && (retained.creationEvidence || 0) === (sent.creationEvidence || 0);
+}
 export const creationWritesSupported = (greeting, method) => !isCreationWrite(method)
   || greeting?.capabilities?.includes("environments") === true;
 

@@ -28,6 +28,40 @@ async function bind({ currentGreeting = greeting, active = () => true, status = 
 }
 
 describe("creation write progress", () => {
+  it("records Checking after the sending opening disconnects before its reply rejects", async () => {
+    let active = true, rejectSend;
+    await bind({ active: () => active, raw: () => new Promise((_resolve, reject) => { rejectSend = reject; }) });
+    void service.submit({ operationId: "attempt", ...intent().request }).catch(() => {});
+    await vi.waitFor(() => expect(rejectSend).toBeTypeOf("function"));
+    active = false;
+    rejectSend(Object.assign(new Error("Disconnected"), { uncertain: true }));
+    await vi.waitFor(async () => expect(await cache.get("attempt")).toMatchObject({ checking: true, state: "queued", acknowledged: false }));
+    expect(await cache.get("attempt")).not.toHaveProperty("unresolved");
+    expect(await cache.list()).toHaveLength(1);
+  });
+
+  it.each(["ack", "progress", "status", "terminal"])("does not let an old send rejection overwrite newer %s evidence", async kind => {
+    let active = true, rejectSend;
+    const session = await bind({ active: () => active, raw: () => new Promise((_resolve, reject) => { rejectSend = reject; }) });
+    void service.submit({ operationId: "attempt", ...intent().request }).catch(() => {});
+    await vi.waitFor(() => expect(rejectSend).toBeTypeOf("function"));
+    active = false;
+    await service.bind({ session, greeting, active: () => true });
+    if (kind === "ack") await service.handleFrame({ ok: true, bridge_epoch: "epoch", write: { phase: "ack", state: "accepted", operation_id: "attempt", revision: 1 } });
+    if (kind === "progress") await service.handleFrame(frame());
+    if (kind === "status") {
+      session.callRaw.mockImplementation(async () => ({ journal_incarnation: "journal", operations: [{ operation_id: "attempt", state: "executing", revision: 0 }] }));
+      await service.reconcile();
+    }
+    if (kind === "terminal") await service.handleFrame({ type: "writes.confirmed", bridge_epoch: "epoch", operation_id: "attempt", revision: 2, state: "succeeded", result: { workspace: { id: "W" } } });
+    const before = await cache.get("attempt");
+    const announced = vi.fn(); const stop = service.subscribe(announced);
+    rejectSend(Object.assign(new Error("Old opening disconnected"), { uncertain: true }));
+    await vi.waitFor(() => expect(announced).toHaveBeenCalled());
+    expect(await cache.get("attempt")).toEqual(before);
+    expect((await cache.get("attempt")).checking).not.toBe(true);
+    stop();
+  });
   it("records whether a new creation has reached transport before its raw handoff", async () => {
     const raw = vi.fn(async () => {
       expect(await cache.get("attempt")).toMatchObject({ transportAttempted: true });
@@ -132,7 +166,7 @@ describe("creation write progress", () => {
     await cache.put(intent()); await bind();
     const before = await cache.get("attempt");
     expect(await service.handleFrame(frame())).toBe(true);
-    expect(await cache.get("attempt")).toEqual({ ...before, progress });
+    expect(await cache.get("attempt")).toEqual({ ...before, progress, creationEvidence: 1 });
     expect(service.readOperations()[0].progress).toEqual(progress);
     await service.close();
     vi.resetModules();

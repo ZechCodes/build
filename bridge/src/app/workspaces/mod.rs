@@ -317,6 +317,11 @@ impl WorkspaceCreateWork {
         isolation: Isolation,
     ) -> Result<(Option<String>, Isolation), String> {
         self.secret_sources.copying(source, destination)?;
+        if self.uncheckpointed_git_replay(source) {
+            // Recovery may inspect HEAD for legacy workspaces, but a journal
+            // must not promote that guess into authority to later delete a ref.
+            return Err("saved Git branch ownership missing; outcome unknown".into());
+        }
         if self.recover_existing && std::fs::symlink_metadata(destination).is_ok() {
             return deferred_creation::recover_checkout(source, destination, &self.workspace_name);
         }
@@ -336,6 +341,17 @@ impl WorkspaceCreateWork {
             &self.rift_root,
             start.as_deref(),
         )
+    }
+
+    fn uncheckpointed_git_replay(&self, source: &WorkspaceSource) -> bool {
+        source.is_git
+            && self.observer.is_some()
+            && !self.fresh_materialization
+            && self
+                .workspace
+                .directories
+                .iter()
+                .any(|directory| directory.source_id == source.id && directory.branch.is_none())
     }
 
     fn rollback(&self, workspace: &Workspace) -> Result<(), String> {

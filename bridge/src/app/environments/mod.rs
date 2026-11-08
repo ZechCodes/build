@@ -41,3 +41,6 @@ mod edit_tests;
 
 mod edits;
 mod source_edits;
+
+#[cfg(test)]
+mod review_tests;

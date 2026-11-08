@@ -2,7 +2,7 @@ use super::runtime_tests::{rpc, state};
 use crate::app::AppState;
 use serde_json::{json, Value};
 
-fn fixture(root: &std::path::Path) -> AppState {
+pub(super) fn fixture(root: &std::path::Path) -> AppState {
     for name in ["home", "extra", "shared", "target"] {
         std::fs::create_dir(root.join(name)).unwrap();
     }
@@ -21,7 +21,7 @@ fn fixture(root: &std::path::Path) -> AppState {
     std::fs::write(&path, config.to_string()).unwrap();
     state(root).with_config(path).unwrap()
 }
-fn ok(app: &mut AppState, method: &str, params: Value) -> Value {
+pub(super) fn ok(app: &mut AppState, method: &str, params: Value) -> Value {
     let reply = rpc(app, method, params);
     assert_eq!(reply["ok"], true, "{method}: {reply}");
     reply["result"].clone()

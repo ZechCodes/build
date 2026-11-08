@@ -607,6 +607,11 @@ pub fn reply(id: Value, result: Result<Value, ApiError>) -> Value {
     }
 }
 
+fn unavailable_refusal(sentence: &str) -> bool {
+    sentence.starts_with(crate::github::REFUSAL)
+        || sentence.starts_with("Rift isolation is unavailable")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -743,9 +748,4 @@ mod tests {
             "internal"
         );
     }
-}
-
-fn unavailable_refusal(sentence: &str) -> bool {
-    sentence.starts_with(crate::github::REFUSAL)
-        || sentence.starts_with("Rift isolation is unavailable")
 }

@@ -34,7 +34,7 @@ import { deviceKey, routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
 import { deviceView } from "./feedMerge.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { patchList } from "./patchList.js";
-import { toolbarHtml } from "./toolbarRender.js";
+import { toolbarHtml, patchToolbarProjectIdentity } from "./toolbarRender.js";
 import { navigationCatalog } from "./navigationModel.js";
 import { globalNavigationPicker, reconcilePickerOrder } from "./navigationPickerModel.js";
 import { globalPickerEntries } from "./navigationPickerRender.js";
@@ -296,6 +296,7 @@ function paint({ entering = false } = {}) {
   if (entering) scopeToRoute(standing.projectKey || routeProjectKey(App.route));
   const shown = shownIdentity(standing);
   drawToolbar(host, shown, entering);
+  patchToolbarProjectIdentity(host, shown);
 
   paintWorkspaceLock(host, shown.workspaceLock, () => { if (mounted) paint(); });
   paintVerb();
@@ -310,7 +311,8 @@ function scopeToRoute(key) {
 }
 
 function drawToolbar(host, shown, entering) {
-  const signature = JSON.stringify({ ...shown, workspaceLock: null });
+  const { environmentIdentity, workspaceLock, ...structure } = shown;
+  const signature = JSON.stringify(structure);
   if (!entering && signature === paintedIdentity && host.querySelector(".toolbar")) return;
   paintedIdentity = signature;
   host.innerHTML = toolbarHtml(shown);
@@ -624,7 +626,7 @@ function paintMenu() {
   paintMenuCreation();
   const signature = JSON.stringify([open.list, open.query, open.list === "workspaces" ? scopedProjectKey : null, open.finishedOpen, environmentNavigation.support]);
   const next = (MENU_LISTS[open.list] || workspaceMenuEntries)();
-  const entries = signature === open.orderSignature ? reconcilePickerOrder(open.entries, next) : next;
+  const entries = !pickerFollowsRecency() && signature === open.orderSignature ? reconcilePickerOrder(open.entries, next) : next;
   open.orderSignature = signature;
   open.entries = entries;
   reconcileMenuRows(entries);
@@ -634,6 +636,10 @@ function paintMenu() {
     const review = workspaceReviewMenuEntry();
     patchList(reviewHost, review ? [review] : [], { keyOf: () => "review", render: (entry) => entry.html });
   }
+}
+
+function pickerFollowsRecency() {
+  return open.list === "workspaces" ? scopedEnvironmentsSupported() : Object.values(environmentNavigation.support || {}).some(Boolean);
 }
 
 function reconcileMenuRows(entries) {

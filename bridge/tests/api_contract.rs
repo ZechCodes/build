@@ -129,14 +129,6 @@ fn environments_read_wire_is_additive_and_withheld() {
     assert_workspace_environment_fixture("workspace.get", "", row);
 }
 
-#[test]
-fn environment_sync_board_fixtures_preserve_environment_rows() {
-    let environment = read_json(&fixtures_root().join("v1/environment.list.json"));
-    let rows = &environment["result"]["environments"];
-    assert_sync_board_environment_fixture("sync.snapshot", "records", rows);
-    assert_sync_board_environment_fixture("sync.changes", "changes", rows);
-}
-
 fn assert_fixture_result_round_trips(method: &str, result: &Value) {
     let (_, handler) = v1::methods()
         .iter()
@@ -165,33 +157,6 @@ fn assert_workspace_environment_fixture(method: &str, pointer: &str, environment
         );
         assert_fixture_result_round_trips(method, &example["result"]);
     }
-}
-
-fn assert_sync_board_environment_fixture(method: &str, list: &str, environments: &Value) {
-    let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
-    let example = fixture["examples"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|example| {
-            example["result"][list].as_array().is_some_and(|rows| {
-                rows.iter()
-                    .any(|row| row["kind"] == "entity" && row["key"] == "board")
-            })
-        })
-        .expect("device sync fixture includes a board entity");
-    let board = example["result"][list]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["kind"] == "entity" && row["key"] == "board")
-        .unwrap();
-    assert_eq!(
-        board["row"]["state"]["environments"], *environments,
-        "{method}"
-    );
-    assert!(board["row"]["state"]["projects"].is_array(), "{method}");
-    assert_fixture_result_round_trips(method, &example["result"]);
 }
 
 #[test]

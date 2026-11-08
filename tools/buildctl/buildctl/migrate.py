@@ -272,6 +272,9 @@ class Migrator:
                     hashes = copy_open(descriptor, stage, exclude={'secrets'},
                                        source_kind='target', skip_sockets=True)
                     verify_copied(stage, hashes)
+            # The next bridge load must snapshot the imported config, not reuse
+            # a recovery generation belonging to the previous dev state.
+            remove(stage / 'config.json.pre-environments')
             copied_hashes = self.copy_state(stage, entries)
             verify_copied(stage, copied_hashes)
             rewrite_database(stage / 'tasks/build.db', self.paths)

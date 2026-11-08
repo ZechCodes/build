@@ -87,6 +87,23 @@ def state(tmp_path):
     db.close()
 
 
+def test_import_clears_stale_pre_environments(state):
+    migrator, source, target, _, _, _ = state
+    stale = target / 'config.json.pre-environments'
+    stale.write_bytes(b'old dev snapshot')
+    # A source snapshot is not imported either: the next bridge load must
+    # capture the rewritten, imported config as its own recovery generation.
+    (source / stale.name).write_bytes(b'old prod snapshot')
+    source_before = tree_bytes(source)
+    result = migrator.run(prod_stopped=True, force=True)
+    assert result['verified']
+    assert not stale.exists()
+    assert (Path(result['backup']) / stale.name).read_bytes() == b'old dev snapshot'
+    assert tree_bytes(source) == source_before
+    migrator.rollback(Path(result['backup']))
+    assert stale.read_bytes() == b'old dev snapshot'
+
+
 def test_online_backup_preserves_rows_and_rewrites_state(state):
     migrator, source, target, original, projects, _ = state
     identity = (target / 'identity.json').read_bytes()

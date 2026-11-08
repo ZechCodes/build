@@ -7,11 +7,14 @@ mod continuation_identity;
 mod discard_identity;
 mod failure_finalization;
 mod project_identity;
+mod recorded_admission;
+mod retry_backoff;
 mod review_followup;
 mod settlement;
 mod stale_replay;
 mod unlanded_identity;
 mod unwind_proof;
+mod used_projects;
 pub(super) use admission_recovery::SimulatedCrash;
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -193,6 +193,94 @@ fn parked_projects_survive_migration() {
 }
 
 #[test]
+fn non_notfound_canonicalize_error_parks_project() {
+    let fixture = Fixture::new();
+    let parent = fixture.root.path().join("file-parent");
+    std::fs::write(&parent, b"not a directory").unwrap();
+    let missing = parent.join("project");
+    assert_ne!(
+        std::fs::canonicalize(&missing).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    let original = json!({"projects":[{"id":"proj-1","path":missing}]});
+    std::fs::write(&fixture.config, original.to_string()).unwrap();
+    let app = fixture.state();
+    assert_eq!(app.projects.len(), 0);
+    assert_eq!(app.projects.parked()[0]["project_key"], json!(missing));
+    assert_eq!(app.projects.parked()[0]["home_path"], json!(missing));
+    app.persist();
+    assert_eq!(fixture.read()["projects"][0]["path"], json!(missing));
+}
+
+#[cfg(unix)]
+#[test]
+fn parked_symlink_home_rekeys_on_revive() {
+    assert_symlink_revival(false);
+    assert_symlink_revival(true);
+}
+
+#[cfg(unix)]
+fn assert_symlink_revival(opaque_key: bool) {
+    let fixture = Fixture::new();
+    let alias = fixture.root.path().join("alias");
+    let home = fixture.root.path().join("returned");
+    std::os::unix::fs::symlink(&home, &alias).unwrap();
+    std::fs::write(
+        &fixture.config,
+        json!({"projects":[{"id":"proj-1","path":alias}]}).to_string(),
+    )
+    .unwrap();
+    fixture.state();
+    let key = if opaque_key {
+        let mut config = fixture.read();
+        config["projects"][0]["project_key"] = json!("project:retained-sibling");
+        std::fs::write(&fixture.config, config.to_string()).unwrap();
+        "project:retained-sibling".to_string()
+    } else {
+        home.display().to_string()
+    };
+    let mut app = fixture
+        .state()
+        .with_task_store(fixture.root.path().join("state/tasks"))
+        .unwrap();
+    let task = app
+        .store
+        .as_ref()
+        .unwrap()
+        .create_tracker_task(
+            crate::tracker::Task::drafted(
+                &key,
+                "legacy task",
+                crate::tracker::Actor::User,
+                &crate::store::now_rfc3339(),
+            ),
+            &[],
+        )
+        .unwrap();
+    app.projects
+        .retain_entity_path("retained-owner".into(), key.clone());
+    std::fs::create_dir(&home).unwrap();
+    assert_eq!(app.revive_parked_projects(), ["proj-1"]);
+    assert_eq!(app.projects.project_id_of("retained-owner"), Some("proj-1"));
+    let project = app.project_for("proj-1").unwrap();
+    assert_eq!(project.project_key, key);
+    assert_eq!(project.home_path, home);
+    assert_eq!(project.repo_path, home);
+    let tasks = app
+        .store
+        .as_ref()
+        .unwrap()
+        .list_tracker_tasks(&project.project_key, crate::store::TaskFilter::default())
+        .unwrap();
+    assert_eq!(tasks[0].id, task.id);
+    app.persist();
+    assert_eq!(
+        fixture.state().project_for("proj-1").unwrap().project_key,
+        key
+    );
+}
+
+#[test]
 fn unknown_environment_is_parked() {
     let fixture = Fixture::new();
     let mut config = fixture.read();

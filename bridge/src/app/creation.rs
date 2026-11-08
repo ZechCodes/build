@@ -26,6 +26,19 @@ pub(in crate::app) fn admit(
 ) -> Result<MutationRecord, ApiError> {
     let params = crate::api::v1::normalize_read_params(method, &params)?;
     validate_creation(method, &params)?;
+    let writer = state
+        .lock()
+        .unwrap()
+        .store
+        .as_ref()
+        .ok_or_else(|| ApiError::unavailable("creation needs a durable store"))?
+        .writer();
+    if let Some(record) = writer
+        .creation_record(PRINCIPAL, &metadata.operation_id)
+        .map_err(admission_error)?
+    {
+        return retry_recorded(&writer, record, method, params, metadata);
+    }
     let CreationScope {
         writer,
         scope,
@@ -33,13 +46,7 @@ pub(in crate::app) fn admit(
         project_key,
     } = capture_scope(&state.lock().unwrap(), method, &params)?;
     validate_continuation(&writer, &params, &scope, project_key.as_deref())?;
-    let retained = writer
-        .creation_record(PRINCIPAL, &metadata.operation_id)
-        .map_err(admission_error)?;
-    let (acceptance, reservations) = match retained {
-        Some(record) => (record.acceptance, record.reservations),
-        None => reserve_attempt(state, method, &params, &owner)?,
-    };
+    let (acceptance, reservations) = reserve_attempt(state, method, &params, &owner)?;
     #[cfg(test)]
     tests::at_boundary(tests::Boundary::AdmissionPrepared);
     writer
@@ -59,6 +66,42 @@ pub(in crate::app) fn admit(
         })
         .map_err(admission_error)
 }
+fn retry_recorded(
+    writer: &StoreWriter,
+    record: MutationRecord,
+    method: &str,
+    params: Value,
+    metadata: WriteMetadata,
+) -> Result<MutationRecord, ApiError> {
+    // The paired-device principal can read its retained result even when the
+    // original scope is gone. Reuse its saved authority and reservations, but
+    // let the journal compare the submitted method, intent and dependencies.
+    writer
+        .admit_mutation(&MutationAdmission {
+            principal: PRINCIPAL.into(),
+            operation_id: metadata.operation_id,
+            method: method.into(),
+            params,
+            scope: record.scope,
+            owners: record
+                .owners
+                .into_iter()
+                .map(|owner| MutationOwner {
+                    kind: owner.kind,
+                    id: owner.id,
+                    generation: owner.generation,
+                })
+                .collect(),
+            resources: record.resources,
+            reservations: record.reservations,
+            after: metadata.after,
+            recovery_policy: record.recovery_policy,
+            accepted_epoch: record.accepted_epoch,
+            acceptance: record.acceptance,
+        })
+        .map_err(admission_error)
+}
+
 struct CreationScope {
     writer: StoreWriter,
     scope: Value,

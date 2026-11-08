@@ -60,12 +60,12 @@ function projectGroup(project, workspaces, tag, unread, feed, context) {
 /** Feed listKnowledge comes from canonical cache records, per device. A
  * default [] in a feed fixture cannot establish that the roster was observed.
  * Pass the watched-task follower's taskUnread tally to share the rail counts. */
-export function navigationCatalog(feed = {}, { devices = [], route = {}, currentHash = null, taskUnread } = {}) {
+export function navigationCatalog(feed = {}, { devices = [], route = {}, currentHash = null, taskUnread, includeFinished = false } = {}) {
   const projects = (feed.projects || []).map((project) => stampProject(project, project.deviceId));
   const workspaces = (feed.workspaces || []).map((workspace) => stampWorkspace(workspace, workspace.deviceId));
   const named = catalogProjects(projects, workspaces);
   const projectsByKey = new Map(named.map((project) => [project.projectKey, project]));
-  const live = workspaces.filter((workspace) => workspace.status !== "finished"
+  const live = workspaces.filter((workspace) => (includeFinished || workspace.status !== "finished")
     && !standsOnProjectCheckout(workspace, projectsByKey.get(workspace.projectKey)));
   const unread = navigationUnreadCounts({ ...feed, projects: named, workspaces, taskUnread });
   const tags = deviceTags(named, devices);

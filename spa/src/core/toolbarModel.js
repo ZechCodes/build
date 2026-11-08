@@ -2,6 +2,9 @@
 // Linked project ancestry, a local workspace selector and the global switcher
 // share device-qualified destinations. core/toolbar.js renders and wires them.
 
+import { navigationTime, switcherModel } from "./environmentSwitcherModel.js";
+export { switcherModel };
+
 import { fuzzyRank } from "./fuzzy.js";
 import { byProjectName, deviceTags, projectNameOf } from "./inboxProjects.js";
 import { routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
@@ -60,26 +63,30 @@ export function projectMenuModel({ projects = [], items = [], devices = [], proj
   return fuzzyRank(entries, query, (entry) => entry.name);
 }
 
-const WORKSPACE_STATUS_ORDER = new Map([
-  ["ready", 0],
-  ["provisioning", 1],
-  ["failed", 2],
-  ["finished", 4],
-]);
-
+// Kept only for bridges without environments; capable selectors use recency.
 function compareWorkspaceStatus(left, right) {
-  const leftStatus = left.status || "";
-  const rightStatus = right.status || "";
-  return (WORKSPACE_STATUS_ORDER.get(leftStatus) ?? 3) - (WORKSPACE_STATUS_ORDER.get(rightStatus) ?? 3)
-    || leftStatus.localeCompare(rightStatus);
+  const order = { ready: 0, provisioning: 1, failed: 2, finished: 4 };
+  return (order[left.status] ?? 3) - (order[right.status] ?? 3)
+    || (left.status || "").localeCompare(right.status || "");
+}
+
+const workspaceVisitTime = (row, visits) => Math.max(0, ...visits
+  .filter(visit => visit.kind === "workspace" && visit.key === row.workspaceKey).map(visit => navigationTime(visit.at)));
+
+function compareWorkspaceRecency(left, right, visits) {
+  return Number(right.current) - Number(left.current)
+    || Number(left.status === "finished") - Number(right.status === "finished")
+    || navigationTime(right.last_activity_ms) - navigationTime(left.last_activity_ms)
+    || workspaceVisitTime(right, visits) - workspaceVisitTime(left, visits)
+    || navigationTime(right.created_at) - navigationTime(left.created_at);
 }
 
 /** Workspaces registered for one project, filtered by their human name and
- *  grouped by status, ready first and finished last. Within each status retain
- *  the listed order, or match relevance when filtering. A
+ *  ordered by activity, visit and creation on capable devices, with Current
+ *  first and Finished last. Older devices retain their status order. A
  *  project belongs to one machine, so the narrowing and the marking are both by
  *  the account-wide names (core/deviceKey.js) the feed stamped on every row. */
-export function workspaceMenuModel({ workspaces = [], projectKey = null, workspaceKey = null, query = "" } = {}) {
+export function workspaceMenuModel({ workspaces = [], projectKey = null, workspaceKey = null, query = "", environmentsSupported = false, visits = [] } = {}) {
   const entries = workspaces
     .filter((workspace) => !projectKey || workspace.projectKey === projectKey)
     .map((workspace) => ({
@@ -90,7 +97,8 @@ export function workspaceMenuModel({ workspaces = [], projectKey = null, workspa
       name: workspaceDisplayName(workspace, workspace.id),
       current: workspace.workspaceKey === workspaceKey,
     }));
-  return fuzzyRank(entries, query, (entry) => entry.name).sort(compareWorkspaceStatus);
+  return fuzzyRank(entries, query, (entry) => entry.name).sort(environmentsSupported
+    ? (left, right) => compareWorkspaceRecency(left, right, visits) : compareWorkspaceStatus);
 }
 
 /** What each kind of work route is: the row it stands on, what the bar calls it,

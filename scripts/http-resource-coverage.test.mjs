@@ -251,6 +251,8 @@ const metadataUses = {
     ["term.output",". type === [\"term.output\"] ) { if","c359dc975880f6018fbadcb07010dee4f9c53b00da269d93fd6d01936f15a50d"],
   ],
   "core/writeOperationProgress.js": [
+    // Exact capability lookup; this literal is never a method producer.
+    ["environments.create","=== \"environment.create\" ? [\"environments.create\"] : \"environments\" )","449ca8ff7bdca667657cd6411b5301386329592bd10c064e5bba4a134a8874cf"],
     ["writes.confirmed","{ type : [\"writes.confirmed\"] , operation_id :","370627743b292ef60a20ca2575dd89f495ed572042809ce7d21773a999d6dc77"],
   ],
 };

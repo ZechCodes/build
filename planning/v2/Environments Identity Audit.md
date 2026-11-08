@@ -80,10 +80,10 @@ file/function name is the durable locator. Test-only uses are listed explicitly
 in their own section. Supplemental identity consumers with different variable
 names follow the lexical inventory.
 
-The final source snapshot has **834 lexical occurrences across 222 files**,
-classified in **257 occurrence groups** (129 production, 102 test/fixture and
-26 declaration/comment groups). The supplemental table adds 42 groups for
-aliases and renamed readers: **299 classified rows total**. Every
+The final source snapshot has **831 lexical occurrences across 220 files**,
+classified in **255 occurrence groups** (129 production, 100 test/fixture and
+26 declaration/comment groups). The supplemental table adds 43 groups for
+aliases and renamed readers: **298 classified rows total**. Every
 classification cell is exactly Identity, Location or Neither.
 
 ### Production readers
@@ -284,13 +284,11 @@ classification cell is exactly Identity, Location or Neither.
 | `app/tests/tracker_unread_kinds.rs` | `case` L71 | Identity | Test fixture supplies, copies, queries or asserts the legacy-named durable key; the enclosing test/suite is its direct verification. | Enclosing named test/function and suite; T/R/V |
 | `app/tests/tracker_waiting_attention.rs` | `edges` L20; `waiting_on_invalidation_fanout_contract` L511 | Identity | Test fixture supplies, copies, queries or asserts the legacy-named durable key; the enclosing test/suite is its direct verification. | Enclosing named test/function and suite; T/R/V |
 | `app/tests/tracker_waiting_on.rs` | `waiting_on_manual_review_completion_and_workspace_finish_share_transitions` L44; `waiting_on_reconciles_at_startup_without_a_client` L117 | Identity | Test fixture supplies, copies, queries or asserts the legacy-named durable key; the enclosing test/suite is its direct verification. | Enclosing named test/function and suite; T/R/V |
-| `app/tests/tracker_watch_baselines.rs` | `explicit_task_watch_excludes_history_and_rewatch_resets_persisted_baseline` L89,98 | Identity | Migrated-only test fixture finds its restarted project using the known legacy home-shaped key; this is test setup, not a production resolver. | explicit_task_watch_excludes_history_and_rewatch_resets_persisted_baseline; T |
 | `app/tests/tracker_watching.rs` | `watched_task_sessions_share_eight_hour_boundaries_across_reads_and_restart` L177,182; `silent_task_edits_extend_activity_but_read_marks_do_not` L199,203,205,280 | Identity | Reads the persisted key in migrated fixtures; those tests know their legacy key also names the directory recreated for restart setup. | watched_task_sessions_share_eight_hour_boundaries_across_reads_and_restart; T/D |
 | `app/tests/workflow/archive_list.rs` | `archived_worktrees_load_into_archived_list_after_restart` L9 | Identity | Test fixture supplies, copies, queries or asserts the legacy-named durable key; the enclosing test/suite is its direct verification. | Enclosing named test/function and suite; T/R/V |
 | `app/tests/workflow/finish.rs` | `restart_preserves_a_pending_legacy_finish_record` L46 | Identity | Test fixture supplies, copies, queries or asserts the legacy-named durable key; the enclosing test/suite is its direct verification. | Enclosing named test/function and suite; T/R/V |
 | `app/tests/workflow/recovery.rs` | `drafting_plan` L50; `building_run` L80 | Identity | Test fixture supplies, copies, queries or asserts the legacy-named durable key; the enclosing test/suite is its direct verification. | Enclosing named test/function and suite; T/R/V |
 | `app/tests/workflow/repo_root_runs.rs` | `legacy_repo_root_run` L134 | Identity | Test fixture supplies, copies, queries or asserts the legacy-named durable key; the enclosing test/suite is its direct verification. | Enclosing named test/function and suite; T/R/V |
-| `app/tests/workspace_reclaim.rs` | `block_project_agent` L579 | Location | Test fixture creates/opens a checkout or asserts its displayed/observed directory; migrated fixture keys may equal that directory. | Enclosing named test/function and suite |
 | `app/tests/workspace_reclaim_races/reviews.rs` | `new` L35; `job` L73; `failed_local_intent` L127; `admitted_merge_retains_workspace_and_build_output_after_task_completion` L174 | Location | Test fixture creates/opens a checkout or asserts its displayed/observed directory; migrated fixture keys may equal that directory. | Enclosing named test/function and suite |
 | `app/tests/workspaces/conversation_git/incremental_parity/project_capture.rs` | `incremental_project_capture_keeps_alias_source_order_and_policy_fallbacks` L169 | Location | Test fixture creates/opens a checkout or asserts its displayed/observed directory; migrated fixture keys may equal that directory. | Enclosing named test/function and suite |
 | `app/tests/workspaces/conversation_git/projection_ownership/structural_reuse.rs` | `cold_guards_and_changed_native_state_root_do_not_reuse_old_classification` L453,455 | Identity | Uses the project key to derive a scratch owner while testing stale ownership-cache retirement. | Enclosing named test; P/X |
@@ -380,6 +378,7 @@ or `home_path`.
 | `app/tracker/identities.rs::live_task_identity`, `app/tracker/observed_identities.rs::observed_workspace_is_project_root` | Location | Compares a workspace checkout to the resolved home for source-root alias classification; project ID already supplies ownership. Existing tracker_summary_identity_availability and tracker/read_identities tests. |
 | `app/snapshot_projection/incremental/layout.rs::capture_with_projects` | Location | Tracks home and worktree-root locations for incremental layout invalidation; owner_layouts captures keys separately. X and existing snapshot projection regressions. |
 | `app/snapshot_projection/tests/warm_work.rs::warm_roots_resolution_matches_legacy_direct_terminal_project_missing_and_alias_cases`, `app/tests/workspace_reclaim.rs::block_project_agent`, `app/tracker/read_identities/tests.rs::captured_project_owner_keeps_non_utf8_project_path_bytes` | Identity | Existing regression fixtures now derive project scratch from the project key; each enclosing test validates its ownership/reclaim behavior. P, X and the named existing tests. |
+| `app/tests/tracker_watch_baselines.rs::explicit_task_watch_excludes_history_and_rewatch_resets_persisted_baseline` | Identity | Restores the configured registry and resolves its saved key through project_by_key before checking watch/read baselines across restart. This named regression and T. |
 | `app/tracker/mod.rs::{tracker_project_path, tracker_task}` | Identity | Returns project_key and resolves stored task keys through the central accessor; T. |
 | `app/tracker/read.rs::task_project_maps` | Identity | Maps public IDs to opaque keys one-to-one, never shared home directories; T. |
 | `app/projects/conversation.rs::{scratch_dir, scratch_key, is_project_scratch, project_ensure_conversation, is_project_conversation_owner, is_project_snapshot_conversation_owner, project_snapshot_scratch_path, project_snapshot_scratch_paths, project_snapshot_conversation_run, project_conversation_run}` | Identity | Hashes/recognizes keyed scratch and separates sibling conversation owners; P, R, X. Legacy stem/digest bytes are preserved. |

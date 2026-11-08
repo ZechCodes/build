@@ -461,7 +461,7 @@ impl AppState {
             .transpose()?;
         let destination_claims = self
             .source_directory_claims
-            .reserve_destinations(&[dest.clone()])?;
+            .reserve_destinations(std::slice::from_ref(&dest))?;
         self.defer_project(
             dest.clone(),
             name.clone(),

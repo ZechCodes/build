@@ -618,17 +618,21 @@ fn legacy_update_source_routes_to_environment_without_added_sources() {
 #[test]
 fn legacy_sync_source_routes_to_environment_without_added_sources() {
     let f = Fixture::new();
-    let (home, sibling) = {
+    let (home, sibling, sibling_status) = {
         let mut app = f.state.lock().unwrap();
         assert!(app.projects.get("proj-1").unwrap().added_sources.is_empty());
         app.dispatch("project.init_git", &json!({"project_id":"proj-1"}))
             .unwrap();
         let sibling = app.add_environment_sibling_for_test("proj-1");
+        let sibling_status = app.projects.get(&sibling).unwrap().sources[0]
+            .sync_status
+            .clone();
         (
             app.projects.environment("env-1").unwrap().sources[0]
                 .path
                 .clone(),
             sibling,
+            sibling_status,
         )
     };
     let upstream =
@@ -679,6 +683,11 @@ fn legacy_sync_source_routes_to_environment_without_added_sources() {
             .unwrap()
             .state,
         crate::app::projects::base_sync::SyncState::Synced
+    );
+    assert_eq!(
+        app.projects.get(&sibling).unwrap().sources[0].sync_status,
+        sibling_status,
+        "manual sync must not overwrite a sibling's per-reference status"
     );
     // This checks the shared Git effect through another project's RPC scope,
     // rather than merely observing the requester's per-reference sync status.

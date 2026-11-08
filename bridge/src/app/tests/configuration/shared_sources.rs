@@ -353,6 +353,10 @@ fn added_source_repoint_refuses_another_added_source() {
             .contains("already included in this project"),
         "{answer}"
     );
+    assert!(
+        answer["error"].as_str().unwrap().contains("proj-2"),
+        "{answer}"
+    );
     assert_eq!(std::fs::read(&f.config).unwrap(), before);
 }
 #[test]
@@ -375,6 +379,7 @@ fn added_source_repoint_settlement_refuses_concurrent_added_duplicate() {
         error.contains("already included in this project"),
         "{error}"
     );
+    assert!(error.contains("proj-2"), "{error}");
     assert_eq!(std::fs::read(&f.config).unwrap(), before);
     assert_eq!(f.app.sources_for("proj-2").unwrap()[1].path, original);
 }

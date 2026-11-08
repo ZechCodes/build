@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, it, vi } from 'vitest';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
-const mocked=vi.hoisted(()=>({service:{submit:vi.fn(),get:vi.fn(),list:vi.fn()},call:vi.fn()}));
+const mocked=vi.hoisted(()=>({service:{submit:vi.fn(),get:vi.fn(),list:vi.fn(),subscribe:vi.fn(()=>()=>{})},call:vi.fn()}));
 vi.mock('../src/core/writeOperationRuntime.js',()=>({deviceWriteOperations:()=>mocked.service}));
 vi.mock('../src/core/inboxDevices.js',()=>({deviceCall:()=>mocked.call}));
 const {submitCreateWorkspace,createLegacyWorkspace,cacheCreatedWorkspace,readCreateWorkspaceTargets}=await import('../src/core/createWorkspaceTargets.js');
@@ -34,4 +34,17 @@ it('upserts only the created workspace and retains other cached rows',async()=>{
 it('reads the persisted project list for the account devices',async()=>{
  await writeCached({deviceId:'d1',entityId:'',kind:'projects'},[{project_id:'p1',name:'Payments'}]);
  expect((await readCreateWorkspaceTargets()).projects).toMatchObject([{id:'p1',deviceId:'d1',name:'Payments'}]);
+});
+
+it('waits for persisted intent before publishing its progress identity',async()=>{
+ let announce;mocked.service.subscribe.mockImplementation(listener=>{announce=listener;return ()=>{};});
+ mocked.service.get.mockResolvedValue(undefined);mocked.service.submit.mockReturnValue(new Promise(()=>{}));
+ const attempt=submitCreateWorkspace({target:{kind:'project',id:'p1',deviceId:'d1'},operationId:'durable'});
+ let ready=false;attempt.ready.then(()=>{ready=true;});await Promise.resolve();expect(ready).toBe(false);
+ announce([{operationId:'durable',state:'queued'}]);await expect(attempt.ready).resolves.toMatchObject({operationId:'durable',state:'queued'});
+});
+it('recovers active creation attempts from the durable cache for a fresh wizard',async()=>{
+ const pending={operationId:'active',state:'accepted',request:{method:'workspace.create',params:{project_id:'p1'}},draft:{target:{id:'p1',kind:'project',deviceId:'d1'},name:'Retained'}};
+ mocked.service.list.mockResolvedValue([pending,{...pending,operationId:'old',state:'succeeded'}]);
+ expect((await readCreateWorkspaceTargets()).attempts).toEqual([pending]);
 });

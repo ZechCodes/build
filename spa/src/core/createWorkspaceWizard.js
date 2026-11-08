@@ -97,9 +97,18 @@ export function openCreateWorkspaceWizard(options = {}) {
   draft=watchUiState(address,restoreDraft,{debounceMs:120,active:()=>!detached});
   stop=followCreateWorkspaceTargets(()=>{void refresh();});
   wire();
-  const ready=Promise.all([draft.ready,refresh()]).then(()=>{if(!detached) focusPage(options.fromShortcut);});
+  const ready=Promise.all([draft.ready,refresh()]).then(async()=>{await recoverAttempt();if(!detached)focusPage(options.fromShortcut);});
   return {ready,close:cancel,detach,flushDraft:()=>draft.flush()};
 
+  async function recoverAttempt() {
+    if(detached || state.operationId)return;
+    const attempts=(snapshot.attempts || []).filter(row=>!fixedProject ||
+      row.draft.target.id===options.projectId && row.draft.target.deviceId===options.deviceId);
+    const attempt=[...attempts].sort((left,right)=>right.createdAt-left.createdAt)[0];
+    if(!attempt)return;
+    Object.assign(state,attempt.draft,{operationId:attempt.operationId,page:3});updateModel();paint();
+    await draft.write(draftOf(state));
+  }
   function restoreDraft(value) {
     if(!value || detached || JSON.stringify(value) === JSON.stringify(draftOf(state))) return;
     Object.assign(state,value);updateModel();paint();
@@ -193,6 +202,7 @@ export function openCreateWorkspaceWizard(options = {}) {
   }
   async function submitDurable(continues=state.continues) {
     const attempt=submitCreateWorkspace({...draftOf(state),continues,draft:draftOf(state)});
+    await attempt.ready;
     state.operationId=attempt.operationId;state.busy=false;
     await draft.write(draftOf(state));
     const screen=await showProgress(attempt.operationId);
@@ -214,6 +224,7 @@ export function openCreateWorkspaceWizard(options = {}) {
   async function retryWorkspace({project,operationId}) {
     state.target=landedProjectTarget(project);
     const attempt=submitCreateWorkspace({target:state.target,name:state.name,isolation:state.isolation,continues:operationId,draft:draftOf(state)});
+    await attempt.ready;
     state.operationId=attempt.operationId;
     await updateUiState(address,()=>draftOf(state));
     const screen=openProgress(attempt.operationId);

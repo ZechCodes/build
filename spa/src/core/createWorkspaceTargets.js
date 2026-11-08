@@ -10,6 +10,7 @@ import { deviceCall } from './inboxDevices.js';
 import { stampProject, stampWorkspace } from './feedMerge.js';
 import { upsertSessionRow } from './sessionListCache.js';
 import { workspaceRoute } from './projectModel.js';
+import { isCreationWrite } from './writeOperationProgress.js';
 
 export const taskCountText = (open, total) => open > 0 ? `${open} open tasks` : `${total || 0} tasks`;
 const visitsAddress = uiAddress({view:'navigation',kind:'history',sub:'visits'});
@@ -23,19 +24,24 @@ const readEnvironmentSupport = async deviceId => {
 };
 
 async function readDeviceTargets(device) {
-  const [projects,environments,workspaces,support] = await Promise.all([
-    cachedList(device.id,'projects'),readCachedEnvironments(device.id),cachedList(device.id,'workspaces'),readEnvironmentSupport(device.id),
+  const [projects,environments,workspaces,support,attempts] = await Promise.all([
+    cachedList(device.id,'projects'),readCachedEnvironments(device.id),cachedList(device.id,'workspaces'),readEnvironmentSupport(device.id),deviceWriteOperations(device.id)?.list() || [],
   ]);
   return { projects:projects.map(row=>stampProject(row,device.id)),
     environments:environments.map(row=>({...row,id:row.environment_id || row.id,deviceId:device.id})),
-    workspaces:workspaces.map(row=>stampWorkspace(row,device.id)), environmentsSupported:support.createProject };
+    workspaces:workspaces.map(row=>stampWorkspace(row,device.id)), environmentsSupported:support.createProject,attempts:attempts.filter(pendingCreation) };
+}
+function pendingCreation(row) {
+  if(!isCreationWrite(row.request?.method) || row.dismissed || !row.draft?.target) return false;
+  if(['queued','accepted','executing','outcome_unknown'].includes(row.state)) return true;
+  return row.state === 'failed' && row.effect === 'unknown';
 }
 export async function readCreateWorkspaceTargets() {
   const devices = App.devices || [];
   const rows = await Promise.all(devices.map(readDeviceTargets));
   return { devices, projects:rows.flatMap(row=>row.projects), environments:rows.flatMap(row=>row.environments),
     workspaces:rows.flatMap(row=>row.workspaces), support:Object.fromEntries(rows.map((row,index)=>[devices[index].id,row.environmentsSupported])),
-    visits:(await readUiRecord(visitsAddress))?.value || [] };
+    visits:(await readUiRecord(visitsAddress))?.value || [],attempts:rows.flatMap(row=>row.attempts) };
 }
 export function followCreateWorkspaceTargets(listener) {
   const stop = subscribeCache({},listener);
@@ -58,7 +64,23 @@ export function submitCreateWorkspace(input) {
   const completion = service.submit({...creationRequest(input),operationId,draft:input.draft || input});
   // The screen is mounted asynchronously; retain early admission refusals.
   void completion.catch(()=>{});
-  return {operationId,completion,get:()=>service.get(operationId)};
+  return {operationId,completion,ready:createdIntentReady(service,operationId,completion),get:()=>service.get(operationId)};
+}
+function createdIntentReady(service,operationId,completion) {
+  let stop=()=>{},settled=false;
+  const ready=new Promise((resolve,reject)=>{
+    const finish=(error,row)=>{if(settled)return;settled=true;stop();if(error)reject(error);else resolve(row);};
+    const found=row=>{if(row)finish(null,row);};
+    stop=service.subscribe(rows=>found(rows.find(row=>row.operationId===operationId)));
+    if(settled)stop();
+    void service.get(operationId).then(found,error=>finish(error));
+    void completion.then(async()=>{
+      const row=await service.get(operationId);
+      if(row)found(row);else finish(new Error('The creation attempt could not be retained.'));
+    },error=>finish(error)).catch(error=>finish(error));
+  });
+  void ready.catch(()=>{});
+  return ready;
 }
 export async function cacheCreatedWorkspace(deviceId,answer) {
   const workspace=answer?.workspace || answer;

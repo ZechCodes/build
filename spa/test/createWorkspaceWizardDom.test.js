@@ -125,4 +125,11 @@ describe('workspace wizard pages',()=>{
     await new Promise(resolve=>setTimeout(resolve,10));expect(mocks.submit).not.toHaveBeenCalled();
   });
 
+  it('finds a durable attempt even when no modal draft survived the reload',async()=>{
+    mocks.read.mockResolvedValue({...snapshot(),attempts:[{operationId:'saved-attempt',createdAt:123,state:'accepted',request:{method:'workspace.create',params:{project_id:'p1'}},draft:{target:{id:'p1',deviceId:'d1',kind:'project',name:'Payments',key:'d1/p1'},name:'Recovered'}}]});
+    await open({projectId:'p1',deviceId:'d1'});expect(dialog().textContent).toContain('Still creating ‹Recovered›');
+    dialog().querySelector('[data-create-resume]').click();await vi.waitFor(()=>expect(mocks.progress).toHaveBeenCalledWith(expect.objectContaining({operationId:'saved-attempt'})));
+    expect(mocks.submit).not.toHaveBeenCalled();
+  });
+
 });

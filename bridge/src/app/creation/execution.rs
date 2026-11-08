@@ -142,9 +142,9 @@ fn provision(
         )
         .map(Some);
     }
-    // Capture proof before Started is written. A replay may never borrow the
-    // current process's materialize-error unwind as proof for older effects.
-    let fresh_materialization =
+    // Capture proof before Started is written. Replay from durable not_started
+    // also excludes older effects; every new Git failure must prove its unwind.
+    let no_prior_workspace_effects =
         evidence["effect_step"] == "workspace" && evidence["effect_state"] == "not_started";
     let evidence = Arc::new(Mutex::new(evidence));
     let observer = observer(state, writer, record, evidence.clone());
@@ -156,7 +156,7 @@ fn provision(
         "running",
         None,
     );
-    let result = run_workspace(state, &reserved, Some(observer), fresh_materialization)?;
+    let result = run_workspace(state, &reserved, Some(observer), no_prior_workspace_effects)?;
     let mut saved = evidence.lock().unwrap();
     complete_workspace(state, writer, record, &mut saved)?;
     drop(saved);
@@ -357,11 +357,12 @@ fn run_workspace(
     state: &Arc<Mutex<AppState>>,
     reserved: &Workspace,
     observer: Option<WorkspaceCreationObserver>,
-    fresh_materialization: bool,
+    no_prior_workspace_effects: bool,
 ) -> Result<Value, String> {
     let work = {
         let mut app = state.lock().unwrap();
-        let work = app.prepare_creation_workspace(reserved, observer, fresh_materialization)?;
+        let work =
+            app.prepare_creation_workspace(reserved, observer, no_prior_workspace_effects)?;
         app.active_deferred_filesystem_jobs += 1;
         app.active_device_registry_jobs += 1;
         work

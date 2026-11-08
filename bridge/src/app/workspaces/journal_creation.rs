@@ -79,7 +79,7 @@ impl AppState {
         &mut self,
         reserved: &Workspace,
         observer: Option<WorkspaceCreationObserver>,
-        fresh_materialization: bool,
+        no_prior_workspace_effects: bool,
     ) -> Result<DeferredGit, String> {
         self.mark_device_lifecycle_dirty()?;
         self.project_for(&reserved.project_id)?;
@@ -127,7 +127,8 @@ impl AppState {
                 source_state: self.source_validation_handle(),
                 synced: Default::default(),
                 observer,
-                fresh_materialization,
+                no_prior_workspace_effects,
+                checkout_unwind: Default::default(),
                 #[cfg(test)]
                 prepared_gate: None,
             }),
@@ -179,13 +180,15 @@ impl DeferredGitWork for CleanupCreation {
 }
 /// A replay cannot prove an unrecorded Git ref was removed. Absence of its
 /// checkout does not help: ref creation precedes checkout materialization.
-/// Fresh workers alone may rely on the materializer unwinding its own Err.
+/// The exemption requires durable not_started evidence excluding earlier
+/// processes' effects and a positive typed report for every Git unwind in this
+/// process. Replay from not_started may qualify; path absence alone never does.
 pub(super) fn cleanup_directories(
     workspace: &Workspace,
     rift_root: &Path,
-    fresh_materialization: bool,
+    unrecorded_refs_proven_absent: bool,
 ) -> Result<(), String> {
-    if !fresh_materialization
+    if !unrecorded_refs_proven_absent
         && workspace.directories.iter().any(|directory| {
             directory.is_git
                 && directory.status != crate::workspace::DirectoryStatus::Ready

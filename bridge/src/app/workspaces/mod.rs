@@ -52,8 +52,9 @@ struct WorkspaceCreateWork {
     synced: std::sync::Mutex<Vec<Synced>>,
     observer: Option<journal_creation::WorkspaceCreationObserver>,
     /// Durable workspace not_started proof, captured before this worker starts.
-    /// Only this process's fresh materialize Err can rely on its local unwind.
-    fresh_materialization: bool,
+    /// This includes replay from not_started; every Git error still needs unwind proof.
+    no_prior_workspace_effects: bool,
+    checkout_unwind: std::sync::Mutex<crate::worktree::CheckoutUnwind>,
     #[cfg(test)]
     prepared_gate: Option<crate::app::OffLockGate>,
 }
@@ -173,6 +174,26 @@ pub(super) fn materialize_source(
     rift_root: &Path,
     start: Option<&str>,
 ) -> Result<(Option<String>, Isolation), String> {
+    materialize_source_observed(
+        source,
+        destination,
+        workspace_name,
+        isolation,
+        rift_root,
+        start,
+        |_| {},
+    )
+}
+
+fn materialize_source_observed(
+    source: &WorkspaceSource,
+    destination: &Path,
+    workspace_name: &str,
+    isolation: Isolation,
+    rift_root: &Path,
+    start: Option<&str>,
+    report: impl FnOnce(crate::worktree::CheckoutUnwind),
+) -> Result<(Option<String>, Isolation), String> {
     if source.is_git {
         let start = start.ok_or_else(|| {
             format!(
@@ -191,12 +212,13 @@ pub(super) fn materialize_source(
             isolation
         };
         let checkout = manager
-            .create_workspace_checkout_from(
+            .create_workspace_checkout_from_observed(
                 workspace_name,
                 &source.base_branch,
                 Some(start),
                 destination,
                 effective,
+                report,
             )
             .map_err(|error| error.to_string())?;
         Ok((Some(checkout.worktree.recorded_branch), effective))
@@ -333,20 +355,21 @@ impl WorkspaceCreateWork {
             source,
         );
         self.secret_sources.copying(source, destination)?;
-        materialize_source(
+        materialize_source_observed(
             source,
             destination,
             &self.workspace_name,
             isolation,
             &self.rift_root,
             start.as_deref(),
+            |unwind| *self.checkout_unwind.lock().unwrap() = unwind,
         )
     }
 
     fn uncheckpointed_git_replay(&self, source: &WorkspaceSource) -> bool {
         source.is_git
             && self.observer.is_some()
-            && !self.fresh_materialization
+            && !self.no_prior_workspace_effects
             && self
                 .workspace
                 .directories
@@ -360,7 +383,8 @@ impl WorkspaceCreateWork {
             return journal_creation::cleanup_directories(
                 workspace,
                 &self.rift_root,
-                self.fresh_materialization,
+                self.no_prior_workspace_effects
+                    && self.checkout_unwind.lock().unwrap().proves_absent(),
             );
         }
         let mut failures = Vec::new();
@@ -1001,7 +1025,8 @@ impl AppState {
                 source_state: self.source_validation_handle(),
                 synced: Default::default(),
                 observer: None,
-                fresh_materialization: false,
+                no_prior_workspace_effects: false,
+                checkout_unwind: Default::default(),
                 #[cfg(test)]
                 prepared_gate: self.off_lock_workspace_prepared_gate.take(),
             }),
@@ -1251,7 +1276,8 @@ impl AppState {
                 source_state: self.source_validation_handle(),
                 synced: Default::default(),
                 observer: None,
-                fresh_materialization: false,
+                no_prior_workspace_effects: false,
+                checkout_unwind: Default::default(),
                 #[cfg(test)]
                 prepared_gate: self.off_lock_workspace_prepared_gate.take(),
             }),

@@ -27,7 +27,7 @@ import { subscribeFeed } from "./taskFeed.js";
 import { notifyError } from "./notify.js";
 import { openCreateWorkspaceWizard } from "./createWorkspaceWizard.js";
 import { readCreateWorkspaceTargets, followCreateWorkspaceTargets } from "./createWorkspaceTargets.js";
-import { toolbarIdentity, toolbarDestinationModel } from "./toolbarModel.js";
+import { toolbarIdentity, toolbarDestinationModel, workspaceMenuModel } from "./toolbarModel.js";
 import { projectNameOf } from "./inboxProjects.js";
 import { filterByDevice } from "./deviceFilter.js";
 import { deviceKey, routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
@@ -53,6 +53,9 @@ import "../styles/workspace-lock.css";
 import { fieldTraits } from "./fieldTraits.js";
 import { readCached, subscribeCache } from "./localCache.js";
 import { NO_REVIEW_SUPPORT, readReviewSupport, reviewSupportAddress, reviewSupportFor } from "./taskReviewSupport.js";
+
+import { followEnvironmentNavigation } from "./environmentNavigation.js";
+import { environmentNavigationSupported, projectEnvironmentIdentity, kindGlyphHtml } from "./environmentIdentity.js";
 
 const SCOPE_ADDRESS = uiAddress({ view: "toolbar", kind: "filter", sub: "project" });
 const MENU_ADDRESS = uiAddress({ view: "toolbar", kind: "menu", sub: "jump" });
@@ -97,6 +100,8 @@ let visits = [];
 let watchedTasks = null;
 let creationTargets = {support:{}};
 let stopCreationTargets = null;
+let environmentNavigation = {};
+let environmentWatcher = null;
 
 function watchCreationTargets(run) {
   let pending = Promise.resolve();
@@ -329,6 +334,7 @@ const shownIdentity = (standing) => ({
   currentHash: currentHash(),
   task: taskLabel,
   deviceTag: projectDeviceTag(standing.projectKey),
+  environmentIdentity: projectEnvironmentIdentity(projectFor(standing.projectKey), feed.projects, { ...environmentNavigation, devices: App.devices }),
   workspaceLock: standing.kind === "workspace" ? standingWorkspaceLock() : null,
 });
 
@@ -615,7 +621,8 @@ function showList(list) {
 function paintMenu() {
   if (!open || open.mode !== "jump") return;
   paintMenuShell();
-  const signature = JSON.stringify([open.list, open.query, open.list === "workspaces" ? scopedProjectKey : null]);
+  paintMenuCreation();
+  const signature = JSON.stringify([open.list, open.query, open.list === "workspaces" ? scopedProjectKey : null, open.finishedOpen, environmentNavigation.support]);
   const next = (MENU_LISTS[open.list] || workspaceMenuEntries)();
   const entries = signature === open.orderSignature ? reconcilePickerOrder(open.entries, next) : next;
   open.orderSignature = signature;
@@ -723,6 +730,25 @@ function paintMenuShell() {
   };
 }
 
+
+// A greeting may change cached rendering support while a search is focused.
+// Only the footer changes; the editor and its selection retain their nodes.
+function paintMenuCreation() {
+  if (open.list === "workspaces") {
+    const label = open.element.querySelector('[data-create="workspace"] .mt');
+    const text = scopedEnvironmentsSupported() ? "New workspace in this project" : "New workspace…";
+    if (label && label.textContent !== text) label.textContent = text;
+    return;
+  }
+  let footer = open.element.querySelector(".tbmenu-foot");
+  if (!Object.values(environmentNavigation.support || {}).some(Boolean)) { footer?.remove(); return; }
+  if (footer) return;
+  footer = document.createElement("div");
+  footer.className = "tbmenu-foot";
+  footer.innerHTML = '<button class="mi" data-create="global" type="button"><span class="mt">New workspace…</span></button>';
+  open.element.append(footer);
+}
+
 function pickWorkspace(element) {
   if (!element) return false;
   const selected = scopedDestinations().find((candidate) => candidate.kind === "workspace" && candidate.key === element.dataset.workspace);
@@ -754,7 +780,8 @@ function pickDestination(element) {
 }
 
 function destinationStillAvailable(destination) {
-  const available = globalCatalog().destinations.some((row) => row.kind === destination.kind && row.key === destination.key);
+  const available = navigationCatalog(feed, { includeFinished: environmentNavigationSupported(environmentNavigation, destination.deviceId) }).destinations
+    .some((row) => row.kind === destination.kind && row.key === destination.key);
   if (!available) notifyError("Destination is no longer available.", "Use the project breadcrumb to return to the project.");
   return available;
 }
@@ -811,6 +838,8 @@ const MENU_ACTIONS = [
   ["[data-projects]", () => showList("projects")],
   ["[data-project-page]", () => openProjectPage(returnProject(), { newEntry: true })],
   ["[data-workspace-review]", openStandingReview],
+  ["[data-finished-fold]", () => { open.finishedOpen = !open.finishedOpen; paintMenu(); }],
+  ['[data-create="global"]', () => openCreate({ global: true })],
   ["[data-create]", openCreate],
 ];
 
@@ -826,9 +855,10 @@ function onMenuClick(event) {
 
 /** The local footer presets its project. The global keyboard shortcut opens
  * target selection and retains that project for older-bridge fallback. */
-function openCreate({ fromShortcut = false } = {}) {
+function openCreate({ fromShortcut = false, global = false } = {}) {
   const project = scopedProject();
   closeMenu();
+  if (global) return openCreateWorkspaceWizard({ fixedProject: false, navigate: go });
   if (!project) return openUnscopedCreate({ fromShortcut });
   openCreateWorkspaceWizard({ projectId: project.id, deviceId: project.deviceId,
     projectName: nameOf(project), fixedProject: !fromShortcut, ...(fromShortcut ? { fromShortcut: true } : {}), navigate: go });
@@ -849,7 +879,7 @@ async function openUnscopedCreate({ fromShortcut }) {
 /** The project half's rows: which project — said with its machine when another
  *  machine uses the same name — and how much is waiting in it. */
 const globalCatalog = () => navigationCatalog(feed, { route: App.route, devices: App.devices, currentHash: currentHash(), taskUnread: watchedTasks?.taskUnread() });
-const projectMenuEntries = () => globalPickerEntries(globalNavigationPicker(globalCatalog(), { query: open.query, visits }));
+const projectMenuEntries = () => globalPickerEntries(globalNavigationPicker(globalCatalog(), { ...environmentNavigation, devices: App.devices, query: open.query, visits }));
 
 /** The project half's frame. */
 function projectMenuShellHtml() {
@@ -862,14 +892,16 @@ function projectMenuShellHtml() {
 
 /** The scoped project's workspaces, as the open menu lists them, and what a
  *  clicked row is looked up in. */
+const scopedEnvironmentsSupported = () => environmentNavigationSupported(environmentNavigation, scopedProject()?.deviceId || App.route.deviceId);
 const scopedPicker = () => toolbarDestinationModel(App.route, feed, {
   devices: App.devices, projectKey: scopedProject()?.projectKey || routeProjectKey(App.route),
-  currentHash: currentHash(), query: open.query,
+  currentHash: currentHash(), query: open.query, includeFinished: scopedEnvironmentsSupported(),
   taskUnread: watchedTasks?.taskUnread(),
 });
 const scopedDestinations = () => scopedPicker().groups.flatMap((group) => group.destinations);
 
 function workspaceMenuEntries() {
+  if (scopedEnvironmentsSupported()) return environmentWorkspaceEntries();
   const picker = scopedPicker();
   const entries = picker.groups.flatMap((group) => group.destinations);
   const rows = entries.map((destination) => ({
@@ -884,6 +916,33 @@ function workspaceMenuEntries() {
     rows.push({ key: "none", html: `<div class="tb-none dim">${empty}</div>` });
   }
   return rows;
+}
+
+function environmentWorkspaceEntries() {
+  const destinations = new Map(scopedDestinations().map(row => [row.key, row]));
+  const workspaces = workspaceMenuModel({ workspaces: feed.workspaces || [],
+    projectKey: scopedProject()?.projectKey || routeProjectKey(App.route), workspaceKey: routeWorkspaceKey(App.route),
+    query: open.query, visits, environmentsSupported: true }).filter(row => destinations.has(row.workspaceKey));
+  const finished = workspaces.filter(row => row.status === "finished" && !row.current);
+  const active = workspaces.filter(row => row.status !== "finished" || row.current);
+  const rows = active.map(row => environmentWorkspaceEntry(row, destinations.get(row.workspaceKey), "active"));
+  if (finished.length) rows.push(...finishedWorkspaceEntries(finished, destinations));
+  if (!workspaces.length) rows.push({ key: "none", html: `<div class="tb-none dim">${esc(open.query ? "No workspace by that name." : `No workspaces in ${scopedName()} yet`)}</div>` });
+  return rows;
+}
+
+function finishedWorkspaceEntries(finished, destinations) {
+  const expanded = !!open.finishedOpen || !!open.query.trim();
+  const heading = { key: "finished", groupKey: "finished", html: `<button class="mi tb-finished-fold" data-finished-fold type="button" aria-expanded="${expanded}">Finished ▾</button>` };
+  return [heading, ...(expanded ? finished.map(row => environmentWorkspaceEntry(row, destinations.get(row.workspaceKey), "finished")) : [])];
+}
+
+function environmentWorkspaceEntry(workspace, destination, groupKey) {
+  return { key: `workspace:${destination.key}`, groupKey,
+    html: `<a class="mi${workspace.current ? " current" : ""}" data-workspace="${esc(destination.key)}"
+      href="${esc(destination.hash)}"${workspace.current ? ' aria-current="page"' : ""}>
+      <span class="mi-line identity-line">${kindGlyphHtml("workspace")}<span class="mt">${esc(workspace.name)}</span></span>
+      <span class="md">${esc(workspace.current ? "Current" : destination.statusText)}</span></a>` };
 }
 
 const menuHeading = (title) => `<div class="tbmenu-head"><strong>${esc(title)}</strong>
@@ -906,7 +965,7 @@ function workspaceMenuShellHtml() {
       <button class="mi" data-manage-workspaces type="button" role="menuitem"><span class="mt">Manage workspaces</span></button>
       <div class="tb-group">Workspace actions</div>
       <div class="tbmenu-review"></div>
-      <button class="mi" data-create="workspace" type="button" role="menuitem"><span class="mt">New workspace…</span>
+      <button class="mi" data-create="workspace" type="button" role="menuitem"><span class="mt">${scopedEnvironmentsSupported() ? "New workspace in this project" : "New workspace…"}</span>
         <span class="md">Materialize every source in ${esc(scopedName())}</span></button>
     </div>`;
 }
@@ -942,6 +1001,11 @@ export function initToolbar() {
   mounted = true;
   const run = ++toolbarRun;
   const creationReady = watchCreationTargets(run);
+  environmentWatcher = followEnvironmentNavigation(() => App.devices, context => {
+    if (!mounted || run !== toolbarRun) return;
+    environmentNavigation = context;
+    paint();
+  });
   watchedTasks = followNavigationTaskUnread({ onChange: () => { if (mounted && run === toolbarRun && open) paintMenu(); } });
   document.addEventListener("keydown", onGlobalShortcut);
   visits = [];
@@ -968,7 +1032,7 @@ export function initToolbar() {
     scopedProjectKey = typeof saved?.projectKey === "string" ? saved.projectKey : null;
     paint();
   });
-  toolbarReady = Promise.all([scopeRecord.ready, visitTracker.ready, creationReady]).then(async () => {
+  toolbarReady = Promise.all([scopeRecord.ready, visitTracker.ready, creationReady, environmentWatcher.ready]).then(async () => {
     if (!mounted || run !== toolbarRun) return;
     scopeReady = true;
     const routeKey = routeProjectKey(App.route);
@@ -998,6 +1062,9 @@ export function stopToolbar() {
   visitTracker = null;
   visits = [];
   stopNavigationTaskUnread();
+  environmentWatcher?.dispose();
+  environmentWatcher = null;
+  environmentNavigation = {};
   stopCreationTargets?.();
   stopCreationTargets = null;
   creationTargets = {support:{}};

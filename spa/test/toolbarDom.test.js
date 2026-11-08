@@ -1043,3 +1043,16 @@ describe("cached environment navigation", () => {
     expect(openCreateWorkspaceWizard).toHaveBeenCalledWith(expect.objectContaining({ projectId: "p1", deviceId: "dev-1", fixedProject: true }));
   });
 });
+
+it("keeps the open search node, focus and caret across a cached capability change", async () => {
+  const popup = await openJump("project");
+  const input = popup.querySelector(".tb-filter");
+  input.value = "pay";
+  input.dispatchEvent(new Event("input"));
+  input.setSelectionRange(1, 2);
+  await writeCached({ deviceId: "dev-1", entityId: "", kind: "environment-support" }, { list: true, createProject: true });
+  await vi.waitFor(() => expect(popup.querySelector('[data-create="global"]')).not.toBeNull());
+  expect(popup.querySelector(".tb-filter")).toBe(input);
+  expect(document.activeElement).toBe(input);
+  expect([input.selectionStart, input.selectionEnd]).toEqual([1, 2]);
+});

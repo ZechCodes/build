@@ -216,7 +216,7 @@ fn revision_dispatch_recovers_for_uuid_keyed_project() {
     let sibling = register_sibling(&mut app, &legacy);
     let task = seeded(&app, &sibling, "failed revision handoff");
     let store = app.tracker_store().unwrap().clone();
-    store.writer_for_test().execute("INSERT INTO review_revision_dispatches(task_id,snapshot_id,previous_snapshot_id,number,reviewer,state,error) VALUES(?1,'uuid-revision','uuid-previous',2,'reviewer','failed','reviewer unavailable')", [&task.id]).unwrap();
+    store.writer_for_test().execute("INSERT INTO review_revision_dispatches(task_id,snapshot_id,previous_snapshot_id,number,reviewer,state,error,failure_comment_id) VALUES(?1,'uuid-revision','uuid-previous',2,'reviewer','failed','reviewer unavailable','uuid-revision-failure-comment')", [&task.id]).unwrap();
     app.drain_review_revision_dispatches().unwrap();
     let notices = store
         .load_tracker_timeline(&task.id)

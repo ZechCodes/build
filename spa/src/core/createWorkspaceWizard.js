@@ -107,7 +107,7 @@ function retainedCreationAttempt(snapshot,options) {
     row.draft.target.id===options.projectId && row.draft.target.deviceId===options.deviceId)
     .sort((left,right)=>(right.localOrder ?? right.createdAt ?? 0)-(left.localOrder ?? left.createdAt ?? 0))[0];
 }
-const wizardDraftAddress=options=>uiAddress({deviceId:options.deviceId,entityId:options.projectId,view:'create-workspace',kind:'draft'});
+const wizardDraftAddress=options=>uiAddress({deviceId:options.deviceId,entityId:options.projectId || options.environmentId,view:'create-workspace',kind:'draft'});
 function openLegacySurface(options,savedDraft) {
   const target=!options.projectId && savedDraft?.target?.kind === 'project' ? savedDraft.target:null;
   return openCreateWorkspaceLegacy({...options,...(target ? {projectId:target.id,deviceId:target.deviceId,projectName:target.name}:{}),
@@ -140,7 +140,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     environmentDraft:initialEnvironmentDraft(options,initial),addedSources:[],advancedExpanded:options.advancedExpanded === true,folderReferences:snapshot};
   updateAdvanced();
   const opener=document.activeElement;
-  const address=uiAddress({deviceId:options.deviceId,entityId:options.projectId,view:'create-workspace',kind:'draft'});
+  const address=uiAddress({deviceId:options.deviceId,entityId:options.projectId || options.environmentId,view:'create-workspace',kind:'draft'});
   if(recoveryAttempt)return recoverProgress(recoveryAttempt);
   let legacyScreen=null;
   let detached=false,submitting=false,readGeneration=0;
@@ -227,9 +227,13 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     const restored=id ? modal.body.querySelector(`#${id}`):null;
     restored?.focus();if(restored?.type==='text' && selection!==null) restored.setSelectionRange(selection,selection);
   }
+  function changeAddedDevice(deviceId) {
+    if(!state.target || state.target.deviceId===deviceId)return;
+    state.addedSources.forEach(source=>{if(source.kind==='path')source.path='';});
+  }
   function selectTarget(target) {
     if(!snapshot.support?.[target.deviceId]){void handoffLegacy(target);return;}
-    state.target=target;state.page=3;state.error='';updateAdvanced();save();paint();focusPage();
+    changeAddedDevice(target.deviceId);state.target=target;state.page=3;state.error='';updateAdvanced();save();paint();focusPage();
   }
   async function handoffLegacy(target) {
     await cancel();
@@ -269,7 +273,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     const targets=(state.sections || []).flatMap(section=>section.targets);
     modal.body.querySelectorAll('[data-create-target]').forEach(button=>{button.onclick=()=>selectTarget(targets[Number(button.dataset.createTarget)]);});
     const fresh=modal.body.querySelector('[data-create-new-environment]');
-    if(fresh)fresh.onclick=()=>{state.page=2;state.error='';save();paint();focusPage();};
+    if(fresh)fresh.onclick=()=>{changeAddedDevice(state.environmentDraft.deviceId);state.page=2;state.error='';save();paint();focusPage();};
     const search=modal.body.querySelector('#create-workspace-search');
     if(search)search.oninput=()=>{state.query=search.value;updateModel();paint();};
   }

@@ -7,9 +7,9 @@ import { subscribeCache } from "./localCache.js";
 export async function readEnvironmentNavigation(devices) {
   const rows = await Promise.all(devices.map(async (device) => {
     const [support, environments] = await Promise.all([readEnvironmentSupport(device.id), readCachedEnvironments(device.id)]);
-    return { deviceId: device.id, supported: support.list, environments: environments.map((row) => ({ ...row, deviceId: device.id })) };
+    return { deviceId: device.id, supported: support.list, createSupported: support.create, environments: environments.map((row) => ({ ...row, deviceId: device.id })) };
   }));
-  return { devices, environments: rows.flatMap((row) => row.environments), support: Object.fromEntries(rows.map((row) => [row.deviceId, row.supported])) };
+  return { devices, createSupport: Object.fromEntries(rows.map(row=>[row.deviceId,row.createSupported])), environments: rows.flatMap((row) => row.environments), support: Object.fromEntries(rows.map((row) => [row.deviceId, row.supported])) };
 }
 
 export function followEnvironmentNavigation(devices, onChange) {

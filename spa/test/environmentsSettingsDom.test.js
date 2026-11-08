@@ -5,6 +5,8 @@ const state = vi.hoisted(() => ({ devices: [{ id: "laptop", name: "Laptop" }, { 
 vi.mock("../src/app.js", () => ({ App: { get devices() { return state.devices; } } }));
 vi.mock("../src/devices.js", () => ({ readCachedDevices: async () => state.devices, onDevicesChanged: fn => { state.changes.add(fn); return () => state.changes.delete(fn); } }));
 vi.mock("../src/core/inboxDevices.js", () => ({ deviceCall: id => (...args) => state.calls.get(id)(...args) }));
+vi.mock("../src/core/createWorkspaceWizard.js", () => ({ openCreateWorkspaceWizard: vi.fn() }));
+vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo: vi.fn() }));
 vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: vi.fn() }));
 vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: id => ({ environments: { list: state.support.get(id) } }),
   onBridgeGreeted: fn => { state.greetings.add(fn); return () => state.greetings.delete(fn); } }));
@@ -45,8 +47,8 @@ it("paints read-only cached cards per device while pulls are outstanding", async
   await mount();
   await vi.waitFor(() => expect(document.querySelectorAll("[data-environment]")).toHaveLength(2));
   for (const text of ["Laptop", "Desktop", "/work/source", "2 sources · 1 projects · 2 workspaces", "+1 folders", "2 workspaces · 3 open tasks", "2 workspaces · 7 tasks"]) expect(document.body.textContent).toContain(text);
-  expect(document.body.textContent).not.toMatch(/loading…|Resume|New environment|New project|Add project/);
-  expect([...document.querySelectorAll("button")].every(button => button.textContent === "Settings…")).toBe(true);
+  expect(document.body.textContent).not.toMatch(/loading…|Resume|New environment|New project/);
+  expect([...document.querySelectorAll("[data-environment-project]")].every(button => button.textContent === "Settings…")).toBe(true);
   document.querySelector('[data-environments-device="desktop"] button').click();
   expect(openProjectSettings).toHaveBeenCalledWith("proj-1", expect.objectContaining({ deviceId: "desktop", callRpc: expect.any(Function) }));
 });
@@ -315,4 +317,32 @@ it("ignores a superseded pull's late failure while the current retry is pending"
   expect(host.textContent).not.toContain("superseded failure");
   attempts[1].reject(new Error("current failure"));
   await vi.waitFor(() => expect(host.textContent).toContain("current failure"));
+});
+
+it("opens cached-capability creation shortcuts and empty-environment Resume with workspace copy", async()=>{
+  const {openCreateWorkspaceWizard}=await import("../src/core/createWorkspaceWizard.js");
+  await seed("laptop",[{...environment(),project_ids:[]}],[]); await seed("desktop",[],[]);
+  await writeCached(address("laptop","environment-support"),{list:true,createProject:true,create:true,addedSources:true});
+  await mount(); const host=document.querySelector('[data-environments-device="laptop"]');
+  for(const action of ["project","advanced","resume","new"]){
+    const button=host.querySelector(`[data-environment-create="${action}"]`); expect(button).not.toBeNull();
+    expect(button.textContent).toContain("Creates a workspace"); button.click();
+  }
+  expect(openCreateWorkspaceWizard.mock.calls.map(([options])=>options)).toEqual([
+    expect.objectContaining({deviceId:"laptop",environmentId:"env-1",fixedProject:false}),
+    expect.objectContaining({environmentId:"env-1",advancedExpanded:true}),
+    expect.objectContaining({environmentId:"env-1"}), expect.objectContaining({newEnvironment:true,deviceId:"laptop"})]);
+  expect(host.querySelector('[data-legacy-add-project]')).toBeNull();
+});
+it("offers legacy Add project only without cached environments.create",async()=>{
+  await seed("laptop"); await seed("desktop"); await mount();
+  expect(document.querySelectorAll('[data-legacy-add-project]')).toHaveLength(2);
+  await writeCached(address("laptop","environment-support"),{list:true,create:true});
+  await vi.waitFor(()=>expect(document.querySelector('[data-environments-device="laptop"] [data-legacy-add-project]')).toBeNull());
+});
+it("keeps M1 environments read-only until environments.create is cached",async()=>{
+ await seed('laptop');await seed('desktop',[],[]);
+ await writeCached(address('laptop','environment-support'),{list:true,createProject:true,create:false,addedSources:false});
+ await mount();const host=document.querySelector('[data-environments-device="laptop"]');
+ expect(host.querySelector('[data-environment-create]')).toBeNull();expect(host.querySelector('[data-legacy-add-project]')).not.toBeNull();
 });

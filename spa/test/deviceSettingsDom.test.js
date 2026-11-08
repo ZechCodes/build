@@ -44,6 +44,7 @@ vi.mock("../src/connection.js", () => ({
   securityStopText: () => "",
 }));
 vi.mock("../src/sheets/browser.js", () => ({ openBrowser }));
+vi.mock("../src/core/createWorkspaceWizard.js", () => ({openCreateWorkspaceWizard:vi.fn()}));
 vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo }));
 vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings }));
 vi.mock("../src/api.js", () => ({ fetchDevices, renameDevice, revokeDevice }));
@@ -312,6 +313,7 @@ describe("the machine's own panels", () => {
     expect(rows[0].textContent).toContain("Rift (copy-on-write)");
 
     document.querySelector("#newrepo").click();
+    await vi.waitFor(()=>expect(openNewRepo).toHaveBeenCalled());
     const addOptions = openNewRepo.mock.calls[0][1];
     expect(addOptions.defaultDeviceId).toBe("other");
     expect(addOptions.devices).toContainEqual(expect.objectContaining({ id: "other", name: "Other machine" }));
@@ -800,4 +802,14 @@ it("paints cached compaction while the device greeting is pending and keeps its 
   expect(document.activeElement).toBe(input);
   expect(input.value).toBe("175000");
   expect(document.querySelector("#root").textContent).toContain("Compaction defaults on this device");
+});
+
+it("replaces the legacy Add project entry from cached environments.create",async()=>{
+  await writeCached({deviceId:"other",entityId:"",kind:"environment-support"},{create:true});
+  await renderDeviceSettings();
+  await vi.waitFor(()=>expect(document.querySelector("#newrepo").textContent).toContain("New environment"));
+  document.querySelector("#newrepo").click();
+  const {openCreateWorkspaceWizard}=await import("../src/core/createWorkspaceWizard.js");
+  expect(openCreateWorkspaceWizard).toHaveBeenCalledWith(expect.objectContaining({newEnvironment:true,deviceId:"other",fixedProject:false}));
+  expect(openNewRepo).not.toHaveBeenCalled();
 });

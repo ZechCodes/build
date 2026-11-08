@@ -697,7 +697,7 @@ export function openNewProject() {
     goFromInbox(projectRoute({ ...project, deviceId: target.id }));
     refreshFeed(target.id);
   }, {
-    devices: App.devices,
+    devices: App.devices.filter(device => !environmentNavigation.createSupport?.[device.id]),
     defaultDeviceId: App.deviceFilter,
     callRpcFor: creationCall,
   });

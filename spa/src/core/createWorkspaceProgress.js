@@ -1,3 +1,6 @@
+import { creationMethodForRecovery, creationSupportForMethod } from "./writeOperationProgress.js";
+import { environmentSupportAddress, readEnvironmentSupport } from "./environmentSupport.js";
+import { subscribeCache } from "./localCache.js";
 import { kindGlyphHtml } from "./environmentIdentity.js";
 import { modalDialogHtml, openModal } from "./modal.js";
 import { esc, messageOf } from "./text.js";
@@ -76,7 +79,7 @@ function failureText(record, workspace) {
 
 /** A write-operation record is the sole source of execution and outcome state.
  * A transport acknowledgment alone never means that provisioning has finished. */
-export function createWorkspaceProgressModel(record) {
+export function createWorkspaceProgressModel(record, support = {}) {
   const resources = resourcesOf(record);
   const { environment, project, workspace } = resources;
   const phase = outcomePhase(record);
@@ -84,9 +87,17 @@ export function createWorkspaceProgressModel(record) {
   const status = { done: "Done", failed: "Failed", checking: "Checking…", creating: "Creating…" }[phase];
   const error = phase === "failed" ? failureText(record, workspace) : "";
   return { record, phase, status, steps, environment, project, workspace, error,
-    message: outcomeMessage(phase, resources, error), actions: outcomeActions(phase, resources) };
+    message: outcomeMessage(phase, resources, error), ...recoveryActions(record,outcomeActions(phase, resources),support) };
 }
 
+function recoveryActions(record, candidates, support) {
+  const actions=candidates.filter(([action])=>{
+    const method=creationMethodForRecovery(action,record?.request?.method);
+    return !method || creationSupportForMethod(support,method);
+  });
+  const unavailable=actions.length===candidates.length ? "" : "Update Build on this device to use the remaining recovery actions. You can close this and return later.";
+  return {actions,unavailable};
+}
 function outcomeMessage(phase, {environment, project}, error) {
   if (phase === "checking") return "Build lost the reply; checking what happened";
   if (phase !== "failed") return "";
@@ -139,6 +150,7 @@ function progressBodyHtml(model, targetSummary, actionError, target) {
     <ol class="create-progress-steps" aria-label="Creation steps">${model.steps.map(stepHtml).join("")}</ol>
     <p role="status" aria-live="polite">${esc(model.message)}</p>
     ${model.error ? `<p class="warn create-error">${esc(model.error)}</p>` : ""}
+    ${model.unavailable ? `<p class="sub" role="status">${esc(model.unavailable)}</p>` : ""}
     ${actionError ? `<p class="warn create-error" role="alert">${esc(actionError)}</p>` : ""}
     <div class="row create-row">${model.actions.map(([action, label]) => `<button class="btn" type="button" data-progress-action="${action}">${esc(label)}</button>`).join("")}
       <button class="btn" type="button" data-progress-action="close">Close</button></div>`;
@@ -150,9 +162,10 @@ export function openCreateWorkspaceProgress(options) {
   const { operationId, deviceId, targetSummary = "", autoOpenDelay = 900 } = options;
   const service = options.writeOperations || deviceWriteOperations(deviceId);
   const opener = document.activeElement;
-  let detached = false, timer = null, actionError = "", acting = false;
+  let detached = false, timer = null, actionError = "", acting = false, supportGeneration = 0;
+  let support = options.environmentSupport || {};
   let record = service?.readOperations().find(row => row.operationId === operationId);
-  let model = createWorkspaceProgressModel(record);
+  let model = createWorkspaceProgressModel(record,support);
   let previousPhase = null;
   const modal = openModal({
     dialogHtml: modalDialogHtml(progressBodyHtml(model, targetSummary, actionError, options.target), { className: "modal-create create-workspace-sheet create-workspace-progress" }),
@@ -161,8 +174,9 @@ export function openCreateWorkspaceProgress(options) {
   modal.body.setAttribute("aria-labelledby", "create-workspace-progress-title");
   modal.body.onkeydown = event => trapProgressTab(event, modal.body);
   const unsubscribe = service?.subscribe(sync) || NOOP;
+  const stopSupport = options.environmentSupport ? NOOP : subscribeCache(environmentSupportAddress(deviceId),()=>{void refreshSupport();});
   paint();
-  const ready = Promise.resolve(service?.get(operationId)).then(row => {
+  const ready = Promise.all([Promise.resolve(service?.get(operationId)),refreshSupport()]).then(([row]) => {
     if (detached) return;
     record = service?.readOperations().find(item => item.operationId === operationId) || row;
     paint();
@@ -173,13 +187,20 @@ export function openCreateWorkspaceProgress(options) {
     if (detached) return;
     detached = true;
     clearTimeout(timer);
-    unsubscribe();
+    unsubscribe();stopSupport();
     if (!document.activeElement?.closest('[role="dialog"]') || modal.body.contains(document.activeElement)) opener?.focus();
     options.onClose?.();
   }
   function close() {
     detachedView();
     return modal.close();
+  }
+  async function refreshSupport() {
+    if(options.environmentSupport)return;
+    const requested=++supportGeneration;
+    const next=await readEnvironmentSupport(deviceId);
+    if(detached || requested!==supportGeneration)return;
+    support=next;paint();
   }
   function sync() {
     if (detached) return;
@@ -188,7 +209,7 @@ export function openCreateWorkspaceProgress(options) {
   }
   function paint() {
     if (detached) return;
-    model = createWorkspaceProgressModel(record);
+    model = createWorkspaceProgressModel(record,support);
     const terminalChange = model.phase !== previousPhase && ["done", "failed"].includes(model.phase);
     const focusedAction = modal.body.contains(document.activeElement) ? document.activeElement.dataset.progressAction : null;
     modal.body.innerHTML = progressBodyHtml(model, targetSummary, actionError, options.target);

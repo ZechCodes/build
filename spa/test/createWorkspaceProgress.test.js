@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createWorkspaceProgressModel, openCreateWorkspaceProgress } from "../src/core/createWorkspaceProgress.js";
+import { createWorkspaceProgressModel as progressModel, openCreateWorkspaceProgress } from "../src/core/createWorkspaceProgress.js";
 vi.mock("../src/core/motion.js", () => ({ reveal: async e => { e.hidden = false; }, hide: async e => { e.hidden = true; }, settleHidden: () => {} }));
+const createWorkspaceProgressModel=record=>progressModel(record,{create:true,createProject:true});
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
 const operation = (fields = {}) => ({ operationId: "attempt-1", request: { method: "environment.create_project", params: { name: "Release" } }, state: "executing", ...fields });
 const workspace = { id: "ws-1", project_id: "p1", name: "Release", directories: [] };
@@ -17,7 +18,7 @@ function serviceFor(initial) {
 let dialogs;
 function open(row, extra = {}) {
   const writeOperations = serviceFor(row);
-  const dialog = openCreateWorkspaceProgress({ operationId: "attempt-1", deviceId: "laptop", targetSummary: "Laptop · Sources › Payments", writeOperations, autoOpenDelay: 0, ...extra });
+  const dialog = openCreateWorkspaceProgress({ operationId: "attempt-1", deviceId: "laptop", targetSummary: "Laptop · Sources › Payments", writeOperations, environmentSupport:{create:true,createProject:true}, autoOpenDelay: 0, ...extra });
   dialogs.push(dialog); return { ...dialog, writeOperations };
 }
 beforeEach(() => { document.body.innerHTML = ""; dialogs = []; });

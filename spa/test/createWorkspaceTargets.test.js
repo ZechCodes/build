@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, it, vi } from 'vitest';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
+vi.mock('../src/core/changeEvents.js',()=>({bridgeCapabilities:()=>({environments:{}})}));
 const mocked=vi.hoisted(()=>({service:{submit:vi.fn(),get:vi.fn(),list:vi.fn(),dismiss:vi.fn(),subscribe:vi.fn(()=>()=>{})},call:vi.fn()}));
 vi.mock('../src/core/writeOperationRuntime.js',()=>({deviceWriteOperations:()=>mocked.service}));
 vi.mock('../src/core/inboxDevices.js',()=>({deviceCall:()=>mocked.call}));

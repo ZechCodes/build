@@ -1,6 +1,7 @@
 // The wizard's only boundary to environment/support plumbing and device writes.
 // Cached support selects the legacy flow without consulting connection state.
 import { sourceDraftParams } from './sourceDraft.js';
+import { bridgeCapabilities } from './changeEvents.js';
 import { App } from '../appState.js';
 import { readCached, subscribeCache, mergeCachedAtomically } from './localCache.js';
 import { readUiRecord, subscribeUiRecords } from './localUiStore.js';
@@ -10,7 +11,7 @@ import { deviceCall } from './inboxDevices.js';
 import { stampProject, stampWorkspace } from './feedMerge.js';
 import { upsertSessionRow } from './sessionListCache.js';
 import { workspaceRoute } from './projectModel.js';
-import { isCreationWrite, creationSupportForMethod, creationMethodForTarget } from './writeOperationProgress.js';
+import { isCreationWrite, creationSupportForMethod, creationMethodForTarget, creationMethodForRecovery } from './writeOperationProgress.js';
 import { readEnvironmentSupport } from './environmentSupport.js';
 import { readCachedEnvironments } from './environmentCache.js';
 import { taskCountText } from './taskCountText.js';
@@ -118,16 +119,24 @@ export async function createLegacyWorkspace(input) {
 }
 export async function discardCreatedProject({target,project,operationId}) {
   const projectId=project.project_id || project.id;
-  await deviceCall(target.deviceId,'discard this project')('project.discard_unused',{project_id:projectId,creation_operation_id:operationId});
+  const method=requireRecoveryMethod(target.deviceId,'discard');
+  await deviceCall(target.deviceId,'discard this project')(method,{project_id:projectId,creation_operation_id:operationId});
   await mergeCachedAtomically(listAddress(target.deviceId,'projects'),held=>(held || []).filter(row=>(row.project_id || row.id)!==projectId));
 }
 
 export async function discardCreatedEnvironment({target,environment,operationId}) {
   const environmentId=environment.environment_id || environment.id;
-  await deviceCall(target.deviceId,'discard the environment')('environment.discard_unused',{environment_id:environmentId,creation_operation_id:operationId});
+  const method=requireRecoveryMethod(target.deviceId,'discardEnvironment');
+  await deviceCall(target.deviceId,'discard the environment')(method,{environment_id:environmentId,creation_operation_id:operationId});
   await mergeCachedAtomically(listAddress(target.deviceId,'environments'),held=>(held || []).filter(row=>(row.environment_id || row.id)!==environmentId));
 }
 
 function hasWorkspaceResult(answer) {
   return answer?.workspace || (!answer?.environment && !answer?.project);
+}
+
+function requireRecoveryMethod(deviceId,action) {
+  const method=creationMethodForRecovery(action);
+  if(!creationSupportForMethod(bridgeCapabilities(deviceId).environments,method))throw new Error('Update Build on this device to use this recovery action.');
+  return method;
 }

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+vi.mock("../src/core/changeEvents.js",()=>({bridgeCapabilities:()=>({environments:{}})}));
 
 const runtime = vi.hoisted(() => ({ list: vi.fn(), call: vi.fn() }));
 vi.mock("../src/core/writeOperationRuntime.js", () => ({

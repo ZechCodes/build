@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import {beforeEach,afterEach,it,expect,vi} from 'vitest';
 import {IDBFactory,IDBKeyRange} from 'fake-indexeddb';
-const mocks=vi.hoisted(()=>({service:null,progress:vi.fn(),legacy:vi.fn(),navigate:vi.fn()}));
+const mocks=vi.hoisted(()=>({service:null,liveFlags:{},progress:vi.fn(),legacy:vi.fn(),navigate:vi.fn()}));
+vi.mock('../src/core/changeEvents.js',async original=>({...await original(),bridgeCapabilities:()=>({environments:mocks.liveFlags})}));
 vi.mock('../src/app.js',()=>({go:mocks.navigate}));
 vi.mock('../src/core/writeOperationRuntime.js',async original=>({...await original(),deviceWriteOperations:()=>mocks.service}));
 vi.mock('../src/core/inboxDevices.js',()=>({deviceCall:()=>mocks.legacy}));
@@ -19,19 +20,21 @@ import {wipeUiRecords} from '../src/core/localUiStore.js';
 const identity={accountId:'integration',deviceId:'d1',principalId:'user'};
 const combinations=[{create:true,createProject:false},{create:false,createProject:true},{create:true,createProject:true},{create:false,createProject:false}];
 let screen,cache,raw,greeting;
+let progressScreens=[];
 const query=selector=>document.querySelector(selector);
 const click=selector=>query(selector).click();
 const input=(selector,value)=>{query(selector).value=value;query(selector).dispatchEvent(new Event('input'));};
 const open=async options=>{screen=openCreateWorkspaceWizard(options);await screen.ready;};
 beforeEach(async()=>{
- globalThis.indexedDB=new IDBFactory();globalThis.IDBKeyRange=IDBKeyRange;await wipeCache();await wipeUiRecords();await wipePendingOperations();document.body.innerHTML='';vi.clearAllMocks();
- App.devices=[{id:'d1',name:'Laptop'}];mocks.progress.mockReturnValue({ready:Promise.resolve(),close:vi.fn()});
+ globalThis.indexedDB=new IDBFactory();globalThis.IDBKeyRange=IDBKeyRange;sessionStorage.clear();await wipeCache();await wipeUiRecords();await wipePendingOperations();document.body.innerHTML='';vi.clearAllMocks();
+ progressScreens=[];App.devices=[{id:'d1',name:'Laptop'}];mocks.progress.mockReturnValue({ready:Promise.resolve(),close:vi.fn()});
  mocks.legacy.mockResolvedValue({workspace_id:'legacy-workspace',project_id:'p1',status:'ready'});
  await writeCached({deviceId:'d1',entityId:'',kind:'projects'},[{project_id:'p1',name:'Board',environment_id:'e1',sources:[{path:'/code/api'}]}]);
  await writeCached({deviceId:'d1',entityId:'',kind:'environments'},[{environment_id:'e1',name:'Sources',sources:[{path:'/code/api'}],project_ids:['p1']}]);
 });
-afterEach(async()=>{await screen?.close();screen=null;await mocks.service?.close();mocks.service=null;});
+afterEach(async()=>{const cancel=query('[data-create-cancel]');if(cancel&&!cancel.disabled){cancel.click();await vi.waitFor(()=>expect(query('[data-create-cancel]')).toBeNull());}await Promise.all(progressScreens.map(progress=>progress.close()));await screen?.close();screen=null;await mocks.service?.close();mocks.service=null;});
 async function bind(flags,refusal){
+ mocks.liveFlags=flags;
  await rememberEnvironmentSupport('d1',{environments:{list:true,...flags,addedSources:true}});
  greeting={bridge_epoch:'epoch',journal_incarnation:'journal',capabilities:['bridge.epoch',...(flags.create?['environments.create']:[]),...(flags.createProject?['environments']:[])],ack_confirm_methods:['environment.create','environment.create_project','workspace.create']};
  raw=vi.fn(async(method,_params,options)=>{
@@ -47,8 +50,8 @@ async function startService(){
 }
 async function expectDurable(method){
  await vi.waitFor(()=>expect(raw.mock.calls.filter(([name])=>name===method)).toHaveLength(1));
- const row=(await cache.list()).find(row=>row.request.method===method);expect(row).toBeDefined();
- expect(raw.mock.calls.find(([name])=>name===method)[2].write.operation_id).toBe(row.operationId);
+ const operationId=raw.mock.calls.find(([name])=>name===method)[2].write.operation_id;
+ const row=await cache.get(operationId);expect(row).toBeDefined();expect(row.request.method).toBe(method);
  const progress=[{step:method==='environment.create'?'environment':'workspace',state:'running'}];
  await mocks.service.handleFrame({type:'writes.progress',bridge_epoch:'epoch',operation_id:row.operationId,progress});
  expect((await cache.get(row.operationId)).progress).toEqual(progress);
@@ -93,4 +96,73 @@ it('retains bounded admission source details in the rejected promise, durable ca
  await open({deviceId:'d1',newEnvironment:true});
  await mocks.progress.mock.calls.at(-1)[0].onBack({record:reloaded,operationId:oldId});
  expect(query('[data-create-advanced]')?.open).toBe(true);expect(query('#create-work-input').value).toBe('Ship');expect(query('[data-folder-value]').value).toContain('extra.git');
+});
+
+async function failedCreation(flags, landed, initialMethod='environment.create') {
+ await bind({create:true,createProject:true});
+ const options=initialMethod==='environment.create' ? {deviceId:'d1',newEnvironment:true}
+  : initialMethod==='workspace.create' ? {deviceId:'d1',projectId:'p1',fixedProject:true}
+  : {deviceId:'d1',environmentId:'e1',fixedProject:false};
+ await open(options);
+ if(initialMethod==='environment.create'){click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');click('[data-create-next]');}
+ input('#create-work-input','Ship');click('[data-create-go]');
+ await vi.waitFor(()=>expect(mocks.progress).toHaveBeenCalled());
+ const oldId=mocks.progress.mock.calls.at(-1)[0].operationId;
+ const environment={environment_id:'landed-env',name:'API',sources:[{path:'/code/api'}],project_ids:[]};
+ const project={project_id:'landed-project',name:'Ship',environment_id:'landed-env',environment_name:'API',sources:[{path:'/code/api'}]};
+ const details=landed==='environment'?{environment}:landed==='project'?{environment,project}:{};
+ await mocks.service.handleFrame({type:'writes.confirmed',bridge_epoch:'epoch',operation_id:oldId,revision:2,state:'failed',effect:landed==='none'?'unapplied':'partial',error:{code:'creation_failed',message:'recorded creation failure',details}});
+ await screen.close();screen=null;await mocks.service.close();await bind(flags);
+ const {openCreateWorkspaceProgress}=await vi.importActual('../src/core/createWorkspaceProgress.js');
+ mocks.progress.mockImplementation(options=>{const progress=openCreateWorkspaceProgress({...options,autoOpenDelay:0});progressScreens.push(progress);return progress;});
+ await open(options);await progressScreens.at(-1).ready;
+ return oldId;
+}
+const recoveryCases=combinations.flatMap(flags=>['environment','project'].map(landed=>({flags,landed})));
+it.each(recoveryCases)('offers and completes only a supported provision continuation for %j',async({flags,landed})=>{
+ const oldId=await failedCreation(flags,landed);
+ const action=landed==='environment'?'resume':'retry';
+ const method=landed==='environment'?'environment.create_project':'workspace.create';
+ expect(document.body.textContent).toContain('recorded creation failure');
+ const button=query(`[data-progress-action="${action}"]`);
+ if(flags.createProject){
+  expect(button).not.toBeNull();button.click();await expectDurable(method);
+  const next=(await cache.list()).find(row=>row.operationId!==oldId&&row.request.method===method);
+  expect(next.request.params.continues).toBe(oldId);expect(next.operationId).not.toBe(oldId);
+ }else{
+  expect(button).toBeNull();expect(query('[data-progress-action="close"]')).not.toBeNull();
+  expect(document.body.textContent).toContain('Update Build');
+  click('[data-progress-action="close"]');await vi.waitFor(()=>expect(query('[role="dialog"]')).toBeNull());
+  expect((await cache.get(oldId)).dismissed).not.toBe(true);expect((await cache.get(oldId)).state).toBe('failed');
+  expect(raw.mock.calls.filter(([name])=>!name.startsWith('writes.'))).toHaveLength(0);
+ }
+});
+it.each(recoveryCases)('offers and completes only a supported discard for %j',async({flags,landed})=>{
+ const oldId=await failedCreation(flags,landed);
+ const action=landed==='environment'?'discardEnvironment':'discard';
+ const method=landed==='environment'?'environment.discard_unused':'project.discard_unused';
+ const supported=landed==='environment'?flags.create:flags.createProject;
+ const button=query(`[data-progress-action="${action}"]`);
+ if(supported){
+  expect(button).not.toBeNull();button.click();await vi.waitFor(()=>expect(mocks.legacy).toHaveBeenCalledWith(method,expect.objectContaining({creation_operation_id:oldId})));
+  await vi.waitFor(()=>expect(query('[role="dialog"]')).toBeNull());
+ }else{
+  expect(button).toBeNull();expect(query('[data-progress-action="close"]')).not.toBeNull();
+  expect((await cache.get(oldId)).dismissed).not.toBe(true);expect(mocks.legacy).not.toHaveBeenCalled();
+ }
+});
+const backCases=combinations.flatMap(flags=>['environment.create','environment.create_project','workspace.create'].map(method=>({flags,method})));
+it.each(backCases)('offers Back and resubmission only when its original method is supported: %j',async({flags,method})=>{
+ const oldId=await failedCreation(flags,'none',method);
+ const supported=method==='environment.create'?flags.create:flags.createProject;
+ const back=query('[data-progress-action="back"]');
+ if(supported){
+  expect(back).not.toBeNull();back.click();await vi.waitFor(()=>expect(query('#create-work-input, [data-create-next]')).not.toBeNull());
+  if(query('[data-create-next]'))click('[data-create-next]');
+  click('[data-create-go]');await expectDurable(method);
+  const next=(await cache.list()).find(row=>row.operationId!==oldId&&row.request.method===method);expect(next.request.params.continues).toBe(oldId);
+ }else{
+  expect(back).toBeNull();expect(query('[data-progress-action="close"]')).not.toBeNull();
+  expect((await cache.get(oldId)).dismissed).not.toBe(true);expect(document.body.textContent).toContain('recorded creation failure');
+ }
 });

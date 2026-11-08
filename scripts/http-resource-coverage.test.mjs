@@ -252,7 +252,8 @@ const metadataUses = {
   ],
   "core/writeOperationProgress.js": [
     // Exact capability lookup; this literal is never a method producer.
-    ["environments.create",", capability : [\"environments.create\"] } ] ,","d53830d88fee0caa75da294ede724a16df8571784c93d722e4ffa047607917c0"],
+    ["environments.create",", capability : [\"environments.create\"] } ] ,","e0ea7e8f5be227dc217aadf5c0f21a06b1add39c05ea7e058a79e1c5966133a1"],
+    ["environments.create",", capability : [\"environments.create\"] , recoveryAction :","e0ea7e8f5be227dc217aadf5c0f21a06b1add39c05ea7e058a79e1c5966133a1"],
     ["writes.confirmed","{ type : [\"writes.confirmed\"] , operation_id :","370627743b292ef60a20ca2575dd89f495ed572042809ce7d21773a999d6dc77"],
   ],
 };
@@ -463,9 +464,9 @@ const sourceFingerprintParts = {
   "core/directoryWatcher.js": ["3016199e", "f2ebe782", "5731fa24", "665dba3a", "6fd96a9e", "f5a4ee11", "c6841b70", "db07db4f"],
   "core/taskTimelinePages.js": ["da2840fb", "5992d7ce", "038bbc4d", "9c01a8ab", "c320a6f3", "7592e5be", "d5cbf08c", "4fcf8220"],
 
-  "core/createWorkspaceProgress.js": ["ad463c80", "42fac43e", "4c0bd20f", "e4ac893c", "c773ec61", "c34ed98a", "4c3cdfc6", "a102a9bf"],
-  "core/createWorkspaceTargets.js": ["c0634f66", "07ae14f5", "3864dccd", "6a83b43c", "b19b9019", "974b18d0", "269159a1", "15678c38"],
-  "core/writeOperationProgress.js": ["54c1f2e5", "2ca5a4ee", "47eeeda3", "fe1bc71f", "fa8292fd", "7ed0fbf3", "ff216d0c", "89a4f42e"],
+  "core/createWorkspaceProgress.js": ["ab7a0502", "6d6b5e22", "05afb9ec", "33b53994", "825d5bf9", "29439264", "00a4e31e", "c0b975fe"],
+  "core/createWorkspaceTargets.js": ["347b66ec", "6048a73a", "7fed190e", "94941cc7", "d0f0b8e6", "40a24973", "d73d1813", "321a5a8c"],
+  "core/writeOperationProgress.js": ["612c1fc7", "78d4b658", "fb001a3b", "01eb5aba", "a6a82b1a", "0389924d", "06c8355f", "bdae5355"],
   "core/createWorkspaceWizardModel.js": ["de971c24", "0b170e41", "219c3c43", "cb7db24a", "d2bb3c52", "d007f42a", "01ffa437", "9b1527a4"],
 };
 const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintParts)

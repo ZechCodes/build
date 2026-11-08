@@ -2,12 +2,14 @@
 // Cached offers and live admission use the same per-method requirement.
 const creationMethods = new Map([
   ["environment.create", {kind:"new-environment", flag:"create", capability:"environments.create"}],
-  ["environment.create_project", {kind:"environment", flag:"createProject", capability:"environments"}],
-  ["workspace.create", {kind:"project", flag:"createProject", capability:"environments"}],
+  ["environment.create_project", {kind:"environment", flag:"createProject", capability:"environments", recoveryAction:"resume"}],
+  ["workspace.create", {kind:"project", flag:"createProject", capability:"environments", recoveryAction:"retry"}],
+  ["environment.discard_unused", {flag:"create", capability:"environments.create", recoveryAction:"discardEnvironment"}],
+  ["project.discard_unused", {flag:"createProject", capability:"environments", recoveryAction:"discard"}],
 ]);
 const progressStates = new Set(["running", "done", "failed"]);
 
-export const isCreationWrite = method => creationMethods.has(method);
+export const isCreationWrite = method => Boolean(creationMethods.get(method)?.kind);
 export const creationTransportIntent = method => isCreationWrite(method) ? { transportAttempted: false } : {};
 export const nextCreationEvidence = row => (row.creationEvidence || 0) + 1;
 
@@ -28,7 +30,14 @@ export function creationSupportForMethod(support, method) {
 export const environmentWizardSupported = support => creationSupportForMethod(support,"environment.create_project") || creationSupportForMethod(support,"environment.create");
 export function creationMethodForTarget(target) {
   for (const [method, requirement] of creationMethods) {
-    if (requirement.kind === target.kind) return method;
+    if (requirement.kind && requirement.kind === target.kind) return method;
+  }
+  return null;
+}
+export function creationMethodForRecovery(action, originalMethod) {
+  if (action === "back") return isCreationWrite(originalMethod) ? originalMethod : null;
+  for (const [method, requirement] of creationMethods) {
+    if (requirement.recoveryAction === action) return method;
   }
   return null;
 }

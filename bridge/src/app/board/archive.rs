@@ -128,6 +128,7 @@ pub(in crate::app) struct ArchiveReadInput {
     records: Arc<Vec<PersistedArchivedWorktree>>,
     registry_root: PathBuf,
     current: OrdMap<String, Arc<crate::workspace::Workspace>>,
+    // Display name and opaque project key; the home directory is not an archive identity.
     projects: OrdMap<String, Arc<(String, String)>>,
     project_order: Arc<Vec<String>>,
 }

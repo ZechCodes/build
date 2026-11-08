@@ -127,7 +127,7 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
   let revision = 0;
   const readSupport = async () => {
     const read = ++revision;
-    const [next, evidence] = await Promise.all([readProjectChangesSupport(context.deviceId), readSourceOwnershipEvidence(context.deviceId, context)]);
+    const [next, evidence] = await Promise.all([readProjectChangesSupport(context.deviceId), readSourceOwnershipEvidence(context.deviceId)]);
     if (disposed || read !== revision) return;
     support = next;
     ownershipEvidence = evidence;

@@ -305,17 +305,28 @@ function armGreeting(context) {
 }
 
 /** Capture only an already accepted current greeting. Task replies and cached
- * records cannot activate this identity or extend its opening. */
-export function captureDeviceGreeting(context) {
+ * records cannot activate this identity or extend its opening. Epoch-only
+ * consumers remain the default; allowLegacy also captures a no-epoch
+ * greeting's current capabilities for guarded legacy dispatch. */
+export function captureDeviceGreeting(context, { allowLegacy = false } = {}) {
+  const accepted = acceptedDeviceGreeting(context);
+  if (!accepted) return null;
+  const epoch = accepted.capabilities?.writes?.epoch === false ? null : accepted.epoch;
+  if (!epoch && !legacyGreetingRequested(accepted, allowLegacy)) return null;
+  return Object.freeze({ ...accepted, epoch: epoch ? epoch.bridge_epoch : null });
+}
+
+const legacyGreetingRequested = (accepted, allowLegacy) => allowLegacy && accepted.capabilities?.writes?.epoch !== true;
+
+function acceptedDeviceGreeting(context) {
   const authority = greetingAuthorities.get(context);
   if (!authority?.stands()) return null;
   const session = context.session, epoch = session.bridgeEpoch?.current();
-  if (!epoch) return null;
-  return Object.freeze({
-    epoch: epoch.bridge_epoch,
+  return {
+    epoch,
     capabilities: context.adapter?.capabilities,
-    current: () => authority.stands() && context.session === session && session.bridgeEpoch.current() === epoch,
-  });
+    current: () => authority.stands() && context.session === session && session.bridgeEpoch?.current() === epoch,
+  };
 }
 
 /** The first hello claims adoption's reserved wait, which the initial cache

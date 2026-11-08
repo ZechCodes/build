@@ -665,7 +665,7 @@ describe("project settings added sources", () => {
   });
 
   describe("legacy source epoch authority", () => {
-    it.each(["unchanged pre-upgrade", "unstamped", "no current greeting", "environment identity"])("keeps %s cache read-only through Save and both Sync controls", async kind => {
+    it.each(["unchanged pre-upgrade", "unstamped", "no current greeting", "environment identity"])("renders %s cache without consulting dispatch authority", async kind => {
       const address = environmentSupportAddress("dev-1");
       const support = (await readCached(address)).value;
       const old = { ...PROJECT };
@@ -675,11 +675,12 @@ describe("project settings added sources", () => {
       if (kind === "environment identity") old.environment_id = "environment";
       await writeCached(sourceEditSupportAddress("dev-1"), { editsSources: true, syncsBase: true });
       await open(old);
-      expect(document.querySelector('[data-source-ownership="unknown"]')).toBeTruthy();
+      const inherited = kind === "environment identity";
+      expect(Boolean(document.querySelector('[data-source-ownership="unknown"]'))).toBe(inherited);
       for (const source of old.sources) {
-        expect(card(source.id).querySelector("[data-save-source]")).toBeNull();
-        expect(card(source.id).querySelector("[data-sync-base]")).toBeNull();
-        expect(card(source.id).querySelector("[data-sync-now]")).toBeNull();
+        expect(Boolean(card(source.id).querySelector("[data-save-source]"))).toBe(!inherited);
+        expect(Boolean(card(source.id).querySelector("[data-sync-base]"))).toBe(!inherited);
+        expect(Boolean(card(source.id).querySelector("[data-sync-now]"))).toBe(!inherited);
       }
       expect((await readCached(address)).value).toEqual(support);
     });

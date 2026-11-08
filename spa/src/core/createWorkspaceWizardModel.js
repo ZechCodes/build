@@ -87,13 +87,14 @@ function environmentTarget(environment, context, projectTargets) {
   const childWorkspaces = workspaces.filter((row) => childKeys.has(deviceKey(deviceOf(row), row.project_id)));
   const count = environment.project_ids?.length ?? children.length;
   return {
-    ...targetBase(environment, "environment", devices), sources: environment.sources || [],
+    ...targetBase(environment, "environment", devices), empty: count === 0, sources: environment.sources || [],
     description: count ? `${count} projects · ${childWorkspaces.length} workspaces` : `no projects yet · ${childWorkspaces.length} workspaces`,
     at: Math.max(rowTime(environment), visitTime("environment", keyOf(environment), visits), latest(childTargets, (row) => row.at)),
   };
 }
 
 function presetTarget(options, context, targets) {
+  if (options.environmentId) return targets.find(row => row.kind === "environment" && row.id === options.environmentId && row.deviceId === options.deviceId) || null;
   if (!options.projectId || !options.deviceId) return null;
   if (!options.fixedProject && context.support[options.deviceId]) return null;
   const key = deviceKey(options.deviceId, options.projectId);
@@ -132,11 +133,24 @@ export function createWorkspaceWizardModel(options = {}) {
   const environments = context.environments.filter((row) => context.support[deviceOf(row)])
     .map((row) => environmentTarget(row, context, projects)).sort((left, right) => left.name.localeCompare(right.name));
   const sections = targetSections(projects, environments, options.query || "", options.now ?? Date.now());
-  const target = presetTarget(options, context, projects);
+  const target = presetTarget(options, context, [...projects, ...environments]);
   const legacy = context.devices.some((row) => !context.support[row.id]);
   return {
-    sections, target, page: target ? 3 : 1,
+    sections, target, page: options.newEnvironment && options.features?.[options.deviceId]?.create ? 2 : target ? 3 : 1,
+    newEnvironmentDevices: context.devices.filter(row => options.features?.[row.id]?.create),
     emptyText: emptyText(sections, options.query),
     legacyNote: legacy ? "This device needs an update to create environments here" : "",
   };
+}
+
+// Labels describe known references; canonical containment is checked at Create.
+export function addedFolderLabel(source, deviceId, snapshot) {
+  const location = source.path || source.remote;
+  if (!location) return "new folder";
+  const references = (rows, sources) => (rows || []).filter(row => deviceOf(row) === deviceId)
+    .find(row => sources(row).some(item => (item.path || item.remote) === location));
+  const environment = references(snapshot.environments, row => row.sources || []);
+  if (environment) return `shared with ${environment.name}`;
+  const project = references(snapshot.projects, row => [...(row.sources || []), ...(row.added_sources || [])]);
+  return project ? `shared with ${project.name}` : "new folder";
 }

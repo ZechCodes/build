@@ -17,33 +17,33 @@ function operationError(record) {
 function resourcesOf(record) {
   const result = operationResult(record);
   const details = operationError(record)?.details || {};
-  return { project: result.project || details.project || null,
+  return { environment: result.environment || details.environment || null, project: result.project || details.project || null,
     workspace: result.workspace || (result.project_id && (result.workspace_id || result.id) ? result : null) };
 }
 
-function progressSteps(record, phase, project) {
+function progressSteps(record, phase, resources) {
   const progress = record?.progress || [];
   const held = Array.isArray(progress) ? progress : progress.steps || [];
-  const names = record?.request?.method === "workspace.create" ? ["workspace"] : ["project", "workspace"];
+  const names = creationStepNames(record?.request?.method);
   return names.map(step => {
     const current = held.find(item => item.step === step);
-    const state = stepState(current, step, phase, project, names[0]);
+    const state = stepState(current, step, phase, resources, names);
     return { step, label: STEP_LABELS[step], state, detail: current?.detail || "" };
   });
 }
 
-function stepState(current, step, phase, project, firstStep) {
-  if (phase === "done") return "done";
-  if (phase === "failed") return inferredStepState(step, phase, project, firstStep);
-  return current?.state || inferredStepState(step, phase, project, firstStep);
+function creationStepNames(method) {
+  if (method === "workspace.create") return ["workspace"];
+  return method === "environment.create" ? ["environment", "project", "workspace"] : ["project", "workspace"];
 }
-
-function inferredStepState(step, phase, project, firstStep) {
+function stepState(current, step, phase, resources, names) {
   if (phase === "done") return "done";
   if (phase === "checking") return "checking";
-  if (phase !== "failed") return "waiting";
-  if (project) return step === "project" ? "done" : "failed";
-  return step === firstStep ? "failed" : "waiting";
+  if (phase !== "failed") return current?.state || "waiting";
+  const landed = resources.project ? names.indexOf("project") : resources.environment ? names.indexOf("environment") : -1;
+  const index = names.indexOf(step);
+  if (index <= landed) return "done";
+  return index === landed + 1 ? "failed" : "waiting";
 }
 
 function outcomePhase(record) {
@@ -72,24 +72,27 @@ function failureText(record, workspace) {
 /** A write-operation record is the sole source of execution and outcome state.
  * A transport acknowledgment alone never means that provisioning has finished. */
 export function createWorkspaceProgressModel(record) {
-  const { project, workspace } = resourcesOf(record);
+  const resources = resourcesOf(record);
+  const { environment, project, workspace } = resources;
   const phase = outcomePhase(record);
-  const steps = progressSteps(record, phase, project);
+  const steps = progressSteps(record, phase, resources);
   const status = { done: "Done", failed: "Failed", checking: "Checking…", creating: "Creating…" }[phase];
   const error = phase === "failed" ? failureText(record, workspace) : "";
-  return { record, phase, status, steps, project, workspace, error,
-    message: outcomeMessage(phase, project, error), actions: outcomeActions(phase, project, workspace) };
+  return { record, phase, status, steps, environment, project, workspace, error,
+    message: outcomeMessage(phase, resources, error), actions: outcomeActions(phase, resources) };
 }
 
-function outcomeMessage(phase, project, error) {
+function outcomeMessage(phase, {environment, project}, error) {
   if (phase === "checking") return "Build lost the reply; checking what happened";
   if (phase !== "failed") return "";
+  if (!project && environment) return `Environment ${environment.name || environment.environment_id} was created with no projects yet: ${error}`;
   return project ? `Project ${project.name || project.id} was created. Its workspace was not: ${error}` : "Nothing was created.";
 }
 
-function outcomeActions(phase, project, workspace) {
+function outcomeActions(phase, {environment, project, workspace}) {
   if (phase === "done") return workspace ? [["open", "Open workspace"]] : [];
   if (phase !== "failed") return [];
+  if (!project && environment) return [["resume", "Resume"], ["keepEnvironment", "Keep the environment"], ["discardEnvironment", "Discard the environment"]];
   return project
     ? [["retry", "Try the workspace again"], ["keep", "Keep it"], ["discard", "Discard this project"]]
     : [["back", "Back to the wizard"]];
@@ -209,8 +212,8 @@ export function openCreateWorkspaceProgress(options) {
     if (action === "close") return close();
     acting = true;
     actionError = "";
-    const handlers = { open: options.onOpenWorkspace, retry: options.onRetryWorkspace, discard: options.onDiscardProject, keep: options.onKeepProject, back: options.onBack };
-    const payload = { operationId, record, project: model.project, workspace: model.workspace };
+    const handlers = { open: options.onOpenWorkspace, retry: options.onRetryWorkspace, discard: options.onDiscardProject, keep: options.onKeepProject, back: options.onBack, resume: options.onResumeEnvironment, keepEnvironment: options.onKeepEnvironment, discardEnvironment: options.onDiscardEnvironment };
+    const payload = { operationId, record, environment: model.environment, project: model.project, workspace: model.workspace };
     paint();
     try {
       await handlers[action]?.(payload);

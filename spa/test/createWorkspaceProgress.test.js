@@ -183,3 +183,17 @@ it('keeps focus in the replacement dialog when Back opens the recovered legacy f
   document.querySelector('[data-progress-action="back"]').click();await flush();
   expect(document.activeElement).toBe(field);
 });
+
+it("shows all three environment-create steps and infers partial states from landed resources", () => {
+  const environment = {environment_id:"e1",name:"Sources"};
+  const model=createWorkspaceProgressModel(operation({request:{method:"environment.create"},state:"failed",effect:"partial",confirmation:{error:{message:"project refused",details:{environment}}}}));
+  expect(model.steps.map(({step,state})=>[step,state])).toEqual([["environment","done"],["project","failed"],["workspace","waiting"]]);
+  expect(model.actions.map(([action])=>action)).toEqual(["resume","keepEnvironment","discardEnvironment"]);
+  expect(model.message).toContain("no projects yet");
+});
+it.each([["resume","onResumeEnvironment"],["discardEnvironment","onDiscardEnvironment"]])("passes the landed environment and creating attempt to %s", async(action,handler)=>{
+  const environment={environment_id:"e1",name:"Sources"}; const callback=vi.fn();
+  open(operation({request:{method:"environment.create"},state:"failed",effect:"partial",confirmation:{error:{message:"refused",details:{environment}}}}),{[handler]:callback});
+  document.querySelector(`[data-progress-action="${action}"]`).click(); await flush();
+  expect(callback).toHaveBeenCalledWith(expect.objectContaining({environment,operationId:"attempt-1"}));
+});

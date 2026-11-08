@@ -2585,7 +2585,12 @@ fn creation_attempt_contracts_are_additive_and_strict() {
     assert!(capabilities(false).contains(&"environments"));
     assert!(!capabilities(false).contains(&"environments.create"));
     assert!(!capabilities(false).contains(&"projects.addedSources"));
-    for method in ["environment.create_project", "project.discard_unused"] {
+    for method in [
+        "environment.create",
+        "environment.discard_unused",
+        "environment.create_project",
+        "project.discard_unused",
+    ] {
         let (_, handler) = v1::methods()
             .iter()
             .find(|(name, _)| *name == method)

@@ -244,12 +244,14 @@ verbs; the two stream reads retain their legacy shapes and QA-only gate.
 `environment.list` and the board's carried `environments` list share the same
 producer-owned source observations. `environment.list` returns environment
 identity, home and source metadata, isolation, project IDs and the device name.
-`environment.create_project` takes an existing environment, a project name and
-first-workspace options; it requires frame `write.operation_id` and returns the
-project and workspace through the creation journal described below.
+`environment.create_project` takes an existing environment, a project name,
+first-workspace options and optional `added_sources`; it requires frame
+`write.operation_id` and returns the project and workspace through the creation
+journal described below.
 `project.list` rows carry `environment_id`, `environment_name`, `project_key`,
-`diverged`, `device`, `open_tasks`, `total_tasks` and `workspaces` counts;
-their `path` remains the project home and `sources` lists effective sources.
+`diverged`, `device`, `open_tasks`, `total_tasks` and `workspaces` counts, and
+`added_sources`; their `path` remains the project home and `sources` lists
+effective sources.
 Workspace rows carry `environment_id` resolved from their project.
 `board.list` carries `environments` beside its projects and feed data.
 Board-scope change pushes carry `environments` as a third ownership list beside
@@ -869,6 +871,9 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
   environments or selecting extra folders in the creation wizard, archive,
   rename and environment secrets are not enabled by this capability. Legacy
   Project settings still offers Add folder through `project.add_source`.
+  M2.1 serves journaled environment creation and discard-unused in the bridge,
+  but holds those verbs and the `environments.create` / `projects.addedSources`
+  feature capabilities out of greetings until the M2.2 consumer.
   3.31.0 retires snapshot-mode creation and actions, removes legacy agent
   mutation tools and adds the compact `legacy_review` summary marker,
   independently announced by `tasks.review.snapshotRetired` (#974).
@@ -1346,7 +1351,7 @@ incarnation and outbox. SQL-only claimed work can return to accepted, while
 ambiguous external claims retain an unknown outcome and block conflicting
 execution until reconciliation. Committed work is returned for the enabled
 verb’s publication recovery and is never applied twice. The original foundation
-enabled no verb executor. Creation now enables exactly `environment.create_project`
+enabled no verb executor. Creation now enables `environment.create`, `environment.create_project`
 and requests for `workspace.create` carrying frame `write.operation_id`; legacy
 workspace requests retain their existing synchronous reply. The journal exposes 30-day terminal-result compaction for the future enabled
 command service; identity/outcome tombstones remain, and unresolved partial/unknown
@@ -1390,6 +1395,28 @@ Existing Ready manifests are reused, including plain copies and later edits.
 Pending creation roots share the existing retry, reclaim, lock and writer fences;
 startup restores those reservations before serving requests. Cleanup uses its own
 reserved identity while ordinary writers remain excluded.
+`environment.create` reserves a fresh opaque environment ID and prepares its
+sources inside the same journaled attempt before environment config is published.
+Environment IDs use `env-<operation_id>`, so concurrent same-ID admission
+reserves the same owner before config exists; the saved winning project key and
+acknowledgment are still reused. Paired-user write-status reads authorize that
+reserved intent even before publication or after an unused environment is removed.
+Clones use an attempt-owned root with ownership and per-source completion markers;
+source claims are restored before client admission. Interrupted clones without
+completion proof take the cleanup path. Known failure intent is saved before
+unwind so cleanup cannot restart provisioning. Source failure performs a full checked rollback;
+missing ownership or incomplete removal retains Started and the attempt fence.
+The environment config lands before project config and is recovered by its
+reserved ID. A later project failure retains an empty environment, named in
+`error.details.environment`; `environment.create_project` can resume into it with
+`continues`. `environment.discard_unused` requires the creating terminal attempt
+and refuses live or parked projects and pending creation. Unlinking it keeps source
+files. Added sources are validated against the whole effective source set, receive
+fresh IDs at config commit, and are returned with `diverged` on project rows.
+Project source removal refuses inherited IDs; update and sync retain the legacy
+routing only while the project has no added sources. Device-scoped project sync
+rows keep the configured non-empty project name; legacy rows without one keep
+the home path's basename. Config projection and reload preserve sibling names.
 Known partial failures retain the project and name it in `error.details.project`.
 `project.discard_unused` requires that attempt's identity and refuses workspaces,
 tasks, and live or retained agent sessions.
@@ -1409,11 +1436,14 @@ link attempts without making a failed predecessor a success dependency.
 `app/mutations.rs` shares an in-memory progress map with this service. Pending
 status may include `progress`; subscribed openings receive `writes.progress` on
 step changes. These observations never enter the journal or confirm an outcome.
-Wire 3.37.0 advertises these M1 operations with `environments`. Status keeps its
+Wire 3.37.0 advertises the M1 operations with `environments`. Status keeps its
 existing `accepted`/`executing` summary states and carries the precise durable
 state in `creation.state`. The SPA paints `unknown` and `reconciling` as
 **Checking…**, offers no retry while the outcome is unresolved, and treats
 progress as display evidence rather than completion.
+M2.1 leaves API_VERSION unchanged and withholds `environment.create`,
+`environment.discard_unused`, `environments.create` and `projects.addedSources`
+until the M2.2 consumer.
 
 #### Conversation retention (#836)
 
@@ -1765,18 +1795,23 @@ or fails before writing anything.
 **Environments, projects and sources.** An environment owns source references
 and their monotonic source-ID counter. A project is a line of work under one
 environment, with its own task board, agents and workspaces. Its effective
-sources are the environment's sources followed by its project-added sources;
-M1 creates sibling projects without added sources. Projects sharing a home
-route stored identity by `project_key`, resolved through
+sources are the environment's sources followed by its project-added sources.
+The M1 wizard creates sibling projects without additions; the M2.1 bridge also
+accepts `added_sources` on `environment.create_project`. With `environment_id`,
+`project.create` treats its `sources` as project additions; without it, the
+legacy call makes an implicit environment from those sources. Projects sharing
+a home route stored identity by `project_key`, resolved through
 `AppState::project_by_key`, rather than by directory equality. Migrated keys
 retain the old home path; newly created sibling keys are `project:<uuid>`.
 Filesystem work uses the resolved `home_path` or source path.
 
 Creating a project in an existing environment and its first workspace is one
 journaled attempt in `app/creation/`: it saves the project identity before
-writing config, then materializes the workspace unpublished and records the
-terminal outcome. Reusing the operation ID recovers that attempt. Creating
-another workspace in an existing project with frame `write.operation_id`
+preparing added sources and writing config, then materializes the workspace
+unpublished and records the terminal outcome. Reusing the operation ID recovers
+that attempt. M2.1's staged `environment.create` includes source preparation and
+environment config in the same attempt before the project and workspace steps.
+Creating another workspace in an existing project with frame `write.operation_id`
 uses the same executor without the project step (see
 [Durable write foundation](#durable-write-foundation-739)).
 

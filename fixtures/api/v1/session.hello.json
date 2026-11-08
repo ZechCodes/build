@@ -5,6 +5,7 @@
   "result": {
     "api_version": "3.37.0",
     "ack_confirm_methods": [
+      "environment.create",
       "environment.create_project",
       "workspace.create"
     ],

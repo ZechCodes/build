@@ -1,0 +1,17 @@
+{
+  "method": "environment.discard_unused",
+  "since": "3.37.0",
+  "params": {
+    "environment_id": "env-2",
+    "creation_operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a"
+  },
+  "result": {},
+  "errors": [
+    "invalid_params",
+    "not_found",
+    "conflict",
+    "internal",
+    "busy"
+  ],
+  "note": "Only removes the environment reference created by a terminal attempt when it has no projects or pending creation. Source files are retained."
+}

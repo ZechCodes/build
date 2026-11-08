@@ -5,7 +5,7 @@ use crate::orchestrator::{ActiveRun, Orchestrator};
 use crate::templates::Templates;
 use serde_json::Value;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(in crate::app) struct ProjectSource {
     pub(in crate::app) id: String,
     pub(in crate::app) name: String,
@@ -114,6 +114,7 @@ mod project_registry_tests;
 mod requests;
 mod source_directory_claims;
 pub(in crate::app) use source_directory_claims::SourceDirectoryClaims;
+pub(in crate::app) use source_directory_claims::SourceDirectoryLease;
 mod source_holds;
 #[cfg(test)]
 pub(in crate::app) mod test_support;

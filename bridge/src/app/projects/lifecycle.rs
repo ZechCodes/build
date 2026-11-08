@@ -38,7 +38,7 @@ impl OffLockJob for RemoveUnregisteredProject {
 }
 
 impl AppState {
-    pub(super) fn source_directory_has_owner(&self, path: &Path) -> bool {
+    pub(in crate::app) fn source_directory_has_owner(&self, path: &Path) -> bool {
         let project_owner = self
             .projects
             .registered_sources()
@@ -82,7 +82,7 @@ impl AppState {
                 .any(|root| paths_overlap(path, &crate::worktree::canonical_planned_path(root)))
     }
 
-    fn cleanup_unregistered_sources(&mut self, created: Vec<PathBuf>) {
+    pub(super) fn cleanup_unregistered_sources(&mut self, created: Vec<PathBuf>) {
         for path in created {
             if self.source_directory_has_owner(&path) {
                 continue;

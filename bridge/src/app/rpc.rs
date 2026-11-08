@@ -47,6 +47,9 @@ pub(in crate::app) const INTERACTION_VERBS: &[(&str, &str)] = &[
 /// `user.present` is not listed: it records the arrival and answers the
 /// session in one step.
 pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
+    "environment.create",
+    "environment.create_project",
+    "environment.discard_unused",
     "agent.add",
     "agent.choose",
     "agent.interrupt",

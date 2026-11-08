@@ -108,9 +108,14 @@ fn project_rows(
         .expect("project object")
         .remove("sources");
     row["project_id"] = json!(id);
-    row["name"] = json!(std::path::Path::new(path)
-        .file_name()
-        .map(|name| name.to_string_lossy()));
+    if project["name"]
+        .as_str()
+        .is_none_or(|name| name.trim().is_empty())
+    {
+        row["name"] = json!(std::path::Path::new(path)
+            .file_name()
+            .map(|name| name.to_string_lossy()));
+    }
     rows.insert(Entity::new("project", id), row);
     for source in project["sources"].as_array().into_iter().flatten() {
         let Some(source_id) = source["id"].as_str() else {
@@ -128,6 +133,29 @@ fn project_rows(
 #[cfg(test)]
 mod identity_tests {
     use super::*;
+
+    #[test]
+    fn device_project_rows_preserve_distinct_names_and_legacy_basename() {
+        let mut rows = BTreeMap::new();
+        let mut projects = BTreeMap::new();
+        for (id, name) in [
+            ("proj-1", Some("Payments")),
+            ("proj-2", Some("Billing")),
+            ("proj-3", None),
+            ("proj-4", Some("")),
+        ] {
+            let mut project =
+                json!({"id":id,"path":"/checkout/shared","project_key":format!("project:{id}")});
+            if let Some(name) = name {
+                project["name"] = json!(name);
+            }
+            project_rows(&project, &mut rows, &mut projects);
+        }
+        assert_eq!(rows[&Entity::new("project", "proj-1")]["name"], "Payments");
+        assert_eq!(rows[&Entity::new("project", "proj-2")]["name"], "Billing");
+        assert_eq!(rows[&Entity::new("project", "proj-3")]["name"], "shared");
+        assert_eq!(rows[&Entity::new("project", "proj-4")]["name"], "shared");
+    }
 
     #[test]
     fn device_project_ids_keep_sibling_keys_distinct() {

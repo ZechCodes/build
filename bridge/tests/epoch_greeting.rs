@@ -39,7 +39,11 @@ async fn greeting_reports_the_current_ack_confirm_method_allowlist() {
     let greeting = SessionSender::decrypt_push(&key, &wire.try_recv().unwrap());
     assert_eq!(
         greeting["result"]["ack_confirm_methods"],
-        json!(["environment.create_project", "workspace.create"])
+        json!([
+            "environment.create",
+            "environment.create_project",
+            "workspace.create"
+        ])
     );
     assert_eq!(
         greeting["result"]["ack_confirm_methods"],

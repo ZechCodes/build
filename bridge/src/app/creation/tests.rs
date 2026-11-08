@@ -5,6 +5,7 @@ use tempfile::TempDir;
 mod admission_recovery;
 mod continuation_identity;
 mod discard_identity;
+mod environment_create;
 mod failure_finalization;
 mod project_identity;
 mod recorded_admission;
@@ -20,6 +21,11 @@ pub(super) use admission_recovery::SimulatedCrash;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Boundary {
     AdmissionPrepared,
+    EnvironmentPersisted,
+    SourceStarted,
+    SourcePrepared,
+    EnvironmentStarted,
+    EnvironmentCheckpointed,
     ProjectCheckpointed,
     ProjectIdentityCheckpointed,
     ProjectPersisted,
@@ -77,6 +83,8 @@ impl Fixture {
         .unwrap()
         .with_config(root.path().join("config.json"))
         .unwrap();
+        app.projects_dir = root.path().join("projects");
+        std::fs::create_dir(&app.projects_dir).unwrap();
         app.add_project(home, "main".into());
         app.persist();
         let store = app.store.clone().unwrap();

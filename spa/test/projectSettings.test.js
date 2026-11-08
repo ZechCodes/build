@@ -6,11 +6,16 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { openProjectSettings } from "../src/sheets/projectSettings.js";
-import { wipeCache, writeCached } from "../src/core/localCache.js";
+import { wipeCache, writeCached, readCached } from "../src/core/localCache.js";
 import { wipeUiRecords, writeUiRecord, readUiRecord } from "../src/core/localUiStore.js";
 import { uiAddress } from "../src/core/localUiState.js";
 import { projectSettingsAddress } from "../src/core/settingsRecords.js";
 import { sourceEditSupportAddress } from "../src/core/sourceEditSupport.js";
+import { environmentSupportAddress } from "../src/core/environmentSupport.js";
+import { environmentsAddress } from "../src/core/environmentCache.js";
+
+const openWizard = vi.fn();
+vi.mock("../src/core/createWorkspaceWizard.js", () => ({ openCreateWorkspaceWizard: (...args) => openWizard(...args) }));
 
 const confirmAction = vi.fn();
 vi.mock("../src/core/confirm.js", () => ({ confirmAction: (...args) => confirmAction(...args) }));
@@ -43,6 +48,7 @@ beforeEach(async () => {
   await wipeCache();
   await wipeUiRecords();
   confirmAction.mockReset();
+  openWizard.mockReset();
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
 });
 
@@ -501,6 +507,129 @@ describe("project deletion", () => {
 
 // The project's folders are what every new workspace is cut from, so the sheet
 // that shows them is where one is added and where one is taken off.
+describe("project settings added sources", () => {
+  const ADDED = { ...PROJECT.sources[1], id: "source-7" };
+  const ENV_PROJECT = { ...PROJECT, environment_id: "env-1", environment_name: "Shared <Build>",
+    sources: [PROJECT.sources[0], ADDED], added_sources: [ADDED] };
+  const group = (kind) => document.querySelector(`[data-source-group="${kind}"]`);
+  const support = () => writeCached(environmentSupportAddress("dev-1"), { addedSources: true });
+  const open = async (project = ENV_PROJECT, callRpc = vi.fn(() => new Promise(() => {}))) => {
+    await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), project);
+    openProjectSettings(PROJECT.project_id, { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(card(project.sources[0].id)).toBeTruthy());
+    return callRpc;
+  };
+
+  it("shows added folder cards as editable from cached support before any RPC answers", async () => {
+    await support();
+    await open();
+    await vi.waitFor(() => expect(group("added")?.textContent).toContain("Added to this project"));
+    expect(group("added").querySelectorAll(".ps-source")).toHaveLength(1);
+    for (const field of ["name", "path", "base_branch", "remote"]) expect(input(ADDED.id, field).readOnly).toBe(false);
+    expect(card(ADDED.id).querySelector("[data-save-source]")).toBeTruthy();
+    expect(card(ADDED.id).querySelector("[data-remove-source]")).toBeTruthy();
+  });
+
+  it("makes From-E cards read-only, including save, remove and sync controls", async () => {
+    await support();
+    await writeCached(sourceEditSupportAddress("dev-1"), { editsSources: true, syncsBase: true });
+    await open();
+    await vi.waitFor(() => expect(group("environment")?.textContent).toContain("From Shared <Build>"));
+    expect(group("environment").querySelector("h5").innerHTML).toContain("&lt;Build&gt;");
+    expect([...card("source-1").querySelectorAll("input")].every(field => field.readOnly)).toBe(true);
+    expect(card("source-1").querySelector("button, [data-sync-base]")).toBeNull();
+    expect(card(ADDED.id).querySelector("[data-sync-base]")).toBeTruthy();
+  });
+
+  it("saves added cards through project.update_source and immediately caches the reply", async () => {
+    await support();
+    const changed = { ...ENV_PROJECT, sources: [PROJECT.sources[0], { ...ADDED, name: "Updated" }], added_sources: [{ ...ADDED, name: "Updated" }] };
+    delete changed.environment_id;
+    delete changed.environment_name;
+    const callRpc = vi.fn(method => method === "project.update_source" ? Promise.resolve(changed) : new Promise(() => {}));
+    await open(ENV_PROJECT, callRpc);
+    await vi.waitFor(() => expect(input(ADDED.id, "name")?.readOnly).toBe(false));
+    type(input(ADDED.id, "name"), "Updated");
+    card(ADDED.id).querySelector("[data-save-source]").click();
+    await vi.waitFor(async () => expect((await readCached(projectSettingsAddress("dev-1", PROJECT.project_id)))?.value.added_sources[0].name).toBe("Updated"));
+    expect(callRpc).toHaveBeenCalledWith("project.update_source", { project_id: "proj-1", source_id: ADDED.id, name: "Updated" });
+    expect(group("environment").textContent).toContain("From Shared <Build>");
+    expect(openWizard).not.toHaveBeenCalled();
+  });
+
+  it("removes only this project's added source without opening the wizard", async () => {
+    await support();
+    const sibling = { ...ENV_PROJECT, project_id: "proj-2" };
+    await writeCached(projectSettingsAddress("dev-1", "proj-2"), sibling);
+    const changed = { ...ENV_PROJECT, sources: [PROJECT.sources[0]], added_sources: [] };
+    const callRpc = vi.fn(method => method === "project.remove_source" ? Promise.resolve(changed) : new Promise(() => {}));
+    await open(ENV_PROJECT, callRpc);
+    card(ADDED.id).querySelector("[data-remove-source]").click();
+    await vi.waitFor(() => expect(card(ADDED.id)).toBeUndefined());
+    expect(callRpc).toHaveBeenCalledWith("project.remove_source", { project_id: "proj-1", source_id: ADDED.id });
+    expect((await readCached(projectSettingsAddress("dev-1", "proj-2"))).value).toEqual(sibling);
+    expect(group("added").textContent).toContain("Added to this project");
+    expect(openWizard).not.toHaveBeenCalled();
+  });
+
+  it("adds a local folder to this project through project.add_source without opening the wizard", async () => {
+    await support();
+    const sibling = { ...ENV_PROJECT, project_id: "proj-2" };
+    await writeCached(projectSettingsAddress("dev-1", "proj-2"), sibling);
+    const empty = { ...ENV_PROJECT, sources: [PROJECT.sources[0]], added_sources: [] };
+    const callRpc = vi.fn(async (method) => {
+      if (method === "project.list") return { projects: [empty] };
+      if (method === "settings.get") return { projects_dir: "/Users/z/Projects" };
+      if (method === "fs.list") return { path: "/Users/z/Projects", parent: "/Users/z", entries: [{ name: "docs", path: ADDED.path, is_git: true }] };
+      if (method === "project.add_source") return ENV_PROJECT;
+    });
+    await open(empty, callRpc);
+    document.querySelector("#psaddfolder").click();
+    await vi.waitFor(() => expect(document.querySelector(`#sheet .use[data-path="${ADDED.path}"]`)).toBeTruthy());
+    document.querySelector(`#sheet .use[data-path="${ADDED.path}"]`).click();
+    await vi.waitFor(() => expect(group("added")?.querySelector(".ps-source")).toBeTruthy());
+    expect(callRpc).toHaveBeenCalledWith("project.add_source", { project_id: "proj-1", path: ADDED.path });
+    expect((await readCached(projectSettingsAddress("dev-1", "proj-2"))).value).toEqual(sibling);
+    expect(openWizard).not.toHaveBeenCalled();
+    expect(document.querySelector("#psproject")).toBeTruthy();
+  });
+
+  it("keeps capability-absent devices' existing source cards and actions unchanged", async () => {
+    await editsInPlace();
+    await writeCached(environmentSupportAddress("dev-2"), { addedSources: true });
+    await open();
+    await vi.waitFor(() => expect(input("source-1", "name")?.readOnly).toBe(false));
+    expect(group("added")).toBeNull();
+    expect(group("environment")).toBeNull();
+    expect(card("source-1").querySelector("[data-save-source]")).toBeTruthy();
+    expect(card("source-1").querySelector("[data-remove-source]")).toBeTruthy();
+    expect(input("source-1", "path").readOnly).toBe(true);
+  });
+
+  it("shows an environment-source refusal from the bridge verbatim", async () => {
+    await support();
+    const refusal = "source-7 belongs to environment env-1; edit it there";
+    const callRpc = vi.fn(method => method === "project.remove_source" ? Promise.reject(new Error(refusal)) : new Promise(() => {}));
+    await open(ENV_PROJECT, callRpc);
+    card(ADDED.id).querySelector("[data-remove-source]").click();
+    await vi.waitFor(() => expect(document.querySelector("#pssrcerr").textContent).toBe(refusal));
+    expect(card(ADDED.id)).toBeTruthy();
+    expect(openWizard).not.toHaveBeenCalled();
+  });
+
+  it("repaints when cached support and the device's environment name change", async () => {
+    const project = { ...ENV_PROJECT };
+    delete project.environment_name;
+    await open(project);
+    expect(group("environment")).toBeNull();
+    await support();
+    await writeCached(environmentsAddress("dev-1"), [{ environment_id: "env-1", name: "Renamed environment" }]);
+    await vi.waitFor(() => expect(group("environment")?.textContent).toContain("From Renamed environment"));
+    await writeCached(environmentSupportAddress("dev-1"), { addedSources: false });
+    await vi.waitFor(() => expect(group("environment")).toBeNull());
+  });
+});
+
 describe("project sources", () => {
   const SOURCED = {
     ...PROJECT,

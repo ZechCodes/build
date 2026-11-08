@@ -448,8 +448,8 @@ const sourceFingerprintParts = {
   // #997 deviceProjects.js:82: the existing project.list loader delegates to owned device recovery.
   "views/deviceProjects.js": ["4e4add8c", "613568da", "f8200bad", "b7b27066", "84e7ddaa", "62bfbbbe", "cee788f9", "586de842"],
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
-  // #1052 review: environment.list stays device-scoped; project counts use the settings-owned reader and the existing sheet.
-  "views/environmentsSettings.js": ["c1ede602", "3c0164ed", "1195b8c9", "b50f88c8", "a1626261", "4abc8333", "049b5b40", "55d3e8f4"],
+  // #1052 re-review: only settings-owned results render counts; journal fallback is identity-only. RPC edges stay unchanged.
+  "views/environmentsSettings.js": ["24ecc6d3", "8120411b", "862480a7", "b376c7f0", "412a37e2", "de8798bb", "978354cc", "6f258f25"],
   "views/files.js": ["bc4913c5", "865b9dd0", "e28f655f", "242c9011", "456a4139", "b2cfd372", "6498e15b", "f3116261"],
   "views/projectChanges.js": ["e195b594", "3a7689fe", "14bfc899", "18ada18d", "ab36cd52", "ad96ba97", "a877c4da", "c9c3b78f"],
   "views/projectView.js": ["76123138", "7ded30d0", "0893b5ef", "5d880782", "137464b9", "5b123e76", "48f1a9d5", "28144478"],

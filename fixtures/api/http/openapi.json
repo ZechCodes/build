@@ -13349,7 +13349,7 @@
                       "id": "example",
                       "ok": true,
                       "result": {
-                        "api_version": "3.36.0",
+                        "api_version": "3.37.0",
                         "ack_confirm_methods": [
                           "environment.create_project",
                           "workspace.create"
@@ -13401,6 +13401,8 @@
                           "entity.mute",
                           "entity.seen",
                           "environment.create_project",
+                          "environment.list",
+                          "environments",
                           "errors.codes",
                           "fs.createDirectory",
                           "fs.createFile",

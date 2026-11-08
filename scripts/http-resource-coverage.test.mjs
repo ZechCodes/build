@@ -335,7 +335,8 @@ const sourceFingerprintParts = {
   "core/inboxDevices.js": ["f9a293e4", "dff4b2b4", "f5fc7940", "f5c1f48d", "a66a5718", "238826a6", "e3dc6b9f", "4060a79e"],
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
   // #997 runtime-board inboxView.js:193,206,320: scoped pending display and cached branch choices; existing RPC and mutation dispatch unchanged.
-  "core/inboxView.js": ["2745a252", "ec325f63", "1dbfa229", "8378b996", "0e3367b6", "c65295cc", "0096487f", "e26dc771"],
+  // #1051: cached environment identity and wizard entry points; existing RPC methods, producers and assignment edges are unchanged.
+  "core/inboxView.js": ["af9155dc", "2c6d74b7", "97e7f019", "14d8568c", "80f5eca0", "0842642e", "1b519057", "512e963e"],
   "core/isolation.js": ["1b646651", "086eea7f", "b0a97d6f", "8993ed77", "7e6e246e", "4110fbc2", "7defb076", "77f79221"],
   "core/markdownFences.js": ["10057396", "68214f4d", "d193015e", "2552698e", "c48313df", "6df2e223", "7e3bc837", "2805a4bb"],
   "core/modelCatalog.js": ["c293ea11", "fff0969f", "7852c8cd", "0c252f82", "fe666159", "95919417", "25a661ec", "c93fd9b4"],

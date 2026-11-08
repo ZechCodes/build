@@ -105,3 +105,22 @@ it("P5 visit_history_not_quiet_recent reset clears tab history and fences pendin
   expect((await readUiRecord(navigationVisitAddress)).value).toHaveLength(1);
   await next.dispose();
 });
+
+
+it("environment grouping searches workspace names while default rows go to projects", () => {
+  const envFeed = { projects: [{ ...project("one", "p", "Project"), environment_id: "e" }], workspaces: [workspace("one", "p", "w", "Café 文")] };
+  const options = { support: { one: true }, environments: [{ id: "e", deviceId: "one", name: "Environment" }], devices: [{ id: "one", name: "Workshop" }] };
+  const held = navigationCatalog(envFeed, options);
+  expect(globalNavigationPicker(held, options).groups[0].destinations.map(row => row.kind)).toEqual(["project"]);
+  const searched = globalNavigationPicker(held, { ...options, query: "Café 文" });
+  expect(searched.groups[0].kind).toBe("environment");
+  expect(searched.groups[0].destinations.map(row => row.key)).toEqual(["one/w"]);
+  expect(searched.lastVisited).toEqual([]);
+});
+
+it("environment search finds archived projects with a tag but omits them from the default list", () => {
+  const held = navigationCatalog({ projects: [{ ...project("one", "p", "Retired"), environment_id: "e", archived: true }], workspaces: [] });
+  const options = { support: { one: true }, environments: [{ id: "e", deviceId: "one", name: "Environment" }] };
+  expect(globalNavigationPicker(held, options).groups).toEqual([]);
+  expect(globalNavigationPicker(held, { ...options, query: "Retired" }).groups[0].destinations[0].archived).toBe(true);
+});

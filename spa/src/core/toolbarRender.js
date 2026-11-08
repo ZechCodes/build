@@ -3,6 +3,7 @@ import { workspaceLockHtml } from "./workspaceLock.js";
 import { esc } from "./text.js";
 import { toolbarBreadcrumbs } from "./toolbarBreadcrumbs.js";
 import { ICON_CHEVRON_LEFT } from "./icons.js";
+import { kindGlyphHtml, projectIdentityText } from "./environmentIdentity.js";
 
 const selectorHtml = (name, label, current = false) =>
   `<button class="tb-sel tb-workspace" data-select="workspace" type="button" aria-haspopup="dialog" aria-expanded="false"
@@ -23,14 +24,24 @@ const itemHtml = (html, className, separated = true) =>
 function ancestryHtml(shown) {
   const { project, workspace, tasks, leaf } = toolbarBreadcrumbs(shown);
   const qualifier = shown.deviceTag ? ` · ${shown.deviceTag}` : "";
-  const projectLink = linkHtml({ ...project, label: project.label + qualifier }, "tb-project",
-    `data-project-return aria-label="${esc(`Open project workspace ${project.label}${qualifier}`)}"`);
+  const projectLink = shown.environmentIdentity ? environmentCrumbHtml(project, shown.environmentIdentity)
+    : linkHtml({ ...project, label: project.label + qualifier }, "tb-project",
+      `data-project-return aria-label="${esc(`Open project workspace ${project.label}${qualifier}`)}"`);
   const items = [itemHtml(projectLink, "tb-project-item", false)];
   if (workspace) items.push(itemHtml(selectorHtml(workspace.label,
     `Switch workspace in ${shown.project}; current: ${workspace.label}`, workspace.current), "tb-workspace-item"));
   if (tasks) items.push(itemHtml(linkHtml(tasks, "tb-tasks", "data-tasks-parent"), "tb-tasks-item"));
   if (leaf) items.push(itemHtml(linkHtml(leaf, `tb-leaf${shown.kind === "branch" ? " mono" : ""}`), "tb-leaf-item"));
   return `<nav class="tb-breadcrumbs${tasks ? " tb-task-ancestry" : ""}" aria-label="Breadcrumb"><ol>${items.join("")}</ol></nav>`;
+}
+
+function environmentCrumbHtml(project, identity) {
+  const environment = identity.showEnvironment
+    ? `<span class="tb-environment dim">${esc(identity.environmentName)}</span><span class="tb-environment-sep dim"> › </span>` : "";
+  const label = projectIdentityText(identity);
+  return `<a class="tb-project tb-environment-project" href="${esc(project.hash)}" data-project-return
+    aria-label="${esc(`Open project workspace ${label}`)}" title="${esc(label)}"${project.current ? ' aria-current="page"' : ""}>
+    ${kindGlyphHtml("project")}${environment}<span class="tb-name">${esc(project.label)}</span></a>`;
 }
 
 const surfaceName = (name) => ({ inbox: "Inbox", account: "Settings", device: "Device settings", settings: "Settings" }[name] || "Build");

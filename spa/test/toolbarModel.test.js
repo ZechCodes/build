@@ -1,3 +1,5 @@
+import { switcherModel } from "../src/core/toolbarModel.js";
+import { navigationCatalog } from "../src/core/navigationModel.js";
 // The view-area toolbar's pure model: the identity it prints, the two menus its
 // two selectors open, and the status its right side reports.
 
@@ -389,4 +391,74 @@ describe("workspace navigation", () => {
     expect(identity.directories).toBeUndefined();
     expect(identity.workspaceTasks).toBeUndefined();
   });
+});
+
+
+describe("environment switcherModel", () => {
+  const nowMs = 100 * 3600_000;
+  const projects = [
+    on("dev-1", { id: "a", name: "Older", environment_id: "e", last_activity_ms: nowMs - 1000 }),
+    on("dev-1", { id: "b", name: "Newer", environment_id: "e", last_activity_ms: nowMs, added_sources: [{ id: "extra" }] }),
+    on("dev-2", { id: "a", name: "Other device", environment_id: "e", last_activity_ms: nowMs - 25 * 3600_000 }),
+  ];
+  const environments = [{ id: "e", deviceId: "dev-1", name: "Shared" }, { id: "e", deviceId: "dev-2", name: "Elsewhere" }];
+  const options = { environments, support: { "dev-1": true, "dev-2": true }, devices, nowMs };
+  const catalog = () => navigationCatalog({ projects, workspaces: [], items: [] }, { devices });
+
+  it("groups projects under device-qualified environments and orders by recency", () => {
+    const picker = switcherModel(catalog(), options);
+    expect(picker.groups.map(group => [group.kind, group.key, group.name])).toEqual([
+      ["environment", "dev-2/e", "Elsewhere"], ["environment", "dev-1/e", "Shared"],
+    ]);
+    expect(picker.groups[1].destinations.map(row => [row.name, row.addedFolders])).toEqual([["Newer", 1], ["Older", 0]]);
+    expect(picker.lastVisited.map(row => row.key)).toEqual(["dev-1/b", "dev-1/a"]);
+    expect(picker.groups[0].deviceLabel).toBe("laptop");
+    expect(picker.groups[1].destinations[0].route.name).toBe("project");
+  });
+
+  it("caps Recent at five, resolves workspace visits to their project and ignores stale history", () => {
+    const workspaces = [stampWorkspace({ id: "w", project_id: "a", name: "Workspace match" }, "dev-2")];
+    const more = Array.from({ length: 7 }, (_, i) => on("dev-1", { id: `p${i}`, name: `P${i}`, environment_id: "e", last_activity_ms: nowMs - i }));
+    const picker = switcherModel(navigationCatalog({ projects: [...projects, ...more], workspaces }), {
+      ...options, visits: [{ kind: "workspace", key: "dev-2/w", at: nowMs + 1 }, { kind: "project", key: "dev-1/gone", at: nowMs + 2 }],
+    });
+    expect(picker.lastVisited).toHaveLength(5);
+    expect(picker.lastVisited[0].key).toBe("dev-2/a");
+    expect(new Set(picker.lastVisited.map(row => row.key)).size).toBe(5);
+  });
+
+  it("keeps the legacy catalog without support, including workspace destinations", () => {
+    const legacy = switcherModel(catalog(), { ...options, support: {} });
+    expect(legacy.groups.map(group => group.key)).toEqual(catalog().projects.map(group => group.key));
+    expect(legacy.groups.every(group => group.kind !== "environment")).toBe(true);
+  });
+});
+
+describe("environment workspaceMenuModel", () => {
+  const rows = [
+    { id: "current", last_activity_ms: 1, status: "failed" },
+    { id: "activity", last_activity_ms: 20, status: "provisioning" },
+    { id: "visit", last_activity_ms: 10, status: "ready" },
+    { id: "created", last_activity_ms: 10, created_at: "2026-01-03", status: "ready" },
+    { id: "old", last_activity_ms: 10, created_at: "2026-01-01", status: "failed" },
+    { id: "done", last_activity_ms: 50, status: "finished" },
+  ].map(row => stampWorkspace({ ...row, project_id: "p", name: row.id }, "dev-1"));
+  it("puts current first, then activity, visit and creation, with Finished last", () => {
+    const ordered = workspaceMenuModel({ workspaces: rows, projectKey: "dev-1/p", workspaceKey: "dev-1/current", environmentsSupported: true,
+      visits: [{ kind: "workspace", key: "dev-1/visit", at: 30 }] });
+    expect(ordered.map(row => row.id)).toEqual(["current", "activity", "visit", "created", "old", "done"]);
+    expect(ordered[0].current).toBe(true);
+    expect(workspaceMenuModel({ workspaces: rows, workspaceKey: "dev-1/done", environmentsSupported: true })[0].id).toBe("done");
+  });
+});
+
+it("counts extra folders from the actual project.list effective sources without added_sources", () => {
+  const environments = [
+    { id: "e", deviceId: "dev-1", name: "Shared", sources: [{ id: "shared" }] },
+    { id: "e", deviceId: "dev-2", name: "Other", sources: [{ id: "extra" }] },
+  ];
+  const projects = [on("dev-1", { id: "p", name: "Project", environment_id: "e", diverged: true,
+    sources: [{ id: "shared" }, { id: "extra" }, { id: "another" }] })];
+  const picker = switcherModel(navigationCatalog({ projects }), { environments, support: { "dev-1": true } });
+  expect(picker.groups[0].destinations[0].addedFolders).toBe(2);
 });

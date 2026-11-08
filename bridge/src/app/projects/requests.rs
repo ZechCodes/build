@@ -211,7 +211,7 @@ impl AppState {
         &self,
         project_id: &str,
         candidate: &std::path::Path,
-        except: Option<&str>,
+        source_id: &str,
     ) -> Result<(), String> {
         let project = self.project_for(project_id)?;
         let included_environment = self
@@ -221,12 +221,8 @@ impl AppState {
             .any(|environment| environment.id == project.environment_id);
         let duplicate = included_environment
             && self
-                .project_reference_sources(project_id)?
-                .iter()
-                .filter(|source| Some(source.id.as_str()) != except)
-                .any(|source| {
-                    std::fs::canonicalize(&source.path).is_ok_and(|path| path == candidate)
-                });
+                .projects
+                .source_repoint_duplicates(project_id, source_id, candidate);
         if duplicate {
             return Err(format!(
                 "source is already included in this project: {}",

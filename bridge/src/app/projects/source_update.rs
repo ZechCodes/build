@@ -189,7 +189,7 @@ impl AppState {
                     .to_string(),
             );
         }
-        self.refuse_source_duplicate(project_id, &candidate, Some(&source.id))?;
+        self.refuse_source_duplicate(project_id, &candidate, &source.id)?;
         self.refuse_source_containment(&candidate, Some((project_id, &source.id)))?;
         Ok(candidate)
     }
@@ -362,7 +362,7 @@ impl crate::lifecycle::WorktreeMutation for SerializedSourceUpdate {
                 app.refuse_source_duplicate(
                     &self.captured.project_id,
                     candidate,
-                    Some(&self.captured.source_id),
+                    &self.captured.source_id,
                 )?;
                 app.refuse_source_containment(
                     candidate,

@@ -162,12 +162,19 @@ impl AppState {
         if let Err(error) = validation {
             return self.observe_failed_environment_edit(address, error, held);
         }
+        let moves = address
+            .edit
+            .path
+            .as_ref()
+            .is_some_and(|path| *path != address.source.path);
+        let check_id = address.environment.clone();
+        let check_source = address.source.id.clone();
         let id = address.environment.clone();
         let source_id = address.source.id.clone();
         let sync_base = address.edit.sync_base;
         let checkouts_updated = updated.checkouts_updated;
         let failed = updated.checkouts_failed.iter().map(|f| json!({"workspace_id":f.workspace_id,"path":f.path.display().to_string(),"reason":f.reason})).collect::<Vec<_>>();
-        self.commit_environment_configuration_with(
+        self.commit_environment_configuration_checked(
             &address.environment,
             |projects| {
                 let source = projects
@@ -202,6 +209,15 @@ impl AppState {
                 row["checkouts_failed"] = json!(failed);
                 drop(locks);
                 Ok(row)
+            },
+            move |app| {
+                if moves {
+                    app.refuse_environment_source_move(
+                        &check_id,
+                        app.environment_source(&check_id, &check_source)?,
+                    )?;
+                }
+                Ok(())
             },
         )
     }

@@ -218,15 +218,39 @@ impl AppState {
             return Err("an environment must have at least one source".into());
         }
         self.refuse_environment_source_move(&id, source)?;
-        self.commit_environment_configuration(&id, |projects| {
-            projects
-                .environment_mut(&id)
-                .ok_or("unknown environment")?
-                .sources
-                .retain(|s| s.id != source_id);
-            Ok(())
-        })
+        let held = self.environment_project_ids(&id);
+        for project in &held {
+            self.source_moves.begin(project);
+        }
+        let check_id = id.clone();
+        let check_source = source_id.clone();
+        self.commit_environment_configuration_checked(
+            &id,
+            |projects| {
+                projects
+                    .environment_mut(&id)
+                    .ok_or("unknown environment")?
+                    .sources
+                    .retain(|s| s.id != source_id);
+                Ok(())
+            },
+            None,
+            vec![],
+            move |app, result| {
+                for project in held {
+                    app.source_moves.end(&project);
+                }
+                result
+            },
+            move |app| {
+                app.refuse_environment_source_move(
+                    &check_id,
+                    app.environment_source(&check_id, &check_source)?,
+                )
+            },
+        )
     }
+
     pub(crate) fn environment_set_isolation(&mut self, params: &Value) -> Result<Value, String> {
         let id = require_str(params, "environment_id")?;
         self.projects

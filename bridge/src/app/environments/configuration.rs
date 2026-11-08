@@ -9,6 +9,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 type Finish = Box<dyn FnOnce(&mut AppState, Result<Value, String>) -> Result<Value, String> + Send>;
+type Validate = Box<dyn FnOnce(&AppState) -> Result<(), String> + Send>;
 struct ConfigurationProbe {
     refresh: ProjectSnapshotRefresh,
     environment: String,
@@ -61,8 +62,10 @@ impl WorktreeMutation for ConfigurationProbe {
 struct ConfigurationSettlement {
     environment: String,
     previous: Value,
+    live_projects: Vec<String>,
     prospective: ProjectConfiguration,
     finish: Finish,
+    validate: Option<Validate>,
 }
 impl ConfigurationSettlement {
     fn settle(
@@ -81,9 +84,13 @@ impl ConfigurationSettlement {
         // These paths were related off-lock. No Git discovery runs in settlement.
         app.invalidate_observed_repository_roots(&observed.changed_roots);
         if app.config_value(&app.projects_dir, app.default_harness, app.isolation) != self.previous
+            || app.environment_project_ids(&self.environment) != self.live_projects
         {
             return Err("stale unversioned mutation: environment configuration changed while checking it; retry the edit".into());
         }
+        self.validate
+            .take()
+            .expect("configuration validation runs once")(app)?;
         self.prospective.swap(&mut app.projects, &self.environment);
         let mut observations = app.capture_configuration_observations();
         app.install_environment_edit_refresh(&self.environment, observed.refresh);
@@ -125,6 +132,26 @@ impl AppState {
             + Send
             + 'static,
     ) -> Result<Value, String> {
+        self.commit_environment_configuration_checked(
+            id,
+            change,
+            isolation,
+            repositories,
+            finish,
+            |_| Ok(()),
+        )
+    }
+    pub(in crate::app) fn commit_environment_configuration_checked(
+        &mut self,
+        id: &str,
+        change: impl FnOnce(&mut ProjectRegistry) -> Result<(), String>,
+        isolation: Option<Isolation>,
+        repositories: Vec<PathBuf>,
+        finish: impl FnOnce(&mut AppState, Result<Value, String>) -> Result<Value, String>
+            + Send
+            + 'static,
+        validate: impl FnOnce(&AppState) -> Result<(), String> + Send + 'static,
+    ) -> Result<Value, String> {
         let prepared = self.prepare_environment_configuration(id, change);
         let (previous, prospective, refresh, row) = match prepared {
             Ok(prepared) => prepared,
@@ -156,8 +183,10 @@ impl AppState {
         let settlement = ConfigurationSettlement {
             environment: id.to_owned(),
             previous,
+            live_projects: self.environment_project_ids(id),
             prospective,
             finish: Box::new(finish),
+            validate: Some(Box::new(validate)),
         };
         let job = self.lifecycle_job(reservation, probe, move |app: &mut AppState, result| {
             settlement.settle(app, result)

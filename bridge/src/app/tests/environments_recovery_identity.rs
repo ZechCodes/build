@@ -412,3 +412,48 @@ fn archived_vanished_run_settlement_waits_for_restore() {
         RunState::Archived
     );
 }
+
+fn deferred_run_fixture(root: &Path, adopted: bool) -> (AppState, String, PersistedRun) {
+    let (mut state, project) = super::tracker::tracked_with_origin(root);
+    let checkout = state.project(&project).unwrap().orch.worktrees()
+        .create("restore-obligation", "main", crate::isolation::Isolation::Worktree).unwrap().worktree;
+    let mut record = run_record("run-restore-obligation", &state.project(&project).unwrap().project_key, &checkout.path);
+    record.branch = checkout.branch();
+    record.worktree_name = checkout.name;
+    record.adopted = adopted;
+    state.store.as_ref().unwrap().save_run(&record).unwrap();
+    state.projects.at_mut(0).archived_at = Some(1);
+    (state, project, record)
+}
+
+#[test]
+fn restore_resumes_boot_deferred_publication_with_existing_checkout() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, project, mut record) = deferred_run_fixture(root.path(), true);
+    let checkout = Path::new(&record.worktree_path);
+    crate::git_fixture::git_in(checkout, &["push", "-u", "origin", &record.branch]);
+    let head = git2::Repository::open(checkout).unwrap().head().unwrap().target().unwrap().to_string();
+    record.publication_attempt = Some(crate::run::PublicationAttempt {action:"push".into(),candidate_sha:head,started_at:record.updated_at.clone()});
+    state.store.as_ref().unwrap().save_run(&record).unwrap();
+    state.recover_run(record.clone()).unwrap();
+    assert!(state.runs[&record.id].publication_attempt.is_some());
+    assert_eq!(state.handle(req("project.restore", json!({"project_id":project})))["ok"], true);
+    assert!(state.runs[&record.id].publication_attempt.is_none(), "restore must discharge the skipped publication journal");
+    assert_eq!(state.runs[&record.id].last_error, None);
+    let before = serde_json::to_value(state.store.as_ref().unwrap().load_all_runs().unwrap()).unwrap();
+    state.handle(req("project.restore", json!({"project_id":project})));
+    assert_eq!(serde_json::to_value(state.store.as_ref().unwrap().load_all_runs().unwrap()).unwrap(), before);
+}
+
+#[test]
+fn restore_resumes_boot_deferred_native_checkout_before_vanished_sweep() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, project, record) = deferred_run_fixture(root.path(), false);
+    std::fs::remove_dir_all(&record.worktree_path).unwrap();
+    state.recover_run(record.clone()).unwrap();
+    assert!(!Path::new(&record.worktree_path).exists());
+    assert_eq!(state.handle(req("project.restore", json!({"project_id":project})))["ok"], true);
+    state.sweep_vanished_runs();
+    assert!(Path::new(&record.worktree_path).is_dir(), "restore must remake the native checkout from its retained branch");
+    assert_eq!(state.runs[&record.id].run.state, RunState::Interrupted);
+}

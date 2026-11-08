@@ -1,8 +1,17 @@
 //! Failed creation owns only checkouts that nobody else has referenced.
 use super::*;
 
-#[test]
-fn failed_clone_settlement_keeps_directory_referenced_by_another_project() {
+struct PreparedClone {
+    _root: tempfile::TempDir,
+    app: AppState,
+    other: String,
+    cloned: PathBuf,
+    config: PathBuf,
+    params: Value,
+    done: crate::app::runtime::deferred::DeferredDone,
+}
+
+fn prepared_clone() -> PreparedClone {
     let root = tempfile::tempdir().unwrap();
     let upstream = init_repo_named(root.path(), "upstream");
     let home_a = root.path().join("home-a");
@@ -34,6 +43,28 @@ fn failed_clone_settlement_keeps_directory_referenced_by_another_project() {
         .run();
     let cloned = projects.join("attempt-sources/fresh");
     assert!(cloned.join(".git").is_dir());
+    PreparedClone {
+        _root: root,
+        app,
+        other,
+        cloned,
+        config,
+        params,
+        done,
+    }
+}
+
+#[test]
+fn failed_clone_settlement_keeps_directory_referenced_by_another_project() {
+    let PreparedClone {
+        _root,
+        mut app,
+        other,
+        cloned,
+        config,
+        params,
+        done,
+    } = prepared_clone();
     let original = std::fs::read(cloned.join("README.md")).unwrap();
 
     // The clone exists, but the attempt has not published a project yet.
@@ -78,4 +109,75 @@ fn failed_clone_settlement_keeps_directory_referenced_by_another_project() {
     assert!(other["sources"].as_array().unwrap().iter().any(|source| {
         source["id"] == source_id && source["path"] == cloned.to_string_lossy().as_ref()
     }));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clone_cleanup_claim_blocks_admission_and_prepared_settlement_during_delete() {
+    let PreparedClone {
+        _root,
+        mut app,
+        other,
+        cloned,
+        params,
+        done,
+        ..
+    } = prepared_clone();
+    let child = cloned.join("docs");
+    std::fs::create_dir(&child).unwrap();
+    let local = json!({"project_id":other,"path":cloned,"name":"prepared"});
+    let (admitted, pending) = app.dispatch_deferring("project.add_source", &local);
+    assert!(admitted.is_ok(), "{admitted:?}");
+    let pending = pending.expect("the local folder is opened off-lock").run();
+
+    let state = app.shared();
+    let (gate, gate_handle) = OffLockGate::new();
+    {
+        let mut app = state.lock().unwrap();
+        // Only the failed attempt's cleanup gets the gate: both preparations
+        // have already completed, and later admission must not inherit it.
+        app.off_lock_gate = Some(gate);
+        app.config_persist_failure = Some(ConfigPersistStep::Write);
+        let failed = app.apply_deferred("project.create", &params, done);
+        app.off_lock_gate = None;
+        app.config_persist_failure = None;
+        assert!(failed.is_err(), "the original project write must fail");
+    }
+    gate_handle.wait_for_arrival();
+
+    {
+        let mut app = state.lock().unwrap();
+        // A child path avoids the unrelated exact-path pending reservation.
+        let admission = app.project_add_source(&json!({"project_id":other,"path":child}));
+        assert!(
+            admission.is_err(),
+            "admitted a source inside an active deletion"
+        );
+        let settlement = app.apply_deferred("project.add_source", &local, pending);
+        assert!(
+            settlement.is_err(),
+            "settled a source inside an active deletion"
+        );
+        assert_eq!(app.sources_for(&other).unwrap().len(), 1);
+    }
+    gate_handle.release();
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while cloned.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Once cleanup applies, the same location may be registered afresh.
+        std::fs::create_dir_all(&child).unwrap();
+        loop {
+            let accepted = state.lock().unwrap().handle(req(
+                "project.add_source",
+                json!({"project_id":other,"path":child}),
+            ));
+            if accepted["ok"] == true {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("cleanup must delete its unreferenced clone and release the directory claim");
 }

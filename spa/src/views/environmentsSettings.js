@@ -56,14 +56,14 @@ function listStatusHtml(error) {
 function environmentTotalsText(environment, members, countsKnown) {
   const parts = [];
   if (Array.isArray(environment.sources)) parts.push(`${environment.sources.length} sources`);
-  if (members) parts.push(`${members.length} projects`);
+  if (countsKnown) parts.push(`${members.length} projects`);
   const workspaceText = countsKnown ? environmentWorkspaceText(members) : "";
   if (workspaceText) parts.push(workspaceText);
   return parts.join(" · ");
 }
 
 function environmentProjectsHtml(members, listing, device, error) {
-  if (!members) return listStatusHtml(error);
+  if (!members?.length && !listing.countsKnown) return listStatusHtml(error);
   return members.map(project => projectHtml(project, device, listing.countsKnown)).join("")
     || '<p class="dim">no projects yet</p>';
 }
@@ -77,17 +77,23 @@ function environmentHtml(environment, listing, device, error) {
     ${environmentProjectsHtml(members, listing, device, error)}</article>`;
 }
 
-function legacyProjectsHtml(listing, device) {
+function legacyProjectsHtml(listing, device, error) {
   return `<div class="panel"><h3>Projects (this device needs an update to use environments)</h3>
-    ${listing.rows.map(project => projectHtml(project, device, listing.countsKnown)).join("") || '<p class="dim">No projects yet.</p>'}</div>`;
+    ${environmentProjectsHtml(listing.rows, listing, device, error)}</div>`;
 }
 
-function deviceListHtml({ support, environments, projects: settingsProjects, journalProjects, error }, device) {
+function listErrors(projectList, environmentError) {
+  if (projectList?.pending) return { project: null, empty: null };
+  return { project: projectList?.error, empty: projectList?.error || environmentError };
+}
+
+function deviceListHtml({ support, environments, projects: settingsProjects, journalProjects, error, projectList }, device) {
   const listing = projectListing(settingsProjects, journalProjects);
+  const errors = listErrors(projectList, error);
   const rows = support?.list ? environments : listing.rows;
-  if (!Array.isArray(rows)) return listStatusHtml(error);
-  if (!support?.list) return legacyProjectsHtml(listing, device);
-  return environments.map(environment => environmentHtml(environment, listing, device, error)).join("")
+  if (!Array.isArray(rows)) return listStatusHtml(errors.empty);
+  if (!support?.list) return legacyProjectsHtml(listing, device, errors.project);
+  return environments.map(environment => environmentHtml(environment, listing, device, errors.project)).join("")
     || '<p class="dim">No environments on this device yet</p>';
 }
 
@@ -109,7 +115,8 @@ async function mountDeviceEnvironments(host, device, active) {
     if (kind === "support" && value?.list && wasSupported === false) void refresh();
   })]));
   const reportError = error => { state.error = error.message; paint(); };
-  records.projects = watchEnvironmentSettingsProjects({ deviceId: device.id, callRpc, active, onError: reportError,
+  records.projects = watchEnvironmentSettingsProjects({ deviceId: device.id, callRpc, active,
+    onState: projectList => { state.projectList = projectList; paint(); },
     paint: value => { state.projects = value; paint(); } });
   const supported = () => active() && bridgeCapabilities(device.id).environments?.list === true;
   async function refreshEnvironments() {
@@ -121,7 +128,7 @@ async function mountDeviceEnvironments(host, device, active) {
   }
   async function refresh() {
     await Promise.allSettled([
-      records.projects.refresh().catch(reportError),
+      records.projects.refresh(),
       refreshEnvironments().catch(reportError),
     ]);
     await Promise.all(Object.values(records).map(record => record.read()));

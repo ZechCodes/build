@@ -224,7 +224,7 @@ it.each([
   const row = card.querySelector(".projrow");
   expect(row.querySelector(".pname").textContent).toContain("source");
   expect(row.textContent).not.toMatch(/workspaces|tasks|folders/);
-  expect(card.querySelector("p.dim").textContent).toBe("2 sources · 1 projects");
+  expect(card.querySelector("p.dim").textContent).toBe("2 sources");
   expect(await readCached(address("laptop", "environment-settings-projects"))).toBeUndefined();
 });
 
@@ -248,4 +248,71 @@ it.each([true, false])("keeps absent project lists unknown with cached environme
   await vi.waitFor(() => expect(host.textContent).toContain("project list refused"));
   expect(host.textContent).toContain("Sources"); // retain the cached environment card
   expect(host.textContent).not.toMatch(/loading…|0 projects|no projects yet/);
+});
+
+
+it.each([true, false])("does not claim an empty fallback is authoritative (environments=%s)", async supported => {
+  await seed("laptop", [environment()], [], supported, false); await seed("desktop", [], []);
+  let finish;
+  state.calls.set("laptop", vi.fn(method => method === "project.list"
+    ? new Promise(resolve => { finish = resolve; }) : new Promise(() => {})));
+  await mount();
+  const host = document.querySelector('[data-environments-device="laptop"]');
+  expect(host.textContent).not.toMatch(/0 projects|no projects yet/i);
+  expect(host.textContent).toContain("loading…");
+  await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+  finish({ projects: [] });
+  await vi.waitFor(() => expect(host.textContent).toMatch(/no projects yet/i));
+  expect(host.textContent).not.toContain("loading…");
+  if (supported) expect(host.textContent).toContain("0 projects");
+});
+
+async function seedUnknownProjects() {
+  state.support.set("laptop", true);
+  await writeCached(address("laptop", "environment-support"), { list: true });
+  await writeCached(address("laptop", "environments"), [environment()]);
+  await seed("desktop", [], []);
+}
+const projectWake = () => writeCached({ ...address("laptop", "sync-cursor"), entityId: "proj-1", sub: '{"kind":"project_tasks","project_id":"proj-1"}' }, { cursor: "next" });
+
+it.each(["greeting", "journal wake"])("clears a failed empty-list error during a delayed retry from %s", async retry => {
+  await seedUnknownProjects();
+  let finish;
+  let attempts = 0;
+  state.calls.set("laptop", vi.fn(method => {
+    if (method !== "project.list") return new Promise(() => {});
+    if (++attempts === 1) return Promise.reject(new Error("first attempt failed"));
+    return new Promise(resolve => { finish = resolve; });
+  }));
+  await mount();
+  const host = document.querySelector('[data-environments-device="laptop"]');
+  await vi.waitFor(() => expect(host.textContent).toContain("first attempt failed"));
+  if (retry === "greeting") state.greetings.forEach(listener => listener("laptop"));
+  else await projectWake();
+  await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+  expect(host.textContent).toContain("loading…");
+  expect(host.textContent).not.toContain("first attempt failed");
+  finish({ projects: [] });
+  await vi.waitFor(() => expect(host.textContent).toContain("no projects yet"));
+  expect(host.textContent).not.toMatch(/loading…|failed/);
+});
+
+it("ignores a superseded pull's late failure while the current retry is pending", async () => {
+  await seedUnknownProjects();
+  const attempts = [];
+  state.calls.set("laptop", vi.fn(method => method === "project.list"
+    ? new Promise((resolve, reject) => attempts.push({ resolve, reject })) : new Promise(() => {})));
+  await mount();
+  await vi.waitFor(() => expect(attempts).toHaveLength(1));
+  state.greetings.forEach(listener => listener("laptop"));
+  await vi.waitFor(() => expect(attempts).toHaveLength(2));
+  attempts[0].reject(new Error("superseded failure"));
+  await vi.waitFor(() => expect(state.calls.get("laptop")).toHaveBeenCalled());
+  const host = document.querySelector('[data-environments-device="laptop"]');
+  // Drain the failed request's cache/read continuations before checking paint.
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(host.textContent).toContain("loading…");
+  expect(host.textContent).not.toContain("superseded failure");
+  attempts[1].reject(new Error("current failure"));
+  await vi.waitFor(() => expect(host.textContent).toContain("current failure"));
 });

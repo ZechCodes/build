@@ -267,3 +267,216 @@ fn unknown_environment_reference_reserves_runtime_id() {
     assert!(app.revive_parked_projects().is_empty());
     assert!(app.projects.environment("env-99").is_none());
 }
+
+#[test]
+fn unavailable_sources_are_stored_but_excluded_from_live_projects_and_workspaces() {
+    for legacy in [true, false] {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let missing = root.path().join("missing");
+        let not_directory = root.path().join("file");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(home.join("notes.txt"), "copy this\n").unwrap();
+        std::fs::write(&not_directory, "not a source directory\n").unwrap();
+        let sources = json!([
+            {"id":"source-1","path":home,"name":"home","mount":"home"},
+            {"id":"source-2","path":missing,"name":"missing","mount":"missing"},
+            {"id":"source-3","path":not_directory,"name":"file","mount":"file"}
+        ]);
+        let config = if legacy {
+            json!({"projects":[{"id":"proj-1","path":home,"sources":sources}]})
+        } else {
+            json!({
+                "environments":[{"id":"env-1","name":"home","sources":[sources[0].clone(),sources[1].clone()]}],
+                "projects":[{"id":"proj-1","environment_id":"env-1","project_key":home,
+                    "home_path":home,"path":home,"added_sources":[sources[2].clone()]}]
+            })
+        };
+        let path = root.path().join("config.json");
+        std::fs::write(&path, config.to_string()).unwrap();
+        let mut app = state(root.path()).with_config(&path).unwrap();
+        let live = app.sources_for("proj-1").unwrap();
+        assert_eq!(
+            live.iter()
+                .map(|source| source.id.as_str())
+                .collect::<Vec<_>>(),
+            ["source-1"]
+        );
+        assert_eq!(app.project_for("proj-1").unwrap().sources.len(), 1);
+        // An unrelated source setting must not turn filtering into a stored unlink.
+        app.commit_project_configuration("proj-1", |projects| {
+            projects.source_mut("proj-1", "source-1").unwrap().sync_base = Some(false);
+            Ok(())
+        })
+        .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let stored_count = saved["environments"][0]["sources"]
+            .as_array()
+            .unwrap()
+            .len()
+            + saved["projects"][0]["added_sources"]
+                .as_array()
+                .unwrap()
+                .len();
+        assert_eq!(stored_count, 3);
+        assert_eq!(saved["projects"][0]["sources"].as_array().unwrap().len(), 1);
+        let created = rpc(
+            &mut app,
+            "workspace.create",
+            json!({"project_id":"proj-1","name":"available-only"}),
+        );
+        assert_eq!(created["ok"], true, "{created}");
+        assert_eq!(
+            created["result"]["directories"].as_array().unwrap().len(),
+            1,
+            "{created}"
+        );
+        let reloaded = state(root.path()).with_config(&path).unwrap();
+        assert_eq!(reloaded.sources_for("proj-1").unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn removing_first_source_preserves_project_home_metadata() {
+    for secondary_git in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let home = crate::git_fixture::init_repo_named(root.path(), "home");
+        let secondary = root.path().join("secondary");
+        std::fs::create_dir(&secondary).unwrap();
+        if secondary_git {
+            git2::Repository::init(&secondary).unwrap();
+        }
+        let path = root.path().join("config.json");
+        std::fs::write(&path, json!({"projects":[{
+            "id":"proj-1","path":home,"base_branch":"home-base","sources":[
+                {"id":"source-1","path":home,"name":"home","mount":"home","base_branch":"home-base"},
+                {"id":"source-2","path":secondary,"name":"secondary","mount":"secondary","base_branch":"other-base"}
+            ]}]}).to_string()).unwrap();
+        let mut app = state(root.path()).with_config(&path).unwrap();
+        let removed = rpc(
+            &mut app,
+            "project.remove_source",
+            json!({"project_id":"proj-1","source_id":"source-1"}),
+        );
+        assert_eq!(removed["ok"], true, "{removed}");
+        assert_home_metadata(&app, &home, &secondary);
+        let reloaded = state(root.path()).with_config(&path).unwrap();
+        assert_home_metadata(&reloaded, &home, &secondary);
+    }
+}
+
+fn assert_home_metadata(app: &AppState, home: &std::path::Path, secondary: &std::path::Path) {
+    let project = app.project_for("proj-1").unwrap();
+    assert_eq!(project.repo_path, home);
+    assert!(
+        project.is_git,
+        "source removal cannot change the original home's classification"
+    );
+    assert_eq!(project.base_branch, "home-base");
+    assert_eq!(project.orch.worktrees().repo_path(), home);
+    assert_eq!(project.sources.len(), 1);
+    assert_eq!(project.sources[0].path, secondary);
+    assert_eq!(project.sources[0].base_branch, "other-base");
+}
+
+#[test]
+fn already_diverged_legacy_record_keeps_project_home_metadata() {
+    for secondary_git in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let home = crate::git_fixture::init_repo_named(root.path(), "home");
+        let secondary = root.path().join("secondary");
+        std::fs::create_dir(&secondary).unwrap();
+        if secondary_git {
+            git2::Repository::init(&secondary).unwrap();
+        }
+        let path = root.path().join("config.json");
+        // This is a legacy record saved after the home source was removed.
+        std::fs::write(&path, json!({"projects":[{
+            "id":"proj-1","path":home,"base_branch":"home-base","sources":[
+                {"id":"source-2","path":secondary,"name":"secondary","mount":"secondary","base_branch":"other-base"}
+            ]}]}).to_string()).unwrap();
+        let app = state(root.path()).with_config(&path).unwrap();
+        assert_home_metadata(&app, &home, &secondary);
+        app.persist();
+        let reloaded = state(root.path()).with_config(&path).unwrap();
+        assert_home_metadata(&reloaded, &home, &secondary);
+    }
+}
+
+#[test]
+fn unavailable_source_list_keeps_legacy_home_fallback_without_storing_it() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let missing = root.path().join("missing");
+    let added = root.path().join("added");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::create_dir(&added).unwrap();
+    std::fs::write(home.join("notes.txt"), "home remains usable\n").unwrap();
+    let path = root.path().join("config.json");
+    std::fs::write(
+        &path,
+        json!({"projects":[{"id":"proj-1","path":home,"sources":[
+            {"id":"source-2","name":"missing","mount":"missing","path":missing}
+        ]}]})
+        .to_string(),
+    )
+    .unwrap();
+    let mut app = state(root.path()).with_config(&path).unwrap();
+    let live = app.sources_for("proj-1").unwrap();
+    assert_eq!(
+        live.len(),
+        1,
+        "the base loader retains its initial home source"
+    );
+    assert_eq!(live[0].id, "source-1");
+    assert_eq!(live[0].path, home);
+    app.commit_project_configuration("proj-1", |projects| {
+        projects.source_mut("proj-1", "source-1").unwrap().sync_base = Some(false);
+        Ok(())
+    })
+    .unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        saved["environments"][0]["sources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        saved["environments"][0]["sources"][0]["path"],
+        json!(missing)
+    );
+    assert!(saved["projects"][0]["added_sources"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let mut app = state(root.path()).with_config(&path).unwrap();
+    assert_eq!(app.sources_for("proj-1").unwrap()[0].sync_base, Some(false));
+    let created = rpc(
+        &mut app,
+        "workspace.create",
+        json!({"project_id":"proj-1","name":"fallback"}),
+    );
+    assert_eq!(created["ok"], true, "{created}");
+    let appended = rpc(
+        &mut app,
+        "project.add_source",
+        json!({"project_id":"proj-1","path":added,"name":"added"}),
+    );
+    assert_eq!(appended["ok"], true, "{appended}");
+    let app = state(root.path()).with_config(&path).unwrap();
+    assert_eq!(
+        app.sources_for("proj-1")
+            .unwrap()
+            .iter()
+            .map(|source| source.id.as_str())
+            .collect::<Vec<_>>(),
+        ["source-1", "source-3"]
+    );
+    assert_eq!(
+        app.projects.environment("env-1").unwrap().sources[0].path,
+        missing
+    );
+}

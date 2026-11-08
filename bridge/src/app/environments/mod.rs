@@ -12,6 +12,11 @@
 //! mirrors setting/clearing both copies while environments are one-to-one, so
 //! clearing still restores the device default. Parked projects migrate at once;
 //! their raw source references are retained even while their folders are away.
+//! Unavailable references stay stored, but live project projections and workspace
+//! cuts include only the directories the legacy loader could open. Refreshing
+//! that projection never changes the project's original home Git metadata.
+//! If none can open, the legacy home-source fallback remains usable without
+//! becoming a stored reference merely because an unrelated setting was saved.
 use crate::app::projects::ProjectSource;
 use crate::isolation::Isolation;
 

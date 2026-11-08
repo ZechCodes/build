@@ -1675,9 +1675,13 @@ fixed once a source exists), a base branch, and whether it is a Git
 repository. A project has no remote of its own. A source's remote is its
 checkout's `origin`, read from the checkout for every row
 (`ProjectSource::origin`, via git2 in process). `config.json` keeps no copy of
-it, and ignores the copy older bridges wrote. The project row's `path`,
-`base_branch` and `remote` are its first source's. That first source is the
-project's home (orchestrator, registry identity) and cannot move.
+it, and ignores the copy older bridges wrote. The project row's `remote` is its
+first source's. Its `path`, `base_branch` and Git classification belong to its
+recorded home (orchestrator, registry identity), initially its first source.
+Unlinking that source does not retarget the home, its Git metadata or the
+orchestrator to the next source. Stored references can retain unavailable
+folders, while live source projections and workspace cuts skip missing or
+non-directory paths, as the legacy loader did.
 A configured project whose home folder is missing at boot is parked, not
 dropped (`bridge/src/app/projects/parked.rs`): its configuration is kept
 verbatim and written back on every save, its `proj-N` stays reserved, and

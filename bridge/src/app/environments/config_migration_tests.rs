@@ -86,8 +86,22 @@ fn migration_is_idempotent() {
     fixture.state();
     let migrated = std::fs::read(&fixture.config).unwrap();
     assert_ne!(migrated, fixture.original);
+    let previous_path = fixture.config.with_extension("json.previous");
+    let backup_path = fixture.config.with_extension("json.pre-environments");
+    let previous = std::fs::read(&previous_path).unwrap();
+    let backup = std::fs::read(&backup_path).unwrap();
     fixture.state();
     assert_eq!(std::fs::read(&fixture.config).unwrap(), migrated);
+    assert_eq!(
+        std::fs::read(previous_path).unwrap(),
+        previous,
+        "a second load must preserve the previous recovery generation"
+    );
+    assert_eq!(
+        std::fs::read(backup_path).unwrap(),
+        backup,
+        "a second load must preserve the pre-environments snapshot"
+    );
 }
 
 #[test]

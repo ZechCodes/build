@@ -365,6 +365,16 @@ impl ProjectRegistry {
         sources: Vec<ProjectSource>,
     ) -> bool {
         self.observation_projects.mark(project_id);
+        let fallback_home = self.get(project_id).and_then(|project| {
+            let environment = self.environment(&project.environment_id)?;
+            Self::unowned_home_source(project, environment)
+        });
+        let promoted_home = fallback_home.as_ref().and_then(|fallback| {
+            sources
+                .iter()
+                .find(|source| source.id == fallback.id && source.path == fallback.path)
+                .cloned()
+        });
         let Some(project) = self
             .projects
             .iter_mut()
@@ -372,8 +382,39 @@ impl ProjectRegistry {
         else {
             return false;
         };
+        let retained: std::collections::HashSet<_> =
+            sources.iter().map(|source| &source.id).collect();
+        // Only a reference visible before this edit can have been unlinked.
+        // Absence from the live projection alone does not remove stored refs.
+        let removed: std::collections::HashSet<_> = project
+            .sources
+            .iter()
+            .filter(|source| {
+                !retained.contains(&source.id)
+                    && !fallback_home
+                        .as_ref()
+                        .is_some_and(|home| home.id == source.id && home.path == source.path)
+            })
+            .map(|source| source.id.clone())
+            .collect();
+        project
+            .added_sources
+            .retain(|source| !removed.contains(&source.id));
+        let environment_id = project.environment_id.clone();
         project.next_source = project.next_source.max(next_source_number(&sources));
         project.sources = sources;
+        if let Some(environment) = self
+            .environments
+            .iter_mut()
+            .find(|environment| environment.id == environment_id)
+        {
+            environment
+                .sources
+                .retain(|source| !removed.contains(&source.id));
+        }
+        if let Some(home) = promoted_home {
+            self.promote_home_source(project_id, &home);
+        }
         self.reconcile_project_sources(project_id);
         true
     }
@@ -634,7 +675,11 @@ impl ProjectRegistry {
             return;
         };
         let environment_id = project.environment_id.clone();
+        let fallback = self
+            .environment(&environment_id)
+            .and_then(|environment| Self::unowned_home_source(project, environment));
         let effective = project.sources.clone();
+        let mut added = project.added_sources.clone();
         let next = project.next_source;
         let Some(environment) = self
             .environments
@@ -643,27 +688,39 @@ impl ProjectRegistry {
         else {
             return;
         };
-        let inherited: std::collections::HashSet<_> =
-            environment.sources.iter().map(|s| s.id.clone()).collect();
-        environment.sources = effective
-            .iter()
-            .filter(|s| inherited.contains(&s.id))
-            .cloned()
-            .collect();
+        for source in effective.iter().filter(|source| {
+            !fallback
+                .as_ref()
+                .is_some_and(|home| home.id == source.id && home.path == source.path)
+        }) {
+            if let Some(inherited) = environment
+                .sources
+                .iter_mut()
+                .find(|stored| stored.id == source.id)
+            {
+                *inherited = source.clone();
+            } else {
+                Self::upsert_added_source(&mut added, source);
+            }
+        }
         environment.next_source = environment
             .next_source
             .max(next)
             .max(next_source_number(&effective));
-        let added = effective
-            .into_iter()
-            .filter(|s| !inherited.contains(&s.id))
-            .collect();
         self.projects
             .iter_mut()
             .find(|p| p.id == id)
             .expect("resolved project")
             .added_sources = added;
         self.refresh_environment_projects(&environment_id);
+    }
+
+    fn upsert_added_source(stored: &mut Vec<ProjectSource>, source: &ProjectSource) {
+        if let Some(existing) = stored.iter_mut().find(|stored| stored.id == source.id) {
+            *existing = source.clone();
+        } else {
+            stored.push(source.clone());
+        }
     }
 
     fn refresh_environment_projects(&mut self, environment_id: &str) {
@@ -676,6 +733,7 @@ impl ProjectRegistry {
             .filter(|p| p.environment_id == environment_id)
         {
             self.observation_projects.mark(&project.id);
+            let fallback = Self::unowned_home_source(project, &environment);
             let statuses: HashMap<_, _> = project
                 .sources
                 .iter()
@@ -685,18 +743,23 @@ impl ProjectRegistry {
                 .sources
                 .iter()
                 .chain(&project.added_sources)
-                .cloned()
+                .filter_map(|source| {
+                    let path = super::canonical_source_path(&source.path).ok()?;
+                    let mut live = source.clone();
+                    live.path = path;
+                    Some(live)
+                })
                 .collect();
+            if project.sources.is_empty() {
+                let home = fallback.or_else(|| Self::initial_home_source(project));
+                project.sources.extend(home);
+            }
             for source in &mut project.sources {
                 if let Some(status) = statuses.get(&source.id) {
                     source.sync_status = status.clone();
                 }
             }
             project.next_source = environment.next_source;
-            if let Some(home) = environment.sources.first() {
-                project.base_branch = home.base_branch.clone();
-                project.is_git = home.is_git;
-            }
         }
     }
 
@@ -738,6 +801,7 @@ impl ProjectRegistry {
                 }
             }
         }
+        let saved_home = self.saved_home_source(id, entry, &added_sources);
         let project = self
             .projects
             .iter_mut()
@@ -762,6 +826,99 @@ impl ProjectRegistry {
         project.archived_at = entry.get("archived_at").and_then(serde_json::Value::as_u64);
         project.isolation = crate::app::config::configured_isolation(entry, "project isolation");
         project.added_sources = added_sources;
+        if let Some(home) = saved_home {
+            project.sources = vec![home];
+        }
         self.refresh_environment_projects(environment_id);
+    }
+}
+
+impl ProjectRegistry {
+    fn source_is_owned(
+        source: &ProjectSource,
+        environment: &Environment,
+        added: &[ProjectSource],
+    ) -> bool {
+        environment
+            .sources
+            .iter()
+            .chain(added)
+            .any(|stored| stored.id == source.id && stored.path == source.path)
+    }
+
+    fn unowned_home_source(project: &Project, environment: &Environment) -> Option<ProjectSource> {
+        let home = super::canonical_source_path(&project.repo_path).ok()?;
+        project
+            .sources
+            .iter()
+            .find(|source| {
+                source.id == "source-1"
+                    && source.path == home
+                    && !Self::source_is_owned(source, environment, &project.added_sources)
+            })
+            .cloned()
+    }
+
+    fn initial_home_source(project: &Project) -> Option<ProjectSource> {
+        let path = super::canonical_source_path(&project.repo_path).ok()?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("project")
+            .to_string();
+        Some(ProjectSource::added(
+            "source-1".into(),
+            name.clone(),
+            super::safe_mount_name(&name),
+            path,
+            project.is_git,
+            project.base_branch.clone(),
+        ))
+    }
+
+    fn saved_home_source(
+        &self,
+        id: &str,
+        entry: &serde_json::Value,
+        added: &[ProjectSource],
+    ) -> Option<ProjectSource> {
+        let project = self.get(id)?;
+        let home = super::canonical_source_path(&project.repo_path).ok()?;
+        let environment = self.environment(entry.get("environment_id")?.as_str()?)?;
+        let sources = super::configured_sources(entry.get("sources")?.as_array()?);
+        sources.into_iter().find(|source| {
+            source.id == "source-1"
+                && source.path == home
+                && !Self::source_is_owned(source, environment, added)
+        })
+    }
+
+    /// A membership edit explicitly adopts the legacy fallback as a reference.
+    fn promote_home_source(&mut self, id: &str, home: &ProjectSource) {
+        let environment_id = self
+            .get(id)
+            .expect("resolved project")
+            .environment_id
+            .clone();
+        let inherited = self
+            .environments
+            .iter_mut()
+            .find(|environment| environment.id == environment_id)
+            .and_then(|environment| {
+                environment
+                    .sources
+                    .iter_mut()
+                    .find(|source| source.id == home.id)
+            });
+        if let Some(source) = inherited {
+            *source = home.clone();
+        } else {
+            let project = self
+                .projects
+                .iter_mut()
+                .find(|project| project.id == id)
+                .expect("resolved project");
+            Self::upsert_added_source(&mut project.added_sources, home);
+        }
     }
 }

@@ -59,14 +59,7 @@ const type = (element, value) => {
 };
 
 beforeEach(async () => {
-  // Close the previous reader before resetting shared records. Its list-sync
-  // subscription must not publish an older row into the next opening's cache.
-  const back = document.querySelector("#psbrowseback");
-  if (back) {
-    back.click();
-    await vi.waitFor(() => expect(document.querySelector("#pscancel")).toBeTruthy());
-  }
-  document.querySelector("#pscancel")?.click();
+  document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
   await wipeCache();
   await wipeUiRecords();
   sourceAuthority.epoch = "legacy-epoch";
@@ -79,7 +72,6 @@ beforeEach(async () => {
   });
   confirmAction.mockReset();
   openWizard.mockReset();
-  document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
 });
 
 describe("openProjectSettings", () => {

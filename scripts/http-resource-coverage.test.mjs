@@ -341,7 +341,8 @@ const sourceFingerprintParts = {
   // #997 runtime-board inboxView.js:193,206,320: scoped pending display and cached branch choices; existing RPC and mutation dispatch unchanged.
   // #1051: cached environment identity and wizard entry points; existing RPC methods, producers and assignment edges are unchanged.
   "core/inboxView.js": ["af9155dc", "2c6d74b7", "97e7f019", "14d8568c", "80f5eca0", "0842642e", "1b519057", "512e963e"],
-  "core/isolation.js": ["1b646651", "086eea7f", "b0a97d6f", "8993ed77", "7e6e246e", "4110fbc2", "7defb076", "77f79221"],
+  // #1065: isolation readers follow the settings opening lifetime; RPC methods and parameter producers are unchanged.
+  "core/isolation.js": ["08331ae5", "135fe872", "0b2c3d4f", "0027625e", "4fef2f48", "90f9cddf", "66b81964", "8c4948bd"],
   "core/markdownFences.js": ["10057396", "68214f4d", "d193015e", "2552698e", "c48313df", "6df2e223", "7e3bc837", "2805a4bb"],
   "core/modelCatalog.js": ["c293ea11", "fff0969f", "7852c8cd", "0c252f82", "fe666159", "95919417", "25a661ec", "c93fd9b4"],
   "core/navigationVisits.js": ["f8d32f7a", "6bf64af6", "81866475", "02ebd8fc", "3a0be61c", "c9f0d9f3", "e1cc0c06", "dd4dc05a"],
@@ -436,11 +437,13 @@ const sourceFingerprintParts = {
   // #1052: nested creation execution evidence changes display state; transport method edges stay unchanged.
   "core/writeOperations.js": ["8dd06f02", "c7f3f56e", "ae6bcbca", "76665c9a", "452af3df", "6352b83c", "113b36cc", "193b6b1b"],
   "push.js": ["c7a3eb27", "240e0a4d", "3e314aee", "369bea39", "25bf83e0", "f105e41a", "0e4ed716", "4e53028b"],
-  "sheets/browser.js": ["e226c6fb", "9689c6bc", "39ba311b", "335481c7", "f444e696", "36c5c8b6", "013588ec", "bd2a4dbe"],
+  // #1065: browser teardown retires cached listing readers; filesystem RPC edges are unchanged.
+  "sheets/browser.js": ["d299da94", "78fb105b", "a6dbb9f6", "23f356e1", "e385bce3", "f06a5f56", "15f83ca7", "203093f4"],
   "sheets/newRepo.js": ["e1addf8b", "abc706f6", "ca74fa24", "7e1f3208", "aae3d460", "37157135", "21e46d2f", "f187cdfa"],
   // #1065: positive ownership evidence gates both card rendering and editing.save.
   // Source replies use the shared identity-preserving writer; project-scoped methods/selectors and project.list refresh are unchanged.
-  "sheets/projectSettings.js": ["69ccc0ae", "32caed18", "b78351f2", "0a9b73fb", "c191cac2", "52604fd3", "3dddf9fd", "41bf0e1f"],
+  // Opening teardown and atomic Sync adoption retain current project metadata; no RPC edge changes.
+  "sheets/projectSettings.js": ["19bed643", "9f18d688", "c1dc58c8", "a0ca0231", "60b9f6a1", "6206c912", "7f44359a", "50f47131"],
   "sheets/projectSources.js": ["824cc8cc", "c2389c5d", "c5a484d1", "a8f838bf", "b49d95de", "16e2f200", "29b81ff2", "8b6eaa5b"],
   // #1065: sheet-owned in-flight state blocks duplicate Sync requests; the accepted callback, RPC method and selectors are unchanged.
   "sheets/sourceSyncControls.js": ["49045a5b", "1fd03d03", "c9e574df", "020f32ea", "5d64bdd0", "3ab970b7", "1c98dee9", "cb20c875"],

@@ -8,7 +8,7 @@ import { isolationFieldHtml, mountIsolation, projectIsolationTarget } from "../c
 import { settingsSheetHtml } from "./settingsSheet.js";
 import { openBrowser } from "./browser.js";
 import { deviceSettingsAddress, projectSettingsAddress, removeProjectSetting, watchSettingsRecord, writeProjectSetting } from "../core/settingsRecords.js";
-import { deleteCached, readCached, subscribeCache } from "../core/localCache.js";
+import { deleteCached, mergeCachedAtomically, readCached, subscribeCache } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
@@ -19,6 +19,7 @@ import { guardProjectSourceRpc, readSourceOwnershipEvidence } from "../core/sour
 import { environmentsAddress, readCachedEnvironments } from "../core/environmentCache.js";
 import { mountSourceCards, readSourceEdits, restoreSourceEdits, sourceEditing, sourcesSectionHtml } from "./projectSources.js";
 import { withNewerSyncs } from "../core/sourceSyncModel.js";
+import { watchSheetLifetime } from "../core/sheetLifetime.js";
 
 /** The project's own name. It is the first source's folder's, and is not a
  *  source's label: a source is renamed on its card. */
@@ -116,9 +117,11 @@ function restoreDraft(sheet, project, draft) {
  *  sheet has already resolved that, so nothing here asks which device it is. */
 export function openProjectSettings(projectId, { callRpc, deviceId = "", onDeleted }) {
   const sheet = $("#sheet");
+  const scrim = $("#scrim");
   disposeRepoPickers(sheet);
   sheet.innerHTML = settingsSheetHtml({ title: "Project settings", bodyHtml: '<div class="sub">Loading…</div>' });
   $("#scrim").classList.add("show");
+  let disposed = false;
   let frame = sheet.firstElementChild;
   let view = "settings";
   let painted = null;
@@ -144,7 +147,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   };
   const refresh = () => pullProjectSettings(projectId, { callRpc, deviceId, record });
   const sourceRpc = guardProjectSourceRpc(deviceId, callRpc, async () => (await readCached(projectSettingsAddress(deviceId, projectId)))?.value);
-  const current = () => sheet.isConnected && sheet.firstElementChild === frame && $("#scrim").classList.contains("show");
+  const current = () => !disposed && sheet.isConnected && sheet.firstElementChild === frame && scrim.classList.contains("show");
   // Asked again when the machine greets while THIS opening is on screen.
   const repoAsk = refreshGithubRepos(deviceId, callRpc, { wanted: current });
   // Whether this machine edits sources in place is a fact a greeting writes
@@ -165,22 +168,23 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   const adoptListedSyncs = async () => {
     const listed = (await readCached({ deviceId, entityId: "", kind: "projects" }))?.value;
     const row = Array.isArray(listed) ? listed.find((project) => project.project_id === projectId) : null;
-    const synced = painted && withNewerSyncs(painted, row);
-    if (synced) await record.write(synced);
+    await mergeCachedAtomically(projectSettingsAddress(deviceId, projectId), latest =>
+      current() && latest ? withNewerSyncs(latest, row) : null);
   };
   const unsubscribeSupport = subscribeCache({ deviceId }, (address) => {
     if ([SOURCE_EDIT_SUPPORT_KIND, environmentSupportAddress(deviceId).kind, environmentsAddress(deviceId).kind].includes(address?.kind)) void readSupport();
     if (address?.kind === "projects" && !address.entityId) void adoptListedSyncs();
   });
-  const close = () => {
+  const dispose = watchSheetLifetime(current, () => {
+    disposed = true;
     repoAsk.stop();
     unsubscribeSupport();
     disposeRepoPickers(sheet);
     compactionEditor?.dispose();
     record.dispose();
     draftRecord?.dispose();
-    $("#scrim").classList.remove("show");
-  };
+  });
+  const close = () => { dispose(); scrim.classList.remove("show"); };
 
   const paintMissing = (message) => {
     if (!current() || view !== "settings") return;
@@ -222,7 +226,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
       });
     }
     painted = project;
-    mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), deviceId, fromProjectRecord: true });
+    mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), deviceId, fromProjectRecord: true, current });
     mountSources(project, {
       callRpc: sourceRpc, record, deviceId, editing, refresh, syncInFlight,
       saveDraft,
@@ -343,12 +347,15 @@ async function browseForSource(project, { callRpc, deviceId, onFrameChange, onRe
     bodyHtml: '<div id="psbrowser"></div><div class="row"><button class="btn" id="psbrowseback" type="button">Back</button></div><div class="adderr" id="psbrowseerr" role="alert"></div>',
   });
   onFrameChange();
+  const browser = $("#psbrowser");
+  const scrim = $("#scrim");
+  const current = () => browser.isConnected && scrim.classList.contains("show");
   $("#psbrowseback").onclick = onReturn;
   const chosen = async (path) => {
     try {
       const changed = await callRpc("project.add_source", { project_id: project.project_id, path });
       await writeProjectSetting(deviceId, changed);
-      onReturn();
+      if (current()) onReturn();
     } catch (thrown) {
       const error = $("#psbrowseerr");
       if (error) error.textContent = thrown.message;
@@ -362,17 +369,19 @@ async function browseForSource(project, { callRpc, deviceId, onFrameChange, onRe
     const settingsRecord = watchSettingsRecord(address, (settings) => {
       if (settings?.projects_dir) ready();
     });
+    const dispose = watchSheetLifetime(current, settingsRecord.dispose);
     await settingsRecord.read();
+    if (!current()) return;
     const pull = settingsRecord.pull(() => callRpc("settings.get"));
     const result = await Promise.race([
       cached.then(() => ({ ready: true })),
       pull.then(() => ({ ready: true }), (error) => ({ error })),
     ]);
-    if (result.error) settingsRecord.dispose();
-    else void pull.catch(() => {}).finally(settingsRecord.dispose);
+    if (result.error) dispose();
+    else void pull.catch(() => {}).finally(dispose);
     if (result.error) throw result.error;
     const startPath = (await readCached(address))?.value?.projects_dir;
-    if (!$("#psbrowser")) return;
+    if (!current()) return;
     await openBrowser({
       title: "Add folder",
       gitOnly: false,
@@ -380,7 +389,7 @@ async function browseForSource(project, { callRpc, deviceId, onFrameChange, onRe
       startPath,
       callRpc,
       deviceId,
-      container: $("#psbrowser"),
+      container: browser,
       onCancel: onReturn,
       onChoose: (path) => void chosen(path),
     });

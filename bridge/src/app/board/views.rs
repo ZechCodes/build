@@ -645,6 +645,7 @@ impl AppState {
         #[cfg(test)]
         let _assemble_phase = crate::timing::phase_samples::phase("publication.board_assemble");
         super::assembly::BoardSnapshot {
+            environments: self.snapshot_environment_list()["environments"].clone(),
             // The active feed contains workspace-backed work only. Legacy
             // task records are intentionally absent from both the folded
             // items and the compatibility collections.

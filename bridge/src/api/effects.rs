@@ -38,6 +38,7 @@ pub const SQL_READ_METHODS: &[&str] = &[
 pub const INTAKE_SNAPSHOT_METHODS: &[&str] = &[
     "board.list",
     "project.list",
+    "environment.list",
     "workspace.list",
     "workspace.get",
     "agent.list",
@@ -66,6 +67,7 @@ const SNAPSHOT_METHODS: &[&str] = &[
     "agent.list",
     "board.list",
     "project.list",
+    "environment.list",
     "settings.get",
     "workspace.list",
     "workspace.get",

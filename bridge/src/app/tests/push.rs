@@ -2028,3 +2028,57 @@ async fn board_push_publishes_environments() {
         Err(crate::http::sse::DeliveryError::TooLarge)
     );
 }
+
+#[tokio::test]
+async fn project_counts_publish_when_tasks_or_workspaces_change() {
+    let (dir, repo) = init_repo();
+    let (_state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let subscribed = handler.call(
+        sender,
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id":"project-counts", "scope":{"kind":"board"}, "kinds":["state"]
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed}");
+    settled_pushes(&mut rx, &key).await;
+    let created = call(
+        &handler,
+        "tasks.create",
+        json!({"project_id":"proj-1","title":"counted task"}),
+    );
+    assert_eq!(created["ok"], true, "{created}");
+    let row = carried_project(&settled_pushes(&mut rx, &key).await);
+    assert_eq!(row["open_tasks"], 1);
+    assert_eq!(row["total_tasks"], 1);
+    let closed = call(
+        &handler,
+        "tasks.close",
+        json!({"task_id":created["result"]["task"]["id"]}),
+    );
+    assert_eq!(closed["ok"], true, "{closed}");
+    let row = carried_project(&settled_pushes(&mut rx, &key).await);
+    assert_eq!(row["open_tasks"], 0);
+    assert_eq!(row["total_tasks"], 1);
+    let workspace = call(
+        &handler,
+        "workspace.create",
+        json!({"project_id":"proj-1","name":"counted-workspace"}),
+    );
+    assert_eq!(workspace["ok"], true, "{workspace}");
+    let row = carried_project(&settled_pushes(&mut rx, &key).await);
+    assert_eq!(row["workspaces"], 1);
+}
+
+fn carried_project(pushes: &[Value]) -> Value {
+    pushes
+        .iter()
+        .filter(|push| push["type"] == "changes")
+        .flat_map(|push| push["items"].as_array().into_iter().flatten())
+        .flat_map(|item| item["state"]["projects"].as_array().into_iter().flatten())
+        .find(|row| row["project_id"] == "proj-1")
+        .cloned()
+        .unwrap_or_else(|| panic!("project counts must be carried on the board: {pushes:?}"))
+}

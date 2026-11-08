@@ -289,6 +289,7 @@ pub use tracker::{AGENT_ATTACHMENT_MAX_BYTES, ATTACHMENT_READ_CHUNK_BYTES};
 pub struct AppState {
     /// Registered projects and the entity bindings that route work to them.
     projects: ProjectRegistry,
+    device_name: String,
     /// Prevent new mutations while project cleanup runs with the mutex released.
     project_deletion_in_progress: bool,
     read_context: read_context::ReadContextSlot,
@@ -704,6 +705,7 @@ impl AppState {
                 });
         let mut state = AppState {
             projects: ProjectRegistry::new(),
+            device_name: "bridge".into(),
             project_deletion_in_progress: false,
             read_context: Arc::new(arc_swap::ArcSwapOption::empty()),
             committed_entities: Default::default(),
@@ -875,9 +877,13 @@ impl AppState {
         )
     }
 
-    /// Enable web-push notifications: everything that adds to the unread
-    /// counter fires one signed notify at the api (#191), its content sealed
-    /// so the api sees only ids and ciphertext (#200).
+    /// Use the paired identity's display name on project and environment rows.
+    pub fn with_device_name(mut self, name: String) -> Self {
+        self.device_name = name;
+        self
+    }
+
+    /// Enable sealed web-push notifications for watched activity.
     pub fn with_notifier(mut self, notifier: Notifier) -> Self {
         self.notifier = Some(notifier);
         self

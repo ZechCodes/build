@@ -133,6 +133,7 @@ fn read_key<'a>(method: &str, params: &'a Value) -> Result<(&'static str, &'a st
     match method {
         "board.list" => Ok(("board.list", "")),
         "project.list" => Ok(("project.list", "")),
+        "environment.list" => Ok(("environment.list", "")),
         "settings.get" => Ok(("settings.get", "")),
         "models.list" => Ok(("models.list", "")),
         "harnesses.list" => Ok(("harnesses.list", "")),

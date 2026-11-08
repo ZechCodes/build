@@ -484,6 +484,14 @@ pub(in crate::app) struct ProjectListRow {
     pub(in crate::app) compaction_thresholds: Value,
     pub(in crate::app) compaction: Value,
     pub(in crate::app) project_id: String,
+    pub(in crate::app) environment_id: String,
+    pub(in crate::app) environment_name: String,
+    pub(in crate::app) project_key: String,
+    pub(in crate::app) diverged: bool,
+    pub(in crate::app) device: String,
+    pub(in crate::app) open_tasks: u64,
+    pub(in crate::app) total_tasks: u64,
+    pub(in crate::app) workspaces: usize,
     pub(in crate::app) name: String,
     pub(in crate::app) repo_path: std::path::PathBuf,
     pub(in crate::app) worktrees_root: std::path::PathBuf,
@@ -534,6 +542,14 @@ impl ProjectListRow {
             .collect::<Vec<_>>();
         json!({
             "project_id": self.project_id,
+            "environment_id": self.environment_id,
+            "environment_name": self.environment_name,
+            "project_key": self.project_key,
+            "diverged": self.diverged,
+            "device": self.device,
+            "open_tasks": self.open_tasks,
+            "total_tasks": self.total_tasks,
+            "workspaces": self.workspaces,
             "compaction_thresholds": self.compaction_thresholds,
             "compaction": self.compaction,
             "name": self.name,
@@ -1039,7 +1055,7 @@ impl AppState {
     /// next board item carries that list in full. Every other board note
     /// moves rows, which ride their own items.
     pub(in crate::app) fn note_board_lists_changed(&self, lists: crate::changes::BoardLists) {
-        if lists.projects || lists.workspaces {
+        if lists.projects || lists.workspaces || lists.environments {
             if let Err(error) = self.mark_device_lifecycle_dirty() {
                 eprintln!("device sync registry observation: {error}");
             }

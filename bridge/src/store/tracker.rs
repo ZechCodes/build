@@ -260,8 +260,15 @@ impl Store {
         ReadTransaction::new(&self.connection()).task_project_authority(task_id)
     }
 
-    /// One project's tasks, newest first — `number` descending, which is the
-    /// order they are read in and the order the index is built in.
+    /// Counts for project-list publication, without loading task bodies/history.
+    pub fn tracker_project_counts(&self, project_key: &str) -> Result<(u64, u64), StoreError> {
+        Ok(self.connection().query_row(
+            "SELECT COUNT(*) FILTER (WHERE state='open' AND status!='done'), COUNT(*) FROM tracker_tasks WHERE project_key=?1",
+            [project_key], |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64)),
+        )?)
+    }
+
+    /// One project's tasks, newest first, in descending number order.
     pub fn list_tracker_tasks(
         &self,
         project_path: &str,

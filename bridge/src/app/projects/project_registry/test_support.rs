@@ -6,7 +6,9 @@ impl AppState {
         let original = self.projects.get(project).unwrap();
         let environment = original.environment_id.clone();
         let mut candidate = self.project_candidate_with_sources(
-            original.home_path.clone(), original.base_branch.clone(), original.is_git,
+            original.home_path.clone(),
+            original.base_branch.clone(),
+            original.is_git,
             original.sources.clone(),
         );
         candidate.project.environment_id = environment;

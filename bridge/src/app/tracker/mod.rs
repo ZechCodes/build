@@ -488,6 +488,7 @@ impl AppState {
         project: &str,
         publication: &crate::store::TrackerTaskPublication,
     ) {
+        let counts_changed = self.refresh_project_list_counts(project);
         let observations = std::iter::once(&publication.current).chain(publication.related.iter());
         let mut changed = Vec::new();
         for observation in observations {
@@ -509,6 +510,7 @@ impl AppState {
             self.publish_task_snapshot_projection();
         }
         self.changes.note_tasks(project, &changed);
+        self.note_project_list_counts(counts_changed);
     }
 
     /// Deliver side effects only after the task and its activity are durable.
@@ -725,6 +727,7 @@ impl AppState {
     /// Called after the write lands, never before: a subscriber told to refetch
     /// ahead of the commit would read the state the write is about to replace.
     pub(in crate::app) fn note_tasks_changed(&self, project_id: &str, task_id: &str) {
+        let counts_changed = self.refresh_project_list_counts(project_id);
         if self.snapshot_projection_initialized() {
             if let Err(error) = self.refresh_project_snapshot_task_observations(project_id) {
                 eprintln!("watched task observation {project_id}: {error}");
@@ -732,6 +735,25 @@ impl AppState {
             self.publish_snapshot_projection();
         }
         self.changes.note_tasks(project_id, &[task_id.to_string()]);
+        self.note_project_list_counts(counts_changed);
+    }
+
+    fn refresh_project_list_counts(&self, project: &str) -> bool {
+        let previous = self.project_task_counts(project);
+        if let Err(error) = self.refresh_project_task_counts(project) {
+            eprintln!("project task counts {project}: {error}");
+            return false;
+        }
+        self.project_task_counts(project) != previous
+    }
+
+    fn note_project_list_counts(&self, changed: bool) {
+        if changed {
+            self.changes.note_board_lists(crate::changes::BoardLists {
+                projects: true,
+                ..crate::changes::BoardLists::default()
+            });
+        }
     }
 
     /// The store, or why there is none.

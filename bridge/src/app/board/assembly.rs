@@ -4,6 +4,7 @@ use serde_json::Value;
 pub(super) struct BoardSnapshot {
     pub items: Vec<Value>,
     pub projects: Vec<Value>,
+    pub environments: Value,
     pub runs: Vec<Value>,
     pub external_worktrees: Vec<Value>,
     pub pending: Vec<Value>,
@@ -18,6 +19,7 @@ impl BoardSnapshot {
             [
                 ("items", Value::Array(self.items)),
                 ("projects", Value::Array(self.projects)),
+                ("environments", self.environments),
                 ("runs", Value::Array(self.runs)),
                 ("external_worktrees", Value::Array(self.external_worktrees)),
                 ("pending", Value::Array(self.pending)),
@@ -43,6 +45,7 @@ mod tests {
         let snapshot = BoardSnapshot {
             items: rows(),
             projects: rows(),
+            environments: Value::Array(rows()),
             runs: rows(),
             external_worktrees: rows(),
             pending: rows(),
@@ -53,6 +56,7 @@ mod tests {
         let expected = json!({
             "items": snapshot.items,
             "projects": snapshot.projects,
+            "environments": snapshot.environments,
             "runs": snapshot.runs,
             "external_worktrees": snapshot.external_worktrees,
             "pending": snapshot.pending,

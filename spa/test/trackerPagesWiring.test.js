@@ -331,7 +331,10 @@ describe("a tracker synced from a bridge that pages", () => {
     await settle();
     const openList = trackerCache.tasksQueryAddress("dev-1", "p1", { project_id: "p1", state: "open" });
     const openRows = async () => (await cache.readCached(openList))?.value?.tasks || [];
-    expect(numbers(await openRows())).toEqual(everyNumber.filter((number) => number !== 120));
+    const expectedOpen = everyNumber.filter((number) => number !== 120);
+    // Quiet RPC calls do not establish that all page folds have committed.
+    // Wait for the newer list itself before releasing the stale answer.
+    await vi.waitFor(async () => expect(numbers(await openRows())).toEqual(expectedOpen));
 
     // Now the older page lands. It must not bring #120 back as open.
     const seen = [];
@@ -339,11 +342,12 @@ describe("a tracker synced from a bridge that pages", () => {
     held.release();
     held = null;
     await settle();
+    await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0));
     stopWatching();
     olderPane.dispose();
 
     expect(seen.some((rows) => rows.some((row) => row.number === 120))).toBe(false);
-    expect(numbers(await openRows())).toEqual(everyNumber.filter((number) => number !== 120));
+    expect(numbers(await openRows())).toEqual(expectedOpen);
   });
 
   it("keeps a newer read's row over an older page's copy with the same updated_at", async () => {

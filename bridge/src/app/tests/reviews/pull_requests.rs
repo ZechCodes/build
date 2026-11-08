@@ -340,7 +340,11 @@ async fn archived_review_autosync_waits_for_restore() {
     let (_repo_home, mut state, project) = tracked(home.path());
     let workspace_id = workspace(&mut state, &project, "archive-autosync");
     let pr = opened(&mut state, &workspace_id);
-    let working = std::path::Path::new(pr["review"]["bindings"][0]["working_repository"].as_str().unwrap());
+    let working = std::path::Path::new(
+        pr["review"]["bindings"][0]["working_repository"]
+            .as_str()
+            .unwrap(),
+    );
     std::fs::write(working.join("retained.txt"), "deferred review content\n").unwrap();
     git_in(working, &["add", "retained.txt"]);
     git_in(working, &["commit", "-m", "retained review update"]);
@@ -354,13 +358,22 @@ async fn archived_review_autosync_waits_for_restore() {
     let sync = AppState::spawn_review_sync(shared.clone()).await.unwrap();
     tokio::time::sleep(Duration::from_millis(1200)).await;
     assert_eq!(store.load_review(&task).unwrap().unwrap().version, 1);
-    assert_eq!(serde_json::to_value(store.load_tracker_timeline(&task).unwrap()).unwrap(), before);
-    review_call(&mut shared.lock().unwrap(), "project.restore", json!({"project_id":project}));
+    assert_eq!(
+        serde_json::to_value(store.load_tracker_timeline(&task).unwrap()).unwrap(),
+        before
+    );
+    review_call(
+        &mut shared.lock().unwrap(),
+        "project.restore",
+        json!({"project_id":project}),
+    );
     tokio::time::timeout(Duration::from_secs(3), async {
         while store.load_review(&task).unwrap().unwrap().version == 1 {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     tokio::time::sleep(Duration::from_millis(350)).await;
     drop(sync);
     assert_eq!(store.load_review(&task).unwrap().unwrap().version, 2);

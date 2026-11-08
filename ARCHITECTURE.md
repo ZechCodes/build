@@ -3367,6 +3367,13 @@ other projects continue draining. Restore makes the saved rows eligible on the
 normal service tick, using the ordinary delivery/supersession/failure policy.
 The workspace-admission hold releases its count even if unwinding poisons the
 app mutex; its destructor preserves the poison flag and never panics.
+Pending dependency-reconciliation markers also block archive; their worker excludes
+archived keys before paging and leaves markers/cursors intact until restore.
+Review autosync acquires a filesystem admission lease through persistence and
+publication; denied tasks retain their queued work and retry deadlines. Reclaim
+excludes archived projects during selection, final prune/settle checks and digest
+admission, retaining owed work for the first normal sweep after restore.
+Configured conversation-item retention applies independently of project archive.
 The two method names are explicitly withheld from greetings, `projects.archive`
 is not advertised, and the wire stays at 3.36.0 until the consumer checkpoint.
 

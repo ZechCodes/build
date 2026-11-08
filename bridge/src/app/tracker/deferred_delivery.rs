@@ -58,7 +58,10 @@ impl AppState {
 
     #[cfg(test)]
     pub(in crate::app) fn pump_task_deliveries_for_test(&mut self) -> Result<bool, String> {
-        let page = self.tracker_store()?.reconcile_waiting_on(100).stored()?;
+        let page = self
+            .tracker_store()?
+            .reconcile_waiting_on_excluding_projects(100, &self.archived_project_keys())
+            .stored()?;
         let noticed = self.pump_task_delivery_notices()?;
         let Some(work) = self.prepare_task_delivery()? else {
             return Ok(page.pending || noticed);

@@ -4,15 +4,26 @@ use crate::tracker::{TaskEventKind, TimelineEntry};
 
 fn blocked_pair(app: &mut AppState, project: &str, title: &str) -> (Value, Value) {
     let prerequisite = filed(app, project, &format!("{title} prerequisite"));
-    let dependent = call(app, "tasks.create", json!({"project_id":project,"title":title,"waiting_on":[prerequisite["id"]]}))["task"].clone();
+    let dependent = call(
+        app,
+        "tasks.create",
+        json!({"project_id":project,"title":title,"waiting_on":[prerequisite["id"]]}),
+    )["task"]
+        .clone();
     for _ in 0..20 {
-        if !app.pump_task_deliveries_for_test().unwrap() { break; }
+        if !app.pump_task_deliveries_for_test().unwrap() {
+            break;
+        }
     }
     (prerequisite, dependent)
 }
 
 fn finish_prerequisite(app: &mut AppState, prerequisite: &Value) {
-    call(app, "tasks.update", json!({"task_id":prerequisite["id"],"status":"done"}));
+    call(
+        app,
+        "tasks.update",
+        json!({"task_id":prerequisite["id"],"status":"done"}),
+    );
 }
 
 fn unblocked_count(store: &crate::store::Store, task: &Value) -> usize {
@@ -23,7 +34,11 @@ fn unblocked_count(store: &crate::store::Store, task: &Value) -> usize {
 fn marker_rows(store: &crate::store::Store, source: &Value) -> Vec<String> {
     let conn = store.writer_for_test();
     let mut query = conn.prepare("SELECT json_object('id',id,'source',source_task_id,'after',after_number,'self_done',self_done,'fanout',fanout,'causes',cause_event_ids,'at',at,'resolution_changed',resolution_changed) FROM tracker_dependency_reconcile WHERE source_task_id=?1 ORDER BY id").unwrap();
-    query.query_map([source["id"].as_str().unwrap()], |row| row.get(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap()
+    query
+        .query_map([source["id"].as_str().unwrap()], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
 }
 
 #[test]
@@ -33,12 +48,26 @@ fn archive_refused_with_pending_dependency_reconciliation() {
     let (prerequisite, dependent) = blocked_pair(&mut app, &project, "Ready dependent");
     finish_prerequisite(&mut app, &prerequisite);
     let store = app.store.as_ref().unwrap();
-    assert!(!store.waiting_on_summary(&app.project(&project).unwrap().project_key, dependent["id"].as_str().unwrap()).unwrap().blocked);
+    assert!(
+        !store
+            .waiting_on_summary(
+                &app.project(&project).unwrap().project_key,
+                dependent["id"].as_str().unwrap()
+            )
+            .unwrap()
+            .blocked
+    );
     assert!(!marker_rows(store, &prerequisite).is_empty());
     assert_eq!(unblocked_count(store, &dependent), 0);
     let refused = app.handle(req("project.archive", json!({"project_id":project})));
     assert_eq!(refused["error_code"], "conflict", "{refused}");
-    assert!(refused["error"].as_str().unwrap().contains("pending dependency reconciliation"), "{refused}");
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("pending dependency reconciliation"),
+        "{refused}"
+    );
 }
 
 #[test]
@@ -59,17 +88,51 @@ fn archived_dependency_markers_wait_without_starving_and_restore_exactly_once() 
     app.projects.at_mut(0).archived_at = Some(1);
     let markers = marker_rows(&store, &source);
     assert!(markers.len() > 100);
-    let before = serde_json::to_value(store.load_tracker_task(retained["id"].as_str().unwrap()).unwrap()).unwrap();
-    let history = serde_json::to_value(store.load_tracker_timeline(retained["id"].as_str().unwrap()).unwrap()).unwrap();
+    let before = serde_json::to_value(
+        store
+            .load_tracker_task(retained["id"].as_str().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    let history = serde_json::to_value(
+        store
+            .load_tracker_timeline(retained["id"].as_str().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
     let state = app.shared();
-    for _ in 0..3 { AppState::pump_waiting_on_changes_for_test(&state).unwrap(); }
-    assert_eq!(serde_json::to_value(store.load_tracker_task(retained["id"].as_str().unwrap()).unwrap()).unwrap(), before);
-    assert_eq!(serde_json::to_value(store.load_tracker_timeline(retained["id"].as_str().unwrap()).unwrap()).unwrap(), history);
+    for _ in 0..3 {
+        AppState::pump_waiting_on_changes_for_test(&state).unwrap();
+    }
+    assert_eq!(
+        serde_json::to_value(
+            store
+                .load_tracker_task(retained["id"].as_str().unwrap())
+                .unwrap()
+        )
+        .unwrap(),
+        before
+    );
+    assert_eq!(
+        serde_json::to_value(
+            store
+                .load_tracker_timeline(retained["id"].as_str().unwrap())
+                .unwrap()
+        )
+        .unwrap(),
+        history
+    );
     assert_eq!(marker_rows(&store, &source), markers);
     assert_eq!(unblocked_count(&store, &live), 1);
-    call(&mut state.lock().unwrap(), "project.restore", json!({"project_id":archived}));
+    call(
+        &mut state.lock().unwrap(),
+        "project.restore",
+        json!({"project_id":archived}),
+    );
     for _ in 0..120 {
-        if !AppState::pump_waiting_on_changes_for_test(&state).unwrap() { break; }
+        if !AppState::pump_waiting_on_changes_for_test(&state).unwrap() {
+            break;
+        }
     }
     assert!(marker_rows(&store, &source).is_empty());
     assert_eq!(unblocked_count(&store, &retained), 1);

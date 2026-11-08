@@ -20,6 +20,9 @@ impl Store {
                 SELECT t.number, 'resolve waiting-on for #' || t.number FROM tasks t
                 JOIN tracker_task_query_facts q ON q.task_id=t.id WHERE q.blocked=1 AND q.unfinished=1
                 UNION ALL
+                SELECT t.number, 'settle pending dependency reconciliation for #' || t.number FROM tasks t
+                JOIN tracker_dependency_reconcile d ON d.source_task_id=t.id
+                UNION ALL
                 SELECT t.number, 'settle pending verdict delivery for #' || t.number FROM tasks t
                 JOIN review_verdict_deliveries d ON d.task_id=t.id WHERE d.state='pending'
                 UNION ALL

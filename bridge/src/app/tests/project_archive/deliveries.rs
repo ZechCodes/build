@@ -147,6 +147,36 @@ fn archive_refused_with_pending_revision_failure_notice() {
     );
 }
 
+fn assert_suspended_outboxes(
+    store: &crate::store::Store,
+    task: &str,
+    saved: &[ReviewVerdictDelivery],
+) {
+    for delivery in saved {
+        assert_eq!(
+            store
+                .load_review_verdict_delivery(&delivery.comment_id)
+                .unwrap()
+                .unwrap(),
+            *delivery
+        );
+    }
+    let pending_revisions: i64 = store.writer_for_test().query_row(
+        "SELECT COUNT(*) FROM review_revision_dispatches WHERE task_id=?1 AND state='pending' AND attempts=0 AND retry_after_ms=0",
+        [task], |row| row.get(0)).unwrap();
+    let unposted_notices: i64 = store.writer_for_test().query_row(
+        "SELECT COUNT(*) FROM review_revision_dispatches WHERE task_id=?1 AND state='failed' AND failure_notice_posted=0",
+        [task], |row| row.get(0)).unwrap();
+    assert_eq!(
+        pending_revisions, 33,
+        "archived revisions retain their state and retry budget"
+    );
+    assert_eq!(
+        unposted_notices, 33,
+        "archived failure notices are retained for restore"
+    );
+}
+
 #[test]
 fn archived_project_background_deliveries_wait_for_restore() {
     let home = tempfile::tempdir().unwrap();
@@ -200,29 +230,7 @@ fn archived_project_background_deliveries_wait_for_restore() {
         .unwrap(),
         before_history
     );
-    for delivery in &saved {
-        assert_eq!(
-            store
-                .load_review_verdict_delivery(&delivery.comment_id)
-                .unwrap()
-                .unwrap(),
-            *delivery
-        );
-    }
-    let pending_revisions: i64 = store.writer_for_test().query_row(
-        "SELECT COUNT(*) FROM review_revision_dispatches WHERE task_id=?1 AND state='pending' AND attempts=0 AND retry_after_ms=0",
-        [retained["id"].as_str().unwrap()], |row| row.get(0)).unwrap();
-    let unposted_notices: i64 = store.writer_for_test().query_row(
-        "SELECT COUNT(*) FROM review_revision_dispatches WHERE task_id=?1 AND state='failed' AND failure_notice_posted=0",
-        [retained["id"].as_str().unwrap()], |row| row.get(0)).unwrap();
-    assert_eq!(
-        pending_revisions, 33,
-        "archived revisions retain their state and retry budget"
-    );
-    assert_eq!(
-        unposted_notices, 33,
-        "archived failure notices are retained for restore"
-    );
+    assert_suspended_outboxes(&store, retained["id"].as_str().unwrap(), &saved);
     assert_eq!(
         store
             .load_review_verdict_delivery(&active_verdict.comment_id)

@@ -382,7 +382,7 @@ function activateSwitcher(control) {
   persistMenu({ open: true, select: control.dataset.select, list, query: "" });
 }
 
-const globalShortcut = (event) => (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k"
+const globalShortcut = (event) => (event.ctrlKey || event.metaKey) && ["k", "n"].includes(event.key.toLowerCase())
   && !event.altKey && !event.isComposing && !event.defaultPrevented;
 
 function onGlobalShortcut(event) {
@@ -390,6 +390,15 @@ function onGlobalShortcut(event) {
   const editable = 'input, textarea, select, [contenteditable]:not([contenteditable="false"]), .cm-editor, .monaco-editor, .xterm, .terminal, .term-screen, .console-pane, [data-terminal]';
   if (event.target.closest?.(editable) || document.activeElement?.closest(editable)) return;
   if (document.querySelector('[role="dialog"], dialog[open]')) return;
+  dispatchGlobalShortcut(event);
+}
+
+function dispatchGlobalShortcut(event) {
+  if (event.key.toLowerCase() === "n") {
+    event.preventDefault();
+    openCreate({ fromShortcut: true });
+    return;
+  }
   const control = document.querySelector('[data-select="project"]');
   if (!control) return;
   event.preventDefault();
@@ -790,13 +799,13 @@ function onMenuClick(event) {
   pickWorkspace(target.closest("[data-workspace]"));
 }
 
-/** The global creation entry opens target selection; the scoped project is
- * retained for older bridges that can only create in an existing project. */
-function openCreate() {
+/** The local footer presets its project. The global keyboard shortcut opens
+ * target selection and retains that project for older-bridge fallback. */
+function openCreate({ fromShortcut = false } = {}) {
   const project = scopedProject();
   closeMenu();
   openCreateWorkspaceWizard({ projectId: project?.id, deviceId: project?.deviceId,
-    projectName: project ? nameOf(project) : "", fixedProject: false, navigate: go });
+    projectName: project ? nameOf(project) : "", fixedProject: Boolean(project) && !fromShortcut, ...(fromShortcut ? { fromShortcut: true } : {}), navigate: go });
 }
 
 /** The project half's rows: which project — said with its machine when another

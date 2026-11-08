@@ -1,7 +1,8 @@
 use super::*;
 use crate::execution::CallContext;
+use std::collections::{HashMap, HashSet};
 use std::sync::{mpsc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub(in crate::app) fn dispatch(
     state: &Arc<Mutex<AppState>>,
@@ -70,21 +71,15 @@ pub(in crate::app) fn start(state: &Arc<Mutex<AppState>>) {
     }
 }
 fn worker(state: Weak<Mutex<AppState>>, receiver: mpsc::Receiver<()>) {
+    let mut retries = RetryBackoff::default();
     loop {
         let Some(app) = state.upgrade() else {
             return;
         };
         let writer = app.lock().unwrap().store.as_ref().map(|s| s.writer());
         if let Some(writer) = writer {
-            match writer.pending_creations() {
-                Ok(records) => {
-                    for record in records {
-                        if let Err(error) = execute(&app, record) {
-                            eprintln!("creation reconciliation: {error}");
-                        }
-                    }
-                }
-                Err(error) => eprintln!("read pending creations: {error}"),
+            if let Err(error) = reconcile_pending(&app, &writer, &mut retries, Instant::now()) {
+                eprintln!("read pending creations: {error}");
             }
         }
         drop(app);
@@ -95,4 +90,72 @@ fn worker(state: Weak<Mutex<AppState>>, receiver: mpsc::Receiver<()>) {
             return;
         }
     }
+}
+
+#[derive(Default)]
+pub(super) struct RetryBackoff {
+    records: HashMap<i64, Retry>,
+}
+
+struct Retry {
+    delay: Duration,
+    next: Instant,
+}
+
+impl RetryBackoff {
+    fn ready(&self, record: &MutationRecord, now: Instant) -> bool {
+        record.state != "unknown"
+            || self
+                .records
+                .get(&record.command_id)
+                .is_none_or(|retry| now >= retry.next)
+    }
+
+    fn observe(&mut self, record: &MutationRecord, now: Instant) {
+        if record.state != "unknown" {
+            self.records.remove(&record.command_id);
+            return;
+        }
+        let delay = self
+            .records
+            .get(&record.command_id)
+            .map(|retry| (retry.delay * 2).min(Duration::from_secs(1800)))
+            .unwrap_or(Duration::from_secs(30));
+        self.records.insert(
+            record.command_id,
+            Retry {
+                delay,
+                next: now + delay,
+            },
+        );
+    }
+}
+
+pub(super) fn reconcile_pending(
+    app: &Arc<Mutex<AppState>>,
+    writer: &StoreWriter,
+    retries: &mut RetryBackoff,
+    now: Instant,
+) -> Result<(), String> {
+    let records = writer
+        .pending_creations()
+        .map_err(|error| error.to_string())?;
+    let pending: HashSet<_> = records.iter().map(|record| record.command_id).collect();
+    retries.records.retain(|id, _| pending.contains(id));
+    for record in records {
+        if !retries.ready(&record, now) {
+            continue;
+        }
+        let id = record.operation_id.clone();
+        if let Err(error) = execute(app, record) {
+            eprintln!("creation reconciliation: {error}");
+        }
+        if let Some(record) = writer
+            .creation_record(PRINCIPAL, &id)
+            .map_err(|error| error.to_string())?
+        {
+            retries.observe(&record, now);
+        }
+    }
+    Ok(())
 }

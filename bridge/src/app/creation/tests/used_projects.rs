@@ -130,4 +130,3 @@ fn discard_unused_refused_with_retained_roster() {
     assert_refused(&f, &params, "project has a retained agent session");
     assert_eq!(f.store.load_all_plan_rosters().unwrap()[0].id, record.id);
 }
-

@@ -1196,6 +1196,10 @@ plus project-owned added sources, and projects retain an effective-source read
 projection for existing call sites. Source configuration transactions stage
 environments and project projections together while keeping orchestrators live.
 In M0.1 the project and environment isolation copies are updated together.
+Unavailable legacy homes retain their absolute spelling on any resolution error
+and stay parked. When a home returns, a key equal to its stored path follows the
+canonical home; an opaque sibling key stays unchanged. Legacy path lookup prefers
+the project whose key equals that home over siblings registered there first.
 
 The first migration saves the exact original bytes once beside the config in
 `config.json.pre-environments`. Atomic config replacement also retains one
@@ -1341,7 +1345,13 @@ principals and other semantic method enablement belong to Step 6b.
 
 `app/creation.rs` owns the creation service independently of client lifetimes.
 A single background worker resumes admitted attempts and reconciles startup
-records. Admission saves the opaque project key, or a fixed-project workspace
+records. Unknown records back off individually from 30 seconds to a 30-minute
+cap, doubling after each unresolved execution. The schedule is worker-local and
+is pruned with pending records; restart recovery runs immediately. Admission
+checks retained operations before live scope validation, comparing submitted
+method, intent and dependencies through the journal before returning a saved
+outcome even if its project was removed.
+Admission saves the opaque project key, or a fixed-project workspace
 reservation, before acknowledgment. Concurrent same-ID admission compares client
 intent with the winning command's server reservations and returns its saved ack.
 The project config step checkpoints a provisional numeric ID before the atomic

@@ -11,9 +11,11 @@ and typed method declarations (`v1_method!`, `v1_context_method!` and
 `v1_optional_context_method!`) for #1003, based on `origin/dev`
 `bdb14ae3a25d17a495242af34421d6ce0fbecf5d` (wire 3.35.0, including #894
 bounded reads and #1004 runtime CLI). Wire 3.36.0 adds
-`secrets_create`, `secrets_list`, `secrets_revoke` and `secrets_audit`, giving
-**157 operations**, pinned to SHA-256
-`465db3f5de9431ac19341710cc1bfc07d3b8f54dde975dfc068ce1960fcc2813`.
+`secrets_create`, `secrets_list`, `secrets_revoke` and `secrets_audit`.
+M1.1 (#1043) adds `environment_list` (`GET /v1/environments`) without a wire
+version bump; its capability remains withheld until M1.4. The catalogue has
+**158 operations**, pinned to SHA-256
+`47c497485d1b6a6211726f22547ddeee66b71503777af41e4bac2eafd7ede4c4`.
 The baseline manifest hash was
 `b89bd925186fa08ab88abd53d32f49a2fadd1c5fffa36b3cd2e8e7e1dab3e97a`.
 The original #915 import came from coordinator-released committed head

@@ -6,6 +6,7 @@ use serde_json::Value;
 
 mod compaction;
 mod compaction_wire;
+mod files;
 mod persistence;
 mod settings;
 pub(in crate::app) use compaction::CompactionPolicies;
@@ -472,6 +473,7 @@ impl AppState {
             self.isolation = isolation;
         }
         self.apply_router_config(config);
+        self.projects.restore_environments(config);
         self.restore_configured_projects(config);
     }
 
@@ -577,7 +579,9 @@ impl AppState {
         project: &Project,
         available: &IsolationAvailability,
     ) -> ResolvedIsolation {
-        let requested = project.isolation.unwrap_or(self.isolation);
+        let requested = project.isolation
+            .or_else(|| self.projects.environment(&project.environment_id).and_then(|environment| environment.isolation))
+            .unwrap_or(self.isolation);
         match available.lock_reason(requested) {
             None => ResolvedIsolation::honoured(requested),
             Some(reason) => ResolvedIsolation::downgraded(reason),

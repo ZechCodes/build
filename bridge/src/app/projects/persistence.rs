@@ -11,11 +11,10 @@ impl AppState {
         change: impl FnOnce(&mut ProjectRegistry) -> Result<(), String>,
     ) -> Result<Value, String> {
         self.mark_device_lifecycle_dirty()?;
-        let project = self
-            .projects
+        self.projects
             .get(id)
             .ok_or_else(|| format!("unknown project: {id}"))?;
-        let mut configuration = ProjectConfiguration::capture(project);
+        let mut configuration = ProjectConfiguration::capture(&self.projects);
         let previous = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
         let mut observation = None;
         self.swap_project_snapshot_observation(id, &mut observation);
@@ -27,6 +26,7 @@ impl AppState {
             self.swap_project_snapshot_observation(id, &mut observation);
             return Err(error);
         }
+        self.projects.reconcile_project_sources(id);
         let row = self.project_json(self.projects.get(id).expect("staged project"));
         let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
         let projection = self.prepare_all_snapshot_projection();

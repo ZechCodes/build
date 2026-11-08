@@ -130,6 +130,11 @@ fn missing_repository_recovery_keeps_verbatim_path_without_a_live_binding() {
 fn project_fixture(id: ProjectId, path: &Path, base: &str) -> Project {
     let id = id.into_string();
     Project {
+        environment_id: String::new(),
+        project_key: path.display().to_string(),
+        home_path: path.to_path_buf(),
+        added_sources: Vec::new(),
+        archived_at: None,
         name: path
             .file_name()
             .and_then(|name| name.to_str())

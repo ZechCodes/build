@@ -1,4 +1,5 @@
 use super::{next_source_number, Project, ProjectSource};
+use crate::app::environments::Environment;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -6,19 +7,46 @@ use crate::isolation::Isolation;
 
 /// Only configuration-owned project fields; runtime orchestrators stay installed.
 pub(super) struct ProjectConfiguration {
+    records: Vec<(String, ProjectConfigurationRecord)>,
+    environments: Vec<Environment>,
+}
+
+impl ProjectConfiguration {
+    pub(super) fn capture(projects: &ProjectRegistry) -> Self {
+        Self {
+            records: projects
+                .projects
+                .iter()
+                .map(|p| (p.id.clone(), ProjectConfigurationRecord::capture(p)))
+                .collect(),
+            environments: projects.environments.clone(),
+        }
+    }
+
+    pub(super) fn swap(&mut self, projects: &mut ProjectRegistry, _id: &str) {
+        std::mem::swap(&mut self.environments, &mut projects.environments);
+        for (id, record) in &mut self.records {
+            record.swap(projects, id);
+        }
+    }
+}
+
+struct ProjectConfigurationRecord {
     base_branch: String,
     is_git: bool,
     sources: Vec<ProjectSource>,
+    added_sources: Vec<ProjectSource>,
     next_source: u64,
     isolation: Option<Isolation>,
 }
 
-impl ProjectConfiguration {
-    pub(super) fn capture(project: &Project) -> Self {
+impl ProjectConfigurationRecord {
+    fn capture(project: &Project) -> Self {
         Self {
             base_branch: project.base_branch.clone(),
             is_git: project.is_git,
             sources: project.sources.clone(),
+            added_sources: project.added_sources.clone(),
             next_source: project.next_source,
             isolation: project.isolation,
         }
@@ -34,6 +62,7 @@ impl ProjectConfiguration {
         std::mem::swap(&mut self.base_branch, &mut project.base_branch);
         std::mem::swap(&mut self.is_git, &mut project.is_git);
         std::mem::swap(&mut self.sources, &mut project.sources);
+        std::mem::swap(&mut self.added_sources, &mut project.added_sources);
         std::mem::swap(&mut self.next_source, &mut project.next_source);
         std::mem::swap(&mut self.isolation, &mut project.isolation);
     }
@@ -64,6 +93,9 @@ pub(super) struct ProjectCandidate {
 }
 
 impl ProjectCandidate {
+    pub(super) fn set_environment(&mut self, id: &str) {
+        self.project.environment_id = id.to_string();
+    }
     pub(super) fn project(&self) -> &Project {
         &self.project
     }
@@ -76,6 +108,8 @@ impl ProjectCandidate {
 /// changed through the operations that preserve their existing relationship.
 pub(in crate::app) struct ProjectRegistry {
     projects: Vec<Project>,
+    environments: Vec<Environment>,
+    next_environment: u64,
     observation_projects: crate::observation_changes::ChangeKeys,
     observation_bindings: crate::observation_changes::ChangeKeys,
     entity_project: HashMap<String, String>,
@@ -100,6 +134,8 @@ impl ProjectRegistry {
     pub(in crate::app) fn new() -> Self {
         Self {
             projects: Vec::new(),
+            environments: Vec::new(),
+            next_environment: 1,
             observation_projects: Default::default(),
             observation_bindings: Default::default(),
             entity_project: HashMap::new(),
@@ -166,7 +202,9 @@ impl ProjectRegistry {
         self.projects.iter()
     }
 
-    /// One source of one project, to write what its sync concluded.
+    /// One project projection, primarily for its runtime sync status.
+    /// Configuration edits through this reference must be staged by
+    /// commit_project_configuration, which reconciles the owning references.
     pub(in crate::app) fn source_mut(
         &mut self,
         project_id: &str,
@@ -217,6 +255,14 @@ impl ProjectRegistry {
             return false;
         };
         project.isolation = isolation;
+        let environment_id = project.environment_id.clone();
+        if let Some(environment) = self
+            .environments
+            .iter_mut()
+            .find(|e| e.id == environment_id)
+        {
+            environment.isolation = isolation;
+        }
         true
     }
 
@@ -233,6 +279,7 @@ impl ProjectRegistry {
         if let Some(source) = project.sources.first_mut() {
             source.is_git = true;
         }
+        self.reconcile_project_sources(project_id);
         true
     }
 
@@ -266,6 +313,7 @@ impl ProjectRegistry {
             project.is_git = true;
             project.base_branch = branch.to_string();
         }
+        self.reconcile_project_sources(project_id);
         Ok(primary)
     }
 
@@ -302,6 +350,7 @@ impl ProjectRegistry {
         if project.repo_path == source.path {
             project.base_branch = source.base_branch.clone();
         }
+        self.reconcile_project_sources(project_id);
         Ok(())
     }
 
@@ -320,6 +369,7 @@ impl ProjectRegistry {
         };
         project.next_source = project.next_source.max(next_source_number(&sources));
         project.sources = sources;
+        self.reconcile_project_sources(project_id);
         true
     }
 
@@ -333,6 +383,7 @@ impl ProjectRegistry {
         {
             project.next_source = project.next_source.max(next);
         }
+        self.reconcile_project_sources(project_id);
     }
 
     pub(in crate::app) fn find_by_canonical_path(&self, path: &Path) -> Option<&Project> {
@@ -404,11 +455,12 @@ impl ProjectRegistry {
         base_branch: String,
         build: impl FnOnce(ProjectId, &Path, &str) -> Project,
     ) -> ProjectCandidate {
-        let project = build(
+        let mut project = build(
             ProjectId(format!("proj-{number}")),
             &repo_path,
             &base_branch,
         );
+        project.environment_id = format!("env-{}", self.next_environment);
         ProjectCandidate { project }
     }
 
@@ -433,6 +485,14 @@ impl ProjectRegistry {
             .strip_prefix("proj-")
             .and_then(|id| id.parse::<u64>().ok())
             .expect("project IDs are allocated numerically");
+        if self
+            .environment(&candidate.project.environment_id)
+            .is_none()
+        {
+            self.environments
+                .push(Self::environment_for_project(&candidate.project));
+            self.next_environment += 1;
+        }
         self.projects.push(candidate.project);
         self.reserve_ids_through(number + 1);
         id
@@ -464,5 +524,196 @@ impl ProjectRegistry {
 impl Default for ProjectRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl ProjectRegistry {
+    pub(in crate::app) fn environment(&self, id: &str) -> Option<&Environment> {
+        self.environments
+            .iter()
+            .find(|environment| environment.id == id)
+    }
+
+    pub(in crate::app) fn environments(&self) -> impl Iterator<Item = &Environment> {
+        self.environments.iter()
+    }
+
+    pub(in crate::app) fn next_environment(&self) -> u64 {
+        self.next_environment
+    }
+
+    pub(in crate::app) fn restore_environments(&mut self, config: &serde_json::Value) {
+        if let Some(next) = config
+            .get("next_environment")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.next_environment = self.next_environment.max(next);
+        }
+        for entry in config
+            .get("environments")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(id) = entry.get("id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if let Some(number) = id.strip_prefix("env-").and_then(|n| n.parse::<u64>().ok()) {
+                self.next_environment = self.next_environment.max(number.saturating_add(1));
+            }
+            let sources = super::configured_sources(
+                entry
+                    .get("sources")
+                    .and_then(serde_json::Value::as_array)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+            );
+            let next_source = entry
+                .get("next_source")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(1)
+                .max(next_source_number(&sources));
+            self.environments.push(Environment {
+                id: id.to_string(),
+                name: entry
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("environment")
+                    .to_string(),
+                sources,
+                next_source,
+                isolation: crate::app::config::configured_isolation(entry, "environment isolation"),
+            });
+        }
+    }
+
+    pub(in crate::app) fn environment_for_project(project: &Project) -> Environment {
+        Environment {
+            id: project.environment_id.clone(),
+            name: project.name.clone(),
+            sources: project.sources.clone(),
+            next_source: project.next_source,
+            isolation: None,
+        }
+    }
+
+    /// Apply a legacy edit to its owning references, then rebuild read projections.
+    pub(super) fn reconcile_project_sources(&mut self, id: &str) {
+        let Some(project) = self.get(id) else {
+            return;
+        };
+        let environment_id = project.environment_id.clone();
+        let effective = project.sources.clone();
+        let next = project.next_source;
+        let Some(environment) = self
+            .environments
+            .iter_mut()
+            .find(|e| e.id == environment_id)
+        else {
+            return;
+        };
+        let inherited: std::collections::HashSet<_> =
+            environment.sources.iter().map(|s| s.id.clone()).collect();
+        environment.sources = effective
+            .iter()
+            .filter(|s| inherited.contains(&s.id))
+            .cloned()
+            .collect();
+        environment.next_source = environment
+            .next_source
+            .max(next)
+            .max(next_source_number(&effective));
+        let added = effective
+            .into_iter()
+            .filter(|s| !inherited.contains(&s.id))
+            .collect();
+        self.projects
+            .iter_mut()
+            .find(|p| p.id == id)
+            .expect("resolved project")
+            .added_sources = added;
+        self.refresh_environment_projects(&environment_id);
+    }
+
+    fn refresh_environment_projects(&mut self, environment_id: &str) {
+        let Some(environment) = self.environment(environment_id).cloned() else {
+            return;
+        };
+        for project in self
+            .projects
+            .iter_mut()
+            .filter(|p| p.environment_id == environment_id)
+        {
+            self.observation_projects.mark(&project.id);
+            let statuses: HashMap<_, _> = project
+                .sources
+                .iter()
+                .map(|s| (s.id.clone(), s.sync_status.clone()))
+                .collect();
+            project.sources = environment
+                .sources
+                .iter()
+                .chain(&project.added_sources)
+                .cloned()
+                .collect();
+            for source in &mut project.sources {
+                if let Some(status) = statuses.get(&source.id) {
+                    source.sync_status = status.clone();
+                }
+            }
+            project.next_source = environment.next_source;
+            if let Some(home) = environment.sources.first() {
+                project.base_branch = home.base_branch.clone();
+                project.is_git = home.is_git;
+            }
+        }
+    }
+
+    pub(super) fn restore_project_metadata(&mut self, id: &str, entry: &serde_json::Value) {
+        let Some(environment_id) = entry
+            .get("environment_id")
+            .and_then(serde_json::Value::as_str)
+        else {
+            return;
+        };
+        let generated = self
+            .get(id)
+            .expect("registered project")
+            .environment_id
+            .clone();
+        if generated != environment_id {
+            self.environments.retain(|e| e.id != generated);
+        }
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|p| p.id == id)
+            .expect("registered project");
+        project.environment_id = environment_id.to_string();
+        project.project_key = entry
+            .get("project_key")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        project.home_path = PathBuf::from(
+            entry
+                .get("home_path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| entry["path"].as_str().unwrap_or_default()),
+        );
+        project.repo_path = project.home_path.clone();
+        if let Some(name) = entry.get("name").and_then(serde_json::Value::as_str) {
+            project.name = name.to_string();
+        }
+        project.archived_at = entry.get("archived_at").and_then(serde_json::Value::as_u64);
+        project.isolation = crate::app::config::configured_isolation(entry, "project isolation");
+        project.added_sources = super::configured_sources(
+            entry
+                .get("added_sources")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+        );
+        self.refresh_environment_projects(environment_id);
     }
 }

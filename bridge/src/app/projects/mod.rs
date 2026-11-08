@@ -133,12 +133,20 @@ pub(in crate::app) use project_registry::ProjectRegistry;
 /// drives tasks on it. Each project gets its own worktrees subdir and orchestrator
 /// so tasks on different repos never interact.
 pub(in crate::app) struct Project {
+    pub(in crate::app) environment_id: String,
+    pub(in crate::app) project_key: String,
+    pub(in crate::app) home_path: std::path::PathBuf,
+    pub(in crate::app) added_sources: Vec<ProjectSource>,
+    pub(in crate::app) archived_at: Option<u64>,
     pub(in crate::app) id: String,
     pub(in crate::app) name: String,
     pub(in crate::app) repo_path: std::path::PathBuf,
     pub(in crate::app) base_branch: String,
     pub(in crate::app) is_git: bool,
+    /// Effective read projection: environment sources followed by added_sources.
+    /// Registry configuration writes reconcile it back to the owning references.
     pub(in crate::app) sources: Vec<ProjectSource>,
+    /// Compatibility projection of the owning environment counter.
     /// The number the next `source-N` is minted from. Held past every id this
     /// project has ever carried, not just the ones it still holds: a workspace
     /// records the id it was cut from, so handing a removed id to another
@@ -238,14 +246,18 @@ pub(in crate::app) fn repo_name_from_url(url: &str) -> String {
 /// The folder a configured project stands in: its `path`, or for a
 /// configuration that names only sources, its first source's.
 pub(in crate::app) fn configured_primary_path(project: &Value) -> Option<&str> {
-    project.get("path").and_then(Value::as_str).or_else(|| {
-        project
-            .get("sources")?
-            .as_array()?
-            .first()?
-            .get("path")?
-            .as_str()
-    })
+    project
+        .get("home_path")
+        .or_else(|| project.get("path"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            project
+                .get("sources")?
+                .as_array()?
+                .first()?
+                .get("path")?
+                .as_str()
+        })
 }
 
 /// The `N` of a configured project's `proj-N` id, when it carries one.
@@ -269,7 +281,8 @@ fn configured_sources(entries: &[Value]) -> Vec<ProjectSource> {
 
 fn configured_source(index: usize, source: &Value) -> Option<ProjectSource> {
     let path = source.get("path")?.as_str()?;
-    let path = canonical_source_path(&expand_tilde(path)).ok()?;
+    let expanded = expand_tilde(path);
+    let path = std::fs::canonicalize(&expanded).unwrap_or(expanded);
     let fallback_name = path.file_name()?.to_string_lossy().into_owned();
     let name = source
         .get("name")
@@ -289,7 +302,14 @@ fn configured_source(index: usize, source: &Value) -> Option<ProjectSource> {
             .unwrap_or_else(|| format!("source-{}", index + 1)),
         name,
         mount,
-        is_git: path.join(".git").exists(),
+        is_git: if path.exists() {
+            path.join(".git").exists()
+        } else {
+            source
+                .get("is_git")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        },
         path,
         base_branch: source
             .get("base_branch")
@@ -332,6 +352,16 @@ impl AppState {
     /// loads it the moment the folder is back.
     pub(in crate::app) fn restore_configured_project(&mut self, project: &Value) -> Option<String> {
         let repo = std::path::PathBuf::from(configured_primary_path(project)?);
+        if let Some(environment_id) = project.get("environment_id").and_then(Value::as_str) {
+            if self.projects.environment(environment_id).is_none() {
+                if let Some(number) = configured_project_number(project) {
+                    self.projects.reserve_ids_through(number + 1);
+                }
+                eprintln!("park project: unknown environment {environment_id}");
+                self.projects.park(project.clone());
+                return None;
+            }
+        }
         let number = configured_project_number(project);
         if !repo.exists() {
             // Its id stays its own while it is away.
@@ -346,18 +376,26 @@ impl AppState {
             .and_then(Value::as_str)
             .unwrap_or("main")
             .to_string();
-        let id = self.register_configured_project(repo, base, number)?;
-        if let Some(entries) = project.get("sources").and_then(Value::as_array) {
-            let sources = configured_sources(entries);
-            if !sources.is_empty() {
-                self.projects.set_sources(&id, sources);
+        let id = self.register_configured_project(
+            repo,
+            base,
+            number,
+            project.get("environment_id").and_then(Value::as_str),
+        )?;
+        if project.get("environment_id").is_none() {
+            if let Some(entries) = project.get("sources").and_then(Value::as_array) {
+                let sources = configured_sources(entries);
+                if !sources.is_empty() {
+                    self.projects.set_sources(&id, sources);
+                }
             }
+            if let Some(next) = project.get("next_source").and_then(Value::as_u64) {
+                self.projects.reserve_source_ids_through(&id, next);
+            }
+            let isolation = configured_isolation(project, "project isolation");
+            self.projects.set_isolation(&id, isolation);
         }
-        if let Some(next) = project.get("next_source").and_then(Value::as_u64) {
-            self.projects.reserve_source_ids_through(&id, next);
-        }
-        let isolation = configured_isolation(project, "project isolation");
-        self.projects.set_isolation(&id, isolation);
+        self.projects.restore_project_metadata(&id, project);
         Some(id)
     }
 
@@ -368,17 +406,23 @@ impl AppState {
         repo: std::path::PathBuf,
         base: String,
         number: Option<u64>,
+        environment_id: Option<&str>,
     ) -> Option<String> {
         let number = number.unwrap_or(self.projects.next_id());
         let repo = std::fs::canonicalize(&repo).unwrap_or(repo);
-        if let Some(existing) = self.projects.find_by_canonical_path(&repo) {
-            return Some(existing.id.clone());
+        if environment_id.is_none() {
+            if let Some(existing) = self.projects.find_by_canonical_path(&repo) {
+                return Some(existing.id.clone());
+            }
         }
         if self.projects.get(&format!("proj-{number}")).is_some() {
             return None;
         }
-        let candidate =
+        let mut candidate =
             self.project_candidate_at(repo.clone(), base, repo.join(".git").exists(), Some(number));
+        if let Some(environment_id) = environment_id {
+            candidate.set_environment(environment_id);
+        }
         Some(self.insert_project(candidate))
     }
 
@@ -492,6 +536,11 @@ impl AppState {
                     bridge_exe,
                 );
                 Project {
+                    environment_id: String::new(),
+                    project_key: repo_path.display().to_string(),
+                    home_path: repo_path.to_path_buf(),
+                    added_sources: Vec::new(),
+                    archived_at: None,
                     id,
                     name,
                     repo_path: repo_path.to_path_buf(),

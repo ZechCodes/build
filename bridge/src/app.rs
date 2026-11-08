@@ -18,6 +18,7 @@ mod config;
 mod device_lifecycle;
 #[cfg(test)]
 mod device_lifecycle_tests;
+mod environments;
 mod facts;
 mod fs;
 mod git;
@@ -28,7 +29,6 @@ mod model_catalog;
 mod mutations;
 mod observation_reads;
 mod projects;
-mod environments;
 mod push_keys;
 mod read_context;
 mod read_view;

@@ -18,6 +18,7 @@ pub(in crate::app) fn execute(
         .as_ref()
         .ok_or("creation store missing")?
         .writer();
+    let _activity = CreationActivity::new(state, &record)?;
     if record.state == "accepted"
         && !writer
             .claim_mutation(PRINCIPAL, &record.operation_id)
@@ -33,7 +34,6 @@ pub(in crate::app) fn execute(
         .lock()
         .unwrap()
         .track_creation_workspace(&record.execution);
-    let _activity = CreationActivity::new(state);
     let service = state.lock().unwrap().mutation_service();
     // A stale identity parks cleanup as unknown without discarding its residue.
     // If authority returns, resume that cleanup rather than provisioning again.
@@ -82,11 +82,14 @@ struct CreationActivity {
     state: std::sync::Weak<Mutex<AppState>>,
 }
 impl CreationActivity {
-    fn new(state: &Arc<Mutex<AppState>>) -> Self {
-        state.lock().unwrap().active_deferred_filesystem_jobs += 1;
-        Self {
+    fn new(state: &Arc<Mutex<AppState>>, record: &MutationRecord) -> Result<Self, String> {
+        let mut app = state.lock().unwrap();
+        guard_archived_creation_record(&app, record)
+            .map_err(crate::app::projects::archive_error_string)?;
+        app.active_deferred_filesystem_jobs += 1;
+        Ok(Self {
             state: Arc::downgrade(state),
-        }
+        })
     }
 }
 impl Drop for CreationActivity {

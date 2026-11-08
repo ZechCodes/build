@@ -58,6 +58,27 @@ pub(in crate::app) enum FileScope {
 }
 
 impl FileScope {
+    fn guard_archived_mutation(&self, app: &AppState) -> Result<(), crate::api::ApiError> {
+        use crate::api::ApiError;
+        match self {
+            Self::WorkspaceSource { workspace_id, .. } => match app.workspaces.get(workspace_id) {
+                Some(workspace) => app.refuse_archived_project(&workspace.project_id),
+                None => Ok(()),
+            },
+            Self::ProjectSource { project_id, .. }
+            | Self::Legacy(TermScope::Primary { project_id })
+            | Self::Legacy(TermScope::ExternalWorktree { project_id, .. }) => {
+                app.refuse_archived_project(project_id)
+            }
+            Self::Legacy(TermScope::Run { run_id }) => app
+                .refuse_archived_entity(run_id)
+                .map_err(ApiError::classify),
+            Self::Legacy(TermScope::ProjectSource(source)) => {
+                app.refuse_archived_project(&source.project_id)
+            }
+        }
+    }
+
     pub(in crate::app) fn parse(params: &Value) -> Result<Self, String> {
         let workspace_id = scope_field(params, "workspace_id")?;
         let source_id = scope_field(params, "source_id")?;

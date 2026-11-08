@@ -256,7 +256,8 @@
     "conflict",
     "busy",
     "unavailable",
-    "internal"
+    "internal",
+    "project_archived"
   ],
   "note": "Creates the environment, project and first workspace in one journaled attempt; page 2 only edits drafts.",
   "capability": "environments.create",

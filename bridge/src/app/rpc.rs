@@ -96,6 +96,8 @@ pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
     "tasks.unwatch",
     "tasks.update",
     "tasks.watch",
+    "project.archive",
+    "project.restore",
     "project.add_source",
     "project.create",
     "project.delete",
@@ -228,6 +230,10 @@ pub(in crate::app) fn dispatch_frame(
             id,
             Err(ApiError::unavailable("request authorization has ended")),
         );
+    }
+
+    if let Err(error) = timer.lock(state).guard_archived_rpc(&method, &params) {
+        return api::reply(id, Err(error));
     }
 
     if let Some(metadata) = frame.payload.get("write") {
@@ -890,6 +896,7 @@ impl AppState {
         if self.project_deletion_in_progress && !allowed_during_project_deletion(method) {
             return Err(ApiError::unavailable(PROJECT_DELETION_IN_PROGRESS));
         }
+        self.guard_archived_rpc(method, params)?;
         if let Some(answered) = crate::api::v1::dispatch_with_context(self, method, params, context)
         {
             return answered;

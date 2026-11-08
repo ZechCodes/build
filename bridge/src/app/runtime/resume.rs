@@ -223,6 +223,8 @@ impl AppState {
         went_down_at: &str,
         version: &str,
     ) -> Result<(), String> {
+        self.refuse_archived_entity(&entry.entity_id)?;
+        self.refuse_run_recovery(&entry.entity_id)?;
         let mut params = serde_json::json!({
             "id": entry.entity_id,
             "agent_id": entry.agent_id,

@@ -59,7 +59,7 @@ impl AppState {
 
     /// Whether the session at `key` is running, being started, or owed a
     /// queued or in-flight turn that would start it.
-    fn agent_session_held(&self, key: &TabKey) -> bool {
+    pub(in crate::app) fn agent_session_held(&self, key: &TabKey) -> bool {
         self.session_registry.agent_snapshot(key).is_some()
             || self.session_registry.claim_is_held(key)
             || self.delivery_queue.holds_agent(key)

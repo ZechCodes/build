@@ -563,6 +563,8 @@ impl AppState {
             .plans
             .iter()
             .filter(|(_, a)| a.plan.state.is_working())
+            .filter(|(id, _)| self.refuse_archived_entity(id).is_ok())
+            .filter(|(id, _)| !self.run_recovery_reserved(id))
             .filter(|(id, a)| !self.stopped_at_usage_limit(id, &a.agents))
             .filter_map(|(id, a)| {
                 let root = a
@@ -583,6 +585,8 @@ impl AppState {
             .runs
             .iter()
             .filter(|(_, a)| a.run.state.is_working())
+            .filter(|(id, _)| self.refuse_archived_entity(id).is_ok())
+            .filter(|(id, _)| !self.run_recovery_reserved(id))
             .filter(|(id, a)| !self.stopped_at_usage_limit(id, &a.agents))
             .filter_map(|(id, a)| {
                 let root = Self::canonical_root(&a.worktree.path);

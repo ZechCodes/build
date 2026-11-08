@@ -1,6 +1,6 @@
 {
   "api_version": "3.37.0",
-  "commit": "89052051",
+  "commit": "7f16bb41",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -65,6 +65,7 @@
     "harnesses.refresh",
     "models.list",
     "project.add_source",
+    "project.archive",
     "project.create",
     "project.delete",
     "project.discard_unused",
@@ -72,6 +73,7 @@
     "project.init_git",
     "project.list",
     "project.remove_source",
+    "project.restore",
     "project.set_compaction",
     "project.set_isolation",
     "project.set_remote",

@@ -75,6 +75,7 @@ pub(super) struct FileTarget {
 
 impl FileTarget {
     pub(super) fn capture(app: &AppState, scope: FileScope) -> Result<Self, ApiError> {
+        scope.guard_archived_mutation(app)?;
         let recorded_root = scope.recorded_root(app).map_err(ApiError::classify)?;
         Ok(Self {
             scope: Some(scope),
@@ -116,7 +117,15 @@ impl FileTarget {
         Ok(PreparedFile { root, held })
     }
 
+    pub(super) fn guard_archived_mutation(&self, app: &AppState) -> Result<(), ApiError> {
+        match &self.scope {
+            Some(scope) => scope.guard_archived_mutation(app),
+            None => Ok(()),
+        }
+    }
+
     pub(super) fn validate(&self, app: &AppState, root: &Path) -> Result<(), ApiError> {
+        self.guard_archived_mutation(app)?;
         if let Some(scope) = &self.scope {
             let current = scope.recorded_root(app).map_err(ApiError::classify)?;
             if current != self.recorded_root {

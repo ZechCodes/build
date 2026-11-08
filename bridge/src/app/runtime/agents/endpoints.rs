@@ -216,6 +216,8 @@ pub(in crate::app) fn agent_start(
             return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string().into());
         }
         let agent = s.addressed_agent(params)?;
+        s.refuse_archived_entity(&agent.entity_id)?;
+        s.refuse_run_recovery(&agent.entity_id)?;
         s.delivery_queue.enqueue(PendingAgentTurn {
             operation_id: None,
             root: agent.root.clone(),
@@ -604,6 +606,7 @@ impl AppState {
         if let Some(primary) = self.entity_agents(entity_id)?.primary() {
             return Ok(primary.id.clone());
         }
+        self.refuse_run_recovery(entity_id)?;
         let choice = match asked {
             Some(asked) => asked,
             None => self.mint_model_choice(entity_id)?,
@@ -1052,6 +1055,7 @@ impl AppState {
 
     pub(crate) fn agent_add(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
+        self.refuse_run_recovery(&entity_id)?;
         // Named at creation when the caller knows what it is making, which is
         // the usual case: whoever cuts an agent for a piece of work can say
         // what that work is better than the agent can before it has read

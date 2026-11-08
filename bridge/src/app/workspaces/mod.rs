@@ -513,7 +513,11 @@ impl AppState {
             return Ok(());
         }
         self.mark_device_lifecycle_dirty()?;
-        for workspace in capabilities {
+        for workspace in capabilities
+            .into_iter()
+            .filter(|workspace| self.refuse_archived_project(&workspace.project_id).is_ok())
+            .collect::<Vec<_>>()
+        {
             let id = workspace.id.clone();
             if let Err(error) = self.workspaces.apply_local_capabilities(workspace) {
                 eprintln!("device sync workspace refresh {id}: {error}");
@@ -522,6 +526,11 @@ impl AppState {
         // Capabilities can reveal a new repository in a finished directory.
         // Re-observe after applying them; the marker already covers this pass.
         for id in self.workspaces.observe_finished_local() {
+            if self.workspaces.get(&id).is_some_and(|workspace| {
+                self.refuse_archived_project(&workspace.project_id).is_err()
+            }) {
+                continue;
+            }
             if let Err(error) = self.workspaces.reopen(&id) {
                 eprintln!("device sync workspace reopen {id}: {error}");
             }

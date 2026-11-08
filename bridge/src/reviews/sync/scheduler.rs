@@ -40,15 +40,31 @@ impl Scheduler {
             (now + QUIET).min(entry.first + MAX_WAIT)
         };
     }
+    #[cfg(test)]
     pub(super) fn ready(&mut self, now: Instant, limit: usize) -> Vec<String> {
+        self.ready_admitted(now, limit, |_| Some(()))
+            .into_iter()
+            .map(|(task, ())| task)
+            .collect()
+    }
+
+    /// Admission precedes the page limit and any queue/retry mutation.
+    pub(super) fn ready_admitted<T>(
+        &mut self,
+        now: Instant,
+        limit: usize,
+        admit: impl Fn(&str) -> Option<T>,
+    ) -> Vec<(String, T)> {
         let mut ready = Vec::new();
         for (task, entry) in &mut self.tasks {
             if ready.len() == limit {
                 break;
             }
             if entry.queued && now >= entry.due && now >= entry.retry_after {
-                entry.queued = false;
-                ready.push(task.clone());
+                if let Some(lease) = admit(task) {
+                    entry.queued = false;
+                    ready.push((task.clone(), lease));
+                }
             }
         }
         ready
@@ -74,6 +90,33 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn denied_tasks_preserve_retry_state_without_starving_admitted_work() {
+        let mut scheduler = Scheduler::default();
+        let start = Instant::now();
+        for n in 0..12 {
+            let task = format!("archived-{n:02}");
+            scheduler.enqueue(task.clone(), start, true);
+            scheduler.settle(&task, start, true);
+        }
+        scheduler.enqueue("live".into(), start, true);
+        let at = start + Duration::from_secs(2);
+        assert_eq!(
+            scheduler.ready_admitted(at, 8, |task| (task == "live").then_some(())),
+            [("live".into(), ())]
+        );
+        for entry in scheduler.tasks.values().take(12) {
+            assert!(entry.queued);
+            assert_eq!(entry.failures, 1);
+            assert_eq!(entry.first, start);
+            assert_eq!(entry.due, at);
+            assert_eq!(entry.retry_after, at);
+        }
+        assert_eq!(scheduler.ready(at, 8).len(), 8);
+        assert_eq!(scheduler.ready(at, 8).len(), 4);
+        assert!(scheduler.ready(at, 8).is_empty());
+    }
+
     #[test]
     fn quiet_window_has_a_hard_cap_and_tasks_coalesce() {
         let mut scheduler = Scheduler::default();

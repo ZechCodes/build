@@ -901,11 +901,16 @@ fn remove_source_drops_it_from_the_project_and_leaves_workspaces_alone() {
         "project.create",
         json!({
             "name": "mixed",
-            "sources": [{"name": "code", "path": repo}, {"name": "assets", "path": extra}],
+            "sources": [{"name": "code", "path": repo}],
         }),
     ));
     assert_eq!(opened["ok"], true, "{opened:?}");
     let project_id = opened["result"]["project_id"].as_str().unwrap().to_string();
+    let added = state.handle(req(
+        "project.add_source",
+        json!({"project_id": project_id, "name": "assets", "path": extra}),
+    ));
+    assert_eq!(added["ok"], true, "{added:?}");
     let created = state.handle(req(
         "workspace.create",
         json!({"project_id": project_id, "name": "work", "isolation": "worktree"}),
@@ -1024,11 +1029,16 @@ fn a_removed_source_id_is_not_minted_again() {
             "project.create",
             json!({
                 "name": "many",
-                "sources": [{"path": code}, {"path": docs}, {"path": tokens}],
+                "sources": [{"path": code}, {"path": docs}],
             }),
         ));
         assert_eq!(opened["ok"], true, "{opened:?}");
         let project_id = opened["result"]["project_id"].as_str().unwrap().to_string();
+        let added = state.handle(req(
+            "project.add_source",
+            json!({"project_id": project_id, "path": tokens}),
+        ));
+        assert_eq!(added["ok"], true, "{added:?}");
         let removed = state.handle(req(
             "project.remove_source",
             json!({"project_id": project_id, "source_id": "source-3"}),

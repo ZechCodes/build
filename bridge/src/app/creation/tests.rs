@@ -3,6 +3,7 @@ use crate::harness::HarnessContext;
 use tempfile::TempDir;
 
 mod admission_recovery;
+mod archive_integration;
 mod continuation_identity;
 mod discard_identity;
 mod environment_create;
@@ -539,4 +540,69 @@ fn unknown_project_creation_fences_other_provisioning() {
         .project_delete(&json!({"project_id":"proj-2","confirm":true}))
         .is_err());
     assert!(app.projects.get("proj-2").is_some());
+}
+
+#[test]
+fn archive_refused_during_journaled_workspace_admission() {
+    let f = Fixture::new();
+    let state = Arc::clone(&f.state);
+    let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = Arc::clone(&observed);
+    let _observer = observe_boundary(move |boundary| {
+        if boundary == Boundary::AdmissionPrepared {
+            let refusal = state.lock().unwrap().project_archive("proj-1").unwrap_err();
+            assert_eq!(refusal.code(), "conflict");
+            assert!(refusal
+                .message()
+                .contains("wait for filesystem operations to finish"));
+            seen.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+    admit(
+        &f.state,
+        "workspace.create",
+        json!({"project_id":"proj-1","name":"Not yet visible"}),
+        WriteMetadata {
+            operation_id: operation(1059),
+            after: None,
+        },
+    )
+    .unwrap();
+    assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
+    let mut app = f.state.lock().unwrap();
+    assert!(app.workspaces.list(None).is_empty());
+    let refusal = app.project_archive("proj-1").unwrap_err();
+    assert_eq!(refusal.code(), "conflict");
+    assert!(refusal
+        .message()
+        .contains("wait for workspace Not yet visible creation to finish"));
+    assert!(app.project("proj-1").unwrap().archived_at.is_none());
+}
+
+#[test]
+fn archive_admission_hold_releases_poisoned_mutex() {
+    let f = Fixture::new();
+    let hold = ArchiveAdmissionHold::enter(
+        &f.state,
+        "workspace.create",
+        &json!({"project_id":"proj-1"}),
+    )
+    .unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let app = f.state.lock().unwrap();
+        assert_eq!(app.active_deferred_filesystem_jobs, 1);
+        panic!("panic while reserving a workspace under the app mutex");
+    }));
+    assert!(panic.is_err());
+    assert!(f.state.is_poisoned());
+    // Catch Drop separately so the regression fails safely instead of aborting the test binary.
+    let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(hold)));
+    assert!(dropped.is_ok(), "the hold destructor must never panic");
+    assert_eq!(
+        f.state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .active_deferred_filesystem_jobs,
+        0
+    );
 }

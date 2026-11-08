@@ -1092,3 +1092,33 @@ fn fs_upload_staging_in_ignored_directory_survives_automatic_prune() {
         "aborted upload must release the prune guard"
     );
 }
+
+#[test]
+fn archive_during_reclaim_preserves_output_and_history_until_restore() {
+    let (_tmp, state, project, ws, task, _checkout, output) = ready_to_prune();
+    AppState::sweep_workspaces_racing(
+        &state,
+        &pruning(),
+        now_ms(),
+        &at(PrunePhase::Validated, || {
+            state.lock().unwrap().projects.at_mut(0).archived_at = Some(1);
+        }),
+    );
+    assert!(output.exists());
+    assert!(timeline_kinds(&state, &task).is_empty());
+    assert_eq!(lifecycle(&state, &ws), Value::Null);
+    assert!(!state
+        .lock()
+        .unwrap()
+        .idle_digest_sent
+        .contains_key(&project));
+    assert_eq!(
+        call(&state, "project.restore", json!({"project_id":project}))["ok"],
+        true
+    );
+    AppState::sweep_workspaces(&state, &pruning(), now_ms());
+    assert!(!output.exists());
+    assert!(timeline_kinds(&state, &task)
+        .iter()
+        .any(|entry| entry["kind"] == "workspace_pruned"));
+}

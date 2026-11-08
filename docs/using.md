@@ -1,6 +1,6 @@
 # Using Build
 
-How devices, projects, workspaces and work isolation behave. For installing
+How devices, environments, projects, workspaces and work isolation behave. For installing
 Build, see the [README](../README.md#install).
 
 ## Devices
@@ -42,8 +42,14 @@ projects folder has been saved in the bridge configuration.
 
 ## Projects and workspaces
 
-A project brings together one or more source directories on a device. Add local
-directories, Git repositories, or remote repositories that Build clones. Each
+An environment holds source directories on one device. A project is one line
+of work in that environment, with its own task board, agents and workspaces.
+Picking the same environment for another line of work creates a separate
+project with an empty board, numbered from #1; the existing project's tasks
+stay on its board. Picking an existing project keeps using that board.
+
+Sources can be local directories, Git repositories, or remote repositories
+that Build clones. Each
 source keeps its own files and Git state; a project may also include ordinary
 directories that have no Git repository.
 
@@ -88,16 +94,74 @@ source configuration.
 For the complete workspace behavior, see
 [`planning/v2/workspaces.md`](../planning/v2/workspaces.md).
 
-**New project** in the projects rail, and anything you capture with the compose
-box, goes to the **Creation device** on Settings instead. Those two are the
-only places that pick a machine for you.
+### Create a workspace
+
+On a device with environments support, **New workspace** in the inbox opens
+the **Where?** picker. It shows Recent targets, then **Projects** (uses the
+existing task board), then **Environments** (creates a new task board). Search
+by name; when more than one device is listed, rows carry device labels. The
+target you choose determines where the workspace runs. **New workspace in
+this project** starts with that project already selected.
+
+The next page asks **What are you working on?** A name is required for a new
+line of work in an environment and optional for a workspace in an existing
+project. It previews the branch name, offers isolation, and lists the
+directories the workspace will contain. **Create workspace** starts one
+attempt: either a workspace in the selected project, or a new project and
+its first workspace in the selected environment.
+
+The progress screen shows Creating…, Done, Failed or **Checking…**. Checking
+means Build is finding out what happened; it does not offer a retry that could
+create duplicate work. If the project was created but its workspace failed,
+the screen offers **Try the workspace again**, **Keep it** and **Discard this
+project**. Discard only works for the project from that attempt while it has
+no workspace, task or agent session. If nothing was created, **Back to the
+wizard** lets you correct the draft. Closing progress leaves the attempt
+running; reopening the wizard can recover its saved progress, including after
+a page reload. Done offers **Open workspace**.
+
+Devices without environments support use the legacy workspace form. To set up
+a new environment today, use **Add project** in device settings: the legacy
+sheet still registers the sources and an initial project. The wizard has no
+**New environment…** page yet. Add project starts with that device selected;
+the workspace picker uses the selected target's device. Items from the capture
+compose box use the **Creation device** default on Settings.
+
+The current M1 limitations are:
+
+- No extra-folder selection in the wizard; it uses the target's sources.
+- No archive or rename, and no new project lifecycle flow in environment
+  settings. Every new line of work stays in the inbox until archive arrives,
+  unless you delete the project.
+- No environment secrets.
+
+**Delete project** remains available in **Project settings** for any project,
+including one under an environment. It requires confirmation and is refused
+while creation is pending, another filesystem operation is running, or a
+workspace is locked or provisioning. Pending shell launches and in-flight
+agent messages in the project's source or checkout folders also block deletion.
+
+Deletion removes the project and its workspaces from Build. Files and unsaved
+changes in Build-managed workspaces, Build-created agent run checkouts and the
+project conversation's scratch folder are permanently removed. Associated
+agent runs and their conversations, legacy plans and their saved documents,
+and captures routed to the project are deleted. Build revokes the project's
+secret grants and agent access, cancels pending task deliveries, and clears
+its retained inbox activity history. Original project folders and external
+checkouts are kept.
+
+Task-board records stay stored with their identities preserved; these are
+different from the legacy plans deleted above. Keeping those records does not
+keep the deleted project or its board available. **Discard this project** is
+the separate, narrower action offered immediately after a failed creation
+attempt.
 
 ## Environment config migration and rollback
 
 The bridge privately migrates each configured project into its own environment,
 including projects whose folders are temporarily unavailable. Existing project
 ids and task keys stay the same; tasks, workspaces, runs and scratch folders do
-not move. The interface and wire capabilities remain unchanged at this stage.
+not move. M1 exposes the environments and workspace picker described above.
 
 Before its first migration write, the bridge saves the exact original config as
 `config.json.pre-environments`, beside `config.json`. That snapshot is written
@@ -105,22 +169,29 @@ once and never replaced. Each successful config replacement also retains the
 previous current config in `config.json.previous` (one generation). Migration
 errors stop loading and leave the current config unchanged.
 
-A bridge from before environments can read the legacy project fields still
-written in the migrated config. Downgrading preserves the original projects
-until a sibling project shares a home path. The frozen legacy-loader regression
-records that an old bridge collapses such siblings into the first project at
-that path; the later entry replaces its source settings, isolation and source
-counter. The sibling's separate task key is ignored. Its tasks, scratch and runs
-are therefore not guaranteed to remain bound or reachable on an old bridge.
-After a sibling exists, recovery is a fix on the newer bridge (roll forward).
+**Downgrade boundary:** the bridge store is now schema 26. A binary that
+supports an earlier schema refuses to open it before applying database pragmas
+or schema changes, and the bridge fails to start. Going back across schema 26
+is unsupported, even if no sibling project has been created. Restoring only an
+older config does not make the database compatible. Recover by fixing or
+updating the newer bridge (roll forward).
+
+The config still contains legacy project fields. The frozen legacy-loader
+regression checks only those config bytes: it can load the original projects,
+but collapses siblings sharing a home into the first project at that path;
+the later entry replaces its source settings, isolation and source counter.
+It ignores the sibling's separate task key, so the sibling's tasks, scratch
+and runs are not guaranteed to stay bound or reachable. That config-loader
+result is not a promise that the old binary can open the current store.
 
 Restoring `config.json.pre-environments` deliberately abandons registrations
 made since migration, including new project names, keys and source references.
 Their task and scratch records remain stored under keys no registered project
 claims; restoring that old snapshot does not recover them. For a bad write on
 the newer bridge, use the previous-current snapshot instead. Any authorized
-binary rollback uses `scripts/buildctl --env <env> bridge rollback` with the
-environment named; stop the bridge before deliberately restoring a config.
+binary rollback within a compatible store schema uses
+`scripts/buildctl --env <env> bridge rollback` with the environment named;
+stop the bridge before deliberately restoring a config.
 
 ## Work isolation
 

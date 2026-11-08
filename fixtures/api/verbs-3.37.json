@@ -1,6 +1,6 @@
 {
-  "api_version": "3.36.0",
-  "commit": "5613e9b5",
+  "api_version": "3.37.0",
+  "commit": "89052051",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -28,7 +28,9 @@
     "entity.dismiss",
     "entity.mute",
     "entity.seen",
+    "environment.create",
     "environment.create_project",
+    "environment.discard_unused",
     "environment.list",
     "fs.createDirectory",
     "fs.createFile",
@@ -210,6 +212,8 @@
     "entity.mute",
     "entity.seen",
     "environment.create_project",
+    "environment.list",
+    "environments",
     "errors.codes",
     "fs.createDirectory",
     "fs.createFile",

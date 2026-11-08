@@ -10,9 +10,9 @@ describe("reviewed REST manifest consumption", () => {
     expect(createHash("sha256").update(bytes).digest("hex")).toBe("67c168d44c474f66edf2ba5aba3f029e0febd9eb29b483423568025a156f3fac");
     expect(createHttpRoutes(manifest).operationIds()).toEqual(manifest.transport.operation_ids);
     expect(createHttpRoutes(manifest).operationIds()).toContain("tasks_review_retryDelivery");
-    // M1.1 adds the environment list route before capability activation.
+    // M2.1 staged all creation routes; M2.2 publishes their capabilities without adding routes.
     expect(manifest.operations).toHaveLength(162);
-    for (const operation of ["environment_list", "tasks_review_snapshot", "tasks_review_act", "tasks_review_complete", "sync_head", "sync_snapshot", "sync_changes", "secrets_create", "secrets_list", "secrets_revoke", "secrets_audit"]) {
+    for (const operation of ["environment_create", "environment_discard_unused", "environment_create_project", "environment_list", "tasks_review_snapshot", "tasks_review_act", "tasks_review_complete", "sync_head", "sync_snapshot", "sync_changes", "secrets_create", "secrets_list", "secrets_revoke", "secrets_audit"]) {
       expect(createHttpRoutes(manifest).operationIds()).toContain(operation);
     }
   });

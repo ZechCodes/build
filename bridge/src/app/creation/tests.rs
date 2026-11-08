@@ -3,6 +3,7 @@ use crate::harness::HarnessContext;
 use tempfile::TempDir;
 
 mod admission_recovery;
+mod archive_integration;
 mod continuation_identity;
 mod discard_identity;
 mod environment_create;

@@ -88,6 +88,8 @@ pub(super) fn linked_workspace() -> (
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (mut state, project_id) = tracked_with_origin(&state_root);
+    state = state.with_config(state_root.join("config.json")).unwrap();
+    state.persist();
     let ws = workspace(&mut state, &project_id, "quiet");
     let task = task_id(&filed(&mut state, &project_id, "Quiet work"));
     let linked = link_task(&mut state, json!({ "task_id": task, "workspace_id": ws }));
@@ -506,6 +508,8 @@ fn a_restart_does_not_send_the_digest_twice() {
 
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let reopened = rooted(&state_root)
+        .with_config(state_root.join("config.json"))
+        .unwrap()
         .with_task_store(state_root.join("store"))
         .expect("the store opens");
     let reopened = Arc::new(Mutex::new(reopened));
@@ -869,6 +873,8 @@ fn the_verdict_is_kept_across_a_restart() {
 
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let reopened = rooted(&state_root)
+        .with_config(state_root.join("config.json"))
+        .unwrap()
         .with_task_store(state_root.join("store"))
         .expect("the store opens");
     let reopened = Arc::new(Mutex::new(reopened));

@@ -14,6 +14,8 @@
 // opening an entry tells the daemon, and nothing about what has been read is
 // kept on the device.
 
+import { followEnvironmentNavigation } from "./environmentNavigation.js";
+import { projectEnvironmentIdentity } from "./environmentIdentity.js";
 import { $, el } from "../dom.js";
 import { App } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
@@ -132,6 +134,8 @@ let watchedTasks = null;
 const renderedInboxRow = (entry, ui) => entry.kind === TRACKER_TASK && watchedTasks
   ? watchedTasks.renderEntry(entry, () => inboxRowHtml(entry, ui)) : inboxRowHtml(entry, ui);
 let clock = null;
+let environmentNavigation = {};
+let environmentWatcher = null;
 // Tasks the user stopped watching from their row, by row key: its exact owner
 // and a null stamp while in flight, then the time the bridge stamped it. A list the sync
 // layer asked for before the unwatch landed still says watched and writes
@@ -248,6 +252,7 @@ function railRows() {
 }
 
 function draw() {
+  paintCreationLabel();
   watchedTasks?.follow(projects);
   const painted = railRows();
   clock?.update(painted);
@@ -285,7 +290,10 @@ function draw() {
  *  all, which is every account with one device and every filtered rail. */
 function withDeviceNames(rows) {
   const names = rowDeviceNames({ items: rows, projects, devices: App.devices });
-  return rows.map((row) => ({ ...row, deviceName: names.get(row.projectKey) || null }));
+  const named = new Map(projects.map(project => [project.projectKey, project]));
+  return rows.map((row) => ({ ...row, deviceName: names.get(row.projectKey) || null,
+    environmentIdentity: projectEnvironmentIdentity(named.get(row.projectKey), projects, { ...environmentNavigation, devices: App.devices }),
+  }));
 }
 
 /** The inbox face's flat list of every row kind. */
@@ -350,7 +358,7 @@ const offlineDeviceIds = () =>
 function drawProjects(list, shown, heldActiveKey) {
   const { unsorted, blocks } = workspaceProjectBlocks(
     shown, projects, App.devices, offlineDeviceIds(), Date.now(), watchedTasks?.runningProjectKeys(),
-    heldActiveKey,
+    heldActiveKey, environmentNavigation,
   );
   entries = [...unsorted, ...blocks.flatMap((block) => [...block.entries, ...block.recent])];
   blocksPainted = new Map(blocks.map((block) => [block.projectKey, block]));
@@ -642,6 +650,7 @@ function createInBlock(projectKey) {
     projectId: block.id,
     deviceId: block.deviceId,
     projectName: block.name,
+    fixedProject: true,
     navigate: goFromInbox,
   });
 }
@@ -660,10 +669,22 @@ function hideBlock(projectKey) {
   void hideProject({ deviceId: block.deviceId, projectKey });
 }
 
+function offersNewWorkspace() {
+  const support = environmentNavigation.support || {};
+  return App.deviceFilter ? support[App.deviceFilter] === true : Object.values(support).some(Boolean);
+}
+
+function paintCreationLabel() {
+  const label = $("#inbox-new-project span");
+  const text = offersNewWorkspace() ? "New workspace" : "New project";
+  if (label && label.textContent !== text) label.textContent = text;
+}
+
 /** The one control above every block, and the rail head's own: a project the
  * account does not have yet. The sheet honors the rail's device filter or asks
  * explicitly when the rail is showing every device. */
 export function openNewProject() {
+  if (offersNewWorkspace()) return openCreateWorkspaceWizard({ deviceId: App.deviceFilter || undefined, fixedProject: false, navigate: goFromInbox });
   openNewRepo((project, target) => {
     // A project is a template, so a fresh one opens the rail standing in it
     // rather than its own checkout (core/projectModel.js) — the block is where
@@ -951,6 +972,9 @@ export function unmountInboxList() {
   menuRecord?.dispose();
   watchedTasks?.dispose();
   watchedTasks = null;
+  environmentWatcher?.dispose();
+  environmentWatcher = null;
+  environmentNavigation = {};
   clock?.dispose();
   clock = null;
   document.removeEventListener("pointerdown", onOutsideMenu);
@@ -967,6 +991,10 @@ export function mountInboxList() {
     return;
   }
   mounted = true;
+  environmentWatcher = followEnvironmentNavigation(() => App.devices, context => {
+    environmentNavigation = context;
+    draw();
+  });
   clock = createInboxClock(draw);
   folds = new Map();
   recentOpen.clear();

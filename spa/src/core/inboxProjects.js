@@ -20,6 +20,7 @@
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
+import { projectEnvironmentIdentity, projectIdentityHtml } from "./environmentIdentity.js";
 import { esc } from "./text.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_EYE_OFF, ICON_PLUS } from "./icons.js";
 import {
@@ -113,7 +114,7 @@ export function projectsUnreadCount(entries = [], projects = []) {
  *  project key and never by a name or a bare id: two machines each mint a
  *  `proj-1`, and two projects may share a name — which is what the device tag
  *  on the head is for. */
-export function workspaceProjectBlocks(entries = [], projects = [], devices = [], offlineDeviceIds = null, nowMs = Date.now(), runningTaskProjectKeys = new Set(), heldActiveKey = null) {
+export function workspaceProjectBlocks(entries = [], projects = [], devices = [], offlineDeviceIds = null, nowMs = Date.now(), runningTaskProjectKeys = new Set(), heldActiveKey = null, environmentNavigation = {}) {
   const named = projectsNamed(projects, entries);
   const tags = deviceTags([...named.values()], devices, offlineDeviceIds);
   const blocks = [...named.values()].map((project) =>
@@ -125,13 +126,27 @@ export function workspaceProjectBlocks(entries = [], projects = [], devices = []
       runningTaskProjectKeys,
       heldActiveKey,
     ),
-  ).sort((left, right) => byAnchor(left, right) || byProjectName(left, right));
+  ).map(block => ({ ...block, environmentIdentity: projectEnvironmentIdentity(named.get(block.projectKey), [...named.values()], { ...environmentNavigation, devices }) }))
+    .sort(compareEnvironmentBlocks);
   return {
     unsorted: entries.filter((entry) => !entry.projectKey),
     blocks,
   };
 }
 
+
+function compareEnvironmentBlocks(left, right) {
+  const leftEnvironment = left.environmentIdentity;
+  const rightEnvironment = right.environmentIdentity;
+  if (leftEnvironment && rightEnvironment && leftEnvironment.key !== rightEnvironment.key) {
+    return leftEnvironment.environmentName.localeCompare(rightEnvironment.environmentName)
+      || leftEnvironment.key.localeCompare(rightEnvironment.key);
+  }
+  // Keep legacy blocks in a separate stable partition in mixed accounts, so
+  // anchor comparisons cannot split siblings of a capable environment.
+  return Number(!!rightEnvironment) - Number(!!leftEnvironment)
+    || byAnchor(left, right) || byProjectName(left, right);
+}
 
 /** The project names more than one device uses. A name that is the account's
  *  own says which project it is; one two machines both use does not, and its
@@ -249,10 +264,11 @@ export function projectHeadHtml(block, ui = {}) {
   const folded = !!(ui.folded && ui.folded.has(block.projectKey));
   const dot = folded ? statusDotHtml({ running: block.running, unread: block.unread }) : "";
   const create = `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.projectKey)}" aria-label="New workspace in ${esc(block.name)}" title="New workspace in ${esc(block.name)}">${ICON_PLUS}</button>`;
-  const device = deviceTagHtml(block);
+  const device = block.environmentIdentity ? dimDeviceHtml(block.environmentIdentity.deviceLabel) : deviceTagHtml(block);
+  const name = block.environmentIdentity ? projectIdentityHtml(block.environmentIdentity) : esc(block.name);
   return `<div class="inbox-project-head">
     ${foldButtonHtml(block, folded)}
-    <button class="inbox-project-name" ${foldAttributes(block, folded)}>${esc(block.name)}</button>
+    <button class="inbox-project-name" ${foldAttributes(block, folded)}>${name}</button>
     <span class="inbox-project-tools"><span class="inbox-project-device">${device}</span><span class="inbox-project-actions">${blockHideHtml(block)}${create}</span></span>
     ${dot}
   </div>`;

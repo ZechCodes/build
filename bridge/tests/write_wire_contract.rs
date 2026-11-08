@@ -156,4 +156,31 @@ fn status_fixtures_cover_all_recovery_states_and_a_two_page_cursor() {
     assert_eq!(nested["params"], served["params"]);
     assert_eq!(nested["result"], served["result"]);
     assert_eq!(nested["examples"], served["examples"]);
+
+    assert_creation_recovery_examples(&served["creation_examples"]);
+}
+
+fn assert_creation_recovery_examples(examples: &Value) {
+    let creation_examples = examples
+        .as_array()
+        .expect("separate creation recovery examples");
+    assert_eq!(creation_examples.len(), 2);
+    let mut creation_states = std::collections::BTreeSet::new();
+    for example in creation_examples {
+        roundtrip::<StatusParams>(example["params"].clone());
+        roundtrip::<StatusResult>(example["result"].clone());
+        let operations = example["result"]["operations"].as_array().unwrap();
+        assert_eq!(operations.len(), 1);
+        let operation = &operations[0];
+        assert_eq!(operation["state"], "executing");
+        assert_eq!(
+            example["params"]["operation_ids"],
+            json!([operation["operation_id"]])
+        );
+        creation_states.insert(operation["creation"]["state"].as_str().unwrap());
+    }
+    assert_eq!(
+        creation_states,
+        ["unknown", "reconciling"].into_iter().collect()
+    );
 }

@@ -48,6 +48,13 @@ describe("workspace creation progress", () => {
     expect(document.body.textContent).toContain("Checking…"); expect(document.body.textContent).toContain("Build lost the reply; checking what happened");
     expect(document.querySelector('[data-progress-action="retry"]')).toBeNull(); expect(document.querySelector('[data-progress-action="discard"]')).toBeNull();
   });
+  it.each(["unknown", "reconciling"])("paints nested creation state %s as Checking without recovery actions", state => {
+    open(operation({ creation: { state }, progress: [{ step: "workspace", state: "done" }] }));
+    expect(document.querySelector("h3").textContent).toBe("Checking…");
+    expect(document.querySelector('[data-progress-action="open"]')).toBeNull();
+    expect(document.querySelector('[data-progress-action="retry"]')).toBeNull();
+    expect(document.querySelector('[data-progress-action="discard"]')).toBeNull();
+  });
   it("restores an attempt by operation id after reload and responds to cached updates", async () => {
     const held = open(operation({ state: "outcome_unknown" })); await held.ready;
     expect(held.writeOperations.get).toHaveBeenCalledWith("attempt-1"); held.writeOperations.update(completed());

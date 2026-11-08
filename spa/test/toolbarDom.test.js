@@ -1055,4 +1055,121 @@ it("keeps the open search node, focus and caret across a cached capability chang
   expect(popup.querySelector(".tb-filter")).toBe(input);
   expect(document.activeElement).toBe(input);
   expect([input.selectionStart, input.selectionEnd]).toEqual([1, 2]);
+  await writeCached({ deviceId: "dev-1", entityId: "", kind: "environment-support" }, { list: false, createProject: false });
+  await vi.waitFor(() => expect(popup.querySelector('[data-create="global"]')).toBeNull());
+  expect(popup.querySelector(".tb-filter")).toBe(input);
+  expect(document.activeElement).toBe(input);
+  expect([input.selectionStart, input.selectionEnd]).toEqual([1, 2]);
+});
+
+describe("review regressions", () => {
+  const seed = async () => {
+    feed = { ...savedFeed, projects: savedFeed.projects.map(project => ({ ...project, environment_id: "env", last_activity_ms: 10 })) };
+    workshopHolds({ p1: [payments, { ...payments, id: "other", workspace_id: "other", name: "Other work", last_activity_ms: 10 }] });
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "environments" }, [{ environment_id: "env", name: "Shared", project_ids: ["p1", "p2"] }]);
+    await refreshFeed();
+  };
+  const support = async value => {
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "environment-support" }, { list: value, createProject: value });
+    await vi.waitFor(() => expect(!!bar().querySelector(".tb-environment")).toBe(value));
+  };
+  afterAll(() => { feed = savedFeed; });
+
+  it("retains mounted crumb prefixes and focused trigger when a capable environment is renamed", async () => {
+    await seed();
+    await support(true);
+    const crumb = bar().querySelector("[data-project-return]");
+    const selectors = [".identity-kind", ".tb-environment", ".tb-environment-sep", ".tb-name"];
+    const nodes = selectors.map(selector => crumb.querySelector(selector));
+    const trigger = bar().querySelector('[data-select="project"]');
+    trigger.focus();
+    const assertRetainedAndVisible = () => {
+      selectors.forEach((selector, index) => {
+        const node = crumb.querySelector(selector);
+        expect(node).toBe(nodes[index]);
+        expect(node.isConnected).toBe(true);
+        expect(node.closest("[hidden]")).toBeNull();
+        expect(getComputedStyle(node).display).not.toBe("none");
+        expect(getComputedStyle(node).visibility).toBe("visible");
+      });
+      expect(document.activeElement).toBe(trigger);
+    };
+    assertRetainedAndVisible();
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "environments" }, [
+      { environment_id: "env", name: "Renamed environment", project_ids: ["p1", "p2"] },
+    ]);
+    await vi.waitFor(() => expect(nodes[1].textContent).toBe("Renamed environment"));
+    expect(crumb.textContent).toContain("Renamed environment › relaydb");
+    assertRetainedAndVisible();
+  });
+
+  it.each(["project", "workspace"])("preserves every mounted toolbar node and focused %s control across both capability directions", async select => {
+    await seed();
+    if (select === "workspace") await standOnWorkspace();
+    else {
+      App.route = { name: "project", deviceId: "dev-1", projectId: "p1" };
+      toolbarRouteChanged();
+      await flush();
+    }
+    const original = [...bar().querySelectorAll("*")];
+    const toolbar = bar();
+    const trigger = bar().querySelector(`[data-select="${select}"]`);
+    trigger.focus();
+    await support(true);
+    expect(bar()).toBe(toolbar);
+    expect(original.every(node => node.isConnected && toolbar.contains(node))).toBe(true);
+    expect(bar().querySelector(`[data-select="${select}"]`)).toBe(trigger);
+    expect(document.activeElement).toBe(trigger);
+    await support(false);
+    expect(bar()).toBe(toolbar);
+    expect([...bar().querySelectorAll("*")]).toEqual(original);
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("reorders open grouped projects from new activity without replacing keyed rows or focused search", async () => {
+    await seed(); await support(true);
+    const popup = await openJump("project");
+    const input = popup.querySelector(".tb-filter");
+    const rows = new Map(groupedRows("[data-project]").map(row => [row.dataset.project, row]));
+    expect(projectKeys()).toEqual(["dev-1/p2", "dev-1/p1"]);
+    feed = { ...feed, projects: feed.projects.map(project => project.id === "p1" ? { ...project, last_activity_ms: 20 } : project) };
+    await refreshFeed();
+    expect(projectKeys()).toEqual(["dev-1/p1", "dev-1/p2"]);
+    for (const row of groupedRows("[data-project]")) expect(row).toBe(rows.get(row.dataset.project));
+    expect(popup.querySelector(".tb-filter")).toBe(input);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("reorders open workspace rows from new activity without replacing nodes or the focused input", async () => {
+    await seed(); await support(true);
+    App.route = { name: "project", deviceId: "dev-1", projectId: "p1" }; toolbarRouteChanged();
+    const popup = await openJump("workspace");
+    const input = popup.querySelector(".tb-filter");
+    const rows = new Map(groupedRows("[data-workspace]").map(row => [row.dataset.workspace, row]));
+    expect(labels("[data-workspace]")).toEqual(["Other work", "payment-work"]);
+    workshopHolds({ p1: [{ ...payments, last_activity_ms: 30 }, { ...payments, id: "other", workspace_id: "other", name: "Other work", last_activity_ms: 10 }] });
+    await refreshFeed();
+    expect(labels("[data-workspace]")).toEqual(["payment-work", "Other work"]);
+    for (const row of groupedRows("[data-workspace]")) expect(row).toBe(rows.get(row.dataset.workspace));
+    expect(popup.querySelector(".tb-filter")).toBe(input);
+    expect(document.activeElement).toBe(input);
+  });
+});
+
+
+it("applies new visit order in the open workspace selector while retaining rows and input selection", async () => {
+  feed = { ...savedFeed, projects: savedFeed.projects.map(project => ({ ...project, environment_id: "env" })) };
+  workshopHolds({ p1: [{ ...payments, last_activity_ms: 10 }, { ...payments, id: "other", workspace_id: "other", name: "Other work", last_activity_ms: 10 }] });
+  await writeCached({ deviceId: "dev-1", entityId: "", kind: "environment-support" }, { list: true, createProject: true });
+  App.route = { name: "project", deviceId: "dev-1", projectId: "p1" }; toolbarRouteChanged();
+  await refreshFeed();
+  const popup = await openJump("workspace");
+  const input = popup.querySelector(".tb-filter");
+  await vi.waitFor(() => expect(labels("[data-workspace]")).toEqual(["payment-work", "Other work"]));
+  const rows = groupedRows("[data-workspace]");
+  await writeUiRecord(uiAddress({ view: "navigation", kind: "history", sub: "visits" }), [{ kind: "workspace", key: "dev-1/other", at: NOW }]);
+  await vi.waitFor(() => expect(labels("[data-workspace]")).toEqual(["Other work", "payment-work"]));
+  expect(groupedRows("[data-workspace]")).toEqual([rows[1], rows[0]]);
+  expect(popup.querySelector(".tb-filter")).toBe(input);
+  expect(document.activeElement).toBe(input);
 });

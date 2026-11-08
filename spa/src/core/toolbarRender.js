@@ -4,6 +4,7 @@ import { esc } from "./text.js";
 import { toolbarBreadcrumbs } from "./toolbarBreadcrumbs.js";
 import { ICON_CHEVRON_LEFT } from "./icons.js";
 import { kindGlyphHtml, projectIdentityText } from "./environmentIdentity.js";
+import { patchElement } from "./domPatch.js";
 
 const selectorHtml = (name, label, current = false) =>
   `<button class="tb-sel tb-workspace" data-select="workspace" type="button" aria-haspopup="dialog" aria-expanded="false"
@@ -23,16 +24,47 @@ const itemHtml = (html, className, separated = true) =>
 
 function ancestryHtml(shown) {
   const { project, workspace, tasks, leaf } = toolbarBreadcrumbs(shown);
-  const qualifier = shown.deviceTag ? ` · ${shown.deviceTag}` : "";
-  const projectLink = shown.environmentIdentity ? environmentCrumbHtml(project, shown.environmentIdentity)
-    : linkHtml({ ...project, label: project.label + qualifier }, "tb-project",
-      `data-project-return aria-label="${esc(`Open project workspace ${project.label}${qualifier}`)}"`);
+  const projectLink = projectCrumbHtml(project, shown);
   const items = [itemHtml(projectLink, "tb-project-item", false)];
   if (workspace) items.push(itemHtml(selectorHtml(workspace.label,
     `Switch workspace in ${shown.project}; current: ${workspace.label}`, workspace.current), "tb-workspace-item"));
   if (tasks) items.push(itemHtml(linkHtml(tasks, "tb-tasks", "data-tasks-parent"), "tb-tasks-item"));
   if (leaf) items.push(itemHtml(linkHtml(leaf, `tb-leaf${shown.kind === "branch" ? " mono" : ""}`), "tb-leaf-item"));
   return `<nav class="tb-breadcrumbs${tasks ? " tb-task-ancestry" : ""}" aria-label="Breadcrumb"><ol>${items.join("")}</ol></nav>`;
+}
+
+function projectCrumbHtml(project, shown) {
+  if (shown.environmentIdentity) return environmentCrumbHtml(project, shown.environmentIdentity);
+  const qualifier = shown.deviceTag ? ` · ${shown.deviceTag}` : "";
+  return linkHtml({ ...project, label: project.label + qualifier }, "tb-project",
+    `data-project-return aria-label="${esc(`Open project workspace ${project.label}${qualifier}`)}"`);
+}
+
+/** Capability and environment changes only patch the existing project link.
+ * Its label, ancestry, triggers and other mounted controls keep their nodes.
+ * Turning capability off intentionally removes prefix nodes to restore legacy markup. */
+export function patchToolbarProjectIdentity(host, shown) {
+  const link = host.querySelector("[data-project-return]");
+  if (!link) return;
+  const template = host.ownerDocument.createElement("template");
+  template.innerHTML = projectCrumbHtml(toolbarBreadcrumbs(shown).project, shown);
+  const next = template.content.firstElementChild;
+  for (const attribute of ["class", "title", "aria-label"]) {
+    if (link.getAttribute(attribute) !== next.getAttribute(attribute)) link.setAttribute(attribute, next.getAttribute(attribute));
+  }
+  const name = link.querySelector(".tb-name");
+  patchElement(name, next.querySelector(".tb-name"));
+  for (const selector of [".identity-kind", ".tb-environment", ".tb-environment-sep"]) {
+    patchCrumbPrefix(link, next, selector, name);
+  }
+}
+
+function patchCrumbPrefix(link, next, selector, name) {
+  const live = link.querySelector(selector);
+  const wanted = next.querySelector(selector);
+  if (!wanted) { live?.remove(); return; }
+  if (live) patchElement(live, wanted);
+  else link.insertBefore(wanted, name);
 }
 
 function environmentCrumbHtml(project, identity) {

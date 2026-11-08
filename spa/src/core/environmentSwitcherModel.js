@@ -1,6 +1,7 @@
 import { navigationPickerModel } from "./navigationModel.js";
 import { environmentKeyOf, environmentNavigationSupported, projectEnvironmentIdentity } from "./environmentIdentity.js";
 import { deviceKey } from "./deviceKey.js";
+import { lastVisitedDestinations } from "./navigationVisitModel.js";
 
 export const navigationTime = (value) => {
   if (Number.isFinite(value)) return value;
@@ -13,13 +14,16 @@ const byRecency = (left, right) => right.at - left.at || left.name.localeCompare
 const archived = (row) => !!(row.archived || row.archived_at);
 
 function addedFolderCount(project, environments = []) {
+  // M1 assumes the cache is current: an undetectably older environment can count a new inherited source until the next refresh.
   if (Array.isArray(project.added_sources)) return project.added_sources.length;
-  if (!project.diverged) return 0;
+  if (typeof project.diverged !== "boolean" || !Array.isArray(project.sources)) return null;
   const key = deviceKey(project.deviceId, project.environment_id);
   const environment = environments.find(row => environmentKeyOf(row) === key);
-  if (!environment) return 0;
-  const inherited = new Set((environment.sources || []).map(source => source.id));
-  return (project.sources || []).filter(source => !inherited.has(source.id)).length;
+  if (!Array.isArray(environment?.sources)) return null;
+  const projectIds = new Set(project.sources.map(source => source.id));
+  if (!environment.sources.every(source => projectIds.has(source.id))) return null;
+  const inherited = new Set(environment.sources.map(source => source.id));
+  return project.diverged ? project.sources.filter(source => !inherited.has(source.id)).length : 0;
 }
 
 function projectDestination(group, visits, environments) {
@@ -65,5 +69,7 @@ export function switcherModel(catalog, options = {}) {
   const now = options.nowMs ?? Date.now();
   const recent = projects.filter((row) => row.at > 0 && now - row.at <= 24 * 3600_000).sort(byRecency).slice(0, 5);
   return { ...picker, groups: environmentGroups(picker, catalog, options),
-    lastVisited: String(options.query || "").trim() ? [] : recent, environmentGrouped: true };
+    lastVisited: String(options.query || "").trim() ? [] : recent,
+    legacyLastVisited: lastVisitedDestinations(catalog, options, row => !environmentNavigationSupported(options, row.deviceId)),
+    environmentGrouped: true };
 }

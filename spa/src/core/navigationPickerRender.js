@@ -62,6 +62,10 @@ function environmentPickerEntries(picker) {
     rows.push({ key: "recent", groupKey: "visits", html: '<div class="tb-group">Recent</div>' });
     rows.push(...picker.lastVisited.map((row) => environmentDestinationEntry(row, groupsByProject.get(row.projectKey), true)));
   }
+  if (picker.legacyLastVisited.length) {
+    rows.push({ key: "last-visited", groupKey: "legacy-visits", html: '<div class="tb-group">Last visited</div>' });
+    rows.push(...picker.legacyLastVisited.map(row => ({ ...destinationEntry(row, groupsByProject.get(row.projectKey), true), groupKey: "legacy-visits" })));
+  }
   for (const group of picker.groups) rows.push(...environmentGroupEntries(group));
   if (!picker.groups.length) rows.push({ key: "none", html: '<div class="tb-none dim">No matching projects or workspaces</div>' });
   return rows;

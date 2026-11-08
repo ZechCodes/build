@@ -410,7 +410,7 @@ describe("environment switcherModel", () => {
     expect(picker.groups.map(group => [group.kind, group.key, group.name])).toEqual([
       ["environment", "dev-2/e", "Elsewhere"], ["environment", "dev-1/e", "Shared"],
     ]);
-    expect(picker.groups[1].destinations.map(row => [row.name, row.addedFolders])).toEqual([["Newer", 1], ["Older", 0]]);
+    expect(picker.groups[1].destinations.map(row => [row.name, row.addedFolders])).toEqual([["Newer", 1], ["Older", null]]);
     expect(picker.lastVisited.map(row => row.key)).toEqual(["dev-1/b", "dev-1/a"]);
     expect(picker.groups[0].deviceLabel).toBe("laptop");
     expect(picker.groups[1].destinations[0].route.name).toBe("project");
@@ -461,4 +461,20 @@ it("counts extra folders from the actual project.list effective sources without 
     sources: [{ id: "shared" }, { id: "extra" }, { id: "another" }] })];
   const picker = switcherModel(navigationCatalog({ projects }), { environments, support: { "dev-1": true } });
   expect(picker.groups[0].destinations[0].addedFolders).toBe(2);
+});
+
+it.each([
+  ["missing environment", [], { diverged: true, sources: [{ id: "extra" }] }],
+  ["inconsistent inherited sources", [{ environment_id: "e", deviceId: "dev-1", sources: [{ id: "inherited-new" }] }], { diverged: true, sources: [{ id: "extra" }] }],
+  ["missing project sources", [{ environment_id: "e", deviceId: "dev-1", sources: [{ id: "shared" }] }], { diverged: true }],
+  ["missing divergence", [{ environment_id: "e", deviceId: "dev-1", sources: [] }], { sources: [{ id: "extra" }] }],
+])("suppresses an untrusted folder count: %s", (_label, environments, fields) => {
+  const projects = [on("dev-1", { id: "p", name: "Project", environment_id: "e", ...fields })];
+  const picker = switcherModel(navigationCatalog({ projects }), { environments, support: { "dev-1": true } });
+  expect(picker.groups[0].destinations[0].addedFolders).toBeNull();
+});
+
+it("prefers authoritative added_sources even without a cached environment or computed fields", () => {
+  const projects = [on("dev-1", { id: "p", name: "Project", environment_id: "e", added_sources: [{ id: "extra" }] })];
+  expect(switcherModel(navigationCatalog({ projects }), { support: { "dev-1": true } }).groups[0].destinations[0].addedFolders).toBe(1);
 });

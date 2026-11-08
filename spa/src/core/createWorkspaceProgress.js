@@ -159,7 +159,7 @@ export function openCreateWorkspaceProgress(options) {
     detached = true;
     clearTimeout(timer);
     unsubscribe();
-    opener?.focus();
+    if (!document.activeElement?.closest('[role="dialog"]') || modal.body.contains(document.activeElement)) opener?.focus();
     options.onClose?.();
   }
   function close() {

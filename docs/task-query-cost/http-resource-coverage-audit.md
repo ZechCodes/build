@@ -169,3 +169,6 @@ uncertainty, and fences inactive-opening errors against newer evidence. The
 record type, not an RPC; its exact finite metadata occurrence is pinned.
 Source fingerprints cover the changed helper/cache/service definitions. Scanner
 recognizers, dispatch inventory and every coverage assertion remain intact.
+
+The recovery Back transition retains keyboard focus in its replacement dialog;
+only the progress view source fingerprint changes, with no new RPC or producer.

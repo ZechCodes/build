@@ -167,3 +167,12 @@ it('shows a retained transport uncertainty as Checking while the worker keeps po
  const model=createWorkspaceProgressModel({operationId:'lost',state:'queued',checking:true,request:{method:'workspace.create',params:{project_id:'p'}}});
  expect(model.phase).toBe('checking');expect(model.actions).toEqual([]);expect(model.message).toBe('Build lost the reply; checking what happened');
 });
+
+it('keeps focus in the replacement dialog when Back opens the recovered legacy form',async()=>{
+  const opener=document.createElement('button');document.body.append(opener);opener.focus();
+  let field;
+  const onBack=()=>{const replacement=document.createElement('div');replacement.setAttribute('role','dialog');field=document.createElement('input');replacement.append(field);document.body.append(replacement);field.focus();};
+  const screen=open(operation({state:'failed',effect:'unapplied',confirmation:{error:{message:'Update first'}}}),{onBack});await screen.ready;
+  document.querySelector('[data-progress-action="back"]').click();await flush();
+  expect(document.activeElement).toBe(field);
+});

@@ -8,6 +8,7 @@ mod projects;
 mod provider_defaults;
 mod remote_urls;
 mod settings;
+mod shared_sources;
 mod snapshot_publication;
 mod source_remotes;
 mod source_sync;

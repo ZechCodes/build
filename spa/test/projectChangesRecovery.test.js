@@ -103,6 +103,24 @@ it.each(["stale cache", "greeting rejected"])("clears Project Changes pending st
   await vi.waitFor(() => expect(sync.disabled).toBe(false));
 });
 
+it("keeps Project Changes Sync busy through a repaint while its response is held", async () => {
+  await rememberProjectChangesSupport("d", { git: { projectSources: true }, projects: { syncBase: true } });
+  await writeCached(environmentSupportAddress("d"), { list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false, bridge_epoch: "changes-epoch" });
+  let finish;
+  changesRpc.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  mount();
+  const sync = host.querySelector("[data-project-sync-base]");
+  await vi.waitFor(() => expect(sync.hidden).toBe(false));
+  sync.click();
+  await vi.waitFor(() => expect(changesRpc).toHaveBeenCalledTimes(1));
+  handle.update({ ...project, name: "Repaint while awaiting Sync" });
+  expect(sync.disabled).toBe(true);
+  await sync.onclick();
+  expect(changesRpc).toHaveBeenCalledTimes(1);
+  finish({});
+  await vi.waitFor(() => expect(sync.disabled).toBe(false));
+});
+
 it("preserves a commit-only deep link until the default source resolves", async () => {
   const selected = mount({ id: "p", sources: [] }, { commit: "abc" });
   await vi.waitFor(() => expect(mountWorkspaceChanges).toHaveBeenCalled());

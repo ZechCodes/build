@@ -14,7 +14,7 @@ import { sourceEditSupportAddress } from "../src/core/sourceEditSupport.js";
 import { environmentSupportAddress, rememberEnvironmentSupport } from "../src/core/environmentSupport.js";
 import { environmentsAddress } from "../src/core/environmentCache.js";
 
-const sourceAuthority = vi.hoisted(() => ({ epoch: "legacy-epoch", greetingError: null }));
+const sourceAuthority = vi.hoisted(() => ({ epoch: "legacy-epoch", greetingError: null, greetingWait: null, waiting: 0 }));
 vi.mock("../src/core/deviceContexts.js", async importOriginal => ({
   ...await importOriginal(),
   captureDeviceGreeting: () => {
@@ -22,6 +22,7 @@ vi.mock("../src/core/deviceContexts.js", async importOriginal => ({
     return epoch ? { epoch, current: () => sourceAuthority.epoch === epoch } : null;
   },
   whenGreeted: async (_context, dispatch) => {
+    if (sourceAuthority.greetingWait) { sourceAuthority.waiting += 1; await sourceAuthority.greetingWait; }
     if (sourceAuthority.greetingError) throw new Error(sourceAuthority.greetingError);
     return { sent: dispatch() };
   },
@@ -58,10 +59,20 @@ const type = (element, value) => {
 };
 
 beforeEach(async () => {
+  // Close the previous reader before resetting shared records. Its list-sync
+  // subscription must not publish an older row into the next opening's cache.
+  const back = document.querySelector("#psbrowseback");
+  if (back) {
+    back.click();
+    await vi.waitFor(() => expect(document.querySelector("#pscancel")).toBeTruthy());
+  }
+  document.querySelector("#pscancel")?.click();
   await wipeCache();
   await wipeUiRecords();
   sourceAuthority.epoch = "legacy-epoch";
   sourceAuthority.greetingError = null;
+  sourceAuthority.greetingWait = null;
+  sourceAuthority.waiting = 0;
   // Legacy fixtures positively identify a device that predates environments.
   for (const deviceId of ["", "dev-1"]) await writeCached(environmentSupportAddress(deviceId), {
     list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false, bridge_epoch: "legacy-epoch",
@@ -1099,6 +1110,63 @@ describe("keeping a source's base branch up to date", () => {
     await vi.waitFor(() => expect(callRpc.mock.calls.filter(([called]) => called === method)).toHaveLength(1));
     if (action === "sync now") await vi.waitFor(() => expect(statusOf("source-1")).toBe("Syncing…"));
     else await vi.waitFor(() => expect(toggle("source-1").checked).toBe(false));
+  });
+
+  it.each([
+    ["support", "success"], ["project", "success"],
+    ["support", "RPC error"], ["project", "RPC error"],
+    ["support", "greeting rejected"], ["project", "greeting rejected"],
+    ["support", "ownership refused"], ["project", "ownership refused"],
+  ])("keeps one in-flight Sync through %s repaint until %s", async (repaint, outcome) => {
+    await syncsBase();
+    await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), SYNCING);
+    let finish, refuse;
+    const held = new Promise((resolve, reject) => { finish = resolve; refuse = reject; });
+    const beforeDispatch = ["greeting rejected", "ownership refused"].includes(outcome);
+    if (beforeDispatch) sourceAuthority.greetingWait = held;
+    let sends = 0;
+    const callRpc = vi.fn(method => {
+      if (method !== "project.sync_source") return new Promise(() => {});
+      sends += 1;
+      return !beforeDispatch && sends === 1 ? held : Promise.resolve({ pending: true });
+    });
+    openProjectSettings(PROJECT.project_id, { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(toggle("source-1")).toBeTruthy());
+    const first = card("source-1").querySelector("[data-sync-now]");
+    const handler = first.onclick;
+    let completion;
+    first.onclick = (...args) => (completion = handler(...args));
+    first.click();
+    if (beforeDispatch) expect(sourceAuthority.waiting).toBe(1);
+    else await vi.waitFor(() => expect(sends).toBe(1));
+    const current = card("source-1");
+    if (repaint === "support") await syncsBase();
+    else await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), { ...SYNCING, name: "Repaint during request" });
+    await vi.waitFor(() => expect(card("source-1")).not.toBe(current));
+    const replacement = card("source-1").querySelector("[data-sync-now]");
+    expect(replacement.disabled).toBe(true);
+    expect(statusOf("source-1")).toBe("Syncing…");
+    replacement.click();
+    await replacement.onclick(); // A retained/direct handler must also refuse a duplicate.
+    expect(sends).toBe(beforeDispatch ? 0 : 1);
+    if (beforeDispatch) expect(sourceAuthority.waiting).toBe(1);
+    if (outcome === "success") finish({ pending: true });
+    else if (outcome === "ownership refused") { sourceAuthority.epoch = "upgraded-epoch"; finish(); }
+    else refuse(new Error(outcome));
+    await completion;
+    sourceAuthority.greetingWait = null;
+    if (outcome === "success") {
+      expect(statusOf("source-1")).toBe("Syncing…");
+      expect(card("source-1").querySelector("[data-sync-now]").disabled).toBe(true);
+      const completed = { ...SYNCING, sources: [{ ...SYNCING.sources[0], sync: { ...SYNCED, last_attempt_ms: SYNCED.last_attempt_ms + 1 } }, ...SYNCING.sources.slice(1)] };
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, [completed]);
+    }
+    await vi.waitFor(() => expect(card("source-1").querySelector("[data-sync-now]").disabled).toBe(false));
+    expect(statusOf("source-1")).not.toBe("Syncing…");
+    const support = (await readCached(environmentSupportAddress("dev-1"))).value;
+    await writeCached(environmentSupportAddress("dev-1"), { ...support, bridge_epoch: sourceAuthority.epoch });
+    card("source-1").querySelector("[data-sync-now]").click();
+    await vi.waitFor(() => expect(sends).toBe(beforeDispatch ? 1 : 2));
   });
 
   it("escapes what a sync's reason carries", async () => {

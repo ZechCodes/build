@@ -12,10 +12,10 @@ import { syncStatusLine } from "../core/sourceSyncModel.js";
 const awaitingSync = (source, syncing) =>
   syncing.has(source.id) && syncing.get(source.id) === (source.sync?.last_attempt_ms ?? null);
 
-export function syncControlsHtml(source, index, { syncsBase, syncing = new Map(), now = Date.now() }) {
+export function syncControlsHtml(source, index, { syncsBase, syncing = new Map(), inFlight = new Set(), now = Date.now() }) {
   if (!syncsBase || source.is_git === false) return "";
   const id = `ps-syncbase-${index}`;
-  const waiting = awaitingSync(source, syncing);
+  const waiting = inFlight.has(source.id) || awaitingSync(source, syncing);
   const status = waiting ? "Syncing…" : syncStatusLine(source, now);
   return `<div class="ps-sync" data-source-sync>
       <label class="toggle ps-sync-toggle" for="${id}"><input type="checkbox" id="${id}" data-sync-base${source.sync_base ? " checked" : ""}>
@@ -26,7 +26,7 @@ export function syncControlsHtml(source, index, { syncsBase, syncing = new Map()
 
 /** Wire one card's controls: the setting saves the moment it is changed, and
  *  Sync now asks the bridge to sync the source at once. */
-export function mountSyncControls(card, source, { callRpc, projectId, write, onSyncAccepted }) {
+export function mountSyncControls(card, source, { callRpc, projectId, write, syncInFlight, onSyncAccepted, onSyncSettled }) {
   const toggle = card.querySelector("[data-sync-base]");
   if (!toggle) return;
   const error = card.querySelector("[data-source-error]");
@@ -39,8 +39,17 @@ export function mountSyncControls(card, source, { callRpc, projectId, write, onS
   const syncNow = card.querySelector("[data-sync-now]");
   // Only an accepted write creates the pending marker. A greeting or ownership
   // refusal must leave the source idle and retryable through later repaints.
-  syncNow.onclick = () => void write(
-    () => callRpc("project.sync_source", ids), syncNow, error,
-    () => onSyncAccepted(source),
-  );
+  syncNow.onclick = async () => {
+    if (syncInFlight.has(source.id)) return;
+    syncInFlight.add(source.id);
+    try {
+      await write(
+        () => callRpc("project.sync_source", ids), syncNow, error,
+        () => onSyncAccepted(source),
+      );
+    } finally {
+      syncInFlight.delete(source.id);
+      if (!syncNow.isConnected) onSyncSettled();
+    }
+  };
 }

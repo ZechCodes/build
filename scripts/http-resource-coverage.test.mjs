@@ -440,10 +440,10 @@ const sourceFingerprintParts = {
   "sheets/newRepo.js": ["e1addf8b", "abc706f6", "ca74fa24", "7e1f3208", "aae3d460", "37157135", "21e46d2f", "f187cdfa"],
   // #1065: positive ownership evidence gates both card rendering and editing.save.
   // Source replies use the shared identity-preserving writer; project-scoped methods/selectors and project.list refresh are unchanged.
-  "sheets/projectSettings.js": ["c1dceec2", "d9839a3e", "176dc30c", "8ebb5dbe", "ef8332fd", "54751335", "b7c43080", "125c9c62"],
-  "sheets/projectSources.js": ["9783a364", "64265f3f", "4122f2f8", "8e9a7687", "4a0ecfd6", "2bf1594c", "5dcd4419", "d38369c3"],
-  // #1065: Sync now records pending only in the accepted-write callback; RPC method and selectors are unchanged.
-  "sheets/sourceSyncControls.js": ["1b542986", "c856f7a3", "959cfe82", "0756b7c2", "405e93a2", "55230dc3", "e1a2d894", "a36b48d6"],
+  "sheets/projectSettings.js": ["69ccc0ae", "32caed18", "b78351f2", "0a9b73fb", "c191cac2", "52604fd3", "3dddf9fd", "41bf0e1f"],
+  "sheets/projectSources.js": ["824cc8cc", "c2389c5d", "c5a484d1", "a8f838bf", "b49d95de", "16e2f200", "29b81ff2", "8b6eaa5b"],
+  // #1065: sheet-owned in-flight state blocks duplicate Sync requests; the accepted callback, RPC method and selectors are unchanged.
+  "sheets/sourceSyncControls.js": ["49045a5b", "1fd03d03", "c9e574df", "020f32ea", "5d64bdd0", "3ab970b7", "1c98dee9", "cb20c875"],
   // #997 workspaceSettings.js:292: the existing project.list catalog loader delegates to owned device recovery.
   "sheets/workspaceSettings.js": ["5cc470f0", "7f95fc28", "02c7bfb0", "478c4510", "e33b5183", "1e6be057", "6928f74b", "82185347"],
   "terminal/manager.js": ["4027a8b0", "af931af9", "3d71d687", "c930e06b", "bd55b938", "ad0db4da", "e20dc150", "60ed795b"],

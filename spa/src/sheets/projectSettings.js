@@ -131,6 +131,8 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   // Sources whose Sync now was accepted, by the last attempt their row showed
   // then: "Syncing…" until the row says a newer one.
   const syncing = new Map();
+  // Requests outlive the card nodes replaced by cache-driven repaints.
+  const syncInFlight = new Set();
   const notices = {};
   let cachedDraft = null;
   let displayedDraft = {};
@@ -204,7 +206,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     sheet.innerHTML = settingsSheetHtml({
       title: "Project settings",
       bodyHtml: `${generalHtml(project)}
-      ${sourcesSectionHtml(project, { editing, editsSources, environmentSupport, environmentName, notices, sync: { syncsBase, syncing } })}
+      ${sourcesSectionHtml(project, { editing, editsSources, environmentSupport, environmentName, notices, sync: { syncsBase, syncing, inFlight: syncInFlight } })}
       ${isolationHtml()}
       ${scopedCompactionEditorHtml({ scope: "project", prefix: "project-compaction" })}
       ${dangerHtml()}
@@ -222,10 +224,11 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     painted = project;
     mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), deviceId, fromProjectRecord: true });
     mountSources(project, {
-      callRpc: sourceRpc, record, deviceId, editing, refresh,
+      callRpc: sourceRpc, record, deviceId, editing, refresh, syncInFlight,
       saveDraft,
       onSaved: (sourceId, notice) => { notices[sourceId] = notice; },
       onSyncAccepted: (source) => { syncing.set(source.id, source.sync?.last_attempt_ms ?? null); },
+      onSyncSettled: () => { void record.read(); },
       onFrameChange: () => { frame = sheet.firstElementChild; view = "browser"; },
       onReturn: () => { view = "settings"; void record.read(); },
     });
@@ -267,7 +270,7 @@ function pullProjectSettings(projectId, { callRpc, deviceId, record }) {
  *
  *  Every write answers the project row itself, so the sheet repaints from what
  *  the bridge said rather than from what it hoped. */
-function mountSources(project, { callRpc, record, deviceId, editing, refresh, saveDraft, onSaved, onSyncAccepted, onFrameChange, onReturn }) {
+function mountSources(project, { callRpc, record, deviceId, editing, refresh, syncInFlight, saveDraft, onSaved, onSyncAccepted, onSyncSettled, onFrameChange, onReturn }) {
   const write = async (send, button, error, onDone) => {
     if (error) error.textContent = "";
     button.disabled = true;
@@ -285,7 +288,7 @@ function mountSources(project, { callRpc, record, deviceId, editing, refresh, sa
       return null;
     }
   };
-  mountSourceCards($("#sheet"), project, { editing, callRpc, deviceId, write, saveDraft, onSaved, onSyncAccepted });
+  mountSourceCards($("#sheet"), project, { editing, callRpc, deviceId, write, syncInFlight, saveDraft, onSaved, onSyncAccepted, onSyncSettled });
   const refreshButton = $("#psrefreshsources");
   if (refreshButton) refreshButton.onclick = () => void refreshSources(refreshButton, $("#pssrcerr"), refresh);
   $("#psaddremote").onclick = () => openAddRemote(project, { write, callRpc, saveDraft, deviceId });

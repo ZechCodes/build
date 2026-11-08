@@ -40,6 +40,15 @@ impl ReadTransaction<'_> {
         }
         Ok(records)
     }
+    pub fn mutation_continuations(
+        &self,
+        principal: &str,
+        id: &str,
+    ) -> Result<Vec<MutationRecord>, StoreError> {
+        let mut statement = self.connection().prepare("SELECT record FROM mutation_commands WHERE principal=?1 AND CASE WHEN json_valid(record) THEN json_extract(record,'$.params.continues') END=?2 ORDER BY command_id LIMIT 128")?;
+        let rows = statement.query_map(params![principal, id], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode(row?)).collect()
+    }
     pub fn mutation_cursor(&self, principal: &str) -> Result<u64, StoreError> {
         let mut statement = self
             .connection()

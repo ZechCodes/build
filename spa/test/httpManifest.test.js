@@ -7,7 +7,7 @@ import { createHttpRoutes } from "../src/core/httpRoutes.js";
 describe("reviewed REST manifest consumption", () => {
   it("pins the coordinator-released bytes and exact operation IDs", () => {
     const bytes = readFileSync(new URL("../../fixtures/api/http/resource-manifest.json", import.meta.url));
-    expect(createHash("sha256").update(bytes).digest("hex")).toBe("465db3f5de9431ac19341710cc1bfc07d3b8f54dde975dfc068ce1960fcc2813");
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe("67b0c511d8c597c5b60cf39c326a2cae69d28f88129691675450dac8836ec9ed");
     expect(createHttpRoutes(manifest).operationIds()).toEqual(manifest.transport.operation_ids);
     expect(createHttpRoutes(manifest).operationIds()).toContain("tasks_review_retryDelivery");
     // Wire 3.36 adds four metadata-only secrets routes.

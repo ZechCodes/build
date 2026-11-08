@@ -33,6 +33,18 @@ fn stage_fallback_never_opens_an_unresolved_project_key() {
         let params = json!({"run_id":owner,"stage_id":"stage-one"});
         assert!(app.plan_run_stage_diff(&params, None).is_err(),
             "an unresolved key cannot select a fallback object database");
+    }
+}
+
+#[test]
+fn snapshot_stage_fallback_never_opens_an_unresolved_project_key() {
+    for uuid_keyed in [false, true] {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state_before_admission(&repo, dir.path());
+        let (_, owner) = stage_owner(&mut app, &repo, uuid_keyed);
+        app.runs.get_mut(&owner).unwrap().worktree.path = dir.path().join("gone-checkout");
+        app.projects.unbind_live_entity(&owner);
+        app.clear_projects_for_test();
         let context = crate::app::observation_reads::scopes::ScopeReadContext::capture(&app);
         let result = context.prepare("task.stage_diff", &json!({"task_id":"stage-plan","stage_id":"stage-one"}))
             .and_then(|job| job.run());

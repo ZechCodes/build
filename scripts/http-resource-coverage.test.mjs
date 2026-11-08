@@ -328,8 +328,8 @@ const sourceFingerprintParts = {
   "core/fileUploadRpc.js": ["7891a6ca", "183a9b67", "b7fe41fc", "ba71c70a", "1896ec75", "2809155c", "1375617f", "a9ab96d0"],
   "core/fileUploads.js": ["a1a4c2df", "5ef03503", "483e7b99", "099e04a0", "77c9e865", "a22a23dd", "a704cd79", "6678f239"],
   "core/fileUploadsModel.js": ["d11fdd79", "8bb9318c", "fbc2cff2", "29b16930", "9d73b3ee", "89d5d976", "7e2b756a", "69d40aac"],
-  // #1052 review: settings owns the mapped project.list read; journal cursor/greeting callbacks only refresh that read.
-  "core/environmentSettingsProjects.js": ["fe4732b2", "4889b0b5", "881e6e29", "bb52768c", "63590e63", "eab00e00", "fa7d3769", "655b6579"],
+  // #1052 retry review: current-attempt pending/error state accompanies the same mapped project.list read.
+  "core/environmentSettingsProjects.js": ["c9ca19e3", "8688e54f", "6e1b3396", "11a2c633", "08562858", "7da1d02a", "558a00e3", "84b1ebf8"],
   "core/githubRepos.js": ["4526fb16", "bfe42e0f", "57b963ea", "fe623873", "0fe9ccce", "521ecc83", "b9117e59", "af64462f"],
   "core/gitPane.js": ["3b9c66d1", "186e1669", "3ecc46b0", "0afe28d8", "10e87dd3", "55dfbb00", "44fa79f8", "88d71409"],
   "core/httpSession.js": ["0b7b82e7", "b8028927", "c780566d", "761fc9fc", "12ca2faa", "7e626b1a", "c51ecf85", "3e85059a"],
@@ -448,8 +448,8 @@ const sourceFingerprintParts = {
   // #997 deviceProjects.js:82: the existing project.list loader delegates to owned device recovery.
   "views/deviceProjects.js": ["4e4add8c", "613568da", "f8200bad", "b7b27066", "84e7ddaa", "62bfbbbe", "cee788f9", "586de842"],
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
-  // #1052 re-review: only settings-owned results render counts; journal fallback is identity-only. RPC edges stay unchanged.
-  "views/environmentsSettings.js": ["24ecc6d3", "8120411b", "862480a7", "b376c7f0", "412a37e2", "de8798bb", "978354cc", "6f258f25"],
+  // #1052 retry review: settings-owned results alone authorize totals/empty states; pending pulls hide earlier errors. RPC edges stay unchanged.
+  "views/environmentsSettings.js": ["6f77cec3", "03735073", "2f1399fa", "fd4ef088", "1bfffde5", "647b567f", "bdd5bcf9", "4416e4c5"],
   "views/files.js": ["bc4913c5", "865b9dd0", "e28f655f", "242c9011", "456a4139", "b2cfd372", "6498e15b", "f3116261"],
   "views/projectChanges.js": ["e195b594", "3a7689fe", "14bfc899", "18ada18d", "ab36cd52", "ad96ba97", "a877c4da", "c9c3b78f"],
   "views/projectView.js": ["76123138", "7ded30d0", "0893b5ef", "5d880782", "137464b9", "5b123e76", "48f1a9d5", "28144478"],

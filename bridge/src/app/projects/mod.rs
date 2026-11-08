@@ -485,8 +485,14 @@ impl AppState {
             .and_then(|s| s.to_str())
             .unwrap_or("project")
             .to_string();
+        let source_id = self
+            .projects
+            .allocate_source_ids(None, 1)
+            .expect("a fresh environment has source ID capacity")
+            .pop()
+            .expect("one source ID requested");
         let sources = vec![ProjectSource::added(
-            "source-1".to_string(),
+            source_id,
             name.clone(),
             safe_mount_name(&name),
             repo_path.clone(),

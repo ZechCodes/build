@@ -536,7 +536,8 @@ fn fallback_promotion_preserves_hidden_source_one_and_saved_choices() {
             json!(missing),
             "promoting the fallback must not replace the hidden reference"
         );
-        let expected_number = parked_number.map_or(10, |number| number + 1);
+        let expected_addition = parked_number.map_or(9, |number| number + 1);
+        let expected_number = expected_addition + 1;
         let app = state(root.path()).with_config(&path).unwrap();
         let sources = app.sources_for("proj-1").unwrap();
         let promoted = sources.iter().find(|source| source.path == home).unwrap();
@@ -550,7 +551,7 @@ fn fallback_promotion_preserves_hidden_source_one_and_saved_choices() {
                 .find(|source| source.path == added)
                 .unwrap()
                 .id,
-            "source-9"
+            format!("source-{expected_addition}")
         );
         assert_eq!(
             app.projects.environment("env-1").unwrap().sources[0].path,
@@ -573,18 +574,18 @@ fn fallback_promotion_preserves_hidden_source_one_and_saved_choices() {
 #[test]
 fn fallback_promotion_reserves_parked_legacy_source_ids() {
     for number in [10, 40] {
-        assert_fallback_promotion_reservation(Some(number), 11, "source-1", number + 1, number + 2);
+        assert_fallback_promotion_reservation(Some(number), 11, "source-1", number + 2, number + 3);
     }
 }
 
 #[test]
 fn fallback_promotion_reserves_retired_ids_below_parked_counter() {
-    assert_fallback_promotion_reservation(None, 11, "source-1", 11, 12);
+    assert_fallback_promotion_reservation(None, 11, "source-1", 12, 13);
 }
 
 #[test]
 fn fallback_promotion_preserves_parked_counter_without_id_collision() {
-    assert_fallback_promotion_reservation(None, 11, "source-2", 1, 11);
+    assert_fallback_promotion_reservation(None, 11, "source-2", 1, 12);
 }
 
 fn assert_fallback_promotion_reservation(
@@ -648,7 +649,10 @@ fn assert_fallback_promotion_reservation(
             format!("source-{expected}"),
             "fresh home ID, reload={reload}"
         );
-        assert_ne!(promoted.id, "source-9");
+        let expected_addition = counter.max(held.map_or(9, |number| number + 1));
+        let addition = sources.iter().find(|source| source.path == added).unwrap();
+        assert_eq!(addition.id, format!("source-{expected_addition}"));
+        assert_ne!(promoted.id, addition.id);
         if let Some(number) = held {
             assert_ne!(promoted.id, format!("source-{number}"));
         }
@@ -670,5 +674,134 @@ fn assert_fallback_promotion_reservation(
             saved["environments"][0]["sources"][0]["path"],
             json!(missing)
         );
+    }
+}
+
+#[test]
+fn pending_addition_avoids_parked_source_id() {
+    for fallback in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let added = root.path().join("added");
+        let missing = root.path().join("missing");
+        let away = root.path().join("away");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::create_dir(&added).unwrap();
+        let path = root.path().join("config.json");
+        let stored = if fallback {
+            json!({"id":"source-2","path":missing})
+        } else {
+            json!({"id":"source-1","path":home})
+        };
+        std::fs::write(&path, json!({"next_environment":2,"environments":[{
+            "id":"env-1","name":"home","next_source":9,"sources":[stored]
+        }],"projects":[
+            {"id":"proj-1","environment_id":"env-1","project_key":home,"home_path":home,"path":home,"next_source":9,"added_sources":[]},
+            {"id":"proj-7","environment_id":"env-1","project_key":away,"home_path":away,"path":away,"next_source":10,"added_sources":[{"id":"source-9","path":away}]}
+        ]}).to_string()).unwrap();
+        let mut app = state(root.path()).with_config(&path).unwrap();
+        assert_eq!(app.projects.parked().len(), 1);
+        assert_eq!(app.projects.get("proj-1").unwrap().next_source, 9);
+        assert_eq!(app.projects.environment("env-1").unwrap().next_source, 9);
+        let appended = rpc(
+            &mut app,
+            "project.add_source",
+            json!({
+                "project_id":"proj-1","path":added,"name":"added"
+            }),
+        );
+        assert_eq!(appended["ok"], true, "{appended}");
+        for reload in [false, true] {
+            if reload {
+                app = state(root.path()).with_config(&path).unwrap();
+            }
+            let sources = app.sources_for("proj-1").unwrap();
+            let source = sources.iter().find(|source| source.path == added).unwrap();
+            assert_ne!(
+                source.id, "source-9",
+                "parked ID is still reserved, reload={reload}"
+            );
+            assert_eq!(source.id, "source-10");
+            assert_eq!(app.projects.get("proj-1").unwrap().next_source, 11);
+            assert_eq!(app.projects.environment("env-1").unwrap().next_source, 11);
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let parked = saved["projects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["id"] == "proj-7")
+                .unwrap();
+            assert_eq!(parked["added_sources"][0]["id"], "source-9");
+            assert_eq!(parked["next_source"], 10);
+        }
+    }
+}
+
+#[test]
+fn deferred_additions_allocate_against_current_reservations() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let first = root.path().join("first");
+    let second = root.path().join("second");
+    for path in [&home, &first, &second] {
+        std::fs::create_dir(path).unwrap();
+    }
+    let path = root.path().join("config.json");
+    std::fs::write(
+        &path,
+        json!({"projects":[{
+            "id":"proj-1","path":home,"next_source":10,"sources":[
+                {"id":"source-1","path":home,"name":"home","mount":"home"}
+            ]
+        }]})
+        .to_string(),
+    )
+    .unwrap();
+    let mut app = state(root.path()).with_config(&path).unwrap();
+    // Two off-lock preparations saw the same counter. Neither provisional
+    // identity is published until its membership transaction commits.
+    for (name, directory) in [("first", &first), ("second", &second)] {
+        app.append_project_sources(
+            "proj-1",
+            vec![crate::app::projects::ProjectSource::added(
+                "source-10".into(),
+                name.into(),
+                name.into(),
+                directory.clone(),
+                false,
+                "main".into(),
+            )],
+            vec![],
+        )
+        .unwrap();
+    }
+    for reload in [false, true] {
+        if reload {
+            app = state(root.path()).with_config(&path).unwrap();
+        }
+        let sources = app.sources_for("proj-1").unwrap();
+        assert_eq!(
+            sources.len(),
+            3,
+            "both prepared references must survive, reload={reload}"
+        );
+        assert_eq!(
+            sources
+                .iter()
+                .find(|source| source.path == first)
+                .unwrap()
+                .id,
+            "source-10"
+        );
+        assert_eq!(
+            sources
+                .iter()
+                .find(|source| source.path == second)
+                .unwrap()
+                .id,
+            "source-11"
+        );
+        assert_eq!(app.projects.environment("env-1").unwrap().next_source, 12);
     }
 }

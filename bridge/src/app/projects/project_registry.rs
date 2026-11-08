@@ -12,6 +12,14 @@ struct SourceReservations {
 }
 
 impl SourceReservations {
+    fn allocate_id(&mut self) -> String {
+        let number = self.next_source.max(1);
+        let next = number.checked_add(1).expect("source id counter exhausted");
+        let id = format!("source-{number}");
+        self.reserve(next, std::iter::once(id.as_str()));
+        id
+    }
+
     fn reserve<'a>(&mut self, counter: u64, ids: impl IntoIterator<Item = &'a str>) {
         self.next_source = self.next_source.max(counter).max(1);
         for id in ids {
@@ -937,13 +945,34 @@ impl ProjectRegistry {
             .position(|source| source.id == fallback.id && source.path == fallback.path)?;
         let project = self.get(id)?;
         let environment = self.environment(&project.environment_id)?;
-        let reservations = self.source_reservations(environment, incoming, fallback);
+        let mut reservations = self.source_reservations(environment, incoming, Some(fallback));
         if reservations.used_ids.contains(&incoming[index].id) {
-            incoming[index].id = format!("source-{}", reservations.next_source);
+            incoming[index].id = reservations.allocate_id();
         }
         // Keep every observed counter floor even when the existing home ID
         // needs no replacement. The caller stages this with the membership edit.
         Some((incoming[index].clone(), reservations.next_source))
+    }
+
+    /// IDs are provisional until the membership transaction publishes them.
+    pub(super) fn allocate_source_ids(
+        &self,
+        project_id: Option<&str>,
+        count: usize,
+    ) -> Result<Vec<String>, String> {
+        let mut reservations = match project_id {
+            Some(id) => {
+                let project = self
+                    .get(id)
+                    .ok_or_else(|| format!("unknown project: {id}"))?;
+                let environment = self
+                    .environment(&project.environment_id)
+                    .ok_or_else(|| format!("unknown environment: {}", project.environment_id))?;
+                self.source_reservations(environment, &[], None)
+            }
+            None => SourceReservations::default(),
+        };
+        Ok((0..count).map(|_| reservations.allocate_id()).collect())
     }
 
     /// Reserve both held references and retired IDs recorded by every line.
@@ -951,7 +980,7 @@ impl ProjectRegistry {
         &self,
         environment: &Environment,
         incoming: &[ProjectSource],
-        fallback: &ProjectSource,
+        fallback: Option<&ProjectSource>,
     ) -> SourceReservations {
         let mut reservations = SourceReservations::default();
         reservations.reserve(
@@ -968,7 +997,11 @@ impl ProjectRegistry {
                 project
                     .sources
                     .iter()
-                    .filter(|source| source.id != fallback.id || source.path != fallback.path)
+                    .filter(|source| {
+                        !fallback.is_some_and(|fallback| {
+                            source.id == fallback.id && source.path == fallback.path
+                        })
+                    })
                     .map(|source| source.id.as_str()),
             );
             reservations.reserve(
@@ -1005,7 +1038,11 @@ impl ProjectRegistry {
             0,
             incoming
                 .iter()
-                .filter(|source| source.id != fallback.id || source.path != fallback.path)
+                .filter(|source| {
+                    !fallback.is_some_and(|fallback| {
+                        source.id == fallback.id && source.path == fallback.path
+                    })
+                })
                 .map(|source| source.id.as_str()),
         );
         reservations

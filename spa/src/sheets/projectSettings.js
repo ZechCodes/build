@@ -19,6 +19,7 @@ import { guardProjectSourceRpc, readSourceOwnershipEvidence } from "../core/sour
 import { environmentsAddress, readCachedEnvironments } from "../core/environmentCache.js";
 import { mountSourceCards, readSourceEdits, restoreSourceEdits, sourceEditing, sourcesSectionHtml } from "./projectSources.js";
 import { withNewerSyncs } from "../core/sourceSyncModel.js";
+import { onNavigationCommitted } from "../core/navigationLifetime.js";
 import { watchSheetLifetime } from "../core/sheetLifetime.js";
 
 /** The project's own name. It is the first source's folder's, and is not a
@@ -175,16 +176,23 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     if ([SOURCE_EDIT_SUPPORT_KIND, environmentSupportAddress(deviceId).kind, environmentsAddress(deviceId).kind].includes(address?.kind)) void readSupport();
     if (address?.kind === "projects" && !address.entityId) void adoptListedSyncs();
   });
+  let unsubscribeNavigation = () => {};
   const dispose = watchSheetLifetime(current, () => {
     disposed = true;
+    unsubscribeNavigation();
     repoAsk.stop();
     unsubscribeSupport();
-    disposeRepoPickers(sheet);
+    disposeRepoPickers(frame);
     compactionEditor?.dispose();
     record.dispose();
     draftRecord?.dispose();
   });
-  const close = () => { dispose(); scrim.classList.remove("show"); };
+  const close = () => {
+    const ownsSheet = current();
+    dispose();
+    if (ownsSheet) scrim.classList.remove("show");
+  };
+  unsubscribeNavigation = onNavigationCommitted(close);
 
   const paintMissing = (message) => {
     if (!current() || view !== "settings") return;

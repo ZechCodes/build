@@ -277,7 +277,8 @@ const stagedConsumerExclusions = {
 const sourceFingerprintParts = {
   // #1065: cached eligibility is separate from current-greeting dispatch; epoch and genuine no-epoch legacy paths wrap existing source calls.
   "core/sourceOwnership.js": ["5bb01dc9", "cd302bf9", "b640e0f4", "b396ab65", "8c8d6b7e", "9183fa6a", "22b5fb05", "0d37ee27"],
-  "app.js": ["e9b93f5b", "01a713dd", "1c1f8ef7", "00229053", "d2bf2d3a", "b372d574", "81aaff15", "71dc3f58"],
+  // #1065: accepted navigation notifies only opted-in project settings; RPC edges are unchanged.
+  "app.js": ["8e043a81", "cc1d5abd", "0e312435", "52018876", "d56a6883", "8c9587f5", "e34aa31b", "25b32265"],
   "appState.js": ["d24d9edc", "6e4988f0", "8a5289ee", "6c449b3f", "91bdbe42", "7cd43ada", "7a9df6a4", "acd39971"],
   "connection.js": ["009f7235", "cbcbf300", "43c93b7c", "bcfb2243", "e17e2797", "d809e8af", "5e60cb14", "d0fe86f7"],
   "core/activityRuns.js": ["2bd80d81", "ad2ddde9", "da2fc194", "95b7b7ba", "4d0a86f4", "29a52906", "009b6fc5", "5221d710"],
@@ -443,7 +444,8 @@ const sourceFingerprintParts = {
   // #1065: positive ownership evidence gates both card rendering and editing.save.
   // Source replies use the shared identity-preserving writer; project-scoped methods/selectors and project.list refresh are unchanged.
   // Opening teardown and atomic Sync adoption retain current project metadata; no RPC edge changes.
-  "sheets/projectSettings.js": ["19bed643", "9f18d688", "c1dc58c8", "a0ca0231", "60b9f6a1", "6206c912", "7f44359a", "50f47131"],
+  // Retired-frame picker cleanup and committed navigation release only the project settings opening.
+  "sheets/projectSettings.js": ["e0385b5f", "d2f8fdc6", "35e28343", "f29b19af", "4b8f015c", "030dc1b1", "63e2c1ba", "21d4ccd9"],
   "sheets/projectSources.js": ["824cc8cc", "c2389c5d", "c5a484d1", "a8f838bf", "b49d95de", "16e2f200", "29b81ff2", "8b6eaa5b"],
   // #1065: sheet-owned in-flight state blocks duplicate Sync requests; the accepted callback, RPC method and selectors are unchanged.
   "sheets/sourceSyncControls.js": ["49045a5b", "1fd03d03", "c9e574df", "020f32ea", "5d64bdd0", "3ab970b7", "1c98dee9", "cb20c875"],

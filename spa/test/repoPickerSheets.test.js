@@ -95,3 +95,31 @@ it("a closed settings sheet stops waiting: only the sheet on screen asks when th
   await new Promise((resolve) => setTimeout(resolve, 50));
   expect(first.mock.calls.filter(([method]) => method === "github.repos")).toHaveLength(0);
 });
+
+it.each(["attached picker", "Add project"])("keeps %s subscribed when it replaces project settings in the same turn", async replacement => {
+  const { attachRepoPicker } = await import("../src/sheets/repoPicker.js");
+  const { openNewRepo } = await import("../src/sheets/newRepo.js");
+  await writeCached(projectSettingsAddress("dev-1", "proj-1"), { project_id: "proj-1", sources: [], added_sources: [] });
+  const callRpc = vi.fn(() => new Promise(() => {}));
+  openProjectSettings("proj-1", { deviceId: "dev-1", callRpc });
+  await vi.waitFor(() => expect(document.querySelector("#pscancel")).toBeTruthy());
+  let input;
+  // Installation AND picker attachment happen before the retired opening's
+  // MutationObserver can run: the new owner's reader must survive that cleanup.
+  if (replacement === "attached picker") {
+    document.querySelector("#sheet").innerHTML = '<div><input id="replacement-remote"></div>';
+    input = document.querySelector("#replacement-remote");
+    attachRepoPicker(input, "dev-1");
+  } else {
+    openNewRepo(vi.fn(), { deviceId: "dev-1", deviceName: "Desktop", callRpc });
+    document.querySelector("#nraddremote").click();
+    input = document.querySelector("[data-source-value]");
+  }
+  input.focus();
+  await writeCached(githubReposAddress("dev-1"), { repos: REPOS, refusal: "" });
+  await vi.waitFor(() => expect(input.getAttribute("role")).toBe("combobox"));
+  expect(options()).toEqual(REPOS.map(repo => repo.name_with_owner));
+  const updated = { ...REPOS[0], name_with_owner: "zech/new-repository", ssh_url: "git@github.com:zech/new-repository.git" };
+  await writeCached(githubReposAddress("dev-1"), { repos: [updated], refusal: "" });
+  await vi.waitFor(() => expect(options()).toEqual([updated.name_with_owner]));
+});

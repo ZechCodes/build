@@ -153,7 +153,9 @@ fn reconcile_page(weak: &Weak<Mutex<AppState>>) -> Option<Result<bool, String>> 
     let app = state.lock().unwrap();
     Some((|| {
         let store = app.tracker_store()?;
-        let page = store.reconcile_waiting_on(100).map_err(|e| e.to_string())?;
+        let page = store
+            .reconcile_waiting_on_excluding_projects(100, &app.archived_project_keys())
+            .map_err(|e| e.to_string())?;
         let changes = store
             .take_waiting_on_changes(100)
             .map_err(|e| e.to_string())?;

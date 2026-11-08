@@ -18,6 +18,7 @@ const POLL: Duration = Duration::from_secs(30);
 type MetadataTasks = BTreeMap<PathBuf, BTreeSet<String>>;
 pub(super) struct Worker {
     store: Store,
+    admission: super::SyncAdmission,
     scheduler: Scheduler,
     watchers: MetadataWatchers,
     events: mpsc::Receiver<PathBuf>,
@@ -43,10 +44,19 @@ enum MetadataWork {
     Register(PathBuf),
 }
 impl Worker {
+    #[cfg(test)]
     pub(super) fn new(store: Store, invalidate: Arc<dyn Fn(SyncResult) + Send + Sync>) -> Self {
+        Self::new_admitted(store, invalidate, Arc::new(|_| Some(Box::new(()))))
+    }
+    pub(super) fn new_admitted(
+        store: Store,
+        invalidate: Arc<dyn Fn(SyncResult) + Send + Sync>,
+        admission: super::SyncAdmission,
+    ) -> Self {
         let (sender, events) = mpsc::sync_channel(128);
         Self {
             store,
+            admission,
             scheduler: Scheduler::default(),
             watchers: MetadataWatchers::default(),
             events,
@@ -68,7 +78,10 @@ impl Worker {
         }
         self.scan_page(now);
         self.drain_events(now);
-        for task in self.scheduler.ready(now, WORK_PER_TURN) {
+        for (task, _lease) in self
+            .scheduler
+            .ready_admitted(now, WORK_PER_TURN, |task| (self.admission)(task))
+        {
             if stopped.load(Ordering::Acquire) {
                 break;
             }

@@ -28,6 +28,7 @@ pub(in crate::app) fn admit(
 ) -> Result<MutationRecord, ApiError> {
     let params = crate::api::v1::normalize_read_params(method, &params)?;
     validate_creation(method, &params)?;
+    let _archive_hold = ArchiveAdmissionHold::enter(state, method, &params)?;
     let writer = state
         .lock()
         .unwrap()
@@ -39,6 +40,7 @@ pub(in crate::app) fn admit(
         .creation_record(PRINCIPAL, &metadata.operation_id)
         .map_err(admission_error)?
     {
+        guard_archived_creation_record(&state.lock().unwrap(), &record)?;
         return retry_recorded(&writer, record, method, params, metadata);
     }
     let CreationScope {
@@ -52,7 +54,10 @@ pub(in crate::app) fn admit(
         .creation_record(PRINCIPAL, &metadata.operation_id)
         .map_err(admission_error)?;
     let (acceptance, reservations) = match retained {
-        Some(record) => (record.acceptance, record.reservations),
+        Some(record) => {
+            guard_archived_creation_record(&state.lock().unwrap(), &record)?;
+            (record.acceptance, record.reservations)
+        }
         None => reserve_attempt(state, method, &params, &owner, &metadata.operation_id)?,
     };
     // The new environment owns its attempt before its config exists. This also
@@ -85,6 +90,21 @@ pub(in crate::app) fn admit(
         })
         .map_err(admission_error)
 }
+/// A replay can carry an existing project only in its saved authority, rather
+/// than its environment-scoped input. Terminal outcomes remain readable.
+fn guard_archived_creation_record(app: &AppState, record: &MutationRecord) -> Result<(), ApiError> {
+    if matches!(record.state.as_str(), "succeeded" | "failed") {
+        return Ok(());
+    }
+    if let Some(id) = record.execution["project_key"]
+        .as_str()
+        .and_then(|key| app.project_id_for_archive_key(key))
+    {
+        app.refuse_archived_project(&id)?;
+    }
+    Ok(())
+}
+
 fn retry_recorded(
     writer: &StoreWriter,
     record: MutationRecord,
@@ -234,6 +254,12 @@ fn admission_error(error: crate::store::StoreError) -> ApiError {
         error => ApiError::unavailable(error.to_string()),
     }
 }
+fn validation_refusal(message: impl Into<String>, step: &str) -> ApiError {
+    ApiError::InvalidParams {
+        message: message.into(),
+        details: Some(json!({"creation":{"step":step}})),
+    }
+}
 fn validate_creation(method: &str, params: &Value) -> Result<(), ApiError> {
     if !matches!(
         method,
@@ -247,40 +273,55 @@ fn validate_creation(method: &str, params: &Value) -> Result<(), ApiError> {
         params
     };
     let workspace = if method != "workspace.create" {
-        let name = project["name"].as_str().unwrap_or("");
-        if name.trim().is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
-            return Err(ApiError::invalid_params(
-                "project name must be one line between 1 and 256 bytes",
-            ));
-        }
+        validate_project_name(project)?;
         &project["workspace"]
     } else {
         params
     };
     if method == "environment.create" {
-        if params["sources"].as_array().is_none_or(Vec::is_empty) {
-            return Err(ApiError::invalid_params(
-                "an environment must have at least one source",
-            ));
-        }
-        if let Some(name) = params["name"].as_str() {
-            if name.trim().is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
-                return Err(ApiError::invalid_params(
-                    "environment name must be one line between 1 and 256 bytes",
-                ));
-            }
-        }
-        if let Some(isolation) = params["isolation"].as_str() {
-            if crate::isolation::Isolation::from_wire(isolation).is_none() {
-                return Err(ApiError::invalid_params("unknown environment isolation"));
-            }
-        }
+        validate_environment(params)?;
     }
     if let Some(isolation) = workspace.get("isolation").and_then(Value::as_str) {
         if crate::isolation::Isolation::from_wire(isolation).is_none() {
-            return Err(ApiError::invalid_params(format!(
-                "unknown isolation: {isolation}"
-            )));
+            return Err(validation_refusal(
+                format!("unknown isolation: {isolation}"),
+                "workspace",
+            ));
+        }
+    }
+    Ok(())
+}
+fn validate_project_name(project: &Value) -> Result<(), ApiError> {
+    let name = project["name"].as_str().unwrap_or("");
+    if name.trim().is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
+        return Err(validation_refusal(
+            "project name must be one line between 1 and 256 bytes",
+            "project",
+        ));
+    }
+    Ok(())
+}
+fn validate_environment(params: &Value) -> Result<(), ApiError> {
+    if params["sources"].as_array().is_none_or(Vec::is_empty) {
+        return Err(validation_refusal(
+            "an environment must have at least one source",
+            "environment",
+        ));
+    }
+    if let Some(name) = params["name"].as_str() {
+        if name.trim().is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
+            return Err(validation_refusal(
+                "environment name must be one line between 1 and 256 bytes",
+                "environment",
+            ));
+        }
+    }
+    if let Some(isolation) = params["isolation"].as_str() {
+        if crate::isolation::Isolation::from_wire(isolation).is_none() {
+            return Err(validation_refusal(
+                "unknown environment isolation",
+                "environment",
+            ));
         }
     }
     Ok(())
@@ -400,5 +441,28 @@ impl AppState {
     }
     pub(crate) fn environment_create_project(&mut self, _params: &Value) -> Result<Value, String> {
         Err("environment.create_project requires frame write.operation_id".into())
+    }
+}
+
+/// Keep archive out of the admission gap before the durable reservation exists.
+struct ArchiveAdmissionHold(Option<Arc<Mutex<AppState>>>);
+impl ArchiveAdmissionHold {
+    fn enter(state: &Arc<Mutex<AppState>>, method: &str, params: &Value) -> Result<Self, ApiError> {
+        if method != "workspace.create" {
+            return Ok(Self(None));
+        }
+        let mut app = state.lock().unwrap();
+        app.guard_archived_rpc(method, params)?;
+        app.active_deferred_filesystem_jobs += 1;
+        Ok(Self(Some(Arc::clone(state))))
+    }
+}
+impl Drop for ArchiveAdmissionHold {
+    fn drop(&mut self) {
+        if let Some(state) = &self.0 {
+            let mut app = state.lock().unwrap_or_else(|poison| poison.into_inner());
+            app.active_deferred_filesystem_jobs =
+                app.active_deferred_filesystem_jobs.saturating_sub(1);
+        }
     }
 }

@@ -12,7 +12,7 @@ const taskWrites = new Set([
   // Task Inbox actions use generic entity verbs. Their IDs have no guaranteed
   // prefix, so conservatively fence these device-wide. Project deletion owns
   // task deletion; there is no tasks.delete/dismiss/tracking wire method.
-  "entity.seen", "entity.dismiss", "entity.mute", "project.delete",
+  "entity.seen", "entity.dismiss", "entity.mute", "project.delete", "project.archive", "project.restore",
 ]);
 
 const states = new Map();

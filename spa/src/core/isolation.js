@@ -97,7 +97,9 @@ export function projectIsolationTarget(project) {
     rpc: "project.set_isolation",
     params: { project_id: project.project_id },
     inherits: true,
-    inheritLabel: `Device default (${isolationLabel(project && project.isolation_default)})`,
+    inheritLabel: project.environment_id
+      ? `Inherit ${project.environment_name || "environment"}'s setting (${isolationLabel(project.isolation_default)})`
+      : `Device default (${isolationLabel(project && project.isolation_default)})`,
   };
 }
 

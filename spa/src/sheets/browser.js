@@ -76,9 +76,10 @@ export async function openBrowser(opts) {
   const { callRpc } = opts;
   const deviceId = opts.deviceId || opts.cacheScope?.deviceId || "";
   const sheet = $("#sheet");
-  const scrim = $("#scrim");
   const container = opts.container || sheet;
   const embedded = container !== sheet;
+  // Page-embedded browsers belong to their host, not the global overlay.
+  const scrim = embedded ? container.closest("#scrim") : $("#scrim");
   const present = (bodyHtml) => embedded ? bodyHtml : settingsSheetHtml({ title: opts.title, bodyHtml });
   const cancelHtml = embedded ? "" : '<button class="btn" id="bcancel" style="margin-left:auto">Cancel</button>';
   let request = 0;
@@ -87,7 +88,7 @@ export async function openBrowser(opts) {
   let unwatch = null;
   let renderedRoot = null;
   let cancelled = false;
-  const current = () => !cancelled && container.isConnected && container.firstElementChild === renderedRoot && scrim.classList.contains("show");
+  const current = () => !cancelled && container.isConnected && container.firstElementChild === renderedRoot && (!scrim || scrim.classList.contains("show"));
   const dispose = watchSheetLifetime(current, () => {
     request += 1;
     cancelled = true;
@@ -196,7 +197,7 @@ export async function openBrowser(opts) {
       return;
     }
   };
-  $("#scrim").classList.add("show");
+  if (!embedded) $("#scrim").classList.add("show");
   container.innerHTML = present(`<div class="dim browse-loading" style="padding:14px">loading…</div>
     ${cancelHtml}<div class="adderr" id="berr" role="status"></div>`);
   renderedRoot = container.firstElementChild;

@@ -112,6 +112,8 @@ const LEGACY_READ_METHODS: &[&str] = &["archived.list"];
 const WRITE_METHODS: &[&str] = &[
     "environment.create",
     "environment.discard_unused",
+    "project.archive",
+    "project.restore",
     "environment.create_project",
     "project.discard_unused",
     "secrets.create",

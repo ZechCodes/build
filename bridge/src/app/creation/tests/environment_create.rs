@@ -718,3 +718,90 @@ fn legacy_sync_source_routes_to_environment_without_added_sources() {
     );
     assert!(app.projects.get("proj-1").unwrap().added_sources.is_empty());
 }
+
+#[cfg(unix)]
+#[test]
+fn source_refusal_scope_survives_canonicalized_added_path() {
+    let f = Fixture::new();
+    let actual = f._root.path().join("home/child");
+    std::fs::create_dir(&actual).unwrap();
+    let alias = f._root.path().join("alias");
+    std::os::unix::fs::symlink(&actual, &alias).unwrap();
+    let mut value = params(&f);
+    value["project"]["added_sources"] = json!([{"path":alias}]);
+    let error = admit(
+        &f.state,
+        "environment.create",
+        value,
+        WriteMetadata {
+            operation_id: operation(650),
+            after: None,
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error.message().contains(actual.to_str().unwrap()),
+        "{error:?}"
+    );
+    assert!(
+        !error.message().contains(alias.to_str().unwrap()),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.details().unwrap()["creation"],
+        json!({"step":"sources","source_scope":"project"})
+    );
+}
+#[test]
+fn source_refusal_scope_identifies_added_managed_destination_without_input_value() {
+    let f = Fixture::new();
+    let first = operation(651);
+    f.admit(&first);
+    f.run(&first);
+    let record = f.record(&first);
+    let root = record.outcome.as_ref().unwrap()["result"]["workspace"]["root"]
+        .as_str()
+        .unwrap();
+    let mut value = params(&f);
+    value["parent"] = json!(root);
+    value["project"]["added_sources"] = json!([{"remote":"https://example.invalid/extra.git"}]);
+    let error = admit(
+        &f.state,
+        "environment.create",
+        value,
+        WriteMetadata {
+            operation_id: operation(652),
+            after: None,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.message(),
+        "managed source destination overlaps a project or workspace location"
+    );
+    assert_eq!(
+        error.details().unwrap()["creation"],
+        json!({"step":"sources","source_scope":"project"})
+    );
+}
+#[test]
+fn source_refusal_scope_survives_terminal_clone_failure() {
+    for (n, scope) in [(653, "environment"), (654, "project")] {
+        let f = Fixture::new();
+        let mut value = params(&f);
+        let remote = json!([{"remote":"https://127.0.0.1:1/absent.git"}]);
+        if scope == "environment" {
+            value["sources"] = remote;
+        } else {
+            value["project"]["added_sources"] = remote;
+        }
+        let id = submit(&f, n, value);
+        f.run(&id);
+        let record = f.record(&id);
+        assert_eq!(record.state, "failed", "{record:?}");
+        assert_eq!(
+            record.outcome.unwrap()["error"]["details"]["creation"],
+            json!({"step":"sources","source_scope":scope})
+        );
+    }
+}

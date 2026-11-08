@@ -25,6 +25,21 @@ tasks however a call is spelled.
 This document is phase 1: the bridge. The SPA phase follows from
 [What the SPA phase builds](#what-the-spa-phase-builds).
 
+Task storage routes by a stable **`project_key`**, separate from the project's
+wire `project_id` and its filesystem `home_path`. M0/M1 environments preserve
+each migrated project's old canonical home path as its key (or the retained
+absolute path while its home is unavailable). A new line of work created in
+an environment gets a fresh `project:<uuid>` key and an independent task board
+numbered from #1, even when it shares the same source directories and home.
+Existing tasks stay with their original project.
+
+Legacy records whose `project_path` field contains the old path resolve by
+matching that value to the registered project's `project_key`, through
+`AppState::project_by_key`. They do not bind to whichever sibling happens to
+share the directory. Filesystem operations use the resolved home or source
+path. An unresolved key keeps the missing-project behavior; recovery never
+registers a project from a retained record.
+
 ## Not the plan flow
 
 Build already has a table called `tasks` and a family of `task.*` / `plan.*`

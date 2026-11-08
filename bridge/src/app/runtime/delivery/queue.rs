@@ -225,6 +225,11 @@ impl DeliveryQueue {
             || self.queued.iter().any(|turn| turn.owner == owner)
     }
 
+    /// Archive admission includes waiting wakes, silent starts and executions.
+    pub(in crate::app) fn archive_holds_owner(&self, owner: &str) -> bool {
+        self.holds_owner(owner) || self.settling.holds_owner(owner)
+    }
+
     pub(in crate::app) fn holds_agent(&self, key: &TabKey) -> bool {
         self.agents_in_flight.contains_key(key)
             || self

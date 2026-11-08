@@ -221,6 +221,7 @@
     "conflict",
     "busy",
     "unavailable",
-    "internal"
+    "internal",
+    "project_archived"
   ]
 }

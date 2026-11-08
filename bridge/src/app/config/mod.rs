@@ -617,11 +617,14 @@ impl AppState {
     pub(in crate::app) fn project_isolation(&self, project: &Project) -> Isolation {
         project
             .isolation
-            .or_else(|| {
-                self.projects
-                    .environment(&project.environment_id)
-                    .and_then(|environment| environment.isolation)
-            })
+            .unwrap_or_else(|| self.environment_isolation(project))
+    }
+
+    /// The inherited choice before a project's own override.
+    pub(in crate::app) fn environment_isolation(&self, project: &Project) -> Isolation {
+        self.projects
+            .environment(&project.environment_id)
+            .and_then(|environment| environment.isolation)
             .unwrap_or(self.isolation)
     }
 }

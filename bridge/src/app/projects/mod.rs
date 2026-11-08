@@ -89,6 +89,9 @@ impl ProjectSource {
 
 mod agent_tools;
 mod agent_writes;
+mod archive;
+mod archive_guard;
+pub(in crate::app) use archive_guard::{archive_error_string, archive_guard_required};
 pub(in crate::app) mod base_sync;
 pub(in crate::app) use agent_writes::{
     AgentChoiceArgs, ProjectSourceArgs, WorkspaceAgentAddress, WorkspaceDirectoryArgs,
@@ -414,7 +417,7 @@ impl AppState {
                 self.projects.reserve_source_ids_through(&id, next);
             }
             let isolation = configured_isolation(project, "project isolation");
-            self.projects.set_isolation(&id, isolation);
+            self.projects.initialize_legacy_isolation(&id, isolation);
         }
         self.projects.restore_project_metadata(&id, project);
         Some(id)

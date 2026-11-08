@@ -182,6 +182,8 @@ fn validate_identity(
     resolved: &ResolvedScope,
 ) -> Result<(), String> {
     refuse_project_deletion(app)?;
+    app.refuse_archived_project(&resolved.project_id)
+        .map_err(crate::app::projects::archive_error_string)?;
     if !captured.revalidates(&selector.capture(app)?, resolved, app) {
         return Err(MOVED_TERMINAL_SOURCE.into());
     }

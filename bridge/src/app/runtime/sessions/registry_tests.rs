@@ -254,7 +254,7 @@ fn shell_tabs_preserve_the_agent_projection_layout_through_capacity_growth() {
         for index in 0..agent_count {
             let agent = format!("agent-{index}");
             let (tab, _, _) = agent_tab(root, &agent, &agent, &agent);
-            registry.insert_opened(TabKey::agent(root, &agent), tab);
+            registry.insert_opened(TabKey::agent(root, &agent), tab, None);
         }
         let before = registry.projection_layout();
         for _ in 0..256 {

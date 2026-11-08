@@ -1,7 +1,7 @@
 import { createWriteOperationCache } from "./writeOperationCache.js";
 import { createWriteOperationWorker } from "./writeOperationWorker.js";
 import { creationNeverSent, creationSendEvidenceMatches, creationTransportIntent, creationWritesSupported,
-  isCreationWrite, nextCreationEvidence, normalizeWriteProgress, unsupportedCreationOutcome } from "./writeOperationProgress.js";
+  isCreationWrite, creationRefusalDetails, nextCreationEvidence, normalizeWriteProgress, unsupportedCreationOutcome } from "./writeOperationProgress.js";
 import {
   copyIntent, needsWriteStatus, terminalWrite, writeDependencies, writeRefusal, provenExpiredFailure, expiredOperationFailure,
   wireOperationId, wireRevision, writeSummaryFrame, writeSubmissionOrder, knownWriteSummary, operationFailure, WRITE_STATUS_LIMIT,
@@ -308,8 +308,9 @@ export function createWriteOperationService(options) {
     return !local && error.retryable === false && !error.uncertain;
   }
   async function refused(row, error, held) {
+    const details = isCreationWrite(row.request.method) ? creationRefusalDetails(error.details) : undefined;
     const confirmation = { type: "writes.confirmed", operation_id: row.operationId, state: "failed", effect: "unapplied",
-      error: { code: error.error_code, message: error.message, retryable: error.retryable }, revision: row.revision + 1 };
+      error: { code: error.error_code, message: error.message, retryable: error.retryable, ...(details ? {details} : {}) }, revision: row.revision + 1 };
     await cache.confirm(row.operationId, { confirmation, revision: confirmation.revision, accept: () => current(held) });
     await refreshSnapshot();
   }
@@ -343,10 +344,11 @@ export function createWriteOperationService(options) {
     return true;
   }
   async function recordProgress(frame, held) {
-    if (!current(held) || !held.greeting.capabilities?.includes("environments")) return false;
+    if (!current(held)) return false;
     const row = await cache.get(wireOperationId(frame));
     if (!row || terminalWrite(row) || row.journalIncarnation !== held.greeting.journal_incarnation) return false;
-    if (!isCreationWrite(row.request.method) || !normalizeWriteProgress(frame.progress)) return false;
+    if (!isCreationWrite(row.request.method) || !creationWritesSupported(held.greeting,row.request.method)) return false;
+    if (!normalizeWriteProgress(frame.progress)) return false;
     await cache.recordProgress(row.operationId, frame.progress, {
       journalIncarnation: held.greeting.journal_incarnation, accept: () => current(held),
     });

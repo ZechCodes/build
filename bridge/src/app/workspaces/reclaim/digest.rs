@@ -29,6 +29,7 @@ impl AppState {
         let owed: Vec<String> = self
             .projects
             .iter()
+            .filter(|project| project.archived_at.is_none())
             .map(|project| project.id.clone())
             .filter(|project_id| {
                 self.idle_digest_sent
@@ -59,7 +60,10 @@ impl AppState {
     fn quiet_workspaces_by_project(&self) -> BTreeMap<String, Vec<Quiet>> {
         let linked = self.tasks_linking_workspaces();
         let mut quiet: BTreeMap<String, Vec<Quiet>> = BTreeMap::new();
-        for workspace in self.measured_workspaces(None) {
+        for workspace in self
+            .measured_workspaces(None)
+            .filter(|workspace| self.refuse_archived_project(&workspace.project_id).is_ok())
+        {
             let Some(record) = self
                 .workspace_lifecycle
                 .get(&workspace.id)

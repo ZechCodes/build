@@ -106,6 +106,7 @@ impl AppState {
         let params = &normalized_params;
         super::secrets::require_secret_user(params, &origin)?;
         let entity_id = require_str(params, "entity_id")?;
+        self.refuse_run_recovery(&entity_id)?;
         if self.plans.contains_key(&entity_id) {
             return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string());
         }

@@ -141,6 +141,8 @@ pub enum StartFailure {
     /// Refused before anything was started or written, in a sentence for the
     /// person who chose what it was to run on. Certainly not started.
     Refused(String),
+    /// A temporary admission hold. The caller retains the turn for later delivery.
+    Deferred(String),
     /// Anything else, which may have got as far as starting a child.
     Failed(String),
 }
@@ -154,7 +156,9 @@ impl From<String> for StartFailure {
 impl std::fmt::Display for StartFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StartFailure::Refused(why) | StartFailure::Failed(why) => f.write_str(why),
+            StartFailure::Refused(why)
+            | StartFailure::Deferred(why)
+            | StartFailure::Failed(why) => f.write_str(why),
         }
     }
 }

@@ -41,11 +41,16 @@ fn fixture(ready_git: bool) -> RetryFixture {
         "project.create",
         json!({
             "name": "retry-project",
-            "sources": [{"name": "ready", "path": ready}, {"name": "pending", "path": saved_repo}]
+            "sources": [{"name": "ready", "path": ready}]
         }),
     ));
     assert_eq!(opened["ok"], true, "{opened}");
     let project_id = opened["result"]["project_id"].as_str().unwrap().to_string();
+    let added = state.handle(req(
+        "project.add_source",
+        json!({"project_id": project_id, "name": "pending", "path": saved_repo}),
+    ));
+    assert_eq!(added["ok"], true, "{added}");
     let sources: Vec<_> = state
         .projects
         .get(&project_id)

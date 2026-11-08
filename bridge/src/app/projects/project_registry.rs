@@ -99,6 +99,7 @@ impl ProjectConfiguration {
 }
 
 struct ProjectConfigurationRecord {
+    archived_at: Option<u64>,
     base_branch: String,
     is_git: bool,
     sources: Vec<ProjectSource>,
@@ -110,6 +111,7 @@ struct ProjectConfigurationRecord {
 impl ProjectConfigurationRecord {
     fn capture(project: &Project) -> Self {
         Self {
+            archived_at: project.archived_at,
             base_branch: project.base_branch.clone(),
             is_git: project.is_git,
             sources: project.sources.clone(),
@@ -126,6 +128,7 @@ impl ProjectConfigurationRecord {
             .iter_mut()
             .find(|project| project.id == id)
             .expect("staged project remains registered under the app lock");
+        std::mem::swap(&mut self.archived_at, &mut project.archived_at);
         std::mem::swap(&mut self.base_branch, &mut project.base_branch);
         std::mem::swap(&mut self.is_git, &mut project.is_git);
         std::mem::swap(&mut self.sources, &mut project.sources);
@@ -484,6 +487,16 @@ impl ProjectRegistry {
     }
 
     /// Update only the registered project's configuration-owned isolation.
+    pub(super) fn set_archived_at(&mut self, id: &str, archived_at: Option<u64>) {
+        self.observation_projects.mark(id);
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|p| p.id == id)
+            .expect("resolved project");
+        project.archived_at = archived_at;
+    }
+
     pub(in crate::app) fn set_isolation(
         &mut self,
         project_id: &str,
@@ -498,7 +511,20 @@ impl ProjectRegistry {
             return false;
         };
         project.isolation = isolation;
-        let environment_id = project.environment_id.clone();
+        true
+    }
+
+    /// Older project-only config stored its environment default on the project.
+    /// Keep that initialization separate from edits to a current project.
+    pub(in crate::app) fn initialize_legacy_isolation(
+        &mut self,
+        project_id: &str,
+        isolation: Option<Isolation>,
+    ) -> bool {
+        if !self.set_isolation(project_id, isolation) {
+            return false;
+        }
+        let environment_id = self.get(project_id).unwrap().environment_id.clone();
         if let Some(environment) = self
             .environments
             .iter_mut()

@@ -504,7 +504,12 @@ async fn the_answers_the_dashboard_reads_around_an_absence() {
 /// cannot quietly stop counting it.
 #[test]
 fn every_user_activity_verb_is_served() {
-    let served = crate::api::capabilities(false);
+    // Greeting capabilities omit staged methods and also contain feature names.
+    let served: std::collections::BTreeSet<_> = crate::api::v1::methods()
+        .iter()
+        .map(|(method, _)| *method)
+        .chain(crate::api::LEGACY_METHODS.iter().copied())
+        .collect();
     for verb in crate::app::rpc::USER_ACTIVITY_VERBS {
         assert!(served.contains(verb), "{verb} is not a served verb");
     }

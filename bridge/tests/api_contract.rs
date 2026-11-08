@@ -74,10 +74,10 @@ fn api_version_is_what_versions_json_calls_current() {
 
 #[test]
 fn environments_read_wire_is_additive_and_advertised() {
-    assert_eq!(API_VERSION, "3.37.0");
+    assert_eq!(API_VERSION, "3.38.0");
     assert!(capabilities(false).contains(&"environments"));
-    assert!(!capabilities(false).contains(&"environments.create"));
-    assert!(!capabilities(false).contains(&"projects.addedSources"));
+    assert!(capabilities(false).contains(&"environments.create"));
+    assert!(capabilities(false).contains(&"projects.addedSources"));
     assert!(capabilities(false).contains(&"environment.list"));
 
     let environment = read_json(&fixtures_root().join("v1/environment.list.json"));
@@ -181,7 +181,7 @@ fn assert_workspace_environment_fixture(method: &str, pointer: &str, environment
 
 #[test]
 fn scoped_sync_wire_advertises_complete_device_projection() {
-    assert_eq!(API_VERSION, "3.37.0");
+    assert_eq!(API_VERSION, "3.38.0");
     let methods: BTreeSet<_> = v1::methods().iter().map(|(name, _)| *name).collect();
     for method in ["sync.head", "sync.snapshot", "sync.changes"] {
         assert!(methods.contains(method), "missing typed {method}");
@@ -555,7 +555,7 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.37.0");
+    assert_eq!(API_VERSION, "3.38.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -711,7 +711,7 @@ fn the_harness_inventory_is_announced_with_its_push() {
 #[test]
 fn pull_requests_announce_their_mutations_and_keep_legacy_reads() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.37.0");
+    assert_eq!(API_VERSION, "3.38.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
@@ -1727,7 +1727,7 @@ fn thread_page_activity_mode_is_typed_and_optional() {
 
 #[test]
 fn lean_activity_is_announced_with_newest_item_and_exact_digest() {
-    assert_eq!(API_VERSION, "3.37.0");
+    assert_eq!(API_VERSION, "3.38.0");
     assert!(capabilities(false).contains(&"threads.leanActivity"));
     let fixture = read_json(&fixtures_root().join("v1/thread.page.json"));
     assert_eq!(fixture["lean_activity"]["since"], "3.20.0");
@@ -1910,7 +1910,7 @@ fn project_source_changes_are_announced_with_a_scope_and_an_item() {
 /// accepts. The legacy shape is the pinned coordinator alone.
 #[test]
 fn project_workers_are_announced_with_their_roster_read_and_purposes() {
-    assert_eq!(API_VERSION, "3.37.0");
+    assert_eq!(API_VERSION, "3.38.0");
     let advertised = capabilities(false);
     assert!(advertised.contains(&"agents.projectWorkers"));
     assert!(advertised.contains(&"agent.list"));
@@ -1998,7 +1998,7 @@ fn sync_base_path_precondition_is_announced_and_typed() {
 /// echoes the client's id.
 #[test]
 fn project_worker_assignment_is_announced_with_its_kind_and_operation_id() {
-    assert_eq!(API_VERSION, "3.37.0");
+    assert_eq!(API_VERSION, "3.38.0");
     assert!(capabilities(false).contains(&"tasks.assignProjectAgent"));
     let assign = read_json(&fixtures_root().join("v1/tasks.assign.json"));
     let example = &assign["project_agent_assignment"];
@@ -2496,7 +2496,7 @@ fn review_service_notice_markers_are_additive_read_only_wire_fields() {
 
 #[test]
 fn snapshot_retirement_announces_legacy_summary_marker() {
-    assert_eq!(API_VERSION, "3.37.0");
+    assert_eq!(API_VERSION, "3.38.0");
     assert!(capabilities(false).contains(&"tasks.review.snapshotRetired"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
     assert_eq!(greeting["result"]["api_version"], API_VERSION);
@@ -2581,10 +2581,10 @@ fn secrets_contract_is_advertised_with_the_complete_feature() {
 
 #[test]
 fn creation_attempt_contracts_are_additive_and_strict() {
-    assert_eq!(API_VERSION, "3.37.0");
+    assert_eq!(API_VERSION, "3.38.0");
     assert!(capabilities(false).contains(&"environments"));
-    assert!(!capabilities(false).contains(&"environments.create"));
-    assert!(!capabilities(false).contains(&"projects.addedSources"));
+    assert!(capabilities(false).contains(&"environments.create"));
+    assert!(capabilities(false).contains(&"projects.addedSources"));
     for method in [
         "environment.create",
         "environment.discard_unused",
@@ -2622,4 +2622,31 @@ fn creation_progress_fixture_is_typed_and_nonterminal() {
         assert_eq!(serde_json::to_value(value).unwrap(), *event);
         assert!(event.get("outcome").is_none());
     }
+}
+
+#[test]
+fn project_archive_wire_is_strict_additive_and_withheld() {
+    assert_eq!(API_VERSION, "3.38.0");
+    assert!(!capabilities(false).contains(&"projects.archive"));
+    for method in ["project.archive", "project.restore"] {
+        assert!(!capabilities(false).contains(&method));
+        assert!(UNADVERTISED_CAPABILITIES.contains(&method));
+        let fixture = read_json(&fixtures_root().join(format!("v1/{method}.json")));
+        let (_, handler) = v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap();
+        handler.parse_params(&fixture["params"]).unwrap();
+        assert_eq!(
+            handler.round_trip_result(&fixture["result"]).unwrap(),
+            fixture["result"]
+        );
+        let mut invalid = fixture["params"].clone();
+        invalid["unknown_archive_param"] = serde_json::json!(true);
+        assert!(handler.parse_params(&invalid).is_err());
+    }
+    let project = read_json(&fixtures_root().join("v1/project.list.json"));
+    assert!(project["result"]["projects"][0]
+        .get("archived_at")
+        .is_some());
 }

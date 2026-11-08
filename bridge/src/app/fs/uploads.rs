@@ -225,7 +225,8 @@ impl AppState {
     }
 
     fn owned_upload(&self, id: &str, caller: &SessionSender) -> Result<&Upload, ApiError> {
-        self.uploads
+        let upload = self
+            .uploads
             .get(id)
             .filter(|upload| {
                 upload.active()
@@ -235,7 +236,9 @@ impl AppState {
                     && upload.owner == caller.session_id()
                     && upload.opening.is(&caller.opening())
             })
-            .ok_or_else(|| ApiError::not_found("unknown upload_id"))
+            .ok_or_else(|| ApiError::not_found("unknown upload_id"))?;
+        upload.target.guard_archived_mutation(self)?;
+        Ok(upload)
     }
 
     fn upload_is_current(&self, id: &str, upload: &Upload) -> Result<(), ApiError> {

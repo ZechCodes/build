@@ -2,7 +2,8 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { setImmediate as nextTask } from "node:timers/promises";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-const mocks = vi.hoisted(() => ({ read: vi.fn(), submit: vi.fn(), legacy: vi.fn(), progress: vi.fn(), navigate: vi.fn(), consume:vi.fn(), cache:vi.fn(), route:vi.fn() }));
+const mocks = vi.hoisted(() => ({ read: vi.fn(), submit: vi.fn(), legacy: vi.fn(), progress: vi.fn(), navigate: vi.fn(), consume:vi.fn(), cache:vi.fn(), route:vi.fn(), service:null }));
+vi.mock("../src/core/writeOperationRuntime.js",async original=>({...await original(),deviceWriteOperations:()=>mocks.service}));
 vi.mock("../src/app.js", () => ({ go: mocks.navigate }));
 vi.mock("../src/core/createWorkspaceTargets.js", () => ({
   readCreateWorkspaceTargets: mocks.read, followCreateWorkspaceTargets: () => () => {},
@@ -105,11 +106,36 @@ describe('workspace wizard pages',()=>{
     await opened.close();opened=null;await open(options);
     expect(dialog().querySelector('[data-create-resume]')).not.toBeNull();expect(mocks.submit).toHaveBeenCalledTimes(1);
   });
-  it('retries only the landed project with its own summary and predecessor',async()=>{
-    await open({fixedProject:false});clickTarget('environment');name('New board');dialog().querySelector('[data-create-go]').click();
-    await vi.waitFor(()=>expect(mocks.progress).toHaveBeenCalledTimes(1));
-    await mocks.progress.mock.calls[0][0].onRetryWorkspace({project:{project_id:'landed',name:'New board',environment_id:'e1'},operationId:'failed-attempt'});
-    expect(mocks.submit.mock.calls[1][0]).toMatchObject({target:{kind:'project',id:'landed',key:'d1/landed',summaryLabel:'Platform › New board'},continues:'failed-attempt'});
+  it('creates a real workspace continuation under a new operation id instead of reopening the failed record',async()=>{
+    const {createWriteOperationCache}=await import('../src/core/writeOperationCache.js');
+    const {createWriteOperationService}=await import('../src/core/writeOperations.js');
+    const {submitCreateWorkspace}=await vi.importActual('../src/core/createWorkspaceTargets.js');
+    const identity={accountId:'retry-account',deviceId:'d1',principalId:'user'};
+    const cache=createWriteOperationCache(identity);
+    const service=createWriteOperationService({...identity,cache});mocks.service=service;
+    const callRaw=vi.fn(async(method,params,options)=>method.startsWith('writes.') ? {journal_incarnation:'journal',operations:[]}
+      : {ok:true,bridge_epoch:'epoch',write:{phase:'ack',state:'accepted',revision:1,operation_id:options.write.operation_id}});
+    await service.bind({session:{callRaw,onWriteFrame:()=>()=>{}},greeting:{bridge_epoch:'epoch',journal_incarnation:'journal',capabilities:['bridge.epoch','environments'],ack_confirm_methods:['environment.create_project','workspace.create']},active:()=>true});
+    mocks.submit.mockImplementation(submitCreateWorkspace);
+    try {
+      await open({fixedProject:false});clickTarget('environment');name('New board');dialog().querySelector('[data-create-go]').click();
+      await vi.waitFor(()=>expect(mocks.progress).toHaveBeenCalledTimes(1));
+      const oldId=mocks.progress.mock.calls[0][0].operationId;
+      const project={project_id:'landed',name:'New board',environment_id:'e1'};
+      await service.handleFrame({type:'writes.confirmed',bridge_epoch:'epoch',operation_id:oldId,revision:2,state:'failed',effect:'partial',error:{code:'creation_failed',message:'workspace failed',details:{project}}});
+      await mocks.progress.mock.calls[0][0].onRetryWorkspace({project,operationId:oldId});
+      await vi.waitFor(()=>expect(callRaw.mock.calls.filter(([method])=>method==='workspace.create')).toHaveLength(1));
+      const [method,params,options]=callRaw.mock.calls.find(([method])=>method==='workspace.create');
+      const nextId=options.write.operation_id;
+      expect(nextId).not.toBe(oldId);expect(method).toBe('workspace.create');
+      expect(params).toMatchObject({project_id:'landed',continues:oldId});
+      expect((await cache.get(oldId)).request.method).toBe('environment.create_project');
+      expect((await cache.get(nextId)).request.method).toBe('workspace.create');
+      expect(mocks.progress.mock.calls.at(-1)[0].operationId).toBe(nextId);
+      expect(mocks.progress.mock.calls.filter(([options])=>options.operationId===oldId)).toHaveLength(1);
+      await service.handleFrame({type:'writes.confirmed',bridge_epoch:'epoch',operation_id:nextId,revision:2,state:'succeeded',result:{workspace:{id:'retried-workspace',project_id:'landed'}}});
+      expect((await cache.get(nextId)).state).toBe('succeeded');expect((await cache.get(oldId)).state).toBe('failed');
+    } finally {await service.close();mocks.service=null;}
   });
   it('returns to the retained draft if durable admission refuses before persisting',async()=>{
     let refuse;const completion=new Promise((resolve,reject)=>{refuse=reject;});
@@ -252,4 +278,10 @@ describe('workspace wizard pages',()=>{
     expect(mocks.legacy).not.toHaveBeenCalled();expect(mocks.submit).not.toHaveBeenCalled();
   });
 
+});
+
+it.each(['project','environment','new-environment'])('uses the shared identity SVG for wizard %s targets',async kind=>{
+ const {kindGlyphHtml}=await import('../src/core/environmentIdentity.js');
+ const html=createWorkspaceWizardHtml({page:3,target:{kind,id:'x',name:'Target',sources:[]}});
+ expect(html).toContain(kindGlyphHtml(kind==='project'?'project':'environment'));
 });

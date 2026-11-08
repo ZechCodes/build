@@ -9,6 +9,7 @@ impl AppState {
         name: &str,
         key: &str,
         provisional_id: &str,
+        checkpoint_identity: impl FnOnce(&str) -> Result<(), String>,
     ) -> Result<String, String> {
         if let Some(project) = self
             .projects
@@ -18,6 +19,7 @@ impl AppState {
             if project.environment_id != environment_id {
                 return Err("saved creation identity no longer matches the project".into());
             }
+            checkpoint_identity(&project.id)?;
             return Ok(project.id.clone());
         }
         if let Some(project) = self
@@ -29,10 +31,12 @@ impl AppState {
             if project["environment_id"] != environment_id {
                 return Err("saved creation identity no longer matches the parked project".into());
             }
-            return project["id"]
+            let id = project["id"]
                 .as_str()
                 .map(str::to_owned)
-                .ok_or_else(|| "saved creation project id missing".into());
+                .ok_or("saved creation project id missing")?;
+            checkpoint_identity(&id)?;
+            return Ok(id);
         }
         let home = self
             .projects
@@ -64,6 +68,10 @@ impl AppState {
             self.isolation,
             Some(candidate.project()),
         );
+        // Keep selection, write-ahead identity and config publication under the
+        // same app lock. No allocator can take this ID after it is checkpointed.
+        // The callback is SQL-only and must succeed before any config write.
+        checkpoint_identity(&candidate.project().id)?;
         self.persist_config(&config)?;
         Ok(self.insert_project(candidate))
     }

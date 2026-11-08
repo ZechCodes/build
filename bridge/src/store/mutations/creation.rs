@@ -51,7 +51,7 @@ pub(super) fn project_blocked(
     let Some(project) = record.execution["project_id"].as_str() else {
         return Ok(false);
     };
-    Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM mutation_commands WHERE command_id<>?1 AND state IN ('unknown','reconciling') AND json_extract(record,'$.method') IN ('environment.create_project','workspace.create') AND json_extract(record,'$.execution.project_id')=?2)",params![record.command_id,project],|row|row.get(0))?)
+    Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM mutation_commands WHERE command_id<>?1 AND state IN ('executing','unknown','reconciling') AND json_extract(record,'$.method') IN ('environment.create_project','workspace.create') AND json_extract(record,'$.execution.project_id')=?2)",params![record.command_id,project],|row|row.get(0))?)
 }
 impl StoreWriter {
     pub fn creation_record(
@@ -88,7 +88,9 @@ impl StoreWriter {
         {
             return Err(invalid("invalid creation checkpoint"));
         }
-        let record = self.transaction(|tx| {
+        // Checkpoints precede external filesystem/config effects. Flush their
+        // identity and ownership evidence before those effects can become durable.
+        let record = self.durable_transaction(|tx| {
             let mut record = require(tx, principal, id)?;
             if !is_creation(&record.method) || !nonterminal(&record) {
                 return Err(invalid("creation is already terminal"));

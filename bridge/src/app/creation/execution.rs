@@ -218,17 +218,31 @@ pub(super) fn project_step(
     }
     #[cfg(test)]
     tests::at_boundary(tests::Boundary::ProjectCheckpointed);
-    let project_id = state.lock().unwrap().create_environment_project(
+    let key = evidence["project_key"]
+        .as_str()
+        .ok_or("key missing")?
+        .to_owned();
+    let provisional_id = evidence["project_id"]
+        .as_str()
+        .ok_or("id missing")?
+        .to_owned();
+    state.lock().unwrap().create_environment_project(
         record.params["environment_id"]
             .as_str()
             .ok_or("environment missing")?,
         record.params["name"].as_str().ok_or("name missing")?,
-        evidence["project_key"].as_str().ok_or("key missing")?,
-        evidence["project_id"].as_str().ok_or("id missing")?,
+        &key,
+        &provisional_id,
+        |project_id| {
+            evidence["project_id"] = json!(project_id);
+            writer
+                .checkpoint_creation(PRINCIPAL, &record.operation_id, evidence.clone())
+                .map_err(string)?;
+            Ok(())
+        },
     )?;
     #[cfg(test)]
     tests::at_boundary(tests::Boundary::ProjectPersisted);
-    evidence["project_id"] = json!(project_id);
     set_step(&mut evidence, "project", "done", None);
     writer
         .checkpoint_creation(PRINCIPAL, &record.operation_id, evidence.clone())
@@ -344,6 +358,13 @@ fn finish_failure(
         return Ok(());
     }
     let (landed, details) = failure_resources(state, &evidence);
+    if landed {
+        let project_id = details["project"]["project_id"]
+            .as_str()
+            .ok_or("landed project identity missing")?;
+        evidence["project_id"] = json!(project_id);
+        set_step(&mut evidence, "project", "done", None);
+    }
     let step = if record.method == "workspace.create" || landed {
         "workspace"
     } else {

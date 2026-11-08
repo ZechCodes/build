@@ -7,21 +7,43 @@ fn sibling_scratch_dirs_differ_and_migrated_keeps_legacy_dir() {
     let mut app = qa_state(&repo, dir.path());
     let migrated = app.default_project().unwrap();
     let sibling = register_sibling(&mut app, &migrated);
-    let legacy = crate::app::projects::scratch_dir(&app.state_root, &repo);
-    let first = app.project_ensure_conversation(&json!({"project_id": migrated})).unwrap();
-    let second = app.project_ensure_conversation(&json!({"project_id": sibling})).unwrap();
+    // Freeze the old format independently of scratch_dir's implementation.
+    let digest = sha256_hex(repo.as_os_str().as_encoded_bytes());
+    let label = crate::app::projects::safe_mount_name(repo.file_name().unwrap().to_str().unwrap());
+    let legacy = app
+        .state_root
+        .join("project-scratch")
+        .join(format!("{label}-{}", &digest[..12]));
+    let first = app
+        .project_ensure_conversation(&json!({"project_id": migrated}))
+        .unwrap();
+    let second = app
+        .project_ensure_conversation(&json!({"project_id": sibling}))
+        .unwrap();
     let first_id = first["entity_id"].as_str().unwrap();
     let second_id = second["entity_id"].as_str().unwrap();
-    assert_ne!(first_id, second_id, "siblings must own separate conversations");
+    assert_ne!(
+        first_id, second_id,
+        "siblings must own separate conversations"
+    );
     assert_eq!(app.runs[first_id].worktree.path, legacy);
     assert_ne!(app.runs[second_id].worktree.path, legacy);
     assert!(app.is_project_conversation_owner(first_id));
     assert!(app.is_project_conversation_owner(second_id));
-    assert_eq!(app.project_conversation_run(&migrated).as_deref(), Some(first_id));
-    assert_eq!(app.project_conversation_run(&sibling).as_deref(), Some(second_id));
+    assert_eq!(
+        app.project_conversation_run(&migrated).as_deref(),
+        Some(first_id)
+    );
+    assert_eq!(
+        app.project_conversation_run(&sibling).as_deref(),
+        Some(second_id)
+    );
     let saved = app.store.as_ref().unwrap().load_all_runs().unwrap();
     let saved_sibling = saved.iter().find(|record| record.id == second_id).unwrap();
-    assert_eq!(saved_sibling.project_path, app.project(&sibling).unwrap().project_key);
+    assert_eq!(
+        saved_sibling.project_path,
+        app.project(&sibling).unwrap().project_key
+    );
 }
 
 #[test]
@@ -31,8 +53,35 @@ fn parked_compaction_project_resolves_retained_key() {
     let migrated = app.default_project().unwrap();
     let sibling = register_sibling(&mut app, &migrated);
     let key = app.project(&sibling).unwrap().project_key.clone();
-    app.projects.park(json!({"id":migrated,"path":repo,"project_key":repo}));
-    app.projects.park(json!({"id":sibling,"path":repo,"project_key":key}));
+    app.projects
+        .park(json!({"id":migrated,"path":repo,"project_key":repo}));
+    app.projects
+        .park(json!({"id":sibling,"path":repo,"project_key":key}));
     app.projects.retain_entity_path("parked-owner".into(), key);
     assert_eq!(app.compaction_project_of("parked-owner"), Some(sibling));
+}
+
+#[test]
+fn unbound_project_worker_cannot_start_in_scratch_when_old_home_exists() {
+    let (dir, repo) = init_repo();
+    let mut app = qa_state(&repo, dir.path());
+    let key = repo.display().to_string();
+    let project = app.default_project().unwrap();
+    app.projects.remove(&project);
+    let scratch = crate::app::projects::scratch_dir(&app.state_root, key.as_ref());
+    let active = crate::orchestrator::ActiveRun::workspace_conversation(
+        crate::run::RunId::new("unbound-project-owner"),
+        "unbound".into(),
+        scratch,
+        ModelChoice::default(),
+    );
+    app.runs.insert("unbound-project-owner".into(), active);
+    app.projects
+        .retain_entity_path("unbound-project-owner".into(), key.clone());
+    assert!(app.is_project_conversation_owner("unbound-project-owner"));
+    assert!(
+        app.refuse_worker_without_sources("unbound-project-owner", "worker")
+            .is_err(),
+        "an existing directory cannot stand in for a registered project identity"
+    );
 }

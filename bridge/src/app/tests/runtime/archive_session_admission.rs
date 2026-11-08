@@ -280,3 +280,5 @@ async fn archive_session_exited_but_listed_shell_does_not_block_archive() {
     assert_eq!(app.shell_tab_count(), 1);
     assert!(app.project_archive(&f.project).is_ok());
 }
+
+mod retirement;

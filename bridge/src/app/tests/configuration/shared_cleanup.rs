@@ -124,6 +124,15 @@ async fn clone_cleanup_claim_blocks_admission_and_prepared_settlement_during_del
     } = prepared_clone();
     let child = cloned.join("docs");
     std::fs::create_dir(&child).unwrap();
+    let workspace = app.handle(req(
+        "workspace.create",
+        json!({"project_id":other,"name":"cleanup-fence","isolation":"worktree"}),
+    ));
+    assert_eq!(workspace["ok"], true, "{workspace}");
+    let workspace_id = workspace["result"]["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let local = json!({"project_id":other,"path":cloned,"name":"prepared"});
     let (admitted, pending) = app.dispatch_deferring("project.add_source", &local);
     assert!(admitted.is_ok(), "{admitted:?}");
@@ -151,6 +160,18 @@ async fn clone_cleanup_claim_blocks_admission_and_prepared_settlement_during_del
         assert!(
             admission.is_err(),
             "admitted a source inside an active deletion"
+        );
+        let directory = app.handle(req(
+            "workspace.add_directory",
+            json!({"workspace_id":workspace_id,"path":child}),
+        ));
+        assert_eq!(
+            directory["ok"], false,
+            "admitted a workspace directory inside an active deletion: {directory}"
+        );
+        assert_eq!(
+            app.workspaces.get(&workspace_id).unwrap().directories.len(),
+            1
         );
         let settlement = app.apply_deferred("project.add_source", &local, pending);
         assert!(

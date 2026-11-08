@@ -81,7 +81,8 @@ impl TakenSourceNames {
         registered: &[ProjectSource],
     ) -> Result<(), String> {
         for request in requests.iter().filter(|request| request.remote.is_some()) {
-            let destination = managed_root.join(&request.mount);
+            let destination =
+                crate::worktree::canonical_planned_path(&managed_root.join(&request.mount));
             if self
                 .paths
                 .iter()

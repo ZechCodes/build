@@ -241,6 +241,7 @@ fn orphan_shared_remote_is_pushed_immediately_after_git_and_project_mutations() 
         let mut params =
             json!({"project_id":"proj-1","source_id":"source-2","source_path":checkout});
         let expected = if method == "project.update_source" {
+            params.as_object_mut().unwrap().remove("source_path");
             let next = crate::git_fixture::init_repo_named(root.path(), "next-origin");
             params["remote"] = json!(next);
             next

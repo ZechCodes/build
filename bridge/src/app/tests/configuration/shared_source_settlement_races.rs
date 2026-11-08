@@ -145,3 +145,66 @@ fn new_project_clone_refuses_remote_already_in_local_batch_source() {
         assert!(!root.path().join("projects/attempt-sources/cloned").exists());
     }
 }
+
+fn assert_parked_home_refuses_source_creation(clone_request: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let upstream = init_repo_named(root.path(), "upstream");
+    let home = root.path().join("projects/attempt-sources/fresh");
+    let missing = root.path().join("missing-secondary");
+    let config = root.path().join("config.json");
+    std::fs::write(
+        &config,
+        json!({
+            "projects_dir":root.path().join("projects"),
+            "environments":[{"id":"env-1","name":"parked","next_source":3,"sources":[
+                {"id":"source-2","path":missing,"name":"secondary","mount":"secondary"}
+            ]}],
+            "projects":[{"id":"proj-1","environment_id":"env-1","project_key":"project:parked",
+                "path":home,"home_path":home,"added_sources":[]}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let context = crate::harness::HarnessContext::resolved(
+        root.path().join("mcp.sock"),
+        root.path().join("state"),
+    )
+    .unwrap();
+    let mut app =
+        AppState::new_unrooted_configured(root.path().join("workspaces"), "main", true, context)
+            .with_config(&config)
+            .unwrap();
+    assert_eq!(app.projects.parked().len(), 1);
+    assert!(
+        app.projects
+            .registered_sources()
+            .iter()
+            .all(|source| source.path != home),
+        "the retained home is intentionally absent from authoritative source references"
+    );
+    let params = if clone_request {
+        json!({"name":"attempt","sources":[{"name":"fresh","remote":upstream}]})
+    } else {
+        json!({"name":"fresh","parent":home.parent().unwrap()})
+    };
+    let (answer, work) = app.dispatch_deferring("project.create", &params);
+    assert!(answer.is_err(), "creation may revive an existing project's home while its failing batch owns cleanup: {answer:?}");
+    assert!(
+        work.is_none(),
+        "no clone or repository initialization may start in a retained home"
+    );
+    assert!(!home.exists());
+    assert_eq!(app.projects.parked().len(), 1);
+    assert_eq!(app.projects.parked()[0]["home_path"], json!(home));
+    assert!(app.projects.get("proj-1").is_none());
+}
+
+#[test]
+fn clone_destination_refuses_retained_parked_home_before_preparation() {
+    assert_parked_home_refuses_source_creation(true);
+}
+
+#[test]
+fn legacy_creation_refuses_retained_parked_home_before_preparation() {
+    assert_parked_home_refuses_source_creation(false);
+}

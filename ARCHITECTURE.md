@@ -866,8 +866,9 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
   `3.37.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   3.37.0 advertises `environments` for the M1 list, journaled project/first
   workspace creation, recovery and read-only environment settings. Creating
-  environments in the wizard, added folders, archive, rename and environment
-  secrets are not enabled by this capability.
+  environments or selecting extra folders in the creation wizard, archive,
+  rename and environment secrets are not enabled by this capability. Legacy
+  Project settings still offers Add folder through `project.add_source`.
   3.31.0 retires snapshot-mode creation and actions, removes legacy agent
   mutation tools and adds the compact `legacy_review` summary marker,
   independently announced by `tasks.review.snapshotRetired` (#974).

@@ -262,6 +262,17 @@ const stagedConsumerExclusions = {
     use: ["environment.list", "( reading , [\"environment.list\"] , { }", "f9d9a55a14cdd54d9a9e0a1bdadb86bf1f2449c0fd37514e616f0d647e732182"],
     reason: "#1034 stages a capability-gated environment.list read for M1.1 wire and M1.4 activation; this bridge does not yet serve an HTTP resource. Remove when its manifest coverage lands.",
   }],
+  "core/createWorkspaceTargets.js": [{
+    use: ["environment.create_project", "{ method : [\"environment.create_project\"] , params :", "dabe1f5502fbd339d538028a17f63833c369036c55d1354a34b80341858a3466"],
+    reason: "#1035 stages capability-gated creation for M0.4 (bridge journal executor and verb owner); M1.1 owns its wire/HTTP placement. Remove when the bridge verb and manifest coverage land.",
+  }, {
+    use: ["project.discard_unused", "\"discard this project\" ) ( [\"project.discard_unused\"] , { project_id", "763e59889ca7bbb2f11bab334aef86c5a4a3ff1e52560ab340e284fed9e50529"],
+    reason: "#1035 stages creation recovery for M0.4 (bridge project.discard_unused verb and guards owner). Remove when the bridge verb and manifest coverage land.",
+  }],
+  "core/writeOperationProgress.js": [{
+    use: ["environment.create_project", "Set ( [ [\"environment.create_project\"] , \"workspace.create\" ]", "023b7c245c1762e0a5672396a34fbb77c24f918403da48081d7311723373f44c"],
+    reason: "#1035 stages creation classification for M0.4 (bridge journal executor and verb owner); M1.1 owns its wire/HTTP placement. Remove when the bridge verb and manifest coverage land.",
+  }],
 };
 
 // Conservatively pin source containing method-shaped producers, recognized
@@ -979,6 +990,25 @@ test("a staged consumer exclusion cannot cover copied or changed method occurren
   assert.equal(covered(source.replace('ask(reading, "environment.list"', 'ask(context, "environment.list"')), false);
   assert.equal(stagedConsumerCovered("synthetic.js", "environment.list", consumers(source, file).methodUses), false);
 });
+
+for (const [file, method] of [
+  ["core/createWorkspaceTargets.js", "environment.create_project"],
+  ["core/createWorkspaceTargets.js", "project.discard_unused"],
+  ["core/writeOperationProgress.js", "environment.create_project"],
+]) {
+  test(`staged creation consumer ${file}: ${method} excludes only its audited occurrence`, async () => {
+    const source = await readFile(new URL(`spa/src/${file}`, root), "utf8");
+    const covered = (changed) => stagedConsumerCovered(file, method, consumers(changed, file).methodUses);
+    assert.equal(covered(source), true);
+    assert.equal(covered(`${source}\ncontext.rpc(${JSON.stringify(method)});`), false);
+    assert.equal(covered(`${source}\nconst method = ${JSON.stringify(method)}; context.rpc(method);`), false);
+    const changed = source.replaceAll(JSON.stringify(method), `String(${JSON.stringify(method)})`)
+      .replaceAll(`'${method}'`, `String(${JSON.stringify(method)})`);
+    assert.notEqual(changed, source);
+    assert.equal(covered(changed), false);
+    assert.equal(stagedConsumerCovered("synthetic.js", method, consumers(source, file).methodUses), false);
+  });
+}
 
 test("literal collection finds unknown methods without a registry intersection", () => {
   const found = consumers('context.rpc("new_family.future"); callRpc("agent.start"); context.call("thread.page");', "synthetic.js");

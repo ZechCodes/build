@@ -133,9 +133,16 @@ pin both the absence of a rejection and preservation of the seeded record.
 
 The new `createWorkspaceTargets.js` produces `workspace.create`,
 `environment.create_project` and `project.discard_unused`. The first retains its
-existing resource route. The latter two receive explicit manifest exclusions:
-the SPA is built against the Environments plan, while M0.4/M1.1 still own their
-bridge implementations and eventual resource placements. No route is invented.
+existing resource route. The latter two are staged SPA consumers, absent from
+the manifest because the bridge does not register them yet. M0.4 owns the
+creation executor and both bridge verbs; M1.1 owns creation wire/HTTP placement.
+Exact occurrence exclusions live in `stagedConsumerExclusions`, using the same
+pattern as the existing staged `environment.list` read. Two occurrences are in
+`core/createWorkspaceTargets.js` (creation and discard), and one classifies
+creation in `core/writeOperationProgress.js`. Each entry records its owner and
+must be removed when its bridge verb and manifest coverage land. Copied, moved
+or changed occurrences are not covered. No route is invented, and the generated
+manifest contains only registered bridge methods.
 
 `writes.progress` is a pushed event, never a callable RPC. Reviewed finite
 metadata occurrences cover the adapter's push-kind list, device-event map,
@@ -181,7 +188,8 @@ retains M1.2's named environment capability metadata and M1.3's progress push
 labels. The adapter, write-method and change-event source pins were recomputed
 from the combined files, rather than choosing either branch's hashes. M1.2's
 occurrence-scoped staged `environment.list` exclusion and its dispatcher
-inventory remain intact, alongside M1.3's two documented manifest exclusions.
+inventory remain intact, alongside M1.3's three occurrence-scoped staged
+consumer exclusions for its two future verbs.
 Neither the staged-call guards nor the scanner and coverage assertions were
 weakened. The earlier review sections above remain applicable to each slice.
 

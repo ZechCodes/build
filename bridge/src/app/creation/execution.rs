@@ -40,6 +40,8 @@ pub(super) fn execute(
     };
     match result {
         Ok(Some(result)) => {
+            #[cfg(test)]
+            tests::at_boundary(tests::Boundary::WorkspaceProvisioned);
             service.clear_progress(&record.operation_id);
             writer
                 .finish_creation(

@@ -137,8 +137,9 @@ fn workspace_replay_refuses_changed_project_key_before_filesystem_effects() {
     assert_eq!(legacy_snapshot(&f), legacy);
     assert_eq!(std::fs::read(marker).unwrap(), b"legacy-owned");
     let record = f.record(&prior);
-    assert_eq!(record.state, "failed", "{record:?}");
-    assert_eq!(record.outcome.unwrap()["effect"], "unapplied");
+    // Absence of this root alone is not proof that no external effect began.
+    assert_eq!(record.state, "unknown", "{record:?}");
+    assert!(record.outcome.is_none());
 }
 
 #[test]

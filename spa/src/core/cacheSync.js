@@ -62,7 +62,8 @@ import { applyDirectoryHint } from "./directoryPages.js";
 import { createBackgroundStreams } from "./syncBackgroundStreams.js";
 import { createTaskPhases, taskReadScope } from "./syncTaskPhases.js";
 import { createTaskReadQueue } from "./serialTaskReads.js";
-import { readSyncLists } from "./syncLists.js";
+import { readSyncEnvironments, readSyncLists } from "./syncLists.js";
+import { admitEnvironmentListWrite, writeCachedEnvironments } from "./environmentCache.js";
 import { App } from "../appState.js";
 import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
 import { bridgeCapabilities, onSubscriptionHeld, subscriptionsSettledFor, watchChanges } from "./changeEvents.js";
@@ -776,7 +777,8 @@ async function readLists(context, fence) {
       delete view.workspaces;
       await writeLists(reading, view, fence);
     },
-    landList: (kind, rows, before) => landOwnershipList(reading, kind, rows, before, fence),
+    landList: (kind, rows, before, admission) => kind === "environments"
+      ? writeEnvironmentList(reading, rows, admission) : landOwnershipList(reading, kind, rows, before, fence),
   });
   if (lists) {
     await refreshWorkspaceSummaries(reading, lists.view, fence);
@@ -789,11 +791,26 @@ async function readLists(context, fence) {
 // device recovery owns items, directories, rosters and pooled session facts.
 async function readDeviceRuntimeBoard(context, priority = "foreground") {
   const fence = pushFence();
+  await Promise.all([
+    readRuntimeBoard(context, priority, fence),
+    readSyncEnvironments(context, { ask, priority, landList: (_kind, rows, _before, admission) => writeEnvironmentList(context, rows, admission) }),
+  ]);
+}
+
+async function readRuntimeBoard(context, priority, fence) {
   const board = await ask(context, "board.list", {}, priority, addressOf(context, "", "feed"));
   if (!board || !context.active()) return;
   await writeUsageLimits(context.deviceId, board.usage_limits);
   await enrichDeviceRuntimeBoard(context.deviceId, { pending: [], external_worktrees: [], plans: [], runs: [], ...board },
     () => context.active() && deviceScopedSyncOwns(context.deviceId), { fence });
+}
+
+// No environment journal projection exists yet. Both sync paths share this
+// independent admission order rather than session-list semantics.
+const environmentListActive = (context) => context.active() && bridgeCapabilities(context.deviceId).environments?.list === true;
+
+function writeEnvironmentList(context, rows, admission) {
+  return writeCachedEnvironments(context.deviceId, rows, admission, () => environmentListActive(context));
 }
 
 async function landOwnershipList(context, kind, rows, before, fence) {
@@ -1907,8 +1924,14 @@ async function applyChanges(items, deviceId) {
   void wakeScopedSyncChanges(deviceId, items).catch(() => {});
   context.pushing = true;
   const queues = queuesFor(context);
-  const applied = await queues.body.enqueueApplied(context, items);
+  const applied = await queues.body.enqueueApplied(context, admitEnvironmentPushes(context, items));
   await Promise.all(applied.map((job) => job?.settled));
+}
+
+function admitEnvironmentPushes(context, items) {
+  if (!environmentListActive(context)) return items;
+  return items.map((item) => item.entity_id === BOARD_ENTITY && Array.isArray(item.state?.environments)
+    ? { ...item, environmentAdmission: admitEnvironmentListWrite(context.deviceId, () => environmentListActive(context)) } : item);
 }
 
 async function applyRemainder(context, item) {
@@ -1924,7 +1947,7 @@ async function applyItem(context, item) {
   if (item.project_source) return applyProjectSourceItem(context, item);
   const entityId = String(item.entity_id || "");
   if (!entityId) return;
-  if (entityId === BOARD_ENTITY) return applyBoard(context, item.state || {});
+  if (entityId === BOARD_ENTITY) return applyBoard(context, item.state || {}, item.environmentAdmission);
   return applyEntityBodies(context, entityId, item);
 }
 
@@ -2035,8 +2058,10 @@ async function applySourceDiff(context, entityId, diff, source) {
 /** The board item: which entities left the board, and the two lists when they
  *  moved. An entity that finished, was deleted, or was cleared away appears in
  *  `removed`, and everything it had goes at once — its data and its row. */
-async function applyBoard(context, state) {
+async function applyBoard(context, state, environmentAdmission) {
+  notePushedLists(context, state);
   if (deviceScopedSyncOwns(context.deviceId)) {
+    await writeEnvironmentList(context, state.environments, environmentAdmission);
     await writeUsageLimits(context.deviceId, state.usage_limits);
     await enrichDeviceRuntimeBoard(context.deviceId, state,
       () => context.active() && deviceScopedSyncOwns(context.deviceId), { pushed: true });
@@ -2049,10 +2074,9 @@ async function applyBoard(context, state) {
   }
   const owner = context;
   context = { ...owner, active: () => owner.active() && !deviceScopedSyncOwns(owner.deviceId) };
-  notePushedLists(context, state);
   const before = {};
   const previousSources = state.projects ? projectTerminalScopes(await heldValue(context, "", "projects")) : null;
-  await writePushedBoard(context, state, before);
+  await writePushedBoard(context, state, before, environmentAdmission);
   enqueueBoardEnrichment(context, state, previousSources);
   return removedOwnerId(before, state) ? before : null;
 }
@@ -2064,7 +2088,7 @@ function enqueueBoardEnrichment(context, state, previousSources) {
   if (state.workspaces) deferPush(context, "board", "board-reviews", () => readWorkspaceReviews(context, state.workspaces));
 }
 
-async function writePushedBoard(context, state, before) {
+async function writePushedBoard(context, state, before, environmentAdmission) {
   // The harnesses out of usage there (#58): the pushed reading replaces the
   // device's record, and mounted surfaces repaint from its cache announcement.
   await writeUsageLimits(context.deviceId, state.usage_limits);
@@ -2088,9 +2112,11 @@ async function writePushedBoard(context, state, before) {
       stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])), before,
     { clearMissingReview: true });
   }
+  await writeEnvironmentList(context, state.environments, environmentAdmission);
 }
 
 function notePushedLists(context, state) {
+  if (deviceScopedSyncOwns(context.deviceId)) return;
   for (const kind of ["projects", "workspaces"]) {
     if (state[kind]) notePush(addressOf(context, "", kind));
   }

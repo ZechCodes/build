@@ -38,10 +38,15 @@ let pagesBodies = false;
 let perFileDiffs = false;
 let projectSourceFacts = false;
 let projectTerminalFacts = false;
+let environmentsSupported = false;
+let deviceOwned = false;
 
 const App = { route: { name: "inbox" }, devices: [{ id: "dev-1" }] };
 vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")).App }));
 vi.mock("../src/app.js", () => ({ App }));
+vi.mock("../src/core/scopedSyncRuntime.js", async (original) => ({
+  ...await original(), deviceScopedSyncOwns: () => deviceOwned,
+}));
 
 let registeredWatchers = [];
 vi.mock("../src/core/changeEvents.js", () => ({
@@ -52,6 +57,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
     bodies: { pages: pagesBodies },
     diffs: { perFile: perFileDiffs },
     term: { projectSources: projectTerminalFacts },
+    environments: { list: environmentsSupported },
   }),
   // A stand-in bridge holds whatever it is asked to at once
   // (test/cacheSyncDelivery.test.js drives the real one).
@@ -166,6 +172,8 @@ beforeEach(async () => {
   perFileDiffs = false;
   projectSourceFacts = false;
   projectTerminalFacts = false;
+  environmentsSupported = false;
+  deviceOwned = false;
   App.route = { name: "inbox" };
   registerDevice("dev-1");
   bridge.call = vi.fn(async (method, params) => answer(method, params));
@@ -956,6 +964,240 @@ describe("a push and a pass landing on the same record", () => {
     const record = (await read("run-1", "thread", "ag-1")).value;
     expect(record.items.map((one) => one.id)).toEqual(["m-1", "m-8", "m-9"]);
     expect(record.deliveredSequence).toBe(9);
+  });
+});
+
+describe.each([false, true])("environment lists (device sync owns lists: %s)", (owned) => {
+  const address = { deviceId: "dev-1", entityId: "", kind: "environments" };
+  const environment = (name) => ({ environment_id: "env-1", name, home_path: "/synthetic/build",
+    sources: [{ id: "source-1", path: "/synthetic/build", is_git: true }], project_ids: ["p1"],
+    device: { id: "dev-1", name: "Synthetic device" } });
+  const cachedRows = (rows) => rows.map((row) => ({ ...row, deviceId: "dev-1" }));
+  const readEnvironments = async (deviceId = "dev-1") =>
+    (await import("../src/core/environmentCache.js")).readCachedEnvironments(deviceId);
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((done) => { resolve = done; });
+    return { promise, resolve };
+  };
+  const holdUsageLimits = (limits) => {
+    const blocked = deferred(), started = vi.fn();
+    const write = cache.writeCached;
+    const spy = vi.spyOn(cache, "writeCached").mockImplementation(async (address, value, ...options) => {
+      if (address.kind === "usage-limits" && value === limits) {
+        started();
+        await blocked.promise;
+      }
+      return write(address, value, ...options);
+    });
+    return { started, release: blocked.resolve, restore: () => spy.mockRestore() };
+  };
+
+  beforeEach(() => {
+    deviceOwned = owned;
+    environmentsSupported = true;
+  });
+
+  it("lands the capable device's environment.list in its cache for independent readers", async () => {
+    const rows = [environment("Pulled environment")];
+    script["environment.list"] = () => ({ environments: rows });
+    await boot([]);
+
+    expect(calls("environment.list")).toHaveLength(1);
+    expect(calls("environment.list")[0][1]).toEqual({});
+    expect((await read("", "environments"))?.value).toEqual(cachedRows(rows));
+    expect(await readEnvironments()).toEqual(cachedRows(rows));
+    expect(await readEnvironments("dev-2")).toEqual([]);
+  });
+
+  it.runIf(owned)("lands runtime board observations while environment.list is still outstanding", async () => {
+    const pending = { entity_id: "pending-worktree", project_id: "p1", title: "Creating workspace",
+      branch: "build/pending", state: "creating", checkout_id: "pending-worktree", isolation: "worktree" };
+    script["board.list"] = () => ({ items: [], pending: [pending] });
+    let release;
+    const answer = new Promise((resolve) => { release = resolve; });
+    script["environment.list"] = () => answer;
+    sync.startCacheSync();
+    try {
+      await vi.waitFor(() => expect(calls("environment.list")).toHaveLength(1));
+      await vi.waitFor(async () => expect((await read("", "feed"))?.value?.pending)
+        .toEqual([{ ...pending, deviceId: "dev-1", projectKey: "dev-1/p1" }]));
+      expect(await read("", "environments")).toBeUndefined();
+    } finally {
+      release({ environments: [] });
+      await passesSettled(sync, "dev-1");
+    }
+  });
+
+  it("neither asks for nor writes environments without the current capability", async () => {
+    environmentsSupported = false;
+    const rows = [environment("Unsupported environment")];
+    script["environment.list"] = () => ({ environments: rows });
+    script["board.list"] = () => ({ items: [], environments: rows });
+    await boot([]);
+    await deliver([{ entity_id: "board", state: { environments: rows } }]);
+
+    expect(calls("environment.list")).toHaveLength(0);
+    expect(await read("", "environments")).toBeUndefined();
+    expect(await readEnvironments()).toEqual([]);
+  });
+
+  it("replaces pushed environments, retains an omitted list, and clears an explicit empty list", async () => {
+    script["environment.list"] = () => ({ environments: [environment("Initial environment")] });
+    await boot([]);
+    const rows = [environment("Pushed environment")];
+    bridge.call.mockClear();
+    await deliver([{ entity_id: "board", state: { environments: rows } }]);
+    await vi.waitFor(async () => expect(await readEnvironments()).toEqual(cachedRows(rows)));
+    const pushed = await read("", "environments");
+
+    await deliver([{ entity_id: "board", state: { projects: [] } }]);
+    expect(await read("", "environments")).toEqual(pushed);
+    await deliver([{ entity_id: "board", state: { environments: [] } }]);
+    await vi.waitFor(async () => expect(await readEnvironments()).toEqual([]));
+    expect((await read("", "environments"))?.value).toEqual([]);
+    expect(calls("environment.list")).toHaveLength(0);
+  });
+
+  it("keeps a newer board push when an older environment.list answer arrives later", async () => {
+    script["environment.list"] = () => ({ environments: [environment("Initial environment")] });
+    await boot([]);
+    let release;
+    const answer = new Promise((resolve) => { release = resolve; });
+    script["environment.list"] = () => answer;
+    bridge.call.mockClear();
+    const refreshing = sync.syncDevice("dev-1");
+    try {
+      await vi.waitFor(() => expect(calls("environment.list")).toHaveLength(1));
+      const rows = [environment("Newer pushed environment")];
+      await deliver([{ entity_id: "board", state: { environments: rows } }]);
+      await vi.waitFor(async () => expect(await readEnvironments()).toEqual(cachedRows(rows)));
+      const pushed = await read("", "environments");
+      release({ environments: [environment("Older pulled environment")] });
+      await refreshing;
+      expect(await read("", "environments")).toEqual(pushed);
+    } finally {
+      release({ environments: [] });
+      await refreshing;
+    }
+  });
+
+  it("older_queued_push_does_not_overwrite_newer_read", async () => {
+    script["environment.list"] = () => ({ environments: [environment("Initial environment")] });
+    await boot([]);
+    const limits = [{ provider: "synthetic", message: "Hold the preceding board item" }];
+    const blocked = holdUsageLimits(limits);
+    const watcher = subscription("s-inbox");
+    const first = watcher.onChanges([{ entity_id: "board", state: { usage_limits: limits } }]);
+    let queued = Promise.resolve();
+    try {
+      await vi.waitFor(() => expect(blocked.started).toHaveBeenCalledOnce());
+      queued = watcher.onChanges([{ entity_id: "board", state: { environments: [environment("Older queued environment")] } }]);
+      await vi.waitFor(() => expect(sync.pushWorkInFlight("dev-1").pending).toBe(1));
+      const rows = [environment("Newer pulled environment")];
+      script["environment.list"] = () => ({ environments: rows });
+      await sync.syncDevice("dev-1");
+      expect(await readEnvironments()).toEqual(cachedRows(rows));
+      const newer = await read("", "environments");
+      blocked.release();
+      await Promise.all([first, queued]);
+      expect(await read("", "environments")).toEqual(newer);
+    } finally {
+      blocked.release();
+      await Promise.all([first, queued]);
+      blocked.restore();
+    }
+  });
+
+  it.runIf(!owned)("older_in_processing_push_does_not_overwrite_newer_read", async () => {
+    script["environment.list"] = () => ({ environments: [environment("Initial environment")] });
+    await boot([]);
+    const limits = [{ provider: "synthetic", message: "Hold this board's third list" }];
+    const blocked = holdUsageLimits(limits);
+    const pushed = subscription("s-inbox").onChanges([{ entity_id: "board", state: {
+      usage_limits: limits, environments: [environment("Older in-processing environment")],
+    } }]);
+    try {
+      await vi.waitFor(() => expect(blocked.started).toHaveBeenCalledOnce());
+      const rows = [environment("Newer pulled environment")];
+      script["environment.list"] = () => ({ environments: rows });
+      await sync.syncDevice("dev-1");
+      expect(await readEnvironments()).toEqual(cachedRows(rows));
+      const newer = await read("", "environments");
+      blocked.release();
+      await pushed;
+      expect(await read("", "environments")).toEqual(newer);
+    } finally {
+      blocked.release();
+      await pushed;
+      blocked.restore();
+    }
+  });
+
+  it.runIf(owned)("older_overlapping_read_completing_last_is_dropped", async () => {
+    script["environment.list"] = () => ({ environments: [environment("Initial environment")] });
+    await boot([]);
+    const older = deferred(), started = vi.fn();
+    const rows = [environment("Newer deferred-runtime environment")];
+    let reads = 0;
+    script["environment.list"] = () => {
+      reads += 1;
+      started();
+      return reads === 1 ? older.promise : { environments: rows };
+    };
+    const refreshing = sync.syncDevice("dev-1");
+    let pushed = Promise.resolve();
+    try {
+      await vi.waitFor(() => expect(started).toHaveBeenCalledOnce());
+      pushed = subscription("s-inbox").onChanges([{ entity_id: "board", state: { revision: 2 } }]);
+      await vi.waitFor(() => expect(started).toHaveBeenCalledTimes(2));
+      await pushed;
+      expect(await readEnvironments()).toEqual(cachedRows(rows));
+      const newer = await read("", "environments");
+      older.resolve({ environments: [environment("Older pass environment")] });
+      await refreshing;
+      expect(await read("", "environments")).toEqual(newer);
+    } finally {
+      older.resolve({ environments: [] });
+      await Promise.all([refreshing, pushed]);
+    }
+  });
+
+  it("preserves the held environment list when a refresh fails", async () => {
+    const rows = [environment("Cached environment")];
+    script["environment.list"] = () => ({ environments: rows });
+    await boot([]);
+    const held = await read("", "environments");
+    script["environment.list"] = () => { throw new Error("away"); };
+    bridge.call.mockClear();
+    await sync.syncDevice("dev-1");
+
+    expect(calls("environment.list")).toHaveLength(1);
+    expect(await readEnvironments()).toEqual(cachedRows(rows));
+    expect(await read("", "environments")).toEqual(held);
+  });
+
+  it("does not land an outstanding environment.list after cache sync stops", async () => {
+    const rows = [environment("Cached environment")];
+    script["environment.list"] = () => ({ environments: rows });
+    await boot([]);
+    const held = await read("", "environments");
+    let release;
+    const answer = new Promise((resolve) => { release = resolve; });
+    script["environment.list"] = () => answer;
+    bridge.call.mockClear();
+    const refreshing = sync.syncDevice("dev-1");
+    try {
+      await vi.waitFor(() => expect(calls("environment.list")).toHaveLength(1));
+      sync.stopCacheSync();
+      release({ environments: [environment("Late environment")] });
+      await refreshing;
+      expect(await readEnvironments()).toEqual(cachedRows(rows));
+      expect(await cache.readCached(address)).toEqual(held);
+    } finally {
+      release({ environments: [] });
+      await refreshing;
+    }
   });
 });
 

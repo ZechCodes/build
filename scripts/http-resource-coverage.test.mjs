@@ -43,85 +43,95 @@ const metadataUses = {
     ["secrets.sealedUpload",". has ( [\"secrets.sealedUpload\"] ) , metadataEvents","d602aee9fb486c0ef7a43dd7fc204224b250ee6b9c56e419bed26ac4f56d6adf"],
     ["secrets.metadataEvents",". has ( [\"secrets.metadataEvents\"] ) , }","d602aee9fb486c0ef7a43dd7fc204224b250ee6b9c56e419bed26ac4f56d6adf"],
     ["changes.subscriptions",". has ( [\"changes.subscriptions\"] ) ; const","20fb6a0c88c128a1254da272bc70614f9aba7dc095f927a02e0b67717a777c23"],
-    ["bridge.epoch",". has ( [\"bridge.epoch\"] ) , ackConfirmMethods","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["bridge.epoch",". has ( [\"bridge.epoch\"] ) ) }","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["changes.filesHints",". has ( [\"changes.filesHints\"] ) , kinds","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["changes.projectSources",". has ( [\"changes.projectSources\"] ) , }","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["git.projectSources",". has ( [\"git.projectSources\"] ) , showPaths","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["git.showPaths",". has ( [\"git.showPaths\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["term.projectSources",". has ( [\"term.projectSources\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["fs.treePaged",". has ( [\"fs.treePaged\"] ) , projectSources","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["fs.projectSources",". has ( [\"fs.projectSources\"] ) , projectSourcePath","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["fs.projectSourcePath",". has ( [\"fs.projectSourcePath\"] ) , uploads","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["fs.uploadBegin",". has ( [\"fs.uploadBegin\"] ) , createDirectory","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["fs.createDirectory",". has ( [\"fs.createDirectory\"] ) , createFile","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["fs.createFile",". has ( [\"fs.createFile\"] ) , }","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["requests.priority",". has ( [\"requests.priority\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["rtc.clientLanCache",". has ( [\"rtc.clientLanCache\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["errors.codes",". has ( [\"errors.codes\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["diffs.perFile",". has ( [\"diffs.perFile\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["bodies.pages",". has ( [\"bodies.pages\"] ) , mediaRawPages","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["fs.mediaRawPages",". has ( [\"fs.mediaRawPages\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["sync.device",". has ( [\"sync.device\"] ) , projectTasks","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["sync.projectTasks",". has ( [\"sync.projectTasks\"] ) , task","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["sync.task",". has ( [\"sync.task\"] ) , }","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.review.snapshotRetired",". has ( [\"tasks.review.snapshotRetired\"] ) , ...","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.review.reject",". has ( [\"tasks.review.reject\"] ) , author","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.review.author",". has ( [\"tasks.review.author\"] ) , verdictDelivery","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.review.verdictDelivery",". has ( [\"tasks.review.verdictDelivery\"] ) , comments","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.reviewComments",". has ( [\"tasks.reviewComments\"] ) , commits","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.review.commits",". has ( [\"tasks.review.commits\"] ) , commit","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.review.commit",". has ( [\"tasks.review.commit\"] ) , since","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.review.since",". has ( [\"tasks.review.since\"] ) , anchorCommit","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.review.anchorCommit",". has ( [\"tasks.review.anchorCommit\"] ) , forTask","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.review.forTask",". has ( [\"tasks.review.forTask\"] ) , taskChoices","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.listSummaries",". has ( [\"tasks.listSummaries\"] ) , linkedTaskChoices","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.listLinkedWorkspace",". has ( [\"tasks.listLinkedWorkspace\"] ) , pullRequests","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.review.pullRequests",". has ( [\"tasks.review.pullRequests\"] ) , }","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.timelinePaged",". has ( [\"tasks.timelinePaged\"] ) , context","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.context",". has ( [\"tasks.context\"] ) , assignProjectAgent","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.assignProjectAgent",". has ( [\"tasks.assignProjectAgent\"] ) , attachments","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.attachments",". has ( [\"tasks.attachments\"] ) , watching","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.watching",". has ( [\"tasks.watching\"] ) , doneSinceLeft","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.doneSinceLeft",". has ( [\"tasks.doneSinceLeft\"] ) , commentUserNotifies","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.commentUserNotifies",". has ( [\"tasks.commentUserNotifies\"] ) , listPaged","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.listPaged",". has ( [\"tasks.listPaged\"] ) , listSummaries","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.listSummaries",". has ( [\"tasks.listSummaries\"] ) , filterChoices","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.filterChoices",". has ( [\"tasks.filterChoices\"] ) , counts","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.counts",". has ( [\"tasks.counts\"] ) , lookup","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.lookup",". has ( [\"tasks.lookup\"] ) , listWatched","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.listWatched",". has ( [\"tasks.listWatched\"] ) , listAttention","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.listAttention",". has ( [\"tasks.listAttention\"] ) , listLinkedWorkspace","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.listLinkedWorkspace",". has ( [\"tasks.listLinkedWorkspace\"] ) , listTracked","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.listTracked",". has ( [\"tasks.listTracked\"] ) , listReviewMode","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.listReviewMode",". has ( [\"tasks.listReviewMode\"] ) , listOrder","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.listOrder",". has ( [\"tasks.listOrder\"] ) , listReadiness","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.listReadiness",". has ( [\"tasks.listReadiness\"] ) , listExcludeAssignee","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.listExcludeAssignee",". has ( [\"tasks.listExcludeAssignee\"] ) , bodyPrecondition","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.bodyPrecondition",". has ( [\"tasks.bodyPrecondition\"] ) , waitingOn","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["tasks.waitingOn",". has ( [\"tasks.waitingOn\"] ) , }","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["compaction.harnessThresholds",". has ( [\"compaction.harnessThresholds\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["conversations.settings",". has ( [\"conversations.settings\"] ) , reset","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["conversation.reset",". has ( [\"conversation.reset\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["github.repos",". has ( [\"github.repos\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["messages.context",". has ( [\"messages.context\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["threads.postOperations",". has ( [\"threads.postOperations\"] ) , attachmentChunks","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["thread.attachmentChunks",". has ( [\"thread.attachmentChunks\"] ) , leanActivity","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["threads.leanActivity",". has ( [\"threads.leanActivity\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["branches.finishDelete",". has ( [\"branches.finishDelete\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
+    ["bridge.epoch",". has ( [\"bridge.epoch\"] ) , ackConfirmMethods","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["bridge.epoch",". has ( [\"bridge.epoch\"] ) ) }","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["changes.filesHints",". has ( [\"changes.filesHints\"] ) , kinds","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["changes.projectSources",". has ( [\"changes.projectSources\"] ) , }","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["git.projectSources",". has ( [\"git.projectSources\"] ) , showPaths","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["git.showPaths",". has ( [\"git.showPaths\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["term.projectSources",". has ( [\"term.projectSources\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["fs.treePaged",". has ( [\"fs.treePaged\"] ) , projectSources","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["fs.projectSources",". has ( [\"fs.projectSources\"] ) , projectSourcePath","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["fs.projectSourcePath",". has ( [\"fs.projectSourcePath\"] ) , uploads","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["fs.uploadBegin",". has ( [\"fs.uploadBegin\"] ) , createDirectory","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["fs.createDirectory",". has ( [\"fs.createDirectory\"] ) , createFile","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["fs.createFile",". has ( [\"fs.createFile\"] ) , }","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["requests.priority",". has ( [\"requests.priority\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["rtc.clientLanCache",". has ( [\"rtc.clientLanCache\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["errors.codes",". has ( [\"errors.codes\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["diffs.perFile",". has ( [\"diffs.perFile\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["bodies.pages",". has ( [\"bodies.pages\"] ) , mediaRawPages","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["fs.mediaRawPages",". has ( [\"fs.mediaRawPages\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["sync.device",". has ( [\"sync.device\"] ) , projectTasks","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["sync.projectTasks",". has ( [\"sync.projectTasks\"] ) , task","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["sync.task",". has ( [\"sync.task\"] ) , }","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.review.snapshotRetired",". has ( [\"tasks.review.snapshotRetired\"] ) , ...","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.review.reject",". has ( [\"tasks.review.reject\"] ) , author","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.review.author",". has ( [\"tasks.review.author\"] ) , verdictDelivery","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.review.verdictDelivery",". has ( [\"tasks.review.verdictDelivery\"] ) , comments","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.reviewComments",". has ( [\"tasks.reviewComments\"] ) , commits","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.review.commits",". has ( [\"tasks.review.commits\"] ) , commit","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.review.commit",". has ( [\"tasks.review.commit\"] ) , since","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.review.since",". has ( [\"tasks.review.since\"] ) , anchorCommit","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.review.anchorCommit",". has ( [\"tasks.review.anchorCommit\"] ) , forTask","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.review.forTask",". has ( [\"tasks.review.forTask\"] ) , taskChoices","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.listSummaries",". has ( [\"tasks.listSummaries\"] ) , linkedTaskChoices","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.listLinkedWorkspace",". has ( [\"tasks.listLinkedWorkspace\"] ) , pullRequests","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.review.pullRequests",". has ( [\"tasks.review.pullRequests\"] ) , }","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.timelinePaged",". has ( [\"tasks.timelinePaged\"] ) , context","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.context",". has ( [\"tasks.context\"] ) , assignProjectAgent","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.assignProjectAgent",". has ( [\"tasks.assignProjectAgent\"] ) , attachments","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.attachments",". has ( [\"tasks.attachments\"] ) , watching","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.watching",". has ( [\"tasks.watching\"] ) , doneSinceLeft","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.doneSinceLeft",". has ( [\"tasks.doneSinceLeft\"] ) , commentUserNotifies","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.commentUserNotifies",". has ( [\"tasks.commentUserNotifies\"] ) , listPaged","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.listPaged",". has ( [\"tasks.listPaged\"] ) , listSummaries","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.listSummaries",". has ( [\"tasks.listSummaries\"] ) , filterChoices","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.filterChoices",". has ( [\"tasks.filterChoices\"] ) , counts","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.counts",". has ( [\"tasks.counts\"] ) , lookup","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.lookup",". has ( [\"tasks.lookup\"] ) , listWatched","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.listWatched",". has ( [\"tasks.listWatched\"] ) , listAttention","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.listAttention",". has ( [\"tasks.listAttention\"] ) , listLinkedWorkspace","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.listLinkedWorkspace",". has ( [\"tasks.listLinkedWorkspace\"] ) , listTracked","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.listTracked",". has ( [\"tasks.listTracked\"] ) , listReviewMode","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.listReviewMode",". has ( [\"tasks.listReviewMode\"] ) , listOrder","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.listOrder",". has ( [\"tasks.listOrder\"] ) , listReadiness","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.listReadiness",". has ( [\"tasks.listReadiness\"] ) , listExcludeAssignee","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.listExcludeAssignee",". has ( [\"tasks.listExcludeAssignee\"] ) , bodyPrecondition","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.bodyPrecondition",". has ( [\"tasks.bodyPrecondition\"] ) , waitingOn","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["tasks.waitingOn",". has ( [\"tasks.waitingOn\"] ) , }","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["compaction.harnessThresholds",". has ( [\"compaction.harnessThresholds\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["conversations.settings",". has ( [\"conversations.settings\"] ) , reset","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["conversation.reset",". has ( [\"conversation.reset\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["github.repos",". has ( [\"github.repos\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["messages.context",". has ( [\"messages.context\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["threads.postOperations",". has ( [\"threads.postOperations\"] ) , attachmentChunks","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["thread.attachmentChunks",". has ( [\"thread.attachmentChunks\"] ) , leanActivity","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["threads.leanActivity",". has ( [\"threads.leanActivity\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["branches.finishDelete",". has ( [\"branches.finishDelete\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
     [
       "push.registerKey",
       ". has ( [\"push.registerKey\"] ) , revokeKey",
-      "13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"
+      "73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"
     ],
-    ["push.revokeKey",". has ( [\"push.revokeKey\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["agents.createdBy",". has ( [\"agents.createdBy\"] ) , projectWorkers","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["agents.projectWorkers",". has ( [\"agents.projectWorkers\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["project.update_source",". has ( [\"project.update_source\"] ) , syncBase","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["sources.syncBase",". has ( [\"sources.syncBase\"] ) , syncBasePath","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["sources.syncBasePath",". has ( [\"sources.syncBasePath\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["workspace.measure_sizes",". has ( [\"workspace.measure_sizes\"] ) , setLocked","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
-    ["workspace.set_locked",". has ( [\"workspace.set_locked\"] ) } ,","13e4c11aa25c1d370e07272e6fd331775a1e8e43a28d732712d0321f236941f1"],
+    ["push.revokeKey",". has ( [\"push.revokeKey\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["agents.createdBy",". has ( [\"agents.createdBy\"] ) , projectWorkers","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["agents.projectWorkers",". has ( [\"agents.projectWorkers\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["project.update_source",". has ( [\"project.update_source\"] ) , syncBase","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["sources.syncBase",". has ( [\"sources.syncBase\"] ) , syncBasePath","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["sources.syncBasePath",". has ( [\"sources.syncBasePath\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    // #1034: future named capabilities are negotiation metadata, not RPC methods.
+    ["environments.create",". has ( [\"environments.create\"] ) , addedSources","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["projects.addedSources",". has ( [\"projects.addedSources\"] ) , archive","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["projects.archive",". has ( [\"projects.archive\"] ) , rename","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    [
+      "environments.rename",
+      ". has ( [\"environments.rename\"] ) , secrets",
+      "73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"
+    ],
+    ["secrets.environmentScope",". has ( [\"secrets.environmentScope\"] ) , }","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["workspace.measure_sizes",". has ( [\"workspace.measure_sizes\"] ) , setLocked","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
+    ["workspace.set_locked",". has ( [\"workspace.set_locked\"] ) } ,","73d937bf9ac0801b3ee002b30bd43fd6ad54c4131883821c6c0ae094784a1bad"],
   ],
   "core/bridgeApi/v1/writeMethods.js": [
     ["stream.start",", \"writes.subscribe\" , [\"stream.start\"] , \"term.attach\" ,","33c4ebe0b0f62912e1c6d8df14ccb62831488abd785fa6eaa66337243ef6237a"],
@@ -239,6 +249,15 @@ const metadataUses = {
   ],
 };
 
+// Staged consumers remain real methods. Exclude only an audited occurrence
+// until its bridge wire/HTTP owner lands; mapped methods must retire the entry.
+const stagedConsumerExclusions = {
+  "core/syncLists.js": [{
+    use: ["environment.list", "( reading , [\"environment.list\"] , { }", "f9d9a55a14cdd54d9a9e0a1bdadb86bf1f2449c0fd37514e616f0d647e732182"],
+    reason: "#1034 stages a capability-gated environment.list read for M1.1 wire and M1.4 activation; this bridge does not yet serve an HTTP resource. Remove when its manifest coverage lands.",
+  }],
+};
+
 // Conservatively pin source containing method-shaped producers, recognized
 // RPC calls or audited metadata. This catches changed alias/assignment edges
 // in reviewed files without claiming the
@@ -268,17 +287,17 @@ const sourceFingerprintParts = {
   "core/agentRolesPanel.js": ["c05b7c96", "5849ec7f", "0d258bc2", "96a7795e", "2a4663f4", "57e78316", "de145b90", "699b4a91"],
   "core/agentSurfacesModel.js": ["546cf5aa", "3a478c63", "4a0f02f5", "4eafcae5", "53a5ffd3", "3ad4f563", "c075aa93", "dcbbef9d"],
   "core/bridgeApi/v1/compactionParams.js": ["506db6e2", "f8148bc4", "925e889b", "61c6fe15", "d8cf74e2", "ef7e468f", "b610115f", "7132ce5b"],
-  "core/bridgeApi/v1/index.js": ["a348bca9", "4248bc30", "4fd53ed2", "2de89d0a", "0ab7ab83", "e20075a6", "b90e947f", "e64c1f19"],
+  "core/bridgeApi/v1/index.js": ["2eba1594", "8b57ad55", "3e738a17", "8b0e3a06", "73b25a1a", "35d41784", "2b12400c", "06280519"],
   "core/bridgeApi/v1/writeMethods.js": ["f311847f", "da193503", "678520ec", "e289e013", "fbbcc9f9", "26f2aae9", "32c184fe", "7f27b03d"],
   "core/bridgeEpoch.js": ["e04a0a11", "6535b020", "abcac20c", "972a554f", "8d51fbb9", "6ef07fd8", "16062ed0", "9cd4d213"],
   "core/bridgeUpdatePanel.js": ["f9b19cc7", "4abdfc5a", "d159194d", "49ee91ed", "d39ab2e7", "15a6a80f", "0cb51530", "623ca8e5"],
   "core/bridgeUpdates.js": ["279cb932", "0495aa46", "c347f93b", "10a492d5", "8d29b0a9", "e9309a9a", "91de7993", "e5f40ad3"],
   // #997 runtime-board cacheSync.js:754,783,1978: existing board.list also refreshes only runtime collections; durable scope/tip writers stay gated, no new method.
-  "core/cacheSync.js": ["e05ccac5", "8746f47f", "e98780dc", "03a41d50", "fa3df544", "909abbba", "4fbf7dd7", "76ec7b0a"],
+  "core/cacheSync.js": ["b6bcb9e8", "4426cefb", "d1cfb123", "ff4b180d", "5a937f61", "4274f74a", "5db90bd4", "46bb4681"],
   // #997 runtime-board captureDecisionView.js:142: branch choices join cached runtime run bodies; existing RPC and mutation dispatch unchanged.
   "core/captureDecisionView.js": ["15299f0a", "f1762e74", "8af22269", "0f16e798", "ccf8e367", "d2d759e2", "554ce8fc", "002692f1"],
   // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
-  "core/changeEvents.js": ["934d11bb", "09dc8caf", "bd353109", "2e2a242c", "2af42dea", "e91daf72", "89963624", "1870a496"],
+  "core/changeEvents.js": ["1eedc033", "010c4a58", "e191c6bc", "2a017d67", "8c7e18d7", "d8fc9712", "7f9a9084", "92f1bc12"],
   "core/changesComments.js": ["7a5e0b06", "c47bf122", "ac5370b8", "debd8dc8", "388227b8", "f9ea1623", "d413134a", "635a2a7d"],
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],
@@ -356,7 +375,7 @@ const sourceFingerprintParts = {
   "core/sqlReadCredits.js": ["6c9b5955", "301a1704", "ef9798df", "3853302b", "edb5b267", "872386a6", "e8e0f30f", "8689421c"],
   // #997 syncDiagnostics.js:14: the device label extends diagnostics only; RPC verb inventory is unchanged.
   "core/syncDiagnostics.js": ["699d4595", "41400002", "6be4a4de", "45c68a8d", "f59ab913", "b68f7991", "936cad7b", "48ee7871"],
-  "core/syncLists.js": ["e44aee99", "346eb027", "1e6486f1", "dac9a7ac", "9acdd7b8", "1c4a00f4", "ce196d01", "e22f5292"],
+  "core/syncLists.js": ["3ec5f6bd", "8a60e37e", "19067862", "25306c63", "c4dbbc54", "c219e6a7", "2348f7b5", "faab500b"],
   "core/syncSuccessors.js": ["8f215712", "252114ce", "b5f282bf", "3b818ded", "2bfe5a52", "60ced14f", "965e228e", "9af31a83"],
   // #997 syncTaskPhases.js:25: task pages keep existing reads while session publication yields to the device owner.
   "core/syncTaskPhases.js": ["594c72ca", "cff8fa97", "cce40760", "49a7754d", "5eab461d", "41cd2789", "92bf5cfb", "0d28ab42"],
@@ -596,8 +615,10 @@ const dynamicSites = {
   "core/sessionSwitch.js": [
     "producer \"rtc.\""
   ],
+  // #1034: ask(reading) dispatches only the staged environment.list consumer.
   "core/syncLists.js": [
-    "ask ( context )"
+    "ask ( context )",
+    "ask ( reading )"
   ],
   "core/syncSuccessors.js": [
     "producer \"tasks.\"",
@@ -865,7 +886,7 @@ function consumers(source, file) {
   const { streams } = scan(source);
   // Namespace lists cannot be used here: an indirect producer can introduce
   // a new resource family while leaving context.call(method) unchanged.
-  const methods = new Set(), usedMetadata = [], dynamic = [];
+  const methods = new Set(), methodUses = [], usedMetadata = [], dynamic = [];
   const remaining = new Map();
   for (const use of metadataUses[file] || []) {
     const key = JSON.stringify(use);
@@ -880,7 +901,10 @@ function consumers(source, file) {
         if (remaining.get(key)) {
           remaining.set(key, remaining.get(key) - 1);
           usedMetadata.push(use);
-        } else methods.add(token.value);
+        } else {
+          methods.add(token.value);
+          methodUses.push(use);
+        }
       }
       // Track method-shaped producers even when a later call only names the
       // variable. Prefix fragments also cover the common "family." + verb
@@ -913,7 +937,13 @@ function consumers(source, file) {
       dynamic.push(`${before} ( ${argument.map(({ kind, value }) => kind === "string" ? JSON.stringify(value) : value).join(" ")} )`);
     }
   }
-  return { methods, dynamic: dynamic.sort(), metadataUses: usedMetadata, hasRpcCalls, sourceFingerprint: fingerprint(source) };
+  return { methods, methodUses, dynamic: dynamic.sort(), metadataUses: usedMetadata, hasRpcCalls, sourceFingerprint: fingerprint(source) };
+}
+
+function stagedConsumerCovered(file, method, uses) {
+  const expected = (stagedConsumerExclusions[file] || []).filter(({ use }) => use[0] === method).map(({ use }) => use);
+  const actual = uses.filter(([literal]) => literal === method);
+  return expected.length > 0 && JSON.stringify(actual) === JSON.stringify(expected);
 }
 
 function requiresSourceReview(record, file) {
@@ -929,6 +959,17 @@ async function sources(directory = new URL("spa/src/", root), prefix = "") {
   }
   return files.sort((left, right) => left.file.localeCompare(right.file));
 }
+
+test("a staged consumer exclusion cannot cover copied or changed method occurrences", async () => {
+  const file = "core/syncLists.js";
+  const source = await readFile(new URL(`spa/src/${file}`, root), "utf8");
+  const covered = (changed) => stagedConsumerCovered(file, "environment.list", consumers(changed, file).methodUses);
+  assert.equal(covered(source), true);
+  assert.equal(covered(`${source}\ncontext.rpc("environment.list");`), false);
+  assert.equal(covered(`${source}\nconst method = "environment.list"; context.rpc(method);`), false);
+  assert.equal(covered(source.replace('ask(reading, "environment.list"', 'ask(context, "environment.list"')), false);
+  assert.equal(stagedConsumerCovered("synthetic.js", "environment.list", consumers(source, file).methodUses), false);
+});
 
 test("literal collection finds unknown methods without a registry intersection", () => {
   const found = consumers('context.rpc("new_family.future"); callRpc("agent.start"); context.call("thread.page");', "synthetic.js");
@@ -1051,9 +1092,19 @@ test("every SPA resource reference is mapped or explicitly excluded", async () =
   assert.ok(Array.isArray(manifest.operations), `${fileURLToPath(manifestPath)}: operations must be an array`);
   assert.ok(Array.isArray(manifest.exclusions), "manifest exclusions must be an array");
   const covered = new Set([...manifest.operations, ...manifest.exclusions].map((operation) => operation.method));
+  for (const [file, exclusions] of Object.entries(stagedConsumerExclusions)) {
+    const source = await readFile(new URL(`spa/src/${file}`, root), "utf8");
+    const { methodUses } = consumers(source, file);
+    for (const { use: [method], reason } of exclusions) {
+      assert.ok(reason.trim(), `${file}: ${method} needs a deferral reason`);
+      assert.ok(!covered.has(method), `Remove staged exclusion now that the manifest covers ${method}`);
+      assert.ok(stagedConsumerCovered(file, method, methodUses), `Review changed/missing staged occurrence: ${file}: ${method}`);
+    }
+  }
   const missing = [];
   for (const { file, source } of await sources()) {
-    for (const method of consumers(source, file).methods) if (!covered.has(method)) missing.push(`${file}: ${method}`);
+    const { methods, methodUses } = consumers(source, file);
+    for (const method of methods) if (!covered.has(method) && !stagedConsumerCovered(file, method, methodUses)) missing.push(`${file}: ${method}`);
   }
   assert.deepEqual(missing.sort(), [], "Add resource routes or deliberate documented exclusions for these consumers");
 });

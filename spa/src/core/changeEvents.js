@@ -85,6 +85,7 @@ import { rememberFileUploadSupport } from "./fileUploadSupport.js";
 import { rememberWorkspaceLockSupport } from "./workspaceLockSupport.js";
 import { rememberWorkspaceSizeSupport } from "./workspaceSizeSupport.js";
 import { rememberCompactionSupport } from "./compactionSupport.js";
+import { rememberEnvironmentSupport } from "./environmentSupport.js";
 import { invalidateCompactionCaches } from "./compactionCache.js";
 import { dispatchWriteConfirmation } from "./writeOperationRuntime.js";
 
@@ -121,6 +122,7 @@ const NO_CAPABILITIES = Object.freeze({
   push: Object.freeze({ registerKey: false, revokeKey: false }),
   agents: Object.freeze({ createdBy: false, projectWorkers: false }),
   projects: Object.freeze({ updateSource: false, syncBase: false, syncBasePath: false }),
+  environments: Object.freeze({ list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false }),
   workspaces: Object.freeze({ measureSizes: false, setLocked: false }),
 });
 
@@ -1019,6 +1021,7 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting, isCurren
   state.apiVersion = greetingVersion(greeting);
   state.adapter = adapter || null;
   state.current = isCurrent;
+  void rememberEnvironmentSupport(deviceId, adapter?.capabilities, () => isCurrent() && bridgeFor(deviceId)?.adapter === (adapter || null));
   void rememberCompactionSupport(deviceId, adapter?.capabilities, () => isCurrent() && bridgeFor(deviceId)?.adapter === (adapter || null));
   announceGreeted(state.deviceId);
   if (!state.adapter) return abandonBridge(state);

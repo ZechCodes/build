@@ -289,6 +289,184 @@
           }
         ]
       }
+    },
+    {
+      "params": {
+        "scope": {
+          "kind": "device"
+        },
+        "limit": 100
+      },
+      "result": {
+        "status": "ok",
+        "scope": {
+          "kind": "device"
+        },
+        "incarnation": "sync-incarnation-1",
+        "bridge_epoch": "bridge-epoch-1",
+        "cursor": "signed-device-environment-cursor",
+        "records": [
+          {
+            "kind": "entity",
+            "key": "board",
+            "revision": "45",
+            "row": {
+              "entity_id": "board",
+              "state": {
+                "revision": 2,
+                "projects": [
+                  {
+                    "project_id": "proj-1",
+                    "name": "build",
+                    "path": "/home/ada/code/build",
+                    "base_branch": "main",
+                    "is_git": true,
+                    "remote": "git@github.com:ada/build.git",
+                    "isolation": null,
+                    "isolation_default": "worktree",
+                    "isolation_effective": "worktree",
+                    "isolation_available": {
+                      "rift": false,
+                      "reason": "rift is not installed on this device"
+                    },
+                    "entity_id": "run-5d90b1e7",
+                    "run_id": "run-5d90b1e7",
+                    "conversations": [
+                      {
+                        "conversation_id": "agent-1"
+                      }
+                    ],
+                    "session_started_ms": 1789826400000,
+                    "last_activity_ms": 1789826700000,
+                    "compaction_thresholds": {},
+                    "compaction": {
+                      "inherited": {
+                        "claude": {
+                          "tokens": 200000,
+                          "source": {
+                            "kind": "device"
+                          }
+                        },
+                        "claude_adk": {
+                          "tokens": 200000,
+                          "source": {
+                            "kind": "device"
+                          }
+                        },
+                        "codex": {
+                          "tokens": 200000,
+                          "source": {
+                            "kind": "device"
+                          }
+                        },
+                        "codex_app_server": {
+                          "tokens": 200000,
+                          "source": {
+                            "kind": "device"
+                          }
+                        },
+                        "pi": {
+                          "tokens": 200000,
+                          "source": {
+                            "kind": "device"
+                          }
+                        }
+                      },
+                      "effective": {
+                        "claude": {
+                          "tokens": 200000,
+                          "source": {
+                            "kind": "device"
+                          }
+                        },
+                        "claude_adk": {
+                          "tokens": 200000,
+                          "source": {
+                            "kind": "device"
+                          }
+                        },
+                        "codex": {
+                          "tokens": 200000,
+                          "source": {
+                            "kind": "device"
+                          }
+                        },
+                        "codex_app_server": {
+                          "tokens": 200000,
+                          "source": {
+                            "kind": "device"
+                          }
+                        },
+                        "pi": {
+                          "tokens": 200000,
+                          "source": {
+                            "kind": "device"
+                          }
+                        }
+                      }
+                    },
+                    "environment_id": "env-1",
+                    "environment_name": "build",
+                    "project_key": "/home/ada/code/build",
+                    "diverged": false,
+                    "device": "Ada’s workstation",
+                    "open_tasks": 3,
+                    "total_tasks": 5,
+                    "workspaces": 1,
+                    "sources": [
+                      {
+                        "id": "source-1",
+                        "name": "build",
+                        "mount": "build",
+                        "path": "/home/ada/code/build",
+                        "is_git": true,
+                        "base_branch": "main",
+                        "remote": "git@github.com:ada/build.git",
+                        "sync_base": false,
+                        "sync": null
+                      }
+                    ]
+                  }
+                ],
+                "environments": [
+                  {
+                    "environment_id": "env-1",
+                    "name": "build",
+                    "home_path": "/home/ada/code/build",
+                    "is_git": true,
+                    "base_branch": "main",
+                    "sources": [
+                      {
+                        "id": "source-1",
+                        "name": "build",
+                        "mount": "build",
+                        "path": "/home/ada/code/build",
+                        "is_git": true,
+                        "base_branch": "main",
+                        "remote": "git@github.com:ada/build.git",
+                        "sync_base": false,
+                        "sync": null
+                      }
+                    ],
+                    "isolation": null,
+                    "isolation_effective": "worktree",
+                    "project_ids": [
+                      "proj-1"
+                    ],
+                    "device": "Ada’s workstation"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "watermark": "45",
+        "consistency": "leased",
+        "lease": {
+          "id": "device-environment-lease",
+          "expires_at_ms": 1800000300000
+        }
+      }
     }
   ],
   "task_timeline_paging": {

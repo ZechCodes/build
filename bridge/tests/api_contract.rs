@@ -70,6 +70,131 @@ fn api_version_is_what_versions_json_calls_current() {
 }
 
 #[test]
+fn environments_read_wire_is_additive_and_withheld() {
+    assert_eq!(API_VERSION, "3.36.0");
+    assert!(!capabilities(false).contains(&"environments"));
+    assert!(!capabilities(false).contains(&"environment.list"));
+
+    let environment = read_json(&fixtures_root().join("v1/environment.list.json"));
+    let rows = &environment["result"]["environments"];
+    let row = &rows[0];
+    for field in [
+        "environment_id",
+        "name",
+        "home_path",
+        "is_git",
+        "base_branch",
+        "sources",
+        "isolation",
+        "isolation_effective",
+        "project_ids",
+        "device",
+    ] {
+        assert!(row.get(field).is_some(), "environment row lacks {field}");
+    }
+    assert_eq!(row["project_ids"], serde_json::json!(["proj-1"]));
+    assert!(row["sources"].is_array());
+    assert!(row["device"].is_string());
+    assert_fixture_result_round_trips("environment.list", &environment["result"]);
+
+    let board = read_json(&fixtures_root().join("v1/board.list.json"));
+    assert_eq!(board["result"]["environments"], *rows);
+    assert_fixture_result_round_trips("board.list", &board["result"]);
+
+    let project = read_json(&fixtures_root().join("v1/project.list.json"));
+    let project_row = &project["result"]["projects"][0];
+    for field in [
+        "environment_id",
+        "environment_name",
+        "project_key",
+        "diverged",
+        "device",
+        "open_tasks",
+        "total_tasks",
+        "workspaces",
+        "sources",
+    ] {
+        assert!(
+            project_row.get(field).is_some(),
+            "project row lacks {field}"
+        );
+    }
+    assert_eq!(project_row["environment_id"], row["environment_id"]);
+    assert_eq!(project_row["environment_name"], row["name"]);
+    assert_eq!(project_row["path"], row["home_path"]);
+    assert_eq!(project_row["diverged"], false);
+    assert_fixture_result_round_trips("project.list", &project["result"]);
+
+    assert_workspace_environment_fixture("workspace.list", "/workspaces/0", row);
+    assert_workspace_environment_fixture("workspace.get", "", row);
+}
+
+#[test]
+fn environment_sync_board_fixtures_preserve_environment_rows() {
+    let environment = read_json(&fixtures_root().join("v1/environment.list.json"));
+    let rows = &environment["result"]["environments"];
+    assert_sync_board_environment_fixture("sync.snapshot", "records", rows);
+    assert_sync_board_environment_fixture("sync.changes", "changes", rows);
+}
+
+fn assert_fixture_result_round_trips(method: &str, result: &Value) {
+    let (_, handler) = v1::methods()
+        .iter()
+        .find(|(name, _)| *name == method)
+        .unwrap();
+    assert_eq!(
+        handler.round_trip_result(result).unwrap(),
+        *result,
+        "{method}"
+    );
+}
+
+fn assert_workspace_environment_fixture(method: &str, pointer: &str, environment: &Value) {
+    let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+    assert_eq!(
+        fixture["result"].pointer(pointer).unwrap()["environment_id"],
+        environment["environment_id"],
+        "{method}"
+    );
+    assert_fixture_result_round_trips(method, &fixture["result"]);
+    for example in fixture["examples"].as_array().into_iter().flatten() {
+        assert_eq!(
+            example["result"].pointer(pointer).unwrap()["environment_id"],
+            environment["environment_id"],
+            "{method}: example"
+        );
+        assert_fixture_result_round_trips(method, &example["result"]);
+    }
+}
+
+fn assert_sync_board_environment_fixture(method: &str, list: &str, environments: &Value) {
+    let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+    let example = fixture["examples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|example| {
+            example["result"][list].as_array().is_some_and(|rows| {
+                rows.iter()
+                    .any(|row| row["kind"] == "entity" && row["key"] == "board")
+            })
+        })
+        .expect("device sync fixture includes a board entity");
+    let board = example["result"][list]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["kind"] == "entity" && row["key"] == "board")
+        .unwrap();
+    assert_eq!(
+        board["row"]["state"]["environments"], *environments,
+        "{method}"
+    );
+    assert!(board["row"]["state"]["projects"].is_array(), "{method}");
+    assert_fixture_result_round_trips(method, &example["result"]);
+}
+
+#[test]
 fn scoped_sync_wire_advertises_complete_device_projection() {
     assert_eq!(API_VERSION, "3.36.0");
     let methods: BTreeSet<_> = v1::methods().iter().map(|(name, _)| *name).collect();

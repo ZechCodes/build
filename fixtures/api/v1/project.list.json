@@ -93,7 +93,28 @@
               }
             }
           }
-        }
+        },
+        "environment_id": "env-1",
+        "environment_name": "build",
+        "project_key": "/home/ada/code/build",
+        "diverged": false,
+        "device": "Ada’s workstation",
+        "open_tasks": 3,
+        "total_tasks": 5,
+        "workspaces": 1,
+        "sources": [
+          {
+            "id": "source-1",
+            "name": "build",
+            "mount": "build",
+            "path": "/home/ada/code/build",
+            "is_git": true,
+            "base_branch": "main",
+            "remote": "git@github.com:ada/build.git",
+            "sync_base": false,
+            "sync": null
+          }
+        ]
       }
     ]
   },

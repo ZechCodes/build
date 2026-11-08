@@ -98,7 +98,8 @@
           }
         }
       }
-    }
+    },
+    "environment_id": "env-1"
   },
   "errors": [
     "not_found",
@@ -212,7 +213,8 @@
               }
             }
           }
-        }
+        },
+        "environment_id": "env-1"
       }
     }
   ],
@@ -321,7 +323,8 @@
           }
         }
       },
-      "legacy_review": true
+      "legacy_review": true,
+      "environment_id": "env-1"
     }
   }
 }

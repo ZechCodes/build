@@ -299,7 +299,35 @@
         "harness": "claude_adk",
         "since": "2026-09-20T21:30:47Z",
         "resets_at": "2026-09-20T22:20:00Z",
-        "said": "You've hit your session limit \u00b7 resets 6:20pm (America/New_York)"
+        "said": "You've hit your session limit · resets 6:20pm (America/New_York)"
+      }
+    ],
+    "environments": [
+      {
+        "environment_id": "env-1",
+        "name": "build",
+        "home_path": "/home/ada/code/build",
+        "is_git": true,
+        "base_branch": "main",
+        "sources": [
+          {
+            "id": "source-1",
+            "name": "build",
+            "mount": "build",
+            "path": "/home/ada/code/build",
+            "is_git": true,
+            "base_branch": "main",
+            "remote": "git@github.com:ada/build.git",
+            "sync_base": false,
+            "sync": null
+          }
+        ],
+        "isolation": null,
+        "isolation_effective": "worktree",
+        "project_ids": [
+          "proj-1"
+        ],
+        "device": "Ada’s workstation"
       }
     ]
   },
@@ -366,7 +394,35 @@
         "pending": [],
         "scanning": false,
         "workspace_summaries": [],
-        "usage_limits": []
+        "usage_limits": [],
+        "environments": [
+          {
+            "environment_id": "env-1",
+            "name": "build",
+            "home_path": "/home/ada/code/build",
+            "is_git": true,
+            "base_branch": "main",
+            "sources": [
+              {
+                "id": "source-1",
+                "name": "build",
+                "mount": "build",
+                "path": "/home/ada/code/build",
+                "is_git": true,
+                "base_branch": "main",
+                "remote": "git@github.com:ada/build.git",
+                "sync_base": false,
+                "sync": null
+              }
+            ],
+            "isolation": null,
+            "isolation_effective": "worktree",
+            "project_ids": [
+              "proj-1"
+            ],
+            "device": "Ada’s workstation"
+          }
+        ]
       }
     },
     {
@@ -701,7 +757,35 @@
             "harness": "claude_adk",
             "since": "2026-09-20T21:30:47Z",
             "resets_at": "2026-09-20T22:20:00Z",
-            "said": "You've hit your session limit \u00b7 resets 6:20pm (America/New_York)"
+            "said": "You've hit your session limit · resets 6:20pm (America/New_York)"
+          }
+        ],
+        "environments": [
+          {
+            "environment_id": "env-1",
+            "name": "build",
+            "home_path": "/home/ada/code/build",
+            "is_git": true,
+            "base_branch": "main",
+            "sources": [
+              {
+                "id": "source-1",
+                "name": "build",
+                "mount": "build",
+                "path": "/home/ada/code/build",
+                "is_git": true,
+                "base_branch": "main",
+                "remote": "git@github.com:ada/build.git",
+                "sync_base": false,
+                "sync": null
+              }
+            ],
+            "isolation": null,
+            "isolation_effective": "worktree",
+            "project_ids": [
+              "proj-1"
+            ],
+            "device": "Ada’s workstation"
           }
         ]
       }

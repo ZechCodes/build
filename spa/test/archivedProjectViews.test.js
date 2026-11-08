@@ -61,7 +61,11 @@ beforeEach(async () => {
   runtime.capabilities = { environments: { archive: true }, projects: { syncBase: true, syncBasePath: true }, git: { projectSources: true },
     changes: { subscriptions: true, kinds: ["state", "tasks", "git", "files"] }, tasks: { attachments: true, watching: true } };
   callRpc = vi.fn(async (method, params) => {
-    if (runtime.failure?.method === method) throw Object.assign(new Error(runtime.failure.message), { code: "project_archived" });
+    if (runtime.failure?.method === method) {
+      const failure = runtime.failure;
+      await failure.wait;
+      throw Object.assign(new Error(failure.message), { code: "project_archived" });
+    }
     if (method === "project.restore") {
       // The feed may observe restore before the archive notice's own reader.
       runtime.feed = { ...runtime.feed, projects: [{ ...project, archived_at: null }] };
@@ -132,13 +136,18 @@ it("archived task and review views disable mutations", async () => {
   expect(document.querySelector("[data-review-view=files]").disabled).toBe(false);
 });
 it("project_archived refusal is shown verbatim", async () => {
-  // A bridge can archive after this view's cached row was last observed.
+  await mountProject(); // Direct archived links paint before any bridge read.
   await cacheProject({ ...project, archived_at: null });
-  await mountProject();
+  await vi.waitFor(() => expect(document.querySelector("[data-project-sync-base]").disabled).toBe(false));
+  // A write started after restore can race another client's archive.
   const message = "Old <line> is archived; restore it first";
-  runtime.failure = { method: "project.sync_source", message };
+  let release;
+  runtime.failure = { method: "project.sync_source", message, wait: new Promise(resolve => { release = resolve; }) };
   document.querySelector("[data-project-sync-base]").click();
+  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.sync_source", expect.objectContaining({ project_id: projectId, source_id: source.id })));
+  await cacheProject(project);
+  await vi.waitFor(() => expect(document.querySelector("[data-project-archived]")).not.toBeNull());
+  release();
   await vi.waitFor(() => expect(document.querySelector("[data-project-sync-error]").textContent).toBe(message));
-  expect(callRpc).toHaveBeenCalledWith("project.sync_source", expect.objectContaining({ project_id: projectId, source_id: source.id }));
   expect(document.querySelector("line")).toBeNull();
 });

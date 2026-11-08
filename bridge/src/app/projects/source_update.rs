@@ -228,6 +228,7 @@ impl AppState {
         address: SourceAddress,
         updated: SourceUpdated,
     ) -> Result<Value, String> {
+        self.validate_settled_source_update(&address, &updated)?;
         let checkouts_updated = updated.checkouts_updated;
         let checkouts_failed: Vec<Value> = updated
             .checkouts_failed
@@ -261,6 +262,23 @@ impl AppState {
         row["checkouts_failed"] = checkouts_failed.into();
         self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
         Ok(row)
+    }
+
+    /// The directory can gain another reference while the filesystem work
+    /// runs. Only the current registry, under settlement's app lock, decides
+    /// whether this edit can publish its resulting location.
+    fn validate_settled_source_update(
+        &self,
+        address: &SourceAddress,
+        updated: &SourceUpdated,
+    ) -> Result<(), String> {
+        let candidate = canonical_source_path(&updated.path)?;
+        if candidate != updated.path {
+            return Err("source directory changed while its edit was being prepared".into());
+        }
+        self.validate_secret_source(&candidate)?;
+        self.refuse_source_duplicate(&address.project_id, &candidate, &address.source_id)?;
+        self.refuse_source_containment(&candidate, Some((&address.project_id, &address.source_id)))
     }
 }
 

@@ -7,7 +7,7 @@ const operation = (fields = {}) => ({ operationId: "attempt-1", request: { metho
 const workspace = { id: "ws-1", project_id: "p1", name: "Release", directories: [] };
 const project = { id: "p1", name: "Payments" };
 const completed = () => operation({ state: "succeeded", confirmation: { result: { project, workspace } } });
-const failed = () => operation({ state: "failed", confirmation: { error: { message: "checkout refused", details: { project } } } });
+const failed = () => operation({ state: "failed", effect: "partial", confirmation: { error: { message: "checkout refused", details: { project } } } });
 function serviceFor(initial) {
   let row = initial; const listeners = new Set();
   return { readOperations: () => row ? [row] : [], get: vi.fn(async () => row),
@@ -78,7 +78,7 @@ describe("workspace creation progress", () => {
     expect(document.body.textContent).toContain("Needs cleanup"); expect(document.querySelector('[data-progress-action="retry"]')).toBeNull();
   });
   it("marks a refused fixed-project workspace step failed without inventing a project", () => {
-    const model = createWorkspaceProgressModel(operation({ request: { method: "workspace.create", params: { project_id: "p1" } }, state: "failed", confirmation: { error: "checkout refused" } }));
+    const model = createWorkspaceProgressModel(operation({ request: { method: "workspace.create", params: { project_id: "p1" } }, state: "failed", effect: "unapplied", confirmation: { error: "checkout refused" } }));
     expect(model.steps).toEqual([expect.objectContaining({ step: "workspace", state: "failed" })]);
     expect(model.project).toBeNull();
   });
@@ -128,6 +128,29 @@ describe("workspace creation progress", () => {
     expect(summary.querySelector(".dim.inbox-device").textContent).toBe("Laptop");
     expect(summary.textContent).toContain("Offline");
     expect(document.body.textContent).toContain("Uses Payments's task board · 7 open tasks");
+  });
+  it("shows terminal Done steps after the last running progress update", () => {
+    const model = createWorkspaceProgressModel(operation({ state: "succeeded", confirmation: { result: { project, workspace } }, progress: [{ step: "project", state: "done" }, { step: "workspace", state: "running", detail: "Copying source" }] }));
+    expect(model.phase).toBe("done"); expect(model.steps.map(step => step.state)).toEqual(["done", "done"]);
+  });
+  it("offers recovery for a terminal partial failure despite generic unresolved bookkeeping", () => {
+    const row = failed(); row.unresolved = true; row.effect = "partial";
+    const model = createWorkspaceProgressModel(row);
+    expect(model.phase).toBe("failed"); expect(model.actions.map(([action]) => action)).toContain("retry");
+  });
+  it("keeps a terminal failure with unknown effect Checking without recovery actions", () => {
+    const row = failed(); row.effect = "unknown"; row.unresolved = true;
+    const model = createWorkspaceProgressModel(row);
+    expect(model.phase).toBe("checking"); expect(model.actions).toEqual([]);
+  });
+  it("keeps a failure with no reliable effect evidence Checking", () => {
+    const row = failed(); delete row.effect;
+    expect(createWorkspaceProgressModel(row).phase).toBe("checking");
+  });
+  it("notifies Keep it separately from Close so the completed choice can clear its draft", async () => {
+    const onKeepProject = vi.fn(); open(failed(), { onKeepProject });
+    document.querySelector('[data-progress-action="keep"]').click(); await flush();
+    expect(onKeepProject).toHaveBeenCalledWith(expect.objectContaining({ operationId: "attempt-1", project }));
   });
   it("does not auto-open when focus has moved elsewhere", async () => {
     vi.useFakeTimers(); const onOpenWorkspace = vi.fn(); open(completed(), { onOpenWorkspace, autoOpenDelay: 900 });

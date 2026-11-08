@@ -27,9 +27,15 @@ function progressSteps(record, phase, project) {
   const names = record?.request?.method === "workspace.create" ? ["workspace"] : ["project", "workspace"];
   return names.map(step => {
     const current = held.find(item => item.step === step);
-    const state = current?.state || inferredStepState(step, phase, project, names[0]);
+    const state = stepState(current, step, phase, project, names[0]);
     return { step, label: STEP_LABELS[step], state, detail: current?.detail || "" };
   });
+}
+
+function stepState(current, step, phase, project, firstStep) {
+  if (phase === "done") return "done";
+  if (phase === "failed") return inferredStepState(step, phase, project, firstStep);
+  return current?.state || inferredStepState(step, phase, project, firstStep);
 }
 
 function inferredStepState(step, phase, project, firstStep) {
@@ -41,10 +47,15 @@ function inferredStepState(step, phase, project, firstStep) {
 }
 
 function outcomePhase(record) {
+  if (record?.state === "failed") return knownFailure(record) ? "failed" : "checking";
+  if (record?.state === "succeeded") return "done";
   if (!record || record.unresolved || UNKNOWN_STATES.has(record.state)) return "checking";
-  if (record.state === "failed") return "failed";
-  if (record.state === "succeeded") return "done";
   return "creating";
+}
+
+function knownFailure(record) {
+  const effect = record.effect || record.confirmation?.effect;
+  return ["partial", "unapplied"].includes(effect);
 }
 
 function failureText(record, workspace) {
@@ -190,10 +201,10 @@ export function openCreateWorkspaceProgress(options) {
   }
   async function act(action) {
     if (acting || detached) return;
-    if (["close", "keep"].includes(action)) return close();
+    if (action === "close") return close();
     acting = true;
     actionError = "";
-    const handlers = { open: options.onOpenWorkspace, retry: options.onRetryWorkspace, discard: options.onDiscardProject, back: options.onBack };
+    const handlers = { open: options.onOpenWorkspace, retry: options.onRetryWorkspace, discard: options.onDiscardProject, keep: options.onKeepProject, back: options.onBack };
     const payload = { operationId, record, project: model.project, workspace: model.workspace };
     paint();
     try {

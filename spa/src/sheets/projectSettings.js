@@ -128,7 +128,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   let environmentSupport = null;
   let environments = [];
   let supportReady = false;
-  // Sources whose Sync now was pressed, by the last attempt their row showed
+  // Sources whose Sync now was accepted, by the last attempt their row showed
   // then: "Syncing…" until the row says a newer one.
   const syncing = new Map();
   const notices = {};
@@ -225,7 +225,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
       callRpc: sourceRpc, record, deviceId, editing, refresh,
       saveDraft,
       onSaved: (sourceId, notice) => { notices[sourceId] = notice; },
-      onSyncAsked: (source) => { syncing.set(source.id, source.sync?.last_attempt_ms ?? null); },
+      onSyncAccepted: (source) => { syncing.set(source.id, source.sync?.last_attempt_ms ?? null); },
       onFrameChange: () => { frame = sheet.firstElementChild; view = "browser"; },
       onReturn: () => { view = "settings"; void record.read(); },
     });
@@ -267,7 +267,7 @@ function pullProjectSettings(projectId, { callRpc, deviceId, record }) {
  *
  *  Every write answers the project row itself, so the sheet repaints from what
  *  the bridge said rather than from what it hoped. */
-function mountSources(project, { callRpc, record, deviceId, editing, refresh, saveDraft, onSaved, onSyncAsked, onFrameChange, onReturn }) {
+function mountSources(project, { callRpc, record, deviceId, editing, refresh, saveDraft, onSaved, onSyncAccepted, onFrameChange, onReturn }) {
   const write = async (send, button, error, onDone) => {
     if (error) error.textContent = "";
     button.disabled = true;
@@ -285,7 +285,7 @@ function mountSources(project, { callRpc, record, deviceId, editing, refresh, sa
       return null;
     }
   };
-  mountSourceCards($("#sheet"), project, { editing, callRpc, deviceId, write, saveDraft, onSaved, onSyncAsked });
+  mountSourceCards($("#sheet"), project, { editing, callRpc, deviceId, write, saveDraft, onSaved, onSyncAccepted });
   const refreshButton = $("#psrefreshsources");
   if (refreshButton) refreshButton.onclick = () => void refreshSources(refreshButton, $("#pssrcerr"), refresh);
   $("#psaddremote").onclick = () => openAddRemote(project, { write, callRpc, saveDraft, deviceId });

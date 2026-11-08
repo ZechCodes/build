@@ -14,14 +14,17 @@ import { sourceEditSupportAddress } from "../src/core/sourceEditSupport.js";
 import { environmentSupportAddress, rememberEnvironmentSupport } from "../src/core/environmentSupport.js";
 import { environmentsAddress } from "../src/core/environmentCache.js";
 
-const sourceAuthority = vi.hoisted(() => ({ epoch: "legacy-epoch" }));
+const sourceAuthority = vi.hoisted(() => ({ epoch: "legacy-epoch", greetingError: null }));
 vi.mock("../src/core/deviceContexts.js", async importOriginal => ({
   ...await importOriginal(),
   captureDeviceGreeting: () => {
     const epoch = sourceAuthority.epoch;
     return epoch ? { epoch, current: () => sourceAuthority.epoch === epoch } : null;
   },
-  whenGreeted: async (_context, dispatch) => ({ sent: dispatch() }),
+  whenGreeted: async (_context, dispatch) => {
+    if (sourceAuthority.greetingError) throw new Error(sourceAuthority.greetingError);
+    return { sent: dispatch() };
+  },
 }));
 
 const openWizard = vi.fn();
@@ -58,6 +61,7 @@ beforeEach(async () => {
   await wipeCache();
   await wipeUiRecords();
   sourceAuthority.epoch = "legacy-epoch";
+  sourceAuthority.greetingError = null;
   // Legacy fixtures positively identify a device that predates environments.
   for (const deviceId of ["", "dev-1"]) await writeCached(environmentSupportAddress(deviceId), {
     list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false, bridge_epoch: "legacy-epoch",
@@ -1051,6 +1055,50 @@ describe("keeping a source's base branch up to date", () => {
       { ...SYNCING, sources: [{ ...SYNCING.sources[0], sync: landed }, ...SYNCING.sources.slice(1)] },
     ]);
     await vi.waitFor(() => expect(statusOf("source-1")).toBe("Skipped just now (1 ahead, 2 behind): main has 1 commit origin does not."));
+  });
+
+  it.each([
+    ["sync now", "support", "stale cache"], ["sync now", "project", "stale cache"],
+    ["sync now", "support", "greeting rejected"], ["sync now", "project", "greeting rejected"],
+    ["sync toggle", "support", "stale cache"], ["sync toggle", "project", "stale cache"],
+    ["sync toggle", "support", "greeting rejected"], ["sync toggle", "project", "greeting rejected"],
+  ])("retries %s after %s repaint following %s without a stuck pending marker", async (action, repaint, refusal) => {
+    await syncsBase();
+    await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), SYNCING);
+    const turnedOff = { ...SYNCING, sources: [{ ...SYNCING.sources[0], sync_base: false }, ...SYNCING.sources.slice(1)] };
+    const callRpc = vi.fn(method => {
+      if (method === "project.sync_source") return Promise.resolve({ pending: true });
+      if (method === "project.update_source") return Promise.resolve(turnedOff);
+      return new Promise(() => {});
+    });
+    openProjectSettings(PROJECT.project_id, { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(toggle("source-1")).toBeTruthy());
+    if (refusal === "stale cache") sourceAuthority.epoch = "upgraded-epoch";
+    else sourceAuthority.greetingError = "Greeting refused before dispatch";
+    const attempt = () => {
+      if (action === "sync now") card("source-1").querySelector("[data-sync-now]").click();
+      else { toggle("source-1").checked = false; toggle("source-1").dispatchEvent(new Event("change")); }
+    };
+    attempt();
+    await vi.waitFor(() => expect(card("source-1").querySelector("[data-source-error]").textContent).toMatch(/read-only|Greeting refused/));
+    const method = action === "sync now" ? "project.sync_source" : "project.update_source";
+    expect(callRpc.mock.calls.filter(([called]) => called === method)).toHaveLength(0);
+    const before = card("source-1");
+    if (repaint === "support") await syncsBase();
+    else await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), { ...SYNCING, name: "Repainted project" });
+    await vi.waitFor(() => expect(card("source-1")).not.toBe(before));
+    expect(statusOf("source-1")).not.toBe("Syncing…");
+    expect(card("source-1").querySelector("[data-sync-now]").disabled).toBe(false);
+    expect(toggle("source-1").disabled).toBe(false);
+    sourceAuthority.greetingError = null;
+    const current = (await readCached(environmentSupportAddress("dev-1"))).value;
+    const beforeRecovery = card("source-1");
+    await writeCached(environmentSupportAddress("dev-1"), { ...current, bridge_epoch: sourceAuthority.epoch });
+    await vi.waitFor(() => expect(card("source-1")).not.toBe(beforeRecovery));
+    attempt();
+    await vi.waitFor(() => expect(callRpc.mock.calls.filter(([called]) => called === method)).toHaveLength(1));
+    if (action === "sync now") await vi.waitFor(() => expect(statusOf("source-1")).toBe("Syncing…"));
+    else await vi.waitFor(() => expect(toggle("source-1").checked).toBe(false));
   });
 
   it("escapes what a sync's reason carries", async () => {

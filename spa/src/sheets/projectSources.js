@@ -205,11 +205,11 @@ async function cachedWorkspaces(deviceId) {
  * onDone)` puts in the cache; the sheet repaints from there once `onDone`
  * has settled.
  */
-export function mountSourceCards(sheet, project, { editing, callRpc, deviceId, write, saveDraft, onSaved, onSyncAsked }) {
+export function mountSourceCards(sheet, project, { editing, callRpc, deviceId, write, saveDraft, onSaved, onSyncAccepted }) {
   sheet.querySelectorAll(".ps-source").forEach((card) => {
     const source = sourceOf(project, card);
     if (!source) return;
-    mountSyncControls(card, source, { callRpc, projectId: project.project_id, write, onSyncAsked });
+    mountSyncControls(card, source, { callRpc, projectId: project.project_id, write, onSyncAccepted });
     card.querySelectorAll("input[data-field]:not([readonly])").forEach((input) => {
       input.oninput = () => { markDirty(card, source); saveDraft(true); };
     });

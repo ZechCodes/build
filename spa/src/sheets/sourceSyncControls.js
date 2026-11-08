@@ -26,7 +26,7 @@ export function syncControlsHtml(source, index, { syncsBase, syncing = new Map()
 
 /** Wire one card's controls: the setting saves the moment it is changed, and
  *  Sync now asks the bridge to sync the source at once. */
-export function mountSyncControls(card, source, { callRpc, projectId, write, onSyncAsked }) {
+export function mountSyncControls(card, source, { callRpc, projectId, write, onSyncAccepted }) {
   const toggle = card.querySelector("[data-sync-base]");
   if (!toggle) return;
   const error = card.querySelector("[data-source-error]");
@@ -37,8 +37,10 @@ export function mountSyncControls(card, source, { callRpc, projectId, write, onS
     error,
   );
   const syncNow = card.querySelector("[data-sync-now]");
-  syncNow.onclick = () => {
-    onSyncAsked(source);
-    void write(() => callRpc("project.sync_source", ids), syncNow, error);
-  };
+  // Only an accepted write creates the pending marker. A greeting or ownership
+  // refusal must leave the source idle and retryable through later repaints.
+  syncNow.onclick = () => void write(
+    () => callRpc("project.sync_source", ids), syncNow, error,
+    () => onSyncAccepted(source),
+  );
 }

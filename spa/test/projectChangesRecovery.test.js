@@ -6,11 +6,15 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const mountWorkspaceChanges = vi.fn((host, options) => ({
   workspaceMoved: vi.fn(), selectDirectory: vi.fn((id) => options.onSelectDirectory(id)), setVisible() {}, dispose() {},
 }));
+const greetingFailure = vi.hoisted(() => ({ message: null }));
 vi.mock("../src/views/workspaceChanges.js", () => ({ mountWorkspaceChanges: (...args) => mountWorkspaceChanges(...args) }));
 vi.mock("../src/core/deviceContexts.js", async importOriginal => ({
   ...await importOriginal(),
   captureDeviceGreeting: () => ({ epoch: "changes-epoch", current: () => true }),
-  whenGreeted: async (_context, dispatch) => ({ sent: dispatch() }),
+  whenGreeted: async (_context, dispatch) => {
+    if (greetingFailure.message) throw new Error(greetingFailure.message);
+    return { sent: dispatch() };
+  },
 }));
 vi.mock("../src/core/changeEvents.js", async importOriginal => ({
   ...await importOriginal(), bridgeCapabilities: () => ({ projects: { syncBase: true }, git: { projectSources: true } }),
@@ -42,6 +46,7 @@ const mount = (initial = project, route = {}) => {
 beforeEach(async () => {
   mountWorkspaceChanges.mockClear();
   changesRpc.mockClear();
+  greetingFailure.message = null;
   await wipeCache();
   await wipeUiRecords();
   await rememberProjectChangesSupport("d", { git: { projectSources: true } });
@@ -70,6 +75,32 @@ it.each(["inherited", "unknown", "added", "legacy"])("protects the Sync base aff
     await vi.waitFor(() => expect(host.querySelector("[data-project-sync-error]").textContent).toMatch(/read-only|ownership/i));
     expect(changesRpc).not.toHaveBeenCalled();
   }
+});
+
+it.each(["stale cache", "greeting rejected"])("clears Project Changes pending state after %s and dispatches one retry", async refusal => {
+  await rememberProjectChangesSupport("d", { git: { projectSources: true }, projects: { syncBase: true } });
+  const support = { list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false,
+    bridge_epoch: refusal === "stale cache" ? "old-epoch" : "changes-epoch" };
+  await writeCached(environmentSupportAddress("d"), support);
+  if (refusal === "greeting rejected") greetingFailure.message = "Greeting refused before dispatch";
+  mount();
+  const sync = host.querySelector("[data-project-sync-base]");
+  await vi.waitFor(() => expect(sync.hidden).toBe(false));
+  sync.click();
+  await vi.waitFor(() => expect(host.querySelector("[data-project-sync-error]").textContent).toMatch(/read-only|Greeting refused/));
+  expect(sync.disabled).toBe(false);
+  expect(changesRpc).not.toHaveBeenCalled();
+  handle.update({ ...project, name: "Repaint after refusal" });
+  expect(sync.disabled).toBe(false);
+  greetingFailure.message = null;
+  const pane = mountWorkspaceChanges.mock.results[0].value;
+  const paints = pane.workspaceMoved.mock.calls.length;
+  await writeCached(environmentSupportAddress("d"), { ...support, bridge_epoch: "changes-epoch" });
+  await vi.waitFor(() => expect(pane.workspaceMoved.mock.calls.length).toBeGreaterThan(paints));
+  expect(sync.disabled).toBe(false);
+  sync.click();
+  await vi.waitFor(() => expect(changesRpc).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() => expect(sync.disabled).toBe(false));
 });
 
 it("preserves a commit-only deep link until the default source resolves", async () => {

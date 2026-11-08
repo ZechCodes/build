@@ -440,9 +440,10 @@ const sourceFingerprintParts = {
   "sheets/newRepo.js": ["e1addf8b", "abc706f6", "ca74fa24", "7e1f3208", "aae3d460", "37157135", "21e46d2f", "f187cdfa"],
   // #1065: positive ownership evidence gates both card rendering and editing.save.
   // Source replies use the shared identity-preserving writer; project-scoped methods/selectors and project.list refresh are unchanged.
-  "sheets/projectSettings.js": ["d5d0cb84", "1b0b3b15", "d31c1bb5", "aff29488", "3b29a627", "fedb7f9a", "da5ec33b", "495dff24"],
-  "sheets/projectSources.js": ["05674c0b", "bea3f19a", "b65299bf", "78b69c85", "08bc83ff", "08977c31", "ff3e5482", "94d5a090"],
-  "sheets/sourceSyncControls.js": ["a0c9eb24", "846213e3", "1cc5b961", "8058d449", "6a46f577", "2b154112", "724dc4e5", "6041f096"],
+  "sheets/projectSettings.js": ["c1dceec2", "d9839a3e", "176dc30c", "8ebb5dbe", "ef8332fd", "54751335", "b7c43080", "125c9c62"],
+  "sheets/projectSources.js": ["9783a364", "64265f3f", "4122f2f8", "8e9a7687", "4a0ecfd6", "2bf1594c", "5dcd4419", "d38369c3"],
+  // #1065: Sync now records pending only in the accepted-write callback; RPC method and selectors are unchanged.
+  "sheets/sourceSyncControls.js": ["1b542986", "c856f7a3", "959cfe82", "0756b7c2", "405e93a2", "55230dc3", "e1a2d894", "a36b48d6"],
   // #997 workspaceSettings.js:292: the existing project.list catalog loader delegates to owned device recovery.
   "sheets/workspaceSettings.js": ["5cc470f0", "7f95fc28", "02c7bfb0", "478c4510", "e33b5183", "1e6be057", "6928f74b", "82185347"],
   "terminal/manager.js": ["4027a8b0", "af931af9", "3d71d687", "c930e06b", "bd55b938", "ad0db4da", "e20dc150", "60ed795b"],

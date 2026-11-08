@@ -29,12 +29,16 @@ async function readDeviceTargets(device) {
   ]);
   return { projects:projects.map(row=>stampProject(row,device.id)),
     environments:environments.map(row=>({...row,id:row.environment_id || row.id,deviceId:device.id})),
-    workspaces:workspaces.map(row=>stampWorkspace(row,device.id)), environmentsSupported:support.createProject,attempts:attempts.filter(pendingCreation) };
+    workspaces:workspaces.map(row=>stampWorkspace(row,device.id)), environmentsSupported:support.createProject,attempts:attempts.filter(recoverableCreation) };
 }
-function pendingCreation(row) {
-  if(!isCreationWrite(row.request?.method) || row.dismissed || !row.draft?.target) return false;
-  if(['queued','accepted','executing','outcome_unknown'].includes(row.state)) return true;
-  return row.state === 'failed' && row.effect === 'unknown';
+// A result is still recoverable until the user explicitly consumes it. Closing
+// the screen is not consumption: the operation may have finished off-screen.
+function recoverableCreation(row) {
+  return isCreationWrite(row.request?.method) && !row.dismissed && Boolean(row.draft?.target);
+}
+export async function consumeCreateWorkspaceAttempt(deviceId,operationId) {
+  const service=deviceWriteOperations(deviceId);
+  if(await service?.get(operationId))await service.dismiss(operationId);
 }
 export async function readCreateWorkspaceTargets() {
   const devices = App.devices || [];

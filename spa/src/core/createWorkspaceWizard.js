@@ -9,7 +9,7 @@ import { readUiRecord, deleteUiDraftsIfUnwritten } from './localUiStore.js';
 import { createWorkspaceWizardModel } from './createWorkspaceWizardModel.js';
 import { openCreateWorkspaceProgress } from './createWorkspaceProgress.js';
 import { readCreateWorkspaceTargets, followCreateWorkspaceTargets, submitCreateWorkspace,
-  createLegacyWorkspace, cacheCreatedResources, createdWorkspaceRoute, discardCreatedProject } from './createWorkspaceTargets.js';
+  createLegacyWorkspace, cacheCreatedResources, createdWorkspaceRoute, discardCreatedProject, consumeCreateWorkspaceAttempt } from './createWorkspaceTargets.js';
 export { createWorkspaceWizardModel } from './createWorkspaceWizardModel.js';
 const glyph = kind => `<span class="create-kind" aria-hidden="true">${kind === 'project' ? '◇' : '▣'}</span>`;
 const deviceHtml = target => `${target.deviceLabel ? `<span class="dim inbox-device">${esc(target.deviceLabel)}</span>` : ''}${target.offline ? '<span class="dim inbox-away">Offline</span>' : ''}`;
@@ -104,7 +104,7 @@ export function openCreateWorkspaceWizard(options = {}) {
     if(detached || state.operationId)return;
     const attempts=(snapshot.attempts || []).filter(row=>!fixedProject ||
       row.draft.target.id===options.projectId && row.draft.target.deviceId===options.deviceId);
-    const attempt=[...attempts].sort((left,right)=>right.createdAt-left.createdAt)[0];
+    const attempt=[...attempts].sort((left,right)=>(right.localOrder ?? right.createdAt ?? 0)-(left.localOrder ?? left.createdAt ?? 0))[0];
     if(!attempt)return;
     Object.assign(state,attempt.draft,{operationId:attempt.operationId,page:3});updateModel();paint();
     await draft.write(draftOf(state));
@@ -213,6 +213,7 @@ export function openCreateWorkspaceWizard(options = {}) {
   }
   async function returnToWizard(error='',continues=state.operationId) {
     await updateUiState(address,held=>({...held,operationId:null,continues}));
+    if(continues)await consumeCreateWorkspaceAttempt(state.target.deviceId,continues);
     const next=openCreateWorkspaceWizard({...options,error});await next.ready;
   }
   function landedProjectTarget(project) {
@@ -227,6 +228,7 @@ export function openCreateWorkspaceWizard(options = {}) {
     await attempt.ready;
     state.operationId=attempt.operationId;
     await updateUiState(address,()=>draftOf(state));
+    await consumeCreateWorkspaceAttempt(state.target.deviceId,operationId);
     const screen=openProgress(attempt.operationId);
     void attempt.completion.catch(async error=>{
       if(await attempt.get())return;
@@ -235,13 +237,13 @@ export function openCreateWorkspaceWizard(options = {}) {
   }
   function openProgress(operationId) {
     return openCreateWorkspaceProgress({operationId,deviceId:state.target.deviceId,target:state.target,targetSummary:targetText(state.target),
-      onKeepProject:()=>deleteDraft(address),onClose:()=>{if(!document.activeElement?.closest('[role="dialog"]'))opener?.focus();},
+      onKeepProject:async()=>{await consumeCreateWorkspaceAttempt(state.target.deviceId,operationId);await deleteDraft(address);},onClose:()=>{if(!document.activeElement?.closest('[role="dialog"]'))opener?.focus();},
       onBack:()=>returnToWizard(),onRetryWorkspace:retryWorkspace,
-      onDiscardProject:async payload=>{await discardCreatedProject({...payload,target:state.target});await deleteDraft(address);},
+      onDiscardProject:async payload=>{await discardCreatedProject({...payload,target:state.target});await consumeCreateWorkspaceAttempt(state.target.deviceId,operationId);await deleteDraft(address);},
       onOpenWorkspace:async({record,workspace})=>{
         const result=record.confirmation?.result || workspace;
         const route=createdWorkspaceRoute(state.target.deviceId,result);
-        await cacheCreatedResources(state.target.deviceId,result);await deleteDraft(address);(options.navigate || go)(route);
+        await cacheCreatedResources(state.target.deviceId,result);await consumeCreateWorkspaceAttempt(state.target.deviceId,operationId);await deleteDraft(address);(options.navigate || go)(route);
       }});
   }
   async function showProgress(operationId) {await detach();return openProgress(operationId);}

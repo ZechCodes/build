@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-const mocks = vi.hoisted(() => ({ read: vi.fn(), submit: vi.fn(), legacy: vi.fn(), progress: vi.fn(), navigate: vi.fn() }));
+const mocks = vi.hoisted(() => ({ read: vi.fn(), submit: vi.fn(), legacy: vi.fn(), progress: vi.fn(), navigate: vi.fn(), consume:vi.fn(), cache:vi.fn(), route:vi.fn() }));
 vi.mock("../src/app.js", () => ({ go: mocks.navigate }));
 vi.mock("../src/core/createWorkspaceTargets.js", () => ({
   readCreateWorkspaceTargets: mocks.read, followCreateWorkspaceTargets: () => () => {},
   submitCreateWorkspace: mocks.submit, createLegacyWorkspace: mocks.legacy,
   taskCountText: (open, total) => open > 0 ? `${open} open tasks` : `${total || 0} tasks`,
-  cacheCreatedWorkspace: vi.fn(), discardCreatedProject: vi.fn(),
+  cacheCreatedWorkspace: vi.fn(), cacheCreatedResources:mocks.cache, createdWorkspaceRoute:mocks.route, discardCreatedProject: vi.fn(), consumeCreateWorkspaceAttempt:mocks.consume,
 }));
 vi.mock("../src/core/createWorkspaceProgress.js", () => ({ openCreateWorkspaceProgress: mocks.progress }));
 vi.mock("../src/core/motion.js", () => ({
@@ -130,6 +130,18 @@ describe('workspace wizard pages',()=>{
     await open({projectId:'p1',deviceId:'d1'});expect(dialog().textContent).toContain('Still creating ‹Recovered›');
     dialog().querySelector('[data-create-resume]').click();await vi.waitFor(()=>expect(mocks.progress).toHaveBeenCalledWith(expect.objectContaining({operationId:'saved-attempt'})));
     expect(mocks.submit).not.toHaveBeenCalled();
+  });
+
+  it.each(['succeeded','failed'])('recovers cache-only terminal %s results and consumes them only on an explicit action',async state=>{
+    const record={operationId:'finished',createdAt:200,state,effect:state==='failed'?'partial':undefined,request:{method:'environment.create_project'},draft:{target:{id:'e1',deviceId:'d1',kind:'environment',name:'Platform',key:'d1/e1'},name:'Finished'}};
+    mocks.read.mockResolvedValue({...snapshot(),attempts:[record]});
+    await open({fixedProject:false});expect(dialog().querySelector('[data-create-go]').disabled).toBe(true);
+    expect(mocks.consume).not.toHaveBeenCalled();dialog().querySelector('[data-create-resume]').click();
+    await vi.waitFor(()=>expect(mocks.progress).toHaveBeenCalledTimes(1));expect(mocks.submit).not.toHaveBeenCalled();
+    const progress=mocks.progress.mock.calls[0][0];expect(progress.operationId).toBe('finished');
+    if(state==='failed')await progress.onKeepProject({operationId:'finished',record});
+    else await progress.onOpenWorkspace({operationId:'finished',record:{...record,confirmation:{result:{workspace:{id:'w1',project_id:'p1'}}}},workspace:{id:'w1',project_id:'p1'}});
+    expect(mocks.consume).toHaveBeenCalledWith('d1','finished');
   });
 
 });

@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, it, vi } from 'vitest';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
-const mocked=vi.hoisted(()=>({service:{submit:vi.fn(),get:vi.fn(),list:vi.fn(),subscribe:vi.fn(()=>()=>{})},call:vi.fn()}));
+const mocked=vi.hoisted(()=>({service:{submit:vi.fn(),get:vi.fn(),list:vi.fn(),dismiss:vi.fn(),subscribe:vi.fn(()=>()=>{})},call:vi.fn()}));
 vi.mock('../src/core/writeOperationRuntime.js',()=>({deviceWriteOperations:()=>mocked.service}));
 vi.mock('../src/core/inboxDevices.js',()=>({deviceCall:()=>mocked.call}));
-const {submitCreateWorkspace,createLegacyWorkspace,cacheCreatedWorkspace,readCreateWorkspaceTargets}=await import('../src/core/createWorkspaceTargets.js');
+const {submitCreateWorkspace,createLegacyWorkspace,cacheCreatedWorkspace,readCreateWorkspaceTargets,consumeCreateWorkspaceAttempt}=await import('../src/core/createWorkspaceTargets.js');
 const {readCached,writeCached,wipeCache}=await import('../src/core/localCache.js');
 const {App}=await import('../src/appState.js');
 beforeEach(async()=>{globalThis.indexedDB ||= new IDBFactory();globalThis.IDBKeyRange=IDBKeyRange;await wipeCache();vi.clearAllMocks();App.devices=[{id:'d1',name:'Laptop'}];mocked.service.list.mockResolvedValue([]);mocked.service.submit.mockResolvedValue({});});
@@ -46,5 +46,12 @@ it('waits for persisted intent before publishing its progress identity',async()=
 it('recovers active creation attempts from the durable cache for a fresh wizard',async()=>{
  const pending={operationId:'active',state:'accepted',request:{method:'workspace.create',params:{project_id:'p1'}},draft:{target:{id:'p1',kind:'project',deviceId:'d1'},name:'Retained'}};
  mocked.service.list.mockResolvedValue([pending,{...pending,operationId:'old',state:'succeeded'}]);
- expect((await readCreateWorkspaceTargets()).attempts).toEqual([pending]);
+ expect((await readCreateWorkspaceTargets()).attempts).toEqual([pending,{...pending,operationId:'old',state:'succeeded'}]);
+});
+
+it.each(['succeeded','failed'])('retains unconsumed terminal %s attempts until explicit dismissal',async state=>{
+ const attempt={operationId:'finished',state,effect:'partial',request:{method:'environment.create_project'},draft:{target:{id:'e',kind:'environment',deviceId:'d1'},name:'Work'}};
+ mocked.service.list.mockResolvedValue([attempt,{...attempt,operationId:'consumed',dismissed:true}]);
+ expect((await readCreateWorkspaceTargets()).attempts).toEqual([attempt]);
+ mocked.service.get.mockResolvedValue(attempt);await consumeCreateWorkspaceAttempt('d1','finished');expect(mocked.service.dismiss).toHaveBeenCalledWith('finished');
 });

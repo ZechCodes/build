@@ -11,7 +11,7 @@ import { stampProject, stampWorkspace } from './feedMerge.js';
 import { upsertSessionRow } from './sessionListCache.js';
 import { workspaceRoute } from './projectModel.js';
 import { isCreationWrite } from './writeOperationProgress.js';
-import { readEnvironmentSupport } from './environmentSupport.js';
+import { readEnvironmentSupport, environmentWizardSupported } from './environmentSupport.js';
 import { readCachedEnvironments } from './environmentCache.js';
 import { taskCountText } from './taskCountText.js';
 
@@ -25,7 +25,7 @@ async function readDeviceTargets(device) {
   ]);
   return { projects:projects.map(row=>stampProject(row,device.id)),
     environments:environments.map(row=>({...row,id:row.environment_id || row.id,deviceId:device.id})),
-    workspaces:workspaces.map(row=>stampWorkspace(row,device.id)), environmentsSupported:support.createProject,features:support,attempts:attempts.filter(recoverableCreation) };
+    workspaces:workspaces.map(row=>stampWorkspace(row,device.id)), environmentsSupported:environmentWizardSupported(support),features:support,attempts:attempts.filter(recoverableCreation) };
 }
 // A result is still recoverable until the user explicitly consumes it. Closing
 // the screen is not consumption: the operation may have finished off-screen.

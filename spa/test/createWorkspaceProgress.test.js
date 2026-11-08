@@ -203,3 +203,10 @@ it("lists both landed resources when the workspace fails after environment and p
  expect(model.steps.map(step=>step.state)).toEqual(["done","done","failed"]);
  expect(model.message).toContain("Environment Sources was created");expect(model.message).toContain("Project Payments was created");
 });
+
+it.each(['project','environment','new-environment'])('uses the shared identity SVG in progress for %s',async kind=>{
+ const {kindGlyphHtml}=await import('../src/core/environmentIdentity.js');
+ open(operation(),{target:{kind,name:'Target'}});
+ const template=document.createElement('template');template.innerHTML=kindGlyphHtml(kind==='project'?'project':'environment');
+ expect(document.querySelector('.create-target-summary .identity-kind')?.outerHTML).toBe(template.content.firstChild.outerHTML);
+});

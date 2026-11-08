@@ -6,7 +6,7 @@ import { App } from "../app.js";
 import { onDevicesChanged, readCachedDevices } from "../devices.js";
 import { deviceCall } from "../core/inboxDevices.js";
 import { bridgeCapabilities } from "../core/changeEvents.js";
-import { environmentSupportAddress } from "../core/environmentSupport.js";
+import { environmentSupportAddress, environmentWizardSupported } from "../core/environmentSupport.js";
 import { admitEnvironmentListWrite, environmentsAddress, writeCachedEnvironments } from "../core/environmentCache.js";
 import { watchSettingsRecord } from "../core/settingsRecords.js";
 import { watchEnvironmentSettingsProjects } from "../core/environmentSettingsProjects.js";
@@ -90,7 +90,7 @@ function environmentShortcuts(environment,members,listing,support) {
   return `<div class="row create-row">${creationButton('project',`New project in ${name}…`,id)}${advanced}${resume}</div>`;
 }
 function deviceCreationHtml(support) {
-  return support?.create ? creationButton('new','New environment…') : '<button class="btn" type="button" data-legacy-add-project>Add project…</button>';
+  return environmentWizardSupported(support) && support.create ? creationButton('new','New environment…') : '<button class="btn" type="button" data-legacy-add-project>Add project…</button>';
 }
 function legacyProjectsHtml(listing, device, error) {
   return `<div class="panel"><h3>Projects (this device needs an update to use environments)</h3>

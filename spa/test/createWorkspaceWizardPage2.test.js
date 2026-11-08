@@ -70,14 +70,37 @@ it('hides Advanced in fixed-project mode',async()=>{
  const held=snapshot();held.projects=[{id:'p1',deviceId:'d1',name:'Board',sources:[{path:'/existing'}]}];mocks.read.mockResolvedValue(held);
  await open({projectId:'p1',deviceId:'d1'});expect(query('[data-create-advanced]')).toBeNull();expect(document.body.textContent).toContain('/existing');
 });
-it('returns an added-folder refusal to expanded Advanced, retaining the environment draft',async()=>{
- mocks.submit.mockImplementation(()=>{throw new Error('source overlaps https://github.com/org/extra.git');});
- await open({newEnvironment:true,deviceId:'d1'});click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');click('[data-create-next]');input('#create-work-input','Ship');
- click('[data-create-advanced] summary');click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/extra.git');click('[data-create-go]');
- await vi.waitFor(()=>expect(query('[data-create-advanced]')?.open).toBe(true));expect(query('#create-work-input').value).toBe('Ship');expect(document.body.textContent).toContain('source overlaps');
-});
 it('includes New environment in picker arrow navigation',async()=>{
  const held=snapshot();held.environments=[{id:'e1',deviceId:'d1',name:'Sources',sources:[]}];mocks.read.mockResolvedValue(held);
  await open();query('[data-create-target]').focus();document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));
  expect(document.activeElement).toBe(query('[data-create-new-environment]'));
+});
+
+it.each([{create:true,createProject:false},{create:false,createProject:true}])('opens a usable wizard from partial cached support %j',async features=>{
+ const held=snapshot();held.features.d1=features;held.support.d1=features.createProject;held.environments=[{id:'e1',deviceId:'d1',name:'Sources',sources:[]}];mocks.read.mockResolvedValue(held);
+ await open({deviceId:'d1',...(features.create?{newEnvironment:true}:{environmentId:'e1',fixedProject:false})});
+ expect(query('h3').textContent).toBe(features.create?'New environment':'New workspace in Sources');
+});
+it.each([
+ 'managed source destination overlaps a project or workspace location',
+ 'source overlaps a registered project source: /canonical/actual/extra'
+])('routes structured added-source refusals without matching literal input: %s',async message=>{
+ mocks.submit.mockImplementation(()=>{throw Object.assign(new Error(message),{details:{creation:{step:'sources',source_scope:'project'}}});});
+ await open({newEnvironment:true,deviceId:'d1'});click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');click('[data-create-next]');input('#create-work-input','Ship');
+ mocks.call.mockResolvedValueOnce({path:'/links',parent:'/',entries:[{path:'/links/extra',name:'extra',is_git:true}]});
+ click('[data-create-advanced] summary');click('[data-folder-add="path"]');await vi.waitFor(()=>expect(query('.use')).not.toBeNull());click('.use');click('[data-create-go]');
+ await vi.waitFor(()=>expect(document.body.textContent).toContain(message));expect(query('[data-create-advanced]')?.open).toBe(true);expect(document.body.textContent).toContain('/links/extra');
+ expect(query('#create-work-input').value).toBe('Ship');expect(document.body.textContent).toContain(message);
+});
+it('retains structured source ownership when returning from a terminal refusal',async()=>{
+ await open({newEnvironment:true,deviceId:'d1'});click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');click('[data-create-next]');input('#create-work-input','Ship');
+ click('[data-create-advanced] summary');click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/extra.git');click('[data-create-go]');
+ await vi.waitFor(()=>expect(mocks.progress).toHaveBeenCalled());
+ await mocks.progress.mock.calls[0][0].onBack({record:{confirmation:{error:{message:'could not clone repository: authentication failed',details:{creation:{step:'sources',source_scope:'project'}}}}}});
+ expect(query('[data-create-advanced]')?.open).toBe(true);expect(query('[data-folder-value]').value).toContain('extra.git');
+});
+it('routes an environment-source refusal to page 2 even when its message mentions a workspace',async()=>{
+ mocks.submit.mockImplementation(()=>{throw Object.assign(new Error('managed source destination overlaps a project or workspace location'),{details:{creation:{step:'sources',source_scope:'environment'}}});});
+ await open({newEnvironment:true,deviceId:'d1'});click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');click('[data-create-next]');input('#create-work-input','Ship');click('[data-create-go]');
+ await vi.waitFor(()=>expect(query('h3').textContent).toBe('New environment'));expect(query('[data-folder-value]').value).toContain('api.git');
 });

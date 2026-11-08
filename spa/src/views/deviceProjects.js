@@ -11,7 +11,7 @@ import { pullDeviceProjection } from "../core/scopedDeviceReads.js";
 import { deviceScopedSyncOwns } from "../core/scopedSyncRuntime.js";
 import { esc } from "../core/text.js";
 import { isolationLabel } from "../core/isolation.js";
-import { environmentSupportAddress, readEnvironmentSupport } from "../core/environmentSupport.js";
+import { environmentSupportAddress, readEnvironmentSupport, environmentWizardSupported } from "../core/environmentSupport.js";
 import { openCreateWorkspaceWizard } from "../core/createWorkspaceWizard.js";
 import { openNewRepo } from "../sheets/newRepo.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
@@ -101,7 +101,7 @@ export async function mountDeviceProjects(host, { callRpc, deviceId, deviceName,
   let createEnvironment = false;
   const add = panel.querySelector("#newrepo");
   const supportRecord = watchSettingsRecord(environmentSupportAddress(deviceId), support => {
-    createEnvironment = support?.create === true;
+    createEnvironment = environmentWizardSupported(support) && support.create === true;
     add.textContent = createEnvironment ? "New environment…" : "Add project…";
   }, {owner:panel});
   await supportRecord.whenPainted();

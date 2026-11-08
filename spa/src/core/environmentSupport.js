@@ -17,3 +17,7 @@ export async function readEnvironmentSupport(deviceId) {
   const held = deviceId ? (await readCached(environmentSupportAddress(deviceId)))?.value : null;
   return supportOf(held);
 }
+
+// Either creation feature needs the workspace wizard. New-environment controls
+// still require create; M1 project/workspace creation remains usable on its own.
+export const environmentWizardSupported = support => support?.createProject === true || support?.create === true;

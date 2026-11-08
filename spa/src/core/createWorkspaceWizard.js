@@ -1,7 +1,9 @@
 import { folderDraftsHtml, folderDraftError, wireFolderDrafts } from './createWorkspaceFolders.js';
 import { environmentDraftHtml, initialEnvironmentDraft, draftEnvironmentTarget, environmentDraftError, wireEnvironmentDraft, refusalDraftPage } from './createWorkspaceEnvironmentDraft.js';
+import { kindGlyphHtml } from './environmentIdentity.js';
+import { environmentWizardSupported } from './environmentSupport.js';
 import { go } from '../app.js';
-import { esc } from './text.js';
+import { esc, messageOf } from './text.js';
 import { fieldTraits } from './fieldTraits.js';
 import { isolationOptionsHtml } from './isolation.js';
 import { modalDialogHtml, openModal } from './modal.js';
@@ -14,7 +16,7 @@ import { openCreateWorkspaceLegacy } from './createWorkspaceLegacy.js';
 import { readCreateWorkspaceTargets, followCreateWorkspaceTargets, submitCreateWorkspace,
   createLegacyWorkspace, cacheCreatedResources, createdWorkspaceRoute, discardCreatedProject, discardCreatedEnvironment, consumeCreateWorkspaceAttempt } from './createWorkspaceTargets.js';
 export { createWorkspaceWizardModel } from './createWorkspaceWizardModel.js';
-const glyph = kind => `<span class="create-kind" aria-hidden="true">${kind === 'project' ? '◇' : '▣'}</span>`;
+const glyph = kind => `<span class="create-kind" aria-hidden="true">${kindGlyphHtml(kind === 'project' ? 'project' : 'environment')}</span>`;
 const deviceHtml = target => `${target.deviceLabel ? `<span class="dim inbox-device">${esc(target.deviceLabel)}</span>` : ''}${target.offline ? '<span class="dim inbox-away">Offline</span>' : ''}`;
 const targetLabel = target => target.summaryLabel || target.label || target.name || target.id;
 export function createWorkspaceTargetSummaryHtml(target) {
@@ -98,8 +100,14 @@ function validName(input,target,name) {
   if(input.checkValidity()) return true;
   input.reportValidity();return false;
 }
+function deviceSupportsWizard(snapshot,deviceId) {
+  const features=snapshot.features?.[deviceId];
+  return features ? environmentWizardSupported(features):snapshot.support?.[deviceId] === true;
+}
 function supportsWorkspaceWizard(snapshot,options) {
-  return options.deviceId ? snapshot.support?.[options.deviceId] === true : Object.values(snapshot.support || {}).some(Boolean);
+  if(options.deviceId)return deviceSupportsWizard(snapshot,options.deviceId);
+  const ids=new Set([...Object.keys(snapshot.support || {}),...Object.keys(snapshot.features || {})]);
+  return [...ids].some(id=>deviceSupportsWizard(snapshot,id));
 }
 function retainedCreationAttempt(snapshot,options) {
   const fixedProject=options.fixedProject ?? Boolean(options.projectId);
@@ -233,7 +241,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     state.addedSources.forEach(source=>{if(source.kind==='path')source.path='';});
   }
   function selectTarget(target) {
-    if(!snapshot.support?.[target.deviceId]){void handoffLegacy(target);return;}
+    if(!deviceSupportsWizard(snapshot,target.deviceId)){void handoffLegacy(target);return;}
     changeAddedDevice(target.deviceId);state.target=target;state.page=3;state.error='';updateAdvanced();save();paint();focusPage();
   }
   async function handoffLegacy(target) {
@@ -296,9 +304,9 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     submitting=true;state.busy=true;state.error='';paint();
     try {
       await draft.write(draftOf(state));
-      if(!snapshot.support?.[state.target.deviceId]) await submitLegacy();
+      if(!deviceSupportsWizard(snapshot,state.target.deviceId)) await submitLegacy();
       else await submitDurable();
-    }catch(error){if(!detached){state.busy=false;state.error=error.message || String(error);refusalPage();save();paint();}}
+    }catch(error){if(!detached){state.busy=false;state.error=messageOf(error);refusalPage(error);save();paint();}}
     finally{submitting=false;}
   }
   async function submitLegacy() {
@@ -314,18 +322,18 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     const screen=await showProgress(attempt.operationId);
     void attempt.completion.catch(async error=>{
       if(await attempt.get())return;
-      await screen.close();await returnToWizard(error.message || String(error));
+      await screen.close();await returnToWizard(error);
     });
   }
-  function refusalPage() {
-    state.page=refusalDraftPage(state.target,state.error,state.addedSources);
+  function refusalPage(error) {
+    state.page=refusalDraftPage(state.target,error);
     state.advancedExpanded=state.page===3;
   }
   async function returnToWizard(error='',continues=state.operationId) {
-    state.error=error;refusalPage();
+    state.error=messageOf(error);refusalPage(error);
     await updateUiState(address,held=>({...held,...draftOf(state),operationId:null,continues}));
     if(continues)await consumeCreateWorkspaceAttempt(state.target.deviceId,continues);
-    const next=openCreateWorkspaceWizard({...options,error});await next.ready;
+    const next=openCreateWorkspaceWizard({...options,error:state.error});await next.ready;
   }
   function landedProjectTarget(project) {
     const deviceId=state.target.deviceId;
@@ -338,15 +346,16 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     await submitContinuation(operationId);
   }
   async function submitContinuation(operationId) {
-    const attempt=submitCreateWorkspace({...draftOf(state),continues:operationId,draft:draftOf(state)});
+    const nextDraft={...draftOf(state),operationId:null,continues:operationId};
+    const attempt=submitCreateWorkspace({...nextDraft,operationId:crypto.randomUUID(),draft:nextDraft});
     await attempt.ready;
-    state.operationId=attempt.operationId;
+    state.operationId=attempt.operationId;state.continues=operationId;
     await updateUiState(address,()=>draftOf(state));
     await consumeCreateWorkspaceAttempt(state.target.deviceId,operationId);
     const screen=openProgress(attempt.operationId);
     void attempt.completion.catch(async error=>{
       if(await attempt.get())return;
-      await screen.close();await returnToWizard(error.message || String(error),operationId);
+      await screen.close();await returnToWizard(error,operationId);
     });
   }
   async function resumeEnvironment({environment,operationId}) {
@@ -358,7 +367,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
   function openProgress(operationId) {
     return openCreateWorkspaceProgress({operationId,deviceId:state.target.deviceId,target:state.target,targetSummary:targetText(state.target),
       onKeepProject:async()=>{await consumeCreateWorkspaceAttempt(state.target.deviceId,operationId);await deleteDraft(address);},onClose:()=>{if(!document.activeElement?.closest('[role="dialog"]'))opener?.focus();},
-      onBack:payload=>returnToWizard(payload?.record?.confirmation?.error?.message || ''),onRetryWorkspace:retryWorkspace,
+      onBack:payload=>returnToWizard(payload?.record?.confirmation?.error || payload?.record?.error || ''),onRetryWorkspace:retryWorkspace,
       onResumeEnvironment:resumeEnvironment,
       onKeepEnvironment:async()=>{await consumeCreateWorkspaceAttempt(state.target.deviceId,operationId);await deleteDraft(address);},
       onDiscardEnvironment:async payload=>{await discardCreatedEnvironment({...payload,target:state.target});await consumeCreateWorkspaceAttempt(state.target.deviceId,operationId);await deleteDraft(address);},

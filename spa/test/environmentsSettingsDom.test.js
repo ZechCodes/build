@@ -346,3 +346,15 @@ it("keeps M1 environments read-only until environments.create is cached",async()
  await mount();const host=document.querySelector('[data-environments-device="laptop"]');
  expect(host.querySelector('[data-environment-create]')).toBeNull();expect(host.querySelector('[data-legacy-add-project]')).not.toBeNull();
 });
+
+it.each([{create:true,createProject:false},{create:false,createProject:true}])('keeps a usable settings path for partial support %j',async support=>{
+ await seed('laptop');await seed('desktop',[],[]);
+ await writeCached(address('laptop','environment-support'),{list:true,...support});await mount();
+ const host=document.querySelector('[data-environments-device="laptop"]');
+ expect(Boolean(host.querySelector('[data-environment-create="new"]'))).toBe(support.create);
+ expect(Boolean(host.querySelector('[data-legacy-add-project]'))).toBe(!support.create);
+ const {openCreateWorkspaceWizard}=await import('../src/core/createWorkspaceWizard.js');
+ const {openNewRepo}=await import('../src/sheets/newRepo.js');
+ if(support.create){host.querySelector('[data-environment-create="new"]').click();expect(openCreateWorkspaceWizard).toHaveBeenCalledWith(expect.objectContaining({newEnvironment:true,deviceId:'laptop'}));}
+ else {host.querySelector('[data-legacy-add-project]').click();expect(openNewRepo).toHaveBeenCalledWith(expect.any(Function),expect.objectContaining({deviceId:'laptop'}));}
+});

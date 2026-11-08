@@ -46,10 +46,10 @@ export function wireEnvironmentDraft(host, state, {save,paint,fail}) {
   };
 }
 
-export function refusalDraftPage(target, error, addedSources = []) {
+export function refusalDraftPage(target, error) {
   if (target?.kind !== 'new-environment') return 3;
-  const message = error?.message || String(error);
-  const added = addedSources.some(source => [source.path,source.remote].some(value => value && message.includes(value)));
-  if (added || /project name|workspace|line of work/i.test(message)) return 3;
-  return 2;
+  const creation = error?.details?.creation || {};
+  const sourcePages = new Map([['project',3],['environment',2]]);
+  const stepPages = new Map([['project',3],['workspace',3],['environment',2]]);
+  return sourcePages.get(creation.source_scope) || stepPages.get(creation.step) || 2;
 }

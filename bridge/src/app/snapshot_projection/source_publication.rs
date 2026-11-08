@@ -71,7 +71,7 @@ pub(super) fn publish_source_observation(
             Some(selected.1.clone())
         })
         .collect::<Vec<_>>();
-    let available = [Some(&incoming).filter(|_| availability_matches), previous]
+    let available = [availability_matches.then_some(&incoming), previous]
         .into_iter()
         .flatten()
         .filter(|observation| observation.value["path"] == home.display().to_string())

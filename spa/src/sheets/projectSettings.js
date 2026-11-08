@@ -139,6 +139,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     if (debounced) draftRecord?.schedule(snapshot);
     else void draftRecord?.write(snapshot);
   };
+  const refresh = () => pullProjectSettings(projectId, { callRpc, deviceId, record });
   const current = () => sheet.isConnected && sheet.firstElementChild === frame && $("#scrim").classList.contains("show");
   // Asked again when the machine greets while THIS opening is on screen.
   const repoAsk = refreshGithubRepos(deviceId, callRpc, { wanted: current });
@@ -219,7 +220,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     painted = project;
     mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), deviceId, fromProjectRecord: true });
     mountSources(project, {
-      callRpc, record, deviceId, editing,
+      callRpc, record, deviceId, editing, refresh,
       saveDraft,
       onSaved: (sourceId, notice) => { notices[sourceId] = notice; },
       onSyncAsked: (source) => { syncing.set(source.id, source.sync?.last_attempt_ms ?? null); },
@@ -244,23 +245,27 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     displayedDraft = { edits: saved.edits ?? {}, source: saved.source };
   }, { debounceMs: 180 });
   void readSupport();
-  void pullDeviceProjection(deviceId, record, async () => {
-    const listed = await callRpc("project.list");
-    const project = (listed.projects || []).find((candidate) => candidate.project_id === projectId);
-    if (!project) throw new Error("This project is no longer registered on this device.");
-    return project;
-  }).catch((error) => {
+  void refresh().catch((error) => {
     // The refusal is the sentence: the sheet's title already says what it is.
     if (!$("#psproject")) paintMissing(error.message);
   });
   return { whenCachePainted: record.whenPainted };
 }
 
+function pullProjectSettings(projectId, { callRpc, deviceId, record }) {
+  return pullDeviceProjection(deviceId, record, async () => {
+    const listed = await callRpc("project.list");
+    const project = (listed.projects || []).find(candidate => candidate.project_id === projectId);
+    if (!project) throw new Error("This project is no longer registered on this device.");
+    return project;
+  });
+}
+
 /** The source controls: the cards, and the two ways a source is added.
  *
  *  Every write answers the project row itself, so the sheet repaints from what
  *  the bridge said rather than from what it hoped. */
-function mountSources(project, { callRpc, record, deviceId, editing, saveDraft, onSaved, onSyncAsked, onFrameChange, onReturn }) {
+function mountSources(project, { callRpc, record, deviceId, editing, refresh, saveDraft, onSaved, onSyncAsked, onFrameChange, onReturn }) {
   const write = async (send, button, error, onDone) => {
     if (error) error.textContent = "";
     button.disabled = true;
@@ -279,8 +284,22 @@ function mountSources(project, { callRpc, record, deviceId, editing, saveDraft, 
     }
   };
   mountSourceCards($("#sheet"), project, { editing, callRpc, deviceId, write, saveDraft, onSaved, onSyncAsked });
+  const refreshButton = $("#psrefreshsources");
+  if (refreshButton) refreshButton.onclick = () => void refreshSources(refreshButton, $("#pssrcerr"), refresh);
   $("#psaddremote").onclick = () => openAddRemote(project, { write, callRpc, saveDraft, deviceId });
   $("#psaddfolder").onclick = () => void browseForSource(project, { callRpc, deviceId, onFrameChange, onReturn });
+}
+
+async function refreshSources(button, error, refresh) {
+  error.textContent = "";
+  button.disabled = true;
+  try {
+    await refresh();
+  } catch (thrown) {
+    error.textContent = thrown.message;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 // Source replies omit environment identity. Read the current row inside the

@@ -560,6 +560,7 @@ describe("project settings added sources", () => {
         delete initial.environment_id;
         delete initial.environment_name;
       }
+      await writeCached(deviceProjectsAddress("dev-1"), [initial]);
       let answerMutation;
       const pending = new Promise(resolve => { answerMutation = resolve; });
       const callRpc = vi.fn(method => {
@@ -596,6 +597,55 @@ describe("project settings added sources", () => {
       await vi.waitFor(async () => expect((await readCached(address))?.value.name).toBe("After pull"));
       expect((await readCached(address)).value).toMatchObject(identity);
       expect((await readCached(deviceProjectsAddress("dev-1"))).value[0]).toMatchObject(identity);
+    });
+  });
+
+  describe("unknown source ownership", () => {
+    it.each(["pre-upgrade", "partial"])("paints %s cached rows explicitly read-only until a pull supplies ownership", async (kind) => {
+      await support();
+      await writeCached(sourceEditSupportAddress("dev-1"), { editsSources: true, syncsBase: true });
+      const old = { ...PROJECT };
+      const partial = { ...ENV_PROJECT, added_sources: null };
+      let answerList;
+      const callRpc = vi.fn(() => new Promise(resolve => { answerList = resolve; }));
+      await open(kind === "pre-upgrade" ? old : partial, callRpc);
+      expect(document.querySelector('[data-source-ownership="unknown"]')?.textContent).toContain("Folder ownership is unavailable");
+      expect(group("environment")).toBeNull();
+      expect(group("added")).toBeNull();
+      expect(group("unknown").querySelectorAll(".ps-source")).toHaveLength(2);
+      expect(group("unknown").querySelector("button, [data-sync-base]")).toBeNull();
+      expect([...group("unknown").querySelectorAll("input")].every(field => field.readOnly)).toBe(true);
+      expect(document.querySelector("#psrefreshsources")).toBeTruthy();
+      await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.list"));
+      answerList({ projects: [ENV_PROJECT] });
+      await vi.waitFor(() => expect(input(ADDED.id, "name")?.readOnly).toBe(false));
+      expect(document.querySelector('[data-source-ownership="unknown"]')).toBeNull();
+      expect(group("environment").querySelector("button, [data-sync-base]")).toBeNull();
+      expect((await readCached(projectSettingsAddress("dev-1", PROJECT.project_id))).value).toMatchObject({
+        environment_id: ENV_PROJECT.environment_id, added_sources: [ADDED],
+      });
+    });
+
+    it("allows another refresh when the first pull still omits ownership", async () => {
+      await support();
+      const partial = { ...ENV_PROJECT, name: "Partial pull" };
+      delete partial.added_sources;
+      let answerRefresh;
+      let reads = 0;
+      const callRpc = vi.fn(method => {
+        if (method !== "project.list") return new Promise(() => {});
+        reads += 1;
+        return reads === 1 ? Promise.resolve({ projects: [partial] }) : new Promise(resolve => { answerRefresh = resolve; });
+      });
+      await open({ ...partial, name: "Cached partial" }, callRpc);
+      await vi.waitFor(() => expect(document.querySelector("#psproject")?.value).toBe("Partial pull"));
+      expect(document.querySelector('[data-source-ownership="unknown"]')).toBeTruthy();
+      document.querySelector("#psrefreshsources").click();
+      await vi.waitFor(() => expect(reads).toBe(2));
+      expect(group("unknown").querySelector("button, [data-sync-base]")).toBeNull();
+      answerRefresh({ projects: [ENV_PROJECT] });
+      await vi.waitFor(() => expect(input(ADDED.id, "name")?.readOnly).toBe(false));
+      expect(group("unknown")).toBeNull();
     });
   });
 

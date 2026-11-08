@@ -51,6 +51,13 @@ export const sourceEditing = (editsSources, addedSources = false) => (editsSourc
 
 const READ_ONLY = { editable: () => false };
 
+function sourceOwnershipState(project, addedSources) {
+  if (addedSources) return Array.isArray(project.added_sources) ? "known" : "unknown";
+  // Environment identity outlives cached capability records. Only a legacy
+  // project can safely fall back to writers that may edit shared sources.
+  return project.environment_id || project.environment_name ? "unknown" : "legacy";
+}
+
 const shownFields = (source) => FIELDS.filter((field) => source.is_git !== false || !GIT_FIELDS.has(field));
 
 function fieldHtml(source, index, field, editing) {
@@ -84,34 +91,38 @@ function cardHtml(source, index, { editing, removable, notice, sync }) {
 
 /** The section: a card per source, then the two ways one is added. */
 export function sourcesSectionHtml(project, { editing, editsSources, addedSources = false, environmentName, notices = {}, sync = {} }) {
-  const older = editsSources || addedSources
-    ? ""
-    : '<p class="dim">Update Build on this device to edit a folder\'s label, path and base branch here.</p>';
+  const ownership = sourceOwnershipState(project, addedSources);
   return `<section class="ps-section" aria-labelledby="ps-sources-h"><h4 id="ps-sources-h">Sources</h4>
     <p class="sub">New workspaces are cut from these folders. A workspace that already exists keeps its own directories.</p>
-    ${older}
-    ${sourceGroupsHtml(project, { editing, addedSources, environmentName, notices, sync })}
+    ${sourceHelpHtml(ownership, editsSources)}
+    ${sourceGroupsHtml(project, { editing, ownership, environmentName, notices, sync })}
     <div class="row"><button class="btn" id="psaddfolder" type="button">Add folder…</button>
       <button class="btn" id="psaddremote" type="button">Add Git remote…</button></div>
     <div id="psaddsource"></div>
     <div class="adderr" id="pssrcerr" role="alert"></div></section>`;
 }
 
-function sourceGroupsHtml(project, { editing, addedSources, environmentName, notices, sync }) {
+function sourceHelpHtml(ownership, editsSources) {
+  if (ownership === "unknown") return `<p class="dim" data-source-ownership="unknown" role="status">Folder ownership is unavailable. Folders are read-only until this project's source information refreshes.</p>
+    <button class="btn" id="psrefreshsources" type="button">Refresh folders</button>`;
+  return ownership === "legacy" && !editsSources
+    ? '<p class="dim">Update Build on this device to edit a folder\'s label, path and base branch here.</p>' : "";
+}
+
+function sourceGroupsHtml(project, { editing, ownership, environmentName, notices, sync }) {
   const sources = project.sources || [];
-  const addedIds = new Set((project.added_sources || []).map(source => source.id));
-  // An environment-bearing row can outlive its capability record. It must
-  // never fall back to the legacy writer, which can edit shared sources.
-  const environmentProject = addedSources || Boolean(project.environment_id || project.environment_name);
+  const addedIds = new Set((Array.isArray(project.added_sources) ? project.added_sources : []).map(source => source.id));
   const cards = sources.map((source, index) => {
-    const inherited = environmentProject && (!addedSources || !addedIds.has(source.id));
+    const inherited = ownership === "known" && !addedIds.has(source.id);
+    const readOnly = ownership === "unknown" || inherited;
     return { inherited, html: cardHtml(source, index, {
-      editing: inherited ? READ_ONLY : editing,
-      removable: !inherited && sources.length > 1,
-      notice: notices[source.id], sync: inherited ? {} : sync,
+      editing: readOnly ? READ_ONLY : editing,
+      removable: !readOnly && sources.length > 1,
+      notice: notices[source.id], sync: readOnly ? {} : sync,
     }) };
   });
-  if (!addedSources) return cards.map(card => card.html).join("");
+  if (ownership === "legacy") return cards.map(card => card.html).join("");
+  if (ownership === "unknown") return `<div data-source-group="unknown">${cards.map(card => card.html).join("")}</div>`;
   const inherited = cards.filter(card => card.inherited).map(card => card.html).join("");
   const added = cards.filter(card => !card.inherited).map(card => card.html).join("");
   return `<div data-source-group="environment"><h5>From ${esc(environmentName || project.environment_name || project.environment_id || "environment")}</h5>${inherited}</div>

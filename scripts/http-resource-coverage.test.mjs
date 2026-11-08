@@ -435,10 +435,10 @@ const sourceFingerprintParts = {
   "push.js": ["c7a3eb27", "240e0a4d", "3e314aee", "369bea39", "25bf83e0", "f105e41a", "0e4ed716", "4e53028b"],
   "sheets/browser.js": ["e226c6fb", "9689c6bc", "39ba311b", "335481c7", "f444e696", "36c5c8b6", "013588ec", "bd2a4dbe"],
   "sheets/newRepo.js": ["e1addf8b", "abc706f6", "ca74fa24", "7e1f3208", "aae3d460", "37157135", "21e46d2f", "f187cdfa"],
-  // #1065: cached ownership gates cards; source replies preserve metadata.
-  // Existing project-scoped RPC methods/selectors and editing.save expansion are unchanged.
-  "sheets/projectSettings.js": ["ec2cf08d", "e5731c35", "c414e5cd", "e7efb450", "175b4225", "ee040158", "15eb27d2", "81cd7bfc"],
-  "sheets/projectSources.js": ["d09ca691", "e1a5244f", "c8327655", "c93bb2fa", "eda14681", "31179c2d", "a7756e7f", "0a9e7c44"],
+  // #1065: unknown ownership stays read-only; refresh retains the existing project.list read.
+  // Source replies merge atomically; project-scoped methods/selectors and editing.save expansion are unchanged.
+  "sheets/projectSettings.js": ["30f60223", "1208de33", "406a6fec", "6480a1b6", "28d1d87f", "183892e0", "252cf8db", "3d287e5a"],
+  "sheets/projectSources.js": ["66399d04", "d3d079af", "889fd29b", "b20735b2", "cef68334", "9cf6e077", "dbf6bb36", "4a5611e5"],
   "sheets/sourceSyncControls.js": ["a0c9eb24", "846213e3", "1cc5b961", "8058d449", "6a46f577", "2b154112", "724dc4e5", "6041f096"],
   // #997 workspaceSettings.js:292: the existing project.list catalog loader delegates to owned device recovery.
   "sheets/workspaceSettings.js": ["5cc470f0", "7f95fc28", "02c7bfb0", "478c4510", "e33b5183", "1e6be057", "6928f74b", "82185347"],

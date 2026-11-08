@@ -1,6 +1,7 @@
 import { navigationPickerModel } from "./navigationModel.js";
 import { environmentKeyOf, environmentNavigationSupported, projectEnvironmentIdentity } from "./environmentIdentity.js";
 import { deviceKey } from "./deviceKey.js";
+import { lastVisitedDestinations } from "./navigationVisitModel.js";
 
 export const navigationTime = (value) => {
   if (Number.isFinite(value)) return value;
@@ -68,5 +69,7 @@ export function switcherModel(catalog, options = {}) {
   const now = options.nowMs ?? Date.now();
   const recent = projects.filter((row) => row.at > 0 && now - row.at <= 24 * 3600_000).sort(byRecency).slice(0, 5);
   return { ...picker, groups: environmentGroups(picker, catalog, options),
-    lastVisited: String(options.query || "").trim() ? [] : recent, environmentGrouped: true };
+    lastVisited: String(options.query || "").trim() ? [] : recent,
+    legacyLastVisited: lastVisitedDestinations(catalog, options, row => !environmentNavigationSupported(options, row.deviceId)),
+    environmentGrouped: true };
 }

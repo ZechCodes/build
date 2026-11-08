@@ -84,10 +84,10 @@ impl Fixture {
     }
 
     fn timer_takes_it(&mut self, now_ms: i64) -> bool {
-        !self
-            .state
+        self.state
             .source_sync_subjects(SyncPass::Due, now_ms)
-            .is_empty()
+            .iter()
+            .any(|subject| subject.project_id == self.project_id)
     }
 }
 

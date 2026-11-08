@@ -556,6 +556,17 @@ impl AppState {
                     }
                 }
             }
+            for environment in self.projects.environments() {
+                for source in &environment.sources {
+                    if due_for_the_timer(source, now_ms)
+                        && !subjects.iter().any(|subject| {
+                            subject.project_id == environment.id && subject.source_id == source.id
+                        })
+                    {
+                        subjects.push(subject(&environment.id, source, fetch, SyncOrigin::Service));
+                    }
+                }
+            }
         }
         subjects
     }

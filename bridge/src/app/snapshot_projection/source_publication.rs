@@ -76,17 +76,14 @@ pub(super) fn publish_source_observation(
         .flatten()
         .filter(|observation| observation.value["path"] == home.display().to_string())
         .max_by_key(|observation| observation.version);
-    let mut value = incoming.value.clone();
-    value["path"] = json!(home);
-    value["isolation_available"] = available
+    let isolation_available = available
         .map(|o| o.value["isolation_available"].clone())
         .unwrap_or_else(|| {
             json!(crate::isolation::IsolationAvailability::unavailable(
                 "repository observation pending"
             ))
         });
-    value["remote"] = crate::app::projects::primary_remote(&rows);
-    value["sources"] = json!(rows);
+    let value = json!({"path":home,"remote":crate::app::projects::primary_remote(&rows),"sources":rows,"isolation_available":isolation_available});
     let version = available.map(|o| o.version).unwrap_or_default();
     observations.insert(
         id.to_owned(),

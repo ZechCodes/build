@@ -1,7 +1,7 @@
 use super::edit_tests::ok;
 use crate::app::runtime::deferred::DeferredNext;
 use crate::app::{AppState, ConfigPersistStep, OffLockGate};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 fn fixture(root: &Path) -> (AppState, PathBuf) {

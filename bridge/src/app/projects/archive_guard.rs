@@ -109,7 +109,7 @@ impl AppState {
         Ok(())
     }
 
-    fn project_id_for_archive_key(&self, key: &str) -> Option<String> {
+    pub(in crate::app) fn project_id_for_archive_key(&self, key: &str) -> Option<String> {
         self.project_by_key(key).map(|p| p.id.clone()).or_else(|| {
             self.projects
                 .parked()

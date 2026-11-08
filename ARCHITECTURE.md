@@ -3482,6 +3482,12 @@ Usage-limit resets and shared-harness success retain each stopped agent's owed
 retry before consuming it when its owner is archived or ready; eligible agents
 continue, and the held agent resumes once after admission reopens.
 Snapshot refresh preserves archived finished-workspace records until restore.
+Journaled environment/project replay resolves archive admission from the saved
+project key, while fresh sibling creation remains allowed. Recorded pending
+attempts are refused on user retry and excluded by recovery before claim/effects
+or retry backoff changes; restore makes them eligible on the normal service tick.
+The workspace admission hold spans both retained retries and new reservation
+through durable admission. Terminal environment-creation results remain readable.
 Configured conversation-item retention applies independently of project archive.
 The two method names are explicitly withheld from greetings, `projects.archive`
 is not advertised, and the wire stays at 3.36.0 until the consumer checkpoint.

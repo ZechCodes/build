@@ -149,7 +149,9 @@ pub(super) fn reconcile_pending(
     let pending: HashSet<_> = records.iter().map(|record| record.command_id).collect();
     retries.records.retain(|id, _| pending.contains(id));
     for record in records {
-        if !retries.ready(&record, now) {
+        if guard_archived_creation_record(&app.lock().unwrap(), &record).is_err()
+            || !retries.ready(&record, now)
+        {
             continue;
         }
         let id = record.operation_id.clone();

@@ -40,6 +40,7 @@ pub(in crate::app) fn admit(
         .creation_record(PRINCIPAL, &metadata.operation_id)
         .map_err(admission_error)?
     {
+        guard_archived_creation_record(&state.lock().unwrap(), &record)?;
         return retry_recorded(&writer, record, method, params, metadata);
     }
     let CreationScope {
@@ -53,7 +54,10 @@ pub(in crate::app) fn admit(
         .creation_record(PRINCIPAL, &metadata.operation_id)
         .map_err(admission_error)?;
     let (acceptance, reservations) = match retained {
-        Some(record) => (record.acceptance, record.reservations),
+        Some(record) => {
+            guard_archived_creation_record(&state.lock().unwrap(), &record)?;
+            (record.acceptance, record.reservations)
+        }
         None => reserve_attempt(state, method, &params, &owner, &metadata.operation_id)?,
     };
     // The new environment owns its attempt before its config exists. This also
@@ -86,6 +90,21 @@ pub(in crate::app) fn admit(
         })
         .map_err(admission_error)
 }
+/// A replay can carry an existing project only in its saved authority, rather
+/// than its environment-scoped input. Terminal outcomes remain readable.
+fn guard_archived_creation_record(app: &AppState, record: &MutationRecord) -> Result<(), ApiError> {
+    if matches!(record.state.as_str(), "succeeded" | "failed") {
+        return Ok(());
+    }
+    if let Some(id) = record.execution["project_key"]
+        .as_str()
+        .and_then(|key| app.project_id_for_archive_key(key))
+    {
+        app.refuse_archived_project(&id)?;
+    }
+    Ok(())
+}
+
 fn retry_recorded(
     writer: &StoreWriter,
     record: MutationRecord,

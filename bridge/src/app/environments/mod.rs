@@ -36,3 +36,6 @@ pub(in crate::app) struct Environment {
     pub(in crate::app) next_source: u64,
     pub(in crate::app) isolation: Option<Isolation>,
 }
+
+#[cfg(test)]
+mod edit_tests;

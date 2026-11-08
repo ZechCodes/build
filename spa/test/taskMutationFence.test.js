@@ -81,7 +81,7 @@ it("matches the bridge's supported task write methods and excludes every task re
   const methods = [...effects.matchAll(/"(tasks\.[^"]+)"/g)].map((match) => match[1]);
   for (const method of new Set(methods)) expect(fence.isTaskMutationMethod(method)).toBe(writes.includes(`"${method}"`));
   for (const method of ["entity.seen", "entity.dismiss", "entity.mute", "project.delete"]) expect(fence.isTaskMutationMethod(method)).toBe(true);
-  for (const method of ["environment.create", "environment.discard_unused", "environment.create_project", "project.discard_unused", "tasks.delete", "tasks.track", "tasks.dismiss", "tasks.unknown", "board.list", "thread.post", "secrets.create", "secrets.list", "secrets.revoke", "secrets.audit"]) expect(fence.isTaskMutationMethod(method)).toBe(false);
+  for (const method of ["project.rename", "environment.rename", "environment.add_source", "environment.remove_source", "environment.update_source", "environment.sync_source", "environment.set_isolation", "environment.create", "environment.discard_unused", "environment.create_project", "project.discard_unused", "tasks.delete", "tasks.track", "tasks.dismiss", "tasks.unknown", "board.list", "thread.post", "secrets.create", "secrets.list", "secrets.revoke", "secrets.audit"]) expect(fence.isTaskMutationMethod(method)).toBe(false);
   for (const method of ["sync.head", "sync.snapshot", "sync.changes"]) expect(fence.isTaskMutationMethod(method)).toBe(false);
 });
 

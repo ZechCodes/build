@@ -123,7 +123,7 @@ fn clearing_project_override_restores_device_default() {
     );
 }
 
-fn rpc(app: &mut AppState, method: &str, params: serde_json::Value) -> serde_json::Value {
+pub(super) fn rpc(app: &mut AppState, method: &str, params: serde_json::Value) -> serde_json::Value {
     app.handle(crate::app::Frame {
         session_id: "test".into(),
         message_id: "test".into(),
@@ -134,7 +134,7 @@ fn rpc(app: &mut AppState, method: &str, params: serde_json::Value) -> serde_jso
     })
 }
 
-fn state(root: &std::path::Path) -> AppState {
+pub(super) fn state(root: &std::path::Path) -> AppState {
     let context =
         crate::harness::HarnessContext::resolved(root.join("mcp.sock"), root.join("state"))
             .unwrap();

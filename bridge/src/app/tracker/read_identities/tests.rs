@@ -172,8 +172,17 @@ fn captured_project_owner_keeps_non_utf8_project_path_bytes() {
     std::fs::create_dir(&root).unwrap();
     let project = app.add_project(root.clone(), "main".into());
     app.projects.bind_entity("owner".into(), project.clone());
-    let key = &app.project(&project).unwrap().project_key;
-    let scratch = crate::app::projects::scratch_dir(&app.state_root, key.as_ref());
+    // Freeze the pre-M0.2 scratch format from the native path, not its lossy key.
+    let name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("project");
+    let digest = crate::app::sha256_hex(root.as_os_str().as_encoded_bytes());
+    let scratch = app.state_root.join("project-scratch").join(format!(
+        "{}-{}",
+        crate::app::projects::safe_mount_name(name),
+        &digest[..12]
+    ));
     std::fs::create_dir_all(&scratch).unwrap();
     app.runs.get_mut("owner").unwrap().worktree.path = scratch;
     assert!(app.is_project_snapshot_conversation_owner("owner"));

@@ -1,3 +1,4 @@
+import { inferredSourceName, uniqueSourceName, sourceDraftError, sourceDraftParams } from "../core/sourceDraft.js";
 import { $ } from "../dom.js";
 import { esc, messageOf } from "../core/text.js";
 import { openBrowser } from "./browser.js";
@@ -23,7 +24,7 @@ function creationOutcomeUnknown(error) {
   return !hasRefusalCode(error) && isTransientTransportError(error);
 }
 
-const inferredName = (value) => (value.trim().replace(/[\\/]+$/, "").replace(/\.git$/i, "").split(/[\\/:]/).pop() || "folder").replace(/[^a-zA-Z0-9._-]+/g, "-");
+
 
 /** The account-wide sheet chooses a device, while a contextual surface can
  * still pin one caller. Each caller is already bound to its machine and keeps
@@ -109,12 +110,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     readName();
     saveDraft(true);
   };
-  const uniqueName = (value, except) => {
-    const base = inferredName(value), used = new Set(draft.sources.filter((source) => source !== except).map((source) => source.name.trim().toLowerCase()));
-    let name = base;
-    for (let n = 2; used.has(name.toLowerCase()); n += 1) name = `${base}-${n}`;
-    return name;
-  };
+  const uniqueName = (value, except) => uniqueSourceName(value, draft.sources, except);
   const addSource = (kind) => { const source = { id: ++serial, kind, path: "", remote: "", name: "", base_branch: "", automaticName: true }; draft.sources.push(source); return source; };
   const backToForm = () => {
     creationView = null;
@@ -166,13 +162,10 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     <div class="field"><label for="nrbranch-${source.id}">Base branch (optional)</label><input id="nrbranch-${source.id}" data-source-branch="${source.id}" ${fieldTraits("identifier")} value="${esc(source.base_branch)}" placeholder="main"></div>
     <button class="btn" type="button" data-remove-source="${source.id}" aria-label="Remove folder ${index + 1}">Remove</button></fieldset>`;
   const sourceError = (source, names) => {
-    if (!source[source.kind].trim()) return [source.kind === "remote" ? "Enter a Git remote URL." : "Choose a folder.", source.kind === "remote" ? `#nrsource-${source.id}` : `[data-choose-source="${source.id}"]`];
-    const name = source.name.trim();
-    if (!name) return ["Enter a folder label.", `#nrmount-${source.id}`];
-    if (/[\\/]/.test(name) || name === "." || name === "..") return ["Use a single folder name without / or \\.", `#nrmount-${source.id}`];
-    if (names.has(name.toLowerCase())) return [`Folder labels must be unique. “${name}” is used more than once.`, `#nrmount-${source.id}`];
-    names.add(name.toLowerCase());
-    return null;
+    const error = sourceDraftError(source, names);
+    if (!error) return null;
+    const valueSelector = source.kind === "remote" ? `#nrsource-${source.id}` : `[data-choose-source="${source.id}"]`;
+    return [error, source[source.kind].trim() ? `#nrmount-${source.id}` : valueSelector];
   };
   const invalidSource = () => {
     if (!selectedDevice()) return ["Choose a device.", "#nrdevice"];
@@ -307,7 +300,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     sheet.querySelectorAll("[data-source-branch]").forEach((input) => input.oninput = () => { draft.sources.find((item) => item.id === Number(input.dataset.sourceBranch)).base_branch = input.value; saveDraft(true); });
     sheet.querySelectorAll("[data-choose-source]").forEach((button) => button.onclick = () => void browseFor(Number(button.dataset.chooseSource)));
     sheet.querySelectorAll("[data-remove-source]").forEach((button) => button.onclick = () => { remember(); draft.sources = draft.sources.filter((source) => source.id !== Number(button.dataset.removeSource)); followName(); saveDraft(); paint(); $("#nraddfolder").focus(); });
-    $("#nrform").onsubmit = (event) => { event.preventDefault(); remember(); const invalid = invalidSource(); if (invalid) { $("#nrerr").textContent = invalid[0]; sheet.querySelector(invalid[1])?.focus(); return; } const sources = draft.sources.map((source) => ({ [source.kind]: source[source.kind].trim(), name: source.name.trim(), ...(source.base_branch.trim() ? { base_branch: source.base_branch.trim() } : {}) })); const params = { name: projectName(), sources }; void submit(params); };
+    $("#nrform").onsubmit = (event) => { event.preventDefault(); remember(); const invalid = invalidSource(); if (invalid) { $("#nrerr").textContent = invalid[0]; sheet.querySelector(invalid[1])?.focus(); return; } const sources = draft.sources.map(sourceDraftParams); const params = { name: projectName(), sources }; void submit(params); };
     // A typed name is the reader's; clearing it hands the name back to the
     // first folder, shown as the placeholder until the next change fills it.
     // Anything the reader types is theirs, even a name equal to the one the

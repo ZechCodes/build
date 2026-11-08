@@ -10,9 +10,9 @@ describe("reviewed REST manifest consumption", () => {
     expect(createHash("sha256").update(bytes).digest("hex")).toBe("7a270a5f229cf2e5e7b4223df4104514d9220f6d7167ff512e5d89a8a4ffdca7");
     expect(createHttpRoutes(manifest).operationIds()).toEqual(manifest.transport.operation_ids);
     expect(createHttpRoutes(manifest).operationIds()).toContain("tasks_review_retryDelivery");
-    // Combined M2.1/M3.1 routes remain staged before capability activation.
+    // Creation routes are advertised; archive routes stay staged until their product surface lands.
     expect(manifest.operations).toHaveLength(164);
-    for (const operation of ["environment_create", "environment_discard_unused", "project_archive", "project_restore", "environment_list", "tasks_review_snapshot", "tasks_review_act", "tasks_review_complete", "sync_head", "sync_snapshot", "sync_changes", "secrets_create", "secrets_list", "secrets_revoke", "secrets_audit"]) {
+    for (const operation of ["environment_create", "environment_discard_unused", "environment_create_project", "project_archive", "project_restore", "environment_list", "tasks_review_snapshot", "tasks_review_act", "tasks_review_complete", "sync_head", "sync_snapshot", "sync_changes", "secrets_create", "secrets_list", "secrets_revoke", "secrets_audit"]) {
       expect(createHttpRoutes(manifest).operationIds()).toContain(operation);
     }
   });

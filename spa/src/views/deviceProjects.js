@@ -11,6 +11,8 @@ import { pullDeviceProjection } from "../core/scopedDeviceReads.js";
 import { deviceScopedSyncOwns } from "../core/scopedSyncRuntime.js";
 import { esc } from "../core/text.js";
 import { isolationLabel } from "../core/isolation.js";
+import { environmentSupportAddress, readEnvironmentSupport, environmentWizardSupported } from "../core/environmentSupport.js";
+import { openCreateWorkspaceWizard } from "../core/createWorkspaceWizard.js";
 import { openNewRepo } from "../sheets/newRepo.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
 import { App } from "../app.js";
@@ -96,18 +98,28 @@ export async function mountDeviceProjects(host, { callRpc, deviceId, deviceName,
     });
   };
 
-  panel.querySelector("#newrepo").onclick = () =>
+  let createEnvironment = false;
+  const add = panel.querySelector("#newrepo");
+  const supportRecord = watchSettingsRecord(environmentSupportAddress(deviceId), support => {
+    createEnvironment = environmentWizardSupported(support) && support.create === true;
+    add.textContent = createEnvironment ? "New environment…" : "Add project…";
+  }, {owner:panel});
+  await supportRecord.whenPainted();
+  add.onclick = async () => {
+    if (createEnvironment) return openCreateWorkspaceWizard({deviceId,newEnvironment:true,fixedProject:false});
+    const choices = await Promise.all(App.devices.map(async device => ({device,support:await readEnvironmentSupport(device.id)})));
     openNewRepo(
       async (project, target) => {
         await refresh();
         onProjectCreated?.(project, target);
       },
       {
-        devices: App.devices,
+        devices: choices.filter(row => !row.support.create).map(row => row.device),
         defaultDeviceId: deviceId,
         callRpcFor: (chosenId) => chosenId === deviceId ? callRpc : creationCall(chosenId),
       },
     );
+  };
 
   await refresh();
 }

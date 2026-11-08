@@ -1,10 +1,12 @@
 // M1 settings observes environments and their project boards on every device.
 // Cache records own paint; pulls merely refresh those records.
+import { openCreateWorkspaceWizard } from "../core/createWorkspaceWizard.js";
+import { openNewRepo } from "../sheets/newRepo.js";
 import { App } from "../app.js";
 import { onDevicesChanged, readCachedDevices } from "../devices.js";
 import { deviceCall } from "../core/inboxDevices.js";
 import { bridgeCapabilities } from "../core/changeEvents.js";
-import { environmentSupportAddress } from "../core/environmentSupport.js";
+import { environmentSupportAddress, environmentWizardSupported } from "../core/environmentSupport.js";
 import { admitEnvironmentListWrite, environmentsAddress, writeCachedEnvironments } from "../core/environmentCache.js";
 import { watchSettingsRecord } from "../core/settingsRecords.js";
 import { watchEnvironmentSettingsProjects } from "../core/environmentSettingsProjects.js";
@@ -68,15 +70,28 @@ function environmentProjectsHtml(members, listing, device, error) {
     || '<p class="dim">no projects yet</p>';
 }
 
-function environmentHtml(environment, listing, device, error) {
+function environmentHtml(environment, listing, device, error, support) {
   const members = listing.rows?.filter(project => project.environment_id === environment.environment_id);
   return `<article class="panel" data-environment="${esc(environment.environment_id)}">
     <h3>${kindGlyphHtml("environment")} ${esc(environment.name)} ${deviceTagHtml(device)}</h3>
     <p class="ppath">${esc(environment.home_path)}</p>
     <p class="dim">${environmentTotalsText(environment, members, listing.countsKnown)}</p>
-    ${environmentProjectsHtml(members, listing, device, error)}</article>`;
+    ${environmentProjectsHtml(members, listing, device, error)}${environmentShortcuts(environment,members,listing,support)}</article>`;
 }
 
+function creationButton(action, label, environmentId = '') {
+  return `<button class="btn" type="button" data-environment-create="${action}" data-environment-id="${esc(environmentId)}">${esc(label)}<br><span class="sub">Creates a workspace</span></button>`;
+}
+function environmentShortcuts(environment,members,listing,support) {
+  if (!support?.create || !support.createProject) return '';
+  const id=environment.environment_id, name=environment.name;
+  const resume=listing.countsKnown && !members.length ? creationButton('resume','Resume…',id) : '';
+  const advanced=support.addedSources ? creationButton('advanced',`New project with extra folders in ${name}…`,id) : '';
+  return `<div class="row create-row">${creationButton('project',`New project in ${name}…`,id)}${advanced}${resume}</div>`;
+}
+function deviceCreationHtml(support) {
+  return environmentWizardSupported(support) && support.create ? creationButton('new','New environment…') : '<button class="btn" type="button" data-legacy-add-project>Add project…</button>';
+}
 function legacyProjectsHtml(listing, device, error) {
   return `<div class="panel"><h3>Projects (this device needs an update to use environments)</h3>
     ${environmentProjectsHtml(listing.rows, listing, device, error)}</div>`;
@@ -93,7 +108,7 @@ function deviceListHtml({ support, environments, projects: settingsProjects, jou
   const rows = support?.list ? environments : listing.rows;
   if (!Array.isArray(rows)) return listStatusHtml(errors.empty);
   if (!support?.list) return legacyProjectsHtml(listing, device, errors.project);
-  return environments.map(environment => environmentHtml(environment, listing, device, errors.project)).join("")
+  return environments.map(environment => environmentHtml(environment, listing, device, errors.project, support)).join("")
     || '<p class="dim">No environments on this device yet</p>';
 }
 
@@ -102,11 +117,21 @@ async function mountDeviceEnvironments(host, device, active) {
   const state = {};
   const paint = () => {
     if (!active()) return;
-    host.innerHTML = `<h2>${esc(device.name)}</h2>${deviceListHtml(state, device)}`;
+    host.innerHTML = `<h2>${esc(device.name)}</h2>${deviceListHtml(state, device)}${deviceCreationHtml(state.support)}`;
+    wireCreation();
     host.querySelectorAll("[data-environment-project]").forEach(button => {
       button.onclick = () => openProjectSettings(button.dataset.environmentProject, { callRpc, deviceId: device.id, onDeleted: refresh });
     });
   };
+  function wireCreation() {
+    host.querySelectorAll('[data-environment-create]').forEach(button => { button.onclick=()=> {
+      const action=button.dataset.environmentCreate;
+      openCreateWorkspaceWizard({deviceId:device.id,fixedProject:false,
+        ...(action==='new' ? {newEnvironment:true}:{environmentId:button.dataset.environmentId}),advancedExpanded:action==='advanced'});
+    }; });
+    const legacy=host.querySelector('[data-legacy-add-project]');
+    if(legacy)legacy.onclick=()=>openNewRepo(()=>{void refresh();},{callRpc,deviceId:device.id,deviceName:device.name});
+  }
   const entries = [["support", environmentSupportAddress(device.id)], ["environments", environmentsAddress(device.id)], ["journalProjects", projectsAddress(device.id)]];
   const records = Object.fromEntries(entries.map(([kind, address]) => [kind, watchSettingsRecord(address, value => {
     const wasSupported = state.support?.list;

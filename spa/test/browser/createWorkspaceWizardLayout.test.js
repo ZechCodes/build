@@ -27,3 +27,25 @@ it('keeps the name page and directory list within desktop and phone viewports',a
   expect(await page.getByRole('button',{name:'Create workspace'}).isVisible()).toBe(true);await captureLayout(page,`workspace-wizard-name-${width}.png`);
  },{width,height:844});
 },30000);
+
+for(const width of [390,1280])it(`keeps new-environment drafts and Advanced folders usable at ${width}px`,async()=>{
+ await session.withPage(async({page,basePath})=>{
+  await mount(page,basePath);
+  await page.evaluate(()=>{
+   const source={kind:'remote',remote:'https://github.com/org/api.git',name:'api',base_branch:'main'};
+   const draft={deviceId:'d1',name:'Platform',sources:[source],isolation:''};
+   window.__m2Draft={page:2,environmentDraft:draft,newEnvironmentDevices:[{id:'d1',name:'Laptop'}]};
+   document.querySelector('#creation').innerHTML=window.__layoutModules.wizard.createWorkspaceWizardHtml(window.__m2Draft);
+  });
+  expect(await page.getByLabel('Git remote URL').inputValue()).toContain('api.git');
+  await captureLayout(page,`workspace-wizard-environment-${width}.png`);
+  await page.evaluate(()=>{
+   const target={kind:'new-environment',id:'draft',deviceId:'d1',name:'Platform',summaryLabel:'Platform (new environment)',sources:[{path:'/code/api'}]};
+   document.querySelector('#creation').innerHTML=window.__layoutModules.wizard.createWorkspaceWizardHtml({page:3,target,name:'Ship wizard',showAdvanced:true,advancedExpanded:true,addedSources:[{kind:'path',path:'/code/shared',name:'shared',base_branch:''}],folderReferences:{environments:[{deviceId:'d1',name:'Tools',sources:[{path:'/code/shared'}]}]}});
+  });
+  expect(await page.getByText('Folder 1 · shared with Tools').isVisible()).toBe(true);
+  const dimensions=await page.evaluate(()=>({width:document.documentElement.scrollWidth,viewport:innerWidth}));
+  expect(dimensions.width).toBe(dimensions.viewport);
+  await captureLayout(page,`workspace-wizard-advanced-${width}.png`);
+ },{width,height:844});
+},30000);

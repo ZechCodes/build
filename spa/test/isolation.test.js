@@ -526,3 +526,7 @@ describe("the device's settings page", () => {
     expect(rows[1]).toContain("Git worktree");
   }, SLOW_IMPORT_MS);
 });
+
+it("names environment inheritance on projects in an environment",()=>{
+ expect(projectIsolationTarget({project_id:"p",environment_id:"e",environment_name:"Sources",isolation_default:"worktree"}).inheritLabel).toBe("Inherit Sources's setting (Git worktree)");
+});

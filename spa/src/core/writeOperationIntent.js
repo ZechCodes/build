@@ -1,3 +1,4 @@
+import { creationRefusalDetails } from "./writeOperationProgress.js";
 // Client intent is persisted exactly as sent, independently of transport IDs.
 export const WRITE_STATUS_LIMIT = 128;
 export const WRITE_RETRY_DELAYS = [1000, 2000, 5000, 10000, 30000];
@@ -58,6 +59,7 @@ export function operationFailure(frame) {
   const message = typeof detail === "string" ? detail : detail?.message;
   return Object.assign(new Error(message || "Your change was not saved"), {
     error_code: detail?.code || frame.error_code,
+    details: creationRefusalDetails(detail?.details),
     retryable: detail?.retryable ?? frame.retryable ?? false,
     effect: frame.effect, uncertain: ["partial", "unknown"].includes(frame.effect), operation_id: wireOperationId(frame),
   });

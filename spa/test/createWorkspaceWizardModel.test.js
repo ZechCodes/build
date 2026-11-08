@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("../src/core/createWorkspaceTargets.js", () => ({ taskCountText: (open, total) => open > 0 ? `${open} open tasks` : `${total} tasks` }));
-import { createWorkspaceWizardModel } from "../src/core/createWorkspaceWizardModel.js";
+import { createWorkspaceWizardModel, addedFolderLabel } from "../src/core/createWorkspaceWizardModel.js";
 const now = Date.parse("2026-11-08T01:00:00Z");
 const device = { id: "d1", name: "Laptop", status: "online" };
 const env = { environment_id: "e1", deviceId: "d1", name: "Build", sources: [{ path: "/code/build" }] };
@@ -88,4 +88,25 @@ describe("create workspace target model", () => {
     expect(section(model, "environments").targets.map((row) => row.name)).toEqual(["Alpha", "Zebra"]);
     expect(section(model, "projects").targets[0]).toMatchObject({ id: "p1", sources });
   });
+});
+
+it("offers new environments only from cached create support and presets environment shortcuts", () => {
+  const options = { ...base, features: { d1: { create: true, createProject: true, addedSources: true } } };
+  expect(createWorkspaceWizardModel(options).newEnvironmentDevices).toEqual([device]);
+  expect(createWorkspaceWizardModel({ ...options, environmentId: "e1", deviceId: "d1" })).toMatchObject({ page: 3, target: { id: "e1", kind: "environment" } });
+  expect(createWorkspaceWizardModel({ ...options, newEnvironment: true, deviceId: "d1" }).page).toBe(2);
+  expect(createWorkspaceWizardModel(base).newEnvironmentDevices).toEqual([]);
+});
+it("labels advanced folders by same-device shared references or as a new folder", () => {
+  expect(addedFolderLabel({path:"/code/build"}, "d1", base)).toBe("shared with Build");
+  expect(addedFolderLabel({path:"/extra"}, "d1", {...base, projects:[{...project, added_sources:[{path:"/extra"}]}]})).toBe("shared with Ship wizard");
+  expect(addedFolderLabel({path:"/extra"}, "d2", base)).toBe("new folder");
+});
+it("marks empty environments resumable while keeping their no-project description", () => {
+  const row = section(createWorkspaceWizardModel({...base,projects:[]}),"environments").targets[0];
+  expect(row).toMatchObject({empty:true}); expect(row.description).toContain("no projects yet");
+});
+it("replaces the M1 add-project empty state when a cached device can create environments",()=>{
+ const model=createWorkspaceWizardModel({devices:[device],support:{d1:true},features:{d1:{create:true}}});
+ expect(model.emptyText).not.toContain("Add a project");expect(model.newEnvironmentDevices).toEqual([device]);
 });

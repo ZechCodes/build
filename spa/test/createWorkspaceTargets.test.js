@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, it, vi } from 'vitest';
 import { IDBFactory, IDBKeyRange } from 'fake-indexeddb';
+vi.mock('../src/core/changeEvents.js',()=>({bridgeCapabilities:()=>({environments:{}})}));
 const mocked=vi.hoisted(()=>({service:{submit:vi.fn(),get:vi.fn(),list:vi.fn(),dismiss:vi.fn(),subscribe:vi.fn(()=>()=>{})},call:vi.fn()}));
 vi.mock('../src/core/writeOperationRuntime.js',()=>({deviceWriteOperations:()=>mocked.service}));
 vi.mock('../src/core/inboxDevices.js',()=>({deviceCall:()=>mocked.call}));
@@ -54,4 +55,10 @@ it.each(['succeeded','failed'])('retains unconsumed terminal %s attempts until e
  mocked.service.list.mockResolvedValue([attempt,{...attempt,operationId:'consumed',dismissed:true}]);
  expect((await readCreateWorkspaceTargets()).attempts).toEqual([attempt]);
  mocked.service.get.mockResolvedValue(attempt);await consumeCreateWorkspaceAttempt('d1','finished');expect(mocked.service.dismiss).toHaveBeenCalledWith('finished');
+});
+it('sends a new environment, project, workspace and added sources as one retained command',()=>{
+ const source={kind:'remote',remote:'https://github.com/org/api.git',name:'api',base_branch:'main'};
+ submitCreateWorkspace({target:{kind:'new-environment',deviceId:'d1'},environmentDraft:{name:'Sources',sources:[source],isolation:'worktree'},name:'Ship',addedSources:[{...source,remote:'https://github.com/org/extra.git',name:'extra'}],isolation:'rift',operationId:'one'});
+ expect(mocked.service.submit).toHaveBeenCalledTimes(1);
+ expect(mocked.service.submit).toHaveBeenCalledWith(expect.objectContaining({operationId:'one',method:'environment.create',params:{name:'Sources',sources:[{remote:source.remote,name:'api',base_branch:'main'}],isolation:'worktree',project:{name:'Ship',workspace:{name:'Ship',isolation:'rift'},added_sources:[{remote:'https://github.com/org/extra.git',name:'extra',base_branch:'main'}]}}}));
 });

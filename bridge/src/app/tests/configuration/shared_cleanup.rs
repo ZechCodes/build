@@ -202,3 +202,57 @@ async fn clone_cleanup_claim_blocks_admission_and_prepared_settlement_during_del
     .await
     .expect("cleanup must delete its unreferenced clone and release the directory claim");
 }
+
+#[test]
+fn failed_clone_settlement_keeps_directory_held_by_pending_workspace_add() {
+    let PreparedClone {
+        _root,
+        mut app,
+        other,
+        cloned,
+        params,
+        done,
+        ..
+    } = prepared_clone();
+    let workspace = app.handle(req(
+        "workspace.create",
+        json!({"project_id":other,"name":"pending-holder","isolation":"worktree"}),
+    ));
+    assert_eq!(workspace["ok"], true, "{workspace}");
+    let workspace_id = workspace["result"]["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let local = json!({"workspace_id":workspace_id,"path":cloned,"name":"borrowed"});
+    let (admitted, pending) = app.dispatch_deferring("workspace.add_directory", &local);
+    assert!(admitted.is_ok(), "{admitted:?}");
+    let pending = pending.expect("the workspace directory has not materialized yet");
+    assert!(app
+        .workspaces
+        .get(&workspace_id)
+        .unwrap()
+        .directories
+        .iter()
+        .any(|directory| directory.source_path == cloned));
+
+    app.config_persist_failure = Some(ConfigPersistStep::Write);
+    let failed = app.apply_deferred("project.create", &params, done);
+    assert!(failed.is_err(), "the original project write must fail");
+    assert!(
+        cloned.join(".git").is_dir(),
+        "cleanup deleted the source named by a pending workspace directory"
+    );
+    app.config_persist_failure = None;
+    let materialized = app
+        .apply_deferred("workspace.add_directory", &local, pending.run())
+        .unwrap();
+    let borrowed = materialized["directories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|directory| directory["name"] == "borrowed")
+        .unwrap();
+    let checkout = Path::new(borrowed["path"].as_str().unwrap());
+    let repository = git2::Repository::open(checkout).unwrap();
+    assert!(repository.head().unwrap().peel_to_commit().is_ok());
+}

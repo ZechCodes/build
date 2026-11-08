@@ -12,6 +12,7 @@ import { publicationReadAddresses, publicationGuardMatches, publicationIsActive,
   taskPublicationApplicable, taskPublicationEvidenceAddresses } from "./writeOperationPublication.js";
 import { TRACKER_TASK_KIND, taskAddress } from "./trackerCache.js";
 import { threadCacheAddress } from "./conversationCache.js";
+import { normalizeWriteProgress } from "./writeOperationProgress.js";
 
 const notifications = createAnnouncer("build-write-operations");
 const terminalStates = new Set(["succeeded", "failed"]);
@@ -253,6 +254,16 @@ export function createWriteOperationCache(scope) {
     }, { canonical, accept: authority });
   }
 
+  function recordProgress(operationId, progress, { accept = () => true, journalIncarnation } = {}) {
+    const steps = normalizeWriteProgress(progress);
+    if (!steps) return Promise.resolve(null);
+    return update(operationId, (previous) => {
+      if (!previous || isTerminal(previous) || previous.state === "result_expired") return null;
+      if (previous.journalIncarnation !== journalIncarnation) return null;
+      return { ...previous, progress: steps };
+    }, { accept });
+  }
+
   async function observePublication({ canonical = [], accept = () => true, report = false, refresh, failure } = {}) {
     if (refresh) return observeRefreshPublication({ canonical, accept, report, refresh, failure });
     const changed = [];
@@ -436,7 +447,7 @@ export function createWriteOperationCache(scope) {
   }
 
   return {
-    get, list, put, putMany, update, accept, confirm, observePublication, openRefresh, reevaluateRefresh, watchRefresh,
+    get, list, put, putMany, update, accept, confirm, recordProgress, observePublication, openRefresh, reevaluateRefresh, watchRefresh,
     acquireLease: (tabId, ttlMs = 15000) => changeLease(tabId, ttlMs, "acquire"),
     renewLease: (tabId, ttlMs = 15000) => changeLease(tabId, ttlMs, "renew"),
     releaseLease: (tabId) => changeLease(tabId, 1, "release"),

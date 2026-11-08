@@ -1,5 +1,6 @@
 import { createWriteOperationCache } from "./writeOperationCache.js";
 import { createWriteOperationWorker } from "./writeOperationWorker.js";
+import { creationWritesSupported, isCreationWrite, normalizeWriteProgress } from "./writeOperationProgress.js";
 import {
   copyIntent, needsWriteStatus, terminalWrite, writeDependencies, writeRefusal, provenExpiredFailure, expiredOperationFailure,
   wireOperationId, wireRevision, writeSummaryFrame, writeSubmissionOrder, knownWriteSummary, operationFailure, WRITE_STATUS_LIMIT,
@@ -84,7 +85,8 @@ export function createWriteOperationService(options) {
   function supports(method) {
     if (!binding || !current(binding)) return false;
     const { greeting } = binding;
-    return greeting.capabilities?.includes("bridge.epoch") && greeting.ack_confirm_methods?.includes(method) === true;
+    return greeting.capabilities?.includes("bridge.epoch") && greeting.ack_confirm_methods?.includes(method) === true
+      && creationWritesSupported(greeting, method);
   }
   function raw(held, method, params, extra = {}) {
     const call = held.session.rawCall || held.session.callRaw || held.session.call;
@@ -276,9 +278,14 @@ export function createWriteOperationService(options) {
     await refreshSnapshot();
   }
   function handleFrame(frame, held = binding) {
-    const task = serial.then(() => applyFrame(frame, held));
+    const task = serial.then(() => routeFrame(frame, held));
     serial = task.catch(() => {});
     return task;
+  }
+  function routeFrame(frame, held) {
+    if (frame?.type !== "writes.progress") return applyFrame(frame, held);
+    if (!current(held) || frame.bridge_epoch !== held.greeting.bridge_epoch) return false;
+    return recordProgress(frame, held);
   }
   async function applyFrame(frame, held) {
     if (!current(held) || frame?.bridge_epoch !== held.greeting.bridge_epoch) return false;
@@ -296,6 +303,17 @@ export function createWriteOperationService(options) {
     else if (frame.type === "writes.confirmed") await confirm(frame, row, held);
     else return false;
     worker.reset();
+    await refreshSnapshot();
+    return true;
+  }
+  async function recordProgress(frame, held) {
+    if (!current(held) || !held.greeting.capabilities?.includes("environments")) return false;
+    const row = await cache.get(wireOperationId(frame));
+    if (!row || terminalWrite(row) || row.journalIncarnation !== held.greeting.journal_incarnation) return false;
+    if (!isCreationWrite(row.request.method) || !normalizeWriteProgress(frame.progress)) return false;
+    await cache.recordProgress(row.operationId, frame.progress, {
+      journalIncarnation: held.greeting.journal_incarnation, accept: () => current(held),
+    });
     await refreshSnapshot();
     return true;
   }
@@ -455,6 +473,7 @@ export function createWriteOperationService(options) {
     const row = await cache.get(id);
     if (!row || !current(held)) return;
     if (obsoleteSummary(summary, row)) return;
+    await recordSummaryProgress(summary, held);
     if (summary.state === "not_found") {
       if (row.acknowledged) await quarantine(row, "acknowledged_missing", held);
       else retries.add(id);
@@ -470,6 +489,10 @@ export function createWriteOperationService(options) {
     }
     await handleFrame(writeSummaryFrame(summary, held.greeting.bridge_epoch), held);
     if (summary.state === "executing") await recordExecuting(summary, held);
+  }
+  function recordSummaryProgress(summary, held) {
+    if (!["accepted", "executing"].includes(summary.state) || !Object.hasOwn(summary, "progress")) return;
+    return recordProgress(summary, held);
   }
   async function recordExpired(summary, row, held) {
     const unapplied = provenExpiredFailure(summary);

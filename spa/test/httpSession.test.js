@@ -21,6 +21,15 @@ const make = (changes = {}) => {
 const open = (endpoint, options = {}) => openHttpSession({ endpoint, routes: createHttpRoutes(manifest), ...options });
 
 describe("HTTP session adapter and fences", () => {
+  it("forwards progress on the current authenticated event stream to operation cache listeners", async () => {
+    const { endpoint, event } = make(); const session = await open(endpoint);
+    const writes = vi.fn(); session.onWriteFrame(writes);
+    const progress = { type: "writes.progress", bridge_epoch: "epoch", operation_id: "attempt", progress: [{ step: "workspace", state: "running" }] };
+    await event({ event: "operation", data: progress });
+    expect(writes).toHaveBeenCalledExactlyOnceWith(progress);
+    session.close(); await event({ event: "operation", data: progress });
+    expect(writes).toHaveBeenCalledOnce();
+  });
   it("activates producers once through the actual hello resource after stream readiness", async () => {
     const helloRoute = { method: "session.hello", operationId: "hello", verb: "POST", path: "/v1/session-greetings", pathParams: [], queryParams: [], body: "remaining" };
     const { endpoint } = make({

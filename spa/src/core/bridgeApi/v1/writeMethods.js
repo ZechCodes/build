@@ -1,3 +1,5 @@
+import { creationWritesSupported } from "../../writeOperationProgress.js";
+
 // These controls stay bound to their session and retain ordered final replies.
 const exemptMethods = new Set([
   "session.hello", "writes.subscribe", "stream.start", "term.attach", "agent.attach",
@@ -12,7 +14,7 @@ function isWriteMethod(method) {
 /** A list admits exact semantic methods only; a wildcard never grants writes. */
 export function ackConfirmMethods(greeting, epoch) {
   if (!epoch || !Array.isArray(greeting?.ack_confirm_methods)) return [];
-  return [...new Set(greeting.ack_confirm_methods.filter(isWriteMethod))];
+  return [...new Set(greeting.ack_confirm_methods.filter(method => isWriteMethod(method) && creationWritesSupported(greeting, method)))];
 }
 
 /** Persist and submit through the shared service, resolving only acceptance. */

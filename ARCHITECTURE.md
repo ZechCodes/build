@@ -1807,6 +1807,20 @@ dependent project projections; other references to the directory keep their
 settings. Git mutations invalidate views for every referencing project and
 affected checkout, while sync status remains keyed by project and source.
 The shared common-Git-directory lock continues to serialize repository work.
+The staged M3.2 `project.rename` and `environment.rename` change display names
+only: a nonempty trimmed line of at most 200 UTF-8 bytes, with control characters
+and Unicode line/paragraph separators refused. IDs, source mounts and paths stay
+fixed. The staged `environment.add_source`, `remove_source`, `update_source`,
+`sync_source` and `set_isolation` operate on environment-owned references even
+without a live project. Source membership is validated against every dependent
+project's additions, including parked records; existing workspace directories
+retain their cuts. Project and environment isolation overrides are independent,
+resolved project → environment → device. Manual environment sync uses the existing
+background service and common-Git-directory lock; its status has an environment
+and source key, while project statuses retain their project and source keys.
+These seven verbs have explicit HTTP resources and fixtures at wire 3.37.0 but
+remain in `UNADVERTISED_CAPABILITIES` until M3.3 supplies their product surface.
+
 A configured project whose home folder is missing at boot is parked, not
 dropped (`bridge/src/app/projects/parked.rs`): its configuration is kept
 verbatim and written back on every save, its `proj-N` stays reserved, and

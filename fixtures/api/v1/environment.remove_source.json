@@ -3,7 +3,7 @@
   "since": "3.37.0",
   "params": {
     "environment_id": "env-1",
-    "source_id": "source-1"
+    "source_id": "source-2"
   },
   "result": {
     "environment_id": "env-1",

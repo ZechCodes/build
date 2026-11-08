@@ -168,7 +168,7 @@ fn environment_source_verbs_add_remove_update_sync() {
     let row = ok(
         &mut app,
         "environment.update_source",
-        json!({"environment_id":"env-1","source_id":id,"name":"Renamed","path":root.path().join("git"),"sync_base":false}),
+        json!({"environment_id":"env-1","source_id":id,"name":"Renamed","path":root.path().join("git")}),
     );
     assert_eq!(row["checkouts_updated"], 0);
     assert!(row["sources"]
@@ -222,11 +222,9 @@ fn environment_sources_refuse_containment_and_dependent_duplicates() {
             root.path().to_path_buf(),
         ] {
             let before = std::fs::read(root.path().join("config.json")).unwrap();
-            let reply = rpc(
-                &mut app,
-                method,
-                json!({"environment_id":"env-1","source_id":"source-2","path":path}),
-            );
+            let mut params = json!({"environment_id":"env-1","path":path});
+            if method == "environment.update_source" { params["source_id"] = json!("source-2"); }
+            let reply = rpc(&mut app, method, params);
             assert_eq!(reply["ok"], false, "{method}: {reply}");
             assert_eq!(
                 std::fs::read(root.path().join("config.json")).unwrap(),
@@ -361,4 +359,16 @@ fn environment_reference_edits_leave_shared_siblings_and_workspace_cuts_alone() 
         assert_eq!(before.path, after.path);
         assert_eq!(before.source_path, after.source_path);
     }
+}
+
+#[test]
+fn environment_remote_edits_publish_for_orphan_and_shared_references() {
+    let root = tempfile::tempdir().unwrap(); let mut app = fixture(root.path());
+    let git = crate::git_fixture::init_repo_named(root.path(), "git");
+    let row = ok(&mut app, "environment.add_source", json!({"environment_id":"env-1","path":git}));
+    let id = row["sources"].as_array().unwrap().last().unwrap()["id"].clone();
+    app.projects.clear();
+    let row = ok(&mut app, "environment.update_source", json!({"environment_id":"env-1","source_id":id,"remote":"https://example.invalid/new.git"}));
+    assert_eq!(row["sources"].as_array().unwrap().last().unwrap()["remote"], "https://example.invalid/new.git");
+    assert_eq!(app.environment_list()["environments"][0]["sources"].as_array().unwrap().last().unwrap()["remote"], "https://example.invalid/new.git");
 }

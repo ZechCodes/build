@@ -6,9 +6,14 @@ a compatibility location projection equal to `home_path`; its presence is not
 permission to use that directory as project identity. Identity resolution compares keys for
 exact equality, without canonicalizing, splitting or parsing them. `AppState::project_by_key`
 is the live key resolver. Legacy creation dedupe remains directory-based.
-Scratch identity hashes the complete key bytes. `Path::file_name` supplies only
-the historical cosmetic label, preserving migrated folder names; it never
-probes the filesystem or resolves a project.
+Scratch preserves the original native basename and the hash of
+`home_path.as_os_str().as_encoded_bytes()` for a registered path-derived key
+whose text equals that home's display spelling. Opaque UUID keys hash their
+own bytes, so siblings keep separate scratch. Creation, recovery, owner
+recognition, sender routing, terminal denial and captured ownership all use the
+registered native context consistently. When no project resolves, scratch uses
+the key-string fallback without probing a directory or registering a project.
+The basename remains cosmetic; identity resolution does not parse the key.
 
 ## Contract and coverage
 
@@ -18,7 +23,7 @@ probes the filesystem or resolves a project.
 | D | Keyed agent intent routing, dependency reconciliation, revision notices and summary pools | Same file: `project_agent_intent_routes_by_key`, `dependency_change_reconciles_for_uuid_keyed_sibling`, `revision_dispatch_recovers_for_uuid_keyed_project`, `session_summaries_rebind_by_key`, `failed_delivery_invalidates_uuid_keyed_project_only` |
 | V | Review recipient ownership, publication and outbox key propagation | Same file: `verdict_delivery_routes_by_key`; existing `store/reviews/verdict_delivery/tests.rs`, `reviews/opening/tests.rs`, `reviews/merge/tests.rs` |
 | A | Attachment containment stays inside the bridge attachment store | Same file: `attachment_containment_stays_in_attachment_store` |
-| P | Scratch identity, persisted key writes, retained entity binding and migrated folder compatibility | `app/tests/environments_project_identity.rs::{sibling_scratch_dirs_differ_and_migrated_keeps_legacy_dir, parked_compaction_project_resolves_retained_key, unbound_project_worker_cannot_start_in_scratch_when_old_home_exists}`; `app/projects/project_registry_tests.rs::bind_retained_entities_ignores_sibling_path` |
+| P | Scratch identity, persisted key writes, retained entity binding and migrated folder compatibility | `app/tests/environments_project_identity.rs::{sibling_scratch_dirs_differ_and_migrated_keeps_legacy_dir, parked_compaction_project_resolves_retained_key, unbound_project_worker_cannot_start_in_scratch_when_old_home_exists}`; `app/projects/project_registry_tests.rs::bind_retained_entities_ignores_sibling_path`; `app/tracker/read_identities/tests.rs::captured_project_owner_keeps_non_utf8_project_path_bytes` |
 | R | Restart binds runs, plans and scratch to the correct key, without registering projects | `app/tests/environments_recovery_identity.rs::{recovery_binds_runs_by_key_not_path, recovery_never_adds_project_from_record, legacy_record_binds_migrated_project_only, restart_recovery_preserves_sibling_run_plan_and_scratch_ownership, recovery_uses_home_path_for_a_resolved_project_with_a_missing_repo}` |
 | X | Additional consumers found by the audit: archives, incremental inputs, parked/scratch ownership, background review sync | `app/tests/environments_extra_identity.rs::{environments_extra_identity_archives_join_and_dedupe_by_key, environments_extra_identity_ownership_recognizes_sibling_scratch_and_parked_key, environments_extra_identity_ownership_witness_tracks_project_keys}`; `app/runtime/review_sync.rs::tests::environments_extra_identity_review_sync_routes_uuid_keyed_project` |
 | F | Stage fallback never treats an unresolved key as a filesystem directory, while surviving checkouts and resolved homes remain usable | `app/tests/environments_stage_identity.rs::{stage_fallback_never_opens_an_unresolved_project_key, snapshot_stage_fallback_never_opens_an_unresolved_project_key, stage_reads_keep_existing_checkouts_and_resolved_project_homes}` |
@@ -82,8 +87,8 @@ names follow the lexical inventory.
 
 The final source snapshot has **831 lexical occurrences across 220 files**,
 classified in **255 occurrence groups** (129 production, 100 test/fixture and
-26 declaration/comment groups). The supplemental table adds 43 groups for
-aliases and renamed readers: **298 classified rows total**. Every
+26 declaration/comment groups). The supplemental table adds 44 groups for
+aliases and renamed readers: **299 classified rows total**. Every
 classification cell is exactly Identity, Location or Neither.
 
 ### Production readers
@@ -110,18 +115,18 @@ classification cell is exactly Identity, Location or Neither.
 | `app/projects/deletion.rs` | `retire_project_task_deliveries` L238 | Identity | Reads tracker_project_path to retire only the removed project’s tasks/deliveries. | T; existing project deletion and tracker_deferred_delivery suites |
 | `app/projects/lifecycle.rs` | `register_opened_project_sources` L39; `register_opened_repository` L122 | Neither | Legacy project.create source/repository dedupe remains canonical-path-based. | Existing project creation/configuration suites |
 | `app/projects/list.rs` | `project_list_rows` L46 | Location | Supplies/display-validates the real project source/home directory; project ID carries owner identity. | Existing area suites; migrated location behavior is unchanged |
-| `app/projects/mod.rs` | `register_configured_project` L429; `add_project` L467 | Neither | Keeps legacy canonical-directory creation dedupe; this is not a durable identity resolver. | Existing configuration and project_registry suites; T |
-| `app/projects/mod.rs` | `register_configured_project` L434; `add_project` L466,470,471 | Location | Canonicalizes/probes the supplied home, constructs its runtime, or checks that a known configured ID still names the expected home. | Existing configuration and project_registry suites |
-| `app/projects/mod.rs` | `add_project` L465 | Neither | Declares the real-directory registration argument; no value is read on this line. | — |
-| `app/projects/mod.rs` | `project_candidate` L477,481; `project_candidate_at` L486,491,506,511; `project_candidate_with_sources` L521,526; `stands_in_the_repository` L704,705,706 | Location | Constructs or returns a real project/source directory, or fences repository-root deletion against the actual run checkout. | Existing project_agent_base and workflow/repo_root_runs suites |
-| `app/projects/mod.rs` | `project_candidate_with_sources_at` L531,542,544,546,552,561,566 | Location | Constructs real home/orchestrator/source locations; the separate project_key initialization is inventoried as identity. | P; existing environments/runtime_tests.rs::assert_home_metadata |
-| `app/projects/mod.rs` | `project_candidate_with_sources_at` L560 | Identity | Initial legacy project registration freezes its canonical-home text as the stable key. | P; existing environments/runtime_tests.rs::assert_home_metadata |
+| `app/projects/mod.rs` | `register_configured_project` L431; `add_project` L469 | Neither | Keeps legacy canonical-directory creation dedupe; this is not a durable identity resolver. | Existing configuration and project_registry suites; T |
+| `app/projects/mod.rs` | `register_configured_project` L436; `add_project` L468,472,473 | Location | Canonicalizes/probes the supplied home, constructs its runtime, or checks that a known configured ID still names the expected home. | Existing configuration and project_registry suites |
+| `app/projects/mod.rs` | `add_project` L467 | Neither | Declares the real-directory registration argument; no value is read on this line. | — |
+| `app/projects/mod.rs` | `project_candidate` L479,483; `project_candidate_at` L488,493,508,513; `project_candidate_with_sources` L523,528; `stands_in_the_repository` L706,707,708 | Location | Constructs or returns a real project/source directory, or fences repository-root deletion against the actual run checkout. | Existing project_agent_base and workflow/repo_root_runs suites |
+| `app/projects/mod.rs` | `project_candidate_with_sources_at` L533,544,546,548,554,563,568 | Location | Constructs real home/orchestrator/source locations; the separate project_key initialization is inventoried as identity. | P; existing environments/runtime_tests.rs::assert_home_metadata |
+| `app/projects/mod.rs` | `project_candidate_with_sources_at` L562 | Identity | Initial legacy project registration freezes its canonical-home text as the stable key. | P; existing environments/runtime_tests.rs::assert_home_metadata |
 | `app/projects/project_registry.rs` | `mark_source_git` L355; `update_source` L394; `candidate_with_id` L548,554; `candidate` L565,569; `restore_project_metadata` L871; `unowned_home_source` L899; `initial_home_source` L912; `saved_home_source` L935 | Location | Builds/updates the real primary source/home path or constructs location-bearing project runtime state. | Existing environments/runtime_tests.rs and project_registry_tests.rs |
 | `app/projects/project_registry.rs` | `find_by_canonical_path` L474,477 | Neither | Legacy project creation/config registration dedupe only; not an identity accessor. | Existing project_registry_tests.rs; T |
 | `app/projects/requests.rs` | `project_init_git` L189 | Location | Supplies/display-validates the real project source/home directory; project ID carries owner identity. | Existing area suites; migrated location behavior is unchanged |
 | `app/read_context/mcp_bootstrap.rs` | `capture` L33; `update_owner` L59; `project_path` L71 | Location | Captures project-id→home directory for MCP filesystem/source reads. | Existing area suites; migrated location behavior is unchanged |
 | `app/runtime/deferred.rs` | `conditional_key` L357,358; `render` L379,382,390,395,446,453,505; `render_observed` L540 | Location | Performs repository/diff/isolation probes or renders the real project directory. | Existing area suites; migrated location behavior is unchanged |
-| `app/runtime/recovery.rs` | `recover_plan` L350,352; `recover_run` L414,415,481 | Identity | Resolves or retains the opaque record key, derives keyed scratch, or reports the missing key verbatim; never registers from a record. | R; P |
+| `app/runtime/recovery.rs` | `recover_plan` L350,352; `recover_run` L414,415,479 | Identity | Resolves or retains the opaque record key, derives keyed scratch, or reports the missing key verbatim; never registers from a record. | R; P |
 | `app/runtime/review_sync.rs` | `apply_review_sync_result` L37 | Identity | Routes the background review synchronization result by its task project key. | X: environments_extra_identity_review_sync_routes_uuid_keyed_project |
 | `app/runtime/terminals/create_scope.rs` | `capture` L106,276; `capture_workspace` L349 | Location | Captures the actual terminal cwd/source root; the rejected repo_path selector string is a wire-parameter name only. | Existing area suites; migrated location behavior is unchanged |
 | `app/runtime/terminals/scope.rs` | `project_source` L84 | Neither | Lists repo_path as a refused legacy wire selector; this string literal does not read a project path. | Existing terminal_creation_scope suite |
@@ -332,7 +337,7 @@ classification cell is exactly Identity, Location or Neither.
 | `app/board/archive.rs` | `<module/type>` L114 | Neither | Field/parameter documentation, type declaration, or fixture literal; no runtime read. Identity-bearing record fields retain the legacy name; see the contract table above. | — |
 | `app/git/mod.rs` | `<module/type>` L15 | Neither | Field/parameter documentation, type declaration, or fixture literal; no runtime read. Identity-bearing record fields retain the legacy name; see the contract table above. | — |
 | `app/observation_reads/scopes.rs` | `<module/type>` L76 | Neither | Field/parameter documentation, type declaration, or fixture literal; no runtime read. Identity-bearing record fields retain the legacy name; see the contract table above. | — |
-| `app/projects/mod.rs` | `<module/type>` L145 | Neither | Field/parameter documentation, type declaration, or fixture literal; no runtime read. Identity-bearing record fields retain the legacy name; see the contract table above. | — |
+| `app/projects/mod.rs` | `<module/type>` L147 | Neither | Field/parameter documentation, type declaration, or fixture literal; no runtime read. Identity-bearing record fields retain the legacy name; see the contract table above. | — |
 | `app/runtime/deferred.rs` | `<module/type>` L285,306,488 | Neither | Field/parameter documentation, type declaration, or fixture literal; no runtime read. Identity-bearing record fields retain the legacy name; see the contract table above. | — |
 | `app/tests/tracker_summary_identity_availability.rs` | `<module/type>` L28 | Neither | Field/parameter documentation, type declaration, or fixture literal; no runtime read. Identity-bearing record fields retain the legacy name; see the contract table above. | — |
 | `app/tracker/pages.rs` | `<module/type>` L50 | Neither | Field/parameter documentation, type declaration, or fixture literal; no runtime read. Identity-bearing record fields retain the legacy name; see the contract table above. | — |
@@ -366,7 +371,7 @@ or `home_path`.
 | File:function | Classification | Reason and coverage |
 | --- | --- | --- |
 | `app/board/archive.rs::archive_read_input` | Identity | Captures (display name, project key) for record joins; the private key is not a rendered home path. X. |
-| `app/workspaces/ownership/inputs.rs::capture_runs` | Identity | Derives scratch ownership and parked-project ownership from exact project keys. X. |
+| `app/workspaces/ownership/inputs.rs::capture_runs` | Identity | Derives scratch ownership using the bound project or first registered key match for native context; unknown keys use the string fallback. The key index preserves registry order when distinct native paths share a lossy spelling. X and captured_project_owner_keeps_non_utf8_project_path_bytes. |
 | `app/workspaces/ownership/inputs.rs::Inputs::capture` | Location | Captures project home roots for physical checkout matching; project IDs and keys carry ownership separately. X and existing workspace ownership regressions. |
 | `app/projects/parked.rs::revive_parked_projects` (retained owner binding) | Identity | Binds retained owners by the restored project's key, never by sibling home equality. P, R, X and existing parked-project tests. |
 | `app/projects/parked.rs::revive_parked_projects` (returned-home check) | Location | Tests the configured real home directory for availability before restoring its saved record. Existing parked-project tests. |
@@ -377,14 +382,15 @@ or `home_path`.
 | `app/projects/conversation.rs::project_base`, `app/projects/mod.rs::repo_path_for` | Location | Returns a real home checkout for agent/process and filesystem callers; does not resolve identity from a directory. Existing project_agent_base/project_conversation tests. |
 | `app/tracker/identities.rs::live_task_identity`, `app/tracker/observed_identities.rs::observed_workspace_is_project_root` | Location | Compares a workspace checkout to the resolved home for source-root alias classification; project ID already supplies ownership. Existing tracker_summary_identity_availability and tracker/read_identities tests. |
 | `app/snapshot_projection/incremental/layout.rs::capture_with_projects` | Location | Tracks home and worktree-root locations for incremental layout invalidation; owner_layouts captures keys separately. X and existing snapshot projection regressions. |
-| `app/snapshot_projection/tests/warm_work.rs::warm_roots_resolution_matches_legacy_direct_terminal_project_missing_and_alias_cases`, `app/tests/workspace_reclaim.rs::block_project_agent`, `app/tracker/read_identities/tests.rs::captured_project_owner_keeps_non_utf8_project_path_bytes` | Identity | Existing regression fixtures now derive project scratch from the project key; each enclosing test validates its ownership/reclaim behavior. P, X and the named existing tests. |
+| `app/snapshot_projection/tests/warm_work.rs::warm_roots_resolution_matches_legacy_direct_terminal_project_missing_and_alias_cases`, `app/tests/workspace_reclaim.rs::block_project_agent` | Identity | Existing regression fixtures derive scratch from their known project identity; each enclosing test validates its ownership/reclaim behavior. P, X and the named existing tests. |
+| `app/tracker/read_identities/tests.rs::captured_project_owner_keeps_non_utf8_project_path_bytes` | Identity | Independently freezes the old native basename and as_encoded_bytes digest, then verifies owner/roster/captured recognition, UUID sibling separation and first registered match for colliding lossy key spellings. This named regression and P. |
 | `app/tests/tracker_watch_baselines.rs::explicit_task_watch_excludes_history_and_rewatch_resets_persisted_baseline` | Identity | Restores the configured registry and resolves its saved key through project_by_key before checking watch/read baselines across restart. This named regression and T. |
 | `app/tracker/mod.rs::{tracker_project_path, tracker_task}` | Identity | Returns project_key and resolves stored task keys through the central accessor; T. |
-| `app/tracker/read.rs::task_project_maps` | Identity | Maps public IDs to opaque keys one-to-one, never shared home directories; T. |
-| `app/projects/conversation.rs::{scratch_dir, scratch_key, is_project_scratch, project_ensure_conversation, is_project_conversation_owner, is_project_snapshot_conversation_owner, project_snapshot_scratch_path, project_snapshot_scratch_paths, project_snapshot_conversation_run, project_conversation_run}` | Identity | Hashes/recognizes keyed scratch and separates sibling conversation owners; P, R, X. Legacy stem/digest bytes are preserved. |
-| `app/runtime/terminals/create_scope.rs::capture_workspace` (scratch denial) | Identity | Generates the forbidden scratch root from the project key. P, R, X and existing terminal_creation_scope denial tests. |
+| `app/tracker/read.rs::task_project_maps` | Identity | Maps public IDs to opaque keys rather than shared home directories; T. |
+| `app/projects/conversation.rs::{scratch_dir, scratch_dir_for_project, scratch_dir_for_identity, scratch_key, project_scratch_for_key, is_project_scratch, project_ensure_conversation, is_project_conversation_owner, is_project_snapshot_conversation_owner, project_snapshot_scratch_path, project_snapshot_scratch_paths, project_snapshot_conversation_run, project_conversation_run}` | Identity | Uses registered native basename/encoded bytes for known path-derived keys and opaque-key bytes for UUID siblings; unknown keys use the string fallback. Creation and owner recognition share that context. P, R, X and captured_project_owner_keeps_non_utf8_project_path_bytes. |
+| `app/runtime/terminals/create_scope.rs::capture_workspace` (scratch denial) | Identity | Generates the forbidden scratch root with the registered native context for a path-derived key, or opaque UUID key bytes. P, R, X, captured_project_owner_keeps_non_utf8_project_path_bytes and existing terminal_creation_scope denial tests. |
 | `app/runtime/terminals/create_scope.rs::capture_workspace` (cwd) | Location | The original legacy-project selector supplies the resolved home checkout as terminal cwd. Existing terminal_creation_scope tests. |
-| `app/conversations/senders.rs::conversation_owner_candidates` | Identity | Resolves project conversation sender roots using project_key; P, X. |
+| `app/conversations/senders.rs::conversation_owner_candidates` | Identity | Derives project conversation sender scratch with the registered native context for a path-derived key, or opaque UUID key bytes; P, X and captured_project_owner_keeps_non_utf8_project_path_bytes. |
 | `app/session_summaries.rs::apply_device_session_summaries` | Identity | Rebinds retained pools through project_by_key; D. |
 | `app/tracker/reviews/revision_dispatch.rs::post_revision_failure_notice` | Identity | Resolves failed revision notices through project_by_key; D. |
 | `app/tracker/reviews/verdict_delivery.rs::{verdict_agent_owner, note_verdict_delivery_changed}` | Identity | Validates recipient key equality and routes board publication by key; V. |

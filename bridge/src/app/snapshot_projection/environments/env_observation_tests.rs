@@ -210,6 +210,11 @@ fn environment_availability_uses_its_current_home_and_newest_matching_probe() {
     assert!(app.projects.set_isolation(&project, Some(Isolation::Rift)));
     assert_eq!(app.project_for(&project).unwrap().home_path, original_home);
     let environment_id = app.project_for(&project).unwrap().environment_id.clone();
+    // Environment and project choices are independent after M3.2.
+    app.projects
+        .environment_mut(&environment_id)
+        .unwrap()
+        .isolation = Some(Isolation::Rift);
     app.snapshot_observations.projects.lock().unwrap().insert(
         project.clone(),
         ProjectObservation {

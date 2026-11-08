@@ -9,7 +9,7 @@ export function environmentDraftHtml(state, snapshot) {
   const devices = choices.length > 1 ? `<label for="create-environment-device">Device</label><select id="create-environment-device"><option value="">Choose a device</option>${choices.map(device => `<option value="${esc(device.id)}"${device.id === draft.deviceId ? ' selected' : ''}>${esc(device.name)}</option>`).join('')}</select>` : '';
   return `<h3 id="create-workspace-title">New environment</h3><p class="sub">Choose folders or Git remotes. Nothing is created until Create workspace.</p>${devices}
     ${folderDraftsHtml(draft.sources, {deviceId:draft.deviceId,snapshot})}
-    <label for="create-environment-name">Environment name (optional)</label><input id="create-environment-name" ${fieldTraits('line','next')} value="${esc(draft.name)}">
+    <label for="create-environment-label">Environment name (optional)</label><input id="create-environment-label" ${fieldTraits('line','next')} value="${esc(draft.name)}">
     <label for="create-environment-isolation">Isolation</label><select id="create-environment-isolation">${isolationOptionsHtml(draft.isolation,null,{inheritLabel:'Inherit device setting'})}</select>`;
 }
 export function initialEnvironmentDraft(options, model) {
@@ -31,12 +31,12 @@ export function wireEnvironmentDraft(host, state, {save,paint,fail}) {
   const changed = () => {
     if (draft.nameAutomatic) {
       draft.name = draft.sources[0]?.name || '';
-      host.querySelector('#create-environment-name').value = draft.name;
+      host.querySelector('#create-environment-label').value = draft.name;
     }
     save();
   };
   wireFolderDrafts(host,{sources:draft.sources,deviceId:draft.deviceId,changed,repaint:paint,fail});
-  host.querySelector('#create-environment-name').oninput = event => {draft.name=event.target.value;draft.nameAutomatic=!draft.name.trim();save();};
+  host.querySelector('#create-environment-label').oninput = event => {draft.name=event.target.value;draft.nameAutomatic=!draft.name.trim();save();};
   host.querySelector('#create-environment-isolation').onchange = event => {draft.isolation=event.target.value;save();};
   const device = host.querySelector('#create-environment-device');
   if (device) device.onchange = () => {

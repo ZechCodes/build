@@ -265,6 +265,7 @@ async fn the_greeting_announces_push_events() {
             "changes",
             "bridge.restarting",
             "writes.confirmed",
+            "writes.progress",
             "bridge.update_status",
             "models.changed",
             "rtc.diagnostics",

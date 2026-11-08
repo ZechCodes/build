@@ -18,6 +18,23 @@ struct SourceReference<'a> {
     source: ProjectSource,
 }
 
+impl SourceReference<'_> {
+    fn belongs_to_source(
+        &self,
+        project_id: &str,
+        source_id: &str,
+        inherited_environment: Option<&str>,
+    ) -> bool {
+        if self.source.id != source_id {
+            return false;
+        }
+        match inherited_environment {
+            Some(id) => self.project_id.is_none() && self.environment_id == id,
+            None => self.project_id == Some(project_id),
+        }
+    }
+}
+
 fn canonical_reference(mut source: ProjectSource) -> ProjectSource {
     source.path = std::fs::canonicalize(&source.path)
         .unwrap_or_else(|_| crate::worktree::canonical_planned_path(&source.path));
@@ -185,31 +202,61 @@ impl ProjectRegistry {
         project_id: &str,
         source_id: &str,
     ) -> Vec<ProjectSource> {
-        let inherited_environment = self.get(project_id).and_then(|project| {
-            let environment = self.environment(&project.environment_id)?;
-            let live = project
-                .sources
-                .iter()
-                .find(|source| source.id == source_id)?;
-            environment
-                .sources
-                .iter()
-                .any(|source| source.id == source_id && source.path == live.path)
-                .then_some(environment.id.as_str())
-        });
+        let inherited_environment = self.inherited_source_environment(project_id, source_id);
         self.source_references()
             .into_iter()
             .filter(|reference| {
-                if reference.source.id != source_id {
-                    return true;
-                }
-                match inherited_environment {
-                    Some(id) => reference.project_id.is_some() || reference.environment_id != id,
-                    None => reference.project_id != Some(project_id),
-                }
+                !reference.belongs_to_source(project_id, source_id, inherited_environment)
             })
             .map(|reference| canonical_reference(reference.source))
             .collect()
+    }
+
+    /// An inherited edit changes every dependent project's effective sources.
+    /// Each dependent's additions, including parked projects, must stay unique.
+    /// A project-owned edit only needs its own effective source membership.
+    pub(in crate::app) fn source_repoint_duplicates(
+        &self,
+        project_id: &str,
+        source_id: &str,
+        candidate: &Path,
+    ) -> bool {
+        let Some(project) = self.get(project_id) else {
+            return false;
+        };
+        let Ok(canonical) = super::canonical_source_path(candidate) else {
+            return false;
+        };
+        let inherited_environment = self.inherited_source_environment(project_id, source_id);
+        self.source_references()
+            .into_iter()
+            .filter(|reference| reference.environment_id == project.environment_id)
+            .filter(|reference| {
+                inherited_environment.is_some()
+                    || reference.project_id.is_none()
+                    || reference.project_id == Some(project_id)
+            })
+            .filter(|reference| {
+                !reference.belongs_to_source(project_id, source_id, inherited_environment)
+            })
+            .any(|reference| {
+                super::canonical_source_path(&reference.source.path)
+                    .is_ok_and(|path| path == canonical)
+            })
+    }
+
+    fn inherited_source_environment(&self, project_id: &str, source_id: &str) -> Option<&str> {
+        let project = self.get(project_id)?;
+        let environment = self.environment(&project.environment_id)?;
+        let live = project
+            .sources
+            .iter()
+            .find(|source| source.id == source_id)?;
+        environment
+            .sources
+            .iter()
+            .any(|source| source.id == source_id && source.path == live.path)
+            .then_some(environment.id.as_str())
     }
 
     /// Directory equality identifies references, never project identity or a

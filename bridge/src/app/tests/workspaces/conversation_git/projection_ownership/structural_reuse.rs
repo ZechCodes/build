@@ -451,7 +451,8 @@ fn cold_guards_and_changed_native_state_root_do_not_reuse_old_classification() {
     );
     let project = app.projects.project_id_of("run-00").unwrap().to_owned();
     let project_path = app.projects.get(&project).unwrap().repo_path.clone();
-    let scratch = crate::app::projects::scratch_dir(&app.state_root, project_path.to_str().unwrap());
+    let scratch =
+        crate::app::projects::scratch_dir(&app.state_root, project_path.to_str().unwrap());
     std::fs::create_dir_all(&scratch).unwrap();
     app.runs.get_mut("run-00").unwrap().worktree.path = scratch;
     app.initialize_snapshot_projection();

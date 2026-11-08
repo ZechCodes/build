@@ -693,9 +693,9 @@ impl AppState {
     /// Nothing mints such a run any more — work happens in workspaces — but a
     /// store written before that holds runs adopted on the repo root, and the
     /// verbs that remove a run's directory must never remove the repository.
-    /// Compared by canonical path, off the two paths the run record already
-    /// carries, so the guard holds for a run this daemon never minted and can
-    /// never disagree with where the run actually works.
+    /// Callers require a live project binding first. Compare its resolved home
+    /// with the recorded checkout by canonical path, including legacy runs
+    /// this daemon never minted.
     pub(in crate::app) fn stands_in_the_repository(
         &self,
         run_id: &str,

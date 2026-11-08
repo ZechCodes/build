@@ -1174,7 +1174,15 @@ and its controls are
 Environment records are private bridge config state (`app/environments/`).
 Config load migrates each legacy project, parked entries included, into its own
 environment before serving. A stable `project_key` initially equals its old
-canonical home path; identity consumers remain path-based until M0.2. The
+canonical home path. Identity consumers resolve opaque keys through
+`AppState::project_by_key`; filesystem consumers use the resolved home/source
+directory. Tracker rows, persisted runs/plans, summary pools, review delivery,
+archives and SQL project mappings retain that key. Recovery never registers a
+project from a record: an unresolved key keeps the repo-missing behavior. Stage
+reads fall back only to a resolved project home; a surviving recorded checkout
+remains readable. Project workers require a live binding and available home.
+Project scratch hashes the key, preserving migrated folders and separating siblings.
+The per-usage inventory is `planning/v2/Environments Identity Audit.md`. The
 registry keeps environment-owned source references and their monotonic counter,
 plus project-owned added sources, and projects retain an effective-source read
 projection for existing call sites. Source configuration transactions stage

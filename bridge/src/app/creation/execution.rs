@@ -4,7 +4,7 @@ use crate::workspace::Workspace;
 
 const STALE_PROJECT_IDENTITY: &str = "saved creation project identity is no longer available";
 
-pub(super) fn execute(
+pub(in crate::app) fn execute(
     state: &Arc<Mutex<AppState>>,
     mut record: MutationRecord,
 ) -> Result<(), String> {

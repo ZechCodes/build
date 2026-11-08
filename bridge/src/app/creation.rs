@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 pub(in crate::app) const PRINCIPAL: &str = "device_user";
 mod execution;
 mod service;
-use execution::execute;
+pub(in crate::app) use execution::execute;
 #[cfg(test)]
 use execution::project_step;
 pub(in crate::app) use service::{dispatch, start};

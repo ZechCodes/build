@@ -297,3 +297,23 @@ fn recovery_uses_home_path_for_a_resolved_project_with_a_missing_repo() {
     assert_eq!(state.projects.project_id_of("plan-missing"), None);
     assert_eq!(state.projects.project_id_of("run-missing"), None);
 }
+
+#[test]
+fn new_project_runs_recover_to_their_project() {
+    let root=tempfile::tempdir().unwrap();
+    let home=root.path().join("home"); std::fs::create_dir(&home).unwrap();
+    let mut state=rooted(root.path()).with_config(root.path().join("config.json")).unwrap().with_task_store(root.path().join("tasks")).unwrap();
+    state.add_project(home.clone(),"main".into()); state.persist();
+    let shared=std::sync::Arc::new(std::sync::Mutex::new(state));
+    let id=uuid::Uuid::new_v4().to_string();
+    let record=crate::app::creation::admit(&shared,"environment.create",json!({"sources":[{"path":home}],"project":{"name":"fresh","workspace":{}}}),crate::api::writes::WriteMetadata {operation_id:id.clone(),after:None}).unwrap();
+    // The executor is driven synchronously by the creation test fixture too.
+    crate::app::creation::execute(&shared,record).unwrap();
+    let mut state=shared.lock().unwrap();
+    let record=state.store.as_ref().unwrap().writer().creation_record(crate::app::creation::PRINCIPAL,&id).unwrap().unwrap();
+    let project=record.execution["project_id"].as_str().unwrap().to_string();
+    let key=state.projects.get(&project).unwrap().project_key.clone();
+    let checkout=root.path().join("run-checkout");std::fs::create_dir(&checkout).unwrap();
+    state.recover_run(run_record("run-fresh",&key,&checkout)).unwrap();
+    assert_eq!(state.projects.project_id_of("run-fresh"),Some(project.as_str()));
+}

@@ -3,6 +3,7 @@ use crate::harness::HarnessContext;
 use tempfile::TempDir;
 
 mod admission_recovery;
+mod environment_create;
 mod continuation_identity;
 mod discard_identity;
 mod failure_finalization;
@@ -20,6 +21,11 @@ pub(super) use admission_recovery::SimulatedCrash;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Boundary {
     AdmissionPrepared,
+    EnvironmentPersisted,
+    SourceStarted,
+    SourcePrepared,
+    EnvironmentStarted,
+    EnvironmentCheckpointed,
     ProjectCheckpointed,
     ProjectIdentityCheckpointed,
     ProjectPersisted,

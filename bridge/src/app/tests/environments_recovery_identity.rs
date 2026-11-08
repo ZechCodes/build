@@ -547,3 +547,63 @@ async fn restore_run_recovery_keeps_git_off_lock_and_refuses_a_racing_start() {
     assert_eq!(app.active_deferred_filesystem_jobs, 0);
     assert!(Path::new(&record.worktree_path).is_dir());
 }
+
+async fn wait_for_restore_claims_to_settle(state: &Arc<Mutex<AppState>>) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !state.lock().unwrap().restored_recovery.in_flight.is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_reservation_fences_the_ninth_ready_run_before_claim() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, project, original) = deferred_run_fixture(root.path(), false);
+    for n in 0..9 {
+        let mut record = original.clone();
+        record.id = format!("run-ready-{n}");
+        record.agents = crate::agent::stored_agents(&record.id);
+        state.store.as_ref().unwrap().save_run(&record).unwrap();
+        state.recover_run(record).unwrap();
+    }
+    let (gate, handle) = crate::app::OffLockGate::new();
+    state.off_lock_gate = Some(gate);
+    let shared = state.shared();
+    let (reply, before, queued) = {
+        let mut app = shared.lock().unwrap();
+        assert_eq!(app.handle(req("project.restore", json!({"project_id":project})))["ok"], true);
+        let queued = app.restored_recovery.deferred.iter().find(|id| !app.restored_recovery.in_flight.contains(*id)).unwrap().clone();
+        let before = serde_json::to_value(app.committed_run_snapshot(&queued)).unwrap();
+        let reply = app.handle(req("agent.add", json!({"entity_id":queued})));
+        app.off_lock_gate = None;
+        (reply, before, queued)
+    };
+    for _ in 0..8 { handle.release(); }
+    wait_for_restore_claims_to_settle(&shared).await;
+    assert_eq!(reply["error_code"], "busy", "{reply}");
+    assert_eq!(serde_json::to_value(shared.lock().unwrap().committed_run_snapshot(&queued)).unwrap(), before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_reservation_fences_branch_dispatch_during_paused_git() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, project, record) = deferred_run_fixture(root.path(), false);
+    state.recover_run(record.clone()).unwrap();
+    let (gate, handle) = crate::app::OffLockGate::new();
+    state.off_lock_gate = Some(gate);
+    let shared = state.shared();
+    shared.lock().unwrap().handle(req("project.restore", json!({"project_id":project})));
+    let handle = tokio::task::spawn_blocking(move || { handle.wait_for_arrival(); handle }).await.unwrap();
+    let (reply, before) = {
+        let mut app = shared.lock().unwrap();
+        app.off_lock_gate = None;
+        let before = serde_json::to_value(app.committed_run_snapshot(&record.id)).unwrap();
+        let reply = app.handle(req("branch.dispatch", json!({"project_id":project,"branch":record.branch,"instruction":"Join this branch"})));
+        (reply, before)
+    };
+    handle.release();
+    wait_for_restore_claims_to_settle(&shared).await;
+    assert_eq!(reply["error_code"], "busy", "{reply}");
+    assert_eq!(serde_json::to_value(shared.lock().unwrap().committed_run_snapshot(&record.id)).unwrap(), before);
+}

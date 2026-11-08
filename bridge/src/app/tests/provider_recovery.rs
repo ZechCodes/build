@@ -608,6 +608,39 @@ async fn restore_provider_episodes_continue_after_failure_and_retry_without_rest
         .unwrap()
         .needs_notice
     );
+    let retry_queued = settled.restored_recovery.provider_projects.contains(&project);
     drop(settled);
+    assert!(!retry_queued, "a delivered terminal notice must leave the retry set");
+    let checkpoint = fixture.root.path().join("provider-recovery").join(sha256_hex(blocked.scope.agent_id.as_bytes())).join(format!("{}.json", blocked.id));
+    let before = std::fs::metadata(&checkpoint).unwrap().modified().unwrap();
+    for _ in 0..2 { shared.lock().unwrap().retry_restored_provider_notices(); }
+    assert_eq!(std::fs::metadata(checkpoint).unwrap().modified().unwrap(), before);
     drop(shared);
+}
+
+#[tokio::test]
+async fn provider_notice_retry_survives_restart_without_another_restore() {
+    let mut fixture = RecoveryFixture::new();
+    let project = fixture.state().projects.iter().next().unwrap().id.clone();
+    fixture.state().store.as_ref().unwrap().writer_for_test().execute_batch("CREATE TRIGGER fail_boot_notice BEFORE INSERT ON tracker_comments BEGIN SELECT RAISE(ABORT,'temporary boot notice failure'); END;").unwrap();
+    fixture.state().projects.at_mut(0).archived_at = Some(1);
+    assert_eq!(fixture.state().handle(req("project.restore", json!({"project_id":project})))["ok"], true);
+    assert!(fixture.persisted_episode().needs_notice);
+    fixture.reopen();
+    assert!(fixture.state().replay_provider_recovery_episodes().is_err());
+    assert!(fixture.state().restored_recovery.provider_projects.contains(&project), "boot must reconstruct the retry obligation from the durable owed notice");
+    fixture.state().store.as_ref().unwrap().writer_for_test().execute_batch("DROP TRIGGER fail_boot_notice;").unwrap();
+    let root = fixture.root.path().to_path_buf();
+    let scope = fixture.episode.scope.clone();
+    let episode = fixture.episode.id.clone();
+    let shared = fixture.state.take().unwrap().shared();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while crate::provider_recovery::read_episode(&root, &scope.agent_id, &episode).unwrap().unwrap().needs_notice {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }).await.expect("boot retry must deliver after the fault clears");
+    let app = shared.lock().unwrap();
+    assert!(!app.restored_recovery.provider_projects.contains(&project));
+    let comments = app.store.as_ref().unwrap().load_tracker_timeline(&fixture.task).unwrap().iter().filter(|entry| matches!(entry, crate::tracker::TimelineEntry::Comment(_))).count();
+    assert_eq!(comments, 1);
 }

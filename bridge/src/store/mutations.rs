@@ -290,6 +290,13 @@ fn retry(
     admission: &MutationAdmission,
     record: MutationRecord,
 ) -> Result<MutationRecord, StoreError> {
+    let mut compared = admission.clone();
+    if creation::is_creation(&record.method) {
+        // Concurrent callers can mint different provisional server identities.
+        // Compare client intent using the reservation that won admission; the
+        // returned record, including acceptance, always belongs to that winner.
+        compared.reservations = record.reservations.clone();
+    }
     let selected = admission
         .after
         .as_ref()
@@ -302,9 +309,9 @@ fn retry(
     )?;
     let hash = format!(
         "{:x}",
-        Sha256::digest(intent(admission, &selected).as_bytes())
+        Sha256::digest(intent(&compared, &selected).as_bytes())
     );
-    if hash != record.intent_hash || (!record.expired && original != intent(admission, &selected)) {
+    if hash != record.intent_hash || (!record.expired && original != intent(&compared, &selected)) {
         return Err(StoreError::OperationConflict {
             operation_id: admission.operation_id.clone(),
         });

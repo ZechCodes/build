@@ -266,11 +266,11 @@ function mountTasksTab(body, { canonical, callRpc, context, feed, agentSelection
 /** Files over every directory of the workspace, one root each (#174). The
  *  route's `sourceId` is the opened file's root and its `file` a path in that
  *  root's directory; with no file open it is the first root. */
-function mountFilesPane(body, { canonical, workspace, callRpc, cacheScope }) {
+function mountFilesPane(body, { canonical, workspace, callRpc, cacheScope, readOnly }) {
   const roots = workspaceFilesRoots(workspace, canonical.workspaceId);
   const openAt = canonical.file ? { rootId: canonical.sourceId, path: canonical.file, line: canonical.line || null } : null;
   const files = renderFilesTab(body, {
-    roots,
+    roots, readOnly,
     layoutEntityId: workspaceLayoutCacheId(canonical.workspaceId),
     callRpc,
     cacheScope,
@@ -498,6 +498,7 @@ function refreshWorkspacePane(state, workspace) {
     workspace: state.workspace,
     callRpc: state.callRpc,
     cacheScope: state.context.cacheScope,
+    readOnly: state.readOnly,
     agentSelection: state.selection,
     context: state.context,
     onSelectDirectory: (next, commit) => standOnDirectory(state, next, commit),
@@ -557,8 +558,9 @@ export async function renderWorkspace() {
   });
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
   const archiveView = mountArchivedProjectView(root, { deviceId: route.deviceId, projectId: route.projectId,
-    callRpc: workspaceResultRpc(state), archiveMutationHosts: [$("#agent-rail"), $("#tb-verb")] });
+    callRpc: workspaceResultRpc(state), archiveMutationHosts: [$("#agent-rail"), $("#tb-verb")], onArchiveChanged: () => state.pane?.refreshReadOnly?.() });
   state.callRpc = archiveView.callRpc;
+  state.readOnly = archiveView.readOnly;
   // The rail is the workspace's, not a directory's: it stands on the route
   // alone, before the record naming the workspace has landed.
   state.rail = mountWorkspaceRail($("#dir-rail"), {

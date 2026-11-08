@@ -43,6 +43,7 @@ import { mountChanges } from "../src/views/workspaceChanges.js";
 import { mountArchivedProjectView } from "../src/core/archivedProjectView.js";
 import { hideCommentPop } from "../src/commentPop.js";
 import { renderProject } from "../src/views/projectView.js";
+import { rememberFileUploadSupport } from "../src/core/fileUploadSupport.js";
 import { taskAddress } from "../src/core/taskCache.js";
 import { renderTask } from "../src/views/taskView.js";
 import { renderBranch } from "../src/views/branchView.js";
@@ -85,7 +86,7 @@ beforeEach(async () => {
     return new Promise(() => {});
   });
   runtime.context = { deviceId, rpc: callRpc, active: () => true, modelCatalog: () => ({ providers: [] }), refreshModelCatalog: async () => ({ providers: [] }),
-    cacheScope: { deviceId, address: a => ({ deviceId, ...a }) } };
+    cacheScope: { deviceId, active: () => true, address: a => ({ deviceId, ...a }) } };
   runtime.feed = { projects: [project], workspaces: [], items: [], runs: [], pending: [], devices: {} };
   App.devices = [{ id: deviceId, name: "Device" }]; App.viewingContext = createViewingContext();
   await writeCached({ ...address, kind: "environment-support" }, { list: true, archive: true, projectRename: true, environmentRename: true, addedSources: true, bridge_epoch: "test-epoch" });
@@ -254,4 +255,47 @@ it.each([true, false])("legacy plan route mounts the archive boundary (project i
   expect(document.querySelector("#root").dataset.projectArchiveState).toBe("archived");
   App.viewDispose(); App.viewDispose = null;
   expect(document.querySelector("#root").hasAttribute("data-project-archive-state")).toBe(false);
+});
+
+async function mountFilesRoute(route, archived) {
+  await cacheProject({ ...project, archived_at: archived ? 12 : null });
+  await rememberFileUploadSupport(deviceId, { fs: { uploads: true, createDirectory: true } });
+  const entityId = route === "branch" ? "historical-run" : directoryCacheId({ workspace_id: "ws-history", source_id: source.id });
+  await writeCached({ deviceId, entityId, kind: "tree", sub: "" }, { path: "", entries: [{ name: "docs", kind: "dir" }] });
+  if (route === "branch") {
+    runtime.feed.items = [{ kind: "branch", deviceId, project_id: projectId, run_id: entityId, branch: "history" }];
+    runtime.feed.runs = [{ deviceId, project_id: projectId, run_id: entityId, branch: "history", state: "done" }];
+    App.route = { name: "branch", deviceId, projectId, branch: "history", tab: "files" };
+    await renderBranch();
+  } else {
+    runtime.feed.workspaces = [{ id: "ws-history", project_id: projectId, status: "finished", directories: [{ ...source, source_id: source.id }] }];
+    App.route = { name: "workspace", deviceId, projectId, workspaceId: "ws-history", sourceId: source.id, tab: "files" };
+    await renderWorkspace();
+  }
+  await vi.waitFor(() => expect(document.querySelector('.frow[data-path="docs"]')).not.toBeNull());
+  // Capability paint must finish before testing offers, even for archived rows.
+  await vi.waitFor(() => expect(document.querySelector('[data-upload-action="upload"]')).not.toBeNull());
+  await vi.waitFor(() => expect(document.querySelector("#root").dataset.projectArchiveState).toBe(archived ? "archived" : "active"));
+  return document.querySelector('.frow[data-path="docs"]');
+}
+const openFileMenu = row => row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+it.each(["branch", "workspace"])("archived %s Files route omits Upload and New directory", async route => {
+  const row = await mountFilesRoute(route, true); openFileMenu(row);
+  expect(document.querySelector(".file-context-menu")).toBeNull();
+  expect(callRpc.mock.calls.some(([method]) => method === "fs.createDirectory" || method === "fs.uploadBegin")).toBe(false);
+});
+it.each(["branch", "workspace"])("active %s Files route offers Upload and New directory and retires its menu on archive", async route => {
+  const row = await mountFilesRoute(route, false); openFileMenu(row);
+  const offered = [...document.querySelectorAll('.file-context-menu [role="menuitem"]')].map(item => item.textContent.trim());
+  expect(offered).toContain("Upload files here"); expect(offered).toContain("New directory");
+  await cacheProject(project);
+  await vi.waitFor(() => expect(document.querySelector("#root").dataset.projectArchiveState).toBe("archived"));
+  await vi.waitFor(() => expect(document.querySelector(".file-context-menu")).toBeNull());
+  openFileMenu(row);
+  expect(document.querySelector(".file-context-menu")).toBeNull();
+  await cacheProject({ ...project, archived_at: null });
+  await vi.waitFor(() => expect(document.querySelector("#root").dataset.projectArchiveState).toBe("active"));
+  openFileMenu(row);
+  expect(document.querySelector(".file-context-menu").textContent).toContain("Upload files here");
+  expect(document.querySelector(".file-context-menu").textContent).toContain("New directory");
 });

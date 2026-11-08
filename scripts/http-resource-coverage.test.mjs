@@ -279,8 +279,9 @@ const sourceFingerprintParts = {
   // cache rows. Source read-only controls and file-menu guards add no RPC verbs.
   // #1073: archive observation forwards the caller unchanged; restore, rename,
   // and environment edits require a fresh capable greeting and publish cache
-  // projections. Source cards translate only the three SOURCE_METHODS keys.
-  "core/archivedProjectView.js": ["a2004a3e", "c4442470", "1a8276a8", "aecbc55a", "3d0397df", "1ad2013b", "f2cc8fd6", "240b1d52"],
+  // projections. Archive retries retain only an opening-owned in-flight latch;
+  // cached archive transitions retire Files menus without changing RPC edges. Source cards translate only the three SOURCE_METHODS keys.
+  "core/archivedProjectView.js": ["3752fb0a", "1bd74b83", "477027f9", "0caa3694", "75e564ba", "74d7a7f2", "668502e2", "c6f97911"],
   "core/environmentWrites.js": ["035dbf26", "683d9297", "9306e4cc", "51f549d6", "c0cad335", "51198b2c", "3981d520", "129d2b31"],
   "sheets/environmentSettings.js": ["46b8c3c8", "c4c507ab", "4e081f06", "84ba399f", "32479c6d", "4110a01f", "e3233fe3", "f1acab81"],
   "sheets/projectGeneral.js": ["a89586e4", "f50590d4", "7dfb57a5", "46b4313c", "b7cf7255", "76085087", "8abea538", "ec72d05c"],
@@ -463,7 +464,7 @@ const sourceFingerprintParts = {
   "terminal/manager.js": ["4027a8b0", "af931af9", "3d71d687", "c930e06b", "bd55b938", "ad0db4da", "e20dc150", "60ed795b"],
   "terminal/session.js": ["ce4e3036", "ac5b84b3", "ae7583e9", "2b940e62", "4dfe75b7", "d77a06e7", "dfda65ca", "8c8ede4e"],
   "views/archive.js": ["6f4a7962", "88f34292", "73eafead", "5dc6229b", "5b040b7a", "09baf137", "8cbbce83", "6c83d400"],
-  "views/branchView.js": ["5bea4685", "b85a7cb2", "9a9b09df", "b37aaf56", "0609dff8", "b3e8ea97", "25d68b9b", "00e3e7f2"],
+  "views/branchView.js": ["70c29ffd", "bb5b3d73", "5e035b0d", "db7630f9", "db5f60e3", "05e6694e", "84d8115f", "5eb5b72c"],
   // #997 deviceProjects.js:82: the existing project.list loader delegates to owned device recovery.
   "views/deviceProjects.js": ["1a1e6df3", "03d87e50", "3c8c3e09", "d3d2ecc9", "2b9c040f", "df2d7629", "c493f430", "adcc7c93"],
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
@@ -474,7 +475,7 @@ const sourceFingerprintParts = {
   "views/projectView.js": ["24538ac1", "a6a75ad3", "665099d8", "839998b0", "79a97193", "5e755b82", "4be8f527", "d1b8c73d"],
   "views/taskReview.js": ["7d540d05", "70beae35", "200434ea", "decae581", "f1b126d6", "9a38fe38", "642a621a", "2e34a257"],
   "views/taskView.js": ["4b923ba1", "b951cd49", "cf886160", "2afd333d", "dd7b61bc", "40dbcdfb", "19494b00", "6f15dd58"],
-  "views/workspaceView.js": ["c1cf7fce", "0e9f3802", "34bbe01a", "29bbe444", "805119ba", "9e283f28", "d464e471", "df16148b"],
+  "views/workspaceView.js": ["c231dfe4", "25b9827f", "76205401", "d45022da", "20df0c39", "527894af", "d602f675", "5d5d8401"],
   "views/worktreeReview.js": ["85ee8f63", "e33ae091", "1057ec2b", "8bd416bd", "d4b709ba", "71953ecd", "05807b6d", "ee80f4db"],
   "core/directoryPages.js": ["1114bcb9", "d7703490", "4542e5ef", "d06e4f25", "b52d6e2e", "4c206d81", "9586fd6a", "92ccc080"],
   "core/directoryWatcher.js": ["3016199e", "f2ebe782", "5731fa24", "665dba3a", "6fd96a9e", "f5a4ee11", "c6841b70", "db07db4f"],

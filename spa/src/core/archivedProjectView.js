@@ -22,7 +22,7 @@ function mutationControl(node) {
   return node.matches(mutationSelectors) || node.closest("[data-archived-mutation]");
 }
 
-export function mountArchivedProjectView(host, { deviceId, projectId, callRpc, archiveMutationHosts = [] }) {
+export function mountArchivedProjectView(host, { deviceId, projectId, callRpc, archiveMutationHosts = [], onArchiveChanged = () => {} }) {
   host.setAttribute("data-project-archive-state", "unknown");
   let active = true, project = null, support = {}, refusal = "", reading = 0;
   let banner = null;
@@ -73,7 +73,9 @@ export function mountArchivedProjectView(host, { deviceId, projectId, callRpc, a
   }
   function publishArchiveState(archived) {
     const state = archived ? "archived" : "active";
-    if (host.getAttribute("data-project-archive-state") !== state) host.setAttribute("data-project-archive-state", state);
+    if (host.getAttribute("data-project-archive-state") === state) return;
+    host.setAttribute("data-project-archive-state", state);
+    onArchiveChanged();
   }
   function paint() {
     if (!active) return;
@@ -117,6 +119,7 @@ export function mountArchivedProjectView(host, { deviceId, projectId, callRpc, a
   for (const root of hosts) observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled", "contenteditable"] });
   void read();
   return {
+    readOnly: () => projectIsArchived(project),
     callRpc: async (...args) => {
       try { return await callRpc(...args); }
       catch (error) {

@@ -169,7 +169,7 @@ export async function renderBranch() {
   // over. An operation already awaiting a reply still finishes on the session
   // that accepted it.
   const archiveView = mountArchivedProjectView(root, { deviceId, projectId, callRpc: context.rpc,
-    archiveMutationHosts: [$("#agent-rail"), $("#tb-verb")] });
+    archiveMutationHosts: [$("#agent-rail"), $("#tb-verb")], onArchiveChanged: () => pane?.refreshReadOnly?.() });
   const callRpc = archiveView.callRpc;
   // The frozen treatment every pane shows while its machine is unreachable: one
   // device going offline says nothing about the others.
@@ -355,6 +355,7 @@ export async function renderBranch() {
     if (tab === "files") {
       pane = renderFilesTab(host, {
         scope,
+        readOnly: archiveView.readOnly,
         callRpc,
         cacheScope: context.cacheScope,
         openAt,

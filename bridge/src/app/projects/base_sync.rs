@@ -289,7 +289,7 @@ fn sync_for_the_service(subject: SyncSubject, state: &Arc<Mutex<AppState>>) -> O
         .lock()
         .unwrap()
         .capture_environment_repository_refresh();
-    environments.observe(&[subject.path.clone()]);
+    environments.observe(std::slice::from_ref(&subject.path));
     Some(Synced {
         subject,
         report,
@@ -345,7 +345,7 @@ fn sync_for_a_cut(
             .lock()
             .unwrap()
             .capture_environment_repository_refresh();
-        refresh.observe(&[subject.path.clone()]);
+        refresh.observe(std::slice::from_ref(&subject.path));
         refresh
     });
     Ok(Synced {

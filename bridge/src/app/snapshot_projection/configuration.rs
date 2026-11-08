@@ -57,8 +57,6 @@ impl AppState {
         // Preserve the established mutation-row shape; list-only metadata stays
         // on project.list and its pushed snapshots.
         for name in [
-            "environment_id",
-            "environment_name",
             "project_key",
             "device",
             "open_tasks",

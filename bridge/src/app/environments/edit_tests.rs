@@ -52,6 +52,7 @@ fn environment_rename_keeps_ids_and_paths() {
         "project_key",
         "path",
         "environment_id",
+        "environment_name",
         "sources",
     ] {
         assert_eq!(row[key], before[key]);

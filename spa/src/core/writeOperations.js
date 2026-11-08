@@ -1,6 +1,6 @@
 import { createWriteOperationCache } from "./writeOperationCache.js";
 import { createWriteOperationWorker } from "./writeOperationWorker.js";
-import { creationWritesSupported, isCreationWrite, normalizeWriteProgress } from "./writeOperationProgress.js";
+import { creationNeverSent, creationTransportIntent, creationWritesSupported, isCreationWrite, normalizeWriteProgress, unsupportedCreationOutcome } from "./writeOperationProgress.js";
 import {
   copyIntent, needsWriteStatus, terminalWrite, writeDependencies, writeRefusal, provenExpiredFailure, expiredOperationFailure,
   wireOperationId, wireRevision, writeSummaryFrame, writeSubmissionOrder, knownWriteSummary, operationFailure, WRITE_STATUS_LIMIT,
@@ -108,7 +108,8 @@ export function createWriteOperationService(options) {
     const row = copyIntent({ accountId: options.accountId, deviceId: options.deviceId, principalId: options.principalId,
       operationId, request, method: request.method, after, owner: input.owner, generation: input.generation,
       draft: input.draft, baseRevision: input.baseRevision, overlay: input.overlay || [], reservedIds: input.reservedIds || [],
-      acceptedEpoch: null, journalIncarnation: held.greeting.journal_incarnation, revision: 0, state: "queued", acknowledged: false, overlayActive: true, createdAt: now() });
+      acceptedEpoch: null, journalIncarnation: held.greeting.journal_incarnation, revision: 0, state: "queued", acknowledged: false, overlayActive: true, createdAt: now(),
+      ...creationTransportIntent(request.method) });
     await installIntentEffects(row);
     await cache.put(row);
     await refreshSnapshot();
@@ -230,6 +231,7 @@ export function createWriteOperationService(options) {
     sending.set(row.operationId, held);
     try {
       if (row.awaitPredecessorAck && !await prepareBatchSend(row, held)) return;
+      if (isCreationWrite(row.request.method) && !await prepareCreationTransport(row, held, leaseActive)) return;
       const frame = await raw(held, row.request.method, row.request.params, { write: { operation_id: row.operationId, after: row.after }, assertCurrent: () => assertLease(leaseActive) });
       if (current(held)) await handleFrame(frame, held);
     } catch (error) {
@@ -239,6 +241,14 @@ export function createWriteOperationService(options) {
       worker.wake();
     }
   }
+  async function prepareCreationTransport(row, held, leaseActive) {
+    const saved = await cache.update(row.operationId, value => {
+      if (!value || terminalWrite(value) || value.acknowledged || value.unresolved) return null;
+      if (value.journalIncarnation !== held.greeting.journal_incarnation) return null;
+      return { ...value, transportAttempted: true };
+    }, { accept: () => current(held) && leaseActive() });
+    return Boolean(saved?.transportAttempted && !terminalWrite(saved) && !saved.acknowledged && !saved.unresolved && current(held) && leaseActive());
+  }
   async function sendFailed(row, error, held) {
     if (!current(held)) return;
     if (definitiveRefusal(error)) return refused(row, error, held);
@@ -247,7 +257,7 @@ export function createWriteOperationService(options) {
     await refreshSnapshot();
   }
   function setCreationChecking(row, checking, held) {
-    if (!isCreationWrite(row.request.method) || !creationWritesSupported(held.greeting, row.request.method)) return;
+    if (!isCreationWrite(row.request.method)) return;
     return cache.update(row.operationId, value => {
       if (!value || terminalWrite(value) || value.journalIncarnation !== held.greeting.journal_incarnation) return null;
       if (Boolean(value.checking) === checking) return null;
@@ -488,7 +498,7 @@ export function createWriteOperationService(options) {
     const id = wireOperationId(summary);
     const row = await cache.get(id);
     if (!row || !current(held)) return;
-    if (obsoleteSummary(summary, row)) return;
+    if (obsoleteSummary(summary, row, held)) return;
     await recordSummaryProgress(summary, row, held);
     if (summary.state === "not_found") {
       if (row.acknowledged) await quarantine(row, "acknowledged_missing", held);
@@ -520,7 +530,8 @@ export function createWriteOperationService(options) {
       unresolvedReason: unapplied ? null : "result_expired",
     });
   }
-  function obsoleteSummary(summary, row) {
+  function obsoleteSummary(summary, row, held) {
+    if (summary.state === "not_found" && !creationWritesSupported(held.greeting, row.request.method)) return true;
     const revision = wireRevision(summary);
     return Number.isSafeInteger(revision) && revision < row.revision;
   }
@@ -624,9 +635,17 @@ export function createWriteOperationService(options) {
       if (!row) continue;
       if (!held.greeting.capabilities?.includes("bridge.epoch")) await quarantine(row, "bridge_incapable", held);
       else if (row.journalIncarnation !== held.greeting.journal_incarnation) await quarantine(row, "journal_changed", held);
+      else if (!creationWritesSupported(held.greeting, row.request.method)) await retainCreationForGreeting(row, held, compatible);
       else compatible.push(row);
     }
     return compatible;
+  }
+  async function retainCreationForGreeting(row, held, compatible) {
+    const recovered = await cache.update(row.operationId, value => {
+      if (!value || terminalWrite(value) || value.journalIncarnation !== held.greeting.journal_incarnation) return null;
+      return creationNeverSent(value) ? unsupportedCreationOutcome(value) : { ...value, checking: true };
+    }, { accept: () => current(held) });
+    if (recovered && !terminalWrite(recovered)) compatible.push(recovered);
   }
 
   function rebindRefreshes(held) {

@@ -28,6 +28,57 @@ async function bind({ currentGreeting = greeting, active = () => true, status = 
 }
 
 describe("creation write progress", () => {
+  it("records whether a new creation has reached transport before its raw handoff", async () => {
+    const raw = vi.fn(async () => {
+      expect(await cache.get("attempt")).toMatchObject({ transportAttempted: true });
+      return { ok: true, bridge_epoch: "epoch", write: { phase: "ack", state: "accepted", operation_id: "attempt", revision: 1 } };
+    });
+    const acquire = vi.spyOn(cache, "acquireLease").mockResolvedValue(false);
+    await bind({ raw });
+    void service.submit({ operationId: "attempt", ...intent().request }).catch(() => {});
+    await vi.waitFor(async () => expect(await cache.get("attempt")).toMatchObject({ transportAttempted: false }));
+    expect(raw).not.toHaveBeenCalled();
+    acquire.mockRestore();
+    await service.reconcile();
+    await vi.waitFor(() => expect(raw).toHaveBeenCalledOnce());
+  });
+
+  it("makes a provably never-sent creation recoverable after an environments downgrade", async () => {
+    await cache.put(intent({ state: "queued", acknowledged: false, revision: 0, transportAttempted: false, draft: { name: "Work" } }));
+    const session = await bind({ currentGreeting: { ...greeting, capabilities: ["bridge.epoch"] },
+      status: [{ operation_id: "attempt", state: "not_found" }] });
+    expect(await cache.get("attempt")).toMatchObject({ state: "failed", effect: "unapplied", acknowledged: true, overlayActive: false,
+      draft: { name: "Work" }, confirmation: { state: "failed", effect: "unapplied", error: { code: "write_unsupported" } } });
+    expect(session.callRaw.mock.calls.every(([method]) => method.startsWith("writes."))).toBe(true);
+  });
+
+  it.each([true, undefined])("keeps a possibly sent creation Checking on downgrade (transport marker %s)", async transportAttempted => {
+    await cache.put(intent({ state: "queued", acknowledged: false, revision: 0, ...(transportAttempted === undefined ? {} : { transportAttempted }) }));
+    const session = await bind({ currentGreeting: { ...greeting, capabilities: ["bridge.epoch"] },
+      status: [{ operation_id: "attempt", state: "not_found" }] });
+    expect(await cache.get("attempt")).toMatchObject({ state: "queued", acknowledged: false, checking: true });
+    expect(await cache.get("attempt")).not.toHaveProperty("unresolved");
+    expect(await cache.get("attempt")).not.toHaveProperty("confirmation");
+    expect(session.callRaw.mock.calls.every(([method]) => method.startsWith("writes."))).toBe(true);
+    await service.handleFrame({ type: "writes.confirmed", bridge_epoch: "epoch", operation_id: "attempt", state: "succeeded", revision: 2, result: { workspace: { id: "W" } } });
+    expect(await cache.get("attempt")).toMatchObject({ state: "succeeded", confirmation: { result: { workspace: { id: "W" } } } });
+  });
+
+  it("does not apply creation downgrade recovery to ordinary writes", async () => {
+    await cache.put(intent({ request: { method: "tasks.update", params: { task_id: "T" } }, state: "queued", acknowledged: false, revision: 0, transportAttempted: false }));
+    await bind({ currentGreeting: { ...greeting, capabilities: ["bridge.epoch"] } });
+    expect(await cache.get("attempt")).toMatchObject({ state: "queued", acknowledged: false });
+    expect(await cache.get("attempt")).not.toHaveProperty("checking");
+  });
+
+  it("keeps an acknowledged creation pollable if the downgraded bridge cannot find it", async () => {
+    await cache.put(intent({ transportAttempted: true }));
+    await bind({ currentGreeting: { ...greeting, capabilities: ["bridge.epoch"] }, status: [{ operation_id: "attempt", state: "not_found" }] });
+    expect(await cache.get("attempt")).toMatchObject({ state: "accepted", acknowledged: true, checking: true });
+    expect(await cache.get("attempt")).not.toHaveProperty("unresolved");
+    await service.reconcile();
+    expect(await cache.get("attempt")).toMatchObject({ state: "accepted", checking: true });
+  });
   it("marks a lost creation reply Checking without changing the polling state or retry identity", async () => {
     const status = [];
     const session = await bind({ status, raw: async () => { throw Object.assign(new Error("Reply lost"), { uncertain: true, timedOut: true }); } });

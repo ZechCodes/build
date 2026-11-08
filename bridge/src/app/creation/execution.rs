@@ -142,6 +142,10 @@ fn provision(
         )
         .map(Some);
     }
+    // Capture proof before Started is written. A replay may never borrow the
+    // current process's materialize-error unwind as proof for older effects.
+    let fresh_materialization =
+        evidence["effect_step"] == "workspace" && evidence["effect_state"] == "not_started";
     let evidence = Arc::new(Mutex::new(evidence));
     let observer = observer(state, writer, record, evidence.clone());
     progress(
@@ -152,7 +156,7 @@ fn provision(
         "running",
         None,
     );
-    let result = run_workspace(state, &reserved, Some(observer))?;
+    let result = run_workspace(state, &reserved, Some(observer), fresh_materialization)?;
     let mut saved = evidence.lock().unwrap();
     complete_workspace(state, writer, record, &mut saved)?;
     drop(saved);
@@ -246,7 +250,9 @@ pub(super) fn project_step(
         &provisional_id,
         |project_id| {
             evidence["project_id"] = json!(project_id);
-            evidence["effect_state"] = json!("started");
+            if evidence["effect_step"] == "project" {
+                evidence["effect_state"] = json!("started");
+            }
             writer
                 .checkpoint_creation(PRINCIPAL, &record.operation_id, evidence.clone())
                 .map_err(string)?;
@@ -266,8 +272,11 @@ pub(super) fn project_step(
     #[cfg(test)]
     tests::at_boundary(tests::Boundary::ProjectPersisted);
     set_step(&mut evidence, "project", "done", None);
-    evidence["effect_step"] = json!("workspace");
-    evidence["effect_state"] = json!("not_started");
+    // Looking up an already landed project must not reset workspace evidence.
+    if evidence["effect_step"] == "project" {
+        evidence["effect_step"] = json!("workspace");
+        evidence["effect_state"] = json!("not_started");
+    }
     writer
         .checkpoint_creation(PRINCIPAL, &record.operation_id, evidence.clone())
         .map_err(string)?;
@@ -346,10 +355,11 @@ fn run_workspace(
     state: &Arc<Mutex<AppState>>,
     reserved: &Workspace,
     observer: Option<WorkspaceCreationObserver>,
+    fresh_materialization: bool,
 ) -> Result<Value, String> {
     let work = {
         let mut app = state.lock().unwrap();
-        let work = app.prepare_creation_workspace(reserved, observer)?;
+        let work = app.prepare_creation_workspace(reserved, observer, fresh_materialization)?;
         app.active_deferred_filesystem_jobs += 1;
         app.active_device_registry_jobs += 1;
         work
@@ -420,12 +430,12 @@ fn finish_failure(
         "project"
     };
     set_step(&mut evidence, step, "failed", Some(error));
-    let failed = if evidence["failure_intent"]["error"].is_string() {
-        writer.park_creation(PRINCIPAL, id, "reconciling", evidence)
-    } else {
-        writer.checkpoint_creation(PRINCIPAL, id, evidence)
-    }
-    .map_err(string)?;
+    // The failed step and its terminal intent must survive the same checkpoint.
+    // Restart completes this failure; it must never provision this attempt again.
+    evidence["failure_intent"] = json!({"error":error});
+    let failed = writer
+        .park_creation(PRINCIPAL, id, "reconciling", evidence)
+        .map_err(string)?;
     progress(state, id, &failed.execution, step, "failed", Some(error));
     state.lock().unwrap().mutation_service().clear_progress(id);
     #[cfg(test)]
@@ -457,8 +467,11 @@ fn retain_failure(
     {
         return true;
     }
-    if !matches!(prior.state.as_str(), "accepted" | "executing")
-        || !matches!(current.state.as_str(), "accepted" | "executing")
+    let unstarted_failure = evidence["effect_state"] == "not_started"
+        && evidence["failure_intent"]["error"].is_string();
+    if !unstarted_failure
+        && (!matches!(prior.state.as_str(), "accepted" | "executing")
+            || !matches!(current.state.as_str(), "accepted" | "executing"))
     {
         return true;
     }

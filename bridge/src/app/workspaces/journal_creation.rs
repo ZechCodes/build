@@ -79,6 +79,7 @@ impl AppState {
         &mut self,
         reserved: &Workspace,
         observer: Option<WorkspaceCreationObserver>,
+        fresh_materialization: bool,
     ) -> Result<DeferredGit, String> {
         self.mark_device_lifecycle_dirty()?;
         self.project_for(&reserved.project_id)?;
@@ -126,6 +127,7 @@ impl AppState {
                 source_state: self.source_validation_handle(),
                 synced: Default::default(),
                 observer,
+                fresh_materialization,
                 #[cfg(test)]
                 prepared_gate: None,
             }),
@@ -140,7 +142,7 @@ impl AppState {
         &mut self,
         reserved: &Workspace,
     ) -> Result<DeferredGit, String> {
-        let mut work = self.prepare_creation_workspace(reserved, None)?;
+        let mut work = self.prepare_creation_workspace(reserved, None, false)?;
         work.call = Box::new(CleanupCreation {
             work: work.call,
             registry_root: self.workspaces.root().to_path_buf(),
@@ -161,7 +163,7 @@ impl DeferredGitWork for CleanupCreation {
     fn run(&self, _: &Value) -> Result<Value, String> {
         let registry = WorkspaceRegistry::load(&self.registry_root)?;
         registry.validate_creation_cleanup(&self.reserved)?;
-        cleanup_directories(&self.reserved, &self.rift_root)?;
+        cleanup_directories(&self.reserved, &self.rift_root, false)?;
         match std::fs::remove_dir_all(&self.reserved.root) {
             Ok(()) => Ok(Value::Null),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Value::Null),
@@ -175,14 +177,59 @@ impl DeferredGitWork for CleanupCreation {
         true
     }
 }
-pub(super) fn cleanup_directories(workspace: &Workspace, rift_root: &Path) -> Result<(), String> {
-    for directory in workspace.directories.iter().rev() {
-        if let Some(branch) = &directory.branch {
-            WorktreeManager::new(
+/// A replay cannot prove an unrecorded Git ref was removed. Absence of its
+/// checkout does not help: ref creation precedes checkout materialization.
+/// Fresh workers alone may rely on the materializer unwinding its own Err.
+pub(super) fn cleanup_directories(
+    workspace: &Workspace,
+    rift_root: &Path,
+    fresh_materialization: bool,
+) -> Result<(), String> {
+    if !fresh_materialization
+        && workspace.directories.iter().any(|directory| {
+            directory.is_git
+                && directory.status != crate::workspace::DirectoryStatus::Ready
+                && directory.branch.is_none()
+        })
+    {
+        return Err("Git rollback not proven: an uncheckpointed branch may remain".into());
+    }
+    // All Git removals must succeed before removing any materialized directory.
+    for directory in workspace
+        .directories
+        .iter()
+        .rev()
+        .filter(|d| d.is_git || d.branch.is_some())
+    {
+        cleanup_git_directory(directory, rift_root)?;
+    }
+    for directory in workspace
+        .directories
+        .iter()
+        .rev()
+        .filter(|d| !d.is_git && d.branch.is_none())
+    {
+        if directory.path.exists() {
+            remove_directory_with_rift_root(
                 &directory.source_path,
-                directory.path.parent().unwrap_or(&directory.path),
+                &directory.path,
+                directory.effective_isolation.unwrap_or(workspace.isolation),
+                rift_root,
             )
-            .with_rift_registry_root(rift_root)
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn cleanup_git_directory(directory: &WorkspaceDirectory, rift_root: &Path) -> Result<(), String> {
+    let manager = WorktreeManager::new(
+        &directory.source_path,
+        directory.path.parent().unwrap_or(&directory.path),
+    )
+    .with_rift_registry_root(rift_root);
+    if let Some(branch) = &directory.branch {
+        manager
             .remove(&Worktree {
                 name: directory
                     .path
@@ -195,28 +242,10 @@ pub(super) fn cleanup_directories(workspace: &Workspace, rift_root: &Path) -> Re
                 base_branch: directory.base_branch.clone(),
             })
             .map_err(|e| e.to_string())?;
-            continue;
-        }
-        if !directory.path.exists() {
-            continue;
-        }
-        if directory.is_git {
-            WorktreeManager::new(
-                &directory.source_path,
-                directory.path.parent().unwrap_or(&directory.path),
-            )
-            .with_rift_registry_root(rift_root)
+    } else if directory.path.exists() {
+        manager
             .remove_checkout(&directory.path)
             .map_err(|e| e.to_string())?;
-        } else {
-            remove_directory_with_rift_root(
-                &directory.source_path,
-                &directory.path,
-                directory.effective_isolation.unwrap_or(workspace.isolation),
-                rift_root,
-            )
-            .map_err(|e| e.to_string())?;
-        }
     }
     Ok(())
 }
@@ -250,7 +279,7 @@ mod tests {
             Ok(())
         });
         let work = app
-            .prepare_creation_workspace(&reserved, Some(observer))
+            .prepare_creation_workspace(&reserved, Some(observer), true)
             .unwrap();
         let result = work.run().unwrap();
         assert_eq!(result["workspace_id"], reserved.id);

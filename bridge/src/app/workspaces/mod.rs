@@ -51,6 +51,9 @@ struct WorkspaceCreateWork {
     /// What those syncs concluded, for the settlement to write.
     synced: std::sync::Mutex<Vec<Synced>>,
     observer: Option<journal_creation::WorkspaceCreationObserver>,
+    /// Durable workspace not_started proof, captured before this worker starts.
+    /// Only this process's fresh materialize Err can rely on its local unwind.
+    fresh_materialization: bool,
     #[cfg(test)]
     prepared_gate: Option<crate::app::OffLockGate>,
 }
@@ -338,7 +341,11 @@ impl WorkspaceCreateWork {
     fn rollback(&self, workspace: &Workspace) -> Result<(), String> {
         if self.observer.is_some() {
             WorkspaceRegistry::load(&self.registry_root)?.validate_creation_cleanup(workspace)?;
-            return journal_creation::cleanup_directories(workspace, &self.rift_root);
+            return journal_creation::cleanup_directories(
+                workspace,
+                &self.rift_root,
+                self.fresh_materialization,
+            );
         }
         let mut failures = Vec::new();
         for directory in workspace.directories.iter().rev() {
@@ -978,6 +985,7 @@ impl AppState {
                 source_state: self.source_validation_handle(),
                 synced: Default::default(),
                 observer: None,
+                fresh_materialization: false,
                 #[cfg(test)]
                 prepared_gate: self.off_lock_workspace_prepared_gate.take(),
             }),
@@ -1227,6 +1235,7 @@ impl AppState {
                 source_state: self.source_validation_handle(),
                 synced: Default::default(),
                 observer: None,
+                fresh_materialization: false,
                 #[cfg(test)]
                 prepared_gate: self.off_lock_workspace_prepared_gate.take(),
             }),

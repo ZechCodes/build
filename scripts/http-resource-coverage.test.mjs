@@ -328,6 +328,8 @@ const sourceFingerprintParts = {
   "core/fileUploadRpc.js": ["7891a6ca", "183a9b67", "b7fe41fc", "ba71c70a", "1896ec75", "2809155c", "1375617f", "a9ab96d0"],
   "core/fileUploads.js": ["a1a4c2df", "5ef03503", "483e7b99", "099e04a0", "77c9e865", "a22a23dd", "a704cd79", "6678f239"],
   "core/fileUploadsModel.js": ["d11fdd79", "8bb9318c", "fbc2cff2", "29b16930", "9d73b3ee", "89d5d976", "7e2b756a", "69d40aac"],
+  // #1052 review: settings owns the mapped project.list read; journal cursor/greeting callbacks only refresh that read.
+  "core/environmentSettingsProjects.js": ["fe4732b2", "4889b0b5", "881e6e29", "bb52768c", "63590e63", "eab00e00", "fa7d3769", "655b6579"],
   "core/githubRepos.js": ["4526fb16", "bfe42e0f", "57b963ea", "fe623873", "0fe9ccce", "521ecc83", "b9117e59", "af64462f"],
   "core/gitPane.js": ["3b9c66d1", "186e1669", "3ecc46b0", "0afe28d8", "10e87dd3", "55dfbb00", "44fa79f8", "88d71409"],
   "core/httpSession.js": ["0b7b82e7", "b8028927", "c780566d", "761fc9fc", "12ca2faa", "7e626b1a", "c51ecf85", "3e85059a"],
@@ -446,8 +448,8 @@ const sourceFingerprintParts = {
   // #997 deviceProjects.js:82: the existing project.list loader delegates to owned device recovery.
   "views/deviceProjects.js": ["4e4add8c", "613568da", "f8200bad", "b7b27066", "84e7ddaa", "62bfbbbe", "cee788f9", "586de842"],
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
-  // #1052: device-scoped project.list/environment.list reads only; settings delegate to the existing sheet.
-  "views/environmentsSettings.js": ["c19e07f6", "17c650fb", "4997d318", "802bb3e5", "e6e9c250", "3053bc4d", "c7dad211", "60a65fe6"],
+  // #1052 review: environment.list stays device-scoped; project counts use the settings-owned reader and the existing sheet.
+  "views/environmentsSettings.js": ["c1ede602", "3c0164ed", "1195b8c9", "b50f88c8", "a1626261", "4abc8333", "049b5b40", "55d3e8f4"],
   "views/files.js": ["bc4913c5", "865b9dd0", "e28f655f", "242c9011", "456a4139", "b2cfd372", "6498e15b", "f3116261"],
   "views/projectChanges.js": ["e195b594", "3a7689fe", "14bfc899", "18ada18d", "ab36cd52", "ad96ba97", "a877c4da", "c9c3b78f"],
   "views/projectView.js": ["76123138", "7ded30d0", "0893b5ef", "5d880782", "137464b9", "5b123e76", "48f1a9d5", "28144478"],

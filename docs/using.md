@@ -138,10 +138,22 @@ The current M1 limitations are:
 **Delete project** remains available in **Project settings** for any project,
 including one under an environment. It requires confirmation and is refused
 while creation is pending, another filesystem operation is running, or a
-workspace is locked or provisioning. It removes the project and its workspaces
-from Build, including Build-managed workspace files and unsaved changes.
-Original project folders and external checkouts are kept. This is separate
-from **Discard this project**, offered immediately after a failed creation
+workspace is locked or provisioning. Pending shell launches and in-flight
+agent messages in the project's source or checkout folders also block deletion.
+
+Deletion removes the project and its workspaces from Build. Files and unsaved
+changes in Build-managed workspaces, Build-created agent run checkouts and the
+project conversation's scratch folder are permanently removed. Associated
+agent runs and their conversations, legacy plans and their saved documents,
+and captures routed to the project are deleted. Build revokes the project's
+secret grants and agent access, cancels pending task deliveries, and clears
+its retained inbox activity history. Original project folders and external
+checkouts are kept.
+
+Task-board records stay stored with their identities preserved; these are
+different from the legacy plans deleted above. Keeping those records does not
+keep the deleted project or its board available. **Discard this project** is
+the separate, narrower action offered immediately after a failed creation
 attempt.
 
 ## Environment config migration and rollback

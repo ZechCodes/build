@@ -1075,9 +1075,17 @@ stays in the inbox until archive arrives, unless the project is deleted.
 **Delete project remains available** in Project settings for any project,
 including one under an environment. It requires confirmation and is refused
 while creation is pending, another filesystem operation is running, or a
-workspace is locked or provisioning. It removes the project and its workspaces
-from Build, including Build-managed workspace files and unsaved changes;
-original project folders and external checkouts are kept. The wizard's
+workspace is locked or provisioning. Pending shell launches and in-flight
+agent delivery under the project's source, workspace or run roots also refuse
+deletion. It removes the project and its workspaces from Build, permanently
+removing files and unsaved changes in managed workspaces, Build-cut run
+checkouts and the project conversation's scratch folder. It deletes associated
+runs and their conversations, legacy plans and their canonical documents, and
+captures routed to the project; revokes project secret grants and agent
+access; cancels pending task deliveries; and clears retained inbox activity
+history. Tracker-task records remain stored with identities preserved before
+rosters disappear; this does not keep the deleted project or its board
+available. Original project folders and external checkouts are kept. The wizard's
 **Discard this project** remains the narrow action immediately after a failed
 attempt, guarded by that attempt's identity and absence of workspaces, tasks
 and sessions. **Failure checks:**

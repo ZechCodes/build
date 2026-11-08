@@ -333,3 +333,35 @@ fn pr_merge_can_refresh_a_failed_unintegrated_plan_after_a_same_snapshot_opinion
     assert_eq!(retried["merge_intents"], merged["merge_intents"]);
     assert_eq!(retried["review"]["actions"], merged["review"]["actions"]);
 }
+
+#[tokio::test]
+async fn archived_review_autosync_waits_for_restore() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repo_home, mut state, project) = tracked(home.path());
+    let workspace_id = workspace(&mut state, &project, "archive-autosync");
+    let pr = opened(&mut state, &workspace_id);
+    let working = std::path::Path::new(pr["review"]["bindings"][0]["working_repository"].as_str().unwrap());
+    std::fs::write(working.join("retained.txt"), "deferred review content\n").unwrap();
+    git_in(working, &["add", "retained.txt"]);
+    git_in(working, &["commit", "-m", "retained review update"]);
+    git_in(working, &["push"]);
+    let task = pr["task"]["id"].as_str().unwrap().to_owned();
+    let store = state.store.as_ref().unwrap().clone();
+    // Late work against an archived scope, independent of admission blockers.
+    state.projects.at_mut(0).archived_at = Some(1);
+    let before = serde_json::to_value(store.load_tracker_timeline(&task).unwrap()).unwrap();
+    let shared = state.shared();
+    let sync = AppState::spawn_review_sync(shared.clone()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(store.load_review(&task).unwrap().unwrap().version, 1);
+    assert_eq!(serde_json::to_value(store.load_tracker_timeline(&task).unwrap()).unwrap(), before);
+    review_call(&mut shared.lock().unwrap(), "project.restore", json!({"project_id":project}));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while store.load_review(&task).unwrap().unwrap().version == 1 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    drop(sync);
+    assert_eq!(store.load_review(&task).unwrap().unwrap().version, 2);
+}

@@ -9,7 +9,7 @@ import { openProjectSettings } from "../src/sheets/projectSettings.js";
 import { wipeCache, writeCached, readCached } from "../src/core/localCache.js";
 import { wipeUiRecords, writeUiRecord, readUiRecord } from "../src/core/localUiStore.js";
 import { uiAddress } from "../src/core/localUiState.js";
-import { projectSettingsAddress } from "../src/core/settingsRecords.js";
+import { deviceProjectsAddress, projectSettingsAddress, writeProjectSetting } from "../src/core/settingsRecords.js";
 import { sourceEditSupportAddress } from "../src/core/sourceEditSupport.js";
 import { environmentSupportAddress } from "../src/core/environmentSupport.js";
 import { environmentsAddress } from "../src/core/environmentCache.js";
@@ -549,6 +549,53 @@ describe("project settings added sources", () => {
       expect(card("source-1").querySelector("[data-remove-source]")).toBeTruthy();
       expect(card("source-1").querySelector("[data-sync-base]")).toBeTruthy();
       expect(card("source-1").querySelector("[data-sync-now]")).toBeTruthy();
+    });
+  });
+
+  describe("source reply identity races", () => {
+    it.each(["browser", "save"])("merges a delayed %s reply with the current cached identity and retains it after a pull", async (action) => {
+      await support();
+      const initial = { ...ENV_PROJECT };
+      if (action === "browser") {
+        delete initial.environment_id;
+        delete initial.environment_name;
+      }
+      let answerMutation;
+      const pending = new Promise(resolve => { answerMutation = resolve; });
+      const callRpc = vi.fn(method => {
+        if (method === "settings.get") return Promise.resolve({ projects_dir: "/Users/z/Projects" });
+        if (method === "fs.list") return Promise.resolve({ path: "/Users/z/Projects", parent: "/Users/z", entries: [{ name: "docs", path: ADDED.path, is_git: true }] });
+        if (["project.add_source", "project.update_source"].includes(method)) return pending;
+        return new Promise(() => {});
+      });
+      await open(initial, callRpc);
+      if (action === "browser") {
+        document.querySelector("#psaddfolder").click();
+        await vi.waitFor(() => expect(document.querySelector(`#sheet .use[data-path="${ADDED.path}"]`)).toBeTruthy());
+        document.querySelector(`#sheet .use[data-path="${ADDED.path}"]`).click();
+      } else {
+        type(input(ADDED.id, "name"), "Updated folder");
+        card(ADDED.id).querySelector("[data-save-source]").click();
+      }
+      await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith(
+        action === "browser" ? "project.add_source" : "project.update_source", expect.objectContaining({ project_id: PROJECT.project_id }),
+      ));
+      const newest = { ...ENV_PROJECT, environment_id: "env-current", environment_name: "Current environment", project_key: "project:current" };
+      await writeProjectSetting("dev-1", newest);
+      const reply = { ...PROJECT, name: "Mutation reply", sources: [PROJECT.sources[0], { ...ADDED, name: "Updated folder" }], added_sources: [{ ...ADDED, name: "Updated folder" }] };
+      answerMutation(reply);
+      const address = projectSettingsAddress("dev-1", PROJECT.project_id);
+      await vi.waitFor(async () => expect((await readCached(address))?.value.name).toBe("Mutation reply"));
+      const identity = { environment_id: "env-current", environment_name: "Current environment", project_key: "project:current" };
+      expect((await readCached(address)).value).toMatchObject(identity);
+      expect((await readCached(deviceProjectsAddress("dev-1"))).value[0]).toMatchObject(identity);
+      await vi.waitFor(() => expect(document.querySelector("#pscancel")).toBeTruthy());
+      document.querySelector("#pscancel").click();
+      const pulled = { ...newest, ...reply, name: "After pull" };
+      openProjectSettings(PROJECT.project_id, { deviceId: "dev-1", callRpc: vi.fn(async () => ({ projects: [pulled] })) });
+      await vi.waitFor(async () => expect((await readCached(address))?.value.name).toBe("After pull"));
+      expect((await readCached(address)).value).toMatchObject(identity);
+      expect((await readCached(deviceProjectsAddress("dev-1"))).value[0]).toMatchObject(identity);
     });
   });
 

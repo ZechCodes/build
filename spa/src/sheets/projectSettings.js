@@ -7,8 +7,8 @@ import { esc } from "../core/text.js";
 import { isolationFieldHtml, mountIsolation, projectIsolationTarget } from "../core/isolation.js";
 import { settingsSheetHtml } from "./settingsSheet.js";
 import { openBrowser } from "./browser.js";
-import { deviceSettingsAddress, projectSettingsAddress, removeProjectSetting, watchSettingsRecord, writeProjectSetting } from "../core/settingsRecords.js";
-import { deleteCached, readCached, subscribeCache } from "../core/localCache.js";
+import { deviceProjectsAddress, deviceSettingsAddress, projectSettingsAddress, removeProjectSetting, watchSettingsRecord } from "../core/settingsRecords.js";
+import { deleteCached, mergeCachedTogether, readCached, subscribeCache } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
@@ -266,7 +266,7 @@ function mountSources(project, { callRpc, record, deviceId, editing, saveDraft, 
     button.disabled = true;
     try {
       const changed = await send();
-      if (changed?.project_id) await writeSourceProject(deviceId, project, changed);
+      if (changed?.project_id) await writeSourceProject(deviceId, project.project_id, changed);
       await onDone?.(changed);
       await record.read();
       saveDraft();
@@ -283,10 +283,31 @@ function mountSources(project, { callRpc, record, deviceId, editing, saveDraft, 
   $("#psaddfolder").onclick = () => void browseForSource(project, { callRpc, deviceId, onFrameChange, onReturn });
 }
 
-// Source replies omit environment identity. Keep the known metadata while
-// publishing the authoritative effective and added source lists immediately.
-const writeSourceProject = (deviceId, project, changed) =>
-  writeProjectSetting(deviceId, { ...project, ...changed });
+// Source replies omit environment identity. Read the current row inside the
+// same transaction that publishes the reply to both settings projections.
+function writeSourceProject(deviceId, projectId, changed) {
+  return mergeCachedTogether([projectSettingsAddress(deviceId, projectId), deviceProjectsAddress(deviceId)], ([held, projects]) => {
+    const listed = Array.isArray(projects) ? projects.find(row => row.project_id === projectId) : null;
+    const current = { ...listed, ...held };
+    const project = sourceReplyWithIdentity(current, changed);
+    return [project, withProjectRow(projects, project)];
+  });
+}
+
+function sourceReplyWithIdentity(current, changed) {
+  const project = { ...current, ...changed };
+  for (const key of ["environment_id", "environment_name", "project_key"]) {
+    if (Object.hasOwn(current, key)) project[key] = current[key];
+  }
+  return project;
+}
+
+function withProjectRow(projects, project) {
+  if (!Array.isArray(projects)) return null;
+  return projects.some(row => row.project_id === project.project_id)
+    ? projects.map(row => row.project_id === project.project_id ? project : row)
+    : [...projects, project];
+}
 
 /** Say where to clone the remote from, and what to call it. */
 function openAddRemote(project, { write, callRpc, saveDraft, deviceId }) {
@@ -328,7 +349,7 @@ async function browseForSource(project, { callRpc, deviceId, onFrameChange, onRe
   const chosen = async (path) => {
     try {
       const changed = await callRpc("project.add_source", { project_id: project.project_id, path });
-      await writeSourceProject(deviceId, project, changed);
+      await writeSourceProject(deviceId, project.project_id, changed);
       onReturn();
     } catch (thrown) {
       const error = $("#psbrowseerr");

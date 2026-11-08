@@ -10,7 +10,7 @@ import { mountFilesUploadActions } from "./filesUploadActions.js";
 const sameScope = (left, right) => Object.keys(left).length === Object.keys(right).length
   && Object.entries(left).every(([key, value]) => right[key] === value);
 
-export function mountFilesUploads({ treeEl, viewerEl, roots, keyOf, tree, callRpc, deviceId, listingAddress, onOpen = () => {} }) {
+export function mountFilesUploads({ readOnly, treeEl, viewerEl, roots, keyOf, tree, callRpc, deviceId, listingAddress, onOpen = () => {} }) {
   let disposed = false;
   const refreshed = new Set();
   const observedActive = new Set();
@@ -34,7 +34,7 @@ export function mountFilesUploads({ treeEl, viewerEl, roots, keyOf, tree, callRp
     if (kind === "file") onOpen(keyOf(current, path));
   };
   const actions = mountFilesUploadActions(treeEl, {
-    roots, capabilities: { uploads: false, createDirectory: false, createFile: false }, uploads, callRpc: rpc, deviceId,
+    readOnly, roots, capabilities: { uploads: false, createDirectory: false, createFile: false }, uploads, callRpc: rpc, deviceId,
     onCreated: (root, parent, path, kind) => void refresh(root, parent, path, kind),
     onFinished: ({ rootId, scope, parent }) => invalidate({ id: rootId, scope }, parent),
   });

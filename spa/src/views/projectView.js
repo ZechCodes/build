@@ -319,6 +319,7 @@ function mountFiles(state, pane, project, roots) {
   state.filesRoots = roots;
   state.files = renderFilesTab(pane.querySelector(".project-files-body"), {
     roots,
+    readOnly: () => projectIsArchived(projectRecord(state)),
     layoutEntityId: projectLayoutCacheId(state.route.projectId),
     callRpc: projectFilesRpc(state.context, roots[0]?.id, { project, currentProject: () => projectRecord(state) }),
     cacheScope: state.context.cacheScope,

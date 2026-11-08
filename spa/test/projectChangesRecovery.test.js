@@ -224,3 +224,14 @@ it("ignores UI store readbacks from a replaced account", async () => {
   await new Promise((resolve) => setTimeout(resolve, 40));
   expect(host.querySelector("[data-recovered-draft]")).toBeNull();
 });
+
+it("locks Sync base on archived sources even through a retained handler", async () => {
+  await rememberProjectChangesSupport("d", { git: { projectSources: true }, projects: { syncBase: true } });
+  const current = { ...project, archived_at: 1, added_sources: project.sources };
+  mount(current);
+  const sync = host.querySelector("[data-project-sync-base]");
+  await vi.waitFor(() => expect(sync.hidden).toBe(false));
+  expect(sync.disabled).toBe(true);
+  await sync.onclick();
+  expect(changesRpc).not.toHaveBeenCalled();
+});

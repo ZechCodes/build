@@ -8,12 +8,12 @@ import { readEnvironmentSupport } from "./environmentSupport.js";
 import { esc } from "./text.js";
 
 const mutationSelectors = [
-  "textarea", "input:not([type=search])", "[contenteditable=true]", "[data-project-create]", "[data-workspace-reclaim]",
-  ".composer-send", ".rail-remove", ".rail-harness-choice", ".rail-watch", ".file-save", "[data-upload-action]", ".fupload-new button", "[data-task-state]", "[data-task-assign]", "#task-status", "#task-priority", "#task-labels", "[data-task-index]",
+  "[data-project-sync-base]", ".gittoolbar button", ".gtstash button", ".csbox button", ".gitdiscard", "[data-ref]", ".fcmt", "textarea", "input:not([type=search])", "[contenteditable=true]", "[data-project-create]", "[data-workspace-reclaim]",
+  ".fupload-action", "[data-bubble=add]", ".rail-newagent select", "[data-clear-start]", ".composer-chip-remove", ".composer-send", ".rail-remove", ".rail-harness-choice", ".rail-watch", ".file-save", "[data-upload-action]", ".fupload-new button", "[data-task-state]", "[data-task-assign]", "#task-status", "#task-priority", "#task-labels", "[data-task-index]",
   "[data-review-comment]", "[data-review-verdict]", "[data-review-comment-batch]", "[data-review-reply]", "[data-review-reviewer]", "[data-review-refresh]",
   "[data-review-request-legacy]", "[data-review-close-legacy]", "[data-review-reopen]", "[data-review-repair]", "[data-review-reclaim]",
   "[data-review-retry-delivery]", "[data-review-retry]", "[data-review-recover]", "[data-review-draft-edit]", "[data-review-draft-remove]",
-  "[data-review-controls] button", "[data-review-git-actions] button", "[data-review-close] button",
+  "[data-pr-merge-source] select", "[data-review-controls] button", "[data-review-git-actions] button", "[data-review-close] button",
   "[data-task-waiting-on] button", "[data-task-waiting-on] select", "form button[type=submit]", ".composer-attach",
   "[data-task-create]", "[data-task-new]", "[data-new-task]", "[data-task-edit]", "[data-task-delete]", "[data-file-save]",
 ].join(",");

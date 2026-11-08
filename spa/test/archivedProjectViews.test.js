@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createViewingContext } from "../src/core/viewingContext.js";
 import { createAgentSelection } from "../src/core/agentSelection.js";
 import { readCached, wipeCache, writeCached } from "../src/core/localCache.js";
-import { wipeUiRecords } from "../src/core/localUiStore.js";
+import { readUiRecord, writeUiRecord, wipeUiRecords } from "../src/core/localUiStore.js";
 import { rememberProjectChangesSupport } from "../src/core/projectChangesSupport.js";
 import { rememberReviewSupport } from "../src/core/taskReviewSupport.js";
 import { writeReviewRecord } from "../src/core/taskReviewCache.js";
@@ -38,6 +38,9 @@ vi.mock("../src/core/toolbar.js", async original => ({ ...await original(),
 vi.mock("../src/core/shell.js", async original => ({ ...await original(), shellSelection: () => createAgentSelection(), collapseChatOverPage() {} }));
 
 import { App } from "../src/app.js";
+import { mountChanges } from "../src/views/workspaceChanges.js";
+import { mountArchivedProjectView } from "../src/core/archivedProjectView.js";
+import { hideCommentPop } from "../src/commentPop.js";
 import { renderProject } from "../src/views/projectView.js";
 import { renderTrackerTask } from "../src/views/trackerTaskView.js";
 
@@ -49,6 +52,7 @@ const project = { id: projectId, project_id: projectId, name: "Old line", device
 const scope = { deviceId, projectId, taskId };
 const detail = { task: task({ id: taskId, project_id: projectId }), timeline: [] };
 let callRpc;
+const extraViews = [];
 
 async function cacheProject(row) {
   await writeCached(address, [row]);
@@ -89,7 +93,7 @@ beforeEach(async () => {
   await writeCached({ deviceId, entityId, kind: "refs" }, { refs: [{ kind: "branch", name: "main", full_ref: "refs/heads/main", current: true }, { kind: "branch", name: "other", full_ref: "refs/heads/other" }] });
   await cacheProject(project);
 });
-afterEach(() => { App.viewDispose?.(); App.viewDispose = null; });
+afterEach(() => { extraViews.splice(0).forEach(view => view.dispose()); hideCommentPop(); window.getSelection()?.removeAllRanges(); App.viewDispose?.(); App.viewDispose = null; });
 async function mountProject() {
   App.route = { name: "project", deviceId, projectId, tab: "changes" };
   await renderProject();
@@ -150,4 +154,65 @@ it("project_archived refusal is shown verbatim", async () => {
   release();
   await vi.waitFor(() => expect(document.querySelector("[data-project-sync-error]").textContent).toBe(message));
   expect(document.querySelector("line")).toBeNull();
+});
+
+// Bare project sources have no conversation. The shared Changes view also
+// reads historical run/workspace checkouts, whose real comment layer does.
+async function mountCommentingChanges(archived = true) {
+  await cacheProject({ ...project, archived_at: archived ? 12 : null });
+  const entityId = "historical-run";
+  const draftAddress = { deviceId, entityId, kind: "ui-draft", sub: "changes:inline-comments" };
+  const comments = [{ id: 1, file: "a.js", lnA: 2, lnB: 2, snippet: "changed", comment: "Keep this note", side: "new" }];
+  await writeUiRecord(draftAddress, { comments });
+  const tree = worktreeOf({ "a.js": "changed" });
+  await writeCached({ deviceId, entityId, kind: "status" }, tree.status());
+  await writeCached({ deviceId, entityId, kind: "log" }, { commits: [], more: false });
+  const root = document.querySelector("#root"), body = document.createElement("section"); root.append(body);
+  extraViews.push(mountArchivedProjectView(root, { deviceId, projectId, callRpc }));
+  const view = mountChanges(body, { scope: { run_id: entityId }, cacheScope: runtime.context.cacheScope,
+    callRpc: (method, params) => method === "git.diff" ? Promise.resolve(tree.diff(params)) : callRpc(method, params),
+    viewingContext: App.viewingContext,
+  });
+  extraViews.push(view);
+  await vi.waitFor(() => expect(body.querySelector("tr[data-ln]:not(.hunk) .code")).not.toBeNull());
+  await vi.waitFor(() => expect(body.querySelector(".pcx")).not.toBeNull());
+  body.querySelector(".diff-expand")?.click();
+  await vi.waitFor(() => expect(body.querySelector(".file.capped")).toBeNull());
+  return { body, draftAddress, comments, view };
+}
+it("archived real Changes locks gutter and selection notes and preserves saved drafts", async () => {
+  const { body, draftAddress, comments } = await mountCommentingChanges();
+  const code = body.querySelector("tr[data-ln]:not(.hunk) .code");
+  code.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+  await vi.waitFor(() => expect(body.querySelector(".dcmt")?.disabled).toBe(true));
+  expect(body.querySelector(".pcx").getAttribute("aria-disabled")).toBe("true");
+  expect(body.querySelector(".cscancel").disabled).toBe(true);
+  body.querySelector(".dcmt").click(); code.click();
+  expect(document.querySelector(".comment-pop")).toBeNull();
+  body.querySelector(".pcx").click();
+  body.querySelector(".pcx").onclick(); // A retained handler must also refuse.
+  body.querySelector(".cscancel").click();
+  const range = document.createRange(); range.selectNodeContents(code);
+  range.getBoundingClientRect = () => ({ left: 0, bottom: 20 });
+  window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+  document.dispatchEvent(new Event("selectionchange"));
+  await new Promise(resolve => setTimeout(resolve, 400));
+  expect(document.querySelector(".comment-pop")).toBeNull();
+  expect((await readUiRecord(draftAddress)).value.comments).toEqual(comments);
+});
+it.each([false, true])("a cached archive closes a real Changes popup without saving its draft (hidden=%s)", async hidden => {
+  const { body, draftAddress, comments, view } = await mountCommentingChanges(false);
+  const code = body.querySelector("tr[data-ln]:not(.hunk) .code");
+  code.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+  body.querySelector(".dcmt").click();
+  await vi.waitFor(() => expect(document.querySelector(".cp-input")).not.toBeNull());
+  document.querySelector(".cp-input").value = "Cannot save after archive";
+  const save = document.querySelector(".cp-save").onclick;
+  if (hidden) view.setVisible(false);
+  await cacheProject(project);
+  await vi.waitFor(() => expect(document.querySelector("#root").getAttribute("data-project-archive-state")).toBe("archived"));
+  if (hidden) view.setVisible(true);
+  await vi.waitFor(() => expect(document.querySelector(".comment-pop")).toBeNull());
+  save();
+  expect((await readUiRecord(draftAddress)).value.comments).toEqual(comments);
 });

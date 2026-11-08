@@ -8,7 +8,7 @@ import { readEnvironmentSupport } from "./environmentSupport.js";
 import { esc } from "./text.js";
 
 const mutationSelectors = [
-  "[data-project-sync-base]", ".gittoolbar button", ".gtstash button", ".csbox button", ".gitdiscard", "[data-ref]", ".fcmt", "textarea", "input:not([type=search])", "[contenteditable=true]", "[data-project-create]", "[data-workspace-reclaim]",
+  ".dcmt", ".pcx", ".cscancel", "[data-project-sync-base]", ".gittoolbar button", ".gtstash button", ".csbox button", ".gitdiscard", "[data-ref]", ".fcmt", "textarea", "input:not([type=search])", "[contenteditable=true]", "[data-project-create]", "[data-workspace-reclaim]",
   ".fupload-action", "[data-bubble=add]", ".rail-newagent select", "[data-clear-start]", ".composer-chip-remove", ".composer-send", ".rail-remove", ".rail-harness-choice", ".rail-watch", ".file-save", "[data-upload-action]", ".fupload-new button", "[data-task-state]", "[data-task-assign]", "#task-status", "#task-priority", "#task-labels", "[data-task-index]",
   "[data-review-comment]", "[data-review-verdict]", "[data-review-comment-batch]", "[data-review-reply]", "[data-review-reviewer]", "[data-review-refresh]",
   "[data-review-request-legacy]", "[data-review-close-legacy]", "[data-review-reopen]", "[data-review-repair]", "[data-review-reclaim]",
@@ -23,6 +23,7 @@ function mutationControl(node) {
 }
 
 export function mountArchivedProjectView(host, { deviceId, projectId, callRpc, archiveMutationHosts = [] }) {
+  host.setAttribute("data-project-archive-state", "unknown");
   let active = true, project = null, support = {}, refusal = "", reading = 0;
   let banner = null;
   const locked = new Map();
@@ -44,24 +45,40 @@ export function mountArchivedProjectView(host, { deviceId, projectId, callRpc, a
   for (const event of ["dragstart", "drop", "keydown"]) host.addEventListener(event, refuseBoard, true);
   function lockControls() {
     for (const control of locked.keys()) if (!contains(control)) locked.delete(control);
-    hosts.flatMap(root => [...root.querySelectorAll("button, input, select, textarea, [contenteditable]")]).forEach(control => {
+    hosts.flatMap(root => [...root.querySelectorAll("button, input, select, textarea, [contenteditable], .pcx")]).forEach(control => {
       const shouldLock = projectIsArchived(project) && (locked.has(control) || mutationControl(control));
-      if (shouldLock) {
-        if (!locked.has(control)) locked.set(control, { disabled: control.disabled, editable: control.getAttribute("contenteditable") });
-        if (control.hasAttribute("contenteditable") && control.getAttribute("contenteditable") !== "false") control.setAttribute("contenteditable", "false");
-        if ("disabled" in control && !control.disabled) control.disabled = true;
-      } else if (locked.has(control)) unlock(control);
+      if (shouldLock) lock(control);
+      else if (locked.has(control)) unlock(control);
     });
   }
+  function lock(control) {
+    if (!locked.has(control)) locked.set(control, { disabled: control.disabled, editable: control.getAttribute("contenteditable"),
+      ariaDisabled: control.getAttribute("aria-disabled"), tabIndex: control.getAttribute("tabindex") });
+    if (control.hasAttribute("contenteditable") && control.getAttribute("contenteditable") !== "false") control.setAttribute("contenteditable", "false");
+    if ("disabled" in control) {
+      if (!control.disabled) control.disabled = true;
+    } else {
+      control.setAttribute("aria-disabled", "true");
+      control.setAttribute("tabindex", "-1");
+    }
+  }
+  const restoreAttribute = (control, name, value) => value === null ? control.removeAttribute(name) : control.setAttribute(name, value);
   function unlock(control) {
     const before = locked.get(control);
     if ("disabled" in control) control.disabled = before.disabled;
     if (before.editable !== null) control.setAttribute("contenteditable", before.editable);
+    restoreAttribute(control, "aria-disabled", before.ariaDisabled);
+    restoreAttribute(control, "tabindex", before.tabIndex);
     locked.delete(control);
+  }
+  function publishArchiveState(archived) {
+    const state = archived ? "archived" : "active";
+    if (host.getAttribute("data-project-archive-state") !== state) host.setAttribute("data-project-archive-state", state);
   }
   function paint() {
     if (!active) return;
     const archived = projectIsArchived(project);
+    publishArchiveState(archived);
     if (!archived && !locked.size && !banner && !refusal) return;
     if (archived || refusal) paintBanner(archived);
     else { banner?.remove(); banner = null; }
@@ -107,6 +124,6 @@ export function mountArchivedProjectView(host, { deviceId, projectId, callRpc, a
         throw error;
       }
     },
-    dispose() { for (const event of ["dragstart", "drop", "keydown"]) host.removeEventListener(event, refuseBoard, true); for (const root of hosts) for (const event of ["click", "change", "submit"]) root.removeEventListener(event, refuseEvent, true); active = false; unsubscribe(); observer.disconnect(); for (const control of locked.keys()) unlock(control); banner?.remove(); },
+    dispose() { for (const event of ["dragstart", "drop", "keydown"]) host.removeEventListener(event, refuseBoard, true); for (const root of hosts) for (const event of ["click", "change", "submit"]) root.removeEventListener(event, refuseEvent, true); active = false; unsubscribe(); observer.disconnect(); host.removeAttribute("data-project-archive-state"); for (const control of locked.keys()) unlock(control); banner?.remove(); },
   };
 }

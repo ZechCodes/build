@@ -272,13 +272,15 @@ const stagedConsumerExclusions = {
 // modules; neither delegating view has its own RPC/producer occurrence.
 // #894 finite metadata/call-edge audit: docs/task-query-cost/http-resource-coverage-audit.md
 const sourceFingerprintParts = {
+  // #1073 round 2: cache-owned archive boundaries gate local comment
+  // constructors and draft writes; RPC methods/selectors remain unchanged.
   // #1073 review: project/environment rename use separate named capabilities;
   // archive refusal recovery observes project task/review and filtered workspace
   // cache rows. Source read-only controls and file-menu guards add no RPC verbs.
   // #1073: archive observation forwards the caller unchanged; restore, rename,
   // and environment edits require a fresh capable greeting and publish cache
   // projections. Source cards translate only the three SOURCE_METHODS keys.
-  "core/archivedProjectView.js": ["f1c592eb", "f366e928", "f8c938a3", "a8824dea", "3d9e92dd", "decaecf6", "b34dd4d3", "a67ede14"],
+  "core/archivedProjectView.js": ["1ad53c26", "f90c5d0f", "ce7ffdf2", "d4fa2e34", "dfec2269", "599d37d5", "d37b7752", "d9e83e68"],
   "core/environmentWrites.js": ["035dbf26", "683d9297", "9306e4cc", "51f549d6", "c0cad335", "51198b2c", "3981d520", "129d2b31"],
   "sheets/environmentSettings.js": ["46b8c3c8", "c4c507ab", "4e081f06", "84ba399f", "32479c6d", "4110a01f", "e3233fe3", "f1acab81"],
   "sheets/projectGeneral.js": ["b117d339", "9e9da09a", "fd2d1d78", "3c45f0dc", "62923dd6", "1fd6d8eb", "4ad62cd9", "45490407"],
@@ -310,7 +312,7 @@ const sourceFingerprintParts = {
   "core/captureDecisionView.js": ["15299f0a", "f1762e74", "8af22269", "0f16e798", "ccf8e367", "d2d759e2", "554ce8fc", "002692f1"],
   // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
   "core/changeEvents.js": ["64c7b70b", "3ed73b95", "b11eef57", "3d802986", "27035cff", "ec51a6f3", "164078a9", "4aee38d7"],
-  "core/changesComments.js": ["7a5e0b06", "c47bf122", "ac5370b8", "debd8dc8", "388227b8", "f9ea1623", "d413134a", "635a2a7d"],
+  "core/changesComments.js": ["a4d03b10", "31dbf6e1", "6e12294d", "e69ceb46", "2958a35c", "7f2f07c9", "4088008f", "f1d7394d"],
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],
   "core/chatChoiceController.js": ["d257b6c5", "f32d9067", "226af14c", "bd8ec71e", "718bf188", "1e994ef1", "66edcceb", "4499fa61"],

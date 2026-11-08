@@ -95,8 +95,17 @@ fn shared_repository_mutation_invalidates_every_referencing_project() {
         upstream,
         checkout,
         projects,
-        app,
+        mut app,
     } = fixture();
+    // Multi-source projects have no automatic legacy primary alias. Adopt
+    // this original checkout explicitly to exercise the workspace selector.
+    let alias = app.workspaces.adopt_git_root(
+        &projects[0],
+        "adopted-shared".into(),
+        "Shared checkout".into(),
+        checkout.clone(),
+        "source-2".into(),
+    );
     let state = app.shared();
     let requests = requests(&projects, &checkout);
     warm_sources(&state, &requests);
@@ -127,7 +136,7 @@ fn shared_repository_mutation_invalidates_every_referencing_project() {
             false,
         ),
         (
-            json!({"workspace_id":format!("legacy-{}", projects[0]), "source_id":"source-2"}),
+            json!({"workspace_id":alias.id, "source_id":"source-2"}),
             false,
         ),
         (

@@ -16,7 +16,7 @@ struct EndControl {
 }
 
 impl HeldEnd {
-    fn new() -> (Arc<dyn AgentSession>, EndControl) {
+    fn controlled() -> (Arc<dyn AgentSession>, EndControl) {
         let (entered, arrived) = mpsc::channel();
         let (release, blocked) = mpsc::channel();
         (
@@ -59,7 +59,7 @@ impl AgentSession for HeldEnd {
 }
 
 fn held_tab(key: &TabKey, role: crate::app::TabRole) -> (crate::app::Tab, EndControl) {
-    let (session, control) = HeldEnd::new();
+    let (session, control) = HeldEnd::controlled();
     (
         crate::app::Tab {
             tab_id: key.tab_id.clone(),
@@ -104,10 +104,12 @@ fn finish(control: EndControl, retirement: &Retirement) {
         retirement.wait(Duration::from_secs(5)),
         "wait only after releasing the app guard"
     );
+    assert!(retirement.is_reaped());
 }
 
 fn closing_refusal(value: &Value) {
     assert_eq!(value["error_code"], "conflict", "{value}");
+    assert_eq!(value["retryable"], false);
     assert!(
         value["error"]
             .as_str()
@@ -121,8 +123,11 @@ fn closing_refusal(value: &Value) {
 fn archive_retiring_closed_shell_blocks_until_reaped() {
     let f = Fixture::new();
     let (key, control) = install_shell(&f);
-    // The common close primitive returns the receipt term.close discards.
-    let retirement = f.state.lock().unwrap().retire_tab(&key, "closed").unwrap();
+    let retirement = {
+        let mut app = f.state.lock().unwrap();
+        app.term_close(&json!({"term_id":key.tab_id})).unwrap();
+        app.session_registry.test_retirements().pop().unwrap()
+    };
     let generation = f.state.lock().unwrap().session_registry.shell_generation();
     let refused = f.archive();
     assert!(f
@@ -135,6 +140,13 @@ fn archive_retiring_closed_shell_blocks_until_reaped() {
     finish(control, &retirement);
     closing_refusal(&refused);
     assert_eq!(f.archive()["ok"], true);
+    assert!(f
+        .state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_retirements()
+        .is_empty());
     assert_eq!(
         f.state.lock().unwrap().session_registry.shell_generation(),
         generation
@@ -156,6 +168,13 @@ fn archive_retiring_replacement_shell_blocks_until_reaped() {
     finish(control, &retirement);
     closing_refusal(&refused);
     assert_eq!(f.archive()["ok"], true);
+    assert!(f
+        .state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_retirements()
+        .is_empty());
 }
 
 #[test]
@@ -185,6 +204,13 @@ fn archive_retiring_shell_of_another_project_does_not_block() {
     assert_eq!(archived["ok"], true, "{archived}");
     closing_refusal(&refused);
     assert_eq!(f.archive()["ok"], true);
+    assert!(f
+        .state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_retirements()
+        .is_empty());
 }
 
 #[test]
@@ -204,7 +230,8 @@ fn archive_retiring_project_agent_blocks_until_reaped() {
                 provider: crate::models::AgentProvider::default(),
             },
         );
-        app.session_registry.insert_opened(key.clone(), tab);
+        app.session_registry
+            .insert_opened(key.clone(), tab, Some(f.project.clone()));
         (key, control)
     };
     let retirement = f.state.lock().unwrap().retire_tab(&key, "closed").unwrap();
@@ -219,4 +246,35 @@ fn archive_retiring_project_agent_blocks_until_reaped() {
         "{refused}"
     );
     assert_eq!(f.archive()["ok"], true);
+    assert!(f
+        .state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_retirements()
+        .is_empty());
+}
+
+#[test]
+fn archive_retiring_direct_shell_replacement_blocks_until_reaped() {
+    let f = Fixture::new();
+    let (key, control) = install_shell(&f);
+    let retirement = {
+        let mut app = f.state.lock().unwrap();
+        let (mut successor, _ended) = held_tab(&key, crate::app::TabRole::Shell);
+        successor.live = false;
+        app.session_registry.test_insert_tab(key.clone(), successor);
+        app.session_registry.test_retirements().pop().unwrap()
+    };
+    let refused = f.archive();
+    finish(control, &retirement);
+    closing_refusal(&refused);
+    assert_eq!(f.archive()["ok"], true);
+    assert!(f
+        .state
+        .lock()
+        .unwrap()
+        .session_registry
+        .test_retirements()
+        .is_empty());
 }

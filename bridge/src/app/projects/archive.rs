@@ -11,7 +11,8 @@ impl AppState {
         let project = self.project_for(id).map_err(ApiError::classify)?;
         let key = project.project_key.clone();
         let name = project.name.clone();
-        let mut blockers = self.archive_workspace_blockers(id);
+        let mut blockers = self.session_registry.retiring_project_blockers(id);
+        blockers.extend(self.archive_workspace_blockers(id));
         blockers.extend(self.archive_session_blockers(id));
         if self.session_registry.pending_shell_for_project(id) {
             blockers.push("wait for terminal creation to finish".into());

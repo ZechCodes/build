@@ -105,6 +105,15 @@ impl Fixture {
         );
         child.end();
         assert!(child.exited_within(Duration::from_secs(2)));
+        let retiring = self
+            .state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_retirements();
+        for retirement in retiring {
+            assert!(retirement.wait(Duration::from_secs(5)));
+        }
     }
 }
 

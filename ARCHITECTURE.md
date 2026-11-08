@@ -3441,8 +3441,11 @@ guards; clock-only snapshots and global presence gain no app-mutex acquisition.
 Shell reservation and final registration recheck archive under their existing
 guards; pending shell reservations and registered live shells block archive.
 The registry retains the reservation's project attribution at registration;
-exited shell rows do not block while awaiting cleanup. Agent
-start checks its addressed owner before resolving or changing the roster.
+exited shell rows do not block while awaiting cleanup. Removal and replacement
+retain project-attributed shell and agent retirement receipts until reaping
+completes, separate from the tab list. Archive polls and prunes these receipts
+without waiting under the app guard, retaining the existing conflict response.
+Agent start checks its addressed owner before resolving or changing the roster.
 RPC write classification comes from the effect registry, with project scope
 resolved from project, workspace, task or conversation identities; upload calls resolve their
 retained scope after owner validation. Reads and screen-attachment bookkeeping

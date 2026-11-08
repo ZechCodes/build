@@ -375,7 +375,7 @@ mod reconciliation;
 #[test]
 fn archived_snapshot_refresh_preserves_finished_workspace_until_restore() {
     let home = tempfile::tempdir().unwrap();
-    let (_repo, mut app, project) = tracked(home.path());
+    let (mut app, project) = super::tracker::tracked_with_origin(home.path());
     let ws = workspace(&mut app, &project, "Retained finished checkout");
     let mut finished = app.workspaces.get(&ws).unwrap().clone();
     app.workspaces.record_finished(&mut finished).unwrap();

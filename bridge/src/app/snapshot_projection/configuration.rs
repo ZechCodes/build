@@ -30,13 +30,6 @@ impl AppState {
             &mut self.snapshot_observations.environments.lock().unwrap(),
         );
     }
-    pub(in crate::app) fn install_environment_edit_refresh(
-        &self,
-        _environment: &str,
-        refresh: RenderedProjectSnapshotRefresh,
-    ) {
-        self.install_project_snapshot_refresh(refresh);
-    }
     pub(in crate::app) fn project_json_observed(&self, id: &str) -> Result<Value, String> {
         let row = self
             .project_list_rows()

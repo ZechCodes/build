@@ -83,7 +83,12 @@ pub(super) fn publish_source_observation(
                 "repository observation pending"
             ))
         });
-    let value = json!({"path":home,"remote":crate::app::projects::primary_remote(&rows),"sources":rows,"isolation_available":isolation_available});
+    let value = json!({
+        "path": home.display().to_string(),
+        "remote": crate::app::projects::primary_remote(&rows),
+        "sources": rows,
+        "isolation_available": isolation_available,
+    });
     let version = available.map(|o| o.version).unwrap_or_default();
     observations.insert(
         id.to_owned(),

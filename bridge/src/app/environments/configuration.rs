@@ -88,7 +88,7 @@ impl ConfigurationSettlement {
             .expect("configuration validation runs once")(app)?;
         self.prospective.swap(&mut app.projects, &self.environment);
         let mut observations = app.capture_configuration_observations();
-        app.install_environment_edit_refresh(&self.environment, observed.refresh);
+        app.install_project_snapshot_refresh(observed.refresh);
         self.prospective.restore_runtime_into(&mut app.projects);
         let row = app
             .environment_json(&self.environment)

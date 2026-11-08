@@ -514,3 +514,27 @@ fn revision_621_stale_failure_scope_does_not_mutate_replacement_thread() {
     assert!(thread.items.is_empty());
     assert!(!fixture.persisted_episode().active);
 }
+
+#[test]
+fn archived_provider_recovery_keeps_episode_and_task_until_restore() {
+    let mut fixture = RecoveryFixture::new();
+    let task = fixture.task.clone();
+    fixture.state().projects.at_mut(0).archived_at = Some(1);
+    let before = fixture
+        .state()
+        .handle(req("tasks.get", json!({"task_id":task})))["result"]
+        .clone();
+    fixture.state().replay_provider_recovery_episodes().unwrap();
+    assert_eq!(fixture.persisted_episode(), fixture.episode);
+    assert_eq!(
+        fixture
+            .state()
+            .handle(req("tasks.get", json!({"task_id":task})))["result"],
+        before
+    );
+    fixture.state().projects.at_mut(0).archived_at = None;
+    fixture.state().replay_provider_recovery_episodes().unwrap();
+    fixture.assert_single_reports();
+    fixture.state().replay_provider_recovery_episodes().unwrap();
+    fixture.assert_single_reports();
+}

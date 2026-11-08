@@ -371,3 +371,22 @@ fn archived_project_refuses_router_dispatch() {
 mod deliveries;
 
 mod reconciliation;
+
+#[test]
+fn archived_snapshot_refresh_preserves_finished_workspace_until_restore() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(home.path());
+    let ws = workspace(&mut app, &project, "Retained finished checkout");
+    let mut finished = app.workspaces.get(&ws).unwrap().clone();
+    app.workspaces.record_finished(&mut finished).unwrap();
+    let checkout = finished.directories[0].path.clone();
+    app.workspaces.apply_local_capabilities(finished).unwrap();
+    call(&mut app, "project.archive", json!({"project_id":project}));
+    let before = serde_json::to_value(app.workspaces.get(&ws).unwrap()).unwrap();
+    std::fs::write(checkout.join("external.txt"), "external change").unwrap();
+    app.refresh_workspace_snapshot_observations();
+    assert_eq!(serde_json::to_value(app.workspaces.get(&ws).unwrap()).unwrap(), before);
+    call(&mut app, "project.restore", json!({"project_id":project}));
+    app.refresh_workspace_snapshot_observations();
+    assert_ne!(app.workspaces.get(&ws).unwrap().status, crate::workspace::WorkspaceStatus::Finished);
+}

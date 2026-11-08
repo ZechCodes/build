@@ -297,3 +297,118 @@ fn recovery_uses_home_path_for_a_resolved_project_with_a_missing_repo() {
     assert_eq!(state.projects.project_id_of("plan-missing"), None);
     assert_eq!(state.projects.project_id_of("run-missing"), None);
 }
+
+#[test]
+fn archived_boot_recovery_keeps_plan_and_run_records_unchanged() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let mut state = rooted(root.path())
+        .with_task_store(root.path().join("store"))
+        .unwrap();
+    let project = state.add_project(home.clone(), "main".into());
+    let key = state.project(&project).unwrap().project_key.clone();
+    let store = state.store.clone().unwrap();
+    let plan = plan_record("plan-archived", &key);
+    let run = run_record("run-archived", &key, &root.path().join("missing-checkout"));
+    store.save_task_plan(&plan).unwrap();
+    store.save_run(&run).unwrap();
+    assert_eq!(
+        state.handle(req("project.archive", json!({"project_id":project})))["ok"],
+        true
+    );
+    std::fs::remove_dir(&home).unwrap();
+    state.recover_plan(plan.clone()).unwrap();
+    state.recover_run(run.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(store.load_all_plans().unwrap()[0].clone()).unwrap(),
+        serde_json::to_value(&plan).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(store.load_all_runs().unwrap()[0].clone()).unwrap(),
+        serde_json::to_value(&run).unwrap()
+    );
+    assert_eq!(state.plans[&plan.id].last_error, None);
+    assert_eq!(state.runs[&run.id].last_error, None);
+    assert!(state.projects.project_id_of(&plan.id).is_some());
+    assert!(state.projects.project_id_of(&run.id).is_some());
+}
+
+#[test]
+fn archived_idle_monitor_waits_for_restore() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let checkout = root.path().join("checkout");
+    std::fs::create_dir(&checkout).unwrap();
+    let mut state = rooted(root.path())
+        .with_task_store(root.path().join("store"))
+        .unwrap();
+    let project = state.add_project(home, "main".into());
+    let key = state.project(&project).unwrap().project_key.clone();
+    state
+        .recover_run(run_record("run-idle-archived", &key, &checkout))
+        .unwrap();
+    let mut active = state.take_run("run-idle-archived").unwrap();
+    active.run.state = RunState::Building;
+    state
+        .finish_run_mutation("run-idle-archived".into(), active)
+        .unwrap();
+    assert_eq!(
+        state.handle(req("project.archive", json!({"project_id":project})))["ok"],
+        true
+    );
+    assert!(state.mark_idle_tasks(Duration::ZERO).is_empty());
+    assert_eq!(
+        state.runs["run-idle-archived"].run.state,
+        RunState::Building
+    );
+    assert_eq!(
+        state.handle(req("project.restore", json!({"project_id":project})))["ok"],
+        true
+    );
+    assert_eq!(state.mark_idle_tasks(Duration::ZERO), ["run-idle-archived"]);
+}
+
+#[test]
+fn archived_vanished_run_settlement_waits_for_restore() {
+    use crate::app::runtime::recovery::DecidedVanishedRun;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let checkout = root.path().join("checkout");
+    std::fs::create_dir(&checkout).unwrap();
+    let mut state = rooted(root.path())
+        .with_task_store(root.path().join("store"))
+        .unwrap();
+    let project = state.add_project(home, "main".into());
+    let key = state.project(&project).unwrap().project_key.clone();
+    state
+        .recover_run(run_record("run-vanished-archived", &key, &checkout))
+        .unwrap();
+    assert_eq!(
+        state.handle(req("project.archive", json!({"project_id":project})))["ok"],
+        true
+    );
+    std::fs::remove_dir(&checkout).unwrap();
+    let decide = || {
+        vec![DecidedVanishedRun {
+            run_id: "run-vanished-archived".into(),
+            published: Default::default(),
+        }]
+    };
+    state.archive_vanished_runs(decide());
+    assert_eq!(
+        state.runs["run-vanished-archived"].run.state,
+        RunState::Interrupted
+    );
+    assert_eq!(
+        state.handle(req("project.restore", json!({"project_id":project})))["ok"],
+        true
+    );
+    state.archive_vanished_runs(decide());
+    assert_eq!(
+        state.runs["run-vanished-archived"].run.state,
+        RunState::Archived
+    );
+}

@@ -41,7 +41,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
   joinFeed: () => {},
 }));
 vi.mock("../src/core/inboxShell.js", () => ({ goFromInbox: (...args) => navigate(...args) }));
-vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => createWorkspace(...args) }));
+vi.mock("../src/core/createWorkspaceWizard.js", () => ({ openCreateWorkspaceWizard: (...args) => createWorkspace(...args) }));
 const projectSettings = vi.fn();
 vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: (...args) => projectSettings(...args) }));
 const newRepoSheet = vi.fn();

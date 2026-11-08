@@ -13,7 +13,7 @@ globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
 vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail: () => ({ dispose: vi.fn() }) }));
-vi.mock("../src/core/createWork.js", () => ({ openCreateWork: vi.fn() }));
+vi.mock("../src/core/createWorkspaceWizard.js", () => ({ openCreateWorkspaceWizard: vi.fn() }));
 vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: vi.fn() }));
 vi.mock("../src/core/trackerTasksPane.js", () => ({ mountTasksPane: () => ({ feedMoved: vi.fn(), dispose: vi.fn() }) }));
 

@@ -10,7 +10,7 @@ export const SELECT_SOURCES = {
   "core/agentRolesPanel.js": "device settings",
   "core/captureDecision.js": "task controls",
   "core/composeView.js": "compose",
-  "core/createWork.js": "task controls",
+  "core/createWorkspaceWizard.js": "task controls",
   "core/defaultHarness.js": "device settings",
   "core/diffSort.js": "task controls",
   "core/harnessDefaults.js": "local settings / workspace settings",
@@ -60,7 +60,7 @@ const modules = {
   app: "src/app.js", cache: "src/core/localCache.js", records: "src/core/settingsRecords.js", feed: "src/core/taskFeed.js",
   settings: "src/views/settings.js", panels: "src/views/devicePanels.js", contexts: "src/core/deviceContexts.js",
   defaults: "src/core/harnessDefaults.js", task: "src/core/trackerTaskRender.js", assignee: "src/core/trackerAssigneeControl.js",
-  capture: "src/core/captureDecision.js", create: "src/core/createWork.js", sort: "src/core/diffSort.js",
+  capture: "src/core/captureDecision.js", create: "src/core/createWorkspaceWizard.js", sort: "src/core/diffSort.js",
   compose: "src/core/composeView.js", workspace: "src/sheets/workspaceSettings.js", newRepo: "src/sheets/newRepo.js",
   project: "src/sheets/projectSettings.js", reviewEntry: "src/core/workspaceReviewEntry.js", tracker: "src/core/trackerCache.js",
   review: "src/core/taskReviewPage.js", reviewSupport: "src/core/taskReviewSupport.js", reviewCache: "src/core/taskReviewCache.js",
@@ -123,7 +123,7 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
     const draft = { optionId: "workspace", name: "", isolation: "", choiceOpen: true, choice: { provider: "claude_adk", model: "claude-opus-4", effort: "high" } };
     const assignee = m.assignee.assigneeControlHtml(options, draft, { prefix: "assign", catalog });
     const capture = m.capture.captureDecisionHtml(m.capture.captureDecisionModel({ id: "capture-1", text: "Fix selects", state: "needs_input" }), { projects: [project], projectId: project.id });
-    root.innerHTML = rail + m.waiting.waitingOnFrameHtml() + `<div class="modal-create">${assignee}</div>` + capture + `<div class="modal-create">${m.create.createWorkBodyHtml({ projectId: project.id, projectName: project.name, name: "", isolation: "", busy: false })}</div>` + m.sort.diffSortHtml("latest") + '<label>Compact control<select class="mini"><option>First</option><option>Second</option></select></label>';
+    root.innerHTML = rail + m.waiting.waitingOnFrameHtml() + `<div class="modal-create">${assignee}</div>` + capture + `<div class="modal-create">${m.create.createWorkspaceWizardBodyHtml({ page: 3, target: { kind: "project", id: project.id, deviceId: device.id, name: project.name, label: project.name, sources: project.sources, taskText: "0 tasks" }, name: "", isolation: "", error: "" })}</div>` + m.sort.diffSortHtml("latest") + '<label>Compact control<select class="mini"><option>First</option><option>Second</option></select></label>';
   }
   if (name === "task controls") {
     root.querySelector("[data-waiting-choice]").innerHTML = m.waiting.blockerOptionsHtml([

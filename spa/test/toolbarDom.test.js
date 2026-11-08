@@ -80,8 +80,8 @@ vi.mock("../src/core/taskFeed.js", () => ({
 }));
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notifySuccess: () => {} }));
-const openCreateWork = vi.fn();
-vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openCreateWork(...args) }));
+const openCreateWorkspaceWizard = vi.fn();
+vi.mock("../src/core/createWorkspaceWizard.js", () => ({ openCreateWorkspaceWizard: (...args) => openCreateWorkspaceWizard(...args) }));
 
 const { App } = await import("../src/app.js");
 const { clearToolbarVerb, initToolbar, setToolbarVerb, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
@@ -170,7 +170,7 @@ beforeEach(async () => {
     { id: "dev-1", name: "workshop", status: "online" },
     { id: "dev-2", name: "laptop", status: "online" },
   ];
-  openCreateWork.mockClear();
+  openCreateWorkspaceWizard.mockClear();
   notifyError.mockClear();
   await rememberDeviceFilter(null);
   workshopCall.mockReset();
@@ -735,10 +735,11 @@ describe("creating from the menu", () => {
     workshopHolds({ p1: [] });
     await standOnWorkspace();
     (await openJump("workspace")).querySelector('[data-create="workspace"]').click();
-    expect(openCreateWork).toHaveBeenCalledWith({
+    expect(openCreateWorkspaceWizard).toHaveBeenCalledWith({
       projectId: "p1",
       deviceId: "dev-1",
       projectName: "relaydb",
+      fixedProject: false,
       navigate: expect.any(Function),
     });
     await waitMenuClosed();
@@ -757,20 +758,20 @@ describe("creating from the menu", () => {
     toolbarRouteChanged();
     const local = await openJump("workspace");
     local.querySelector('[data-create="workspace"]').click();
-    expect(openCreateWork).toHaveBeenCalledWith({
-      projectId: "p1", deviceId: "dev-2", projectName: "their relaydb", navigate: expect.any(Function),
+    expect(openCreateWorkspaceWizard).toHaveBeenCalledWith({
+      projectId: "p1", deviceId: "dev-2", projectName: "their relaydb", fixedProject: false, navigate: expect.any(Function),
     });
     feed = savedFeed;
     await refreshFeed();
   });
 
-  it("says so instead of opening anything when the account has no project", async () => {
+  it("opens the target picker when the account has no current project", async () => {
     feed = { items: [], projects: [] };
     await refreshFeed();
     await standOnWorkspace();
     (await openJump("workspace")).querySelector('[data-create="workspace"]').click();
-    expect(openCreateWork).not.toHaveBeenCalled();
-    expect(notifyError).toHaveBeenCalledWith("No project to create in.", expect.any(String));
+    expect(openCreateWorkspaceWizard).toHaveBeenCalledWith(expect.objectContaining({ fixedProject: false }));
+    expect(notifyError).not.toHaveBeenCalled();
     feed = savedFeed;
     await refreshFeed();
   });

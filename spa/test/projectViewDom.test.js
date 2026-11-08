@@ -12,8 +12,8 @@ const collapseChat = vi.fn();
 const mountAgentRail = vi.fn(() => ({ collapse: collapseChat, dispose: vi.fn() }));
 vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail: (...args) => mountAgentRail(...args) }));
 
-const openCreateWork = vi.fn();
-vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openCreateWork(...args) }));
+const openCreateWorkspaceWizard = vi.fn();
+vi.mock("../src/core/createWorkspaceWizard.js", () => ({ openCreateWorkspaceWizard: (...args) => openCreateWorkspaceWizard(...args) }));
 const openProjectSettings = vi.fn();
 vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: (...args) => openProjectSettings(...args) }));
 
@@ -116,7 +116,7 @@ beforeEach(() => {
   renderFilesTab.mockClear();
   mountProjectChanges.mockClear();
   readProjectFilesSupport.mockReset().mockResolvedValue(false);
-  openCreateWork.mockClear();
+  openCreateWorkspaceWizard.mockClear();
   openProjectSettings.mockClear();
   subscribers = [];
   snapshot = { items: [], projects: [project], workspaces: [workspace("ws-1"), workspace("ws-2", { name: "docs" })], pending: [], devices: {} };
@@ -281,7 +281,7 @@ describe("the project surface", () => {
     expect(document.querySelector("#tb-verb [data-project-settings]")).toBeNull();
 
     create.click();
-    expect(openCreateWork).toHaveBeenCalledWith(
+    expect(openCreateWorkspaceWizard).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: "proj-1", deviceId: "dev-1", projectName: "Build" }),
     );
   });

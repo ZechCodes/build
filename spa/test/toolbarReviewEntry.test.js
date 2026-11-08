@@ -8,7 +8,7 @@ const state = vi.hoisted(() => ({
   listeners: new Set(),
   go: vi.fn(),
   openWorkspaceReview: vi.fn(),
-  openCreateWork: vi.fn(),
+  openCreateWorkspaceWizard: vi.fn(),
   rpc: vi.fn(),
 }));
 vi.mock("../src/app.js", () => ({ App: state.App, go: state.go }));
@@ -20,7 +20,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
   },
 }));
 vi.mock("../src/core/workspaceReviewEntry.js", () => ({ openWorkspaceReview: state.openWorkspaceReview }));
-vi.mock("../src/core/createWork.js", () => ({ openCreateWork: state.openCreateWork }));
+vi.mock("../src/core/createWorkspaceWizard.js", () => ({ openCreateWorkspaceWizard: state.openCreateWorkspaceWizard }));
 vi.mock("../src/core/notify.js", () => ({ notifyError: vi.fn() }));
 vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: () => ({ rpc: state.rpc }), whenGreeted: vi.fn() }));
 
@@ -76,7 +76,7 @@ beforeEach(async () => {
   deliver([workspace()]);
   state.go.mockClear();
   state.openWorkspaceReview.mockClear();
-  state.openCreateWork.mockClear();
+  state.openCreateWorkspaceWizard.mockClear();
   state.rpc.mockClear();
 });
 afterEach(async () => { await stopToolbar(); });
@@ -211,7 +211,7 @@ describe("current breadcrumb and picker destinations", () => {
       await vi.waitFor(() => expect(state.go).toHaveBeenCalledExactlyOnceWith(saved, { newEntry: true, beforeCommit: expect.any(Function) }));
       expect(menu()).toBeNull();
     }
-    expect(state.openCreateWork).not.toHaveBeenCalled();
+    expect(state.openCreateWorkspaceWizard).not.toHaveBeenCalled();
     expect(state.rpc).not.toHaveBeenCalled();
   });
 
@@ -228,7 +228,7 @@ describe("current breadcrumb and picker destinations", () => {
     } else {
       menu().querySelector(action === "create" ? '[data-create="workspace"]' : "[data-manage-workspaces]").click();
       await vi.waitFor(() => expect(menu()).toBeNull());
-      expect(state.openCreateWork).not.toHaveBeenCalled();
+      expect(state.openCreateWorkspaceWizard).not.toHaveBeenCalled();
       expect(state.go).not.toHaveBeenCalled();
     }
     expect(state.rpc).not.toHaveBeenCalled();

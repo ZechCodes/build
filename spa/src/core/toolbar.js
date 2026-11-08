@@ -25,7 +25,7 @@ import { esc } from "./text.js";
 import { App, go } from "../app.js";
 import { subscribeFeed } from "./taskFeed.js";
 import { notifyError } from "./notify.js";
-import { openCreateWork } from "./createWork.js";
+import { openCreateWorkspaceWizard } from "./createWorkspaceWizard.js";
 import { toolbarIdentity, toolbarDestinationModel } from "./toolbarModel.js";
 import { projectNameOf } from "./inboxProjects.js";
 import { filterByDevice } from "./deviceFilter.js";
@@ -790,17 +790,13 @@ function onMenuClick(event) {
   pickWorkspace(target.closest("[data-workspace]"));
 }
 
-/** The one create surface, on the scoped project and on the machine that
- *  project is on. An account with no project has nowhere to create, and says
- *  so. */
+/** The global creation entry opens target selection; the scoped project is
+ * retained for older bridges that can only create in an existing project. */
 function openCreate() {
   const project = scopedProject();
   closeMenu();
-  if (!project) {
-    notifyError("No project to create in.", "Add a project in Settings first.");
-    return;
-  }
-  openCreateWork({ projectId: project.id, deviceId: project.deviceId, projectName: nameOf(project), navigate: go });
+  openCreateWorkspaceWizard({ projectId: project?.id, deviceId: project?.deviceId,
+    projectName: project ? nameOf(project) : "", fixedProject: false, navigate: go });
 }
 
 /** The project half's rows: which project — said with its machine when another

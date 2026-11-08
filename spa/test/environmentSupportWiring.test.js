@@ -1,0 +1,53 @@
+/** @vitest-environment jsdom */
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import greetingFixture from "../../fixtures/api/v1/session.hello.json";
+import { capabilitiesOf } from "../src/core/bridgeApi/v1/index.js";
+
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
+const { bridgeCapabilities, greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
+const { environmentSupportAddress, readEnvironmentSupport, rememberEnvironmentSupport } = await import("../src/core/environmentSupport.js");
+const { readCached } = await import("../src/core/localCache.js");
+const unsupported = { list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false };
+const m1 = { ...unsupported, list: true, createProject: true };
+const greet = (capabilities, deviceId = "dev-1") => greetBridge(async (method) =>
+  method === "session.hello" ? { ...greetingFixture.result, capabilities } : {}, { deviceId, strict: true });
+
+beforeEach(() => {
+  resetChangeEvents();
+  globalThis.indexedDB = new IDBFactory();
+});
+afterEach(() => resetChangeEvents());
+
+it("writes environment-support from a named greeting, independently per device", async () => {
+  await greet(["environments"]);
+  await vi.waitFor(async () => expect(await readEnvironmentSupport("dev-1")).toEqual(m1));
+  expect((await readCached(environmentSupportAddress("dev-1"))).value).toEqual(m1);
+  expect(environmentSupportAddress("dev-1")).toEqual({ deviceId: "dev-1", entityId: "", kind: "environment-support" });
+  expect(await readEnvironmentSupport("dev-2")).toEqual(unsupported);
+  resetChangeEvents();
+  expect(bridgeCapabilities("dev-1").environments).toEqual(unsupported);
+  expect(await readEnvironmentSupport("dev-1")).toEqual(m1);
+});
+
+it("replaces cached support on downgrade and never infers support from the version or record name", async () => {
+  await greet(["environments"]);
+  await vi.waitFor(async () => expect(await readEnvironmentSupport("dev-1")).toEqual(m1));
+  await greet(["environment-support"]);
+  await vi.waitFor(async () => expect(await readEnvironmentSupport("dev-1")).toEqual(unsupported));
+  expect(capabilitiesOf({ api_version: "3.99.0", capabilities: [] }).environments).toEqual(unsupported);
+  expect(await readEnvironmentSupport()).toEqual(unsupported);
+});
+
+it("maps later checkpoint flags only from their own named capabilities", () => {
+  expect(capabilitiesOf({ api_version: "3.36.0", capabilities: ["environments.create", "projects.addedSources", "projects.archive", "environments.rename", "secrets.environmentScope"] }).environments)
+    .toEqual({ ...unsupported, create: true, addedSources: true, archive: true, rename: true, secrets: true });
+  expect(capabilitiesOf({ api_version: "3.36.0", capabilities: ["projects.rename"] }).environments.rename).toBe(false);
+});
+
+it("does not let a retired greeting change the support record", async () => {
+  await rememberEnvironmentSupport("dev-1", { environments: m1 });
+  await rememberEnvironmentSupport("dev-1", { environments: unsupported }, () => false);
+  expect(await readEnvironmentSupport("dev-1")).toEqual(m1);
+});

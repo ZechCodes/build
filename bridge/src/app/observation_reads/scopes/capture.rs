@@ -60,7 +60,9 @@ fn run(app: &AppState, id: &str) -> Option<Arc<RunInput>> {
             run.worktree.path.clone()
         },
         project_id: app.projects.project_id_of(id).map(str::to_owned),
-        project_path: PathBuf::from(app.project_path_for(id)),
+        project_path: app
+            .project_by_key(&app.projects.project_key_for(id))
+            .map(|project| project.home_path.clone()),
         checkout: run.worktree.path.clone(),
         git_root: run.worktree.path.clone(),
         base_sha: run.base_sha.clone(),

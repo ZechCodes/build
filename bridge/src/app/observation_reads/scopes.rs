@@ -72,7 +72,8 @@ struct RunInput {
     checkout_git: bool,
     canonical_checkout: PathBuf,
     project_id: Option<String>,
-    project_path: PathBuf,
+    /// Resolved project home for a vanished checkout; never a retained key.
+    project_path: Option<PathBuf>,
     checkout: PathBuf,
     git_root: PathBuf,
     base_sha: Option<String>,

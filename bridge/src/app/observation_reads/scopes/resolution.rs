@@ -40,7 +40,7 @@ impl ScopeReadContext {
     pub(super) fn run(&self, id: &str) -> Result<RunInput, String> {
         let mut run = self.runs.get(id).ok_or("unknown run_id")?.as_ref().clone();
         if let Some(project) = run.project_id.as_ref().and_then(|id| self.projects.get(id)) {
-            run.project_path = project.path.clone();
+            run.project_path = Some(project.path.clone());
             if run.base_branch.is_empty() {
                 run.base_branch = project.base_branch.clone();
             }

@@ -348,3 +348,26 @@ describe("the project head's status dot", () => {
     expect(headOf([rows[0], { ...rows[1], watchedWorking: true }], folded)).toContain("inbox-status-running");
   });
 });
+
+
+describe("environment inbox identities", () => {
+  const projects = [on("dev-1", { id: "a", name: "Alpha", environment_id: "e" }), on("dev-1", { id: "z", name: "Zulu", environment_id: "e" }), on("dev-1", { id: "b", name: "Beta", environment_id: "f" })];
+  const environmentNavigation = { support: { "dev-1": true }, environments: [{ id: "e", deviceId: "dev-1", name: "Environment" }, { id: "f", deviceId: "dev-1", name: "Other" }] };
+  const rows = [entry("a", "a", "Alpha", 1, { anchorMs: 30 }), entry("z", "z", "Zulu", 0, { anchorMs: 10 }), entry("b", "b", "Beta", 0, { anchorMs: 20 })];
+  it("keeps environment blocks adjacent, then sorts siblings by anchor", () => {
+    const blocks = workspaceProjectBlocks(rows, projects, devices, null, 100, new Set(), null, environmentNavigation).blocks;
+    expect(blocks.map(block => block.id)).toEqual(["z", "a", "b"]);
+    expect(blocks[0].environmentIdentity).toMatchObject({ environmentName: "Environment", showEnvironment: true, deviceLabel: "workshop" });
+    const html = projectHeadHtml(blocks[0], { folded: new Set([blocks[0].projectKey]) });
+    expect(html).toContain('data-kind="project"');
+    expect(html).toContain("Environment › Zulu");
+    expect(html).toContain("workshop");
+    expect(html).toContain("inbox-status-dot");
+    expect(projectHeadHtml(blocks[2])).not.toContain("Other › Beta");
+  });
+  it("leaves unsupported blocks and their ordering unchanged despite cached environments", () => {
+    const blocks = workspaceProjectBlocks(rows, projects, devices, null, 100, new Set(), null, { ...environmentNavigation, support: {} }).blocks;
+    expect(blocks.map(block => block.id)).toEqual(["z", "b", "a"]);
+    expect(projectHeadHtml(blocks[0])).not.toContain('data-kind="project"');
+  });
+});

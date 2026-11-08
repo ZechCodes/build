@@ -1273,3 +1273,27 @@ describe("a capture on another device", () => {
     }
   });
 });
+
+describe("cached environment inbox", () => {
+  it("updates heads and flat identities from cache and routes creation to the wizard", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    const projects = [project("project-1", "Payments", "dev-1", { environment_id: "env" }), project("project-2", "Website", "dev-1", { environment_id: "env" })];
+    feed([workspace()], projects);
+    mountInboxList();
+    setInboxView("projects");
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "environments" }, [{ environment_id: "env", name: "Shared", project_ids: ["project-1", "project-2"] }]);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "environment-support" }, { list: true, createProject: true });
+    await vi.waitFor(() => expect(blocks()[0].querySelector(".inbox-project-name").textContent).toContain("Shared › Payments"));
+    expect(blocks()[0].querySelector(".inbox-project-device").textContent).toContain("workshop");
+    blocks()[0].querySelector("[data-project-create]").click();
+    expect(createWorkspace).toHaveBeenCalledWith(expect.objectContaining({ projectId: "project-1", deviceId: "dev-1", fixedProject: true }));
+    createWorkspace.mockClear();
+    expect(document.querySelector("#inbox-new-project span").textContent).toBe("New workspace");
+    openNewProject();
+    expect(createWorkspace).toHaveBeenCalledWith(expect.objectContaining({ fixedProject: false }));
+    expect(newRepoSheet).not.toHaveBeenCalled();
+    setInboxView("workspaces");
+    expect(rows()[0].querySelector(".inbox-project-line").textContent).toContain("Shared › Payments");
+    expect(rows()[0].querySelector('.inbox-project-line [data-kind="project"]')).not.toBeNull();
+  });
+});

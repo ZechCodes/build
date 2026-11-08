@@ -183,7 +183,7 @@ beforeEach(async () => {
     {id:"dev-1",name:"workshop",status:"online"},{id:"dev-2",name:"laptop",status:"online"},
   ]);
   await flush();
-  for (const deviceId of ["dev-1", "dev-2"]) await writeCached({deviceId,entityId:"",kind:"environment-support"}, {list:true,createProject:true});
+  for (const deviceId of ["dev-1", "dev-2"]) await writeCached({deviceId,entityId:"",kind:"environment-support"}, {list:false,createProject:true});
   await initToolbar();
   // The cache wipe announces to the app's device watcher asynchronously; give
   // this fixture its known devices after that readback has completed.
@@ -988,5 +988,58 @@ describe("an account with more than one device", () => {
     await vi.waitFor(() => expect(routeFromHash(location.hash)).toMatchObject({ name: "project", deviceId: "dev-2", projectId: "p1", tab: "tasks" }));
     feed = savedFeed;
     await refreshFeed();
+  });
+});
+
+
+describe("cached environment navigation", () => {
+  const enable = async () => {
+    feed = { ...savedFeed, projects: savedFeed.projects.map(project => ({ ...project, environment_id: "env", last_activity_ms: NOW, added_sources: project.id === "p1" ? [{ id: "extra" }] : [] })) };
+    workshopHolds({ p1: [payments, { ...payments, id: "finished", workspace_id: "finished", name: "Finished work", status: "finished" }] });
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "environments" }, [{ environment_id: "env", name: "Shared environment", project_ids: ["p1", "p2"] }]);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "environment-support" }, { list: true, createProject: true });
+    await refreshFeed();
+    await vi.waitFor(() => expect(bar().querySelector(".tb-environment")?.textContent).toBe("Shared environment"));
+  };
+  afterAll(() => { feed = savedFeed; });
+
+  it("paints E › P from cache and drops E when exactly one project remains", async () => {
+    await enable();
+    const crumb = bar().querySelector("[data-project-return]");
+    expect(crumb.querySelector('[data-kind="project"]').getAttribute("aria-hidden")).toBe("true");
+    expect(crumb.textContent).toContain("Shared environment › relaydb");
+    feed = { ...feed, projects: feed.projects.filter(project => project.id === "p1") };
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "environments" }, [{ environment_id: "env", name: "Shared environment", project_ids: ["p1"] }]);
+    await refreshFeed();
+    await vi.waitFor(() => expect(bar().querySelector(".tb-environment")).toBeNull());
+    expect(bar().querySelector("[data-project-return]").textContent).toContain("relaydb");
+  });
+
+  it("shows noninteractive environment heads, named project rows and a global wizard footer", async () => {
+    await enable();
+    const popup = await openJump("project");
+    expect(popup.querySelectorAll('[data-environment-group="dev-1/env"]')).toHaveLength(1);
+    expect(popup.querySelector('[data-environment-group]').tagName).toBe("DIV");
+    expect(labels("[data-project]")).toEqual(["mascot", "relaydb"]);
+    expect(popup.querySelector('[data-project="dev-1/p1"]:not([data-visit])').textContent).toContain("+1 folders");
+    expect(popup.querySelector("[data-workspace]")).toBeNull();
+    popup.querySelector('[data-create="global"]').click();
+    expect(openCreateWorkspaceWizard).toHaveBeenCalledWith(expect.objectContaining({ fixedProject: false }));
+  });
+
+  it("folds finished workspaces, exposes them to search and creates in the fixed project", async () => {
+    await enable();
+    await standOnWorkspace();
+    const popup = await openJump("workspace");
+    expect(labels("[data-workspace]")).toEqual(["payment-work"]);
+    expect(popup.querySelector("[data-finished-fold]").getAttribute("aria-expanded")).toBe("false");
+    popup.querySelector("[data-finished-fold]").click();
+    expect(labels("[data-workspace]")).toEqual(["payment-work", "Finished work"]);
+    popup.querySelector(".tb-filter").value = "Finished";
+    popup.querySelector(".tb-filter").dispatchEvent(new Event("input"));
+    expect(labels("[data-workspace]")).toEqual(["Finished work"]);
+    expect(popup.querySelector('[data-create="workspace"]').textContent).toContain("New workspace in this project");
+    popup.querySelector('[data-create="workspace"]').click();
+    expect(openCreateWorkspaceWizard).toHaveBeenCalledWith(expect.objectContaining({ projectId: "p1", deviceId: "dev-1", fixedProject: true }));
   });
 });

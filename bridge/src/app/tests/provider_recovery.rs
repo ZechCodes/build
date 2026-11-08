@@ -701,39 +701,100 @@ fn archive_round_restore_requeues_only_unseen_terminal_notice_once() {
         fixture.state().replay_provider_recovery_episodes().unwrap();
         let recipient = fixture.persisted_episode().recipient.unwrap();
         fixture.state().delivery_queue.lapse_settle_windows();
-        assert_eq!(fixture.state().delivery_queue.take_ready(|_| false).len(), 1);
+        assert_eq!(
+            fixture.state().delivery_queue.take_ready(|_| false).len(),
+            1
+        );
         if seen {
-            fixture.state().edit_agent_conversation(&recipient.scope.entity_id, &recipient.scope.agent_id, |thread, _| {
-                let sequence = thread.items.iter().find_map(|item| match item {
-                    crate::thread::ThreadItem::Message(m) if m.id == recipient.message_id => Some(m.sequence),
-                    _ => None,
-                }).unwrap();
-                thread.read_native_legacy_messages(sequence, sequence, &now_rfc3339());
-                Ok(())
-            }).unwrap();
+            fixture
+                .state()
+                .edit_agent_conversation(
+                    &recipient.scope.entity_id,
+                    &recipient.scope.agent_id,
+                    |thread, _| {
+                        let sequence = thread
+                            .items
+                            .iter()
+                            .find_map(|item| match item {
+                                crate::thread::ThreadItem::Message(m)
+                                    if m.id == recipient.message_id =>
+                                {
+                                    Some(m.sequence)
+                                }
+                                _ => None,
+                            })
+                            .unwrap();
+                        thread.read_native_legacy_messages(sequence, sequence, &now_rfc3339());
+                        Ok(())
+                    },
+                )
+                .unwrap();
         }
         // Only the durable unseen message remains; finish the workspace before archive.
         let project = fixture.state().projects.iter().next().unwrap().id.clone();
-        let workspaces: Vec<_> = fixture.state().workspaces.list(Some(&project)).into_iter().cloned().collect();
+        let workspaces: Vec<_> = fixture
+            .state()
+            .workspaces
+            .list(Some(&project))
+            .into_iter()
+            .cloned()
+            .collect();
         for mut ws in workspaces {
             ws.status = crate::workspace::WorkspaceStatus::Finished;
-            fixture.state().workspaces.apply_local_capabilities(ws).unwrap();
+            fixture
+                .state()
+                .workspaces
+                .apply_local_capabilities(ws)
+                .unwrap();
         }
-        let archived = fixture.state().handle(req("project.archive", json!({"project_id":project})));
+        let archived = fixture
+            .state()
+            .handle(req("project.archive", json!({"project_id":project})));
         assert_eq!(archived["ok"], true, "{archived}");
         fixture.reopen();
         fixture.state().replay_provider_recovery_episodes().unwrap();
         assert!(fixture.state().delivery_queue.is_idle());
-        let checkpoint = fixture.root.path().join("provider-recovery").join(sha256_hex(fixture.episode.scope.agent_id.as_bytes())).join(format!("{}.json", fixture.episode.id));
+        let checkpoint = fixture
+            .root
+            .path()
+            .join("provider-recovery")
+            .join(sha256_hex(fixture.episode.scope.agent_id.as_bytes()))
+            .join(format!("{}.json", fixture.episode.id));
         let before = std::fs::metadata(&checkpoint).unwrap().modified().unwrap();
-        let restored = fixture.state().handle(req("project.restore", json!({"project_id":project})));
+        let restored = fixture
+            .state()
+            .handle(req("project.restore", json!({"project_id":project})));
         assert_eq!(restored["ok"], true, "{restored}");
         fixture.state().delivery_queue.lapse_settle_windows();
-        assert_eq!(fixture.state().delivery_queue.take_ready(|_| false).len(), usize::from(!seen), "restore requeues exactly the unseen notice");
-        for _ in 0..2 {fixture.state().retry_restored_provider_notices();}
+        assert_eq!(
+            fixture.state().delivery_queue.take_ready(|_| false).len(),
+            usize::from(!seen),
+            "restore requeues exactly the unseen notice"
+        );
+        for _ in 0..2 {
+            fixture.state().retry_restored_provider_notices();
+        }
+        assert!(fixture.state().restored_recovery.recipient_wakes.is_empty());
+        assert_eq!(
+            fixture
+                .state()
+                .handle(req("project.restore", json!({"project_id":project})))["ok"],
+            true
+        );
         fixture.state().delivery_queue.lapse_settle_windows();
-        assert!(fixture.state().delivery_queue.take_ready(|_| false).is_empty());
-        assert!(!fixture.state().restored_recovery.provider_projects.contains(&project));
-        assert_eq!(std::fs::metadata(checkpoint).unwrap().modified().unwrap(), before);
+        assert!(fixture
+            .state()
+            .delivery_queue
+            .take_ready(|_| false)
+            .is_empty());
+        assert!(!fixture
+            .state()
+            .restored_recovery
+            .provider_projects
+            .contains(&project));
+        assert_eq!(
+            std::fs::metadata(checkpoint).unwrap().modified().unwrap(),
+            before
+        );
     }
 }

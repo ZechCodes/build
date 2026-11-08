@@ -135,6 +135,8 @@ impl AppState {
             .filter(|(_, active)| !active.run.state.is_terminal())
             .map(|(run_id, _)| run_id.clone())
             .filter(|run_id| self.is_project_conversation_owner(run_id))
+            .filter(|run_id| self.refuse_archived_entity(run_id).is_ok())
+            .filter(|run_id| !self.restored_recovery.deferred.contains(run_id))
             .collect();
         for owner in owners {
             if let Err(error) = self.ensure_project_pin(&owner, None) {

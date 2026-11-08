@@ -3389,7 +3389,13 @@ retry on the restored-recovery service tick, without requiring another restart.
 Boot reconstructs notice retry obligations from durable owed checkpoints on
 active projects, including after an unsuccessful startup replay. A delivered
 terminal notice ends that retry obligation without changing its active flag or
-rewriting/waking it on later retry ticks.
+rewriting/waking it on later retry ticks. Restore separately requeues already-written
+terminal notices once when their durable native acknowledgement is still unseen;
+this pass neither rewrites checkpoints nor enrolls them in notice retries.
+Archived boot defers coordinator roster repair until the owner's restore recovery
+settles. Archive admission counts settling wakes alongside queued/in-flight work.
+Ready owners retain their existing turns until recovery settles, including a hold
+at final spawn admission; settlement releases delivery off the app lock.
 Snapshot refresh preserves archived finished-workspace records until restore.
 Configured conversation-item retention applies independently of project archive.
 The two method names are explicitly withheld from greetings, `projects.archive`

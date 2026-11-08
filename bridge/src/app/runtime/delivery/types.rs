@@ -431,6 +431,13 @@ impl AppState {
         // limits never gate delivery: account, credit, and model changes can
         // make a request succeed before that reset.
         self.release_due_usage_limits();
+        let held_owners: std::collections::HashSet<_> = self
+            .runs
+            .keys()
+            .chain(self.plans.keys())
+            .filter(|owner| self.delivery_owner_held(owner))
+            .cloned()
+            .collect();
         let pending_rows = &self.pending_rows;
         let reserved = &self.reclaim_reserved;
         let resetting = &self.resetting_conversations;
@@ -444,7 +451,8 @@ impl AppState {
         // the turn's last snapshot, and a session end withdraws it. A session
         // with no status pump is never held: nothing would release it.
         let mut ready = self.delivery_queue.take_ready(|turn| {
-            pending_rows.iter().any(|row| row.entity_id == turn.owner)
+            held_owners.contains(&turn.owner)
+                || pending_rows.iter().any(|row| row.entity_id == turn.owner)
                 || reserved_holds(reserved, &turn.root)
                 || resetting.contains(&turn.conversation_id)
                 || waits_for_compaction(&compacting_first, turn)

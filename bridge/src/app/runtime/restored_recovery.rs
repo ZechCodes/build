@@ -3,7 +3,7 @@ use super::run_recovery::{RunRecoveryEvidence, RunRecoveryWork};
 use crate::app::{off_the_workers, AppState, OffLockJob, TabKey};
 use crate::orchestrator::ActiveRun;
 use crate::store::PersistedRun;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,6 +14,8 @@ pub(in crate::app) struct RestoredRecovery {
     ready: HashSet<String>,
     pub provider_projects: HashSet<String>,
     pub provider_discovery_retry: bool,
+    pub recipient_wakes: HashMap<String, crate::provider_recovery::RecoveryEpisode>,
+    pub delivery_due: bool,
 }
 
 struct RestoreRun {
@@ -51,8 +53,18 @@ impl OffLockJob for RestoreRun {
         let active = ActiveRun::reattach(&expected, plan_path);
         match app.apply_recovered_run(expected, active, evidence) {
             Ok(()) => {
-                app.restored_recovery.deferred.remove(&id);
                 app.restored_recovery.ready.remove(&id);
+                if app.is_project_conversation_owner(&id) && !app.runs[&id].run.state.is_terminal()
+                {
+                    if let Err(error) = app.ensure_project_pin(&id, None) {
+                        app.restored_recovery.ready.insert(id.clone());
+                        eprintln!("restored project roster {id}: {error}");
+                        return;
+                    }
+                }
+                app.restored_recovery.deferred.remove(&id);
+                app.release_restored_recipient_wakes();
+                app.restored_recovery.delivery_due = true;
             }
             Err(error) => eprintln!("restored run recovery {id}: {error}"),
         }
@@ -68,6 +80,10 @@ impl OffLockJob for RestoreRun {
 impl AppState {
     pub(in crate::app) fn run_recovery_reserved(&self, id: &str) -> bool {
         self.restored_recovery.ready.contains(id)
+    }
+
+    pub(in crate::app) fn delivery_owner_held(&self, id: &str) -> bool {
+        self.run_recovery_reserved(id) || self.refuse_archived_entity(id).is_err()
     }
 
     pub(in crate::app) fn refuse_run_recovery(&self, id: &str) -> Result<(), String> {
@@ -109,10 +125,12 @@ impl AppState {
             return false;
         };
         let root = Self::canonical_root(&active.worktree.path);
-        active
-            .agents
-            .iter()
-            .any(|agent| self.agent_session_held(&TabKey::agent(&root, &agent.id)))
+        active.agents.iter().any(|agent| {
+            let key = TabKey::agent(&root, &agent.id);
+            self.session_registry.agent_snapshot(&key).is_some()
+                || self.session_registry.claim_is_held(&key)
+                || self.delivery_queue.agent_in_flight(&key)
+        })
     }
 
     /// Only archived-boot obligations enter this set; ordinary projects retain
@@ -195,6 +213,7 @@ impl AppState {
     }
 
     pub(in crate::app) fn replay_restored_provider_notices(&mut self, project: &str) {
+        self.restored_recovery.delivery_due = true;
         match self.replay_provider_recovery_for_project(project) {
             Ok(true) => {
                 self.restored_recovery.provider_projects.remove(project);
@@ -225,9 +244,19 @@ impl AppState {
                     return;
                 };
                 off_the_workers(move || {
-                    let mut app = state.lock().unwrap();
-                    app.schedule_restored_run_recovery(None);
-                    app.retry_restored_provider_notices();
+                    let clock = {
+                        let mut app = state.lock().unwrap();
+                        app.schedule_restored_run_recovery(None);
+                        app.retry_restored_provider_notices();
+                        std::mem::take(&mut app.restored_recovery.delivery_due)
+                            .then(|| Arc::clone(&app.frame_clock))
+                    };
+                    if let Some(clock) = clock {
+                        crate::app::DeliveryRunner::drain(
+                            &state,
+                            &clock.frame("project.restore_delivery"),
+                        );
+                    }
                 })
                 .await;
             }

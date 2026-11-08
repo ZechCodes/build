@@ -52,11 +52,7 @@ impl AppState {
         project: &str,
         episode: RecoveryEpisode,
     ) -> Result<bool, String> {
-        let source = self.projects.project_id_of(&episode.scope.entity_id) == Some(project);
-        let recipient = episode.recipient.as_ref().is_some_and(|recipient| {
-            self.projects.project_id_of(&recipient.scope.entity_id) == Some(project)
-        });
-        if !source && !recipient {
+        if !self.provider_episode_in_project(&episode, project) {
             return Ok(true);
         }
         if !episode.needs_notice
@@ -75,6 +71,66 @@ impl AppState {
         // Keep the restore obligation until the durable checkpoint settles.
         let saved = provider_recovery::read_episode(&self.state_root, &scope.agent_id, &id)?;
         Ok(saved.is_none_or(|saved| !saved.needs_notice))
+    }
+
+    fn provider_episode_in_project(&self, episode: &RecoveryEpisode, project: &str) -> bool {
+        self.projects.project_id_of(&episode.scope.entity_id) == Some(project)
+            || episode.recipient.as_ref().is_some_and(|recipient| {
+                self.projects.project_id_of(&recipient.scope.entity_id) == Some(project)
+            })
+    }
+
+    /// Boot ordinarily requeues these already-written, unseen notices once.
+    /// Restore owns the corresponding single pass for episodes boot skipped.
+    /// They never enter the owed-notice retry set or rewrite a checkpoint.
+    pub(in crate::app) fn remember_restored_recipient_wakes(&mut self, project: &str) {
+        let episodes = match provider_recovery::independent_episodes(&self.state_root) {
+            Ok(episodes) => episodes,
+            Err(error) => {
+                eprintln!("discover restored recipient wakes: {error}");
+                return;
+            }
+        };
+        for episode in episodes {
+            let episode = match episode {
+                Ok(episode) => episode,
+                Err(error) => {
+                    eprintln!("discover restored recipient wake: {error}");
+                    continue;
+                }
+            };
+            if !self.provider_episode_in_project(&episode, project)
+                || episode.needs_notice
+                || episode.recipient.is_none()
+                || !matches!(
+                    episode.stage,
+                    RecoveryStage::Terminal | RecoveryStage::Resolved
+                )
+            {
+                continue;
+            }
+            let key = format!("{}:{}", episode.scope.agent_id, episode.id);
+            self.restored_recovery.recipient_wakes.insert(key, episode);
+        }
+    }
+
+    /// Called at restore and reservation release, never from the notice retry tick.
+    /// Like boot, each eligible episode gets one queue attempt, without rewriting it.
+    pub(in crate::app) fn release_restored_recipient_wakes(&mut self) {
+        let wakes = std::mem::take(&mut self.restored_recovery.recipient_wakes);
+        for (key, episode) in wakes {
+            if self.provider_episode_archived(&episode)
+                || self.refuse_provider_run_recovery(&episode).is_err()
+            {
+                self.restored_recovery.recipient_wakes.insert(key, episode);
+                continue;
+            }
+            if let Err(error) = self.queue_recovery_recipient(episode.recipient.as_ref()) {
+                eprintln!("restored recipient wake {key}: {error}");
+            } else {
+                self.restored_recovery.delivery_due = true;
+            }
+        }
     }
 
     /// Retry state is derived from durable owed notices, not a restore-only

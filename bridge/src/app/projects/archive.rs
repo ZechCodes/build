@@ -35,9 +35,18 @@ impl AppState {
     }
 
     pub(crate) fn project_restore(&mut self, id: &str) -> Result<Value, ApiError> {
+        let was_archived = self
+            .project_for(id)
+            .map_err(ApiError::classify)?
+            .archived_at
+            .is_some();
         let restored = self.set_project_archive(id, None)?;
         self.schedule_restored_run_recovery(Some(id));
+        if was_archived {
+            self.remember_restored_recipient_wakes(id);
+        }
         self.replay_restored_provider_notices(id);
+        self.release_restored_recipient_wakes();
         Ok(restored)
     }
 
@@ -86,7 +95,13 @@ impl AppState {
             .keys()
             .chain(self.plans.keys())
             .filter(|owner| self.projects.project_id_of(owner) == Some(project))
-            .flat_map(|owner| self.archive_owner_blockers(owner))
+            .flat_map(|owner| {
+                let mut blockers = self.archive_owner_blockers(owner);
+                if self.delivery_queue.archive_holds_owner(owner) {
+                    blockers.push(format!("wait for pending wake for {owner}"));
+                }
+                blockers
+            })
             .collect()
     }
 

@@ -717,7 +717,7 @@ async fn ready_usage_retry_roundtrip(success: bool) {
     let (gate, handle) = crate::app::OffLockGate::new();
     fixture.state.off_lock_gate = Some(gate);
     let shared = fixture.state.shared();
-    let _spawns = super::project_agent_base::record_spawns(&shared);
+    let spawns = super::project_agent_base::record_spawns(&shared);
     let answer = shared.lock().unwrap().handle(req(
         "project.restore",
         json!({"project_id":fixture.project}),
@@ -754,12 +754,18 @@ async fn ready_usage_retry_roundtrip(success: bool) {
     handle.release();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let mut state = shared.lock().unwrap();
-            if !state.run_recovery_reserved(&fixture.owner) {
-                state.release_usage_limits_due_at(reset);
+            let settled = {
+                let mut state = shared.lock().unwrap();
+                if state.run_recovery_reserved(&fixture.owner) {
+                    false
+                } else {
+                    state.release_usage_limits_due_at(reset);
+                    true
+                }
+            };
+            if settled {
                 break;
             }
-            drop(state);
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
@@ -767,7 +773,17 @@ async fn ready_usage_retry_roundtrip(success: bool) {
     .unwrap();
     let mut state = shared.lock().unwrap();
     state.release_usage_limits_due_at(reset);
-    assert_usage_retry_counts(&mut state, &fixture.owner, &fixture.agent, 1);
+    assert_eq!(
+        build_notices(&mut state, &fixture.owner, &fixture.agent, "Retrying").len(),
+        1
+    );
+    // Settlement may already have drained the retry. A queue ticket or the
+    // recorded spawn proves the wake survives either side of that boundary.
+    assert!(
+        state.delivery_queue.archive_holds_owner(&fixture.owner)
+            || spawns.lock().unwrap().len() == 1
+    );
+    assert!(spawns.lock().unwrap().len() <= 1);
     assert_eq!(
         build_notices(
             &mut state,

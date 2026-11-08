@@ -8,14 +8,12 @@ import { environmentSupportAddress } from "../core/environmentSupport.js";
 import { admitEnvironmentListWrite, environmentsAddress, writeCachedEnvironments } from "../core/environmentCache.js";
 import { watchSettingsRecord } from "../core/settingsRecords.js";
 import { watchEnvironmentSettingsProjects } from "../core/environmentSettingsProjects.js";
-import { identityDeviceLabel } from "../core/environmentIdentity.js";
+import { identityDeviceLabel, kindGlyphHtml } from "../core/environmentIdentity.js";
 import { taskCountText } from "../core/taskCountText.js";
 import { esc } from "../core/text.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
 
 const projectsAddress = deviceId => ({ deviceId, entityId: "", kind: "projects" });
-const kindGlyph = kind => kind === "environment" ? "▣" : "◇";
-const glyphHtml = kind => `<span class="create-kind" aria-hidden="true">${kindGlyph(kind)}</span>`;
 const knownCount = value => Number.isSafeInteger(value) && value >= 0;
 
 function projectCountText(project) {
@@ -38,7 +36,7 @@ function deviceTagHtml(device) {
 
 function projectHtml(project, device) {
   const folders = Array.isArray(project.added_sources) ? `+${project.added_sources.length} folders` : "";
-  return `<div class="projrow"><span class="pname">${glyphHtml("project")} ${esc(project.name)} ${deviceTagHtml(device)}</span>
+  return `<div class="projrow"><span class="pname">${kindGlyphHtml("project")} ${esc(project.name)} ${deviceTagHtml(device)}</span>
     <span class="dim">${folders}</span>
     <span class="dim">${esc(projectCountText(project))}</span>
     <button class="btn mini projsettings" data-environment-project="${esc(project.project_id)}">Settings…</button></div>`;
@@ -48,18 +46,22 @@ function environmentHtml(environment, projects, device) {
   const members = projects.filter(project => project.environment_id === environment.environment_id);
   const workspaceText = environmentWorkspaceText(members);
   return `<article class="panel" data-environment="${esc(environment.environment_id)}">
-    <h3>${glyphHtml("environment")} ${esc(environment.name)} ${deviceTagHtml(device)}</h3>
+    <h3>${kindGlyphHtml("environment")} ${esc(environment.name)} ${deviceTagHtml(device)}</h3>
     <p class="ppath">${esc(environment.home_path)}</p>
     <p class="dim">${environment.sources?.length || 0} sources · ${members.length} projects${workspaceText}</p>
     ${members.map(project => projectHtml(project, device)).join("") || '<p class="dim">no projects yet</p>'}</article>`;
+}
+
+function legacyProjectsHtml(projects, device) {
+  return `<div class="panel"><h3>Projects (this device needs an update to use environments)</h3>
+    ${projects.map(project => projectHtml(project, device)).join("") || '<p class="dim">No projects yet.</p>'}</div>`;
 }
 
 function deviceListHtml({ support, environments, projects: settingsProjects, journalProjects, error }, device) {
   const projects = settingsProjects ?? journalProjects;
   const rows = support?.list ? environments : projects;
   if (!Array.isArray(rows)) return `<p class="${error ? "adderr" : "dim"}">${esc(error || "loading…")}</p>`;
-  if (!support?.list) return `<div class="panel"><h3>Projects (this device needs an update to use environments)</h3>
-    ${projects.map(project => projectHtml(project, device)).join("") || '<p class="dim">No projects yet.</p>'}</div>`;
+  if (!support?.list) return legacyProjectsHtml(projects, device);
   return environments.map(environment => environmentHtml(environment, projects || [], device)).join("")
     || '<p class="dim">No environments on this device yet</p>';
 }

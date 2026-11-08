@@ -105,7 +105,7 @@ it("updates device labels and removes deactivated devices from cached cards", as
   } finally { state.devices = original; }
 });
 
-async function publishJournalProjects(revision = "1") {
+async function publishJournalProjects(revision = "1", snapshot = true) {
   // project_rows clones config, replaces its chosen name with the path leaf,
   // and publishes sources separately; counts are not part of that journal row.
   const configProject = { id: "proj-1", project_id: "proj-1", project_key: "project:opaque", environment_id: "env-1",
@@ -114,7 +114,8 @@ async function publishJournalProjects(revision = "1") {
     ? { ...record, revision, row: { ...configProject, name: "source" } } : { ...record, revision });
   const writer = createScopedDeviceSyncCache({ deviceId: "laptop", scope: { kind: "device" }, bridgeIdentity: "laptop" });
   const cursor = await writer.readCursor();
-  await writer.publish({ records, capture: await writer.capture(), snapshot: true, expectedCursor: cursor?.cursor,
+  await writer.publish({ records: snapshot ? records : records.filter(record => record.kind === "inbox_task"),
+    capture: await writer.capture(), snapshot, expectedCursor: cursor?.cursor,
     response: { status: "ok", scope: { kind: "device" }, incarnation: "journal", cursor: "cursor-" + revision,
       watermark: revision, head: revision, bridge_epoch: "epoch", consistency: "leased" } });
   return (await readCached(address("laptop", "projects"))).value;
@@ -158,7 +159,7 @@ it("refreshes settings-owned names and counts on reconnect and journal wake whil
   expect(document.body.textContent).toContain("3 open tasks");
   answers.shift()({ projects: [{ ...project, name: "Chosen name", workspaces: 4, open_tasks: 7 }] });
   await vi.waitFor(() => expect(document.body.textContent).toContain("4 workspaces · 7 open tasks"));
-  await publishJournalProjects("2");
+  await publishJournalProjects("2", false);
   await vi.waitFor(() => expect(answers).toHaveLength(1));
   expect(document.body.textContent).toContain("Chosen name");
   answers.shift()({ projects: [{ ...project, workspaces: 5, open_tasks: 8 }] });

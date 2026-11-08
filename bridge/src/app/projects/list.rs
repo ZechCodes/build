@@ -65,6 +65,7 @@ impl AppState {
                     base_branch: project.base_branch.clone(),
                     is_git: project.is_git,
                     sources: project.sources.clone(),
+                    added_sources: project.added_sources.clone(),
                     isolation: project.isolation,
                     isolation_default: self.isolation,
                     conversations: conversation
@@ -124,6 +125,8 @@ impl AppState {
             "is_git": p.is_git,
             "remote": primary_remote(&sources),
             "sources": sources,
+            "added_sources": p.added_sources.iter().map(ProjectSource::wire).collect::<Vec<_>>(),
+            "diverged": !p.added_sources.is_empty(),
             "isolation": p.isolation,
             "isolation_default": self.isolation,
             "isolation_effective": effective,

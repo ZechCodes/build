@@ -3,7 +3,7 @@ use super::*;
 use crate::workspace::{DirectoryStatus, Workspace};
 use std::path::PathBuf;
 
-fn git_fixture(mixed: bool) -> (Fixture, PathBuf, String) {
+pub(super) fn git_fixture(mixed: bool) -> (Fixture, PathBuf, String) {
     let f = Fixture::new();
     let repo = f._root.path().join("git-source");
     std::fs::create_dir(&repo).unwrap();

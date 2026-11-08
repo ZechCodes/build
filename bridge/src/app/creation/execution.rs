@@ -309,6 +309,8 @@ fn observer(
             WorkspaceCreationEvent::Started => {
                 saved["effect_step"] = json!("workspace");
                 checkpoint_effect(&writer, &id, &mut saved, "started")?;
+                #[cfg(test)]
+                tests::at_boundary(tests::Boundary::WorkspaceStarted);
             }
             WorkspaceCreationEvent::RolledBack { error } => {
                 checkpoint_settlement(&writer, &id, &mut saved, &error)?;

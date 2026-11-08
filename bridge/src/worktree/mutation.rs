@@ -204,29 +204,97 @@ impl WorktreeManager {
         })?;
         let branch = self.branch_name(&name);
         repo.branch(&branch, &base_commit, false)?;
-        if let Err(error) = backend.materialize(&self.repo_path, &branch, destination) {
-            if let Err(cleanup_error) = backend.remove(&self.repo_path, destination) {
+        let materialized = (|| {
+            #[cfg(test)]
+            super::workspace_checkout_test::at(
+                super::workspace_checkout_test::Boundary::Materialize,
+                destination,
+                &branch,
+            )?;
+            backend.materialize(&self.repo_path, &branch, destination)
+        })();
+        if let Err(error) = materialized {
+            #[cfg(test)]
+            super::workspace_checkout_test::at(
+                super::workspace_checkout_test::Boundary::BeforeRemove,
+                destination,
+                &branch,
+            )
+            .unwrap();
+            let removed = backend.remove(&self.repo_path, destination);
+            #[cfg(test)]
+            super::workspace_checkout_test::at(
+                super::workspace_checkout_test::Boundary::AfterRemove(removed.is_ok()),
+                destination,
+                &branch,
+            )
+            .unwrap();
+            if let Err(cleanup_error) = removed {
                 eprintln!(
                     "checkout {}: could not unwind failed materialization: {cleanup_error}",
                     destination.display()
                 );
             }
-            if let Ok(mut created) = repo.find_branch(&branch, git2::BranchType::Local) {
+            let found = (|| {
+                #[cfg(test)]
+                super::workspace_checkout_test::at(
+                    super::workspace_checkout_test::Boundary::BeforeRefRemoval,
+                    destination,
+                    &branch,
+                )?;
+                repo.find_branch(&branch, git2::BranchType::Local)
+                    .map_err(WorktreeError::from)
+            })();
+            if let Ok(mut created) = found {
                 let _ = created.delete();
             }
             return Err(error);
         }
         let teardown = BranchTeardown::DeletesBranch;
-        if let Err(error) = record_branch_teardown(destination, teardown) {
+        let stamped = (|| {
+            #[cfg(test)]
+            super::workspace_checkout_test::at(
+                super::workspace_checkout_test::Boundary::Teardown,
+                destination,
+                &branch,
+            )?;
+            record_branch_teardown(destination, teardown)
+        })();
+        if let Err(error) = stamped {
             // Materialization succeeded, so unwind both halves before
             // returning the metadata failure to the caller.
-            if let Err(cleanup_error) = backend.remove(&self.repo_path, destination) {
+            #[cfg(test)]
+            super::workspace_checkout_test::at(
+                super::workspace_checkout_test::Boundary::BeforeRemove,
+                destination,
+                &branch,
+            )
+            .unwrap();
+            let removed = backend.remove(&self.repo_path, destination);
+            #[cfg(test)]
+            super::workspace_checkout_test::at(
+                super::workspace_checkout_test::Boundary::AfterRemove(removed.is_ok()),
+                destination,
+                &branch,
+            )
+            .unwrap();
+            if let Err(cleanup_error) = removed {
                 eprintln!(
                     "checkout {}: could not unwind after recording teardown failed: {cleanup_error}",
                     destination.display()
                 );
             }
-            if let Ok(mut created) = repo.find_branch(&branch, git2::BranchType::Local) {
+            let found = (|| {
+                #[cfg(test)]
+                super::workspace_checkout_test::at(
+                    super::workspace_checkout_test::Boundary::BeforeRefRemoval,
+                    destination,
+                    &branch,
+                )?;
+                repo.find_branch(&branch, git2::BranchType::Local)
+                    .map_err(WorktreeError::from)
+            })();
+            if let Ok(mut created) = found {
                 let _ = created.delete();
             }
             return Err(error);

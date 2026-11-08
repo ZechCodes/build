@@ -5,6 +5,8 @@ mod discovery;
 mod identity;
 mod manager;
 mod mutation;
+#[cfg(test)]
+pub(crate) mod workspace_checkout_test;
 
 pub use crate::isolation::{
     branch_teardown, copy_directory, copy_directory_with_rift_root, BranchTeardown,

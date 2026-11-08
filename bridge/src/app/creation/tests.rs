@@ -11,6 +11,7 @@ mod review_followup;
 mod settlement;
 mod stale_replay;
 mod unlanded_identity;
+mod unwind_proof;
 pub(super) use admission_recovery::SimulatedCrash;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -25,6 +26,7 @@ pub(super) enum Boundary {
     WorkspaceMaterialized,
     BeforeResidueCheckpoint,
     BeforeDirectoryCheckpoint,
+    WorkspaceStarted,
 }
 type BoundaryObserver = Box<dyn FnMut(Boundary)>;
 thread_local! {

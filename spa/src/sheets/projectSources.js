@@ -47,7 +47,9 @@ const FIRST_REMOTE_ONLY = {
     callRpc("project.set_remote", { project_id: projectId, url: changes.remote }),
 };
 
-export const sourceEditing = (editsSources) => (editsSources ? IN_PLACE : FIRST_REMOTE_ONLY);
+export const sourceEditing = (editsSources, addedSources = false) => (editsSources || addedSources ? IN_PLACE : FIRST_REMOTE_ONLY);
+
+const READ_ONLY = { editable: () => false };
 
 const shownFields = (source) => FIELDS.filter((field) => source.is_git !== false || !GIT_FIELDS.has(field));
 
@@ -81,20 +83,36 @@ function cardHtml(source, index, { editing, removable, notice, sync }) {
 }
 
 /** The section: a card per source, then the two ways one is added. */
-export function sourcesSectionHtml(project, { editing, editsSources, notices = {}, sync = {} }) {
-  const sources = project.sources || [];
-  const removable = sources.length > 1;
-  const older = editsSources
+export function sourcesSectionHtml(project, { editing, editsSources, addedSources = false, environmentName, notices = {}, sync = {} }) {
+  const older = editsSources || addedSources
     ? ""
     : '<p class="dim">Update Build on this device to edit a folder\'s label, path and base branch here.</p>';
   return `<section class="ps-section" aria-labelledby="ps-sources-h"><h4 id="ps-sources-h">Sources</h4>
     <p class="sub">New workspaces are cut from these folders. A workspace that already exists keeps its own directories.</p>
     ${older}
-    ${sources.map((source, index) => cardHtml(source, index, { editing, removable, notice: notices[source.id], sync })).join("")}
+    ${sourceGroupsHtml(project, { editing, addedSources, environmentName, notices, sync })}
     <div class="row"><button class="btn" id="psaddfolder" type="button">Add folder…</button>
       <button class="btn" id="psaddremote" type="button">Add Git remote…</button></div>
     <div id="psaddsource"></div>
     <div class="adderr" id="pssrcerr" role="alert"></div></section>`;
+}
+
+function sourceGroupsHtml(project, { editing, addedSources, environmentName, notices, sync }) {
+  const sources = project.sources || [];
+  const addedIds = new Set((project.added_sources || []).map(source => source.id));
+  const cards = sources.map((source, index) => {
+    const inherited = addedSources && !addedIds.has(source.id);
+    return { inherited, html: cardHtml(source, index, {
+      editing: inherited ? READ_ONLY : editing,
+      removable: !inherited && sources.length > 1,
+      notice: notices[source.id], sync: inherited ? {} : sync,
+    }) };
+  });
+  if (!addedSources) return cards.map(card => card.html).join("");
+  const inherited = cards.filter(card => card.inherited).map(card => card.html).join("");
+  const added = cards.filter(card => !card.inherited).map(card => card.html).join("");
+  return `<div data-source-group="environment"><h5>From ${esc(environmentName || project.environment_name || project.environment_id || "environment")}</h5>${inherited}</div>
+    <div data-source-group="added"><h5>Added to this project</h5>${added}</div>`;
 }
 
 const cardOf = (sheet, sourceId) =>

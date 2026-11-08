@@ -14,6 +14,8 @@ import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
 import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
 import { readSourceSupport, SOURCE_EDIT_SUPPORT_KIND } from "../core/sourceEditSupport.js";
+import { environmentSupportAddress, readEnvironmentSupport } from "../core/environmentSupport.js";
+import { environmentsAddress, readCachedEnvironments } from "../core/environmentCache.js";
 import { mountSourceCards, readSourceEdits, restoreSourceEdits, sourceEditing, sourcesSectionHtml } from "./projectSources.js";
 import { withNewerSyncs } from "../core/sourceSyncModel.js";
 
@@ -26,6 +28,9 @@ const generalHtml = (project) => `<section class="ps-section" aria-labelledby="p
 
 const isolationHtml = () => `<section class="ps-section" aria-labelledby="ps-isolation-h"><h4 id="ps-isolation-h">Isolation</h4>
     ${isolationFieldHtml()}</section>`;
+
+const environmentNameOf = (project, environments) =>
+  environments.find(row => (row.environment_id || row.id) === project.environment_id)?.name;
 
 const dangerHtml = () => `<section class="ps-section ps-danger" aria-labelledby="ps-danger-h"><h4 id="ps-danger-h">Danger zone</h4>
     <p class="sub">Delete this project and all of its workspaces from Build. Files and unsaved changes in Build-managed workspaces will be permanently removed. Original project folders and external checkouts are kept.</p>
@@ -119,6 +124,9 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   let compactionEditor = null;
   let editsSources = false;
   let syncsBase = false;
+  let addedSources = false;
+  let environments = [];
+  let supportReady = false;
   // Sources whose Sync now was pressed, by the last attempt their row showed
   // then: "Syncing…" until the row says a newer one.
   const syncing = new Map();
@@ -137,7 +145,13 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   // Whether this machine edits sources in place is a fact a greeting writes
   // to the cache; the cards repaint when it lands.
   const readSupport = async () => {
-    ({ editsSources, syncsBase } = await readSourceSupport(deviceId));
+    const [sources, environmentSupport, rows] = await Promise.all([
+      readSourceSupport(deviceId), readEnvironmentSupport(deviceId), readCachedEnvironments(deviceId),
+    ]);
+    ({ editsSources, syncsBase } = sources);
+    addedSources = environmentSupport.addedSources;
+    environments = rows;
+    supportReady = true;
     if (painted) paint(painted);
   };
   // The bridge's source sync service writes each sync onto the project's
@@ -150,7 +164,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     if (synced) await record.write(synced);
   };
   const unsubscribeSupport = subscribeCache({ deviceId }, (address) => {
-    if (address?.kind === SOURCE_EDIT_SUPPORT_KIND) void readSupport();
+    if ([SOURCE_EDIT_SUPPORT_KIND, environmentSupportAddress(deviceId).kind, environmentsAddress(deviceId).kind].includes(address?.kind)) void readSupport();
     if (address?.kind === "projects" && !address.entityId) void adoptListedSyncs();
   });
   const close = () => {
@@ -177,15 +191,17 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
 
   const paint = (project) => {
     if (!current() || view !== "settings") return;
+    if (!supportReady) { painted = project; return; }
     const live = captureDraft(sheet, painted);
     const draft = combineDraft(live, cachedDraft, displayedDraft);
-    const editing = sourceEditing(editsSources);
+    const editing = sourceEditing(editsSources, addedSources);
+    const environmentName = environmentNameOf(project, environments);
     const compactionSection = sheet.querySelector('[data-compaction-editor="project-compaction"]');
     disposeRepoPickers(sheet);
     sheet.innerHTML = settingsSheetHtml({
       title: "Project settings",
       bodyHtml: `${generalHtml(project)}
-      ${sourcesSectionHtml(project, { editing, editsSources, notices, sync: { syncsBase, syncing } })}
+      ${sourcesSectionHtml(project, { editing, editsSources, addedSources, environmentName, notices, sync: { syncsBase, syncing } })}
       ${isolationHtml()}
       ${scopedCompactionEditorHtml({ scope: "project", prefix: "project-compaction" })}
       ${dangerHtml()}
@@ -250,7 +266,7 @@ function mountSources(project, { callRpc, record, deviceId, editing, saveDraft, 
     button.disabled = true;
     try {
       const changed = await send();
-      if (changed?.project_id) await writeProjectSetting(deviceId, changed);
+      if (changed?.project_id) await writeSourceProject(deviceId, project, changed);
       await onDone?.(changed);
       await record.read();
       saveDraft();
@@ -266,6 +282,11 @@ function mountSources(project, { callRpc, record, deviceId, editing, saveDraft, 
   $("#psaddremote").onclick = () => openAddRemote(project, { write, callRpc, saveDraft, deviceId });
   $("#psaddfolder").onclick = () => void browseForSource(project, { callRpc, deviceId, onFrameChange, onReturn });
 }
+
+// Source replies omit environment identity. Keep the known metadata while
+// publishing the authoritative effective and added source lists immediately.
+const writeSourceProject = (deviceId, project, changed) =>
+  writeProjectSetting(deviceId, { ...project, ...changed });
 
 /** Say where to clone the remote from, and what to call it. */
 function openAddRemote(project, { write, callRpc, saveDraft, deviceId }) {
@@ -307,7 +328,7 @@ async function browseForSource(project, { callRpc, deviceId, onFrameChange, onRe
   const chosen = async (path) => {
     try {
       const changed = await callRpc("project.add_source", { project_id: project.project_id, path });
-      await writeProjectSetting(deviceId, changed);
+      await writeSourceProject(deviceId, project, changed);
       onReturn();
     } catch (thrown) {
       const error = $("#psbrowseerr");

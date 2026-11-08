@@ -665,6 +665,15 @@ pub struct CheckoutLeftBehind {
 /// `project.ensure_conversation` minting one to answer.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ListedProjectRow {
+    pub environment_id: String,
+    pub environment_name: String,
+    pub project_key: String,
+    pub diverged: bool,
+    pub device: String,
+    pub open_tasks: u64,
+    pub total_tasks: u64,
+    pub workspaces: usize,
+    pub sources: Vec<ProjectSourceRow>,
     #[serde(flatten)]
     pub project: ProjectRow,
     pub entity_id: Option<String>,
@@ -861,6 +870,7 @@ pub struct PendingRow {
 pub struct BoardListResult {
     pub items: Vec<FeedItem>,
     pub projects: Vec<BoardProjectRow>,
+    pub environments: Vec<super::environment::EnvironmentRow>,
     pub runs: Vec<RunRow>,
     pub external_worktrees: Vec<ExternalWorktreeRow>,
     pub pending: Vec<PendingRow>,

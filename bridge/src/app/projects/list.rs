@@ -28,6 +28,7 @@ impl AppState {
         crate::app::snapshot_projection::work_counts::project_capture::capture();
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.project_rows.capture");
+        let workspace_counts = self.project_workspace_counts();
         self.projects
             .iter()
             .map(|project| {
@@ -35,6 +36,7 @@ impl AppState {
                 crate::app::snapshot_projection::work_counts::project_capture::project(&project.id);
                 let conversation = self.project_snapshot_conversation_run(&project.id);
                 let scope = crate::compaction::CompactionScope::Project(project.id.clone());
+                let (open_tasks, total_tasks) = self.project_task_counts(&project.id);
                 ProjectListRow {
                     compaction_thresholds: self
                         .compaction_thresholds(&scope)
@@ -42,8 +44,23 @@ impl AppState {
                         .read_value(),
                     compaction: self.scope_compaction_observation(&scope),
                     project_id: project.id.clone(),
+                    environment_id: project.environment_id.clone(),
+                    environment_name: self
+                        .projects
+                        .environment(&project.environment_id)
+                        .map(|e| e.name.clone())
+                        .unwrap_or_default(),
+                    project_key: project.project_key.clone(),
+                    diverged: !project.added_sources.is_empty(),
+                    device: self.device_name.clone(),
+                    open_tasks,
+                    total_tasks,
+                    workspaces: workspace_counts
+                        .get(project.id.as_str())
+                        .copied()
+                        .unwrap_or_default(),
                     name: project.name.clone(),
-                    repo_path: project.repo_path.clone(),
+                    repo_path: project.home_path.clone(),
                     worktrees_root: self.project_worktrees_root(&project.id),
                     base_branch: project.base_branch.clone(),
                     is_git: project.is_git,
@@ -102,7 +119,7 @@ impl AppState {
             "compaction_thresholds": self.compaction_thresholds(&crate::compaction::CompactionScope::Project(p.id.clone())).unwrap_or_default().read_value(),
             "compaction": self.scope_compaction_observation(&crate::compaction::CompactionScope::Project(p.id.clone())),
             "name": p.name,
-            "path": p.repo_path.display().to_string(),
+            "path": p.home_path.display().to_string(),
             "base_branch": p.base_branch,
             "is_git": p.is_git,
             "remote": primary_remote(&sources),

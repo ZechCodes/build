@@ -70,6 +70,111 @@ fn api_version_is_what_versions_json_calls_current() {
 }
 
 #[test]
+fn environments_read_wire_is_additive_and_withheld() {
+    assert_eq!(API_VERSION, "3.36.0");
+    assert!(!capabilities(false).contains(&"environments"));
+    assert!(!capabilities(false).contains(&"environment.list"));
+
+    let environment = read_json(&fixtures_root().join("v1/environment.list.json"));
+    let rows = &environment["result"]["environments"];
+    let row = &rows[0];
+    assert_environment_fixture_row(row);
+    assert_fixture_result_round_trips("environment.list", &environment["result"]);
+
+    let board = read_json(&fixtures_root().join("v1/board.list.json"));
+    assert_eq!(board["result"]["environments"], *rows);
+    assert_fixture_result_round_trips("board.list", &board["result"]);
+
+    let project = read_json(&fixtures_root().join("v1/project.list.json"));
+    let project_row = &project["result"]["projects"][0];
+    assert_project_environment_fixture_row(project_row, row);
+    assert_fixture_result_round_trips("project.list", &project["result"]);
+
+    assert_workspace_environment_fixture("workspace.list", "/workspaces/0", row);
+    assert_workspace_environment_fixture("workspace.get", "", row);
+}
+
+fn assert_environment_fixture_row(row: &Value) {
+    assert_required_fixture_row_fields(
+        row,
+        "environment",
+        &[
+            "environment_id",
+            "name",
+            "home_path",
+            "is_git",
+            "base_branch",
+            "sources",
+            "isolation",
+            "isolation_effective",
+            "project_ids",
+            "device",
+        ],
+    );
+    assert_eq!(row["project_ids"], serde_json::json!(["proj-1"]));
+    assert!(row["sources"].is_array());
+    assert!(row["device"].is_string());
+}
+
+fn assert_project_environment_fixture_row(project: &Value, environment: &Value) {
+    assert_required_fixture_row_fields(
+        project,
+        "project",
+        &[
+            "environment_id",
+            "environment_name",
+            "project_key",
+            "diverged",
+            "device",
+            "open_tasks",
+            "total_tasks",
+            "workspaces",
+            "sources",
+        ],
+    );
+    assert_eq!(project["environment_id"], environment["environment_id"]);
+    assert_eq!(project["environment_name"], environment["name"]);
+    assert_eq!(project["path"], environment["home_path"]);
+    assert_eq!(project["diverged"], false);
+}
+
+fn assert_required_fixture_row_fields(row: &Value, kind: &str, fields: &[&str]) {
+    for field in fields {
+        assert!(row.get(*field).is_some(), "{kind} row lacks {field}");
+    }
+}
+
+fn assert_fixture_result_round_trips(method: &str, result: &Value) {
+    let (_, handler) = v1::methods()
+        .iter()
+        .find(|(name, _)| *name == method)
+        .unwrap();
+    assert_eq!(
+        handler.round_trip_result(result).unwrap(),
+        *result,
+        "{method}"
+    );
+}
+
+fn assert_workspace_environment_fixture(method: &str, pointer: &str, environment: &Value) {
+    let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+    assert_eq!(
+        fixture["result"].pointer(pointer).unwrap()["environment_id"],
+        environment["environment_id"],
+        "{method}"
+    );
+    assert_fixture_result_round_trips(method, &fixture["result"]);
+    for example in fixture["examples"].as_array().into_iter().flatten() {
+        assert_eq!(
+            example["result"].pointer(pointer).unwrap()["environment_id"],
+            environment["environment_id"],
+            "{method}: example"
+        );
+        assert_fixture_result_round_trips(method, &example["result"]);
+    }
+}
+
+#[test]
 fn scoped_sync_wire_advertises_complete_device_projection() {
     assert_eq!(API_VERSION, "3.36.0");
     let methods: BTreeSet<_> = v1::methods().iter().map(|(name, _)| *name).collect();

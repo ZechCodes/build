@@ -585,6 +585,7 @@ pub(in crate::app) fn allowed_during_project_deletion(method: &str) -> bool {
             | "capture.get"
             | "models.list"
             | "project.list"
+            | "environment.list"
             | "settings.get"
             | "fs.list"
             | "fs.read"

@@ -310,6 +310,8 @@ pub struct WorkspaceDirectoryRow {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WorkspaceRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_thresholds: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<serde_json::Value>,

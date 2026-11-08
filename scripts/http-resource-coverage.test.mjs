@@ -258,10 +258,6 @@ const metadataUses = {
 // Staged consumers remain real methods. Exclude only an audited occurrence
 // until its bridge wire/HTTP owner lands; mapped methods must retire the entry.
 const stagedConsumerExclusions = {
-  "core/syncLists.js": [{
-    use: ["environment.list", "( reading , [\"environment.list\"] , { }", "f9d9a55a14cdd54d9a9e0a1bdadb86bf1f2449c0fd37514e616f0d647e732182"],
-    reason: "#1034 stages a capability-gated environment.list read for M1.1 wire and M1.4 activation; this bridge does not yet serve an HTTP resource. Remove when its manifest coverage lands.",
-  }],
   "core/createWorkspaceTargets.js": [{
     use: ["environment.create_project", "{ method : [\"environment.create_project\"] , params :", "dabe1f5502fbd339d538028a17f63833c369036c55d1354a34b80341858a3466"],
     reason: "#1035 stages capability-gated creation for M0.4 (bridge journal executor and verb owner); M1.1 owns its wire/HTTP placement. Remove when the bridge verb and manifest coverage land.",
@@ -635,7 +631,7 @@ const dynamicSites = {
   "core/sessionSwitch.js": [
     "producer \"rtc.\""
   ],
-  // #1034: ask(reading) dispatches only the staged environment.list consumer.
+  // #1034: ask(reading) dispatches the environment.list consumer.
   "core/syncLists.js": [
     "ask ( context )",
     "ask ( reading )"
@@ -980,15 +976,15 @@ async function sources(directory = new URL("spa/src/", root), prefix = "") {
   return files.sort((left, right) => left.file.localeCompare(right.file));
 }
 
-test("a staged consumer exclusion cannot cover copied or changed method occurrences", async () => {
-  const file = "core/syncLists.js";
-  const source = await readFile(new URL(`spa/src/${file}`, root), "utf8");
-  const covered = (changed) => stagedConsumerCovered(file, "environment.list", consumers(changed, file).methodUses);
-  assert.equal(covered(source), true);
-  assert.equal(covered(`${source}\ncontext.rpc("environment.list");`), false);
-  assert.equal(covered(`${source}\nconst method = "environment.list"; context.rpc(method);`), false);
-  assert.equal(covered(source.replace('ask(reading, "environment.list"', 'ask(context, "environment.list"')), false);
-  assert.equal(stagedConsumerCovered("synthetic.js", "environment.list", consumers(source, file).methodUses), false);
+test("environment.list is a mapped resource without a staged consumer exclusion", async () => {
+  const manifest = JSON.parse(await readFile(new URL("fixtures/api/http/resource-manifest.json", root), "utf8"));
+  const operation = manifest.operations.find(({ method }) => method === "environment.list");
+  assert.equal(operation?.verb, "GET");
+  assert.equal(operation?.path, "/v1/environments");
+  assert.equal(operation?.requires_events, false);
+  for (const exclusions of Object.values(stagedConsumerExclusions)) {
+    assert.ok(exclusions.every(({ use: [method] }) => method !== "environment.list"));
+  }
 });
 
 for (const [file, method] of [
@@ -1194,5 +1190,5 @@ test("secrets metadata routes are explicit and sealed uploads are bounded", asyn
 
 test("the generator inventories ordinary, required-context and optional-context methods", () => {
   const output = execFileSync(process.execPath, [fileURLToPath(new URL("scripts/http-resource-manifest.mjs", root)), "--check"], { encoding: "utf8" });
-  assert.match(output, /157 explicit resource routes; generated artifacts current/);
+  assert.match(output, /158 explicit resource routes; generated artifacts current/);
 });

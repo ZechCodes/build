@@ -24,7 +24,9 @@ pub(in crate::app) struct SnapshotObservations {
     existing_paths: BTreeSet<PathBuf>,
     branches: BTreeMap<String, String>,
     watched_tasks: Mutex<BTreeMap<String, Vec<Arc<Value>>>>,
+    project_task_counts: Mutex<BTreeMap<String, (u64, u64)>>,
     projects: Mutex<BTreeMap<String, ProjectObservation>>,
+    environments: Mutex<BTreeMap<String, ProjectObservation>>,
     workspace_reviews: BTreeMap<String, WorkspaceReviewObservation>,
 }
 
@@ -36,17 +38,27 @@ pub(in crate::app) struct ProjectObservation {
 pub(in crate::app) struct ProjectSnapshotRefresh {
     version: u64,
     rows: Vec<ProjectListRow>,
+    environments: Vec<environments::EnvironmentSnapshotRow>,
 }
 
 pub(in crate::app) struct RenderedProjectSnapshotRefresh {
     version: u64,
     rows: Vec<(ProjectListRow, Value)>,
+    environments: Vec<(environments::EnvironmentSnapshotRow, Value)>,
 }
 
 impl ProjectSnapshotRefresh {
     pub(in crate::app) fn render(self) -> RenderedProjectSnapshotRefresh {
         RenderedProjectSnapshotRefresh {
             version: self.version,
+            environments: self
+                .environments
+                .into_iter()
+                .map(|row| {
+                    let value = row.render();
+                    (row, value)
+                })
+                .collect(),
             rows: self
                 .rows
                 .into_iter()
@@ -76,6 +88,7 @@ impl AppState {
         }
         self.cli_readings.warm();
         self.revive_parked_projects();
+        self.warm_environment_snapshot_observations();
         self.warm_snapshot_board_observations();
         self.refresh_workspace_snapshot_observations();
         self.warm_snapshot_board_observations();
@@ -424,6 +437,7 @@ fn put_changed(
 }
 
 mod attention_notices;
+mod environments;
 mod history;
 pub(in crate::app) mod incremental;
 mod maintenance;

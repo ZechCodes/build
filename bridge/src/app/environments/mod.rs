@@ -25,6 +25,8 @@ mod config_migration_tests;
 pub(in crate::app) mod migration;
 #[cfg(test)]
 mod runtime_tests;
+#[cfg(test)]
+mod wire_tests;
 
 #[derive(Clone, Debug)]
 pub(in crate::app) struct Environment {

@@ -1,4 +1,4 @@
-# Wire 3.36 adds four metadata-only secrets resources; 157 explicit operations.
+# M1.1 adds the environment read resource without a wire-version bump; 158 explicit operations.
 # Explicit HTTP resource catalogue. method<TAB>verb<TAB>path. No wildcard methods.
 agent.add	POST	/v1/entities/{entity_id}/agents
 agent.choose	PATCH	/v1/entities/{entity_id}/agents/{agent_id}/model
@@ -28,6 +28,7 @@ conversation.watch	PUT	/v1/entities/{entity_id}/conversation-watch
 entity.dismiss	POST	/v1/entities/{entity_id}/dismissals
 entity.mute	PUT	/v1/entities/{entity_id}/mute
 entity.seen	PUT	/v1/entities/{entity_id}/read-cursor
+environment.list	GET	/v1/environments
 fs.createDirectory	POST	/v1/files/directories
 fs.createFile	POST	/v1/files/empty-files
 fs.list	POST	/v1/filesystem/directory-queries

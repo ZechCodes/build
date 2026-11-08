@@ -253,7 +253,12 @@ async fn serve() {
         Ok(app) => app,
         Err(error) => exit_startup(error),
     };
-    run_daemon(runtime, loaded, app).await;
+    let name = loaded
+        .stored
+        .as_ref()
+        .map(|stored| stored.name.clone())
+        .unwrap_or_else(identity::default_device_name);
+    run_daemon(runtime, loaded, app.with_device_name(name)).await;
 }
 
 fn configure_updates(app: AppState, runtime: &RuntimePaths) -> Result<AppState, String> {

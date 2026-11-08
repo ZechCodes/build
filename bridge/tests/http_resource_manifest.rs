@@ -38,6 +38,7 @@ fn every_registered_method_is_explicitly_mapped_or_deliberately_excluded() {
         methods
     );
     for name in [
+        "environment.list",
         "agent.start",
         "agent.interrupt",
         "session.hello",
@@ -100,5 +101,5 @@ fn retired_legacy_writes_keep_http_routes_for_structured_refusals() {
             "missing compatibility route {method}"
         );
     }
-    assert_eq!(manifest["operations"].as_array().unwrap().len(), 157);
+    assert_eq!(manifest["operations"].as_array().unwrap().len(), 158);
 }

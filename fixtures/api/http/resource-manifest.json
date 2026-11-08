@@ -43,6 +43,7 @@
       "entity_dismiss",
       "entity_mute",
       "entity_seen",
+      "environment_list",
       "fs_createDirectory",
       "fs_createFile",
       "fs_list",
@@ -717,6 +718,24 @@
         "source": "bridge/src/api/v1/lifecycle.rs",
         "params": "EntitySeenParams",
         "result": "Acknowledged"
+      }
+    },
+    {
+      "method": "environment.list",
+      "operationId": "environment_list",
+      "verb": "GET",
+      "path": "/v1/environments",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/environment.rs",
+        "params": "NoParams",
+        "result": "EnvironmentListResult"
       }
     },
     {

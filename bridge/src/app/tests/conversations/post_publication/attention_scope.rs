@@ -228,6 +228,7 @@ fn image(root: &ReadView, app: &AppState) -> Image {
         entity_id: crate::changes::BOARD_ITEM_ID.into(),
         lists: BoardLists {
             projects: true,
+            environments: true,
             workspaces: true,
             usage_limits: true,
         },

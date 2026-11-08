@@ -171,6 +171,10 @@ impl GlobalProjection {
         SharedJson::object([
             ("projects".into(), rows::array(&self.projects)),
             (
+                "environments".into(),
+                self.board_fields["environments"].clone(),
+            ),
+            (
                 "workspaces".into(),
                 rows::push_workspaces(&self.workspaces, &self.summaries),
             ),
@@ -190,6 +194,16 @@ impl GlobalProjection {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.incremental.publish");
         delta = rows::put(delta, previous, "board.list", "", self.board());
+        delta = rows::put(
+            delta,
+            previous,
+            "environment.list",
+            "",
+            SharedJson::object([(
+                "environments".into(),
+                self.board_fields["environments"].clone(),
+            )]),
+        );
         delta = rows::put(
             delta,
             previous,

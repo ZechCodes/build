@@ -149,7 +149,7 @@ async fn probe_snapshots(
     replies: &mut mpsc::UnboundedReceiver<OutboundEnvelope>,
     held: &AtomicBool,
 ) {
-    assert_eq!(crate::api::effects::INTAKE_SNAPSHOT_METHODS.len(), 15);
+    assert_eq!(crate::api::effects::INTAKE_SNAPSHOT_METHODS.len(), 16);
     for (offset, method) in crate::api::effects::INTAKE_SNAPSHOT_METHODS
         .iter()
         .enumerate()

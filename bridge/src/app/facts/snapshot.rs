@@ -483,6 +483,7 @@ impl PushFacts {
     fn lists(&self, requested: BoardLists) -> Value {
         let fields = [
             ("projects", requested.projects),
+            ("environments", requested.environments),
             ("workspaces", requested.workspaces),
             ("usage_limits", requested.usage_limits),
         ];

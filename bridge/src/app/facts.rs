@@ -162,6 +162,7 @@ pub(in crate::app) fn bus_with_sources(
 #[cfg(test)]
 pub(in crate::app) struct BoardListFacts {
     projects: Option<Vec<super::ProjectListRow>>,
+    environments: Option<Value>,
     workspaces: Option<Value>,
     usage_limits: Option<Value>,
 }
@@ -176,6 +177,9 @@ impl BoardListFacts {
         if let Some(rows) = self.projects {
             let projects: Vec<Value> = rows.iter().map(super::ProjectListRow::render).collect();
             state.insert("projects".into(), Value::Array(projects));
+        }
+        if let Some(environments) = self.environments {
+            state.insert("environments".into(), environments);
         }
         if let Some(workspaces) = self.workspaces {
             state.insert("workspaces".into(), workspaces);
@@ -514,6 +518,9 @@ impl AppState {
     ) -> BoardListFacts {
         BoardListFacts {
             projects: lists.projects.then(|| self.project_list_rows()),
+            environments: lists
+                .environments
+                .then(|| self.snapshot_environment_list()["environments"].clone()),
             workspaces: lists
                 .workspaces
                 .then(|| self.workspace_list(&json!({})).ok())

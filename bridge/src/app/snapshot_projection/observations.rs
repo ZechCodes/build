@@ -196,6 +196,7 @@ impl AppState {
             .unwrap()
             .retain(|id, _| projects.contains(id));
         for id in projects {
+            self.refresh_project_task_counts(&id)?;
             self.refresh_project_snapshot_task_observations(&id)?;
         }
         Ok(())

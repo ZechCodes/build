@@ -140,7 +140,8 @@
               }
             }
           }
-        }
+        },
+        "environment_id": "env-1"
       },
       {
         "id": "legacy-proj-1",
@@ -232,7 +233,8 @@
               }
             }
           }
-        }
+        },
+        "environment_id": "env-1"
       }
     ]
   },
@@ -387,7 +389,8 @@
                   }
                 }
               }
-            }
+            },
+            "environment_id": "env-1"
           }
         ]
       }
@@ -541,7 +544,8 @@
               }
             }
           },
-          "legacy_review": true
+          "legacy_review": true,
+          "environment_id": "env-1"
         },
         {
           "id": "legacy-proj-1",
@@ -633,7 +637,8 @@
                 }
               }
             }
-          }
+          },
+          "environment_id": "env-1"
         }
       ]
     }

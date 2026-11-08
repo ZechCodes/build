@@ -48,6 +48,7 @@
 
 pub mod board;
 pub mod changes;
+pub mod environment;
 pub mod git;
 pub mod github;
 pub mod harnesses;
@@ -434,9 +435,10 @@ pub fn call_context_typed<P: DeserializeOwned + Serialize, R: Serialize>(
 }
 
 /// Every family's table, in one place.
-fn families() -> [&'static [(&'static str, Handler)]; 15] {
+fn families() -> [&'static [(&'static str, Handler)]; 16] {
     [
         board::methods(),
+        environment::methods(),
         changes::methods(),
         thread::methods(),
         git::methods(),

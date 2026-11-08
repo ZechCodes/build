@@ -397,6 +397,30 @@ impl AppState {
         Ok(())
     }
 
+    fn workspace_json(&self, workspace: &Workspace) -> Value {
+        let mut row = workspace_json(workspace);
+        row["environment_id"] = json!(self
+            .projects
+            .get(&workspace.project_id)
+            .map(|p| p.environment_id.as_str())
+            .unwrap_or_default());
+        row
+    }
+
+    pub(in crate::app) fn project_workspace_counts(
+        &self,
+    ) -> std::collections::HashMap<&str, usize> {
+        let mut counts = std::collections::HashMap::new();
+        for workspace in self
+            .workspaces
+            .iter()
+            .filter(|w| !self.is_projects_own_checkout(w))
+        {
+            *counts.entry(workspace.project_id.as_str()).or_default() += 1;
+        }
+        counts
+    }
+
     pub(in crate::app) fn workspace_list_snapshot(&self, params: &Value) -> Result<Value, String> {
         let project_id = params.get("project_id").and_then(Value::as_str);
         let rows = self
@@ -420,7 +444,7 @@ impl AppState {
         // client standing on the list files the workspace's git
         // under it without asking for the row.
         let owner = self.workspace_snapshot_conversation_owner(workspace);
-        let mut value = workspace_json(workspace);
+        let mut value = self.workspace_json(workspace);
         self.add_scope_compaction(
             &mut value,
             &crate::compaction::CompactionScope::Workspace(workspace.id.clone()),
@@ -483,7 +507,7 @@ impl AppState {
             .cloned()
             .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
         let owner = self.workspace_conversation_owner(&workspace);
-        let mut value = workspace_json(&workspace);
+        let mut value = self.workspace_json(&workspace);
         self.add_scope_compaction(
             &mut value,
             &crate::compaction::CompactionScope::Workspace(workspace.id.clone()),

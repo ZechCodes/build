@@ -1,5 +1,7 @@
 use super::{next_source_number, Project, ProjectSource};
 use crate::app::environments::Environment;
+#[cfg(test)]
+mod test_support;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 

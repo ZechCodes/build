@@ -1,0 +1,39 @@
+{
+  "method": "environment.list",
+  "since": "3.36.0",
+  "params": {},
+  "result": {
+    "environments": [
+      {
+        "environment_id": "env-1",
+        "name": "build",
+        "home_path": "/home/ada/code/build",
+        "is_git": true,
+        "base_branch": "main",
+        "sources": [
+          {
+            "id": "source-1",
+            "name": "build",
+            "mount": "build",
+            "path": "/home/ada/code/build",
+            "is_git": true,
+            "base_branch": "main",
+            "remote": "git@github.com:ada/build.git",
+            "sync_base": false,
+            "sync": null
+          }
+        ],
+        "isolation": null,
+        "isolation_effective": "worktree",
+        "project_ids": [
+          "proj-1"
+        ],
+        "device": "Ada’s workstation"
+      }
+    ]
+  },
+  "errors": [
+    "internal"
+  ],
+  "note": "Staged M1 read side; the environments capability and method capability remain withheld until M1.4."
+}

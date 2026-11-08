@@ -39,7 +39,7 @@ impl DeferredGitWork for DeleteProjectFiles {
                     return Err(format!(
                         "Workspace cleanup failed at {}: {error}. Retry project deletion",
                         root.display()
-                    ))
+                    ));
                 }
             }
         }
@@ -338,12 +338,14 @@ impl AppState {
         self.forget_session_owner(project_id);
         self.compaction_policies = policies;
         self.workspaces.forget_project(project_id);
+        self.retain_environment_snapshot_observation(project_id);
         self.projects.remove(project_id);
         self.board.diff_mut().remove_project(project_id);
         // Both lists: the project is gone from one, and every workspace that
         // stood in it from the other.
         self.note_board_lists_changed(crate::changes::BoardLists {
             projects: true,
+            environments: true,
             workspaces: true,
             usage_limits: false,
         });

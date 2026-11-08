@@ -1964,3 +1964,121 @@ async fn a_git_flush_re_sends_the_workspace_list_with_its_summary() {
         "{listed:?}"
     );
 }
+
+#[tokio::test]
+async fn board_push_publishes_environments() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let subscribed = handler.call(
+        sender,
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id":"environments", "scope":{"kind":"board"}, "kinds":["state"]
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed}");
+    settled_pushes(&mut rx, &key).await;
+    let second = crate::git_fixture::init_repo_named(dir.path(), "environment-second");
+    let added = call(
+        &handler,
+        "project.create",
+        open_folder(json!({"path":second})),
+    );
+    assert_eq!(added["ok"], true, "{added}");
+    let pushes = settled_pushes(&mut rx, &key).await;
+    let carried = pushes
+        .iter()
+        .filter(|push| push["type"] == "changes")
+        .flat_map(|push| push["items"].as_array().into_iter().flatten())
+        .filter(|item| item["entity_id"] == crate::changes::BOARD_ITEM_ID)
+        .find_map(|item| item["state"]["environments"].as_array())
+        .expect("project creation must publish the environment board list");
+    let app = state.lock().unwrap();
+    let expected = app
+        .projects
+        .environments()
+        .map(|row| row.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual = carried
+        .iter()
+        .map(|row| row["environment_id"].as_str().unwrap().to_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual, expected);
+    assert_eq!(carried.len(), 2);
+    let frame = pushes
+        .iter()
+        .find(|push| {
+            push["items"].as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item["state"]["environments"].is_array())
+            })
+        })
+        .unwrap();
+    let event = crate::http::sse::SseEvent::json("changes", frame)
+        .expect("environment board push fits the existing event bound");
+    assert!(event.len() <= crate::http::sse::MAX_EVENT_BYTES);
+    let oversized = json!({"type":"changes","items":[{"entity_id":"board","state":{
+        "environments":[{"environment_id":"env-large","name":"x".repeat(crate::http::sse::MAX_EVENT_BYTES)}]
+    }}]});
+    assert_eq!(
+        crate::http::sse::SseEvent::json("changes", &oversized),
+        Err(crate::http::sse::DeliveryError::TooLarge)
+    );
+}
+
+#[tokio::test]
+async fn project_counts_publish_when_tasks_or_workspaces_change() {
+    let (dir, repo) = init_repo();
+    let (_state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let subscribed = handler.call(
+        sender,
+        req(
+            "changes.subscribe",
+            json!({
+                "subscription_id":"project-counts", "scope":{"kind":"board"}, "kinds":["state"]
+            }),
+        ),
+    );
+    assert_eq!(subscribed["ok"], true, "{subscribed}");
+    settled_pushes(&mut rx, &key).await;
+    let created = call(
+        &handler,
+        "tasks.create",
+        json!({"project_id":"proj-1","title":"counted task"}),
+    );
+    assert_eq!(created["ok"], true, "{created}");
+    let row = carried_project(&settled_pushes(&mut rx, &key).await);
+    assert_eq!(row["open_tasks"], 1);
+    assert_eq!(row["total_tasks"], 1);
+    let closed = call(
+        &handler,
+        "tasks.close",
+        json!({"task_id":created["result"]["task"]["id"]}),
+    );
+    assert_eq!(closed["ok"], true, "{closed}");
+    let row = carried_project(&settled_pushes(&mut rx, &key).await);
+    assert_eq!(row["open_tasks"], 0);
+    assert_eq!(row["total_tasks"], 1);
+    let workspace = call(
+        &handler,
+        "workspace.create",
+        json!({"project_id":"proj-1","name":"counted-workspace"}),
+    );
+    assert_eq!(workspace["ok"], true, "{workspace}");
+    let row = carried_project(&settled_pushes(&mut rx, &key).await);
+    assert_eq!(row["workspaces"], 1);
+}
+
+fn carried_project(pushes: &[Value]) -> Value {
+    pushes
+        .iter()
+        .filter(|push| push["type"] == "changes")
+        .flat_map(|push| push["items"].as_array().into_iter().flatten())
+        .flat_map(|item| item["state"]["projects"].as_array().into_iter().flatten())
+        .find(|row| row["project_id"] == "proj-1")
+        .cloned()
+        .unwrap_or_else(|| panic!("project counts must be carried on the board: {pushes:?}"))
+}

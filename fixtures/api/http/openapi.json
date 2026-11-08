@@ -1365,6 +1365,34 @@
                             "resets_at": "2026-09-20T22:20:00Z",
                             "said": "You've hit your session limit · resets 6:20pm (America/New_York)"
                           }
+                        ],
+                        "environments": [
+                          {
+                            "environment_id": "env-1",
+                            "name": "build",
+                            "home_path": "/home/ada/code/build",
+                            "is_git": true,
+                            "base_branch": "main",
+                            "sources": [
+                              {
+                                "id": "source-1",
+                                "name": "build",
+                                "mount": "build",
+                                "path": "/home/ada/code/build",
+                                "is_git": true,
+                                "base_branch": "main",
+                                "remote": "git@github.com:ada/build.git",
+                                "sync_base": false,
+                                "sync": null
+                              }
+                            ],
+                            "isolation": null,
+                            "isolation_effective": "worktree",
+                            "project_ids": [
+                              "proj-1"
+                            ],
+                            "device": "Ada’s workstation"
+                          }
                         ]
                       }
                     }
@@ -3910,6 +3938,130 @@
                       "ok": true,
                       "result": {
                         "ok": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Http400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Http405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Http426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          }
+        }
+      }
+    },
+    "/v1/environments": {
+      "get": {
+        "operationId": "environment_list",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/session"
+          },
+          {
+            "$ref": "#/components/parameters/subscription"
+          },
+          {
+            "$ref": "#/components/parameters/requestId"
+          },
+          {
+            "$ref": "#/components/parameters/priority"
+          },
+          {
+            "$ref": "#/components/parameters/operationId"
+          },
+          {
+            "$ref": "#/components/parameters/after"
+          }
+        ],
+        "description": "Maps only to environment.list. Remaining JSON fields retain their existing semantics. Registered v1 parameters, including unknown fields, are validated by the existing typed registry. Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method!, v1_context_method! and v1_optional_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
+        "x-build-method": "environment.list",
+        "x-build-contract": {
+          "source": "bridge/src/api/v1/environment.rs",
+          "params": "NoParams",
+          "result": "EnvironmentListResult",
+          "fixture": "fixtures/api/v1/environment.list.json"
+        },
+        "x-build-request-max-bytes": 1048576,
+        "x-build-response-max-bytes": 8388608,
+        "x-build-requires-events": false,
+        "responses": {
+          "200": {
+            "description": "Final existing wire reply, including typed success/error outcome. No blanket durable acknowledgement or retry promise.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reply"
+                },
+                "examples": {
+                  "wire": {
+                    "value": {
+                      "id": "example",
+                      "ok": true,
+                      "result": {
+                        "environments": [
+                          {
+                            "environment_id": "env-1",
+                            "name": "build",
+                            "home_path": "/home/ada/code/build",
+                            "is_git": true,
+                            "base_branch": "main",
+                            "sources": [
+                              {
+                                "id": "source-1",
+                                "name": "build",
+                                "mount": "build",
+                                "path": "/home/ada/code/build",
+                                "is_git": true,
+                                "base_branch": "main",
+                                "remote": "git@github.com:ada/build.git",
+                                "sync_base": false,
+                                "sync": null
+                              }
+                            ],
+                            "isolation": null,
+                            "isolation_effective": "worktree",
+                            "project_ids": [
+                              "proj-1"
+                            ],
+                            "device": "Ada’s workstation"
+                          }
+                        ]
                       }
                     }
                   }
@@ -8935,7 +9087,28 @@
                                   }
                                 }
                               }
-                            }
+                            },
+                            "environment_id": "env-1",
+                            "environment_name": "build",
+                            "project_key": "/home/ada/code/build",
+                            "diverged": false,
+                            "device": "Ada’s workstation",
+                            "open_tasks": 3,
+                            "total_tasks": 5,
+                            "workspaces": 1,
+                            "sources": [
+                              {
+                                "id": "source-1",
+                                "name": "build",
+                                "mount": "build",
+                                "path": "/home/ada/code/build",
+                                "is_git": true,
+                                "base_branch": "main",
+                                "remote": "git@github.com:ada/build.git",
+                                "sync_base": false,
+                                "sync": null
+                              }
+                            ]
                           }
                         ]
                       }
@@ -24487,7 +24660,8 @@
                               }
                             }
                           }
-                        }
+                        },
+                        "environment_id": "env-1"
                       }
                     }
                   }
@@ -25098,7 +25272,8 @@
                                   }
                                 }
                               }
-                            }
+                            },
+                            "environment_id": "env-1"
                           },
                           {
                             "id": "legacy-proj-1",
@@ -25190,7 +25365,8 @@
                                   }
                                 }
                               }
-                            }
+                            },
+                            "environment_id": "env-1"
                           }
                         ]
                       }

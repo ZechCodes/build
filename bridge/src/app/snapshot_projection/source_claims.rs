@@ -31,6 +31,16 @@ impl ProjectSnapshotRefresh {
 }
 
 impl RenderedProjectSnapshotRefresh {
+    pub(in crate::app) fn validate_source_claim_observations(&self) -> Result<(), String> {
+        match self
+            .claims
+            .iter()
+            .find_map(|(_, value)| value.as_ref().err())
+        {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
     pub(in crate::app) fn source_claim_inputs(&self) -> impl Iterator<Item = &ProjectSource> {
         self.claims.iter().map(|(source, _)| source)
     }
@@ -57,6 +67,7 @@ impl AppState {
                 input.id == source.id && input.path == source.path && input.is_git == source.is_git
             })
             .ok_or("stale unversioned mutation: source claim inputs changed; retry the edit")?;
+        let row = row.as_ref().map_err(Clone::clone)?;
         let mut selected = (captured.version, row["remote"].clone());
         let projects = self.snapshot_observations.projects.lock().unwrap();
         let environments = self.snapshot_observations.environments.lock().unwrap();

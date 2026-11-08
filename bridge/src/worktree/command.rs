@@ -43,16 +43,23 @@ pub(crate) fn git_remote_origin(dir: &Path) -> Option<String> {
     (!url.is_empty()).then_some(url)
 }
 
-/// The same answer as [`git_remote_origin`], read from the repository's config
-/// in process rather than by a git subprocess: cheap enough for a reply built
-/// under the app mutex.
+/// Read the origin in process. Repository probes belong off the app mutex.
+/// Legacy callers retain their optional answer; claim validation needs errors.
 pub(crate) fn git_origin_url(dir: &Path) -> Option<String> {
-    let repository = git2::Repository::open(dir).ok()?;
-    let remote = repository.find_remote("origin").ok()?;
-    remote
+    git_origin_url_observed(dir).ok().flatten()
+}
+
+pub(crate) fn git_origin_url_observed(dir: &Path) -> Result<Option<String>, git2::Error> {
+    let repository = git2::Repository::open(dir)?;
+    let remote = match repository.find_remote("origin") {
+        Ok(remote) => remote,
+        Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    Ok(remote
         .url()
         .filter(|url| !url.is_empty())
-        .map(str::to_string)
+        .map(str::to_string))
 }
 
 /// Whether two clone URLs point at the same repo, ignoring a trailing `/` or

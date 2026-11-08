@@ -54,6 +54,7 @@ impl WorktreeMutation for ConfigurationProbe {
         self.refresh
             .select_environment_edit(&self.environment, &self.repositories);
         let refresh = self.refresh.render();
+        refresh.validate_source_claim_observations()?;
         if let Some(isolation) = self.isolation {
             refresh.validate_environment_isolation(&self.environment, isolation)?;
         }

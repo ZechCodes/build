@@ -32,9 +32,11 @@ impl WorktreeMutation for AdmissionProbe {
         if let Some(gate) = &self.gate {
             gate.arrive();
         }
+        let observed = self.refresh.render();
+        observed.validate_source_claim_observations()?;
         Ok(Performed {
             change: WorktreeChange::nothing(),
-            output: self.refresh.render(),
+            output: observed,
         })
     }
 }

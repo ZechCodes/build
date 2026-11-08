@@ -176,3 +176,35 @@ fn environment_clone_refuses_a_remote_claim_added_during_discovery() {
         );
     }
 }
+
+#[test]
+fn environment_clone_refuses_an_unreadable_registered_origin() {
+    let root = tempfile::tempdir().unwrap();
+    let mut app = fixture(root.path());
+    let origin = crate::git_fixture::init_repo_named(root.path(), "origin");
+    let existing = crate::git_fixture::init_repo_named(root.path(), "existing");
+    git2::Repository::open(&existing)
+        .unwrap()
+        .remote("origin", origin.to_str().unwrap())
+        .unwrap();
+    let before = ok(
+        &mut app,
+        "environment.add_source",
+        json!({"environment_id":"env-1","path":existing}),
+    );
+    std::fs::rename(existing.join(".git"), existing.join(".git-away")).unwrap();
+    let reply = super::runtime_tests::rpc(
+        &mut app,
+        "environment.add_source",
+        json!({"environment_id":"env-1","remote":origin}),
+    );
+    std::fs::rename(existing.join(".git-away"), existing.join(".git")).unwrap();
+    assert_eq!(
+        reply["ok"], false,
+        "unknown origin must not release the registered remote claim: {reply}"
+    );
+    assert_eq!(
+        app.projects.environment("env-1").unwrap().sources.len(),
+        before["sources"].as_array().unwrap().len()
+    );
+}

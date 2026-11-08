@@ -56,7 +56,7 @@ pub(in crate::app) struct RenderedProjectSnapshotRefresh {
     version: u64,
     rows: Vec<(ProjectListRow, Value)>,
     environments: Vec<(environments::EnvironmentSnapshotRow, Value)>,
-    claims: Vec<(crate::app::projects::ProjectSource, Value)>,
+    claims: Vec<(crate::app::projects::ProjectSource, Result<Value, String>)>,
 }
 
 impl ProjectSnapshotRefresh {
@@ -67,7 +67,18 @@ impl ProjectSnapshotRefresh {
                 .claims
                 .into_iter()
                 .map(|source| {
-                    let value = source.wire();
+                    let value = if source.is_git {
+                        crate::worktree::git_origin_url_observed(&source.path)
+                            .map(|remote| source.wire_observed(json!(remote)))
+                            .map_err(|error| {
+                                format!(
+                                    "cannot observe source origin at {}: {error}",
+                                    source.path.display()
+                                )
+                            })
+                    } else {
+                        Ok(source.wire_observed(Value::Null))
+                    };
                     (source, value)
                 })
                 .collect(),

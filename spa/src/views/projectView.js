@@ -383,7 +383,7 @@ function mountTasks(state, pane) {
     projectName: state.page.name,
     deviceId: state.context.deviceId,
     projectKey: routeProjectKey(state.route),
-    callRpc: state.context.rpc,
+    callRpc: state.archiveView.callRpc,
     catalog: () => state.context.modelCatalog(),
     refreshCatalog: () => state.context.refreshModelCatalog(),
     feed: () => state.feed,
@@ -436,7 +436,7 @@ async function reclaimWorkspace(state, workspaceKey) {
   state.reclaimErrors.delete(workspaceKey);
   paint(state);
   try {
-    await state.context.rpc("workspace.reclaim", { workspace_id: row.workspaceId });
+    await state.archiveView.callRpc("workspace.reclaim", { workspace_id: row.workspaceId });
   } catch (error) {
     state.reclaimErrors.set(workspaceKey, error?.message || String(error));
   } finally {
@@ -497,8 +497,8 @@ export async function renderProject() {
   };
   state.verb = (host) => paintProjectVerbs(host, state);
   root.innerHTML = `<div id="tabbody" class="flush"><div id="project-pane" class="project-page"></div></div>`;
-  const archiveView = mountArchivedProjectView(root, { deviceId: context.deviceId, projectId: route.projectId, callRpc: context.rpc });
-  state.context = { ...context, rpc: archiveView.callRpc };
+  const archiveView = mountArchivedProjectView(root, { deviceId: context.deviceId, projectId: route.projectId, callRpc: context.rpc, archiveMutationHosts: [$("#agent-rail")] });
+  state.archiveView = archiveView;
   // The four tabs are the rail's faces. A press switches in place rather than
   // navigating, because a navigation would remount the agent rail beside the
   // page; the shell's route rule never sees it (#62), so where the chat lies

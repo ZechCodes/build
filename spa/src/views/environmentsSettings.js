@@ -89,7 +89,7 @@ function archivedProjectsHtml(members = [], device, support) {
   if (!archived.length || !support?.archive) return "";
   return `<details data-archived-projects><summary>Archived (${archived.length})</summary>${archived.map(project =>
     `<div class="projrow"><a href="#/device/${encodeURIComponent(device.id)}/project/${encodeURIComponent(project.project_id)}">${esc(project.name)}</a>
-    <span class="dim">Archived</span><button class="btn mini" data-restore-project="${esc(project.project_id)}">Restore</button><span class="adderr" role="alert"></span></div>`).join("")}</details>`;
+    <span class="dim">Archived</span><button class="btn mini" data-environment-project="${esc(project.project_id)}">Settings…</button><button class="btn mini" data-restore-project="${esc(project.project_id)}">Restore</button><span class="adderr" role="alert"></span></div>`).join("")}</details>`;
 }
 
 function creationButton(action, label, environmentId = '') {

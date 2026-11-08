@@ -96,6 +96,10 @@ function environmentTarget(environment, context, projectTargets) {
 
 function presetTarget(options, context, targets) {
   if (options.environmentId) return targets.find(row => row.kind === "environment" && row.id === options.environmentId && row.deviceId === options.deviceId) || null;
+  return projectPreset(options, context, targets);
+}
+
+function projectPreset(options, context, targets) {
   if (!options.projectId || !options.deviceId) return null;
   if (!options.fixedProject && wizardEntrySupported(context,options.deviceId)) return null;
   if ((options.projects || []).some(row => keyOf(row) === deviceKey(options.deviceId, options.projectId) && row.archived_at != null)) return null;

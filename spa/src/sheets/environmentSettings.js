@@ -1,3 +1,4 @@
+import { readSourceSupport, SOURCE_EDIT_SUPPORT_KIND } from "../core/sourceEditSupport.js";
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { fieldTraits } from "../core/fieldTraits.js";
@@ -6,7 +7,7 @@ import { readEnvironmentSupport, environmentSupportAddress } from "../core/envir
 import { environmentsAddress, admitEnvironmentListWrite, writeCachedEnvironments } from "../core/environmentCache.js";
 import { watchSettingsRecord } from "../core/settingsRecords.js";
 import { isolationOptionsHtml } from "../core/isolation.js";
-import { requireEnvironmentAction, writeEnvironmentSetting } from "../core/environmentWrites.js";
+import { environmentAction, requireEnvironmentAction, writeEnvironmentSetting } from "../core/environmentWrites.js";
 import { onNavigationCommitted } from "../core/navigationLifetime.js";
 import { watchSheetLifetime } from "../core/sheetLifetime.js";
 import { settingsSheetHtml } from "./settingsSheet.js";
@@ -22,9 +23,9 @@ const SOURCE_METHODS = {
 const asSourceOwner = environment => ({ ...environment, project_id: environment.environment_id, added_sources: environment.sources });
 
 function generalHtml(environment) {
-  return `<section class="ps-section"><h4>General</h4><div class="field"><label for="esname">Environment name</label>
-    <input id="esname" ${fieldTraits("identifier")} value="${esc(environment.name)}"><button class="btn" id="esrename">Save name</button></div>
-    <div class="field"><label for="eshome">Home path</label><input id="eshome" value="${esc(environment.home_path)}" readonly></div></section>`;
+  return `<section class="ps-section"><h4>General</h4><div class="field"><label for="esdisplay">Environment name</label>
+    <input id="esdisplay" ${fieldTraits("identifier")} value="${esc(environment.name)}"><button class="btn" id="esrename">Save name</button></div>
+    <div class="field"><label for="eshome">Home path</label><input id="eshome" ${fieldTraits("identifier")} value="${esc(environment.home_path)}" readonly></div></section>`;
 }
 
 function sharedSources(host, environment, projects) {
@@ -43,6 +44,8 @@ export function openEnvironmentSettings(environmentId, { deviceId, callRpc }) {
   const sheet = $("#sheet"), scrim = $("#scrim");
   scrim.classList.add("show");
   sheet.innerHTML = settingsSheetHtml({ title: "Environment settings", bodyHtml: '<p class="dim">loading…</p>' });
+  const notices = {}, syncing = new Map(), inFlight = new Set();
+  let syncsBase = false;
   let frame = sheet.firstElementChild, painted = null, support = {}, projects = [], active = true;
   const current = () => active && sheet.firstElementChild === frame && scrim.classList.contains("show");
   const close = () => { const owns = current(); dispose(); if (owns) scrim.classList.remove("show"); };
@@ -51,55 +54,60 @@ export function openEnvironmentSettings(environmentId, { deviceId, callRpc }) {
     if (environment) paint(environment);
   });
   const unsubscribe = subscribeCache({ deviceId }, address => {
-    if (["projects", "environment-settings-projects", environmentSupportAddress(deviceId).kind].includes(address.kind)) void readSupport();
+    if (["projects", "environment-settings-projects", environmentSupportAddress(deviceId).kind, SOURCE_EDIT_SUPPORT_KIND].includes(address.kind)) void readSupport();
   });
   const navigation = onNavigationCommitted(close);
   const dispose = watchSheetLifetime(current, () => {
     active = false; record.dispose(); unsubscribe(); navigation(); disposeRepoPickers(sheet);
   });
   async function readSupport() {
-    const [actions, held] = await Promise.all([readEnvironmentSupport(deviceId), readCached({ deviceId, entityId: "", kind: "projects" })]);
-    support = actions; projects = held?.value || [];
+    const [actions, held, sourceSupport] = await Promise.all([readEnvironmentSupport(deviceId), readCached({ deviceId, entityId: "", kind: "projects" }), readSourceSupport(deviceId)]);
+    syncsBase = sourceSupport.syncsBase; support = actions; projects = held?.value || [];
     await record.read();
   }
-  const write = async (send, button, error) => {
+  const write = async (send, button, error, onDone) => {
+    error ||= sheet.querySelector("#eserror");
     button.disabled = true; error.textContent = "";
     try {
-      requireEnvironmentAction(deviceId, "rename");
-      const changed = await send();
-      await writeEnvironmentSetting(deviceId, changed); await record.read();
+      const changed = await environmentAction(deviceId, "rename", send);
+      await onDone?.(changed);
+      if (changed.environment_id) await writeEnvironmentSetting(deviceId, changed);
+      await record.read();
       return changed;
     } catch (failure) { error.textContent = failure.message; button.disabled = false; return null; }
   };
   function paint(environment) {
     if (!current()) return;
     const edits = painted ? readSourceEdits(sheet, asSourceOwner(painted)) : {};
-    const name = sheet.querySelector("#esname");
+    const name = sheet.querySelector("#esdisplay");
     const draftName = name && name.value !== painted?.name ? name.value : environment.name;
     const owner = asSourceOwner(environment);
     const editing = support.rename ? sourceEditing(owner, true, {}) : { editable: () => false };
     disposeRepoPickers(sheet);
     sheet.innerHTML = settingsSheetHtml({ title: "Environment settings", bodyHtml: `${generalHtml(environment)}
-      <section class="ps-section"><h4>Sources</h4>${sourceCardsHtml(owner, editing)}
+      <section class="ps-section"><h4>Sources</h4>${sourceCardsHtml(owner, editing, { notices, sync: { syncsBase: support.rename && syncsBase, syncing, inFlight } })}
       ${support.rename ? '<div class="row"><button class="btn" id="esfolder">Add folder…</button><button class="btn" id="esremote">Add Git remote…</button></div><div id="esadd"></div>' : ""}</section>
       <section class="ps-section"><h4>Isolation</h4><select id="esisolation" aria-label="Work isolation">${isolationOptionsHtml(environment.isolation, null, { inheritLabel: "Inherit device setting" })}</select></section>
       <div class="adderr" id="eserror" role="alert"></div><button class="btn" id="esclose">Close</button>` });
     frame = sheet.firstElementChild; painted = environment;
-    sheet.querySelector("#esname").value = draftName;
+    sheet.querySelector("#esdisplay").value = draftName;
     mountGeneral(environment);
     const sourceRpc = (method, params) => {
       requireEnvironmentAction(deviceId, "rename");
       const { project_id: _projectId, ...rest } = params;
       return callRpc(SOURCE_METHODS[method], { ...rest, environment_id: environmentId });
     };
-    mountSourceCards(sheet, owner, { editing, callRpc: sourceRpc, deviceId, write, syncInFlight: new Set(), saveDraft: () => {}, onSaved: () => {} });
+    mountSourceCards(sheet, owner, { editing, callRpc: sourceRpc, deviceId, write, syncInFlight: inFlight, saveDraft: () => {}, onSaved: (id, notice) => { notices[id] = notice; }, onSyncAccepted: source => syncing.set(source.id, source.sync?.last_attempt_ms ?? null), onSyncSettled: () => { void record.read(); } });
     restoreSourceEdits(sheet, owner, edits);
     sharedSources(sheet, environment, projects);
   }
   function mountGeneral(environment) {
     const error = sheet.querySelector("#eserror"), rename = sheet.querySelector("#esrename"), isolation = sheet.querySelector("#esisolation");
-    rename.hidden = !support.rename; sheet.querySelector("#esname").readOnly = !support.rename; isolation.disabled = !support.rename;
-    rename.onclick = () => void write(() => callRpc("environment.rename", { environment_id: environmentId, name: sheet.querySelector("#esname").value.trim() }), rename, error);
+    rename.hidden = !support.rename; sheet.querySelector("#esdisplay").readOnly = !support.rename; isolation.disabled = !support.rename;
+    rename.onclick = () => {
+      const name = sheet.querySelector("#esdisplay").value.trim();
+      void write(() => callRpc("environment.rename", { environment_id: environmentId, name }), rename, error);
+    };
     isolation.onchange = () => void write(() => callRpc("environment.set_isolation", { environment_id: environmentId, isolation: isolation.value || null }), isolation, error);
     sheet.querySelector("#esclose").onclick = close;
     if (!support.rename) return;
@@ -108,10 +116,12 @@ export function openEnvironmentSettings(environmentId, { deviceId, callRpc }) {
   }
   function mountRemote(error, writeSource) {
     const add = sheet.querySelector("#esadd");
-    add.innerHTML = '<label>Clone url <input id="esurl"></label><label>Folder label <input id="eslabel"></label><button class="btn" id="esaddremote">Add remote</button>';
+    add.innerHTML = `<label>Clone url <input id="esurl" ${fieldTraits("identifier")}></label><label>Folder label <input id="eslabel" ${fieldTraits("identifier")}></label><button class="btn" id="esaddremote">Add remote</button>`;
     const button = add.querySelector("button");
-    button.onclick = () => void writeSource(() => callRpc("environment.add_source", { environment_id: environmentId,
-      remote: add.querySelector("#esurl").value.trim(), ...(add.querySelector("#eslabel").value.trim() ? { name: add.querySelector("#eslabel").value.trim() } : {}) }), button, error);
+    button.onclick = () => {
+      const remote = add.querySelector("#esurl").value.trim(), name = add.querySelector("#eslabel").value.trim();
+      void writeSource(() => callRpc("environment.add_source", { environment_id: environmentId, remote, ...(name ? { name } : {}) }), button, error);
+    };
   }
   async function browse(environment, error) {
     const container = sheet.querySelector("#esadd");
@@ -124,6 +134,7 @@ export function openEnvironmentSettings(environmentId, { deviceId, callRpc }) {
   }
   void readSupport();
   void (async () => {
+    requireEnvironmentAction(deviceId, "rename");
     const admission = await admitEnvironmentListWrite(deviceId, current);
     const answer = await callRpc("environment.list");
     await writeCachedEnvironments(deviceId, answer.environments, admission, current);

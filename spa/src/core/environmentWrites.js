@@ -1,5 +1,6 @@
 // M3 writes publish every existing project projection together. A settings
 // response alone must not leave the switcher or an open task on an old name.
+import { contextFor, whenGreeted } from "./deviceContexts.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { mergeCachedRecordsTogether } from "./localCache.js";
 import { deviceProjectsAddress, projectSettingsAddress } from "./settingsRecords.js";
@@ -12,14 +13,24 @@ export function requireEnvironmentAction(deviceId, flag) {
   if (bridgeCapabilities(deviceId).environments?.[flag] !== true) throw new Error("Update Build on this device to use this action.");
 }
 
+export async function environmentAction(deviceId, flag, send) {
+  const request = await whenGreeted(contextFor(deviceId), (current = () => true) => {
+    requireEnvironmentAction(deviceId, flag);
+    if (!current()) throw new Error("This device's settings changed. Try again.");
+    return send();
+  });
+  if (!request) throw new Error("This machine is unavailable.");
+  return request.sent;
+}
+
 export function writeEnvironmentProject(deviceId, reply) {
   const changed = reply.project || reply;
   const addresses = [projectSettingsAddress(deviceId, changed.project_id), deviceProjectsAddress(deviceId), ...projectLists(deviceId)];
   return mergeCachedRecordsTogether(addresses, held => {
-    const current = held[0]?.value || held.slice(1).flatMap(record => record?.value || []).find(row => row.project_id === changed.project_id);
+    const current = held[0]?.value || held.slice(1).flatMap(record => record?.value || []).find(row => (row.project_id || row.id) === changed.project_id);
     const project = { ...current, ...changed };
     return [project, ...held.slice(1).map(record => Array.isArray(record?.value)
-      ? record.value.map(row => row.project_id === changed.project_id ? { ...row, ...changed } : row) : null)];
+      ? record.value.map(row => (row.project_id || row.id) === changed.project_id ? { ...row, ...changed } : row) : null)];
   });
 }
 
@@ -34,6 +45,6 @@ export async function writeEnvironmentSetting(deviceId, changed) {
 }
 
 export async function restoreEnvironmentProject(deviceId, projectId, callRpc) {
-  requireEnvironmentAction(deviceId, "archive");
-  await writeEnvironmentProject(deviceId, await callRpc("project.restore", { project_id: projectId }));
+  const reply = await environmentAction(deviceId, "archive", () => callRpc("project.restore", { project_id: projectId }));
+  await writeEnvironmentProject(deviceId, reply);
 }

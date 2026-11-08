@@ -69,6 +69,7 @@ export async function renderTrackerTask() {
     commentId: route.commentId || null,
     reviewRoute: route.review || null,
     callRpc: context.rpc,
+    archiveMutationHosts: [$("#agent-rail")],
     writeOperations: context.writeOperations,
     catalog: () => context.modelCatalog(),
     refreshCatalog: () => context.refreshModelCatalog(),

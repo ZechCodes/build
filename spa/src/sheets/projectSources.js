@@ -87,9 +87,9 @@ function cardHtml(source, index, { editing, removable, notice, sync }) {
     ].join("")}</footer></article>`;
 }
 
-export function sourceCardsHtml(project, editing) {
+export function sourceCardsHtml(project, editing, { notices = {}, sync = {} } = {}) {
   return (project.sources || []).map((source, index) => cardHtml(source, index, {
-    editing, removable: index > 0 && project.sources.length > 1, sync: {},
+    editing, removable: index > 0 && project.sources.length > 1, notice: notices[source.id], sync,
   })).join("");
 }
 
@@ -129,8 +129,13 @@ function sourceGroupsHtml(project, { editing, ownership, environmentName, editEn
   if (ownership === "unknown") return `<div data-source-group="unknown">${cards.map(card => card.html).join("")}</div>`;
   const inherited = cards.filter(card => card.inherited).map(card => card.html).join("");
   const added = cards.filter(card => !card.inherited).map(card => card.html).join("");
-  return `<div data-source-group="environment"><h5>From ${esc(environmentName || project.environment_name || project.environment_id || "environment")}</h5>${editEnvironment ? `<button class="btn mini" data-edit-environment>Edit in ${esc(environmentName || project.environment_name || "environment")}</button>` : ""}${inherited}</div>
+  return `<div data-source-group="environment">${environmentSourceHeading(project, environmentName, editEnvironment)}${inherited}</div>
     <div data-source-group="added"><h5>Added to this project</h5>${added}</div>`;
+}
+
+function environmentSourceHeading(project, name, editable) {
+  const label = name || project.environment_name || project.environment_id || "environment";
+  return `<h5>From ${esc(label)}</h5>${editable ? `<button class="btn mini" data-edit-environment>Edit in ${esc(label)}</button>` : ""}`;
 }
 
 const cardOf = (sheet, sourceId) =>

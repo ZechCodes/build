@@ -9,26 +9,43 @@ import { esc } from "./text.js";
 
 const mutationSelectors = [
   "textarea", "input:not([type=search])", "[contenteditable=true]", "[data-project-create]", "[data-workspace-reclaim]",
-  "[data-task-state]", "[data-task-assign]", "#task-status", "#task-priority", "#task-labels", "[data-task-index]",
-  "[data-review-verdict]", "[data-review-comment-batch]", "[data-review-reply]", "[data-review-reviewer]", "[data-review-refresh]",
+  ".composer-send", ".rail-remove", ".rail-harness-choice", ".rail-watch", ".file-save", "[data-upload-action]", ".fupload-new button", "[data-task-state]", "[data-task-assign]", "#task-status", "#task-priority", "#task-labels", "[data-task-index]",
+  "[data-review-comment]", "[data-review-verdict]", "[data-review-comment-batch]", "[data-review-reply]", "[data-review-reviewer]", "[data-review-refresh]",
   "[data-review-request-legacy]", "[data-review-close-legacy]", "[data-review-reopen]", "[data-review-repair]", "[data-review-reclaim]",
   "[data-review-retry-delivery]", "[data-review-retry]", "[data-review-recover]", "[data-review-draft-edit]", "[data-review-draft-remove]",
   "[data-review-controls] button", "[data-review-git-actions] button", "[data-review-close] button",
   "[data-task-waiting-on] button", "[data-task-waiting-on] select", "form button[type=submit]", ".composer-attach",
-  "[data-task-create]", "[data-new-task]", "[data-task-edit]", "[data-task-delete]", "[data-file-save]",
+  "[data-task-create]", "[data-task-new]", "[data-new-task]", "[data-task-edit]", "[data-task-delete]", "[data-file-save]",
 ].join(",");
 
 function mutationControl(node) {
   return node.matches(mutationSelectors) || node.closest("[data-archived-mutation]");
 }
 
-export function mountArchivedProjectView(host, { deviceId, projectId, callRpc }) {
+export function mountArchivedProjectView(host, { deviceId, projectId, callRpc, archiveMutationHosts = [] }) {
   let active = true, project = null, support = {}, refusal = "", reading = 0;
   let banner = null;
   const locked = new Map();
+  const hosts = [host, ...archiveMutationHosts.filter(Boolean)];
+  const contains = control => hosts.some(root => root.contains(control));
+  const refuseBoard = event => {
+    if (!projectIsArchived(project)) return;
+    if (event.type !== "keydown" && Array.from(event.dataTransfer?.types || []).includes("Files")) { event.preventDefault(); event.stopImmediatePropagation(); return; }
+    if (!event.target.closest("[data-task], [data-column-drop]")) return;
+    if (event.type === "keydown" && !["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+  };
+  const refuseEvent = event => {
+    if (!projectIsArchived(project)) return;
+    const target = event.target.closest(mutationSelectors);
+    if (target && contains(target)) { event.preventDefault(); event.stopImmediatePropagation(); }
+  };
+  for (const root of hosts) for (const event of ["click", "change", "submit"]) root.addEventListener(event, refuseEvent, true);
+  for (const event of ["dragstart", "drop", "keydown"]) host.addEventListener(event, refuseBoard, true);
   function lockControls() {
-    host.querySelectorAll("button, input, select, textarea, [contenteditable]").forEach(control => {
-      const shouldLock = projectIsArchived(project) && mutationControl(control);
+    for (const control of locked.keys()) if (!contains(control)) locked.delete(control);
+    hosts.flatMap(root => [...root.querySelectorAll("button, input, select, textarea, [contenteditable]")]).forEach(control => {
+      const shouldLock = projectIsArchived(project) && (locked.has(control) || mutationControl(control));
       if (shouldLock) {
         if (!locked.has(control)) locked.set(control, { disabled: control.disabled, editable: control.getAttribute("contenteditable") });
         if (control.hasAttribute("contenteditable") && control.getAttribute("contenteditable") !== "false") control.setAttribute("contenteditable", "false");
@@ -45,6 +62,7 @@ export function mountArchivedProjectView(host, { deviceId, projectId, callRpc })
   function paint() {
     if (!active) return;
     const archived = projectIsArchived(project);
+    if (!archived && !locked.size && !banner && !refusal) return;
     if (archived || refusal) paintBanner(archived);
     else { banner?.remove(); banner = null; }
     lockControls();
@@ -79,7 +97,7 @@ export function mountArchivedProjectView(host, { deviceId, projectId, callRpc })
     if (["projects", "project-settings", "environment-support"].includes(address.kind)) void read();
   });
   const observer = new MutationObserver(paint);
-  observer.observe(host, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled", "contenteditable"] });
+  for (const root of hosts) observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled", "contenteditable"] });
   void read();
   return {
     callRpc: async (...args) => {
@@ -89,6 +107,6 @@ export function mountArchivedProjectView(host, { deviceId, projectId, callRpc })
         throw error;
       }
     },
-    dispose() { active = false; unsubscribe(); observer.disconnect(); for (const control of locked.keys()) unlock(control); banner?.remove(); },
+    dispose() { for (const event of ["dragstart", "drop", "keydown"]) host.removeEventListener(event, refuseBoard, true); for (const root of hosts) for (const event of ["click", "change", "submit"]) root.removeEventListener(event, refuseEvent, true); active = false; unsubscribe(); observer.disconnect(); for (const control of locked.keys()) unlock(control); banner?.remove(); },
   };
 }

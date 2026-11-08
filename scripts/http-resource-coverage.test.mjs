@@ -278,6 +278,13 @@ const stagedConsumerExclusions = {
 // modules; neither delegating view has its own RPC/producer occurrence.
 // #894 finite metadata/call-edge audit: docs/task-query-cost/http-resource-coverage-audit.md
 const sourceFingerprintParts = {
+  // #1073: archive observation forwards the caller unchanged; restore, rename,
+  // and environment edits require a fresh capable greeting and publish cache
+  // projections. Source cards translate only the three SOURCE_METHODS keys.
+  "core/archivedProjectView.js": ["c7b332bd", "c7874606", "784a3cef", "7148cb83", "377e2601", "5dbb8115", "117cb213", "741d7443"],
+  "core/environmentWrites.js": ["035dbf26", "683d9297", "9306e4cc", "51f549d6", "c0cad335", "51198b2c", "3981d520", "129d2b31"],
+  "sheets/environmentSettings.js": ["334948f4", "ec49985a", "de6ad0ec", "355e8940", "c61990a0", "6e133de4", "86ae083b", "61f450ed"],
+  "sheets/projectGeneral.js": ["b0b81fa9", "d6a38cdb", "249a7b3f", "25bd2b0c", "094b8bdc", "1678045f", "c5378b42", "43e06991"],
   // #1065: cached eligibility is separate from current-greeting dispatch; epoch and genuine no-epoch legacy paths wrap existing source calls.
   "core/sourceOwnership.js": ["5bb01dc9", "cd302bf9", "b640e0f4", "b396ab65", "8c8d6b7e", "9183fa6a", "22b5fb05", "0d37ee27"],
   // #1065: accepted navigation notifies only opted-in project settings; RPC edges are unchanged.
@@ -344,9 +351,9 @@ const sourceFingerprintParts = {
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
   // #997 runtime-board inboxView.js:193,206,320: scoped pending display and cached branch choices; existing RPC and mutation dispatch unchanged.
   // #1051: cached environment identity and wizard entry points; existing RPC methods, producers and assignment edges are unchanged.
-  "core/inboxView.js": ["8b134c8c", "978e124c", "ffd889f9", "58a1971d", "bd9e16e7", "54a3195f", "b36dd9e0", "b141065c"],
+  "core/inboxView.js": ["4850de22", "dc0db415", "146c673d", "84107bac", "a14d24cb", "1fbaf931", "65cfb1cb", "b553396a"],
   // #1065: isolation readers follow the settings opening lifetime; RPC methods and parameter producers are unchanged.
-  "core/isolation.js": ["de9e859c", "306a93e1", "6f60081e", "137307a8", "e9ca5a1f", "f8e46258", "28408ab8", "dc1c3172"],
+  "core/isolation.js": ["3ccd3f81", "a4eb1eaa", "73e246dd", "8d2d19d8", "a3386e0b", "2e7bae06", "0cff87d2", "655ef105"],
   "core/markdownFences.js": ["10057396", "68214f4d", "d193015e", "2552698e", "c48313df", "6df2e223", "7e3bc837", "2805a4bb"],
   "core/modelCatalog.js": ["c293ea11", "fff0969f", "7852c8cd", "0c252f82", "fe666159", "95919417", "25a661ec", "c93fd9b4"],
   "core/navigationVisits.js": ["f8d32f7a", "6bf64af6", "81866475", "02ebd8fc", "3a0be61c", "c9f0d9f3", "e1cc0c06", "dd4dc05a"],
@@ -419,7 +426,7 @@ const sourceFingerprintParts = {
   "core/threadAttachmentPages.js": ["df0b246c", "a850af5a", "c612aeac", "414feaa5", "03db6170", "9511cd9c", "372279a6", "9c417822"],
   "core/threadSync.js": ["bf280ad8", "20d158b6", "aaa4f7b9", "695d3816", "1d0200e6", "cf6756bd", "bc0e1372", "2e452737"],
   "core/trackerPages.js": ["2f749a25", "259d2e7b", "904e56ef", "15e91197", "da83450c", "c490c89c", "12b5ae68", "4b7a60e3"],
-  "core/trackerTaskPage.js": ["e3e7d0ff", "2db22922", "ffcf0889", "5440177c", "ccb64ccd", "7d16b9b6", "a19243a5", "f5985960"],
+  "core/trackerTaskPage.js": ["3da4a334", "89927e6f", "0b98373a", "a1304529", "4a5e74ac", "af04828f", "8a0803dd", "59502532"],
   "core/trackerTasksPane.js": ["80f5f62d", "fd719fe1", "535f6317", "215df125", "eeda25ec", "ddcbf174", "924f173f", "99ae4b57"],
   "core/userPresence.js": ["b4a43148", "8352b41e", "f38b7e72", "b03317b3", "ca411d39", "6e7fb659", "b308effa", "511a43aa"],
   "core/watchedTaskFollower.js": ["d08812f3", "b1c71fd1", "c45cc354", "8e0d2495", "ad2f20de", "f54548b0", "89d31f41", "17aa347f"],
@@ -448,8 +455,8 @@ const sourceFingerprintParts = {
   // Source replies use the shared identity-preserving writer; project-scoped methods/selectors and project.list refresh are unchanged.
   // Opening teardown and atomic Sync adoption retain current project metadata; no RPC edge changes.
   // Retired-frame picker cleanup and committed navigation release only the project settings opening.
-  "sheets/projectSettings.js": ["e0385b5f", "d2f8fdc6", "35e28343", "f29b19af", "4b8f015c", "030dc1b1", "63e2c1ba", "21d4ccd9"],
-  "sheets/projectSources.js": ["824cc8cc", "c2389c5d", "c5a484d1", "a8f838bf", "b49d95de", "16e2f200", "29b81ff2", "8b6eaa5b"],
+  "sheets/projectSettings.js": ["02de872f", "f689b13e", "2fb9f279", "41d1585c", "39b4e818", "7c57af8f", "ad9e819b", "edcff140"],
+  "sheets/projectSources.js": ["17ec839a", "a3661e22", "07af1ed0", "5a245332", "c4f9c5f4", "0723dd01", "7b85eb65", "ec71d3d5"],
   // #1065: sheet-owned in-flight state blocks duplicate Sync requests; the accepted callback, RPC method and selectors are unchanged.
   "sheets/sourceSyncControls.js": ["49045a5b", "1fd03d03", "c9e574df", "020f32ea", "5d64bdd0", "3ab970b7", "1c98dee9", "cb20c875"],
   // #997 workspaceSettings.js:292: the existing project.list catalog loader delegates to owned device recovery.
@@ -462,10 +469,10 @@ const sourceFingerprintParts = {
   "views/deviceProjects.js": ["1a1e6df3", "03d87e50", "3c8c3e09", "d3d2ecc9", "2b9c040f", "df2d7629", "c493f430", "adcc7c93"],
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
   // #1052 retry review: settings-owned results alone authorize totals/empty states; pending pulls hide earlier errors. RPC edges stay unchanged.
-  "views/environmentsSettings.js": ["9f430e5d", "e73de874", "7d6b3d62", "095d5489", "d547f7b2", "ae99f7a8", "dd332417", "8884a276"],
+  "views/environmentsSettings.js": ["a9f0fd1a", "714bb1ea", "08fe6bae", "b25e5641", "a15cc08d", "19cde121", "6eea829f", "3b7657c1"],
   "views/files.js": ["bc4913c5", "865b9dd0", "e28f655f", "242c9011", "456a4139", "b2cfd372", "6498e15b", "f3116261"],
   "views/projectChanges.js": ["601d957b", "35e2b919", "ff4c83f8", "9946e6e7", "ff9a9b16", "8d93be43", "466971da", "d1d4dc94"],
-  "views/projectView.js": ["76123138", "7ded30d0", "0893b5ef", "5d880782", "137464b9", "5b123e76", "48f1a9d5", "28144478"],
+  "views/projectView.js": ["d9b3e886", "98d9bbae", "1ebc6d03", "df175412", "7f8f557a", "ea3cba7b", "84abd067", "c47f2cd5"],
   "views/taskReview.js": ["7d540d05", "70beae35", "200434ea", "decae581", "f1b126d6", "9a38fe38", "642a621a", "2e34a257"],
   "views/taskView.js": ["483fdb16", "52a51dd3", "ea9f60d0", "c21f16a9", "090b27a4", "4839602c", "4653bfcc", "38959753"],
   "views/workspaceView.js": ["a8297151", "b9889eea", "1ef6492b", "4242340b", "21deba98", "2afe3f42", "4f4be235", "4268410b"],
@@ -477,7 +484,7 @@ const sourceFingerprintParts = {
   "core/createWorkspaceProgress.js": ["a1043060", "ec8923a1", "4ee1bd97", "a1af57f7", "03cee83a", "20d21308", "519bc541", "533aa650"],
   "core/createWorkspaceTargets.js": ["347b66ec", "6048a73a", "7fed190e", "94941cc7", "d0f0b8e6", "40a24973", "d73d1813", "321a5a8c"],
   "core/writeOperationProgress.js": ["612c1fc7", "78d4b658", "fb001a3b", "01eb5aba", "a6a82b1a", "0389924d", "06c8355f", "bdae5355"],
-  "core/createWorkspaceWizardModel.js": ["de971c24", "0b170e41", "219c3c43", "cb7db24a", "d2bb3c52", "d007f42a", "01ffa437", "9b1527a4"],
+  "core/createWorkspaceWizardModel.js": ["777033f1", "4cf54d45", "b1c6e3b8", "97af1b54", "c2ee0066", "9b22a831", "7617944b", "0cb1a082"],
 };
 const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintParts)
   .map(([file, parts]) => [file, parts.join("")]));
@@ -486,6 +493,13 @@ const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintPa
 // from literal collection. New/changed dynamic sites must be reviewed rather
 // than disappearing because their first argument is not a quoted string.
 const dynamicSites = {
+  // #1073: transparent refusal observation; concrete methods stay owned by
+  // the task/project callers. No selectors or dispatch arguments are changed.
+  "core/archivedProjectView.js": ["callRpc ( ... args )"],
+  // #1073: mountSourceCards supplies exactly project.update_source,
+  // project.remove_source and project.sync_source. SOURCE_METHODS maps these
+  // to their environment equivalents, replacing project_id with environment_id.
+  "sheets/environmentSettings.js": ["callRpc ( SOURCE_METHODS [ method ] )"],
   // #1065: all existing source/read methods pass through; four source writes gain an ownership fence.
   "core/sourceOwnership.js": ["callRpc ( method )", "callRpc ( method )"],
   "sheets/projectSettings.js": ["guardProjectSourceRpc ( deviceId )"],

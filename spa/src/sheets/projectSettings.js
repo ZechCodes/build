@@ -210,6 +210,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     if (!current() || view !== "settings") return;
     if (!supportReady) { painted = project; return; }
     const live = captureDraft(sheet, painted);
+    const nameDraft = projectNameDraft(sheet, painted);
     const draft = combineDraft(live, cachedDraft, displayedDraft);
     const editing = sourceEditing(project, editsSources, environmentSupport);
     const environmentName = environmentNameOf(project, environments);
@@ -235,7 +236,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
       });
     }
     painted = project;
-    mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), deviceId, fromProjectRecord: true, current });
+    mountIsolation(sheet, { callRpc, target: namedIsolationTarget(project, environmentName), deviceId, fromProjectRecord: true, readOnly: projectIsArchived(project), current });
     mountSources(project, {
       callRpc: sourceRpc, record, deviceId, editing, refresh, syncInFlight,
       saveDraft,
@@ -246,13 +247,14 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
       onReturn: () => { view = "settings"; void record.read(); },
     });
     restoreDraft(sheet, project, draft);
+    restoreProjectNameDraft(sheet, nameDraft);
     if (draft.edits === cachedDraft?.edits) displayedDraft.edits = draft.edits;
     if (draft.source === cachedDraft?.source) displayedDraft.source = draft.source;
     mountProjectGeneral(sheet, project, {
       deviceId, callRpc, onArchiveRefused: message => { archiveRefusal = message; },
       openEnvironment: () => { close(); openEnvironmentSettings(project.environment_id, { deviceId, callRpc }); },
     });
-    if (projectIsArchived(project)) sheet.querySelectorAll("button:not(#psarchive):not(#pscancel), select, textarea, input:not([readonly])").forEach(control => { control.disabled = true; });
+    lockArchivedSettings(sheet, project);
     $("#pscancel").onclick = close;
     $("#psdelete").onclick = () => deleteProject(project, { callRpc, onDeleted, close, deviceId });
   };
@@ -455,4 +457,20 @@ async function deleteProject(project, { callRpc, onDeleted, close, deviceId }) {
   } catch (error) {
     notifyError("Project deleted, but refreshing the project list failed", error.message);
   }
+}
+
+function lockArchivedSettings(sheet, project) {
+  if (!projectIsArchived(project)) return;
+  sheet.querySelectorAll("button:not(#psarchive):not(#pscancel), select, textarea, input:not([readonly])").forEach(control => { control.disabled = true; });
+}
+
+const namedIsolationTarget = (project, name) => projectIsolationTarget({ ...project, environment_name: name || project.environment_name });
+
+function projectNameDraft(sheet, project) {
+  const input = sheet.querySelector("#psproject");
+  return input && !input.readOnly && input.value !== project?.name ? input.value : null;
+}
+function restoreProjectNameDraft(sheet, draft) {
+  const input = sheet.querySelector("#psproject");
+  if (draft !== null && input && !input.readOnly) input.value = draft;
 }

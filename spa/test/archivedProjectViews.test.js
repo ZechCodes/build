@@ -46,3 +46,35 @@ it("project_archived refusal is shown verbatim", async () => {
   expect(document.querySelector("[data-project-archive-error]").textContent).toBe(message);
   expect(document.querySelector("line")).toBeNull();
 });
+
+it("archived controls cannot be reenabled by a surrounding repaint", async () => {
+  const content = document.querySelector("[data-content]");
+  content.innerHTML = '<button data-task-new>New task</button><div contenteditable="true">Draft</div>';
+  mount();
+  await vi.waitFor(() => expect(content.querySelector("[data-task-new]").disabled).toBe(true));
+  content.querySelector("button").disabled = false;
+  await vi.waitFor(() => expect(content.querySelector("button").disabled).toBe(true));
+  expect(content.querySelector("[contenteditable]").getAttribute("contenteditable")).toBe("false");
+  await writeCached(address, [{ ...project, archived_at: null }]);
+  await vi.waitFor(() => expect(content.querySelector("[contenteditable]").getAttribute("contenteditable")).toBe("true"));
+});
+
+it("archived board blocks moving cards by keyboard and drag while keeping navigation", async () => {
+  const content = document.querySelector("[data-content]");
+  content.innerHTML = '<li data-task="t1" draggable="true"><a href="#task">Task</a></li><div data-column-drop="done"></div><button data-review-comment>Comment on line</button>';
+  const move = vi.fn(); content.querySelector("li").onkeydown = move; content.querySelector("[data-column-drop]").ondrop = move;
+  mount(); await vi.waitFor(() => expect(content.querySelector("button").disabled).toBe(true));
+  content.querySelector("li").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
+  content.querySelector("[data-column-drop]").dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+  expect(move).not.toHaveBeenCalled(); expect(content.querySelector("a").getAttribute("href")).toBe("#task");
+});
+
+vi.mock("../src/core/deviceContexts.js", async original => ({ ...await original(), whenGreeted: async (_context, send) => ({ sent: send() }) }));
+
+it("locks the project conversation composer supplied by the route host", async () => {
+  const rail = document.createElement("aside"); rail.innerHTML = '<textarea></textarea><button class="composer-send">Send</button><button data-bubble="overview">Overview</button>';
+  document.body.append(rail);
+  view = mountArchivedProjectView(document.querySelector("main"), { deviceId: "d1", projectId: "p1", callRpc: vi.fn(), archiveMutationHosts: [rail] });
+  await vi.waitFor(() => expect(rail.querySelector(".composer-send").disabled).toBe(true));
+  expect(rail.querySelector("textarea").disabled).toBe(true); expect(rail.querySelector("[data-bubble]").disabled).toBe(false);
+});

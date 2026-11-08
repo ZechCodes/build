@@ -14,7 +14,8 @@ import { sourceEditSupportAddress } from "../src/core/sourceEditSupport.js";
 import { environmentSupportAddress, rememberEnvironmentSupport } from "../src/core/environmentSupport.js";
 import { environmentsAddress } from "../src/core/environmentCache.js";
 
-vi.mock("../src/core/changeEvents.js", async original => ({ ...await original(), bridgeCapabilities: () => ({ environments: { archive: true, rename: true } }) }));
+const actionCapabilities = vi.hoisted(() => ({ archive: true, rename: true }));
+vi.mock("../src/core/changeEvents.js", async original => ({ ...await original(), bridgeCapabilities: () => ({ environments: actionCapabilities }) }));
 const sourceAuthority = vi.hoisted(() => ({ epoch: "legacy-epoch", greetingError: null, greetingWait: null, waiting: 0 }));
 vi.mock("../src/core/deviceContexts.js", async importOriginal => ({
   ...await importOriginal(),
@@ -63,6 +64,7 @@ beforeEach(async () => {
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
   await wipeCache();
   await wipeUiRecords();
+  actionCapabilities.archive = true; actionCapabilities.rename = true;
   sourceAuthority.epoch = "legacy-epoch";
   sourceAuthority.greetingError = null;
   sourceAuthority.greetingWait = null;
@@ -1236,4 +1238,14 @@ describe("M3 settings", () => {
     expect(document.querySelector("#psproject").readOnly).toBe(true);
     for (const selector of ["#psrename", "#psarchive", "[data-edit-environment]"]) expect(document.querySelector(selector)).toBeNull();
   });
+  it("rechecks rename capability after a greeting wait without changing cached paint", async () => {
+    const callRpc = vi.fn(() => new Promise(() => {})); await mountM3(callRpc);
+    let release; sourceAuthority.greetingWait = new Promise(resolve => { release = resolve; });
+    document.querySelector("#psproject").value = "New name"; document.querySelector("#psrename").click();
+    await vi.waitFor(() => expect(sourceAuthority.waiting).toBe(1)); actionCapabilities.rename = false; release();
+    await vi.waitFor(() => expect(document.querySelector("#psrenameerr").textContent).toContain("Update Build"));
+    expect(callRpc.mock.calls.some(([method]) => method === "project.rename")).toBe(false);
+    expect(document.querySelector("#psrename")).not.toBeNull();
+  });
+
 });

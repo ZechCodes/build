@@ -1150,7 +1150,7 @@ function rerouteBranchHtml(projectId, branches) {
  *
  *  `ui`: { projects, rerouteBranchProject, rerouteBranches }. */
 function rerouteMenuHtml(entry, ui = {}) {
-  const rows = (ui.projects || [])
+  const rows = (ui.projects || []).filter(project => project.archived_at == null)
     .map(
       (project) => `<div class="reroute-project"><span class="mt">${esc(project.name || project.id)}</span>
         <span class="reroute-kinds"><button class="btn mini${project.id === ui.rerouteBranchProject ? " primary" : ""}" type="button"

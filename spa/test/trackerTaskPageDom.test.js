@@ -2099,3 +2099,15 @@ it("observes late embedded project columns without replacing a cached task detai
   expect(await local.readCanonicalCached(metadata)).toBeUndefined();
   expect(call).not.toHaveBeenCalled();
 });
+
+it("archived task page keeps navigation and disables its real editors", async () => {
+  const { writeCached } = await import("../src/core/localCache.js");
+  await writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, [{ project_id: "proj-1", name: "Old line", archived_at: 1 }]);
+  await mount();
+  await vi.waitFor(() => expect(host.querySelector("[data-project-archived]")).not.toBeNull());
+  expect(host.querySelector("[data-task-state]").disabled).toBe(true);
+  expect(host.querySelector("#task-status").disabled).toBe(true);
+  expect(host.querySelector("textarea").disabled).toBe(true);
+  host.querySelector("[data-task-state]").click();
+  expect(listed("tasks.close")).toHaveLength(0);
+});

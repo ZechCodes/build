@@ -1,10 +1,7 @@
-#[cfg(test)]
-use crate::app::ConfigPersistStep;
 use crate::app::{AppState, Project};
 use crate::isolation::Isolation;
 use crate::models::AgentProvider;
 use serde_json::{json, Value};
-use std::io::Write as _;
 
 /// What a volume that could not make the clone the settings asked for is said
 /// with, spelled once so an operator reading the log and a human reading the
@@ -31,6 +28,10 @@ impl AppState {
         prospective_project: Option<&Project>,
     ) -> Value {
         let mut config = json!({
+            "next_environment": self.projects.next_environment() + u64::from(prospective_project.is_some_and(|p| self.projects.environment(&p.environment_id).is_none())),
+            "environments": self.projects.environments().cloned().chain(prospective_project.filter(|p| self.projects.environment(&p.environment_id).is_none()).map(crate::app::projects::ProjectRegistry::environment_for_project)).map(|e| {
+                json!({"id":e.id,"name":e.name,"next_source":e.next_source,"isolation":e.isolation,"sources":e.sources.iter().map(source_config).collect::<Vec<_>>()})
+            }).collect::<Vec<_>>(),
             "next_project": self.projects.next_id() + u64::from(prospective_project.is_some()),
             "projects_dir": projects_dir.display().to_string(),
             "default_harness": default_harness,
@@ -49,27 +50,18 @@ impl AppState {
             "projects": self.projects.iter().chain(prospective_project).map(|p| {
                 let mut entry = json!({
                     "id": p.id,
+                    "name": p.name,
+                    "environment_id": p.environment_id,
+                    "project_key": p.project_key,
+                    "home_path": p.home_path.display().to_string(),
+                    "added_sources": p.added_sources.iter().map(source_config).collect::<Vec<_>>(),
+                    "archived_at": p.archived_at,
                     "path": p.repo_path.display().to_string(),
                     "base_branch": p.base_branch,
                     // Past every source id this project has held, so a removed
                     // one is not reissued after a restart either.
                     "next_source": p.next_source,
-                    "sources": p.sources.iter().map(|source| {
-                        let mut entry = json!({
-                            "id": source.id,
-                            "name": source.name,
-                            "mount": source.mount,
-                            "path": source.path.display().to_string(),
-                            "is_git": source.is_git,
-                            "base_branch": source.base_branch,
-                        });
-                        // Only a choice is written: a source never told keeps
-                        // reading as the default for existing sources.
-                        if let Some(sync_base) = source.sync_base {
-                            entry["sync_base"] = json!(sync_base);
-                        }
-                        entry
-                    }).collect::<Vec<_>>(),
+                    "sources": p.sources.iter().map(source_config).collect::<Vec<_>>(),
                 });
                 if let Some(isolation) = p.isolation {
                     entry["isolation"] = json!(isolation);
@@ -96,67 +88,15 @@ impl AppState {
         let Some(path) = &self.config_path else {
             return Ok(());
         };
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("write config {}: {error}", path.display()))?;
-        }
-        let bytes = serde_json::to_vec_pretty(config)
-            .map_err(|error| format!("serialize config {}: {error}", path.display()))?;
-        let temporary = path.with_extension("tmp");
-        match std::fs::remove_file(&temporary) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!(
-                    "prepare config {}: cannot remove {}: {error}",
-                    path.display(),
-                    temporary.display()
-                ))
-            }
-        }
-        let write_result = (|| -> Result<(), String> {
-            #[cfg(test)]
-            if self.config_persist_failure == Some(ConfigPersistStep::Write) {
-                return Err(format!(
-                    "write config {}: injected write failure",
-                    path.display()
-                ));
-            }
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-                .map_err(|error| format!("write config {}: {error}", path.display()))?;
-            file.write_all(&bytes)
-                .and_then(|()| file.sync_all())
-                .map_err(|error| format!("write config {}: {error}", path.display()))?;
-            #[cfg(test)]
-            if self.config_persist_failure == Some(ConfigPersistStep::Rename) {
-                return Err(format!(
-                    "write config {}: injected rename failure",
-                    path.display()
-                ));
-            }
-            std::fs::rename(&temporary, path)
-                .map_err(|error| format!("write config {}: {error}", path.display()))
-        })();
-        if let Err(write_error) = write_result {
-            match std::fs::remove_file(&temporary) {
-                Ok(()) => return Err(write_error),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(write_error)
-                }
-                Err(cleanup_error) => {
-                    return Err(format!(
-                        "{write_error}; cannot remove temporary config {}: {cleanup_error}",
-                        temporary.display()
-                    ))
-                }
-            }
-        }
-        Ok(())
+        self.write_config_file(path, config)
     }
+}
+
+fn source_config(source: &crate::app::projects::ProjectSource) -> Value {
+    let mut value = json!({"id":source.id,"name":source.name,"mount":source.mount,
+        "path":source.path.display().to_string(),"is_git":source.is_git,"base_branch":source.base_branch});
+    if let Some(sync_base) = source.sync_base {
+        value["sync_base"] = json!(sync_base);
+    }
+    value
 }

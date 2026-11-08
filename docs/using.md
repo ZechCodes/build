@@ -92,6 +92,36 @@ For the complete workspace behavior, see
 box, goes to the **Creation device** on Settings instead. Those two are the
 only places that pick a machine for you.
 
+## Environment config migration and rollback
+
+The bridge privately migrates each configured project into its own environment,
+including projects whose folders are temporarily unavailable. Existing project
+ids and task keys stay the same; tasks, workspaces, runs and scratch folders do
+not move. The interface and wire capabilities remain unchanged at this stage.
+
+Before its first migration write, the bridge saves the exact original config as
+`config.json.pre-environments`, beside `config.json`. That snapshot is written
+once and never replaced. Each successful config replacement also retains the
+previous current config in `config.json.previous` (one generation). Migration
+errors stop loading and leave the current config unchanged.
+
+A bridge from before environments can read the legacy project fields still
+written in the migrated config. Downgrading preserves the original projects
+until a sibling project shares a home path. The frozen legacy-loader regression
+records that an old bridge collapses such siblings into the first project at
+that path; the later entry replaces its source settings, isolation and source
+counter. The sibling's separate task key is ignored. Its tasks, scratch and runs
+are therefore not guaranteed to remain bound or reachable on an old bridge.
+After a sibling exists, recovery is a fix on the newer bridge (roll forward).
+
+Restoring `config.json.pre-environments` deliberately abandons registrations
+made since migration, including new project names, keys and source references.
+Their task and scratch records remain stored under keys no registered project
+claims; restoring that old snapshot does not recover them. For a bad write on
+the newer bridge, use the previous-current snapshot instead. Any authorized
+binary rollback uses `scripts/buildctl --env <env> bridge rollback` with the
+environment named; stop the bridge before deliberately restoring a config.
+
 ## Work isolation
 
 Build uses Git worktrees by default. For copy-on-write checkouts, install the

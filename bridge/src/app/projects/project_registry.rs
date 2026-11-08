@@ -1,24 +1,87 @@
 use super::{next_source_number, Project, ProjectSource};
-use std::collections::HashMap;
+use crate::app::environments::Environment;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::isolation::Isolation;
 
+#[derive(Default)]
+struct SourceReservations {
+    used_ids: HashSet<String>,
+    next_source: u64,
+}
+
+impl SourceReservations {
+    fn allocate_id(&mut self) -> String {
+        let number = self.next_source.max(1);
+        let next = number.checked_add(1).expect("source id counter exhausted");
+        let id = format!("source-{number}");
+        self.reserve(next, std::iter::once(id.as_str()));
+        id
+    }
+
+    fn reserve<'a>(&mut self, counter: u64, ids: impl IntoIterator<Item = &'a str>) {
+        self.next_source = self.next_source.max(counter).max(1);
+        for id in ids {
+            self.used_ids.insert(id.to_string());
+            if let Some(number) = id
+                .strip_prefix("source-")
+                .and_then(|number| number.parse::<u64>().ok())
+            {
+                let next = number.checked_add(1).expect("source id counter exhausted");
+                self.next_source = self.next_source.max(next);
+            }
+        }
+    }
+}
+
 /// Only configuration-owned project fields; runtime orchestrators stay installed.
 pub(super) struct ProjectConfiguration {
+    records: Vec<(String, ProjectConfigurationRecord)>,
+    environments: Vec<Environment>,
+}
+
+impl ProjectConfiguration {
+    pub(super) fn capture(projects: &ProjectRegistry, project_id: &str) -> Self {
+        let environment_id = &projects
+            .get(project_id)
+            .expect("resolved project")
+            .environment_id;
+        Self {
+            records: projects
+                .projects
+                .iter()
+                .filter(|project| &project.environment_id == environment_id)
+                .map(|p| (p.id.clone(), ProjectConfigurationRecord::capture(p)))
+                .collect(),
+            environments: projects.environments.clone(),
+        }
+    }
+
+    pub(super) fn swap(&mut self, projects: &mut ProjectRegistry, _id: &str) {
+        std::mem::swap(&mut self.environments, &mut projects.environments);
+        for (id, record) in &mut self.records {
+            record.swap(projects, id);
+        }
+    }
+}
+
+struct ProjectConfigurationRecord {
     base_branch: String,
     is_git: bool,
     sources: Vec<ProjectSource>,
+    added_sources: Vec<ProjectSource>,
     next_source: u64,
     isolation: Option<Isolation>,
 }
 
-impl ProjectConfiguration {
-    pub(super) fn capture(project: &Project) -> Self {
+impl ProjectConfigurationRecord {
+    fn capture(project: &Project) -> Self {
         Self {
             base_branch: project.base_branch.clone(),
             is_git: project.is_git,
             sources: project.sources.clone(),
+            added_sources: project.added_sources.clone(),
             next_source: project.next_source,
             isolation: project.isolation,
         }
@@ -34,6 +97,7 @@ impl ProjectConfiguration {
         std::mem::swap(&mut self.base_branch, &mut project.base_branch);
         std::mem::swap(&mut self.is_git, &mut project.is_git);
         std::mem::swap(&mut self.sources, &mut project.sources);
+        std::mem::swap(&mut self.added_sources, &mut project.added_sources);
         std::mem::swap(&mut self.next_source, &mut project.next_source);
         std::mem::swap(&mut self.isolation, &mut project.isolation);
     }
@@ -64,6 +128,9 @@ pub(super) struct ProjectCandidate {
 }
 
 impl ProjectCandidate {
+    pub(super) fn set_environment(&mut self, id: &str) {
+        self.project.environment_id = id.to_string();
+    }
     pub(super) fn project(&self) -> &Project {
         &self.project
     }
@@ -76,6 +143,8 @@ impl ProjectCandidate {
 /// changed through the operations that preserve their existing relationship.
 pub(in crate::app) struct ProjectRegistry {
     projects: Vec<Project>,
+    environments: Vec<Environment>,
+    next_environment: u64,
     observation_projects: crate::observation_changes::ChangeKeys,
     observation_bindings: crate::observation_changes::ChangeKeys,
     entity_project: HashMap<String, String>,
@@ -100,6 +169,8 @@ impl ProjectRegistry {
     pub(in crate::app) fn new() -> Self {
         Self {
             projects: Vec::new(),
+            environments: Vec::new(),
+            next_environment: 1,
             observation_projects: Default::default(),
             observation_bindings: Default::default(),
             entity_project: HashMap::new(),
@@ -166,7 +237,9 @@ impl ProjectRegistry {
         self.projects.iter()
     }
 
-    /// One source of one project, to write what its sync concluded.
+    /// One project projection, primarily for its runtime sync status.
+    /// Configuration edits through this reference must be staged by
+    /// commit_project_configuration, which reconciles the owning references.
     pub(in crate::app) fn source_mut(
         &mut self,
         project_id: &str,
@@ -217,6 +290,14 @@ impl ProjectRegistry {
             return false;
         };
         project.isolation = isolation;
+        let environment_id = project.environment_id.clone();
+        if let Some(environment) = self
+            .environments
+            .iter_mut()
+            .find(|e| e.id == environment_id)
+        {
+            environment.isolation = isolation;
+        }
         true
     }
 
@@ -233,6 +314,7 @@ impl ProjectRegistry {
         if let Some(source) = project.sources.first_mut() {
             source.is_git = true;
         }
+        self.reconcile_project_sources(project_id);
         true
     }
 
@@ -266,6 +348,7 @@ impl ProjectRegistry {
             project.is_git = true;
             project.base_branch = branch.to_string();
         }
+        self.reconcile_project_sources(project_id);
         Ok(primary)
     }
 
@@ -302,15 +385,22 @@ impl ProjectRegistry {
         if project.repo_path == source.path {
             project.base_branch = source.base_branch.clone();
         }
+        self.reconcile_project_sources(project_id);
         Ok(())
     }
 
     pub(in crate::app) fn set_sources(
         &mut self,
         project_id: &str,
-        sources: Vec<ProjectSource>,
+        mut sources: Vec<ProjectSource>,
     ) -> bool {
         self.observation_projects.mark(project_id);
+        let fallback_home = self.get(project_id).and_then(|project| {
+            let environment = self.environment(&project.environment_id)?;
+            Self::unowned_home_source(project, environment)
+        });
+        let promoted_home =
+            self.prepare_home_promotion(project_id, &mut sources, fallback_home.as_ref());
         let Some(project) = self
             .projects
             .iter_mut()
@@ -318,8 +408,44 @@ impl ProjectRegistry {
         else {
             return false;
         };
-        project.next_source = project.next_source.max(next_source_number(&sources));
+        let retained: std::collections::HashSet<_> =
+            sources.iter().map(|source| &source.id).collect();
+        // Only a reference visible before this edit can have been unlinked.
+        // Absence from the live projection alone does not remove stored refs.
+        let removed: std::collections::HashSet<_> = project
+            .sources
+            .iter()
+            .filter(|source| {
+                !retained.contains(&source.id)
+                    && !fallback_home
+                        .as_ref()
+                        .is_some_and(|home| home.id == source.id && home.path == source.path)
+            })
+            .map(|source| source.id.clone())
+            .collect();
+        project
+            .added_sources
+            .retain(|source| !removed.contains(&source.id));
+        let environment_id = project.environment_id.clone();
+        let reservation_floor = promoted_home.as_ref().map_or(0, |(_, floor)| *floor);
+        project.next_source = project
+            .next_source
+            .max(next_source_number(&sources))
+            .max(reservation_floor);
         project.sources = sources;
+        if let Some(environment) = self
+            .environments
+            .iter_mut()
+            .find(|environment| environment.id == environment_id)
+        {
+            environment
+                .sources
+                .retain(|source| !removed.contains(&source.id));
+        }
+        if let Some((home, _)) = promoted_home {
+            self.promote_home_source(project_id, &home);
+        }
+        self.reconcile_project_sources(project_id);
         true
     }
 
@@ -333,6 +459,7 @@ impl ProjectRegistry {
         {
             project.next_source = project.next_source.max(next);
         }
+        self.reconcile_project_sources(project_id);
     }
 
     pub(in crate::app) fn find_by_canonical_path(&self, path: &Path) -> Option<&Project> {
@@ -404,11 +531,12 @@ impl ProjectRegistry {
         base_branch: String,
         build: impl FnOnce(ProjectId, &Path, &str) -> Project,
     ) -> ProjectCandidate {
-        let project = build(
+        let mut project = build(
             ProjectId(format!("proj-{number}")),
             &repo_path,
             &base_branch,
         );
+        project.environment_id = format!("env-{}", self.next_environment);
         ProjectCandidate { project }
     }
 
@@ -433,6 +561,14 @@ impl ProjectRegistry {
             .strip_prefix("proj-")
             .and_then(|id| id.parse::<u64>().ok())
             .expect("project IDs are allocated numerically");
+        if self
+            .environment(&candidate.project.environment_id)
+            .is_none()
+        {
+            self.environments
+                .push(Self::environment_for_project(&candidate.project));
+            self.next_environment += 1;
+        }
         self.projects.push(candidate.project);
         self.reserve_ids_through(number + 1);
         id
@@ -464,5 +600,451 @@ impl ProjectRegistry {
 impl Default for ProjectRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl ProjectRegistry {
+    pub(in crate::app) fn environment(&self, id: &str) -> Option<&Environment> {
+        self.environments
+            .iter()
+            .find(|environment| environment.id == id)
+    }
+
+    pub(in crate::app) fn environments(&self) -> impl Iterator<Item = &Environment> {
+        self.environments.iter()
+    }
+
+    pub(in crate::app) fn next_environment(&self) -> u64 {
+        self.next_environment
+    }
+
+    pub(in crate::app) fn restore_environments(&mut self, config: &serde_json::Value) {
+        if let Some(next) = config
+            .get("next_environment")
+            .and_then(serde_json::Value::as_u64)
+        {
+            self.next_environment = self.next_environment.max(next);
+        }
+        // Missing owners stay parked. Never allocate one of their retained IDs
+        // to an unrelated environment and accidentally revive that project.
+        for project in config
+            .get("projects")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(number) = project
+                .get("environment_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|id| id.strip_prefix("env-"))
+                .and_then(|number| number.parse::<u64>().ok())
+            {
+                self.next_environment = self.next_environment.max(number.saturating_add(1));
+            }
+        }
+        for entry in config
+            .get("environments")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(id) = entry.get("id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if let Some(number) = id.strip_prefix("env-").and_then(|n| n.parse::<u64>().ok()) {
+                self.next_environment = self.next_environment.max(number.saturating_add(1));
+            }
+            let sources = super::configured_sources(
+                entry
+                    .get("sources")
+                    .and_then(serde_json::Value::as_array)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+            );
+            let next_source = entry
+                .get("next_source")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(1)
+                .max(next_source_number(&sources));
+            let environment = Environment {
+                id: id.to_string(),
+                name: entry
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("environment")
+                    .to_string(),
+                sources,
+                next_source,
+                isolation: crate::app::config::configured_isolation(entry, "environment isolation"),
+            };
+            if let Some(existing) = self
+                .environments
+                .iter_mut()
+                .find(|e| e.id == environment.id)
+            {
+                *existing = environment;
+            } else {
+                self.environments.push(environment);
+            }
+        }
+    }
+
+    pub(in crate::app) fn environment_for_project(project: &Project) -> Environment {
+        Environment {
+            id: project.environment_id.clone(),
+            name: project.name.clone(),
+            sources: project.sources.clone(),
+            next_source: project.next_source,
+            isolation: None,
+        }
+    }
+
+    /// Apply a legacy edit to its owning references, then rebuild read projections.
+    pub(super) fn reconcile_project_sources(&mut self, id: &str) {
+        let Some(project) = self.get(id) else {
+            return;
+        };
+        let environment_id = project.environment_id.clone();
+        let fallback = self
+            .environment(&environment_id)
+            .and_then(|environment| Self::unowned_home_source(project, environment));
+        let effective = project.sources.clone();
+        let mut added = project.added_sources.clone();
+        let next = project.next_source;
+        let Some(environment) = self
+            .environments
+            .iter_mut()
+            .find(|e| e.id == environment_id)
+        else {
+            return;
+        };
+        for source in effective.iter().filter(|source| {
+            !fallback
+                .as_ref()
+                .is_some_and(|home| home.id == source.id && home.path == source.path)
+        }) {
+            if let Some(inherited) = environment
+                .sources
+                .iter_mut()
+                .find(|stored| stored.id == source.id)
+            {
+                *inherited = source.clone();
+            } else {
+                Self::upsert_added_source(&mut added, source);
+            }
+        }
+        environment.next_source = environment
+            .next_source
+            .max(next)
+            .max(next_source_number(&effective));
+        self.projects
+            .iter_mut()
+            .find(|p| p.id == id)
+            .expect("resolved project")
+            .added_sources = added;
+        self.refresh_environment_projects(&environment_id);
+    }
+
+    fn upsert_added_source(stored: &mut Vec<ProjectSource>, source: &ProjectSource) {
+        if let Some(existing) = stored.iter_mut().find(|stored| stored.id == source.id) {
+            *existing = source.clone();
+        } else {
+            stored.push(source.clone());
+        }
+    }
+
+    fn refresh_environment_projects(&mut self, environment_id: &str) {
+        let Some(environment) = self.environment(environment_id).cloned() else {
+            return;
+        };
+        for project in self
+            .projects
+            .iter_mut()
+            .filter(|p| p.environment_id == environment_id)
+        {
+            self.observation_projects.mark(&project.id);
+            let fallback = Self::unowned_home_source(project, &environment);
+            let statuses: HashMap<_, _> = project
+                .sources
+                .iter()
+                .map(|s| (s.id.clone(), s.sync_status.clone()))
+                .collect();
+            project.sources = environment
+                .sources
+                .iter()
+                .chain(&project.added_sources)
+                .filter_map(|source| {
+                    let path = super::canonical_source_path(&source.path).ok()?;
+                    let mut live = source.clone();
+                    live.path = path;
+                    Some(live)
+                })
+                .collect();
+            if project.sources.is_empty() {
+                let home = fallback.or_else(|| Self::initial_home_source(project));
+                project.sources.extend(home);
+            }
+            for source in &mut project.sources {
+                if let Some(status) = statuses.get(&source.id) {
+                    source.sync_status = status.clone();
+                }
+            }
+            project.next_source = environment.next_source;
+        }
+    }
+
+    pub(super) fn restore_project_metadata(&mut self, id: &str, entry: &serde_json::Value) {
+        let Some(environment_id) = entry
+            .get("environment_id")
+            .and_then(serde_json::Value::as_str)
+        else {
+            return;
+        };
+        let added_sources = super::configured_sources(
+            entry
+                .get("added_sources")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+        );
+        if let Some(environment) = self
+            .environments
+            .iter_mut()
+            .find(|e| e.id == environment_id)
+        {
+            environment.next_source = environment
+                .next_source
+                .max(next_source_number(&added_sources))
+                .max(
+                    entry
+                        .get("next_source")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(1),
+                );
+            // A parked source may have returned since the environment was loaded.
+            // Retain absent references, but observe newly available checkouts.
+            for source in &mut environment.sources {
+                if source.path.is_dir() {
+                    source.path =
+                        std::fs::canonicalize(&source.path).unwrap_or_else(|_| source.path.clone());
+                    source.is_git = source.path.join(".git").exists();
+                }
+            }
+        }
+        let saved_home = self.saved_home_source(id, entry, &added_sources);
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|p| p.id == id)
+            .expect("registered project");
+        project.environment_id = environment_id.to_string();
+        project.project_key = entry
+            .get("project_key")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        project.home_path = PathBuf::from(
+            entry
+                .get("home_path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_else(|| entry["path"].as_str().unwrap_or_default()),
+        );
+        project.repo_path = project.home_path.clone();
+        if let Some(name) = entry.get("name").and_then(serde_json::Value::as_str) {
+            project.name = name.to_string();
+        }
+        project.archived_at = entry.get("archived_at").and_then(serde_json::Value::as_u64);
+        project.isolation = crate::app::config::configured_isolation(entry, "project isolation");
+        project.added_sources = added_sources;
+        if let Some(home) = saved_home {
+            project.sources = vec![home];
+        }
+        self.refresh_environment_projects(environment_id);
+    }
+}
+
+impl ProjectRegistry {
+    fn source_is_owned(
+        source: &ProjectSource,
+        environment: &Environment,
+        added: &[ProjectSource],
+    ) -> bool {
+        environment
+            .sources
+            .iter()
+            .chain(added)
+            .any(|stored| stored.id == source.id && stored.path == source.path)
+    }
+
+    fn unowned_home_source(project: &Project, environment: &Environment) -> Option<ProjectSource> {
+        let home = super::canonical_source_path(&project.repo_path).ok()?;
+        project
+            .sources
+            .iter()
+            .find(|source| {
+                source.id == "source-1"
+                    && source.path == home
+                    && !Self::source_is_owned(source, environment, &project.added_sources)
+            })
+            .cloned()
+    }
+
+    fn initial_home_source(project: &Project) -> Option<ProjectSource> {
+        let path = super::canonical_source_path(&project.repo_path).ok()?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("project")
+            .to_string();
+        Some(ProjectSource::added(
+            "source-1".into(),
+            name.clone(),
+            super::safe_mount_name(&name),
+            path,
+            project.is_git,
+            project.base_branch.clone(),
+        ))
+    }
+
+    fn saved_home_source(
+        &self,
+        id: &str,
+        entry: &serde_json::Value,
+        added: &[ProjectSource],
+    ) -> Option<ProjectSource> {
+        let project = self.get(id)?;
+        let home = super::canonical_source_path(&project.repo_path).ok()?;
+        let environment = self.environment(entry.get("environment_id")?.as_str()?)?;
+        let sources = super::configured_sources(entry.get("sources")?.as_array()?);
+        sources.into_iter().find(|source| {
+            source.id == "source-1"
+                && source.path == home
+                && !Self::source_is_owned(source, environment, added)
+        })
+    }
+
+    /// A membership edit adopts the fallback without replacing another reference.
+    fn promote_home_source(&mut self, id: &str, home: &ProjectSource) {
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|project| project.id == id)
+            .expect("resolved project");
+        Self::upsert_added_source(&mut project.added_sources, home);
+    }
+
+    fn prepare_home_promotion(
+        &self,
+        id: &str,
+        incoming: &mut [ProjectSource],
+        fallback: Option<&ProjectSource>,
+    ) -> Option<(ProjectSource, u64)> {
+        let fallback = fallback?;
+        let index = incoming
+            .iter()
+            .position(|source| source.id == fallback.id && source.path == fallback.path)?;
+        let project = self.get(id)?;
+        let environment = self.environment(&project.environment_id)?;
+        let mut reservations = self.source_reservations(environment, incoming, Some(fallback));
+        if reservations.used_ids.contains(&incoming[index].id) {
+            incoming[index].id = reservations.allocate_id();
+        }
+        // Keep every observed counter floor even when the existing home ID
+        // needs no replacement. The caller stages this with the membership edit.
+        Some((incoming[index].clone(), reservations.next_source))
+    }
+
+    /// IDs are provisional until the membership transaction publishes them.
+    pub(super) fn allocate_source_ids(
+        &self,
+        project_id: Option<&str>,
+        count: usize,
+    ) -> Result<Vec<String>, String> {
+        let mut reservations = match project_id {
+            Some(id) => {
+                let project = self
+                    .get(id)
+                    .ok_or_else(|| format!("unknown project: {id}"))?;
+                let environment = self
+                    .environment(&project.environment_id)
+                    .ok_or_else(|| format!("unknown environment: {}", project.environment_id))?;
+                self.source_reservations(environment, &[], None)
+            }
+            None => SourceReservations::default(),
+        };
+        Ok((0..count).map(|_| reservations.allocate_id()).collect())
+    }
+
+    /// Reserve both held references and retired IDs recorded by every line.
+    fn source_reservations(
+        &self,
+        environment: &Environment,
+        incoming: &[ProjectSource],
+        fallback: Option<&ProjectSource>,
+    ) -> SourceReservations {
+        let mut reservations = SourceReservations::default();
+        reservations.reserve(
+            environment.next_source,
+            environment.sources.iter().map(|source| source.id.as_str()),
+        );
+        for project in self
+            .projects
+            .iter()
+            .filter(|project| project.environment_id == environment.id)
+        {
+            reservations.reserve(
+                project.next_source,
+                project
+                    .sources
+                    .iter()
+                    .filter(|source| {
+                        !fallback.is_some_and(|fallback| {
+                            source.id == fallback.id && source.path == fallback.path
+                        })
+                    })
+                    .map(|source| source.id.as_str()),
+            );
+            reservations.reserve(
+                0,
+                project
+                    .added_sources
+                    .iter()
+                    .map(|source| source.id.as_str()),
+            );
+        }
+        for project in self.parked.iter().filter(|project| {
+            project
+                .get("environment_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(environment.id.as_str())
+        }) {
+            let counter = project
+                .get("next_source")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(1);
+            let ids = ["sources", "added_sources"]
+                .into_iter()
+                .flat_map(|field| {
+                    project
+                        .get(field)
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                })
+                .filter_map(|source| source.get("id").and_then(serde_json::Value::as_str));
+            reservations.reserve(counter, ids);
+        }
+        reservations.reserve(
+            0,
+            incoming
+                .iter()
+                .filter(|source| {
+                    !fallback.is_some_and(|fallback| {
+                        source.id == fallback.id && source.path == fallback.path
+                    })
+                })
+                .map(|source| source.id.as_str()),
+        );
+        reservations
     }
 }

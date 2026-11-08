@@ -699,6 +699,15 @@ Loading order: environments first, then projects; a project naming an
 unknown `environment_id` is parked (existing path, `persistence.rs:69`) with
 a reason, never dropped.
 
+**M0.1 implementation amendment (#1033):** parked entries migrate immediately,
+without requiring their folders to return; their raw source records survive the
+migrating write. The project isolation override is retained as a legacy copy
+and also copied to the environment. During this one-to-one stage, setting or
+clearing it updates both copies atomically, so clearing still returns to the
+device default. Independent environment inheritance is deferred. Configuration
+staging includes environment records and dependent project source projections,
+so a failed write restores both without replacing runtime orchestrators.
+
 **Migration of every existing project** (first load of a bridge with this
 code, before anything is served, in `AppState` construction). Each existing
 project becomes one project under one new environment derived from its
@@ -710,9 +719,9 @@ sources; nothing is merged:
    `name`, `sources`, `next_source`, `isolation` into the environment; set
    `environment_id`, `added_sources = []`, `project_key = <canonical home
    path as the tracker uses it today>`, `home_path = <that path>`,
-   `isolation = null` (the override moved up; effective isolation unchanged),
+   `isolation` retained as the legacy copy (see the M0.1 amendment above),
    `archived_at = null`. The project keeps its `name` and `id`.
-2. Parked projects migrate the same way when unparked.
+2. Parked projects migrate the same way immediately, keeping raw source records.
 3. One atomic write keeping the legacy project fields. Idempotent: a second
    load finds `environment_id` everywhere and does nothing.
 4. Tasks, secrets, workspaces, runs, plans, scratch folders: **nothing

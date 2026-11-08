@@ -130,6 +130,11 @@ fn missing_repository_recovery_keeps_verbatim_path_without_a_live_binding() {
 fn project_fixture(id: ProjectId, path: &Path, base: &str) -> Project {
     let id = id.into_string();
     Project {
+        environment_id: String::new(),
+        project_key: path.display().to_string(),
+        home_path: path.to_path_buf(),
+        added_sources: Vec::new(),
+        archived_at: None,
         name: path
             .file_name()
             .and_then(|name| name.to_str())
@@ -150,4 +155,17 @@ fn project_fixture(id: ProjectId, path: &Path, base: &str) -> Project {
         id,
         isolation: None,
     }
+}
+
+#[test]
+fn configured_source_keeps_a_filesystem_root_reference() {
+    let source = super::configured_source(
+        0,
+        &serde_json::json!({
+            "id":"source-1", "path":"/", "name":"root", "mount":"root"
+        }),
+    )
+    .expect("a root directory remains a source reference");
+    assert_eq!(source.path, PathBuf::from("/"));
+    assert_eq!(source.name, "root");
 }

@@ -1171,6 +1171,24 @@ and its controls are
   (`MANIFEST_FILE` in `bridge/src/workspace.rs`), and update status and job files
   (`bridge/src/update/`).
 
+Environment records are private bridge config state (`app/environments/`).
+Config load migrates each legacy project, parked entries included, into its own
+environment before serving. A stable `project_key` initially equals its old
+canonical home path; identity consumers remain path-based until M0.2. The
+registry keeps environment-owned source references and their monotonic counter,
+plus project-owned added sources, and projects retain an effective-source read
+projection for existing call sites. Source configuration transactions stage
+environments and project projections together while keeping orchestrators live.
+In M0.1 the project and environment isolation copies are updated together.
+
+The first migration saves the exact original bytes once beside the config in
+`config.json.pre-environments`. Atomic config replacement also retains one
+generation in `config.json.previous`. A failed migration leaves the current
+config untouched. Legacy project fields remain written for older bridges;
+the frozen loader test and `docs/using.md` record that an old loader collapses
+siblings sharing one home into the first project and ignores their opaque keys.
+No environment RPC or capability is advertised by this migration.
+
 Delivered operation receipts retain their request hash, owner/agent identity and
 message sequence span, but discard their delivery prompt in the status update.
 Ordinary receipts clear `delivery` to NULL; historical Task-to-implementation
@@ -1657,9 +1675,23 @@ fixed once a source exists), a base branch, and whether it is a Git
 repository. A project has no remote of its own. A source's remote is its
 checkout's `origin`, read from the checkout for every row
 (`ProjectSource::origin`, via git2 in process). `config.json` keeps no copy of
-it, and ignores the copy older bridges wrote. The project row's `path`,
-`base_branch` and `remote` are its first source's. That first source is the
-project's home (orchestrator, registry identity) and cannot move.
+it, and ignores the copy older bridges wrote. The project row's `remote` is its
+first source's. Its `path`, `base_branch` and Git classification belong to its
+recorded home (orchestrator, registry identity), initially its first source.
+Unlinking that source does not retarget the home, its Git metadata or the
+orchestrator to the next source. Stored references can retain unavailable
+folders, while live source projections and workspace cuts skip missing or
+non-directory paths, as the legacy loader did. When all references are
+unavailable, the live home fallback stays temporary until a membership edit
+adopts it. Promotion preserves its settings and allocates a fresh ID if its
+legacy ID belongs to a stored reference. Allocation reserves source IDs in
+both canonical and legacy records, including parked projects and pending
+additions, and respects every member's recorded counter even after an ID has
+been removed. Addition admission, fresh-project source creation and fallback
+promotion share the same mint function. Additions prepared off lock receive
+final IDs again inside their membership transaction, against current
+reservations, so concurrent preparations cannot publish duplicate identities.
+Hidden references are never replaced by the fallback.
 A configured project whose home folder is missing at boot is parked, not
 dropped (`bridge/src/app/projects/parked.rs`): its configuration is kept
 verbatim and written back on every save, its `proj-N` stays reserved, and

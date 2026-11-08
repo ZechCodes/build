@@ -157,7 +157,11 @@ fn status_fixtures_cover_all_recovery_states_and_a_two_page_cursor() {
     assert_eq!(nested["result"], served["result"]);
     assert_eq!(nested["examples"], served["examples"]);
 
-    let creation_examples = served["creation_examples"]
+    assert_creation_recovery_examples(&served["creation_examples"]);
+}
+
+fn assert_creation_recovery_examples(examples: &Value) {
+    let creation_examples = examples
         .as_array()
         .expect("separate creation recovery examples");
     assert_eq!(creation_examples.len(), 2);

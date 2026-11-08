@@ -448,7 +448,10 @@
           }
         ]
       }
-    },
+    }
+  ],
+  "pagination_note": "The two pages illustrate continuation at a response byte boundary; small sample bodies keep this fixture readable. The cursor is opaque and bound to the authenticated principal, journal incarnation, and complete ordered ID list.",
+  "creation_examples": [
     {
       "params": {
         "operation_ids": [
@@ -575,6 +578,5 @@
         ]
       }
     }
-  ],
-  "pagination_note": "The two pages illustrate continuation at a response byte boundary; small sample bodies keep this fixture readable. The cursor is opaque and bound to the authenticated principal, journal incarnation, and complete ordered ID list."
+  ]
 }

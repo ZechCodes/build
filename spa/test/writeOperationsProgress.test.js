@@ -32,7 +32,7 @@ async function bind({ currentGreeting = greeting, active = () => true, status = 
 
 describe("creation write progress", () => {
   it.each(["unknown", "reconciling"])("retains nested %s status across observational progress and reload", async state => {
-    const example = statusFixture.examples.find(example => example.result.operations[0].creation?.state === state);
+    const example = statusFixture.creation_examples.find(example => example.result.operations[0].creation?.state === state);
     const summary = { ...example.result.operations[0], operation_id: "attempt" };
     await cache.put(intent());
     await bind({ status: [summary] });

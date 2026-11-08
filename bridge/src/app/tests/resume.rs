@@ -728,7 +728,9 @@ fn archived_restart_roster_writes_no_notice_or_turn() {
     set_state(state, &owner, &agent, AgentLifecycle::Live, true);
     let roster = state.resume_roster("before-archive");
     state.projects.at_mut(0).archived_at = Some(1);
-    assert!(state.resume_recorded_agents(&roster, "after-archive").is_empty());
+    assert!(state
+        .resume_recorded_agents(&roster, "after-archive")
+        .is_empty());
     assert!(state.delivery_queue.queued_is_empty());
     assert_eq!(build_said(state, &owner, &agent), None);
 }

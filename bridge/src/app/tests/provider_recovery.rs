@@ -532,8 +532,11 @@ fn archived_provider_recovery_keeps_episode_and_task_until_restore() {
             .handle(req("tasks.get", json!({"task_id":task})))["result"],
         before
     );
-    fixture.state().projects.at_mut(0).archived_at = None;
-    fixture.state().replay_provider_recovery_episodes().unwrap();
+    let project = fixture.state().projects.iter().next().unwrap().id.clone();
+    let restored = fixture
+        .state()
+        .handle(req("project.restore", json!({"project_id":project})));
+    assert_eq!(restored["ok"], true, "{restored}");
     fixture.assert_single_reports();
     fixture.state().replay_provider_recovery_episodes().unwrap();
     fixture.assert_single_reports();

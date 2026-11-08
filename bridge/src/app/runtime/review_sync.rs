@@ -21,7 +21,8 @@ impl AppState {
             // Immutable task ownership is resolved off the app lock; archive
             // and lease acquisition then serialize under that lock.
             let (key, _) = authority.task_project_authority(task).ok()??;
-            ReviewSyncLease::enter(&admission_state, &key).map(|lease| Box::new(lease) as Box<dyn Send>)
+            ReviewSyncLease::enter(&admission_state, &key)
+                .map(|lease| Box::new(lease) as Box<dyn Send>)
         });
         Some(sync::spawn_admitted(
             store,
@@ -61,7 +62,11 @@ impl ReviewSyncLease {
     fn enter(state: &Weak<Mutex<AppState>>, key: &str) -> Option<Self> {
         let shared = state.upgrade()?;
         let mut app = shared.lock().ok()?;
-        if app.archived_project_keys().iter().any(|archived| archived == key) {
+        if app
+            .archived_project_keys()
+            .iter()
+            .any(|archived| archived == key)
+        {
             return None;
         }
         app.active_deferred_filesystem_jobs += 1;
@@ -92,7 +97,11 @@ mod tests {
         let shared = app.shared();
         let weak = Arc::downgrade(&shared);
         let lease = ReviewSyncLease::enter(&weak, &key).unwrap();
-        let refusal = shared.lock().unwrap().project_archive(&project).unwrap_err();
+        let refusal = shared
+            .lock()
+            .unwrap()
+            .project_archive(&project)
+            .unwrap_err();
         assert_eq!(refusal.code(), "conflict");
         drop(lease);
         let mut app = shared.lock().unwrap();

@@ -307,6 +307,24 @@ impl AppState {
         Some(project_id)
     }
 
+    /// An archived boot hydrates the saved record without interpreting missing
+    /// disks as a lifecycle transition. Identity still binds when its home is gone.
+    fn bind_archived_recovery(&mut self, entity: &str, key: &str) -> bool {
+        if !self
+            .archived_project_keys()
+            .iter()
+            .any(|archived| archived == key)
+        {
+            return false;
+        }
+        self.projects
+            .retain_entity_path(entity.to_string(), key.to_string());
+        if let Some(project) = self.project_by_key(key).map(|project| project.id.clone()) {
+            self.projects.bind_entity(entity.to_string(), project);
+        }
+        true
+    }
+
     fn recovery_repo_location(&self, key: &str) -> String {
         self.project_by_key(key)
             .map(|project| project.home_path.display().to_string())
@@ -323,44 +341,47 @@ impl AppState {
         let plan_id = record.id.clone();
         let mut active = ActivePlan::reattach(&record);
 
+        let archived = self.bind_archived_recovery(&plan_id, &record.project_path);
         let mut state_changed = false;
-        if active.plan.state.is_working() {
-            // The drafting session died with the daemon; the docs are safe in
-            // the store. Surface it interrupted (persisted so the verdict
-            // survives the next restart too).
-            active
-                .plan
-                .apply(PlanEvent::Interrupt)
-                .map_err(|e| format!("recover {plan_id}: {e}"))?;
-            // Say so on the conversation: unread is event-driven, so a parked
-            // plan whose session died goes quiet unless the event exists.
-            active.agents.sole_thread_mut().push_event(
-                crate::thread::ThreadEventKind::Interrupted,
-                Some("Build restarted; the drafting session did not survive".to_string()),
-                None,
-                None,
-                now_rfc3339(),
-            );
-            state_changed = true;
-        }
+        if !archived {
+            if active.plan.state.is_working() {
+                // The drafting session died with the daemon; the docs are safe in
+                // the store. Surface it interrupted (persisted so the verdict
+                // survives the next restart too).
+                active
+                    .plan
+                    .apply(PlanEvent::Interrupt)
+                    .map_err(|e| format!("recover {plan_id}: {e}"))?;
+                // Say so on the conversation: unread is event-driven, so a parked
+                // plan whose session died goes quiet unless the event exists.
+                active.agents.sole_thread_mut().push_event(
+                    crate::thread::ThreadEventKind::Interrupted,
+                    Some("Build restarted; the drafting session did not survive".to_string()),
+                    None,
+                    None,
+                    now_rfc3339(),
+                );
+                state_changed = true;
+            }
 
-        // Project ids are persisted, but historical records identify their
-        // project by its opaque key. Never recreate a deleted identity from
-        // a record, even when its old home still exists.
-        let repo_location = self.recovery_repo_location(&record.project_path);
-        if self
-            .bind_recovered_project(&plan_id, &record.project_path)
-            .is_none()
-        {
-            // The repo is gone; the plan can't be re-dispatched, but its docs
-            // remain readable from the store. Keep it legible with a reason.
-            eprintln!(
+            // Project ids are persisted, but historical records identify their
+            // project by its opaque key. Never recreate a deleted identity from
+            // a record, even when its old home still exists.
+            let repo_location = self.recovery_repo_location(&record.project_path);
+            if self
+                .bind_recovered_project(&plan_id, &record.project_path)
+                .is_none()
+            {
+                // The repo is gone; the plan can't be re-dispatched, but its docs
+                // remain readable from the store. Keep it legible with a reason.
+                eprintln!(
                 "recover {plan_id}: project repo {} is gone; plan kept (docs live in the store)",
                 repo_location
             );
-            if !active.plan.state.is_terminal() {
-                active.last_error = Some(format!("project repo missing at {repo_location}"));
-                state_changed = true;
+                if !active.plan.state.is_terminal() {
+                    active.last_error = Some(format!("project repo missing at {repo_location}"));
+                    state_changed = true;
+                }
             }
         }
 
@@ -397,7 +418,6 @@ impl AppState {
     /// is `Abandoned` (worktree gone, branch kept — exactly what `Abandoned`
     /// means); the repo-missing arms park an adopted run needs-attention and
     /// abandon a native one, both with a reason.
-    #[allow(clippy::cognitive_complexity)] // ratchet: recover_run is at 29, threshold 15 — bring it under, then remove
     pub(in crate::app) fn recover_run(&mut self, record: PersistedRun) -> Result<(), String> {
         self.committed_entities.remember_run(record.clone());
         let run_id = record.id.clone();
@@ -410,69 +430,24 @@ impl AppState {
             .map(|plan| plan.plan_path.clone())
             .unwrap_or_else(|| crate::templates::DEFAULT_PLAN_PATH.to_string());
         let mut active = ActiveRun::reattach(&record, plan_path);
+        if self.bind_archived_recovery(&run_id, &record.project_path) {
+            self.board.attention_mut().restore_entity_clocks(
+                run_id.clone(),
+                record.created_at,
+                record.updated_at.clone(),
+                record.state_changed_at.unwrap_or(record.updated_at),
+                run_state_str(&active.run.state),
+            );
+            self.runs.insert(run_id.clone(), active);
+            self.publish_read_owner(&run_id, true);
+            return Ok(());
+        }
 
         let repo_location = self.recovery_repo_location(&record.project_path);
         let project_id = self.bind_recovered_project(&run_id, &record.project_path);
 
-        let mut state_changed = false;
-        let mut recovery_event = None;
-
-        // Resolve an interrupted publication from repository evidence before
-        // considering worktree recovery. The write-ahead record names the exact
-        // candidate, and classification refreshes its configured remote ref.
-        if let Some(attempt) = active.publication_attempt.clone() {
-            let publication = project_id
-                .as_deref()
-                .and_then(|id| self.orch_for(id).ok())
-                .map_or(StagePublication::Local, |orch| {
-                    classify_stage_publication(
-                        orch.worktrees(),
-                        &active.worktree.path,
-                        &active.worktree.branch(),
-                        &active.worktree.base_branch,
-                        &attempt.candidate_sha,
-                    )
-                });
-            let proven = match attempt.action.as_str() {
-                "push" => matches!(
-                    publication,
-                    StagePublication::Pushed | StagePublication::Merged
-                ),
-                "merge" | "merge_push" => publication == StagePublication::Merged,
-                _ => false,
-            };
-            if proven {
-                for progress in &mut active.stages {
-                    if progress.completion_sha.is_some() {
-                        progress.publication = publication;
-                        progress.invalidation_reason = None;
-                    }
-                }
-                if matches!(attempt.action.as_str(), "merge" | "merge_push") {
-                    active.run.state = RunState::Merged;
-                }
-                active.publication_attempt = None;
-                active.last_error = None;
-                recovery_event = Some((
-                    if publication == StagePublication::Merged {
-                        crate::thread::ThreadEventKind::Merged
-                    } else {
-                        crate::thread::ThreadEventKind::Pushed
-                    },
-                    format!(
-                        "Recovered interrupted {} from verified refs at {}",
-                        attempt.action, attempt.candidate_sha
-                    ),
-                ));
-                state_changed = true;
-            } else {
-                active.last_error = Some(format!(
-                    "interrupted {} is not yet proven by configured refs (candidate {})",
-                    attempt.action, attempt.candidate_sha
-                ));
-                state_changed = true;
-            }
-        }
+        let (mut state_changed, mut recovery_event) =
+            self.recover_run_publication(&mut active, project_id.as_deref());
 
         // A project's owner stands in Build's own scratch, which is cut
         // again rather than restored from a branch it never had.
@@ -483,72 +458,15 @@ impl AppState {
                 state_changed = true;
             }
         }
-        if !project_owner && !active.run.state.is_terminal() && !active.worktree.path.exists() {
-            let restored = project_id
-                .as_deref()
-                .filter(|_| !active.adopted)
-                .ok_or_else(|| "the original project/branch is unavailable".to_string())
-                .and_then(|project_id| {
-                    let resolved = self.resolved_isolation(project_id);
-                    self.orch_for(project_id)?
-                        .restore_run_worktree(
-                            &active.worktree,
-                            unregistered_restore_for(&active),
-                            resolved.isolation,
-                        )
-                        .map(|worktree| (worktree, resolved.downgrade))
-                        .map_err(err)
-                });
-            match restored {
-                Ok((worktree, downgrade)) => {
-                    active.worktree = worktree;
-                    if let Some(reason) = downgrade {
-                        self.note_isolation_downgrade(&run_id, &mut active, &reason);
-                    }
-                    recovery_event = Some((
-                        crate::thread::ThreadEventKind::WorktreeRecreated,
-                        format!(
-                            "Recreated the Task worktree from branch {}",
-                            active.worktree.branch()
-                        ),
-                    ));
-                    state_changed = true;
-                }
-                // A Task's implementation keeps its record: its branch is
-                // the lineage the Task's stages were built on, and only the
-                // human can say how to get it back.
-                Err(error) if active.run.plan_id.is_some() && project_id.is_some() => {
-                    active.last_error =
-                        Some(format!("Build could not restore this worktree: {error}"));
-                    recovery_event = Some((
-                        crate::thread::ThreadEventKind::RecoveryFailed,
-                        format!("Could not restore the worktree: {error}"),
-                    ));
-                    state_changed = true;
-                }
-                Err(error) => {
-                    let published = self.classify_stages_now(&run_id, &active);
-                    let affected = reconcile_missing_run_worktree(&mut active, &published);
-                    active
-                        .run
-                        .apply(RunEvent::Abandon)
-                        .map_err(|e| format!("recover {run_id}: {e}"))?;
-                    active.last_error = Some(if project_id.is_some() {
-                        format!("worktree recovery failed: {error}")
-                    } else {
-                        format!("project repo missing at {repo_location}")
-                    });
-                    recovery_event = Some((
-                        crate::thread::ThreadEventKind::RecoveryFailed,
-                        format!(
-                            "Could not recover the worktree: {error}. {} stage(s) were marked incomplete",
-                            affected.len()
-                        ),
-                    ));
-                    state_changed = true;
-                }
-            }
-        }
+        let (changed, event) = self.recover_missing_run_worktree(
+            &run_id,
+            &mut active,
+            project_id.as_deref(),
+            project_owner,
+            &repo_location,
+        )?;
+        state_changed |= changed;
+        recovery_event = event.or(recovery_event);
         let mut interrupted = false;
         if !active.run.state.is_terminal() && active.run.state.is_working() {
             active
@@ -661,6 +579,145 @@ impl AppState {
         Ok(())
     }
 
+    fn recover_missing_run_worktree(
+        &mut self,
+        run_id: &str,
+        active: &mut ActiveRun,
+        project_id: Option<&str>,
+        project_owner: bool,
+        repo_location: &str,
+    ) -> Result<(bool, Option<(crate::thread::ThreadEventKind, String)>), String> {
+        let mut state_changed = false;
+        let mut recovery_event = None;
+        if !project_owner && !active.run.state.is_terminal() && !active.worktree.path.exists() {
+            let restored = project_id
+                .filter(|_| !active.adopted)
+                .ok_or_else(|| "the original project/branch is unavailable".to_string())
+                .and_then(|project_id| {
+                    let resolved = self.resolved_isolation(project_id);
+                    self.orch_for(project_id)?
+                        .restore_run_worktree(
+                            &active.worktree,
+                            unregistered_restore_for(active),
+                            resolved.isolation,
+                        )
+                        .map(|worktree| (worktree, resolved.downgrade))
+                        .map_err(err)
+                });
+            match restored {
+                Ok((worktree, downgrade)) => {
+                    active.worktree = worktree;
+                    if let Some(reason) = downgrade {
+                        self.note_isolation_downgrade(run_id, active, &reason);
+                    }
+                    recovery_event = Some((
+                        crate::thread::ThreadEventKind::WorktreeRecreated,
+                        format!(
+                            "Recreated the Task worktree from branch {}",
+                            active.worktree.branch()
+                        ),
+                    ));
+                    state_changed = true;
+                }
+                // A Task's implementation keeps its record: its branch is
+                // the lineage the Task's stages were built on, and only the
+                // human can say how to get it back.
+                Err(error) if active.run.plan_id.is_some() && project_id.is_some() => {
+                    active.last_error =
+                        Some(format!("Build could not restore this worktree: {error}"));
+                    recovery_event = Some((
+                        crate::thread::ThreadEventKind::RecoveryFailed,
+                        format!("Could not restore the worktree: {error}"),
+                    ));
+                    state_changed = true;
+                }
+                Err(error) => {
+                    let published = self.classify_stages_now(run_id, active);
+                    let affected = reconcile_missing_run_worktree(active, &published);
+                    active
+                        .run
+                        .apply(RunEvent::Abandon)
+                        .map_err(|e| format!("recover {run_id}: {e}"))?;
+                    active.last_error = Some(if project_id.is_some() {
+                        format!("worktree recovery failed: {error}")
+                    } else {
+                        format!("project repo missing at {repo_location}")
+                    });
+                    recovery_event = Some((
+                        crate::thread::ThreadEventKind::RecoveryFailed,
+                        format!(
+                            "Could not recover the worktree: {error}. {} stage(s) were marked incomplete",
+                            affected.len()
+                        ),
+                    ));
+                    state_changed = true;
+                }
+            }
+        }
+        Ok((state_changed, recovery_event))
+    }
+
+    fn recover_run_publication(
+        &mut self,
+        active: &mut ActiveRun,
+        project_id: Option<&str>,
+    ) -> (bool, Option<(crate::thread::ThreadEventKind, String)>) {
+        let Some(attempt) = active.publication_attempt.clone() else {
+            return (false, None);
+        };
+        let publication = project_id.and_then(|id| self.orch_for(id).ok()).map_or(
+            StagePublication::Local,
+            |orch| {
+                classify_stage_publication(
+                    orch.worktrees(),
+                    &active.worktree.path,
+                    &active.worktree.branch(),
+                    &active.worktree.base_branch,
+                    &attempt.candidate_sha,
+                )
+            },
+        );
+        let proven = match attempt.action.as_str() {
+            "push" => matches!(
+                publication,
+                StagePublication::Pushed | StagePublication::Merged
+            ),
+            "merge" | "merge_push" => publication == StagePublication::Merged,
+            _ => false,
+        };
+        if proven {
+            for progress in &mut active.stages {
+                if progress.completion_sha.is_some() {
+                    progress.publication = publication;
+                    progress.invalidation_reason = None;
+                }
+            }
+            if matches!(attempt.action.as_str(), "merge" | "merge_push") {
+                active.run.state = RunState::Merged;
+            }
+            active.publication_attempt = None;
+            active.last_error = None;
+            let recovery_event = Some((
+                if publication == StagePublication::Merged {
+                    crate::thread::ThreadEventKind::Merged
+                } else {
+                    crate::thread::ThreadEventKind::Pushed
+                },
+                format!(
+                    "Recovered interrupted {} from verified refs at {}",
+                    attempt.action, attempt.candidate_sha
+                ),
+            ));
+            (true, recovery_event)
+        } else {
+            active.last_error = Some(format!(
+                "interrupted {} is not yet proven by configured refs (candidate {})",
+                attempt.action, attempt.candidate_sha
+            ));
+            (true, None)
+        }
+    }
+
     pub(in crate::app) fn close_recovered_working_intervals(&mut self) {
         if self
             .board
@@ -748,6 +805,7 @@ impl AppState {
         let queries: Vec<StagePublicationQuery> = self
             .runs
             .iter()
+            .filter(|(run_id, _)| self.refuse_archived_entity(run_id).is_ok())
             .filter(|(run_id, active)| {
                 !active.run.state.is_terminal()
                     && active.run.state != RunState::Created
@@ -772,7 +830,8 @@ impl AppState {
     /// Build's to make, and archiving it would retire its pinned agent.
     fn recut_project_scratches(&self) {
         for (run_id, active) in &self.runs {
-            if active.run.state.is_terminal()
+            if self.refuse_archived_entity(run_id).is_err()
+                || active.run.state.is_terminal()
                 || active.worktree.path.is_dir()
                 || !self.is_project_conversation_owner(run_id)
             {
@@ -791,6 +850,9 @@ impl AppState {
     pub(in crate::app) fn archive_vanished_runs(&mut self, decided: Vec<DecidedVanishedRun>) {
         self.vanished_run_sweep_in_flight = false;
         for DecidedVanishedRun { run_id, published } in decided {
+            if self.refuse_archived_entity(&run_id).is_err() {
+                continue;
+            }
             // The checkout may have come back, or the run may have been
             // abandoned outright, while the sweep was asking git.
             if self

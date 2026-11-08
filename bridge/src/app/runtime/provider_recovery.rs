@@ -20,6 +20,33 @@ impl AppState {
         first_error.map_or(Ok(()), Err)
     }
 
+    /// Restoring a project releases its durable failure notices without a restart.
+    pub(in crate::app) fn replay_provider_recovery_for_project(
+        &mut self,
+        project: &str,
+    ) -> Result<(), String> {
+        let episodes = provider_recovery::all_episodes(&self.state_root)?;
+        for episode in episodes {
+            let source = self.projects.project_id_of(&episode.scope.entity_id) == Some(project);
+            let recipient = episode.recipient.as_ref().is_some_and(|recipient| {
+                self.projects.project_id_of(&recipient.scope.entity_id) == Some(project)
+            });
+            if source || recipient {
+                self.replay_provider_episode(episode)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn provider_episode_archived(&self, episode: &RecoveryEpisode) -> bool {
+        self.refuse_archived_entity(&episode.scope.entity_id)
+            .is_err()
+            || episode.recipient.as_ref().is_some_and(|recipient| {
+                self.refuse_archived_entity(&recipient.scope.entity_id)
+                    .is_err()
+            })
+    }
+
     pub(in crate::app) fn record_provider_recovery_failure(
         &mut self,
         owner: &str,
@@ -71,7 +98,7 @@ impl AppState {
     }
 
     fn replay_provider_episode(&mut self, episode: RecoveryEpisode) -> Result<(), String> {
-        if self.provider_episode_is_live(&episode) {
+        if self.provider_episode_archived(&episode) || self.provider_episode_is_live(&episode) {
             return Ok(());
         }
         if !self.recovery_scope_stands(&episode.scope) {
@@ -129,6 +156,9 @@ impl AppState {
         &mut self,
         mut episode: RecoveryEpisode,
     ) -> Result<(), String> {
+        if self.provider_episode_archived(&episode) {
+            return Ok(());
+        }
         let scope = &episode.scope;
         // A journal entry carries its own provenance. An operationless old
         // episode cannot borrow the current task or a newer consumed message.
@@ -144,6 +174,12 @@ impl AppState {
             sha256_hex(format!("{}:{}:{}", scope.agent_id, scope.thread_id, episode.id).as_bytes());
         if episode.recipient.is_none() {
             let recipient = self.choose_recovery_recipient(scope, operation.as_ref(), &key)?;
+            if recipient.as_ref().is_some_and(|recipient| {
+                self.refuse_archived_entity(&recipient.scope.entity_id)
+                    .is_err()
+            }) {
+                return Ok(());
+            }
             episode = provider_recovery::update_episode(
                 &self.state_root,
                 &scope.agent_id,
@@ -289,7 +325,11 @@ impl AppState {
         let Some(recipient) = &episode.recipient else {
             return Ok(());
         };
-        if !self.recovery_scope_stands(&recipient.scope) {
+        if self
+            .refuse_archived_entity(&recipient.scope.entity_id)
+            .is_err()
+            || !self.recovery_scope_stands(&recipient.scope)
+        {
             return Ok(());
         }
         let exists = self
@@ -324,7 +364,11 @@ impl AppState {
         let Some(recipient) = recipient else {
             return Ok(());
         };
-        if !self.recovery_scope_stands(&recipient.scope) {
+        if self
+            .refuse_archived_entity(&recipient.scope.entity_id)
+            .is_err()
+            || !self.recovery_scope_stands(&recipient.scope)
+        {
             return Ok(());
         }
         let Some(message) = self.recovery_message(&recipient.scope, &recipient.message_id)? else {

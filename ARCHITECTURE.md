@@ -3373,6 +3373,12 @@ Review autosync acquires a filesystem admission lease through persistence and
 publication; denied tasks retain their queued work and retry deadlines. Reclaim
 excludes archived projects during selection, final prune/settle checks and digest
 admission, retaining owed work for the first normal sweep after restore.
+Idle detection and vanished-run sweeps skip archived owners, including late
+sweep settlement. Boot recovery hydrates archived plan/run records without
+persisting lifecycle or missing-disk changes; startup Git recovery remains a
+startup operation. Stale restart rosters cannot queue archived agents. Durable
+provider-failure notices retain their checkpoints and replay on project restore.
+Snapshot refresh preserves archived finished-workspace records until restore.
 Configured conversation-item retention applies independently of project archive.
 The two method names are explicitly withheld from greetings, `projects.archive`
 is not advertised, and the wire stays at 3.36.0 until the consumer checkpoint.

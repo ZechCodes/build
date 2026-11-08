@@ -385,8 +385,14 @@ fn archived_snapshot_refresh_preserves_finished_workspace_until_restore() {
     let before = serde_json::to_value(app.workspaces.get(&ws).unwrap()).unwrap();
     std::fs::write(checkout.join("external.txt"), "external change").unwrap();
     app.refresh_workspace_snapshot_observations();
-    assert_eq!(serde_json::to_value(app.workspaces.get(&ws).unwrap()).unwrap(), before);
+    assert_eq!(
+        serde_json::to_value(app.workspaces.get(&ws).unwrap()).unwrap(),
+        before
+    );
     call(&mut app, "project.restore", json!({"project_id":project}));
     app.refresh_workspace_snapshot_observations();
-    assert_ne!(app.workspaces.get(&ws).unwrap().status, crate::workspace::WorkspaceStatus::Finished);
+    assert_ne!(
+        app.workspaces.get(&ws).unwrap().status,
+        crate::workspace::WorkspaceStatus::Finished
+    );
 }

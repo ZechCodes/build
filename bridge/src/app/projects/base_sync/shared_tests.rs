@@ -91,7 +91,7 @@ fn warm_sources(state: &Arc<Mutex<AppState>>, requests: &[FactsRequest]) {
 #[test]
 fn shared_repository_mutation_invalidates_every_referencing_project() {
     let SharedFixture {
-        _root,
+        _root: root,
         upstream,
         checkout,
         projects,
@@ -121,15 +121,32 @@ fn shared_repository_mutation_invalidates_every_referencing_project() {
     app.settle_source_syncs(vec![synced], 1_000);
     assert_source_facts_invalidated(&app, &requests, &projects);
     drop(app);
-    for (index, scope) in [
-        json!({"project_id": projects[0], "source_id":"source-2", "source_path":checkout}),
-        json!({"workspace_id":format!("legacy-{}", projects[0]), "source_id":"source-2"}),
+    for (index, (scope, fails)) in [
+        (
+            json!({"project_id": projects[0], "source_id":"source-2", "source_path":checkout}),
+            false,
+        ),
+        (
+            json!({"workspace_id":format!("legacy-{}", projects[0]), "source_id":"source-2"}),
+            false,
+        ),
+        (
+            json!({"project_id": projects[0], "source_id":"source-2", "source_path":checkout}),
+            true,
+        ),
     ]
     .into_iter()
     .enumerate()
     {
         warm_sources(&state, &requests);
         advance(&upstream, &format!("fetched-{index}.txt"));
+        if fails {
+            let missing = root.path().join("missing-upstream.git");
+            git_in(
+                &checkout,
+                &["remote", "set-url", "origin", missing.to_str().unwrap()],
+            );
+        }
         let git = {
             let mut app = state.lock().unwrap();
             app.git_fetch(&scope).unwrap();
@@ -139,9 +156,10 @@ fn shared_repository_mutation_invalidates_every_referencing_project() {
             git
         };
         let result = git.run();
-        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(result.is_err(), fails, "{result:?}");
         let mut app = state.lock().unwrap();
-        app.apply_git(&git, result).unwrap();
+        let settled = app.apply_git(&git, result);
+        assert_eq!(settled.is_err(), fails, "{settled:?}");
         assert_source_facts_invalidated(&app, &requests, &projects);
     }
 }
@@ -152,10 +170,23 @@ fn assert_source_facts_invalidated(
     projects: &[String; 2],
 ) {
     let facts = entity_facts(&app.facts_handle, requests);
+    let rows = app.read_view.load().get_owned("project.list", "").unwrap();
     for (project, fact) in projects.iter().zip(facts) {
         assert!(
             fact.status_key.is_none(),
             "repository mutation kept stale source facts for {project}"
+        );
+        let source = &app.projects.get(project).unwrap().sources[1];
+        let row = rows["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["project_id"] == *project)
+            .unwrap();
+        assert_eq!(
+            row["sources"][1]["remote"],
+            json!(source.origin()),
+            "repository mutation kept stale source remote for {project}"
         );
     }
 }
@@ -164,12 +195,12 @@ fn assert_source_facts_invalidated(
 fn shared_directory_different_bases_keep_separate_sync_status() {
     let mut fixture = fixture();
     git_in(&fixture.checkout, &["branch", "topic"]);
-    fixture
+    let mut sources = fixture.app.sources_for(&fixture.projects[1]).unwrap();
+    sources[1].base_branch = "topic".into();
+    assert!(fixture
         .app
         .projects
-        .source_mut(&fixture.projects[1], "source-2")
-        .unwrap()
-        .base_branch = "topic".into();
+        .set_sources(&fixture.projects[1], sources));
     let state = fixture.app.shared();
     for (index, project) in fixture.projects.iter().enumerate() {
         let captured = {
@@ -206,6 +237,22 @@ fn shared_directory_different_bases_keep_separate_sync_status() {
     );
     assert_eq!(statuses[0].last_attempt_ms, 1_000);
     assert_eq!(statuses[1].last_attempt_ms, 1_001);
+    app.commit_project_configuration(&fixture.projects[0], |projects| {
+        projects
+            .source_mut(&fixture.projects[0], "source-2")
+            .unwrap()
+            .name = "Renamed shared folder".into();
+        Ok(())
+    })
+    .unwrap();
+    for (project, expected) in fixture.projects.iter().zip(&statuses) {
+        assert_eq!(
+            app.projects.get(project).unwrap().sources[1]
+                .sync_status
+                .as_ref(),
+            Some(expected)
+        );
+    }
     let persisted = app
         .store
         .as_ref()

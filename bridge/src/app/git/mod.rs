@@ -782,11 +782,52 @@ impl AppState {
             let project_id = worktree.project_id.clone();
             self.rescan_external_worktrees(&project_id);
         }
-        // A source names no entity in its params, so the verb's own change
-        // note reaches nobody: tell every subscription on that folder.
-        if let Some(source) = &scope.source {
-            self.note_git_at(&source.root);
+    }
+
+    /// Git mutations are repository facts shared by every reference to a
+    /// checkout, including linked workspace directories. Source reference
+    /// identity remains the canonical directory; only Git's effects fan out
+    /// through the common Git directory, just as its serialization does.
+    pub(in crate::app) fn invalidate_shared_repository_views(&self, root: &std::path::Path) {
+        let repository = crate::source_sync::sync_lock_identity(root);
+        let mut roots: Vec<_> = self
+            .worktree_roots()
+            .into_values()
+            .chain(
+                self.workspaces
+                    .list(None)
+                    .into_iter()
+                    .flat_map(|workspace| {
+                        workspace
+                            .directories
+                            .iter()
+                            .map(|directory| directory.path.clone())
+                    }),
+            )
+            .filter(|path| crate::source_sync::sync_lock_identity(path) == repository)
+            .collect();
+        // The owner can have gone away while Git was running. Its old root
+        // still fences any observation already in flight against that checkout.
+        roots.push(root.to_path_buf());
+        roots.sort();
+        roots.dedup();
+        for path in &roots {
+            self.invalidate_snapshot_checkout_observations(path);
+            self.note_git_at(path);
         }
+        for project in self.projects.iter().filter(|project| {
+            project
+                .sources
+                .iter()
+                .any(|source| roots.contains(&source.path))
+        }) {
+            self.project_json(project);
+        }
+        self.note_board_lists_changed(crate::changes::BoardLists {
+            projects: true,
+            workspaces: true,
+            ..Default::default()
+        });
     }
 
     /// `git.fetch` — `git fetch --prune`, then the fresh status payload.

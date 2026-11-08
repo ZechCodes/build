@@ -53,7 +53,7 @@ impl GitCallScope for GitScope {
     fn invalidate(&self, app: &mut AppState) {
         // The completed write belongs to this checkout even if its original
         // owner moved, or a workspace selected it without a legacy owner.
-        app.invalidate_snapshot_checkout_observations(&self.repo_path);
+        app.invalidate_shared_repository_views(&self.repo_path);
         if app.git_scope_is_current(self) {
             app.invalidate_git_scope_caches(self);
         }
@@ -87,6 +87,12 @@ impl<S: GitCallScope> DeferredGitWork for ScopedGitCall<S> {
 
     fn invalidate(&self, app: &mut AppState) {
         self.scope.invalidate(app);
+    }
+
+    fn invalidates_on_error(&self) -> bool {
+        // A mutating Git command may have landed part of its work before
+        // failing, or its status read may fail after the mutation succeeded.
+        self.serialized
     }
 }
 

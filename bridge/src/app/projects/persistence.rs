@@ -65,13 +65,19 @@ impl AppState {
         }
         self.projects.refresh_environment_projects(id);
         let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
-        let row = self.environment_json(id)?;
+        let mut observation = self.prepare_environment_edit_observation(id);
+        self.swap_environment_snapshot_observation(id, &mut observation);
+        let row = self
+            .environment_json(id)
+            .expect("edited environment remains registered");
         let projection = self.prepare_all_snapshot_projection();
         configuration.swap(&mut self.projects, id);
+        self.swap_environment_snapshot_observation(id, &mut observation);
         if config != previous {
             self.persist_config(&config)?;
         }
         configuration.swap(&mut self.projects, id);
+        self.swap_environment_snapshot_observation(id, &mut observation);
         if let Some(projection) = projection {
             self.publish_prepared_snapshot_projection(projection);
         }

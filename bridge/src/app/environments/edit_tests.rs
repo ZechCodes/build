@@ -178,6 +178,11 @@ fn environment_source_verbs_add_remove_update_sync() {
         .any(|s| s["id"] == id && s["name"] == "Renamed"));
     ok(
         &mut app,
+        "environment.update_source",
+        json!({"environment_id":"env-1","source_id":id,"sync_base":false}),
+    );
+    ok(
+        &mut app,
         "environment.sync_source",
         json!({"environment_id":"env-1","source_id":id}),
     );
@@ -223,7 +228,9 @@ fn environment_sources_refuse_containment_and_dependent_duplicates() {
         ] {
             let before = std::fs::read(root.path().join("config.json")).unwrap();
             let mut params = json!({"environment_id":"env-1","path":path});
-            if method == "environment.update_source" { params["source_id"] = json!("source-2"); }
+            if method == "environment.update_source" {
+                params["source_id"] = json!("source-2");
+            }
             let reply = rpc(&mut app, method, params);
             assert_eq!(reply["ok"], false, "{method}: {reply}");
             assert_eq!(
@@ -363,12 +370,165 @@ fn environment_reference_edits_leave_shared_siblings_and_workspace_cuts_alone() 
 
 #[test]
 fn environment_remote_edits_publish_for_orphan_and_shared_references() {
-    let root = tempfile::tempdir().unwrap(); let mut app = fixture(root.path());
+    let root = tempfile::tempdir().unwrap();
+    let mut app = fixture(root.path());
     let git = crate::git_fixture::init_repo_named(root.path(), "git");
-    let row = ok(&mut app, "environment.add_source", json!({"environment_id":"env-1","path":git}));
+    let row = ok(
+        &mut app,
+        "environment.add_source",
+        json!({"environment_id":"env-1","path":git}),
+    );
     let id = row["sources"].as_array().unwrap().last().unwrap()["id"].clone();
-    app.projects.clear();
-    let row = ok(&mut app, "environment.update_source", json!({"environment_id":"env-1","source_id":id,"remote":"https://example.invalid/new.git"}));
-    assert_eq!(row["sources"].as_array().unwrap().last().unwrap()["remote"], "https://example.invalid/new.git");
-    assert_eq!(app.environment_list()["environments"][0]["sources"].as_array().unwrap().last().unwrap()["remote"], "https://example.invalid/new.git");
+    let path = root.path().join("config.json");
+    let mut config = app.config_value(&app.projects_dir, app.default_harness, app.isolation);
+    config["environments"].as_array_mut().unwrap().push(json!({"id":"env-2","name":"Other","sources":[
+        {"id":"source-1","name":"git","mount":"git","path":git,"is_git":true,"base_branch":"main"}
+    ]}));
+    config["projects"] = json!([]);
+    std::fs::write(&path, config.to_string()).unwrap();
+    app = state(root.path()).with_config(path).unwrap();
+    let row = ok(
+        &mut app,
+        "environment.update_source",
+        json!({"environment_id":"env-1","source_id":id,"remote":"https://example.invalid/new.git"}),
+    );
+    assert_eq!(
+        row["sources"].as_array().unwrap().last().unwrap()["remote"],
+        "https://example.invalid/new.git"
+    );
+    for environment in app.environment_list()["environments"].as_array().unwrap() {
+        assert_eq!(
+            environment["sources"].as_array().unwrap().last().unwrap()["remote"],
+            "https://example.invalid/new.git"
+        );
+    }
+}
+
+#[test]
+fn environment_source_edits_refuse_parked_project_duplicates() {
+    let root = tempfile::tempdir().unwrap();
+    let app = fixture(root.path());
+    drop(app);
+    let path = root.path().join("config.json");
+    let mut config: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    config["projects"][1]["path"] = json!(root.path().join("away"));
+    config["projects"][1]["home_path"] = json!(root.path().join("away"));
+    std::fs::write(&path, config.to_string()).unwrap();
+    let mut app = state(root.path()).with_config(&path).unwrap();
+    assert_eq!(app.projects.parked().len(), 1);
+    for method in ["environment.add_source", "environment.update_source"] {
+        let mut params = json!({"environment_id":"env-1","path":root.path().join("extra")});
+        if method == "environment.update_source" {
+            params["source_id"] = json!("source-2");
+        }
+        let reply = rpc(&mut app, method, params);
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert!(
+            reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("already included in this project"),
+            "{reply}"
+        );
+    }
+}
+
+#[test]
+fn environment_edits_roll_back_names_and_reference_projections() {
+    let root = tempfile::tempdir().unwrap();
+    let mut app = fixture(root.path());
+    app.config_persist_failure = Some(crate::app::ConfigPersistStep::Write);
+    let before = app.config_value(&app.projects_dir, app.default_harness, app.isolation);
+    for (method, params) in [
+        (
+            "project.rename",
+            json!({"project_id":"proj-1","name":"Unsaved"}),
+        ),
+        (
+            "environment.set_isolation",
+            json!({"environment_id":"env-1","isolation":"worktree"}),
+        ),
+        (
+            "environment.add_source",
+            json!({"environment_id":"env-1","path":root.path().join("target")}),
+        ),
+        (
+            "environment.remove_source",
+            json!({"environment_id":"env-1","source_id":"source-2"}),
+        ),
+        (
+            "environment.update_source",
+            json!({"environment_id":"env-1","source_id":"source-2","name":"Unsaved"}),
+        ),
+    ] {
+        let reply = rpc(&mut app, method, params);
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert_eq!(
+            app.config_value(&app.projects_dir, app.default_harness, app.isolation),
+            before,
+            "{method}"
+        );
+    }
+    assert!(root.path().join("target").is_dir());
+}
+
+#[test]
+fn environment_sync_status_survives_project_configuration() {
+    let root = tempfile::tempdir().unwrap();
+    let mut app = fixture(root.path());
+    let git = crate::git_fixture::init_repo_named(root.path(), "git");
+    let row = ok(
+        &mut app,
+        "environment.add_source",
+        json!({"environment_id":"env-1","path":git}),
+    );
+    let id = row["sources"].as_array().unwrap().last().unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    ok(
+        &mut app,
+        "environment.sync_source",
+        json!({"environment_id":"env-1","source_id":id}),
+    );
+    let state = std::sync::Arc::new(std::sync::Mutex::new(app));
+    AppState::sync_sources(
+        &state,
+        crate::app::projects::base_sync::SyncPass::Requested,
+        1000,
+    );
+    let mut app = state.lock().unwrap();
+    assert!(app
+        .projects
+        .environment("env-1")
+        .unwrap()
+        .sources
+        .last()
+        .unwrap()
+        .sync_status
+        .is_some());
+    app.projects.source_mut("proj-1", &id).unwrap().sync_status = None;
+    ok(
+        &mut app,
+        "project.rename",
+        json!({"project_id":"proj-1","name":"Changed"}),
+    );
+    assert!(app
+        .projects
+        .environment("env-1")
+        .unwrap()
+        .sources
+        .last()
+        .unwrap()
+        .sync_status
+        .is_some());
+    assert!(app
+        .projects
+        .get("proj-1")
+        .unwrap()
+        .sources
+        .last()
+        .unwrap()
+        .sync_status
+        .is_none());
 }

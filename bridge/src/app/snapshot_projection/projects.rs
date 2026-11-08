@@ -158,7 +158,7 @@ impl AppState {
     }
 }
 
-fn refresh_source_remotes(
+pub(super) fn refresh_source_remotes(
     value: &mut Value,
     sources: &[crate::app::projects::ProjectSource],
     roots: &[PathBuf],

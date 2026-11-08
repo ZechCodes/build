@@ -794,6 +794,12 @@ impl AppState {
             .worktree_roots()
             .into_values()
             .chain(
+                self.projects
+                    .registered_sources()
+                    .into_iter()
+                    .map(|s| s.path),
+            )
+            .chain(
                 self.workspaces
                     .list(None)
                     .into_iter()
@@ -816,6 +822,7 @@ impl AppState {
             self.note_git_at(path);
         }
         self.refresh_project_source_remote_observations(&roots);
+        self.refresh_environment_source_remote_observations(&roots);
         self.note_board_lists_changed(crate::changes::BoardLists {
             projects: true,
             workspaces: true,

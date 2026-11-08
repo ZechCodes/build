@@ -1150,8 +1150,9 @@ pub struct ModelsListResult {
 /// codes, so the phrases are matched here rather than the sentences rewritten:
 /// a message is the wire's, and changing one to win a code would be a change
 /// to what every existing client shows its user.
-const CONFLICTS: [&str; 16] = [
+const CONFLICTS: [&str; 17] = [
     "a project must have at least one source",
+    "an environment must have at least one source",
     " belongs to environment ",
     "environment has a pending creation",
     "already included in this project",

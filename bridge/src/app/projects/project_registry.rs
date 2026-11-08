@@ -988,7 +988,10 @@ impl ProjectRegistry {
                 .iter_mut()
                 .find(|stored| stored.id == source.id)
             {
+                // Runtime conclusions belong to the reference's actual owner.
+                let status = inherited.sync_status.clone();
                 *inherited = source.clone();
+                inherited.sync_status = status;
             } else {
                 Self::upsert_added_source(&mut added, source);
             }

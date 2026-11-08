@@ -62,6 +62,35 @@ fn crash_after_rollback_settlement_finishes_failure_without_provisioning() {
     assert_settled_restart(f, &id, &workspace, "preparation refused");
 }
 
+#[test]
+fn root_only_removal_does_not_prove_workspace_settlement() {
+    let f = Fixture::new();
+    let id = operation(174);
+    let record = workspace_attempt(&f, &id, "proj-1");
+    f.store.writer().claim_mutation(PRINCIPAL, &id).unwrap();
+    let workspace: Workspace =
+        serde_json::from_value(record.execution["workspace"].clone()).unwrap();
+    f.state
+        .lock()
+        .unwrap()
+        .workspaces
+        .claim_creation_workspace(&workspace)
+        .unwrap();
+    let mut evidence = record.execution;
+    evidence["effect_state"] = json!("started");
+    f.store
+        .writer()
+        .checkpoint_creation(PRINCIPAL, &id, evidence)
+        .unwrap();
+    std::fs::remove_dir_all(&workspace.root).unwrap();
+    f.store.fail_next_write();
+    f.run(&id);
+    let record = f.record(&id);
+    assert_eq!(record.state, "unknown");
+    assert!(record.outcome.is_none());
+    assert!(f.state.lock().unwrap().workspace_reserved(&workspace.id));
+}
+
 fn git(repo: &std::path::Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -119,15 +148,16 @@ fn interrupted_materialized_worktree_preparation_failure_rolls_back_every_effect
             std::panic::panic_any(SimulatedCrash);
         }
     });
-    f.run(&id);
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f.run(&id)));
     drop(observer);
     let record = f.record(&id);
-    assert_eq!(record.state, "unknown");
+    assert!(matches!(record.state.as_str(), "unknown" | "executing"));
     let workspace: Workspace =
         serde_json::from_value(record.execution["workspace"].clone()).unwrap();
     assert!(workspace.directories[0].path.join("tracked").exists());
     let branch = workspace.directories[0].branch.clone().unwrap();
     let f = f.reopen();
+    f.store.writer().recover_mutations().unwrap();
     crate::app::workspaces::journal_creation::fail_next_preparation_for_test("base sync refused");
     f.run(&id);
     let record = f.record(&id);

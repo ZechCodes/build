@@ -121,7 +121,7 @@ fn legacy_registration_after_project_checkpoint_reallocates() {
 }
 
 #[derive(Debug)]
-pub(super) struct SimulatedCrash;
+pub(in crate::app::creation) struct SimulatedCrash;
 
 pub(super) fn crash_in_project_step(f: &Fixture, id: &str) {
     let record = f.record(id);

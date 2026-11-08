@@ -8,12 +8,13 @@ pub(super) fn migrate_effect_evidence(tx: &Transaction<'_>) -> Result<(), StoreE
     tx.execute_batch(
         "UPDATE mutation_commands
         SET state='unknown', record=json_set(record,
-            '$.state','unknown', '$.execution.effect_state','started',
+            '$.state','unknown', '$.execution.effect_state','started', '$.execution.effect_step','unknown',
             '$.revision',coalesce(json_extract(record,'$.revision'),0)+1)
         WHERE state IN ('accepted','executing','unknown','reconciling','committed')
           AND CASE WHEN json_valid(record) THEN
             json_extract(record,'$.method') IN ('environment.create_project','workspace.create')
-            AND coalesce(json_type(record,'$.execution.effect_state'),'null')='null'
+            AND (coalesce(json_type(record,'$.execution.effect_state'),'null')='null'
+                 OR coalesce(json_type(record,'$.execution.effect_step'),'null')='null')
           ELSE 0 END;",
     )?;
     Ok(())

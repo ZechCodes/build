@@ -120,29 +120,7 @@ impl DeferredGitWork for WorkspaceCreateWork {
             Ok(workspace) => workspace,
             Err(failure) => {
                 let (error, workspace) = *failure;
-                let cleanup =
-                    self.rollback(&workspace).and_then(|_| {
-                        match std::fs::remove_dir_all(&workspace.root) {
-                            Ok(()) => Ok(()),
-                            Err(remove_error)
-                                if remove_error.kind() == std::io::ErrorKind::NotFound =>
-                            {
-                                Ok(())
-                            }
-                            Err(remove_error) => Err(format!(
-                                "remove incomplete workspace {}: {remove_error}",
-                                workspace.root.display()
-                            )),
-                        }
-                    });
-                return match cleanup {
-                    Ok(()) => self.rolled_back(error),
-                    Err(cleanup_error) => {
-                        let message=format!("{error}; additionally could not fully roll back workspace creation: {cleanup_error}");
-                        self.record_residue(workspace, &message)?;
-                        Err(message)
-                    }
-                };
+                return self.rollback_failed_creation(&workspace, error);
             }
         };
         Ok(workspace_json(&workspace))
@@ -239,31 +217,42 @@ impl WorkspaceCreateWork {
         Ok(())
     }
 
-    /// Nothing has materialized yet. Only a root this create privately
-    /// prepared may be removed; an existing workspace retains its files.
+    /// Preparation may be replaying saved materialization, so use the same
+    /// complete rollback as a failure during the cut.
     fn preparation_failed(&self, error: String) -> Result<Value, String> {
         if !self.unpublished {
             return Err(error);
         }
-        match std::fs::remove_dir_all(&self.workspace.root) {
-            Ok(()) => self.rolled_back(error),
-            Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => {
-                self.rolled_back(error)
+        self.rollback_failed_creation(&self.workspace, error)
+    }
+
+    fn rollback_failed_creation(
+        &self,
+        workspace: &Workspace,
+        error: String,
+    ) -> Result<Value, String> {
+        let cleanup =
+            self.rollback(workspace)
+                .and_then(|_| match std::fs::remove_dir_all(&workspace.root) {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(error) => Err(error.to_string()),
+                });
+        match cleanup {
+            Ok(()) => {
+                self.creation_event(journal_creation::WorkspaceCreationEvent::RolledBack {
+                    error: error.clone(),
+                })?;
+                Err(error)
             }
             Err(cleanup) => {
                 let message = format!(
-                    "{error}; additionally could not remove {}: {cleanup}",
-                    self.workspace.root.display()
+                    "{error}; additionally could not fully roll back workspace creation: {cleanup}"
                 );
-                self.record_residue(self.workspace.clone(), &message)?;
+                self.record_residue(workspace.clone(), &message)?;
                 Err(message)
             }
         }
-    }
-
-    fn rolled_back(&self, error: String) -> Result<Value, String> {
-        self.creation_event(journal_creation::WorkspaceCreationEvent::RolledBack)?;
-        Err(error)
     }
 
     fn record_residue(&self, mut workspace: Workspace, error: &str) -> Result<(), String> {
@@ -341,6 +330,10 @@ impl WorkspaceCreateWork {
     }
 
     fn rollback(&self, workspace: &Workspace) -> Result<(), String> {
+        if self.observer.is_some() {
+            WorkspaceRegistry::load(&self.registry_root)?.validate_creation_cleanup(workspace)?;
+            return journal_creation::cleanup_directories(workspace, &self.rift_root);
+        }
         let mut failures = Vec::new();
         for directory in workspace.directories.iter().rev() {
             if directory.status != crate::workspace::DirectoryStatus::Ready {

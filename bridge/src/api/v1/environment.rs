@@ -9,8 +9,18 @@ use serde::{Deserialize, Serialize};
 
 pub fn methods() -> &'static [(&'static str, Handler)] {
     v1_methods![
-        v1_method!("environment.list", environment_list, NoParams, EnvironmentListResult),
-        v1_method!("environment.create_project", create_project, CreateProjectParams, CreateProjectResult)
+        v1_method!(
+            "environment.list",
+            environment_list,
+            NoParams,
+            EnvironmentListResult
+        ),
+        v1_method!(
+            "environment.create_project",
+            create_project,
+            CreateProjectParams,
+            CreateProjectResult
+        )
     ]
 }
 

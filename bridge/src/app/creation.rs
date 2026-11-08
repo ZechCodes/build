@@ -131,6 +131,11 @@ fn reserve_attempt(
     };
     let mut creation = creation;
     creation["effect_state"] = json!("not_started");
+    creation["effect_step"] = json!(if method == "environment.create_project" {
+        "project"
+    } else {
+        "workspace"
+    });
     Ok((json!({"creation":creation}), vec![reservation]))
 }
 fn admission_error(error: crate::store::StoreError) -> ApiError {

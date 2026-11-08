@@ -17,7 +17,9 @@ pub(super) fn take_preparation_failure() -> Option<String> {
 
 pub(in crate::app) enum WorkspaceCreationEvent {
     Started,
-    RolledBack,
+    RolledBack {
+        error: String,
+    },
     Step {
         step: String,
         state: String,
@@ -171,7 +173,7 @@ impl DeferredGitWork for CleanupCreation {
         true
     }
 }
-fn cleanup_directories(workspace: &Workspace, rift_root: &Path) -> Result<(), String> {
+pub(super) fn cleanup_directories(workspace: &Workspace, rift_root: &Path) -> Result<(), String> {
     for directory in workspace.directories.iter().rev() {
         if let Some(branch) = &directory.branch {
             WorktreeManager::new(

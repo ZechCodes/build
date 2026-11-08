@@ -10,6 +10,7 @@ mod project_identity;
 mod settlement;
 mod stale_replay;
 mod unlanded_identity;
+pub(super) use admission_recovery::SimulatedCrash;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Boundary {

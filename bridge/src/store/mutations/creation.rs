@@ -69,7 +69,8 @@ impl StoreWriter {
         evidence: Value,
     ) -> Result<MutationRecord, StoreError> {
         if !matches!(state, "executing" | "unknown" | "reconciling")
-            || evidence.to_string().len() > 192 * 1024
+            || !evidence.is_object()
+            || evidence.to_string().len() > 160 * 1024
         {
             return Err(invalid("invalid creation checkpoint"));
         }
@@ -104,6 +105,13 @@ impl StoreWriter {
             let mut record = require(tx, principal, id)?;
             if !is_creation(&record.method) || !nonterminal(&record) {
                 return Err(invalid("creation is already terminal"));
+            }
+            if record
+                .execution
+                .get("residue")
+                .is_some_and(|value| !value.is_null())
+            {
+                return Err(invalid("creation cleanup residue is not settled"));
             }
             outcome["creation"] = record.execution.clone();
             terminal(tx, &mut record, &state, outcome.clone())?;

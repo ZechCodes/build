@@ -16,6 +16,7 @@ mod deferred_creation;
 mod deletion;
 mod directories;
 pub(in crate::app) mod git_initialization;
+pub(in crate::app) mod journal_creation;
 mod lock;
 mod ownership;
 mod projection_rendering;
@@ -49,6 +50,7 @@ struct WorkspaceCreateWork {
     source_state: Option<std::sync::Weak<std::sync::Mutex<AppState>>>,
     /// What those syncs concluded, for the settlement to write.
     synced: std::sync::Mutex<Vec<Synced>>,
+    observer: Option<journal_creation::WorkspaceCreationObserver>,
     #[cfg(test)]
     prepared_gate: Option<crate::app::OffLockGate>,
 }
@@ -59,8 +61,19 @@ impl DeferredGitWork for WorkspaceCreateWork {
     }
 
     fn run(&self, _params: &Value) -> Result<Value, String> {
-        self.secret_sources.path(&self.workspace.root)?;
-        self.secret_sources.sources(&self.sources)?;
+        // A journal reservation must prove ownership before any failure path
+        // can remove its private root. Legacy callers already prepared theirs.
+        if self.unpublished && self.recover_existing {
+            WorkspaceRegistry::load(&self.registry_root)?
+                .claim_creation_workspace(&self.workspace)?;
+        }
+        if let Err(error) = self
+            .secret_sources
+            .path(&self.workspace.root)
+            .and_then(|_| self.secret_sources.sources(&self.sources))
+        {
+            return self.preparation_failed(error);
+        }
         let prepared = match sync_before_cut(&self.base_syncs, self.source_state.as_ref()) {
             Ok(prepared) => prepared,
             Err(error) => return self.preparation_failed(error),
@@ -87,11 +100,16 @@ impl DeferredGitWork for WorkspaceCreateWork {
             )?;
             return Ok(workspace_json(&workspace));
         }
-        let result = registry.provision_unpublished(
+        let result = registry.provision_unpublished_observed(
             self.workspace.clone(),
             &self.sources,
             self.isolation,
             |source, destination, isolation| self.materialize(source, destination, isolation),
+            |workspace| {
+                self.creation_event(journal_creation::WorkspaceCreationEvent::Checkpoint(
+                    workspace.clone(),
+                ))
+            },
         );
         let workspace = match result {
             Ok(workspace) => workspace,
@@ -114,9 +132,11 @@ impl DeferredGitWork for WorkspaceCreateWork {
                     });
                 return match cleanup {
                     Ok(()) => Err(error),
-                    Err(cleanup_error) => Err(format!(
-                        "{error}; additionally could not fully roll back workspace creation: {cleanup_error}"
-                    )),
+                    Err(cleanup_error) => {
+                        let message=format!("{error}; additionally could not fully roll back workspace creation: {cleanup_error}");
+                        self.record_residue(workspace, &message)?;
+                        Err(message)
+                    }
                 };
             }
         };
@@ -205,7 +225,11 @@ pub(super) fn materialize_source(
 impl WorkspaceCreateWork {
     fn claim_saved_reservation(&self, registry: &mut WorkspaceRegistry) -> Result<(), String> {
         if self.recover_existing {
-            registry.claim_delivery_workspace(&self.workspace)?;
+            if self.unpublished {
+                registry.claim_creation_workspace(&self.workspace)?;
+            } else {
+                registry.claim_delivery_workspace(&self.workspace)?;
+            }
         }
         Ok(())
     }
@@ -219,14 +243,64 @@ impl WorkspaceCreateWork {
         match std::fs::remove_dir_all(&self.workspace.root) {
             Ok(()) => Err(error),
             Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => Err(error),
-            Err(cleanup) => Err(format!(
-                "{error}; additionally could not remove {}: {cleanup}",
-                self.workspace.root.display()
-            )),
+            Err(cleanup) => {
+                let message = format!(
+                    "{error}; additionally could not remove {}: {cleanup}",
+                    self.workspace.root.display()
+                );
+                self.record_residue(self.workspace.clone(), &message)?;
+                Err(message)
+            }
         }
     }
 
+    fn record_residue(&self, mut workspace: Workspace, error: &str) -> Result<(), String> {
+        workspace.status = crate::workspace::WorkspaceStatus::Failed;
+        self.creation_event(journal_creation::WorkspaceCreationEvent::Residue {
+            workspace: workspace.clone(),
+            error: error.into(),
+        })?;
+        if self.observer.is_some() {
+            WorkspaceRegistry::load(&self.registry_root)?.retain_creation_residue(workspace)?;
+        }
+        Ok(())
+    }
+    fn creation_event(
+        &self,
+        event: journal_creation::WorkspaceCreationEvent,
+    ) -> Result<(), String> {
+        match &self.observer {
+            Some(observer) => observer(event),
+            None => Ok(()),
+        }
+    }
     fn materialize(
+        &self,
+        source: &WorkspaceSource,
+        destination: &Path,
+        isolation: Isolation,
+    ) -> Result<(Option<String>, Isolation), String> {
+        let step = format!(
+            "Copying {}",
+            destination
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+        );
+        self.creation_event(journal_creation::WorkspaceCreationEvent::Step {
+            step: step.clone(),
+            state: "running".into(),
+            detail: None,
+        })?;
+        let result = self.materialize_inner(source, destination, isolation);
+        self.creation_event(journal_creation::WorkspaceCreationEvent::Step {
+            step,
+            state: if result.is_ok() { "done" } else { "failed" }.into(),
+            detail: result.as_ref().err().cloned(),
+        })?;
+        result
+    }
+    fn materialize_inner(
         &self,
         source: &WorkspaceSource,
         destination: &Path,
@@ -891,6 +965,7 @@ impl AppState {
                 base_syncs: self.cut_sync_subjects(&project_id),
                 source_state: self.source_validation_handle(),
                 synced: Default::default(),
+                observer: None,
                 #[cfg(test)]
                 prepared_gate: self.off_lock_workspace_prepared_gate.take(),
             }),
@@ -1139,6 +1214,7 @@ impl AppState {
                 base_syncs,
                 source_state: self.source_validation_handle(),
                 synced: Default::default(),
+                observer: None,
                 #[cfg(test)]
                 prepared_gate: self.off_lock_workspace_prepared_gate.take(),
             }),
@@ -1586,7 +1662,7 @@ fn canonical_or_existing(path: &Path) -> Result<PathBuf, String> {
         .map_err(|error| format!("resolve workspace root {}: {error}", path.display()))
 }
 
-fn workspace_json(workspace: &Workspace) -> Value {
+pub(in crate::app) fn workspace_json(workspace: &Workspace) -> Value {
     let mut value = json!({
         "id": workspace.id,
         "workspace_id": workspace.id,

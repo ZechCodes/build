@@ -204,6 +204,66 @@ fn verify_reserved_identity(reserved: &Workspace, existing: &Workspace) -> Resul
     }
 }
 
+impl WorkspaceRegistry {
+    /// Ownership is durable before mkdir; private candidates publish only at Ready.
+    pub(crate) fn claim_creation_workspace(&self, reserved: &Workspace) -> Result<(), String> {
+        self.validate_delivery_reservation(reserved)?;
+        let journal = self.root.join(".creation-reservations").join(&reserved.id);
+        refuse_symlink(journal.parent().expect("journal parent"))?;
+        refuse_symlink(&journal)?;
+        if journal.exists() {
+            let saved: Workspace =
+                serde_json::from_slice(&fs::read(&journal).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            verify_reserved_identity(&saved, reserved)?;
+        } else {
+            if fs::symlink_metadata(&reserved.root).is_ok() {
+                return Err(
+                    "reserved workspace root already exists without ownership proof".into(),
+                );
+            }
+            fs::create_dir_all(journal.parent().expect("journal parent"))
+                .map_err(|e| e.to_string())?;
+            atomic_write(
+                &journal,
+                &serde_json::to_vec(reserved).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        create_owned_container(reserved)
+    }
+    pub(crate) fn recovered_creation_workspace(
+        &self,
+        reserved: &Workspace,
+    ) -> Result<Option<Workspace>, String> {
+        let Some(existing) = self.get(&reserved.id) else {
+            return Ok(None);
+        };
+        verify_reserved_identity(reserved, existing)?;
+        Ok((existing.status == WorkspaceStatus::Ready).then(|| existing.clone()))
+    }
+    pub(crate) fn retain_creation_residue(&mut self, workspace: Workspace) -> Result<(), String> {
+        self.validate_creation_cleanup(&workspace)?;
+        persist(&workspace)?;
+        self.install_workspace(workspace);
+        Ok(())
+    }
+    pub(crate) fn validate_creation_cleanup(&self, reserved: &Workspace) -> Result<(), String> {
+        self.validate_delivery_reservation(reserved)?;
+        let journal = self.root.join(".creation-reservations").join(&reserved.id);
+        refuse_symlink(journal.parent().expect("journal parent"))?;
+        refuse_symlink(&journal)?;
+        let saved: Workspace =
+            serde_json::from_slice(&fs::read(&journal).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        verify_reserved_identity(&saved, reserved)?;
+        for directory in &reserved.directories {
+            refuse_symlink(&directory.path)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::*;

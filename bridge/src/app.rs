@@ -15,6 +15,7 @@ mod board;
 mod board_index;
 mod captures;
 mod config;
+mod creation;
 mod device_lifecycle;
 #[cfg(test)]
 mod device_lifecycle_tests;
@@ -441,6 +442,9 @@ pub struct AppState {
     /// seconds; every other frame, every terminal pump and the relay's own
     /// read loop need this mutex while they run.
     deferred_work: Option<DeferredWork>,
+    mutation_service: Option<mutations::MutationService>,
+    creation_wakeup: Option<std::sync::mpsc::SyncSender<()>>,
+    creation_roots: std::collections::HashMap<String, std::path::PathBuf>,
     /// The result type `api/v1` declares for the verb that filled
     /// [`AppState::deferred_work`], as a check the published value must pass.
     /// Set by [`AppState::expect_deferred_result`] and taken with the work it
@@ -777,6 +781,9 @@ impl AppState {
             terminal_create_scope_probe_gate: None,
             rpc_post_attention_owners: None,
             deferred_work: None,
+            mutation_service: None,
+            creation_wakeup: None,
+            creation_roots: Default::default(),
             deferred_result_check: None,
             pending_rows: Vec::new(),
             live_roster: None,

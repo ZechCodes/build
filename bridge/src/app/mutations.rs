@@ -145,7 +145,7 @@ impl MutationService {
             !subscription.ids.contains(id) || subscription.sender.push_scoped(payload.clone())
         });
     }
-    pub(in crate::app) fn current_progress(&self,id:&str)->Option<Vec<writes::WriteProgress>> {
+    pub(in crate::app) fn current_progress(&self, id: &str) -> Option<Vec<writes::WriteProgress>> {
         self.inner.progress.lock().unwrap().get(id).cloned()
     }
     pub(in crate::app) fn clear_progress(&self, id: &str) {
@@ -393,6 +393,7 @@ fn summary(record: &MutationRecord) -> Result<OperationSummary, ApiError> {
     };
     if !record.execution.is_null() {
         value["creation"] = record.execution.clone();
+        value["creation"]["state"] = json!(record.state);
     }
     value["operation_id"] = json!(record.operation_id);
     value["revision"] = json!(record.revision);

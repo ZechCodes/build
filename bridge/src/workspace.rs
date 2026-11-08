@@ -668,13 +668,28 @@ impl WorkspaceRegistry {
     /// every checkout that succeeded before the failure.
     pub fn provision_unpublished<F>(
         &mut self,
+        workspace: Workspace,
+        sources: &[WorkspaceSource],
+        isolation: Isolation,
+        materialize: F,
+    ) -> Result<Workspace, Box<(String, Workspace)>>
+    where
+        F: FnMut(&WorkspaceSource, &Path, Isolation) -> Result<(Option<String>, Isolation), String>,
+    {
+        self.provision_unpublished_observed(workspace, sources, isolation, materialize, |_| Ok(()))
+    }
+
+    pub fn provision_unpublished_observed<F, C>(
+        &mut self,
         mut workspace: Workspace,
         sources: &[WorkspaceSource],
         isolation: Isolation,
         mut materialize: F,
+        mut checkpoint: C,
     ) -> Result<Workspace, Box<(String, Workspace)>>
     where
         F: FnMut(&WorkspaceSource, &Path, Isolation) -> Result<(Option<String>, Isolation), String>,
+        C: FnMut(&Workspace) -> Result<(), String>,
     {
         for source in sources {
             let Some(directory) = workspace
@@ -684,6 +699,9 @@ impl WorkspaceRegistry {
             else {
                 continue;
             };
+            if directory.status == DirectoryStatus::Ready {
+                continue;
+            }
             match materialize(source, &directory.path, isolation) {
                 Ok((branch, effective_isolation)) => {
                     directory.branch = branch;
@@ -691,6 +709,9 @@ impl WorkspaceRegistry {
                     directory.status = DirectoryStatus::Ready;
                 }
                 Err(error) => return Err(Box::new((error, workspace))),
+            }
+            if let Err(error) = checkpoint(&workspace) {
+                return Err(Box::new((error, workspace)));
             }
         }
         if workspace

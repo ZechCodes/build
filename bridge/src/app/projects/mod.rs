@@ -101,6 +101,7 @@ pub(in crate::app) use conversation::{
     recut_project_scratch, scratch_dir, scratch_dir_for_project,
 };
 pub(crate) use coordinator::PINNED_AGENT_STAYS;
+mod creation;
 mod deletion;
 mod lifecycle;
 mod list;

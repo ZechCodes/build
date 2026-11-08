@@ -44,6 +44,7 @@ impl AppState {
                 #[cfg(test)]
                 prepared_gate: self.off_lock_workspace_prepared_gate.take(),
                 synced: Default::default(),
+                observer: None,
             }),
             params: Value::Null,
             invalidates: true,

@@ -227,6 +227,10 @@ pub(in crate::app) fn dispatch_frame(
         );
     }
 
+    if let Some(metadata) = frame.payload.get("write") {
+        return super::creation::dispatch(state, &sender, id, &method, params, metadata.clone());
+    }
+
     let result = match session_scoped(state, &sender, &method, &params, &timer) {
         Some(outcome) => noted_as_user_activity(state, &method, outcome, &timer),
         None => routed(state, &sender, &method, &params, &timer, &admission),
@@ -666,11 +670,12 @@ impl AppState {
                 app.read_service(),
                 app.snapshot_service(),
                 app.observation_service(),
-                super::mutations::MutationService::new(&app),
+                app.mutation_service(),
                 app.session_greeting(crate::bridge_epoch::current()),
                 app.secret_read_service(),
             )
         };
+        super::creation::start(&state);
         let ending = Arc::clone(&state);
         let cleanup_state = Arc::clone(&state);
         FrameHandler::new(clock, move |sender, frame, timer| {

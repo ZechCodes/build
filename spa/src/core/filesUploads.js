@@ -59,6 +59,7 @@ export function mountFilesUploads({ readOnly, treeEl, viewerEl, roots, keyOf, tr
   onUploads(uploads.snapshot());
   const stopTray = mountFileUploadTray(viewerEl, { uploads, capabilities: { uploads: false } });
   return {
+    refreshReadOnly: () => actions.refreshReadOnly(),
     dispose() { disposed = true; stopSupport(); stopUploads(); stopTray(); actions.dispose(); },
   };
 }

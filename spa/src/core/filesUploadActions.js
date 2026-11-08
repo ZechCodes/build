@@ -34,6 +34,7 @@ const destination = (root, parent) => [root.label, parent].filter(Boolean).join(
  * class and an overlay attribute, preserving the tree's elements and geometry. */
 export function mountFilesUploadActions(host, { roots, capabilities, uploads, callRpc, onCreated, onFinished, deviceId, readOnly }) {
   const locked = () => readOnly?.() === true;
+  let wasReadOnly = locked();
   let support = capabilities;
   let disposed = false;
   let dropRow = null;
@@ -246,6 +247,13 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
   host.addEventListener("drop", onDrop);
   input.addEventListener("change", onChange);
   return {
+    refreshReadOnly() {
+      const next = locked();
+      if (wasReadOnly === next) return;
+      wasReadOnly = next;
+      contextMenu.reset();
+      closeSplitMenusWithin(host);
+    },
     setCapabilities(next) { support = next; contextMenu.reset(); clearDrop(); if (draft && !newEntryKinds(support).includes(draft.kind)) closeDraft(); decorate(); },
     dispose() {
       disposed = true;

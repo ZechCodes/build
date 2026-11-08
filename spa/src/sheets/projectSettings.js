@@ -258,7 +258,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     if (draft.edits === cachedDraft?.edits) displayedDraft.edits = draft.edits;
     if (draft.source === cachedDraft?.source) displayedDraft.source = draft.source;
     mountProjectGeneral(sheet, project, {
-      deviceId, callRpc, onArchiveRefused: refusal => { archiveRefusal = refusal; },
+      deviceId, callRpc, onArchiveRefused: refusal => { archiveRefusal = refusal; void record.read(); },
       openEnvironment: () => { close(); openEnvironmentSettings(project.environment_id, { deviceId, callRpc }); },
     });
     lockArchivedSettings(sheet, project);

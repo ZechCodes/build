@@ -930,6 +930,7 @@ export function renderFilesTab(body, { scope, roots, readOnly, layoutEntityId, c
   if (openKey) void tree.reveal(openKey);
 
   return {
+    refreshReadOnly: () => uploadView.refreshReadOnly(),
     dispose() {
       disposed = true;
       fileRequest += 1;

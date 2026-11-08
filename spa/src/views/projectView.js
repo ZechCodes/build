@@ -299,6 +299,7 @@ function paintFiles(state, pane) {
     state.filesRoots = next;
     state.filesSignature = JSON.stringify(next);
   }
+  state.files.refreshReadOnly?.();
   paintFilesSupport(state, pane, roots, signature !== state.filesSignature);
 }
 

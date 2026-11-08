@@ -462,6 +462,8 @@ it("archived project file menus offer no writes, including a menu opened before 
   readOnly = true;
   [...menu.querySelectorAll("[role=menuitem]")].find(item => item.textContent.includes("New directory")).click();
   expect(host.querySelector(".fupload-folder")).toBeNull();
+  actions.refreshReadOnly();
+  expect(document.querySelector(".file-context-menu")).toBeNull();
   row("docs").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
   expect(document.querySelector(".file-context-menu")).toBeNull();
   row("guide.md").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));

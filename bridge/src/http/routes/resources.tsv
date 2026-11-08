@@ -66,6 +66,8 @@ ping	GET	/v1/health
 project.add_source	POST	/v1/projects/{project_id}/sources
 project.create	POST	/v1/projects
 project.delete	DELETE	/v1/projects/{project_id}
+project.archive	POST	/v1/projects/{project_id}/archives
+project.restore	POST	/v1/projects/{project_id}/restores
 project.discard_unused	POST	/v1/projects/{project_id}/unused-discards
 project.ensure_conversation	POST	/v1/projects/{project_id}/conversation
 project.init_git	POST	/v1/projects/{project_id}/git-initializations

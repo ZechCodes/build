@@ -2614,3 +2614,30 @@ fn creation_progress_fixture_is_typed_and_nonterminal() {
         assert!(event.get("outcome").is_none());
     }
 }
+
+#[test]
+fn project_archive_wire_is_strict_additive_and_withheld() {
+    assert_eq!(API_VERSION, "3.36.0");
+    assert!(!capabilities(false).contains(&"projects.archive"));
+    for method in ["project.archive", "project.restore"] {
+        assert!(!capabilities(false).contains(&method));
+        assert!(UNADVERTISED_CAPABILITIES.contains(&method));
+        let fixture = read_json(&fixtures_root().join(format!("v1/{method}.json")));
+        let (_, handler) = v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap();
+        handler.parse_params(&fixture["params"]).unwrap();
+        assert_eq!(
+            handler.round_trip_result(&fixture["result"]).unwrap(),
+            fixture["result"]
+        );
+        let mut invalid = fixture["params"].clone();
+        invalid["unknown_archive_param"] = serde_json::json!(true);
+        assert!(handler.parse_params(&invalid).is_err());
+    }
+    let project = read_json(&fixtures_root().join("v1/project.list.json"));
+    assert!(project["result"]["projects"][0]
+        .get("archived_at")
+        .is_some());
+}

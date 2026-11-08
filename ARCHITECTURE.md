@@ -3342,6 +3342,26 @@ workspace never retires a project worker, even one its agents made.
 `project.delete` retires the pin and every worker, revokes their tokens and
 queued turns, and removes the project's scratch; its sources stay.
 
+**Project archive (staged M3.1, #1059).** `project.archive` and
+`project.restore` retain the project's identity and all history, persisting
+`archived_at` in `config.json`. Project-list publication carries the timestamp,
+including archived rows. Archive reports every unfinished/provisioning workspace,
+held worker/coordinator session, pending assignment or waiting-on dependency,
+Needs-you task and review awaiting a verdict. Nothing is stopped implicitly.
+The existing global filesystem-job fence also keeps archive out while deferred
+work is active; journaled workspace admission holds that fence until its durable
+reservation exists. A configuration failure publishes no archive state.
+
+`app/projects/archive_guard.rs` shares one archived-project refusal across
+routed/session RPCs, MCP mutations and final agent spawn reservation. RPC write
+classification comes from the effect registry, with project scope resolved from
+project, workspace, task or conversation identities; upload calls resolve their
+retained scope after owner validation. Reads and screen-attachment bookkeeping
+remain available. Restore and project deletion remain allowed. Environment
+reference maintenance can still update archived projects' effective sources.
+The two method names are explicitly withheld from greetings, `projects.archive`
+is not advertised, and the wire stays at 3.36.0 until the consumer checkpoint.
+
 **Waiting-on tools.** `create_task` accepts `waiting_on`; `link_task` adds
 those edges atomically with its ordinary links. `unlink_task` removes only
 waiting-on edges, and `list_task_dependents` pages same-project reverse digests

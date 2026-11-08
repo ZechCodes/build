@@ -1,0 +1,101 @@
+{
+  "method": "project.restore",
+  "since": "3.36.0",
+  "params": {
+    "project_id": "proj-2"
+  },
+  "result": {
+    "project": {
+      "project_id": "proj-2",
+      "name": "relay",
+      "path": "/home/ada/code/relay",
+      "base_branch": "main",
+      "is_git": true,
+      "remote": "git@github.com:ada/relay.git",
+      "isolation": null,
+      "isolation_default": "worktree",
+      "isolation_effective": "worktree",
+      "isolation_available": {
+        "rift": false,
+        "reason": "rift is not installed on this device"
+      },
+      "compaction_thresholds": {},
+      "compaction": {
+        "inherited": {
+          "claude": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "claude_adk": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex_app_server": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "pi": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          }
+        },
+        "effective": {
+          "claude": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "claude_adk": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex_app_server": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "pi": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          }
+        }
+      },
+      "archived_at": null
+    }
+  },
+  "errors": [
+    "invalid_params",
+    "not_found",
+    "project_archived",
+    "conflict",
+    "busy",
+    "unavailable",
+    "internal"
+  ]
+}

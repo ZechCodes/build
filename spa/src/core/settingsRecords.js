@@ -15,16 +15,33 @@ const unchangedSettingsRead = (before, held, address, fence) => !pushedSince(add
 
 export const downloadsAddress = { deviceId: "", entityId: "", kind: "downloads" };
 
-/** A project mutation answers its row. Keep the sheet's record and the device
- * project list coherent before either listener redraws. */
-export async function writeProjectSetting(deviceId, project) {
-  await writeCached(projectSettingsAddress(deviceId, project.project_id), project);
-  await mergeCached(deviceProjectsAddress(deviceId), (projects) =>
-    Array.isArray(projects)
-      ? projects.some((item) => item.project_id === project.project_id)
-        ? projects.map((item) => item.project_id === project.project_id ? project : item)
-        : [...projects, project]
-      : null);
+/** Mutation replies omit environment identity. Merge with the latest cached
+ * row and publish both settings projections in one transaction. An optional
+ * acceptance guard retains a caller's request-time cache/push fences. */
+export function writeProjectSetting(deviceId, changed, { accept = () => true } = {}) {
+  const projectId = changed.project_id;
+  return mergeCachedRecordsTogether([projectSettingsAddress(deviceId, projectId), deviceProjectsAddress(deviceId)], ([held, list]) => {
+    if (!accept(held)) return null;
+    const projects = list?.value;
+    const listed = Array.isArray(projects) ? projects.find(row => row.project_id === projectId) : null;
+    const project = projectReplyWithIdentity({ ...listed, ...held?.value }, changed);
+    return [project, withProjectRow(projects, project)];
+  });
+}
+
+function projectReplyWithIdentity(current, changed) {
+  const project = { ...current, ...changed };
+  for (const key of ["environment_id", "environment_name", "project_key"]) {
+    if (Object.hasOwn(current, key)) project[key] = current[key];
+  }
+  return project;
+}
+
+function withProjectRow(projects, project) {
+  if (!Array.isArray(projects)) return null;
+  return projects.some(row => row.project_id === project.project_id)
+    ? projects.map(row => row.project_id === project.project_id ? project : row)
+    : [...projects, project];
 }
 
 export async function removeProjectSetting(deviceId, projectId) {

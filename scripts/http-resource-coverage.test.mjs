@@ -360,7 +360,8 @@ const sourceFingerprintParts = {
   "core/readStateRepair.js": ["c374e7a6", "23e8215a", "1c4a16b5", "337a4bf2", "32babbcc", "246bfc57", "68c3cdfc", "5e916be7"],
   "core/revisionBodies.js": ["60606411", "ec3a6f2c", "7c923581", "f22c39cd", "43dd8a04", "69ff5c40", "e4e490cb", "e3119193"],
   "core/rtcTerminalLink.js": ["9e8a6c70", "266666d9", "45b2f045", "4f29f5fc", "6293c562", "d2f0ed25", "15a05fd6", "a43dd438"],
-  "core/scopedCompactionEditor.js": ["b5d366f5", "90a2be6a", "b5c01379", "ccad5198", "7298a4cf", "bdcbdc88", "2e022cd4", "847d6330"],
+  // #1065: project replies share the atomic identity-preserving writer; dispatch and acceptance fences are unchanged.
+  "core/scopedCompactionEditor.js": ["bb63e1ad", "9edb5bfa", "e21c2b85", "4258ad49", "9409f3f9", "ae25c6ad", "a4798a0e", "017bd938"],
   "core/scopedProjectColumns.js": ["050be4f1", "7bc93888", "92cfb0a6", "eec46373", "f5b4c3f8", "22bbd079", "a8a0081b", "cf9db94a"],
   // #997 scopedSyncDiagnostics.js:4: device is a closed diagnostic label, never a resource selector.
   "core/scopedSyncDiagnostics.js": ["6cc8fdb6", "b09c4e34", "fe7d1304", "b21f55d1", "28d9740b", "71c566cd", "db179dcd", "ef3bd1bf"],
@@ -435,10 +436,10 @@ const sourceFingerprintParts = {
   "push.js": ["c7a3eb27", "240e0a4d", "3e314aee", "369bea39", "25bf83e0", "f105e41a", "0e4ed716", "4e53028b"],
   "sheets/browser.js": ["e226c6fb", "9689c6bc", "39ba311b", "335481c7", "f444e696", "36c5c8b6", "013588ec", "bd2a4dbe"],
   "sheets/newRepo.js": ["e1addf8b", "abc706f6", "ca74fa24", "7e1f3208", "aae3d460", "37157135", "21e46d2f", "f187cdfa"],
-  // #1065: unknown ownership stays read-only; refresh retains the existing project.list read.
-  // Source replies merge atomically; project-scoped methods/selectors and editing.save expansion are unchanged.
-  "sheets/projectSettings.js": ["30f60223", "1208de33", "406a6fec", "6480a1b6", "28d1d87f", "183892e0", "252cf8db", "3d287e5a"],
-  "sheets/projectSources.js": ["66399d04", "d3d079af", "889fd29b", "b20735b2", "cef68334", "9cf6e077", "dbf6bb36", "4a5611e5"],
+  // #1065: positive ownership evidence gates both card rendering and editing.save.
+  // Source replies use the shared identity-preserving writer; project-scoped methods/selectors and project.list refresh are unchanged.
+  "sheets/projectSettings.js": ["0b46b219", "0a31bd27", "dfcd2f8e", "36a7df91", "b9080d7f", "4ed063d6", "f10aec0c", "62e0cada"],
+  "sheets/projectSources.js": ["489bf8cb", "1e8e692a", "7792a186", "a3aba795", "cc86ff31", "b65bea62", "e1676fc9", "ad42b741"],
   "sheets/sourceSyncControls.js": ["a0c9eb24", "846213e3", "1cc5b961", "8058d449", "6a46f577", "2b154112", "724dc4e5", "6041f096"],
   // #997 workspaceSettings.js:292: the existing project.list catalog loader delegates to owned device recovery.
   "sheets/workspaceSettings.js": ["5cc470f0", "7f95fc28", "02c7bfb0", "478c4510", "e33b5183", "1e6be057", "6928f74b", "82185347"],

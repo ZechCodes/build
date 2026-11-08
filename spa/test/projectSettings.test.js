@@ -6,12 +6,12 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { openProjectSettings } from "../src/sheets/projectSettings.js";
-import { wipeCache, writeCached, readCached } from "../src/core/localCache.js";
+import { deleteCached, wipeCache, writeCached, readCached } from "../src/core/localCache.js";
 import { wipeUiRecords, writeUiRecord, readUiRecord } from "../src/core/localUiStore.js";
 import { uiAddress } from "../src/core/localUiState.js";
-import { deviceProjectsAddress, projectSettingsAddress, writeProjectSetting } from "../src/core/settingsRecords.js";
+import { deviceProjectsAddress, projectSettingsAddress } from "../src/core/settingsRecords.js";
 import { sourceEditSupportAddress } from "../src/core/sourceEditSupport.js";
-import { environmentSupportAddress } from "../src/core/environmentSupport.js";
+import { environmentSupportAddress, rememberEnvironmentSupport } from "../src/core/environmentSupport.js";
 import { environmentsAddress } from "../src/core/environmentCache.js";
 
 const openWizard = vi.fn();
@@ -47,6 +47,10 @@ const type = (element, value) => {
 beforeEach(async () => {
   await wipeCache();
   await wipeUiRecords();
+  // Legacy fixtures positively identify a device that predates environments.
+  for (const deviceId of ["", "dev-1"]) await writeCached(environmentSupportAddress(deviceId), {
+    list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false,
+  });
   confirmAction.mockReset();
   openWizard.mockReset();
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
@@ -525,6 +529,7 @@ describe("project settings added sources", () => {
       ["absent", undefined], ["stale", { addedSources: false }],
       ["empty", {}], ["partial", { list: true, createProject: true }],
     ])("keeps environment sources read-only with %s capability records", async (_label, cachedSupport) => {
+      await deleteCached([environmentSupportAddress("dev-1")]);
       if (cachedSupport) await writeCached(environmentSupportAddress("dev-1"), cachedSupport);
       await writeCached(sourceEditSupportAddress("dev-1"), { editsSources: true, syncsBase: true });
       const callRpc = await open({ ...ENV_PROJECT, added_sources: [] });
@@ -549,6 +554,102 @@ describe("project settings added sources", () => {
       expect(card("source-1").querySelector("[data-remove-source]")).toBeTruthy();
       expect(card("source-1").querySelector("[data-sync-base]")).toBeTruthy();
       expect(card("source-1").querySelector("[data-sync-now]")).toBeTruthy();
+    });
+  });
+
+  describe("positive ownership evidence", () => {
+    const assertInheritedReadOnly = () => {
+      expect(input("source-1", "remote").readOnly).toBe(true);
+      expect(card("source-1").querySelector("[data-save-source], [data-sync-base], [data-sync-now]")).toBeNull();
+    };
+
+    it.each([undefined, { addedSources: false }, { list: true }])("uses complete ownership despite support %j, before and after a refresh", async cachedSupport => {
+      await deleteCached([environmentSupportAddress("dev-1")]);
+      if (cachedSupport) await writeCached(environmentSupportAddress("dev-1"), cachedSupport);
+      await writeCached(sourceEditSupportAddress("dev-1"), { editsSources: false, syncsBase: true });
+      let answerPull;
+      const callRpc = vi.fn(method => method === "project.update_source"
+        ? Promise.resolve(ENV_PROJECT) : new Promise(resolve => { answerPull = resolve; }));
+      await open(ENV_PROJECT, callRpc);
+      expect(input(ADDED.id, "name").readOnly).toBe(false);
+      expect(card(ADDED.id).querySelector("[data-save-source]")).toBeTruthy();
+      assertInheritedReadOnly();
+      await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.list"));
+      answerPull({ projects: [{ ...ENV_PROJECT, name: "Refreshed" }] });
+      await vi.waitFor(() => expect(document.querySelector("#psproject")?.value).toBe("Refreshed"));
+      expect(input(ADDED.id, "name").readOnly).toBe(false);
+      assertInheritedReadOnly();
+      type(input(ADDED.id, "name"), "Edited folder");
+      card(ADDED.id).querySelector("[data-save-source]").click();
+      await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.update_source", {
+        project_id: PROJECT.project_id, source_id: ADDED.id, name: "Edited folder",
+      }));
+    });
+
+    it("uses added_sources even when environment identity is absent", async () => {
+      await deleteCached([environmentSupportAddress("dev-1")]);
+      await writeCached(sourceEditSupportAddress("dev-1"), { editsSources: true, syncsBase: true });
+      const partial = { ...ENV_PROJECT };
+      delete partial.environment_id;
+      delete partial.environment_name;
+      await open(partial);
+      expect(input(ADDED.id, "name").readOnly).toBe(false);
+      expect(group("added")).toBeTruthy();
+      assertInheritedReadOnly();
+    });
+
+    it.each(["absent", "partial", "upgraded"])("keeps an identity-free old row unknown with %s support until a pull", async kind => {
+      await deleteCached([environmentSupportAddress("dev-1")]);
+      if (kind === "partial") await writeCached(environmentSupportAddress("dev-1"), { addedSources: false });
+      if (kind === "upgraded") await rememberEnvironmentSupport("dev-1", { environments: { list: true } });
+      await writeCached(sourceEditSupportAddress("dev-1"), { editsSources: true, syncsBase: true });
+      let answerPull;
+      const callRpc = vi.fn(() => new Promise(resolve => { answerPull = resolve; }));
+      await open(PROJECT, callRpc);
+      expect(document.querySelector('[data-source-ownership="unknown"]')).toBeTruthy();
+      for (const source of PROJECT.sources) expect(card(source.id).querySelector("button, [data-sync-base]")).toBeNull();
+      await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.list"));
+      answerPull({ projects: [ENV_PROJECT] });
+      await vi.waitFor(() => expect(group("added")).toBeTruthy());
+      expect(input(ADDED.id, "name").readOnly).toBe(false);
+      assertInheritedReadOnly();
+    });
+
+    it("retains identity and inherited-source safety after an isolation reply with stale support", async () => {
+      await writeCached(environmentSupportAddress("dev-1"), { addedSources: false });
+      await writeCached(sourceEditSupportAddress("dev-1"), { editsSources: true, syncsBase: true });
+      const row = { ...ENV_PROJECT, sources: [PROJECT.sources[0]], added_sources: [], project_key: "project:known", isolation: null, isolation_default: "worktree", isolation_available: { rift: true } };
+      const reply = { ...row, name: "Isolation reply", isolation: "rift" };
+      delete reply.environment_id;
+      delete reply.environment_name;
+      delete reply.project_key;
+      const callRpc = vi.fn(method => method === "project.set_isolation" ? Promise.resolve(reply) : new Promise(() => {}));
+      await writeCached(deviceProjectsAddress("dev-1"), [row]);
+      await open(row, callRpc);
+      assertInheritedReadOnly();
+      await vi.waitFor(() => expect(document.querySelector('[data-isolation="select"]')?.disabled).toBe(false));
+      const select = document.querySelector('[data-isolation="select"]');
+      select.value = "rift";
+      select.dispatchEvent(new Event("change"));
+      const address = projectSettingsAddress("dev-1", PROJECT.project_id);
+      await vi.waitFor(async () => expect((await readCached(address))?.value.name).toBe("Isolation reply"));
+      const identity = { environment_id: row.environment_id, environment_name: row.environment_name, project_key: row.project_key };
+      expect.soft((await readCached(address)).value).toMatchObject(identity);
+      expect.soft((await readCached(deviceProjectsAddress("dev-1"))).value[0]).toMatchObject(identity);
+      expect.soft(card("source-1").querySelector("[data-save-source]")).toBeNull();
+      expect.soft(card("source-1").querySelector("[data-sync-base]")).toBeNull();
+      expect.soft(card("source-1").querySelector("[data-sync-now]")).toBeNull();
+    });
+
+    it("retains legacy Save and Sync only on a positively identified old device", async () => {
+      await rememberEnvironmentSupport("dev-1", { environments: {} });
+      await writeCached(sourceEditSupportAddress("dev-1"), { editsSources: true, syncsBase: true });
+      await open(PROJECT);
+      expect(input("source-1", "name").readOnly).toBe(false);
+      expect(card("source-1").querySelector("[data-save-source]")).toBeTruthy();
+      expect(card("source-1").querySelector("[data-sync-base]")).toBeTruthy();
+      expect(card("source-1").querySelector("[data-sync-now]")).toBeTruthy();
+      expect(group("unknown")).toBeNull();
     });
   });
 
@@ -582,7 +683,8 @@ describe("project settings added sources", () => {
         action === "browser" ? "project.add_source" : "project.update_source", expect.objectContaining({ project_id: PROJECT.project_id }),
       ));
       const newest = { ...ENV_PROJECT, environment_id: "env-current", environment_name: "Current environment", project_key: "project:current" };
-      await writeProjectSetting("dev-1", newest);
+      await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), newest);
+      await writeCached(deviceProjectsAddress("dev-1"), [newest]);
       const reply = { ...PROJECT, name: "Mutation reply", sources: [PROJECT.sources[0], { ...ADDED, name: "Updated folder" }], added_sources: [{ ...ADDED, name: "Updated folder" }] };
       answerMutation(reply);
       const address = projectSettingsAddress("dev-1", PROJECT.project_id);
@@ -750,12 +852,13 @@ describe("project settings added sources", () => {
     const project = { ...ENV_PROJECT };
     delete project.environment_name;
     await open(project);
-    expect(group("environment")).toBeNull();
+    expect(group("environment")?.textContent).toContain("From env-1");
     await support();
     await writeCached(environmentsAddress("dev-1"), [{ environment_id: "env-1", name: "Renamed environment" }]);
     await vi.waitFor(() => expect(group("environment")?.textContent).toContain("From Renamed environment"));
     await writeCached(environmentSupportAddress("dev-1"), { addedSources: false });
-    await vi.waitFor(() => expect(group("environment")).toBeNull());
+    await vi.waitFor(() => expect(group("environment")?.textContent).toContain("From Renamed environment"));
+    expect(input(ADDED.id, "name").readOnly).toBe(false);
   });
 });
 

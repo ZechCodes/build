@@ -7,14 +7,14 @@ import { esc } from "../core/text.js";
 import { isolationFieldHtml, mountIsolation, projectIsolationTarget } from "../core/isolation.js";
 import { settingsSheetHtml } from "./settingsSheet.js";
 import { openBrowser } from "./browser.js";
-import { deviceProjectsAddress, deviceSettingsAddress, projectSettingsAddress, removeProjectSetting, watchSettingsRecord } from "../core/settingsRecords.js";
-import { deleteCached, mergeCachedTogether, readCached, subscribeCache } from "../core/localCache.js";
+import { deviceSettingsAddress, projectSettingsAddress, removeProjectSetting, watchSettingsRecord, writeProjectSetting } from "../core/settingsRecords.js";
+import { deleteCached, readCached, subscribeCache } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
 import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
 import { readSourceSupport, SOURCE_EDIT_SUPPORT_KIND } from "../core/sourceEditSupport.js";
-import { environmentSupportAddress, readEnvironmentSupport } from "../core/environmentSupport.js";
+import { environmentSupportAddress, readEnvironmentSupportRecord } from "../core/environmentSupport.js";
 import { environmentsAddress, readCachedEnvironments } from "../core/environmentCache.js";
 import { mountSourceCards, readSourceEdits, restoreSourceEdits, sourceEditing, sourcesSectionHtml } from "./projectSources.js";
 import { withNewerSyncs } from "../core/sourceSyncModel.js";
@@ -124,7 +124,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   let compactionEditor = null;
   let editsSources = false;
   let syncsBase = false;
-  let addedSources = false;
+  let environmentSupport = null;
   let environments = [];
   let supportReady = false;
   // Sources whose Sync now was pressed, by the last attempt their row showed
@@ -146,11 +146,11 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   // Whether this machine edits sources in place is a fact a greeting writes
   // to the cache; the cards repaint when it lands.
   const readSupport = async () => {
-    const [sources, environmentSupport, rows] = await Promise.all([
-      readSourceSupport(deviceId), readEnvironmentSupport(deviceId), readCachedEnvironments(deviceId),
+    const [sources, support, rows] = await Promise.all([
+      readSourceSupport(deviceId), readEnvironmentSupportRecord(deviceId), readCachedEnvironments(deviceId),
     ]);
     ({ editsSources, syncsBase } = sources);
-    addedSources = environmentSupport.addedSources;
+    environmentSupport = support;
     environments = rows;
     supportReady = true;
     if (painted) paint(painted);
@@ -195,14 +195,14 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     if (!supportReady) { painted = project; return; }
     const live = captureDraft(sheet, painted);
     const draft = combineDraft(live, cachedDraft, displayedDraft);
-    const editing = sourceEditing(editsSources, addedSources);
+    const editing = sourceEditing(project, editsSources, environmentSupport);
     const environmentName = environmentNameOf(project, environments);
     const compactionSection = sheet.querySelector('[data-compaction-editor="project-compaction"]');
     disposeRepoPickers(sheet);
     sheet.innerHTML = settingsSheetHtml({
       title: "Project settings",
       bodyHtml: `${generalHtml(project)}
-      ${sourcesSectionHtml(project, { editing, editsSources, addedSources, environmentName, notices, sync: { syncsBase, syncing } })}
+      ${sourcesSectionHtml(project, { editing, editsSources, environmentSupport, environmentName, notices, sync: { syncsBase, syncing } })}
       ${isolationHtml()}
       ${scopedCompactionEditorHtml({ scope: "project", prefix: "project-compaction" })}
       ${dangerHtml()}
@@ -271,7 +271,7 @@ function mountSources(project, { callRpc, record, deviceId, editing, refresh, sa
     button.disabled = true;
     try {
       const changed = await send();
-      if (changed?.project_id) await writeSourceProject(deviceId, project.project_id, changed);
+      if (changed?.project_id) await writeProjectSetting(deviceId, changed);
       await onDone?.(changed);
       await record.read();
       saveDraft();
@@ -300,32 +300,6 @@ async function refreshSources(button, error, refresh) {
   } finally {
     button.disabled = false;
   }
-}
-
-// Source replies omit environment identity. Read the current row inside the
-// same transaction that publishes the reply to both settings projections.
-function writeSourceProject(deviceId, projectId, changed) {
-  return mergeCachedTogether([projectSettingsAddress(deviceId, projectId), deviceProjectsAddress(deviceId)], ([held, projects]) => {
-    const listed = Array.isArray(projects) ? projects.find(row => row.project_id === projectId) : null;
-    const current = { ...listed, ...held };
-    const project = sourceReplyWithIdentity(current, changed);
-    return [project, withProjectRow(projects, project)];
-  });
-}
-
-function sourceReplyWithIdentity(current, changed) {
-  const project = { ...current, ...changed };
-  for (const key of ["environment_id", "environment_name", "project_key"]) {
-    if (Object.hasOwn(current, key)) project[key] = current[key];
-  }
-  return project;
-}
-
-function withProjectRow(projects, project) {
-  if (!Array.isArray(projects)) return null;
-  return projects.some(row => row.project_id === project.project_id)
-    ? projects.map(row => row.project_id === project.project_id ? project : row)
-    : [...projects, project];
 }
 
 /** Say where to clone the remote from, and what to call it. */
@@ -368,7 +342,7 @@ async function browseForSource(project, { callRpc, deviceId, onFrameChange, onRe
   const chosen = async (path) => {
     try {
       const changed = await callRpc("project.add_source", { project_id: project.project_id, path });
-      await writeSourceProject(deviceId, project.project_id, changed);
+      await writeProjectSetting(deviceId, changed);
       onReturn();
     } catch (thrown) {
       const error = $("#psbrowseerr");

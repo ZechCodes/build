@@ -6,6 +6,14 @@ const supportOf = (capabilities) => Object.fromEntries(FLAGS.map((flag) => [flag
 
 export const environmentSupportAddress = (deviceId) => ({ deviceId, entityId: "", kind: "environment-support" });
 
+// Missing flags are not negative evidence: only a complete cached greeting
+// without any environment capability identifies a pre-environment device.
+export const predatesEnvironments = (support) => FLAGS.every(flag => support?.[flag] === false);
+
+export async function readEnvironmentSupportRecord(deviceId = "") {
+  return (await readCached(environmentSupportAddress(deviceId)))?.value ?? null;
+}
+
 export function rememberEnvironmentSupport(deviceId, capabilities, current = () => true) {
   if (!deviceId) return Promise.resolve(false);
   const support = supportOf(capabilities?.environments);
@@ -14,6 +22,6 @@ export function rememberEnvironmentSupport(deviceId, capabilities, current = () 
 }
 
 export async function readEnvironmentSupport(deviceId) {
-  const held = deviceId ? (await readCached(environmentSupportAddress(deviceId)))?.value : null;
+  const held = deviceId ? await readEnvironmentSupportRecord(deviceId) : null;
   return supportOf(held);
 }

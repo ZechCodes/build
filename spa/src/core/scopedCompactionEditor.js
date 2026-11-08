@@ -6,7 +6,7 @@ import { compactionTokenLabel, inheritedCompactionLabel, positiveCompactionToken
 import { compactionSupportAddress } from "./compactionSupport.js";
 import { captureCachedRecord, mergeCachedRecordsTogether, recordWriteOf } from "./localCache.js";
 import { pushFence, pushedSince } from "./pushFence.js";
-import { deviceSettingsAddress, projectSettingsAddress, workspaceSettingsAddress, watchSettingsRecord } from "./settingsRecords.js";
+import { deviceSettingsAddress, projectSettingsAddress, workspaceSettingsAddress, watchSettingsRecord, writeProjectSetting } from "./settingsRecords.js";
 
 const harnesses = [
   ["claude", "Claude Code TUI"], ["claude_adk", "Claude Code"],
@@ -93,8 +93,9 @@ const validAnswer = (scope, ownerId, answer) => answer?.compaction && answer?.co
   && (scope === "device" || answer[`${scope}_id`] === ownerId);
 
 async function acceptAnswer(address, before, fence, answer, current) {
-  return mergeCachedRecordsTogether([address], ([held]) => current() && !pushedSince(address, fence)
-    && recordWriteOf(held) === recordWriteOf(before) ? [answer] : null);
+  const accept = held => current() && !pushedSince(address, fence) && recordWriteOf(held) === recordWriteOf(before);
+  if (address.kind === "project-settings") return writeProjectSetting(address.deviceId, answer, { accept });
+  return mergeCachedRecordsTogether([address], ([held]) => accept(held) ? [answer] : null);
 }
 
 function parseInput(row) {

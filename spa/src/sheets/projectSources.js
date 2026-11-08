@@ -13,6 +13,7 @@ import { workspaceDisplayName } from "../core/workspaceModel.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { attachRepoPicker } from "./repoPicker.js";
 import { mountSyncControls, syncControlsHtml } from "./sourceSyncControls.js";
+import { predatesEnvironments } from "../core/environmentSupport.js";
 
 /** The parts of a source a card shows, in the order it shows them. */
 const FIELDS = ["name", "path", "base_branch", "remote"];
@@ -47,15 +48,17 @@ const FIRST_REMOTE_ONLY = {
     callRpc("project.set_remote", { project_id: projectId, url: changes.remote }),
 };
 
-export const sourceEditing = (editsSources, addedSources = false) => (editsSources || addedSources ? IN_PLACE : FIRST_REMOTE_ONLY);
+export function sourceEditing(project, editsSources, environmentSupport) {
+  const ownership = sourceOwnershipState(project, environmentSupport);
+  if (ownership === "unknown") return READ_ONLY;
+  return ownership === "known" || editsSources ? IN_PLACE : FIRST_REMOTE_ONLY;
+}
 
 const READ_ONLY = { editable: () => false };
 
-function sourceOwnershipState(project, addedSources) {
-  if (addedSources) return Array.isArray(project.added_sources) ? "known" : "unknown";
-  // Environment identity outlives cached capability records. Only a legacy
-  // project can safely fall back to writers that may edit shared sources.
-  return project.environment_id || project.environment_name ? "unknown" : "legacy";
+function sourceOwnershipState(project, environmentSupport) {
+  if (Array.isArray(project.added_sources)) return "known";
+  return predatesEnvironments(environmentSupport) ? "legacy" : "unknown";
 }
 
 const shownFields = (source) => FIELDS.filter((field) => source.is_git !== false || !GIT_FIELDS.has(field));
@@ -90,8 +93,8 @@ function cardHtml(source, index, { editing, removable, notice, sync }) {
 }
 
 /** The section: a card per source, then the two ways one is added. */
-export function sourcesSectionHtml(project, { editing, editsSources, addedSources = false, environmentName, notices = {}, sync = {} }) {
-  const ownership = sourceOwnershipState(project, addedSources);
+export function sourcesSectionHtml(project, { editing, editsSources, environmentSupport, environmentName, notices = {}, sync = {} }) {
+  const ownership = sourceOwnershipState(project, environmentSupport);
   return `<section class="ps-section" aria-labelledby="ps-sources-h"><h4 id="ps-sources-h">Sources</h4>
     <p class="sub">New workspaces are cut from these folders. A workspace that already exists keeps its own directories.</p>
     ${sourceHelpHtml(ownership, editsSources)}

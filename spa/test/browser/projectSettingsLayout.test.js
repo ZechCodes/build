@@ -40,10 +40,12 @@ for (const { label, width, height } of [
         sheet: "src/sheets/projectSettings.js",
         cache: "src/core/localCache.js",
         support: "src/core/sourceEditSupport.js",
+        environments: "src/core/environmentSupport.js",
       }, basePath);
       await page.evaluate(async (project) => {
-        const { sheet, cache, support } = window.__layoutModules;
+        const { sheet, cache, support, environments } = window.__layoutModules;
         await cache.writeCached(support.sourceEditSupportAddress("laptop"), { editsSources: true });
+        await environments.rememberEnvironmentSupport("laptop", { environments: {} });
         sheet.openProjectSettings(project.project_id, {
           deviceId: "laptop",
           callRpc: async (method) => (method === "project.list" ? { projects: [project] } : project),

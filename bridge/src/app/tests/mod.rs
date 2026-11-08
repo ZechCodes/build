@@ -225,6 +225,7 @@ mod support;
 use support::*;
 
 mod environments_project_identity;
+mod environments_stage_identity;
 mod environments_extra_identity;
 mod environments_recovery_identity;
 mod environments_tracker_identity;

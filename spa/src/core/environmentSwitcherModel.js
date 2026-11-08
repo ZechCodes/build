@@ -1,5 +1,6 @@
 import { navigationPickerModel } from "./navigationModel.js";
-import { environmentNavigationSupported, projectEnvironmentIdentity } from "./environmentIdentity.js";
+import { environmentKeyOf, environmentNavigationSupported, projectEnvironmentIdentity } from "./environmentIdentity.js";
+import { deviceKey } from "./deviceKey.js";
 
 export const navigationTime = (value) => {
   if (Number.isFinite(value)) return value;
@@ -11,11 +12,21 @@ const visitTime = (row, visits) => latest(visits.filter((visit) => visit.kind ==
 const byRecency = (left, right) => right.at - left.at || left.name.localeCompare(right.name) || left.key.localeCompare(right.key);
 const archived = (row) => !!(row.archived || row.archived_at);
 
-function projectDestination(group, visits) {
+function addedFolderCount(project, environments = []) {
+  if (Array.isArray(project.added_sources)) return project.added_sources.length;
+  if (!project.diverged) return 0;
+  const key = deviceKey(project.deviceId, project.environment_id);
+  const environment = environments.find(row => environmentKeyOf(row) === key);
+  if (!environment) return 0;
+  const inherited = new Set((environment.sources || []).map(source => source.id));
+  return (project.sources || []).filter(source => !inherited.has(source.id)).length;
+}
+
+function projectDestination(group, visits, environments) {
   const at = Math.max(rowTime(group.destination.project), visitTime(group.destination, visits), latest(group.workspaces.map((row) =>
     Math.max(rowTime(row.workspace), visitTime(row, visits)))));
   return { ...group.destination, unreadCount: group.unreadCount, at,
-    addedFolders: group.destination.project.added_sources?.length || 0, archived: archived(group.destination.project) };
+    addedFolders: addedFolderCount(group.destination.project, environments), archived: archived(group.destination.project) };
 }
 
 function environmentGroups(picker, catalog, options) {
@@ -38,7 +49,7 @@ function environmentGroups(picker, catalog, options) {
 }
 
 function environmentDestinations(group, options) {
-  const project = projectDestination(group, options.visits || []);
+  const project = projectDestination(group, options.visits || [], options.environments);
   if (!String(options.query || "").trim()) return project.archived ? [] : [project];
   return group.destinations.map((row) => row.kind === "project" ? project : {
     ...row, at: rowTime(row.workspace), projectName: group.name, deviceLabel: group.deviceName,
@@ -50,7 +61,7 @@ export function switcherModel(catalog, options = {}) {
   const picker = navigationPickerModel(catalog, options);
   const visits = options.visits || [];
   const projects = catalog.projects.filter((group) => environmentNavigationSupported(options, group.deviceId))
-    .map((group) => projectDestination(group, visits)).filter((row) => !row.archived);
+    .map((group) => projectDestination(group, visits, options.environments)).filter((row) => !row.archived);
   const now = options.nowMs ?? Date.now();
   const recent = projects.filter((row) => row.at > 0 && now - row.at <= 24 * 3600_000).sort(byRecency).slice(0, 5);
   return { ...picker, groups: environmentGroups(picker, catalog, options),

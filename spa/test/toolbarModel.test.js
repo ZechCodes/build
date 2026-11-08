@@ -451,3 +451,14 @@ describe("environment workspaceMenuModel", () => {
     expect(workspaceMenuModel({ workspaces: rows, workspaceKey: "dev-1/done", environmentsSupported: true })[0].id).toBe("done");
   });
 });
+
+it("counts extra folders from the actual project.list effective sources without added_sources", () => {
+  const environments = [
+    { id: "e", deviceId: "dev-1", name: "Shared", sources: [{ id: "shared" }] },
+    { id: "e", deviceId: "dev-2", name: "Other", sources: [{ id: "extra" }] },
+  ];
+  const projects = [on("dev-1", { id: "p", name: "Project", environment_id: "e", diverged: true,
+    sources: [{ id: "shared" }, { id: "extra" }, { id: "another" }] })];
+  const picker = switcherModel(navigationCatalog({ projects }), { environments, support: { "dev-1": true } });
+  expect(picker.groups[0].destinations[0].addedFolders).toBe(2);
+});

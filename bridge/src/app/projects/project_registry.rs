@@ -671,7 +671,8 @@ impl ProjectRegistry {
     pub(in crate::app) fn find_by_canonical_path(&self, path: &Path) -> Option<&Project> {
         self.projects
             .iter()
-            .find(|project| project.repo_path == path)
+            .filter(|project| project.repo_path == path)
+            .min_by_key(|project| project.project_key != path.to_string_lossy())
     }
 
     pub(in crate::app) fn project_id_of(&self, entity_id: &str) -> Option<&str> {
@@ -1094,18 +1095,18 @@ impl ProjectRegistry {
             .find(|p| p.id == id)
             .expect("registered project");
         project.environment_id = environment_id.to_string();
-        project.project_key = entry
+        let key = entry
             .get("project_key")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        project.home_path = PathBuf::from(
-            entry
-                .get("home_path")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_else(|| entry["path"].as_str().unwrap_or_default()),
-        );
-        project.repo_path = project.home_path.clone();
+            .unwrap_or_default();
+        // Registration resolved the returning home. Only a legacy path key
+        // follows that resolution; an opaque sibling identity stays stable.
+        project.project_key = if Some(key) == super::configured_primary_path(entry) {
+            project.repo_path.display().to_string()
+        } else {
+            key.to_string()
+        };
+        project.home_path = project.repo_path.clone();
         if let Some(name) = entry.get("name").and_then(serde_json::Value::as_str) {
             project.name = name.to_string();
         }

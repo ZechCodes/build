@@ -120,7 +120,9 @@ fn canonical_home(named: &str) -> Result<PathBuf, String> {
     let path = expand_tilde(named);
     match std::fs::canonicalize(&path) {
         Ok(path) => Ok(path),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        // An unavailable home must not stop boot. Keep its absolute spelling
+        // so the normal project loader can park it and retry when it returns.
+        Err(_) => {
             if path.is_absolute() {
                 return Ok(path);
             }
@@ -128,7 +130,6 @@ fn canonical_home(named: &str) -> Result<PathBuf, String> {
                 .map(|current| current.join(path))
                 .map_err(|error| error.to_string())
         }
-        Err(error) => Err(format!("resolve project home {}: {error}", path.display())),
     }
 }
 

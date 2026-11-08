@@ -61,6 +61,24 @@ fn bind_retained_entities_ignores_sibling_path() {
     );
 }
 
+#[test]
+fn canonical_path_lookup_prefers_project_key_match() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().to_path_buf();
+    let mut registry = ProjectRegistry::new();
+    let mut sibling = candidate(&registry, repo.clone(), project_fixture);
+    sibling.set_test_identity("env-1".into(), "project:sibling".into());
+    let sibling = registry.publish(sibling).into_string();
+    assert_eq!(registry.find_by_canonical_path(&repo).unwrap().id, sibling);
+    let migrated = registry
+        .publish(candidate(&registry, repo.clone(), project_fixture))
+        .into_string();
+    assert_eq!(registry.find_by_canonical_path(&repo).unwrap().id, migrated);
+    assert!(registry
+        .find_by_canonical_path(&repo.join("absent"))
+        .is_none());
+}
+
 fn candidate(
     registry: &ProjectRegistry,
     path: PathBuf,

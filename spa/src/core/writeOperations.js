@@ -233,11 +233,26 @@ export function createWriteOperationService(options) {
       const frame = await raw(held, row.request.method, row.request.params, { write: { operation_id: row.operationId, after: row.after }, assertCurrent: () => assertLease(leaseActive) });
       if (current(held)) await handleFrame(frame, held);
     } catch (error) {
-      if (current(held) && definitiveRefusal(error)) await refused(row, error, held);
+      await sendFailed(row, error, held);
     } finally {
       if (sending.get(row.operationId) === held) sending.delete(row.operationId);
       worker.wake();
     }
+  }
+  async function sendFailed(row, error, held) {
+    if (!current(held)) return;
+    if (definitiveRefusal(error)) return refused(row, error, held);
+    if (!isCreationWrite(row.request.method)) return;
+    await setCreationChecking(row, true, held);
+    await refreshSnapshot();
+  }
+  function setCreationChecking(row, checking, held) {
+    if (!isCreationWrite(row.request.method) || !creationWritesSupported(held.greeting, row.request.method)) return;
+    return cache.update(row.operationId, value => {
+      if (!value || terminalWrite(value) || value.journalIncarnation !== held.greeting.journal_incarnation) return null;
+      if (Boolean(value.checking) === checking) return null;
+      return { ...value, checking };
+    }, { accept: () => current(held) });
   }
   function eligibleToSend(row, held) {
     return current(held) && supports(row.request.method) && sending.get(row.operationId) !== held;
@@ -339,6 +354,7 @@ export function createWriteOperationService(options) {
     catch { return {}; }
   }
   async function accept(frame, row, held) {
+    await setCreationChecking(row, false, held);
     const effects = await normalizedEffects(options.normalizeAckEffects, frame, row);
     if (!current(held)) return;
     await cache.accept(row.operationId, { ...effects, ack: frame, owners: frame.write.owners, revision: wireRevision(frame), acceptedEpoch: frame.write.accepted_epoch,
@@ -473,7 +489,7 @@ export function createWriteOperationService(options) {
     const row = await cache.get(id);
     if (!row || !current(held)) return;
     if (obsoleteSummary(summary, row)) return;
-    await recordSummaryProgress(summary, held);
+    await recordSummaryProgress(summary, row, held);
     if (summary.state === "not_found") {
       if (row.acknowledged) await quarantine(row, "acknowledged_missing", held);
       else retries.add(id);
@@ -490,9 +506,10 @@ export function createWriteOperationService(options) {
     await handleFrame(writeSummaryFrame(summary, held.greeting.bridge_epoch), held);
     if (summary.state === "executing") await recordExecuting(summary, held);
   }
-  function recordSummaryProgress(summary, held) {
-    if (!["accepted", "executing"].includes(summary.state) || !Object.hasOwn(summary, "progress")) return;
-    return recordProgress(summary, held);
+  async function recordSummaryProgress(summary, row, held) {
+    if (!["accepted", "executing"].includes(summary.state)) return;
+    await setCreationChecking(row, false, held);
+    if (Object.hasOwn(summary, "progress")) return recordProgress(summary, held);
   }
   async function recordExpired(summary, row, held) {
     const unapplied = provenExpiredFailure(summary);

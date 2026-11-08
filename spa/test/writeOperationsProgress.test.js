@@ -28,6 +28,42 @@ async function bind({ currentGreeting = greeting, active = () => true, status = 
 }
 
 describe("creation write progress", () => {
+  it("marks a lost creation reply Checking without changing the polling state or retry identity", async () => {
+    const status = [];
+    const session = await bind({ status, raw: async () => { throw Object.assign(new Error("Reply lost"), { uncertain: true, timedOut: true }); } });
+    const request = { operationId: "attempt", ...intent().request };
+    void service.submit(request).catch(() => {});
+    await vi.waitFor(async () => expect(await cache.get("attempt")).toMatchObject({ checking: true }));
+    expect(await cache.get("attempt")).toMatchObject({ state: "queued", acknowledged: false, request: intent().request });
+    expect(await cache.get("attempt")).not.toHaveProperty("unresolved");
+    status.push({ operation_id: "attempt", state: "not_found" });
+    await service.reconcile();
+    const attempts = session.callRaw.mock.calls.filter(([method]) => method === "environment.create_project");
+    expect(attempts.length).toBeGreaterThan(1);
+    expect(attempts.every(([, params, options]) => options.write.operation_id === "attempt" && JSON.stringify(params) === JSON.stringify(intent().request.params))).toBe(true);
+    expect(await cache.list()).toHaveLength(1);
+  });
+
+  it("clears Checking on executing status without progress, ack, or fresh progress", async () => {
+    await cache.put(intent({ checking: true }));
+    await bind({ status: [{ operation_id: "attempt", state: "executing", revision: 2 }] });
+    expect(await cache.get("attempt")).toMatchObject({ checking: false, state: "executing", revision: 2 });
+    await cache.update("attempt", row => ({ ...row, checking: true }));
+    await service.handleFrame(frame());
+    expect(await cache.get("attempt")).toMatchObject({ checking: false, state: "executing" });
+    await cache.update("attempt", row => ({ ...row, checking: true }));
+    await service.handleFrame({ ok: true, bridge_epoch: "epoch", write: { phase: "ack", state: "accepted", operation_id: "attempt", revision: 3 } });
+    expect(await cache.get("attempt")).toMatchObject({ checking: false, state: "accepted", revision: 3 });
+  });
+
+  it("keeps uncertain ordinary writes unchanged", async () => {
+    await bind({ currentGreeting: { ...greeting, ack_confirm_methods: [...greeting.ack_confirm_methods, "tasks.update"] },
+      raw: async () => { throw Object.assign(new Error("Reply lost"), { uncertain: true }); } });
+    void service.submit({ method: "tasks.update", params: { task_id: "T" } }).catch(() => {});
+    await vi.waitFor(async () => expect(await cache.get("attempt")).toBeDefined());
+    await service.reconcile();
+    expect(await cache.get("attempt")).not.toHaveProperty("checking");
+  });
   it("persists one exact creation intent and reuses its frame identity on a caller retry", async () => {
     const session = await bind({ raw: async () => ({ ok: true, bridge_epoch: "epoch", result: { accepted: true },
       write: { phase: "ack", state: "accepted", operation_id: "attempt", revision: 1, accepted_epoch: "epoch" } }) });

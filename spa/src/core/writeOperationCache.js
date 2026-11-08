@@ -260,7 +260,7 @@ export function createWriteOperationCache(scope) {
     return update(operationId, (previous) => {
       if (!previous || isTerminal(previous) || previous.state === "result_expired") return null;
       if (previous.journalIncarnation !== journalIncarnation) return null;
-      return { ...previous, progress: steps };
+      return { ...previous, progress: steps, ...(previous.checking ? { checking: false } : {}) };
     }, { accept });
   }
 

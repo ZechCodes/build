@@ -25,6 +25,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
+mod shared_tests;
+#[cfg(test)]
 mod tests;
 
 /// A cut that finds a fetch this recent moves the base to what it fetched
@@ -204,6 +206,10 @@ pub(in crate::app) struct Synced {
 }
 
 impl Synced {
+    fn changed_repository(&self) -> bool {
+        self.report.fetched || matches!(self.report.outcome, SyncOutcome::FastForwarded { .. })
+    }
+
     /// Whether this sync says anything the source's status should keep. A
     /// cut that ran out of its ten seconds (waiting on the remote, or on
     /// another sync) says nothing the timer should act on, so the status is
@@ -610,6 +616,9 @@ impl AppState {
     /// meanwhile is not written. A checkout a cut left is handed to the
     /// service.
     pub(in crate::app) fn settle_source_syncs(&mut self, synced: Vec<Synced>, now_ms: i64) {
+        for sync in synced.iter().filter(|sync| sync.changed_repository()) {
+            self.invalidate_shared_repository_views(&sync.subject.path);
+        }
         for left in synced.iter().filter(|synced| synced.left_the_checkout()) {
             if left.subject.is_current(self) {
                 self.request_source_sync(

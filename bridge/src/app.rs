@@ -300,6 +300,7 @@ pub struct AppState {
     device_lifecycle_dirty: std::cell::Cell<bool>,
     /// Projects one of whose sources is moving; their workers wait (#533).
     source_moves: projects::SourceMoves,
+    source_directory_claims: projects::SourceDirectoryClaims,
     /// Deferred filesystem work claimed under the mutex and not yet applied.
     active_deferred_filesystem_jobs: usize,
     /// Only jobs that can publish project/workspace registry changes fence sync.
@@ -714,6 +715,7 @@ impl AppState {
             device_lifecycle_holds: 0,
             device_lifecycle_dirty: std::cell::Cell::new(false),
             source_moves: projects::SourceMoves::default(),
+            source_directory_claims: projects::SourceDirectoryClaims::default(),
             active_deferred_filesystem_jobs: 0,
             active_device_registry_jobs: 0,
             worktrees_root,

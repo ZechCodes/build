@@ -2,6 +2,31 @@
 use super::*;
 
 impl AppState {
+    /// A repository mutation changes the origin shared by its references.
+    /// Refresh only those cached remotes; volume observations remain owned by
+    /// their off-lock producer. Recording the row also fences older refreshes.
+    pub(in crate::app) fn refresh_project_source_remote_observations(&self, roots: &[PathBuf]) {
+        for project in self.projects.iter().filter(|project| {
+            project
+                .sources
+                .iter()
+                .any(|source| roots.contains(&source.path))
+        }) {
+            let Some(mut value) = self
+                .snapshot_observations
+                .projects
+                .lock()
+                .unwrap()
+                .get(&project.id)
+                .map(|observation| observation.value.clone())
+            else {
+                continue;
+            };
+            refresh_source_remotes(&mut value, &project.sources, roots);
+            self.record_project_snapshot_observation(&project.id, &value);
+        }
+    }
+
     pub(in crate::app) fn swap_project_snapshot_observation(
         &self,
         id: &str,
@@ -131,4 +156,21 @@ impl AppState {
             .collect::<Vec<_>>();
         json!({"projects": projects})
     }
+}
+
+fn refresh_source_remotes(
+    value: &mut Value,
+    sources: &[crate::app::projects::ProjectSource],
+    roots: &[PathBuf],
+) {
+    let Some(rows) = value.get_mut("sources").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for source in sources.iter().filter(|source| roots.contains(&source.path)) {
+        if let Some(row) = rows.iter_mut().find(|row| row["id"] == source.id) {
+            row["remote"] = json!(source.origin());
+        }
+    }
+    let remote = crate::app::projects::primary_remote(rows);
+    value["remote"] = remote;
 }

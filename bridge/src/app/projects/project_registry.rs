@@ -13,6 +13,36 @@ struct SourceReservations {
     next_source: u64,
 }
 
+/// A stored reference's owner, retained while checking shared directories.
+struct SourceReference<'a> {
+    environment_id: &'a str,
+    project_id: Option<&'a str>,
+    source: ProjectSource,
+}
+
+impl SourceReference<'_> {
+    fn belongs_to_source(
+        &self,
+        project_id: &str,
+        source_id: &str,
+        inherited_environment: Option<&str>,
+    ) -> bool {
+        if self.source.id != source_id {
+            return false;
+        }
+        match inherited_environment {
+            Some(id) => self.project_id.is_none() && self.environment_id == id,
+            None => self.project_id == Some(project_id),
+        }
+    }
+}
+
+fn canonical_reference(mut source: ProjectSource) -> ProjectSource {
+    source.path = std::fs::canonicalize(&source.path)
+        .unwrap_or_else(|_| crate::worktree::canonical_planned_path(&source.path));
+    source
+}
+
 impl SourceReservations {
     fn allocate_id(&mut self) -> String {
         let number = self.next_source.max(1);
@@ -158,6 +188,171 @@ pub(in crate::app) struct ProjectRegistry {
 }
 
 impl ProjectRegistry {
+    /// Sources admitted anywhere on the device, including retained references
+    /// that the live project projection cannot currently open.
+    pub(in crate::app) fn registered_sources(&self) -> Vec<ProjectSource> {
+        self.source_references()
+            .into_iter()
+            .map(|reference| canonical_reference(reference.source))
+            .collect()
+    }
+
+    /// A repoint replaces one owning record. Equal references belonging to
+    /// siblings still constrain containment at the old directory.
+    pub(in crate::app) fn registered_sources_except(
+        &self,
+        project_id: &str,
+        source_id: &str,
+    ) -> Vec<ProjectSource> {
+        let inherited_environment = self.inherited_source_environment(project_id, source_id);
+        self.source_references()
+            .into_iter()
+            .filter(|reference| {
+                !reference.belongs_to_source(project_id, source_id, inherited_environment)
+            })
+            .map(|reference| canonical_reference(reference.source))
+            .collect()
+    }
+
+    /// An inherited edit changes every dependent project's effective sources.
+    /// Each dependent's additions, including parked projects, must stay unique.
+    /// A project-owned edit only needs its own effective source membership.
+    pub(in crate::app) fn source_repoint_duplicates(
+        &self,
+        project_id: &str,
+        source_id: &str,
+        candidate: &Path,
+    ) -> bool {
+        let Some(project) = self.get(project_id) else {
+            return false;
+        };
+        let Ok(canonical) = super::canonical_source_path(candidate) else {
+            return false;
+        };
+        let inherited_environment = self.inherited_source_environment(project_id, source_id);
+        self.source_references()
+            .into_iter()
+            .filter(|reference| reference.environment_id == project.environment_id)
+            .filter(|reference| {
+                inherited_environment.is_some()
+                    || reference.project_id.is_none()
+                    || reference.project_id == Some(project_id)
+            })
+            .filter(|reference| {
+                !reference.belongs_to_source(project_id, source_id, inherited_environment)
+            })
+            .any(|reference| {
+                super::canonical_source_path(&reference.source.path)
+                    .is_ok_and(|path| path == canonical)
+            })
+    }
+
+    fn inherited_source_environment(&self, project_id: &str, source_id: &str) -> Option<&str> {
+        let project = self.get(project_id)?;
+        let environment = self.environment(&project.environment_id)?;
+        let live = project
+            .sources
+            .iter()
+            .find(|source| source.id == source_id)?;
+        environment
+            .sources
+            .iter()
+            .any(|source| source.id == source_id && source.path == live.path)
+            .then_some(environment.id.as_str())
+    }
+
+    /// Directory equality identifies references, never project identity or a
+    /// repository's common Git directory. Return each environment just once.
+    pub(in crate::app) fn environments_referencing(&self, dir: &Path) -> Vec<&Environment> {
+        let Ok(canonical) = super::canonical_source_path(dir) else {
+            return Vec::new();
+        };
+        let owners: HashSet<_> = self
+            .source_references()
+            .into_iter()
+            .filter(|reference| {
+                super::canonical_source_path(&reference.source.path)
+                    .is_ok_and(|path| path == canonical)
+            })
+            .map(|reference| reference.environment_id)
+            .collect();
+        self.environments
+            .iter()
+            .filter(|environment| owners.contains(environment.id.as_str()))
+            .collect()
+    }
+
+    fn source_references(&self) -> Vec<SourceReference<'_>> {
+        let mut references = Vec::new();
+        for environment in &self.environments {
+            references.extend(
+                environment
+                    .sources
+                    .iter()
+                    .cloned()
+                    .map(|source| SourceReference {
+                        environment_id: &environment.id,
+                        project_id: None,
+                        source,
+                    }),
+            );
+        }
+        for project in &self.projects {
+            let fallback = self
+                .environment(&project.environment_id)
+                .and_then(|environment| Self::unowned_home_source(project, environment));
+            references.extend(project.added_sources.iter().cloned().chain(fallback).map(
+                |source| SourceReference {
+                    environment_id: &project.environment_id,
+                    project_id: Some(&project.id),
+                    source,
+                },
+            ));
+        }
+        for project in &self.parked {
+            references.extend(self.parked_source_references(project));
+        }
+        references
+    }
+
+    fn parked_source_references<'a>(
+        &'a self,
+        project: &'a serde_json::Value,
+    ) -> Vec<SourceReference<'a>> {
+        let environment_id = project
+            .get("environment_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        // Legacy projections can be stale after an environment edit. They
+        // reserve paths only when no authoritative environment is available.
+        let fields: &[&str] = if self.environment(environment_id).is_some() {
+            &["added_sources"]
+        } else {
+            &["sources", "added_sources"]
+        };
+        let project_id = project
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        fields
+            .iter()
+            .flat_map(|field| {
+                project
+                    .get(*field)
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+            })
+            .enumerate()
+            .filter_map(|(index, entry)| super::configured_source(index, entry))
+            .map(|source| SourceReference {
+                environment_id,
+                project_id: Some(project_id),
+                source,
+            })
+            .collect()
+    }
+
     pub(in crate::app) fn observation_project_changes(
         &self,
     ) -> &crate::observation_changes::ChangeKeys {
@@ -787,9 +982,9 @@ impl ProjectRegistry {
                 project.sources.extend(home);
             }
             for source in &mut project.sources {
-                if let Some(status) = statuses.get(&source.id) {
-                    source.sync_status = status.clone();
-                }
+                // Runtime conclusions belong to this project's reference, not
+                // the environment record copied from another project's edit.
+                source.sync_status = statuses.get(&source.id).cloned().flatten();
             }
             project.next_source = environment.next_source;
         }

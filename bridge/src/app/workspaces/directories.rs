@@ -461,6 +461,7 @@ impl AppState {
                     )
                 })?;
             self.validate_secret_source(&source.path)?;
+            self.refuse_source_directory_claim(&source.path)?;
             let name = requested_name.unwrap_or(&source.name).to_string();
             return Ok(DirectorySeed::Local(WorkspaceSource {
                 mount: self.free_mount(workspace, &name),
@@ -479,6 +480,7 @@ impl AppState {
         {
             let path = crate::app::projects::canonical_source_path(&expand_tilde(path))?;
             self.validate_secret_source(&path)?;
+            self.refuse_source_directory_claim(&path)?;
             self.refuse_another_projects_source(&workspace.project_id, &path)?;
             let inferred = path
                 .file_name()

@@ -1,3 +1,4 @@
+use super::source_directory_claims::SourceDirectoryLease;
 use super::{
     canonical_source_path, repo_name_from_url, safe_mount_name, usable_project_name, ProjectSource,
 };
@@ -19,6 +20,7 @@ struct SourceRequest {
     name: String,
     mount: String,
     base_branch: Option<String>,
+    destination: Option<std::path::PathBuf>,
 }
 
 /// The names a set of sources has already used: where they stand on disk, the
@@ -37,13 +39,22 @@ impl TakenSourceNames {
     /// appended to it rather than opened with it.
     fn over(sources: &[ProjectSource]) -> Self {
         TakenSourceNames {
-            paths: sources.iter().map(|source| source.path.clone()).collect(),
+            paths: sources
+                .iter()
+                .map(|source| crate::worktree::canonical_planned_path(&source.path))
+                .collect(),
             remotes: sources.iter().filter_map(ProjectSource::origin).collect(),
             mounts: sources.iter().map(|source| source.mount.clone()).collect(),
         }
     }
 
     fn claim_path(&mut self, candidate: &std::path::Path) -> Result<(), String> {
+        if self.paths.iter().any(|existing| candidate == existing) {
+            return Err(format!(
+                "source is already included in this project: {}",
+                candidate.display()
+            ));
+        }
         if self.paths.iter().any(|existing: &std::path::PathBuf| {
             candidate.starts_with(existing) || existing.starts_with(candidate)
         }) {
@@ -69,12 +80,15 @@ impl TakenSourceNames {
         &self,
         requests: &[SourceRequest],
         managed_root: &std::path::Path,
+        registered: &[ProjectSource],
     ) -> Result<(), String> {
         for request in requests.iter().filter(|request| request.remote.is_some()) {
-            let destination = managed_root.join(&request.mount);
+            let destination =
+                crate::worktree::canonical_planned_path(&managed_root.join(&request.mount));
             if self
                 .paths
                 .iter()
+                .chain(registered.iter().map(|source| &source.path))
                 .any(|source| destination.starts_with(source) || source.starts_with(&destination))
             {
                 return Err(format!(
@@ -104,11 +118,39 @@ struct PreparedSources {
     opened: crate::lifecycle::OpenedRepository,
     sources: Vec<ProjectSource>,
     created_checkouts: Vec<std::path::PathBuf>,
+    cloned_paths: Vec<std::path::PathBuf>,
+    _destination_claims: Vec<SourceDirectoryLease>,
 }
 
 struct OpenProjectSources {
     requests: Vec<SourceRequest>,
     managed_root: std::path::PathBuf,
+    destination_claims: Vec<SourceDirectoryLease>,
+}
+
+fn open_requested_source(
+    request: &SourceRequest,
+    managed_root: &std::path::Path,
+) -> Result<Performed<crate::lifecycle::OpenedRepository>, String> {
+    if let Some(path) = &request.path {
+        return OpenRepo {
+            path: canonical_source_path(path)?,
+            requested_base: request.base_branch.clone(),
+        }
+        .perform();
+    }
+    let dest = request
+        .destination
+        .clone()
+        .expect("clone destination was reserved");
+    CloneRepo {
+        url: request.remote.clone().expect("validated source remote"),
+        name: request.mount.clone(),
+        projects_dir: dest.parent().unwrap_or(managed_root).to_path_buf(),
+        dest,
+        requested_base: request.base_branch.clone(),
+    }
+    .perform()
 }
 
 impl WorktreeMutation for OpenProjectSources {
@@ -118,27 +160,9 @@ impl WorktreeMutation for OpenProjectSources {
         let mut sources = Vec::with_capacity(self.requests.len());
         let mut primary = None;
         let mut created_checkouts = Vec::new();
+        let mut cloned_paths = Vec::new();
         for request in self.requests {
-            let result = if let Some(path) = request.path {
-                canonical_source_path(&path).and_then(|path| {
-                    OpenRepo {
-                        path,
-                        requested_base: request.base_branch,
-                    }
-                    .perform()
-                })
-            } else {
-                let remote = request.remote.clone().expect("validated source remote");
-                let dest = self.managed_root.join(&request.mount);
-                CloneRepo {
-                    url: remote,
-                    name: request.mount.clone(),
-                    dest,
-                    projects_dir: self.managed_root.clone(),
-                    requested_base: request.base_branch,
-                }
-                .perform()
-            };
+            let result = open_requested_source(&request, &self.managed_root);
             let performed = match result {
                 Ok(performed) => performed,
                 Err(error) => {
@@ -149,6 +173,7 @@ impl WorktreeMutation for OpenProjectSources {
                 }
             };
             let opened = performed.output;
+            cloned_paths.extend(request.remote.as_ref().map(|_| opened.path.clone()));
             if let Some(path) = &opened.created_checkout {
                 created_checkouts.push(path.clone());
             }
@@ -164,18 +189,204 @@ impl WorktreeMutation for OpenProjectSources {
                 primary = Some(opened);
             }
         }
+        for claim in &self.destination_claims {
+            claim.mark_prepared();
+        }
         Ok(Performed {
             change: WorktreeChange::nothing(),
             output: PreparedSources {
                 opened: primary.expect("non-empty sources"),
                 sources,
                 created_checkouts,
+                cloned_paths,
+                _destination_claims: self.destination_claims,
+            },
+        })
+    }
+}
+
+struct ReservedCreateRepository {
+    mutation: CreateRepo,
+    destination_claims: Vec<SourceDirectoryLease>,
+}
+
+struct PreparedRepository {
+    opened: crate::lifecycle::OpenedRepository,
+    _destination_claims: Vec<SourceDirectoryLease>,
+}
+
+impl WorktreeMutation for ReservedCreateRepository {
+    type Output = PreparedRepository;
+
+    fn perform(self) -> Result<Performed<Self::Output>, String> {
+        let performed = self.mutation.perform()?;
+        for claim in &self.destination_claims {
+            claim.mark_prepared();
+        }
+        Ok(Performed {
+            change: performed.change,
+            output: PreparedRepository {
+                opened: performed.output,
+                _destination_claims: self.destination_claims,
             },
         })
     }
 }
 
 impl AppState {
+    /// A retained home may revive without an RPC source admission. Exclude
+    /// recorded locations before any clone or initializer can write there.
+    fn reserve_source_destinations(
+        &self,
+        paths: &[std::path::PathBuf],
+    ) -> Result<Vec<SourceDirectoryLease>, String> {
+        for path in paths {
+            self.validate_secret_source(path)?;
+            if self.source_directory_has_owner(path) {
+                return Err(format!(
+                    "managed source destination overlaps a project or workspace location: {}",
+                    path.display()
+                ));
+            }
+        }
+        self.source_directory_claims.reserve_destinations(paths)
+    }
+
+    fn reserve_source_opening(
+        &self,
+        mut requests: Vec<SourceRequest>,
+        managed_root: std::path::PathBuf,
+    ) -> Result<OpenProjectSources, String> {
+        let mut destinations = Vec::new();
+        for request in requests
+            .iter_mut()
+            .filter(|request| request.remote.is_some())
+        {
+            let path = crate::worktree::canonical_planned_path(&managed_root.join(&request.mount));
+            destinations.push(path.clone());
+            request.destination = Some(path);
+        }
+        Ok(OpenProjectSources {
+            requests,
+            managed_root,
+            destination_claims: self.reserve_source_destinations(&destinations)?,
+        })
+    }
+
+    /// Stored references also reserve membership when a folder was absent
+    /// during projection. Include the live home fallback without adopting it.
+    pub(super) fn project_reference_sources(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ProjectSource>, String> {
+        let project = self.project_for(project_id)?;
+        let environment = self
+            .projects
+            .environment(&project.environment_id)
+            .ok_or_else(|| format!("unknown environment: {}", project.environment_id))?;
+        Ok(environment
+            .sources
+            .iter()
+            .chain(&project.added_sources)
+            .chain(&project.sources)
+            .cloned()
+            .collect())
+    }
+
+    pub(super) fn refuse_source_duplicate(
+        &self,
+        project_id: &str,
+        candidate: &std::path::Path,
+        source_id: &str,
+    ) -> Result<(), String> {
+        let project = self.project_for(project_id)?;
+        let included_environment = self
+            .projects
+            .environments_referencing(candidate)
+            .iter()
+            .any(|environment| environment.id == project.environment_id);
+        let duplicate = included_environment
+            && self
+                .projects
+                .source_repoint_duplicates(project_id, source_id, candidate);
+        if duplicate {
+            return Err(format!(
+                "source is already included in this project: {}",
+                candidate.display()
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn refuse_source_containment(
+        &self,
+        candidate: &std::path::Path,
+        replacing: Option<(&str, &str)>,
+    ) -> Result<(), String> {
+        let registered = match replacing {
+            Some((project_id, source_id)) => self
+                .projects
+                .registered_sources_except(project_id, source_id),
+            None => self.projects.registered_sources(),
+        };
+        if registered.iter().any(|source| {
+            source.path != candidate
+                && (candidate.starts_with(&source.path) || source.path.starts_with(candidate))
+        }) {
+            return Err(format!(
+                "source overlaps a registered project source: {}",
+                candidate.display()
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_prepared_sources(
+        &self,
+        project_id: Option<&str>,
+        sources: &mut [ProjectSource],
+        cloned_paths: &[std::path::PathBuf],
+    ) -> Result<(), String> {
+        let mut taken = match project_id {
+            Some(id) => TakenSourceNames::over(&self.project_reference_sources(id)?),
+            None => TakenSourceNames::default(),
+        };
+        for source in sources.iter_mut() {
+            source.path = canonical_source_path(&source.path)?;
+            self.validate_secret_source(&source.path)?;
+            self.refuse_source_directory_claim(&source.path)?;
+            taken.claim_path(&source.path)?;
+            self.refuse_source_containment(&source.path, None)?;
+        }
+        self.refuse_duplicate_clone_remotes(sources, cloned_paths)
+    }
+
+    fn refuse_duplicate_clone_remotes(
+        &self,
+        sources: &[ProjectSource],
+        cloned_paths: &[std::path::PathBuf],
+    ) -> Result<(), String> {
+        let registered = self.projects.registered_sources();
+        for source in sources.iter().filter(|source| {
+            cloned_paths
+                .iter()
+                .any(|path| crate::worktree::canonical_planned_path(path) == source.path)
+        }) {
+            if let Some(remote) = source.origin() {
+                if registered
+                    .iter()
+                    .chain(sources)
+                    .filter(|other| other.path != source.path)
+                    .filter_map(ProjectSource::origin)
+                    .any(|origin| crate::worktree::remotes_match(&origin, &remote))
+                {
+                    return Err(format!("source remote is already registered: {remote}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn project_init_git(&mut self, params: &Value) -> Result<Value, String> {
         self.mark_device_lifecycle_dirty()?;
         let project_id = require_str(params, "project_id")?;
@@ -255,7 +466,7 @@ impl AppState {
             Some(parent) => expand_tilde(parent),
             None => self.projects_dir.clone(),
         };
-        let dest = parent.join(&name);
+        let dest = crate::worktree::canonical_planned_path(&parent.join(&name));
         let remote = params
             .get("remote")
             .and_then(Value::as_str)
@@ -263,17 +474,24 @@ impl AppState {
             .filter(|remote| !remote.is_empty())
             .map(usable_remote_url)
             .transpose()?;
+        let destination_claims = self.reserve_source_destinations(std::slice::from_ref(&dest))?;
         self.defer_project(
             dest.clone(),
             name.clone(),
             PendingState::Creating,
-            CreateRepo {
-                name,
-                dest,
-                base_branch,
-                remote,
+            ReservedCreateRepository {
+                mutation: CreateRepo {
+                    name,
+                    dest,
+                    base_branch,
+                    remote,
+                },
+                destination_claims,
             },
-            crate::app::runtime::lifecycle::ProjectRegistrationSettlement,
+            |state: &mut AppState, result: Result<PreparedRepository, String>| {
+                let prepared = result?;
+                state.register_opened_repository(prepared.opened)
+            },
         )
     }
 
@@ -306,26 +524,15 @@ impl AppState {
         let canonical = path.as_deref().map(canonical_source_path).transpose()?;
         if let Some(candidate) = &canonical {
             self.validate_secret_source(candidate)?;
-            if self
-                .projects
-                .iter()
-                .flat_map(|project| &project.sources)
-                .any(|existing| {
-                    candidate.starts_with(&existing.path) || existing.path.starts_with(candidate)
-                })
-            {
-                return Err(format!(
-                    "source overlaps a registered project source: {}",
-                    candidate.display()
-                ));
-            }
+            self.refuse_source_directory_claim(candidate)?;
             taken.claim_path(candidate)?;
+            self.refuse_source_containment(candidate, None)?;
         }
         if let Some(remote) = remote {
             if self
                 .projects
+                .registered_sources()
                 .iter()
-                .flat_map(|project| &project.sources)
                 .filter_map(ProjectSource::origin)
                 .any(|origin| crate::worktree::remotes_match(&origin, remote))
             {
@@ -354,6 +561,7 @@ impl AppState {
             remote: remote.map(str::to_string),
             name,
             mount,
+            destination: None,
             base_branch: entry
                 .get("base_branch")
                 .and_then(Value::as_str)
@@ -393,25 +601,27 @@ impl AppState {
             .unwrap_or_else(|| requests[0].name.clone());
         let project_name = usable_project_name(safe_mount_name(&project_name))?;
         let managed_root = self.projects_dir.join(format!("{project_name}-sources"));
-        let canonical_projects_dir =
-            std::fs::canonicalize(&self.projects_dir).unwrap_or_else(|_| self.projects_dir.clone());
+        let canonical_projects_dir = crate::worktree::canonical_planned_path(&self.projects_dir);
         let planned_managed_root = canonical_projects_dir.join(format!("{project_name}-sources"));
-        taken.refuse_managed_destinations(&requests, &planned_managed_root)?;
+        taken.refuse_managed_destinations(
+            &requests,
+            &planned_managed_root,
+            &self.projects.registered_sources(),
+        )?;
         let title = project_name;
+        let mutation = self.reserve_source_opening(requests, managed_root.clone())?;
         self.defer_project(
             managed_root.clone(),
             title,
             PendingState::Creating,
-            OpenProjectSources {
-                requests,
-                managed_root,
-            },
+            mutation,
             |state: &mut AppState, result: Result<PreparedSources, String>| {
                 let prepared = result?;
                 state.register_opened_project_sources(
                     prepared.opened,
                     prepared.sources,
                     prepared.created_checkouts,
+                    prepared.cloned_paths,
                 )
             },
         )
@@ -435,7 +645,7 @@ impl AppState {
         let project_id = require_str(params, "project_id")?;
         let project = self.project_for(&project_id)?;
         let project_name = usable_project_name(safe_mount_name(&project.name))?;
-        let sources = project.sources.clone();
+        let sources = self.project_reference_sources(&project_id)?;
         let id = self
             .projects
             .allocate_source_ids(Some(&project_id), 1)?
@@ -444,10 +654,13 @@ impl AppState {
         let mut taken = TakenSourceNames::over(&sources);
         let request = self.source_request(params, id, &mut taken)?;
         let managed_root = self.projects_dir.join(format!("{project_name}-sources"));
-        let canonical_projects_dir =
-            std::fs::canonicalize(&self.projects_dir).unwrap_or_else(|_| self.projects_dir.clone());
+        let canonical_projects_dir = crate::worktree::canonical_planned_path(&self.projects_dir);
         let planned_managed_root = canonical_projects_dir.join(format!("{project_name}-sources"));
-        taken.refuse_managed_destinations(std::slice::from_ref(&request), &planned_managed_root)?;
+        taken.refuse_managed_destinations(
+            std::slice::from_ref(&request),
+            &planned_managed_root,
+            &self.projects.registered_sources(),
+        )?;
         // The directory the source will be read or written at is the row's
         // identity, as it is for every other project verb: what a second
         // `add_source` collides with is the folder, not the project's record.
@@ -455,20 +668,19 @@ impl AppState {
             .path
             .clone()
             .unwrap_or_else(|| managed_root.join(&request.mount));
+        let mutation = self.reserve_source_opening(vec![request], managed_root)?;
         self.defer_project(
             dest,
             project.name.clone(),
             PendingState::Updating,
-            OpenProjectSources {
-                requests: vec![request],
-                managed_root,
-            },
+            mutation,
             move |state: &mut AppState, result: Result<PreparedSources, String>| {
                 let prepared = result?;
-                state.append_project_sources(
+                state.append_project_sources_with_clones(
                     &project_id,
                     prepared.sources,
                     prepared.created_checkouts,
+                    prepared.cloned_paths,
                 )
             },
         )

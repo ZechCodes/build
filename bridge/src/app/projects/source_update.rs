@@ -18,6 +18,9 @@ use std::path::PathBuf;
 /// Longer than any label a person types; a cap so nothing unbounded is stored.
 const MAX_LABEL_LEN: usize = 200;
 
+#[cfg(test)]
+mod settlement_tests;
+
 /// The parts of a source an edit names, each checked.
 struct SourceEdit {
     name: Option<String>,
@@ -46,6 +49,7 @@ struct SourceAddress {
     path: PathBuf,
     name: Option<String>,
     sync_base: Option<bool>,
+    repository_paths: Vec<PathBuf>,
 }
 
 impl AppState {
@@ -62,7 +66,7 @@ impl AppState {
             .ok_or_else(|| format!("unknown source_id {source_id} in project {project_id}"))?;
         let source = source.clone();
         let title = project.name.clone();
-        let edit = self.checked_edit(params, &source, index)?;
+        let edit = self.checked_edit(params, &project_id, &source, index)?;
         if edit
             .path
             .as_ref()
@@ -92,6 +96,7 @@ impl AppState {
             path: source.path.clone(),
             name: edit.name,
             sync_base: edit.sync_base,
+            repository_paths: remote_mutation_paths(&mutation),
         };
         let captured = self.resolve_project_source(
             &address.project_id,
@@ -114,6 +119,11 @@ impl AppState {
                 if moves {
                     state.source_moves.end(&address.project_id);
                 }
+                // Git may have landed even if validation or config settlement
+                // fails. Every owner must discard its old repository views.
+                for path in &address.repository_paths {
+                    state.invalidate_shared_repository_views(path);
+                }
                 let LockedSourceUpdate { updated, _held } = result?;
                 state.settle_source_update(address, updated)
             },
@@ -129,6 +139,7 @@ impl AppState {
     fn checked_edit(
         &self,
         params: &Value,
+        project_id: &str,
         source: &ProjectSource,
         index: usize,
     ) -> Result<SourceEdit, String> {
@@ -137,7 +148,7 @@ impl AppState {
                 .map(usable_label)
                 .transpose()?,
             path: optional_text(params, "path")
-                .map(|path| self.usable_source_move(source, index, path))
+                .map(|path| self.usable_source_move(project_id, source, index, path))
                 .transpose()?,
             base_branch: optional_text(params, "base_branch")
                 .map(|branch| branch.trim().to_string()),
@@ -165,12 +176,14 @@ impl AppState {
     /// inside any other registered source.
     fn usable_source_move(
         &self,
+        project_id: &str,
         source: &ProjectSource,
         index: usize,
         path: &str,
     ) -> Result<PathBuf, String> {
         let candidate = canonical_source_path(&expand_tilde(path.trim()))?;
         self.validate_secret_source(&candidate)?;
+        self.refuse_source_directory_claim(&candidate)?;
         if candidate == source.path {
             return Ok(candidate);
         }
@@ -180,18 +193,8 @@ impl AppState {
                     .to_string(),
             );
         }
-        let overlaps = self
-            .projects
-            .iter()
-            .flat_map(|project| &project.sources)
-            .filter(|other| other.path != source.path)
-            .any(|other| candidate.starts_with(&other.path) || other.path.starts_with(&candidate));
-        if overlaps {
-            return Err(format!(
-                "source overlaps a registered project source: {}",
-                candidate.display()
-            ));
-        }
+        self.refuse_source_duplicate(project_id, &candidate, &source.id)?;
+        self.refuse_source_containment(&candidate, Some((project_id, &source.id)))?;
         Ok(candidate)
     }
 
@@ -226,6 +229,7 @@ impl AppState {
         address: SourceAddress,
         updated: SourceUpdated,
     ) -> Result<Value, String> {
+        self.validate_settled_source_update(&address, &updated)?;
         let checkouts_updated = updated.checkouts_updated;
         let checkouts_failed: Vec<Value> = updated
             .checkouts_failed
@@ -260,6 +264,24 @@ impl AppState {
         self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
         Ok(row)
     }
+
+    /// The directory can gain another reference while the filesystem work
+    /// runs. Only the current registry, under settlement's app lock, decides
+    /// whether this edit can publish its resulting location.
+    fn validate_settled_source_update(
+        &self,
+        address: &SourceAddress,
+        updated: &SourceUpdated,
+    ) -> Result<(), String> {
+        let candidate = canonical_source_path(&updated.path)?;
+        if candidate != updated.path {
+            return Err("source directory changed while its edit was being prepared".into());
+        }
+        self.validate_secret_source(&candidate)?;
+        self.refuse_source_directory_claim(&candidate)?;
+        self.refuse_source_duplicate(&address.project_id, &candidate, &address.source_id)?;
+        self.refuse_source_containment(&candidate, Some((&address.project_id, &address.source_id)))
+    }
 }
 
 impl AppState {
@@ -291,6 +313,23 @@ impl AppState {
 
 fn optional_text<'a>(params: &'a Value, key: &str) -> Option<&'a str> {
     params.get(key).and_then(Value::as_str)
+}
+
+/// Remote edits mutate the checkout and independent copies that follow it.
+/// Other reference edits change only configuration.
+fn remote_mutation_paths(mutation: &UpdateSource) -> Vec<PathBuf> {
+    if mutation.new_remote.is_none() {
+        return Vec::new();
+    }
+    std::iter::once(mutation.path.clone())
+        .chain(mutation.new_path.iter().cloned())
+        .chain(
+            mutation
+                .workspace_checkouts
+                .iter()
+                .map(|checkout| checkout.path.clone()),
+        )
+        .collect()
 }
 
 fn usable_label(name: &str) -> Result<String, String> {
@@ -340,10 +379,20 @@ impl crate::lifecycle::WorktreeMutation for SerializedSourceUpdate {
         );
         let held = SyncLock::acquire_many(&paths, SERVICE_FETCH_DEADLINE)?;
         if let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) {
-            state
-                .lock()
-                .unwrap()
-                .validate_source_location(&self.captured)?;
+            let app = state.lock().unwrap();
+            app.validate_source_location(&self.captured)?;
+            if let Some(candidate) = &self.mutation.new_path {
+                app.refuse_source_directory_claim(candidate)?;
+                app.refuse_source_duplicate(
+                    &self.captured.project_id,
+                    candidate,
+                    &self.captured.source_id,
+                )?;
+                app.refuse_source_containment(
+                    candidate,
+                    Some((&self.captured.project_id, &self.captured.source_id)),
+                )?;
+            }
         }
         let performed = self.mutation.perform()?;
         Ok(crate::lifecycle::Performed {

@@ -4,12 +4,15 @@ use tempfile::TempDir;
 
 mod admission_recovery;
 mod project_identity;
+mod unlanded_identity;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Boundary {
     AdmissionPrepared,
     ProjectCheckpointed,
+    ProjectIdentityCheckpointed,
     ProjectPersisted,
+    BeforeFailureTerminal,
 }
 type BoundaryObserver = Box<dyn FnMut(Boundary)>;
 thread_local! {

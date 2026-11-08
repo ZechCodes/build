@@ -238,6 +238,8 @@ pub(super) fn project_step(
             writer
                 .checkpoint_creation(PRINCIPAL, &record.operation_id, evidence.clone())
                 .map_err(string)?;
+            #[cfg(test)]
+            tests::at_boundary(tests::Boundary::ProjectIdentityCheckpointed);
             Ok(())
         },
     )?;
@@ -376,6 +378,8 @@ fn finish_failure(
         .map_err(string)?;
     progress(state, id, &failed.execution, step, "failed", Some(error));
     state.lock().unwrap().mutation_service().clear_progress(id);
+    #[cfg(test)]
+    tests::at_boundary(tests::Boundary::BeforeFailureTerminal);
     writer.finish_creation(PRINCIPAL,id,json!({"state":"failed","effect":if landed{"partial"}else{"unapplied"},"error":{"code":"creation_failed","message":error,"retryable":false,"details":details}})).map_err(string)?;
     Ok(())
 }

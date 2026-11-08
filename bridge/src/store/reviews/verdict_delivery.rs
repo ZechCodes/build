@@ -131,11 +131,13 @@ impl Store {
         &self,
         limit: usize,
         after: i64,
+        excluded_projects: &[String],
     ) -> Result<(Vec<ReviewVerdictDelivery>, i64), StoreError> {
         let conn = self.connection();
-        let mut fresh = conn.prepare("SELECT d.comment_id,d.record FROM review_verdict_deliveries d LEFT JOIN operations o ON o.operation_id=d.operation_id WHERE d.state='pending' AND o.operation_id IS NULL ORDER BY d.rowid LIMIT ?1")?;
+        let excluded = serde_json::to_string(excluded_projects).expect("project keys serialize");
+        let mut fresh = conn.prepare("SELECT d.comment_id,d.record FROM review_verdict_deliveries d LEFT JOIN operations o ON o.operation_id=d.operation_id LEFT JOIN tracker_tasks t ON t.id=d.task_id WHERE d.state='pending' AND o.operation_id IS NULL AND (t.project_key IS NULL OR t.project_key NOT IN (SELECT value FROM json_each(?2))) ORDER BY d.rowid LIMIT ?1")?;
         let mut deliveries = fresh
-            .query_map([limit.min(100) as i64], |row| {
+            .query_map(params![limit.min(100) as i64, excluded], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
             .map(|row| {
@@ -143,8 +145,8 @@ impl Store {
                 decode(&raw, "review_verdict_deliveries", &id)
             })
             .collect::<Result<Vec<_>, StoreError>>()?;
-        let mut polled = conn.prepare("SELECT d.rowid,d.comment_id,d.record FROM review_verdict_deliveries d JOIN operations o ON o.operation_id=d.operation_id WHERE d.state='pending' ORDER BY (d.rowid <= ?1),d.rowid LIMIT ?2")?;
-        let rows = polled.query_map(params![after, limit.min(100) as i64], |row| {
+        let mut polled = conn.prepare("SELECT d.rowid,d.comment_id,d.record FROM review_verdict_deliveries d JOIN operations o ON o.operation_id=d.operation_id LEFT JOIN tracker_tasks t ON t.id=d.task_id WHERE d.state='pending' AND (t.project_key IS NULL OR t.project_key NOT IN (SELECT value FROM json_each(?3))) ORDER BY (d.rowid <= ?1),d.rowid LIMIT ?2")?;
+        let rows = polled.query_map(params![after, limit.min(100) as i64, excluded], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,

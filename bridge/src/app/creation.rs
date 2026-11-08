@@ -324,7 +324,9 @@ impl ArchiveAdmissionHold {
 impl Drop for ArchiveAdmissionHold {
     fn drop(&mut self) {
         if let Some(state) = &self.0 {
-            state.lock().unwrap().active_deferred_filesystem_jobs -= 1;
+            let mut app = state.lock().unwrap_or_else(|poison| poison.into_inner());
+            app.active_deferred_filesystem_jobs =
+                app.active_deferred_filesystem_jobs.saturating_sub(1);
         }
     }
 }

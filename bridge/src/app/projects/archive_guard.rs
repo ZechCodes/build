@@ -5,6 +5,23 @@ use crate::mcp::BridgeAction;
 use serde_json::{json, Value};
 
 impl AppState {
+    /// Drains exclude these keys before paging: suspended work neither retries
+    /// nor starves other projects, and restore needs no outbox state rewrite.
+    pub(in crate::app) fn archived_project_keys(&self) -> Vec<String> {
+        self.projects
+            .iter()
+            .filter(|project| project.archived_at.is_some())
+            .map(|project| project.project_key.clone())
+            .chain(
+                self.projects
+                    .parked()
+                    .iter()
+                    .filter(|project| project["archived_at"].is_number())
+                    .filter_map(|project| project["project_key"].as_str().map(str::to_owned)),
+            )
+            .collect()
+    }
+
     pub(in crate::app) fn refuse_archived_project(&self, id: &str) -> Result<(), ApiError> {
         let name = self
             .projects

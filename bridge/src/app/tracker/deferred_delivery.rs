@@ -72,9 +72,10 @@ impl AppState {
     pub(in crate::app) fn prepare_task_delivery(
         &mut self,
     ) -> Result<Option<TaskDeliveryWork>, String> {
+        let excluded = self.archived_project_keys();
         let ready = self
             .tracker_store()?
-            .delivery_intents_ready(100)
+            .delivery_intents_ready_excluding_projects(100, &excluded)
             .stored()?
             .into_iter()
             .find(|intent| !self.task_delivery_in_flight.contains(&intent.id));

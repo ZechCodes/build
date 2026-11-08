@@ -3359,6 +3359,14 @@ project, workspace, task or conversation identities; upload calls resolve their
 retained scope after owner validation. Reads and screen-attachment bookkeeping
 remain available. Restore and project deletion remain allowed. Environment
 reference maintenance can still update archived projects' effective sources.
+Pending verdict/revision handoffs and unposted failure/dependency notices also
+block archive. The background delivery service excludes archived project keys
+before each bounded page, including receipt polling and revision failure notices.
+Rows, operation identities and retry budgets stay unchanged while suspended;
+other projects continue draining. Restore makes the saved rows eligible on the
+normal service tick, using the ordinary delivery/supersession/failure policy.
+The workspace-admission hold releases its count even if unwinding poisons the
+app mutex; its destructor preserves the poison flag and never panics.
 The two method names are explicitly withheld from greetings, `projects.archive`
 is not advertised, and the wire stays at 3.36.0 until the consumer checkpoint.
 

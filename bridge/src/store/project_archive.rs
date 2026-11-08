@@ -20,6 +20,19 @@ impl Store {
                 SELECT t.number, 'resolve waiting-on for #' || t.number FROM tasks t
                 JOIN tracker_task_query_facts q ON q.task_id=t.id WHERE q.blocked=1 AND q.unfinished=1
                 UNION ALL
+                SELECT t.number, 'settle pending verdict delivery for #' || t.number FROM tasks t
+                JOIN review_verdict_deliveries d ON d.task_id=t.id WHERE d.state='pending'
+                UNION ALL
+                SELECT t.number, 'settle pending revision dispatch for #' || t.number FROM tasks t
+                JOIN review_revision_dispatches d ON d.task_id=t.id WHERE d.state='pending'
+                UNION ALL
+                SELECT t.number, 'settle revision delivery notice for #' || t.number FROM tasks t
+                JOIN review_revision_dispatches d ON d.task_id=t.id
+                WHERE d.state='failed' AND d.failure_notice_posted=0 AND d.failure_comment_id IS NOT NULL
+                UNION ALL
+                SELECT t.number, 'settle pending task notice for #' || t.number FROM tasks t
+                JOIN tracker_delivery_notices n ON n.task_id=t.id WHERE n.state='queued'
+                UNION ALL
                 SELECT t.number, 'give a verdict on #' || t.number FROM tasks t
                 JOIN reviews r ON r.task_id=t.id WHERE json_extract(r.record,'$.pull_request.status')='open'
                     OR (COALESCE(json_extract(r.record,'$.mode'),'snapshot')='snapshot' AND json_extract(r.record,'$.state')='open')

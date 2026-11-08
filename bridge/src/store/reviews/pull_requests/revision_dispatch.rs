@@ -75,16 +75,18 @@ impl Store {
     pub(crate) fn pending_review_revision_dispatches(
         &self,
     ) -> Result<Vec<RevisionDispatch>, StoreError> {
-        self.pending_review_revision_dispatches_at(crate::agent::now_ms() as i64)
+        self.pending_review_revision_dispatches_at(crate::agent::now_ms() as i64, &[])
     }
 
     pub(crate) fn pending_review_revision_dispatches_at(
         &self,
         now_ms: i64,
+        excluded_projects: &[String],
     ) -> Result<Vec<RevisionDispatch>, StoreError> {
         let conn = self.connection();
-        let mut statement = conn.prepare("SELECT task_id,snapshot_id,number FROM review_revision_dispatches WHERE state='pending' AND retry_after_ms<=?1 ORDER BY retry_after_ms,updated_at,snapshot_id LIMIT 32")?;
-        let rows = statement.query_map([now_ms], |row| {
+        let excluded = serde_json::to_string(excluded_projects).expect("project keys serialize");
+        let mut statement = conn.prepare("SELECT d.task_id,d.snapshot_id,d.number FROM review_revision_dispatches d LEFT JOIN tracker_tasks t ON t.id=d.task_id WHERE d.state='pending' AND d.retry_after_ms<=?1 AND (t.project_key IS NULL OR t.project_key NOT IN (SELECT value FROM json_each(?2))) ORDER BY d.retry_after_ms,d.updated_at,d.snapshot_id LIMIT 32")?;
+        let rows = statement.query_map(params![now_ms, excluded], |row| {
             Ok(RevisionDispatch {
                 task_id: row.get(0)?,
                 snapshot_id: row.get(1)?,
@@ -165,12 +167,21 @@ impl Store {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn failed_review_revision_notices(
         &self,
     ) -> Result<Vec<RevisionFailureNotice>, StoreError> {
+        self.failed_review_revision_notices_excluding_projects(&[])
+    }
+
+    pub(crate) fn failed_review_revision_notices_excluding_projects(
+        &self,
+        excluded_projects: &[String],
+    ) -> Result<Vec<RevisionFailureNotice>, StoreError> {
         let conn = self.connection();
-        let mut statement = conn.prepare("SELECT task_id,number,snapshot_id,failure_comment_id,COALESCE('@agent:' || recipient_agent_id,reviewer),error FROM review_revision_dispatches WHERE state='failed' AND failure_notice_posted=0 AND failure_comment_id IS NOT NULL ORDER BY updated_at,snapshot_id LIMIT 32")?;
-        let rows = statement.query_map([], |row| {
+        let excluded = serde_json::to_string(excluded_projects).expect("project keys serialize");
+        let mut statement = conn.prepare("SELECT d.task_id,d.number,d.snapshot_id,d.failure_comment_id,COALESCE('@agent:' || d.recipient_agent_id,d.reviewer),d.error FROM review_revision_dispatches d LEFT JOIN tracker_tasks t ON t.id=d.task_id WHERE d.state='failed' AND d.failure_notice_posted=0 AND d.failure_comment_id IS NOT NULL AND (t.project_key IS NULL OR t.project_key NOT IN (SELECT value FROM json_each(?1))) ORDER BY d.updated_at,d.snapshot_id LIMIT 32")?;
+        let rows = statement.query_map([excluded], |row| {
             Ok(RevisionFailureNotice {
                 task_id: row.get(0)?,
                 number: row.get::<_, i64>(1)? as u64,

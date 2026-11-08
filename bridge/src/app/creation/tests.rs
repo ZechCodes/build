@@ -4,8 +4,10 @@ use tempfile::TempDir;
 
 mod admission_recovery;
 mod continuation_identity;
+mod discard_identity;
 mod failure_finalization;
 mod project_identity;
+mod settlement;
 mod stale_replay;
 mod unlanded_identity;
 
@@ -17,6 +19,9 @@ pub(super) enum Boundary {
     ProjectPersisted,
     BeforeFailureTerminal,
     WorkspaceProvisioned,
+    SettlementCheckpointed,
+    WorkspaceMaterialized,
+    BeforeResidueCheckpoint,
 }
 type BoundaryObserver = Box<dyn FnMut(Boundary)>;
 thread_local! {

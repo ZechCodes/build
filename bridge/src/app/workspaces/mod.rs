@@ -68,6 +68,10 @@ impl DeferredGitWork for WorkspaceCreateWork {
             WorkspaceRegistry::load(&self.registry_root)?
                 .claim_creation_workspace(&self.workspace)?;
         }
+        #[cfg(test)]
+        if let Some(error) = journal_creation::take_preparation_failure() {
+            return self.preparation_failed(error);
+        }
         if let Err(error) = self
             .secret_sources
             .path(&self.workspace.root)

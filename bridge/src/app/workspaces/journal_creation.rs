@@ -2,6 +2,19 @@
 use super::*;
 use std::sync::Arc;
 
+#[cfg(test)]
+thread_local! {
+    static PREPARATION_FAILURE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(in crate::app) fn fail_next_preparation_for_test(error: &str) {
+    PREPARATION_FAILURE.with_borrow_mut(|saved| *saved = Some(error.into()));
+}
+#[cfg(test)]
+pub(super) fn take_preparation_failure() -> Option<String> {
+    PREPARATION_FAILURE.with_borrow_mut(Option::take)
+}
+
 pub(in crate::app) enum WorkspaceCreationEvent {
     Started,
     RolledBack,

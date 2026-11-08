@@ -14,7 +14,7 @@ fn workspace_attempt(f: &Fixture, id: &str) -> MutationRecord {
     .unwrap()
 }
 
-fn unknown_with_residue() -> (Fixture, String, Workspace) {
+pub(super) fn unknown_with_residue() -> (Fixture, String, Workspace) {
     let f = Fixture::new();
     let id = operation(160);
     let record = workspace_attempt(&f, &id);
@@ -199,4 +199,40 @@ fn missing_effect_evidence_never_reads_as_fresh_without_reopen() {
     let record = f.record(&id);
     assert_eq!(record.state, "unknown", "{record:?}");
     assert!(record.outcome.is_none());
+}
+
+#[test]
+fn creation_effect_migration_preserves_each_terminal_state() {
+    for (state, effect) in [
+        ("succeeded", None),
+        ("failed", Some("unapplied")),
+        ("failed", Some("partial")),
+    ] {
+        let f = Fixture::new();
+        let id = operation(166);
+        let mut record = workspace_attempt(&f, &id);
+        record.state = state.into();
+        record.outcome = Some(json!({"state":state,"effect":effect,"legacy":"unchanged"}));
+        record
+            .execution
+            .as_object_mut()
+            .unwrap()
+            .remove("effect_state");
+        {
+            let connection = f.store.writer_for_test();
+            connection
+                .execute(
+                    "UPDATE mutation_commands SET state=?1,record=?2 WHERE command_id=?3",
+                    rusqlite::params![state, json!(record).to_string(), record.command_id],
+                )
+                .unwrap();
+            connection
+                .execute("UPDATE meta SET value='25' WHERE key='schema_version'", [])
+                .unwrap();
+        }
+        let f = f.reopen();
+        assert_eq!(f.record(&id), record);
+        let f = f.reopen();
+        assert_eq!(f.record(&id), record);
+    }
 }

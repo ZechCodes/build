@@ -315,8 +315,12 @@ fn observer(
                 writer
                     .checkpoint_creation(PRINCIPAL, &id, saved.clone())
                     .map_err(string)?;
+                #[cfg(test)]
+                tests::at_boundary(tests::Boundary::WorkspaceMaterialized);
             }
             WorkspaceCreationEvent::Residue { workspace, error } => {
+                #[cfg(test)]
+                tests::at_boundary(tests::Boundary::BeforeResidueCheckpoint);
                 saved["workspace"] = json!(workspace);
                 saved["residue"] = json!({"paths":[workspace.root],"error":error});
                 writer
@@ -467,6 +471,10 @@ fn checkpoint_effect(
     writer
         .checkpoint_creation(PRINCIPAL, id, evidence.clone())
         .map_err(string)?;
+    #[cfg(test)]
+    if effect == "settled" {
+        tests::at_boundary(tests::Boundary::SettlementCheckpointed);
+    }
     Ok(())
 }
 fn ambiguous_workspace(evidence: &Value, error: &str) -> bool {
@@ -563,6 +571,8 @@ fn cleanup(
     writer
         .checkpoint_creation(PRINCIPAL, &record.operation_id, evidence)
         .map_err(string)?;
+    #[cfg(test)]
+    tests::at_boundary(tests::Boundary::SettlementCheckpointed);
     Err(record.execution["residue"]["error"]
         .as_str()
         .unwrap_or("workspace creation failed; residue cleaned")

@@ -213,21 +213,24 @@ fn added_source_duplicate_within_project_refused() {
 
 #[test]
 fn unlink_keeps_folder_and_other_reference() {
-    let mut f = SharedSources::new(true);
+    let mut f = SharedSources::new(false);
     let before = std::fs::read(f.shared.join("README.md")).unwrap();
-    let answer = f.remove("proj-1", "source-2");
+    let shared = f.shared.clone();
+    assert_eq!(f.add("proj-2", &shared)["ok"], true);
+    assert_eq!(f.app.projects.get("proj-2").unwrap().added_sources.len(), 1);
+    let answer = f.remove("proj-2", "source-2");
     assert_eq!(answer["ok"], true, "{answer}");
     f.reload();
     assert_eq!(std::fs::read(f.shared.join("README.md")).unwrap(), before);
     assert!(f
         .app
-        .sources_for("proj-1")
+        .sources_for("proj-2")
         .unwrap()
         .iter()
         .all(|s| s.path != f.shared));
     assert!(f
         .app
-        .sources_for("proj-2")
+        .sources_for("proj-1")
         .unwrap()
         .iter()
         .any(|s| s.path == f.shared));

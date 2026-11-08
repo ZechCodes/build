@@ -29,10 +29,15 @@ impl TwoSources {
         let mut state = booted(&root.join("state"));
         let opened = state.handle(req(
             "project.create",
-            json!({ "name": "pair", "sources": [{ "path": code }, { "path": docs }] }),
+            json!({ "name": "pair", "sources": [{ "path": code }] }),
         ));
         assert_eq!(opened["ok"], true, "{opened:?}");
         let project_id = opened["result"]["project_id"].as_str().unwrap().to_string();
+        let added = state.handle(req(
+            "project.add_source",
+            json!({"project_id":project_id,"path":docs}),
+        ));
+        assert_eq!(added["ok"], true, "{added}");
         let owner = ensure(&mut state, &project_id);
         let pin = state.project_pin(&owner).unwrap().to_string();
         let worker = add_worker(&mut state, &owner, json!({ "name": "Editor" }));
@@ -382,12 +387,13 @@ fn a_rejected_duplicate_update_keeps_the_admitted_move_hold() {
 #[test]
 fn a_nonmoving_update_cannot_release_another_source_move_hold() {
     let mut f = TwoSources::new();
+    f.add_another_move();
     let params = f.move_params();
     f.state.project_update_source(&params).unwrap();
     let pending = f.state.take_deferred().unwrap();
     f.assert_worker_starts_blocked();
 
-    let label = json!({ "project_id": f.project_id, "source_id": "source-1", "name": "Code" });
+    let label = json!({ "project_id": f.project_id, "source_id": "source-3", "name": "Assets" });
     f.state.project_update_source(&label).unwrap();
     let relabel = f.state.take_deferred().unwrap();
     f.state

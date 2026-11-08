@@ -1144,8 +1144,11 @@ pub struct ModelsListResult {
 /// codes, so the phrases are matched here rather than the sentences rewritten:
 /// a message is the wire's, and changing one to win a code would be a change
 /// to what every existing client shows its user.
-const CONFLICTS: [&str; 13] = [
+const CONFLICTS: [&str; 16] = [
     "a project must have at least one source",
+    " belongs to environment ",
+    "environment has a pending creation",
+    "already included in this project",
     "source overlaps",
     "source remote is already registered",
     "is already a git repository",
@@ -1606,7 +1609,7 @@ fn project_discard_unused(
     answer(Ok(value))
 }
 
-fn discard_unused_error(message: String) -> ApiError {
+pub(super) fn discard_unused_error(message: String) -> ApiError {
     if message == "discard needs a durable store" {
         return ApiError::unavailable(message);
     }
@@ -1616,7 +1619,11 @@ fn discard_unused_error(message: String) -> ApiError {
     if message.starts_with("creation is still") {
         return ApiError::busy(message);
     }
-    if message.starts_with("project has ") || message == "project was not created by this attempt" {
+    if message.starts_with("project has ")
+        || message == "project was not created by this attempt"
+        || message.starts_with("environment has ")
+        || message == "environment was not created by this attempt"
+    {
         return ApiError::conflict(message, None);
     }
     ApiError::classify(message)

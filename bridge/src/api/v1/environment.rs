@@ -131,5 +131,8 @@ fn discard_unused(
     app: &mut AppState,
     params: DiscardUnusedParams,
 ) -> Result<Answer<super::board::EmptyResult>, ApiError> {
-    answer(app.environment_discard_unused(&params.wire()))
+    let value = app
+        .environment_discard_unused(&params.wire())
+        .map_err(super::board::discard_unused_error)?;
+    answer(Ok(value))
 }

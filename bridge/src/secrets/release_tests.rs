@@ -813,7 +813,7 @@ fn schema_24_upgrade_adds_audit_without_changing_existing_metadata_or_value() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "25");
+    assert_eq!(version, "26");
 }
 
 #[test]

@@ -1,13 +1,13 @@
 //! Durable write envelopes shared by RPC admission, status and confirmations.
 //!
-//! No semantic method is admitted yet. Request metadata carries identity and
+//! Creation method enablement is explicit. Request metadata carries identity and
 //! dependencies, never a caller-selected protocol mode or authenticated scope.
 
 use serde::{de::Error, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 /// Method enablement policy, advertised by hello rather than capability names.
-pub const ACK_CONFIRM_METHODS: &[&str] = &[];
+pub const ACK_CONFIRM_METHODS: &[&str] = &["environment.create_project", "workspace.create"];
 pub const MAX_DEPENDENCIES: usize = 8;
 pub const MAX_STATUS_OPERATIONS: usize = 128;
 pub const MAX_STATUS_BYTES: usize = 512 * 1024;
@@ -102,6 +102,8 @@ pub struct WriteError {
     pub code: String,
     pub message: String,
     pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -111,6 +113,36 @@ pub enum TerminalState {
     Failed,
 }
 
+/// Volatile observation; only a terminal journal record confirms an attempt.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct WriteProgress {
+    pub step: String,
+    pub state: ProgressState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Value>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressState {
+    Running,
+    Done,
+    Failed,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct WriteProgressEvent {
+    #[serde(rename = "type")]
+    pub event_type: ProgressEvent,
+    pub bridge_epoch: String,
+    #[serde(deserialize_with = "operation_id")]
+    pub operation_id: String,
+    pub progress: Vec<WriteProgress>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub enum ProgressEvent {
+    #[serde(rename = "writes.progress")]
+    Progress,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ConfirmationOutcome<R = Value> {
@@ -118,11 +150,15 @@ pub enum ConfirmationOutcome<R = Value> {
         result: R,
         published: Vec<OwnerSequence>,
         refresh: Vec<RefreshAddress>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        creation: Option<Value>,
     },
     Failed {
         effect: EffectOutcome,
         error: WriteError,
         refresh: Vec<RefreshAddress>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        creation: Option<Value>,
     },
 }
 
@@ -152,18 +188,40 @@ pub enum OperationSummary<R = Value> {
     Accepted {
         operation_id: String,
         revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        creation: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continues: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        continued_by: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress: Option<Vec<WriteProgress>>,
         ack: WriteAck,
         result: R,
     },
     Executing {
         operation_id: String,
         revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        creation: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continues: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        continued_by: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress: Option<Vec<WriteProgress>>,
         ack: WriteAck,
         result: R,
     },
     Succeeded {
         operation_id: String,
         revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        creation: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continues: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        continued_by: Vec<String>,
         result: R,
         published: Vec<OwnerSequence>,
         refresh: Vec<RefreshAddress>,
@@ -171,6 +229,12 @@ pub enum OperationSummary<R = Value> {
     Failed {
         operation_id: String,
         revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        creation: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continues: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        continued_by: Vec<String>,
         effect: EffectOutcome,
         error: WriteError,
         refresh: Vec<RefreshAddress>,
@@ -181,6 +245,12 @@ pub enum OperationSummary<R = Value> {
     ResultExpired {
         operation_id: String,
         revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        creation: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        continues: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        continued_by: Vec<String>,
         outcome: TerminalState,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effect: Option<EffectOutcome>,

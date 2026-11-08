@@ -246,6 +246,8 @@ pub struct WorkspaceGetParams {
 /// Cut a workspace over every source the project has.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WorkspaceCreateParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues: Option<String>,
     pub project_id: String,
     /// Trimmed; `workspace` when absent or blank.
     #[serde(default, skip_serializing_if = "Option::is_none")]

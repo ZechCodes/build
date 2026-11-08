@@ -30,6 +30,11 @@ impl MutationAuthority {
         let mut owners = HashSet::new();
         owners.extend(
             app.projects
+                .environments()
+                .map(|e| ("environment".into(), e.id.clone())),
+        );
+        owners.extend(
+            app.projects
                 .iter()
                 .map(|p| ("project".into(), p.id.clone())),
         );
@@ -55,10 +60,15 @@ impl MutationAuthority {
             })
             && operation.scope.as_object().is_some_and(|scope| {
                 scope.iter().all(|(key, value)| {
-                    key == "project_id"
-                        && value
-                            .as_str()
-                            .is_some_and(|id| self.owners.contains(&("project".into(), id.into())))
+                    matches!(key.as_str(), "project_id" | "environment_id")
+                        && value.as_str().is_some_and(|id| {
+                            let kind = if key == "environment_id" {
+                                "environment"
+                            } else {
+                                "project"
+                            };
+                            self.owners.contains(&(kind.into(), id.into()))
+                        })
                 })
             })
     }
@@ -72,9 +82,11 @@ pub(in crate::app) struct MutationService {
 struct Service {
     context: ReadContextSlot,
     pool: Option<ReadPool>,
+    writer: Option<crate::store::StoreWriter>,
     wakeup: Arc<tokio::sync::Notify>,
     subscriptions: Mutex<HashMap<(u64, Option<u64>), Subscription>>,
     worker: Mutex<bool>,
+    progress: Mutex<HashMap<String, Vec<writes::WriteProgress>>>,
     #[cfg(test)]
     after_snapshot: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
@@ -94,6 +106,7 @@ impl MutationService {
             inner: Arc::new(Service {
                 context: Arc::clone(&app.read_context),
                 pool: app.store.as_ref().map(crate::store::Store::read_pool),
+                writer: app.store.as_ref().map(crate::store::Store::writer),
                 wakeup: app
                     .store
                     .as_ref()
@@ -101,10 +114,42 @@ impl MutationService {
                     .unwrap_or_default(),
                 subscriptions: Mutex::new(HashMap::new()),
                 worker: Mutex::new(false),
+                progress: Mutex::new(HashMap::new()),
                 #[cfg(test)]
                 after_snapshot: Mutex::new(None),
             }),
         }
+    }
+
+    /// Volatile observations are delivered only while the durable record is pending.
+    pub(in crate::app) fn set_progress(&self, id: &str, progress: Vec<writes::WriteProgress>) {
+        let Some(record) = self
+            .inner
+            .writer
+            .as_ref()
+            .and_then(|writer| writer.creation_record(DEVICE_USER, id).ok().flatten())
+        else {
+            return;
+        };
+        if matches!(record.state.as_str(), "succeeded" | "failed") || !self.authorized(&record) {
+            return;
+        }
+        self.inner
+            .progress
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), progress.clone());
+        let payload = json!({"type":"writes.progress","bridge_epoch":crate::bridge_epoch::current(),"operation_id":id,"progress":progress});
+        let mut subscriptions = self.inner.subscriptions.lock().unwrap();
+        subscriptions.retain(|_, subscription| {
+            !subscription.ids.contains(id) || subscription.sender.push_scoped(payload.clone())
+        });
+    }
+    pub(in crate::app) fn current_progress(&self, id: &str) -> Option<Vec<writes::WriteProgress>> {
+        self.inner.progress.lock().unwrap().get(id).cloned()
+    }
+    pub(in crate::app) fn clear_progress(&self, id: &str) {
+        self.inner.progress.lock().unwrap().remove(id);
     }
 
     pub(in crate::app) fn call(
@@ -224,7 +269,33 @@ impl MutationService {
                 .pop()
                 .flatten();
             let summary = match record.filter(|record| self.authorized(record)) {
-                Some(record) => summary(&record)?,
+                Some(record) => {
+                    let mut value =
+                        serde_json::to_value(summary(&record)?).map_err(internal_error)?;
+                    if matches!(
+                        record.state.as_str(),
+                        "accepted" | "executing" | "unknown" | "reconciling" | "committed"
+                    ) {
+                        if let Some(progress) = self.inner.progress.lock().unwrap().get(id) {
+                            value["progress"] = json!(progress);
+                        }
+                    }
+                    if let Some(continues) = record.params.get("continues") {
+                        value["continues"] = continues.clone();
+                    }
+                    let successors = read
+                        .mutation_continuations(principal, id)
+                        .map_err(store_error)?;
+                    let ids: Vec<_> = successors
+                        .into_iter()
+                        .filter(|r| self.authorized(r))
+                        .map(|r| r.operation_id)
+                        .collect();
+                    if !ids.is_empty() {
+                        value["continued_by"] = json!(ids);
+                    }
+                    serde_json::from_value(value).map_err(internal_error)?
+                }
                 None => OperationSummary::NotFound {
                     operation_id: id.clone(),
                 },
@@ -310,7 +381,7 @@ fn summary(record: &MutationRecord) -> Result<OperationSummary, ApiError> {
         json!({"state":"result_expired","outcome":record.state,"effect":record.outcome.as_ref().and_then(|outcome| outcome.get("effect"))})
     } else if matches!(
         record.state.as_str(),
-        "accepted" | "executing" | "committed"
+        "accepted" | "executing" | "committed" | "unknown" | "reconciling"
     ) {
         let owners: Vec<_> = record.owners.iter().map(|owner| json!({"kind":owner.kind,"id":owner.id,"generation":owner.generation,"sequence":owner.sequence})).collect();
         json!({"state": if record.state == "accepted" {"accepted"} else {"executing"}, "ack":{"phase":"ack","state":"accepted","operation_id":record.operation_id,"revision":1,"accepted_epoch":record.accepted_epoch,"owners":owners},"result":record.acceptance})
@@ -320,12 +391,19 @@ fn summary(record: &MutationRecord) -> Result<OperationSummary, ApiError> {
             .clone()
             .ok_or_else(|| ApiError::unavailable("write outcome not yet available"))?
     };
+    if !record.execution.is_null() {
+        value["creation"] = record.execution.clone();
+        value["creation"]["state"] = json!(record.state);
+    }
     value["operation_id"] = json!(record.operation_id);
     value["revision"] = json!(record.revision);
     serde_json::from_value(value).map_err(internal_error)
 }
 
 fn confirmation(record: &MutationRecord) -> Result<Value, ApiError> {
+    if !matches!(record.state.as_str(), "succeeded" | "failed") {
+        return Err(ApiError::unavailable("write is not terminal"));
+    }
     if record.expired {
         return Err(ApiError::unavailable(
             "write confirmation result expired; query status",

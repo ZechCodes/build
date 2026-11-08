@@ -5,6 +5,9 @@ mod discovery;
 mod identity;
 mod manager;
 mod mutation;
+mod workspace_checkout;
+#[cfg(test)]
+pub(crate) mod workspace_checkout_test;
 
 pub use crate::isolation::{
     branch_teardown, copy_directory, copy_directory_with_rift_root, BranchTeardown,
@@ -25,6 +28,7 @@ pub use identity::{
 };
 pub use manager::WorktreeManager;
 pub use mutation::{NamedBranchCheckout, UnregisteredRestore, Worktree};
+pub(crate) use workspace_checkout::CheckoutUnwind;
 
 #[cfg(test)]
 mod tests;

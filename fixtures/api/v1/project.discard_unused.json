@@ -1,0 +1,17 @@
+{
+  "method": "project.discard_unused",
+  "since": "3.36.0",
+  "params": {
+    "project_id": "proj-2",
+    "creation_operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a"
+  },
+  "result": {},
+  "errors": [
+    "invalid_params",
+    "not_found",
+    "conflict",
+    "busy",
+    "unavailable",
+    "internal"
+  ]
+}

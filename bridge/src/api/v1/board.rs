@@ -43,6 +43,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             ProjectDeleteParams,
             ProjectDeleteResult
         ),
+        v1_method!(
+            "project.discard_unused",
+            project_discard_unused,
+            ProjectDiscardUnusedParams,
+            EmptyResult
+        ),
         v1_method!("project.list", project_list, NoParams, ProjectListResult),
         v1_method!(
             "project.create",
@@ -1576,4 +1582,37 @@ mod tests {
             assert_eq!(named.message(), message, "a code never rewrites the wire");
         }
     }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectDiscardUnusedParams {
+    pub project_id: String,
+    pub creation_operation_id: String,
+}
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EmptyResult {}
+fn project_discard_unused(
+    app: &mut AppState,
+    params: ProjectDiscardUnusedParams,
+) -> Result<Answer<EmptyResult>, ApiError> {
+    let value = app
+        .project_discard_unused(&params.wire())
+        .map_err(discard_unused_error)?;
+    answer(Ok(value))
+}
+
+fn discard_unused_error(message: String) -> ApiError {
+    if message == "discard needs a durable store" {
+        return ApiError::unavailable(message);
+    }
+    if message == "creation attempt not found" {
+        return ApiError::not_found(message);
+    }
+    if message.starts_with("creation is still") {
+        return ApiError::busy(message);
+    }
+    if message.starts_with("project has ") || message == "project was not created by this attempt" {
+        return ApiError::conflict(message, None);
+    }
+    ApiError::classify(message)
 }

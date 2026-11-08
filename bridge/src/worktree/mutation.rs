@@ -186,60 +186,14 @@ impl WorktreeManager {
         destination: &Path,
         isolation: Isolation,
     ) -> Result<NamedBranchCheckout, WorktreeError> {
-        let _creation = self.lock_creation()?;
-        if destination.exists() {
-            return Err(WorktreeError::Refused(format!(
-                "{} already exists",
-                destination.display()
-            )));
-        }
-        let backend = self.backend(isolation)?;
-        let repo = git2::Repository::open(&self.repo_path)?;
-        let base_commit = match start {
-            Some(start) => repo.find_commit(git2::Oid::from_str(start)?)?,
-            None => repo.revparse_single(base_branch)?.peel_to_commit()?,
-        };
-        let name = self.unique_checkout_name(workspace_slug, |candidate| {
-            self.branch_taken(&repo, candidate)
-        })?;
-        let branch = self.branch_name(&name);
-        repo.branch(&branch, &base_commit, false)?;
-        if let Err(error) = backend.materialize(&self.repo_path, &branch, destination) {
-            if let Err(cleanup_error) = backend.remove(&self.repo_path, destination) {
-                eprintln!(
-                    "checkout {}: could not unwind failed materialization: {cleanup_error}",
-                    destination.display()
-                );
-            }
-            if let Ok(mut created) = repo.find_branch(&branch, git2::BranchType::Local) {
-                let _ = created.delete();
-            }
-            return Err(error);
-        }
-        let teardown = BranchTeardown::DeletesBranch;
-        if let Err(error) = record_branch_teardown(destination, teardown) {
-            // Materialization succeeded, so unwind both halves before
-            // returning the metadata failure to the caller.
-            if let Err(cleanup_error) = backend.remove(&self.repo_path, destination) {
-                eprintln!(
-                    "checkout {}: could not unwind after recording teardown failed: {cleanup_error}",
-                    destination.display()
-                );
-            }
-            if let Ok(mut created) = repo.find_branch(&branch, git2::BranchType::Local) {
-                let _ = created.delete();
-            }
-            return Err(error);
-        }
-        Ok(NamedBranchCheckout {
-            worktree: Worktree {
-                name,
-                path: destination.to_path_buf(),
-                recorded_branch: branch,
-                base_branch: base_branch.to_string(),
-            },
-            teardown,
-        })
+        self.create_workspace_checkout_from_observed(
+            workspace_slug,
+            base_branch,
+            start,
+            destination,
+            isolation,
+            |_| {},
+        )
     }
 
     /// Create `<prefix>/<slug>` from `base_branch` and materialize a checkout of

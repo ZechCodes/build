@@ -98,8 +98,8 @@ fn stale_epoch_and_incarnation_leases_do_not_consume_opening_quota() {
 }
 
 #[test]
-fn device_schema_is_version_25() {
-    assert_eq!(crate::store::SCHEMA_VERSION, 25);
+fn device_schema_is_version_26() {
+    assert_eq!(crate::store::SCHEMA_VERSION, 26);
 }
 
 #[tokio::test]

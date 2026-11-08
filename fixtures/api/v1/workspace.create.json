@@ -4,7 +4,8 @@
   "params": {
     "project_id": "proj-1",
     "name": "wire facade",
-    "isolation": "worktree"
+    "isolation": "worktree",
+    "continues": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a"
   },
   "result": {
     "id": "ws-3f2a91c4",

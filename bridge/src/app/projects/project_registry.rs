@@ -766,6 +766,46 @@ impl ProjectRegistry {
         self.candidate_with_id(self.next_project, repo_path, base_branch, build)
     }
 
+    /// Build a new line of work using the environment's references and home.
+    pub(super) fn add_project_to_environment(
+        &self,
+        environment_id: &str,
+        name: &str,
+        key: &str,
+        mut candidate: ProjectCandidate,
+    ) -> Result<ProjectCandidate, String> {
+        let environment = self
+            .environment(environment_id)
+            .ok_or_else(|| format!("unknown environment: {environment_id}"))?;
+        let home = environment
+            .sources
+            .first()
+            .ok_or("environment has no home source")?;
+        if name.trim().is_empty() {
+            return Err("project name cannot be empty".into());
+        }
+        if key.is_empty() {
+            return Err("project key cannot be empty".into());
+        }
+        if self
+            .projects
+            .iter()
+            .any(|project| project.id == candidate.project.id || project.project_key == key)
+        {
+            return Err("project identity already exists".into());
+        }
+        candidate.project.environment_id = environment_id.into();
+        candidate.project.project_key = key.into();
+        candidate.project.name = name.into();
+        candidate.project.home_path = home.path.clone();
+        candidate.project.repo_path = home.path.clone();
+        candidate.project.sources = environment.sources.clone();
+        candidate.project.next_source = environment.next_source;
+        candidate.project.added_sources.clear();
+        candidate.project.isolation = None;
+        Ok(candidate)
+    }
+
     /// Publish only after the caller's durability step has succeeded.
     pub(super) fn publish(&mut self, candidate: ProjectCandidate) -> ProjectId {
         self.observation_projects.mark(&candidate.project.id);

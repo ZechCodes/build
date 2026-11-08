@@ -1,6 +1,6 @@
 use super::*;
 
-fn require(
+pub(super) fn require(
     transaction: &Transaction<'_>,
     principal: &str,
     id: &str,
@@ -35,7 +35,7 @@ fn validate_outcome(
     }
     Ok(outcome)
 }
-fn terminal(
+pub(super) fn terminal(
     transaction: &Transaction<'_>,
     record: &mut MutationRecord,
     state: &str,
@@ -115,7 +115,7 @@ impl StoreWriter {
                 terminal(transaction,&mut record,"failed",json!({"effect":"unapplied","error":{"code":"dependency_failed","message":"A predecessor failed","retryable":false}}))?;
                 return Ok(false);
             }
-            if pending || owner_blocked(transaction,&record)? {return Ok(false);}
+            if pending || owner_blocked(transaction,&record)? || super::creation::project_blocked(transaction,&record)? {return Ok(false);}
             record.state="executing".into();record.revision+=1;save(transaction,&record)?;Ok(true)
         })?;
         self.wakeup.notify_waiters();
@@ -285,6 +285,12 @@ fn recover_one(
     recovery: &mut MutationRecovery,
 ) -> Result<(), StoreError> {
     match record.state.as_str() {
+        "executing" if super::creation::is_creation(&record.method) => {
+            record.state = "unknown".into();
+            record.revision += 1;
+            save(transaction, &record)?;
+            recovery.accepted.push(record);
+        }
         "executing" if record.recovery_policy == "sql_only" => {
             record.state = "accepted".into();
             record.revision += 1;

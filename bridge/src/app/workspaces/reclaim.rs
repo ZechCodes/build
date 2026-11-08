@@ -522,10 +522,18 @@ impl AppState {
     /// there waits, and a terminal does not open there.
     pub(in crate::app) fn reclaim_reserved_at(&self, root: &Path) -> bool {
         reserved_holds(&self.reclaim_reserved, root)
+            || self
+                .creation_roots
+                .values()
+                .any(|candidate| root.starts_with(Self::canonical_root(candidate)))
     }
 
     /// Whether this workspace is reserved.
     pub(in crate::app) fn workspace_reserved(&self, workspace_id: &str) -> bool {
+        self.creation_roots.contains_key(workspace_id)
+            || self.workspace_reclaim_reserved(workspace_id)
+    }
+    pub(in crate::app) fn workspace_reclaim_reserved(&self, workspace_id: &str) -> bool {
         self.reclaim_reserved
             .get(workspace_id)
             .is_some_and(ReclaimReservation::live)

@@ -26,7 +26,10 @@ fn write_envelopes_roundtrip_without_reinterpreting_transport_receipts() {
     assert!(
         serde_json::from_value::<AckReply<Value>>(json!({"id":"r17","accepted":true})).is_err()
     );
-    assert!(ACK_CONFIRM_METHODS.is_empty());
+    assert_eq!(
+        ACK_CONFIRM_METHODS,
+        &["environment.create_project", "workspace.create"]
+    );
 }
 
 #[test]

@@ -293,7 +293,7 @@ pub enum StoreError {
 /// 21 adds durable review verdict and revision delivery journals.
 /// 22 adds the separate scoped sync journal and retained stream floors.
 /// 24 adds device-local secret metadata, attachment bindings and clock high-water.
-pub const SCHEMA_VERSION: i64 = 25;
+pub const SCHEMA_VERSION: i64 = 26;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -424,7 +424,7 @@ impl Store {
         secrets::initialize(&conn)?;
         ensure_operation_receipt_columns(&conn)?;
         retention::ensure_upload_retention_columns(&conn)?;
-        let journal_incarnation = mutations::initialize(&conn)?;
+        let journal_incarnation = mutations::initialize(&conn, stored.unwrap_or(0))?;
         // Against the newest HOISTED column's version rather than against the
         // schema's: a bump that adds a table has nothing for the classifier to
         // do, and running it anyway would rewrite every conversation row on

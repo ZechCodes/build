@@ -78,7 +78,17 @@
               "body": "Reproduced: the drop handler writes before the column read settles."
             }
           ]
-        }
+        },
+        "progress": [
+          {
+            "step": "project",
+            "state": "done"
+          },
+          {
+            "step": "workspace",
+            "state": "running"
+          }
+        ]
       },
       {
         "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301c",
@@ -286,7 +296,17 @@
                   "body": "Reproduced: the drop handler writes before the column read settles."
                 }
               ]
-            }
+            },
+            "progress": [
+              {
+                "step": "project",
+                "state": "done"
+              },
+              {
+                "step": "workspace",
+                "state": "running"
+              }
+            ]
           },
           {
             "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301c",

@@ -26,30 +26,23 @@ use std::path::{Path, PathBuf};
 /// has to be too.
 pub(in crate::app) const PROJECT_SCRATCH_DIR_NAME: &str = "project-scratch";
 
-/// Where the conversation owner of the project at `project_path` works.
-///
-/// Keyed by the project's canonical path, not by its `proj-N` id: an id is
-/// minted per boot from the config that restored it and two boots can spell the
-/// same repository differently, which would strand the directory the last boot
-/// filled. The last segment is carried for legibility; the digest is what makes
-/// it unique.
-pub(in crate::app) fn scratch_dir(state_root: &Path, project_path: &Path) -> PathBuf {
+/// Where the conversation owner identified by an opaque project key works.
+/// The key's complete bytes determine identity; migrated keys keep the legacy
+/// cosmetic basename and digest, so existing scratch directories do not move.
+pub(in crate::app) fn scratch_dir(state_root: &Path, project_key: &str) -> PathBuf {
     state_root
         .join(PROJECT_SCRATCH_DIR_NAME)
-        .join(scratch_key(project_path))
+        .join(scratch_key(project_key))
 }
 
-/// Whether a run standing at `root` is the conversation owner of the project
-/// at `project_path`: read off the run's own record, so recovery knows a
-/// project's owner before it binds any project — and while the project's
-/// folder cannot be reached at all.
+/// Recognize scratch using the record's key even when its project is unavailable.
 pub(in crate::app) fn is_project_scratch(
     state_root: &Path,
-    project_path: &Path,
+    project_key: &str,
     root: &Path,
 ) -> bool {
-    !project_path.as_os_str().is_empty()
-        && crate::app::workspaces::same_path(root, &scratch_dir(state_root, project_path))
+    !project_key.is_empty()
+        && crate::app::workspaces::same_path(root, &scratch_dir(state_root, project_key))
 }
 
 /// Cut a project owner's scratch directory at `root` again when it is gone.
@@ -69,12 +62,13 @@ pub(in crate::app) fn recut_project_scratch(root: &Path) -> Result<(), String> {
     })
 }
 
-fn scratch_key(project_path: &Path) -> String {
-    let name = project_path
+fn scratch_key(project_key: &str) -> String {
+    // Preserve the old cosmetic label; it never participates in project lookup.
+    let name = Path::new(project_key)
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("project");
-    let digest = sha256_hex(project_path.as_os_str().as_encoded_bytes());
+    let digest = sha256_hex(project_key.as_bytes());
     format!("{}-{}", safe_mount_name(name), &digest[..12])
 }
 
@@ -86,7 +80,7 @@ impl AppState {
     ///
     /// Idempotent, across a restart as well as within one boot: the owner is
     /// found again by the root it works in, and that root is derived from the
-    /// project's canonical path. Either way the owner answers with exactly
+    /// project's stable key. Either way the owner answers with exactly
     /// one pinned coordinator ([`AppState::ensure_project_pin`]).
     pub(crate) fn project_ensure_conversation(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
@@ -98,7 +92,7 @@ impl AppState {
             .get(&project_id)
             .ok_or_else(|| format!("unknown project_id: {project_id}"))?;
         let project_name = project.name.clone();
-        let scratch = scratch_dir(&self.state_root, &project.repo_path);
+        let scratch = scratch_dir(&self.state_root, &project.project_key);
         if let Some(run_id) = self.project_conversation_owner(&project_id, &scratch) {
             // An owner a boot restored while the project's folder was away
             // is bound to no project; the project it stands for is this one.
@@ -195,15 +189,8 @@ impl AppState {
         let Some(active) = self.runs.get(run_id) else {
             return false;
         };
-        let project_path = match self
-            .projects
-            .project_id_of(run_id)
-            .and_then(|project_id| self.projects.get(project_id))
-        {
-            Some(project) => project.repo_path.clone(),
-            None => PathBuf::from(self.projects.project_path_for(run_id)),
-        };
-        is_project_scratch(&self.state_root, &project_path, &active.worktree.path)
+        let key = self.projects.project_key_for(run_id);
+        is_project_scratch(&self.state_root, &key, &active.worktree.path)
     }
 
     pub(in crate::app) fn is_project_snapshot_conversation_owner(&self, run_id: &str) -> bool {
@@ -213,33 +200,20 @@ impl AppState {
         let Some(active) = self.runs.get(run_id) else {
             return false;
         };
-        let project_path = self
-            .projects
-            .project_id_of(run_id)
-            .and_then(|id| self.projects.get(id))
-            .map(|project| project.repo_path.clone())
-            .unwrap_or_else(|| PathBuf::from(self.projects.project_path_for(run_id)));
-        !project_path.as_os_str().is_empty()
-            && self.observed_same_path(
-                &active.worktree.path,
-                &scratch_dir(&self.state_root, &project_path),
-            )
+        let key = self.projects.project_key_for(run_id);
+        !key.is_empty()
+            && self.observed_same_path(&active.worktree.path, &scratch_dir(&self.state_root, &key))
     }
 
     pub(in crate::app) fn project_snapshot_scratch_path(&self, owner: &str) -> Option<PathBuf> {
-        let path = self
-            .projects
-            .project_id_of(owner)
-            .and_then(|id| self.projects.get(id))
-            .map(|project| project.repo_path.clone())
-            .unwrap_or_else(|| PathBuf::from(self.projects.project_path_for(owner)));
-        (!path.as_os_str().is_empty()).then(|| scratch_dir(&self.state_root, &path))
+        let key = self.projects.project_key_for(owner);
+        (!key.is_empty()).then(|| scratch_dir(&self.state_root, &key))
     }
 
     pub(in crate::app) fn project_snapshot_scratch_paths(&self) -> Vec<PathBuf> {
         self.projects
             .iter()
-            .map(|project| scratch_dir(&self.state_root, &project.repo_path))
+            .map(|project| scratch_dir(&self.state_root, &project.project_key))
             .collect()
     }
 
@@ -281,7 +255,7 @@ impl AppState {
 
     /// The project's base: the directory a project agent stands in.
     ///
-    /// The project's own path, `repo_path` — the primary source, the folder
+    /// The project's home path, `home_path` — the primary source, the folder
     /// the project was added from and the one a primary terminal opens in.
     /// Not the folder it sits in: nothing says that folder holds only this
     /// project, and on a machine where it is itself an old checkout its
@@ -292,9 +266,9 @@ impl AppState {
     pub(in crate::app) fn project_base(&self, project_id: &str) -> Option<PathBuf> {
         let project = self.projects.get(project_id)?;
         project
-            .repo_path
+            .home_path
             .is_dir()
-            .then(|| project.repo_path.clone())
+            .then(|| project.home_path.clone())
     }
 
     /// Where an agent on `owner`'s conversation is started: the project's base
@@ -321,13 +295,13 @@ impl AppState {
         project_id: &str,
     ) -> Option<String> {
         let project = self.projects.get(project_id)?;
-        let scratch = scratch_dir(&self.state_root, &project.repo_path);
+        let scratch = scratch_dir(&self.state_root, &project.project_key);
         self.project_conversation_owner_using(project_id, &scratch, true)
     }
 
     pub(in crate::app) fn project_conversation_run(&self, project_id: &str) -> Option<String> {
         let project = self.projects.get(project_id)?;
-        let scratch = scratch_dir(&self.state_root, &project.repo_path);
+        let scratch = scratch_dir(&self.state_root, &project.project_key);
         self.project_conversation_owner(project_id, &scratch)
     }
 }
@@ -353,10 +327,14 @@ mod tests {
     fn scratch_is_one_directory_per_project_path_under_builds_own_state() {
         let root = Path::new("/home/dev/.build");
         let project = Path::new("/home/dev/code/build");
-        let one = scratch_dir(root, project);
-        let namesake = scratch_dir(root, Path::new("/home/dev/forks/build"));
+        let one = scratch_dir(root, project.to_str().unwrap());
+        let namesake = scratch_dir(root, "/home/dev/forks/build");
 
-        assert_eq!(one, scratch_dir(root, project), "keyed by the path alone");
+        assert_eq!(
+            one,
+            scratch_dir(root, project.to_str().unwrap()),
+            "keyed by the path alone"
+        );
         assert_ne!(
             one, namesake,
             "two projects named alike are two directories"

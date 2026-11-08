@@ -37,20 +37,28 @@ fn bind_retained_entities_ignores_sibling_path() {
     let root = tempfile::tempdir().unwrap();
     let repo = root.path().to_path_buf();
     let mut registry = ProjectRegistry::new();
-    let migrated = registry.publish(candidate(&registry, repo.clone(), project_fixture)).into_string();
+    let migrated = registry
+        .publish(candidate(&registry, repo.clone(), project_fixture))
+        .into_string();
     let key = format!("project:{}", uuid::Uuid::new_v4());
     let mut sibling = candidate(&registry, repo.clone(), project_fixture);
-    sibling.set_test_identity(registry.get(&migrated).unwrap().environment_id.clone(), key.clone());
+    sibling.set_test_identity(
+        registry.get(&migrated).unwrap().environment_id.clone(),
+        key.clone(),
+    );
     let sibling = registry.publish(sibling).into_string();
     registry.retain_entity_path("legacy".into(), repo.display().to_string());
     registry.retain_entity_path("sibling".into(), key.clone());
-    registry.bind_retained_entities(&sibling, &repo);
+    registry.bind_retained_entities(&sibling);
     assert_eq!(registry.project_id_of("legacy"), None);
     assert_eq!(registry.project_id_of("sibling"), Some(sibling.as_str()));
-    registry.bind_retained_entities(&migrated, &repo);
+    registry.bind_retained_entities(&migrated);
     assert_eq!(registry.project_id_of("legacy"), Some(migrated.as_str()));
     assert_eq!(registry.project_id_of("sibling"), Some(sibling.as_str()));
-    assert_eq!(registry.project_path_for("sibling"), repo.display().to_string());
+    assert_eq!(
+        registry.project_path_for("sibling"),
+        repo.display().to_string()
+    );
 }
 
 fn candidate(

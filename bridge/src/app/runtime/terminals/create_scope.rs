@@ -355,7 +355,7 @@ fn capture_workspace(app: &AppState, id: &str) -> Result<CapturedScope, String> 
                 .denied_roots
                 .push(crate::app::projects::scratch_dir(
                     &app.state_root,
-                    &project.repo_path,
+                    &project.project_key,
                 ));
         }
         if run.worktree.base_branch.is_empty() {

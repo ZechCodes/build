@@ -81,14 +81,14 @@ impl AppState {
             .map(|project| project.name.clone())
             .unwrap_or_default();
         let base = project
-            .map(|project| project.repo_path.display().to_string())
+            .map(|project| project.home_path.display().to_string())
             .unwrap_or_default();
         let others = project
             .map(|project| {
                 project
                     .sources
                     .iter()
-                    .filter(|source| source.path != project.repo_path)
+                    .filter(|source| source.path != project.home_path)
                     .map(|source| format!("`{}` at {}", source.name, source.path.display()))
                     .collect::<Vec<_>>()
             })
@@ -124,7 +124,7 @@ impl AppState {
             .map(|project| project.name.clone())
             .unwrap_or_default();
         let base = project
-            .map(|project| project.repo_path.display().to_string())
+            .map(|project| project.home_path.display().to_string())
             .unwrap_or_default();
         let sources = project
             .map(|project| {

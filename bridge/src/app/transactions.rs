@@ -76,7 +76,7 @@ impl AppState {
         let now = now_rfc3339();
         let created_at = clock.created_at.unwrap_or_else(|| now.clone());
         let updated_at = clock.updated_at.unwrap_or(now);
-        let project_path = self.project_path_for(plan_id);
+        let project_path = self.projects.project_key_for(plan_id);
         PersistedPlan {
             id: plan_id.to_string(),
             goal: active.plan.goal.clone(),
@@ -159,7 +159,7 @@ impl AppState {
         let now = now_rfc3339();
         let created_at = clock.created_at.unwrap_or_else(|| now.clone());
         let updated_at = clock.updated_at.unwrap_or(now);
-        let project_path = self.project_path_for(run_id);
+        let project_path = self.projects.project_key_for(run_id);
         PersistedRun {
             id: run_id.to_string(),
             plan_id: active.run.plan_id.as_ref().map(|p| p.0.clone()),

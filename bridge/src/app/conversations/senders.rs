@@ -93,7 +93,7 @@ impl AppState {
             root,
             project: self.projects.get(project_id).map(|project| {
                 (
-                    scratch_dir(&self.state_root, &project.repo_path),
+                    scratch_dir(&self.state_root, &project.project_key),
                     AgentOwnerRef {
                         kind: AgentOwnerKind::Project,
                         id: project.id.clone(),

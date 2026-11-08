@@ -454,7 +454,7 @@ fn reverse_workspace_lookup_preserves_existing_ownership_answers() {
     state
         .projects
         .bind_entity("run-04".into(), other_project_id);
-    let scratch = crate::app::projects::scratch_dir(&state.state_root, tmp.path());
+    let scratch = crate::app::projects::scratch_dir(&state.state_root, tmp.path().to_str().unwrap());
     std::fs::create_dir_all(&scratch).unwrap();
     state.runs.get_mut("run-06").unwrap().worktree.path = scratch.clone();
     state.workspaces.adopt_root(

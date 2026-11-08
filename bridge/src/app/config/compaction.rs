@@ -331,12 +331,12 @@ impl AppState {
         if let Some(id) = self.projects.project_id_of(owner) {
             return Some(id.to_string());
         }
-        let retained_path = self.projects.project_path_for(owner);
+        let retained_key = self.projects.project_key_for(owner);
         self.projects
             .parked()
             .iter()
             .find(|entry| {
-                crate::app::projects::configured_primary_path(entry) == Some(retained_path.as_str())
+                crate::app::projects::configured_project_key(entry) == Some(retained_key.as_str())
             })
             .and_then(|entry| entry["id"].as_str())
             .map(str::to_owned)

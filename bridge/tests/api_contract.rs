@@ -2626,7 +2626,7 @@ fn creation_progress_fixture_is_typed_and_nonterminal() {
 
 #[test]
 fn project_archive_wire_is_strict_additive_and_withheld() {
-    assert_eq!(API_VERSION, "3.36.0");
+    assert_eq!(API_VERSION, "3.37.0");
     assert!(!capabilities(false).contains(&"projects.archive"));
     for method in ["project.archive", "project.restore"] {
         assert!(!capabilities(false).contains(&method));

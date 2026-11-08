@@ -8,7 +8,7 @@ vi.mock("../src/core/inboxDevices.js", () => ({ deviceCall: id => (...args) => s
 vi.mock("../src/core/createWorkspaceWizard.js", () => ({ openCreateWorkspaceWizard: vi.fn() }));
 vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo: vi.fn() }));
 vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: vi.fn() }));
-vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: id => ({ environments: { list: state.support.get(id), archive: true, rename: true } }),
+vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: id => ({ environments: { list: state.support.get(id), archive: true, projectRename: true, environmentRename: true } }),
   onBridgeGreeted: fn => { state.greetings.add(fn); return () => state.greetings.delete(fn); } }));
 vi.mock("../src/core/scopedSyncRuntime.js", () => ({ deviceScopedSyncOwns: () => state.deviceOwned, wakeScopedSync: vi.fn(async () => []) }));
 import { renderEnvironmentsSettings } from "../src/views/environmentsSettings.js";
@@ -362,7 +362,7 @@ it.each([{create:true,createProject:false},{create:false,createProject:true}])('
 import { openEnvironmentSettings } from "../src/sheets/environmentSettings.js";
 it("archived group is collapsed and lists only archived projects", async () => {
   await seed("laptop", [environment()], [project, { ...project, project_id: "old", name: "Old release", archived_at: 123 }]); await seed("desktop", [], []);
-  await writeCached(address("laptop", "environment-support"), { list: true, archive: true, rename: true }); await mount();
+  await writeCached(address("laptop", "environment-support"), { list: true, archive: true, projectRename: true, environmentRename: true }); await mount();
   await vi.waitFor(() => expect(document.querySelector("[data-archived-projects]")).not.toBeNull());
   const group = document.querySelector("[data-archived-projects]");
   expect(group.open).toBe(false); expect(group.textContent).toContain("Old release"); expect(group.textContent).not.toContain("Release");
@@ -378,7 +378,7 @@ it("restore row restores and repaints from cache", async () => {
 });
 async function mountEnvironmentSheet(projects = [project]) {
   await seed("laptop", [{ ...environment(), sources: [{ id: "home", path: "/work/source", name: "source", is_git: false }] }], projects);
-  await writeCached(address("laptop", "environment-support"), { list: true, rename: true });
+  await writeCached(address("laptop", "environment-support"), { list: true, environmentRename: true });
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
   return openEnvironmentSettings("env-1", { deviceId: "laptop", callRpc: state.calls.get("laptop") });
 }

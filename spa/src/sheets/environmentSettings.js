@@ -69,7 +69,7 @@ export function openEnvironmentSettings(environmentId, { deviceId, callRpc }) {
     error ||= sheet.querySelector("#eserror");
     button.disabled = true; error.textContent = "";
     try {
-      const changed = await environmentAction(deviceId, "rename", send);
+      const changed = await environmentAction(deviceId, "environmentRename", send);
       await onDone?.(changed);
       if (changed.environment_id) await writeEnvironmentSetting(deviceId, changed);
       await record.read();
@@ -82,18 +82,18 @@ export function openEnvironmentSettings(environmentId, { deviceId, callRpc }) {
     const name = sheet.querySelector("#esdisplay");
     const draftName = name && name.value !== painted?.name ? name.value : environment.name;
     const owner = asSourceOwner(environment);
-    const editing = support.rename ? sourceEditing(owner, true, {}) : { editable: () => false };
+    const editing = support.environmentRename ? sourceEditing(owner, true, {}) : { editable: () => false };
     disposeRepoPickers(sheet);
     sheet.innerHTML = settingsSheetHtml({ title: "Environment settings", bodyHtml: `${generalHtml(environment)}
-      <section class="ps-section"><h4>Sources</h4>${sourceCardsHtml(owner, editing, { notices, sync: { syncsBase: support.rename && syncsBase, syncing, inFlight } })}
-      ${support.rename ? '<div class="row"><button class="btn" id="esfolder">Add folder…</button><button class="btn" id="esremote">Add Git remote…</button></div><div id="esadd"></div>' : ""}</section>
+      <section class="ps-section"><h4>Sources</h4>${sourceCardsHtml(owner, editing, { notices, sync: { syncsBase: support.environmentRename && syncsBase, syncing, inFlight } })}
+      ${support.environmentRename ? '<div class="row"><button class="btn" id="esfolder">Add folder…</button><button class="btn" id="esremote">Add Git remote…</button></div><div id="esadd"></div>' : ""}</section>
       <section class="ps-section"><h4>Isolation</h4><select id="esisolation" aria-label="Work isolation">${isolationOptionsHtml(environment.isolation, null, { inheritLabel: "Inherit device setting" })}</select></section>
       <div class="adderr" id="eserror" role="alert"></div><button class="btn" id="esclose">Close</button>` });
     frame = sheet.firstElementChild; painted = environment;
     sheet.querySelector("#esdisplay").value = draftName;
     mountGeneral(environment);
     const sourceRpc = (method, params) => {
-      requireEnvironmentAction(deviceId, "rename");
+      requireEnvironmentAction(deviceId, "environmentRename");
       const { project_id: _projectId, ...rest } = params;
       return callRpc(SOURCE_METHODS[method], { ...rest, environment_id: environmentId });
     };
@@ -103,14 +103,14 @@ export function openEnvironmentSettings(environmentId, { deviceId, callRpc }) {
   }
   function mountGeneral(environment) {
     const error = sheet.querySelector("#eserror"), rename = sheet.querySelector("#esrename"), isolation = sheet.querySelector("#esisolation");
-    rename.hidden = !support.rename; sheet.querySelector("#esdisplay").readOnly = !support.rename; isolation.disabled = !support.rename;
+    rename.hidden = !support.environmentRename; sheet.querySelector("#esdisplay").readOnly = !support.environmentRename; isolation.disabled = !support.environmentRename;
     rename.onclick = () => {
       const name = sheet.querySelector("#esdisplay").value.trim();
       void write(() => callRpc("environment.rename", { environment_id: environmentId, name }), rename, error);
     };
     isolation.onchange = () => void write(() => callRpc("environment.set_isolation", { environment_id: environmentId, isolation: isolation.value || null }), isolation, error);
     sheet.querySelector("#esclose").onclick = close;
-    if (!support.rename) return;
+    if (!support.environmentRename) return;
     sheet.querySelector("#esremote").onclick = () => mountRemote(error, write);
     sheet.querySelector("#esfolder").onclick = () => browse(environment, error);
   }
@@ -134,7 +134,7 @@ export function openEnvironmentSettings(environmentId, { deviceId, callRpc }) {
   }
   void readSupport();
   void (async () => {
-    requireEnvironmentAction(deviceId, "rename");
+    requireEnvironmentAction(deviceId, "environmentRename");
     const admission = await admitEnvironmentListWrite(deviceId, current);
     const answer = await callRpc("environment.list");
     await writeCachedEnvironments(deviceId, answer.environments, admission, current);

@@ -9,7 +9,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const { bridgeCapabilities, greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { environmentSupportAddress, readEnvironmentSupport, rememberEnvironmentSupport } = await import("../src/core/environmentSupport.js");
 const { readCached } = await import("../src/core/localCache.js");
-const unsupported = { list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false };
+const unsupported = { list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false };
 const m1 = { ...unsupported, list: true, createProject: true };
 const greet = (capabilities, deviceId = "dev-1") => greetBridge(async (method) =>
   method === "session.hello" ? { ...greetingFixture.result, capabilities } : {}, { deviceId, strict: true });
@@ -42,12 +42,22 @@ it("replaces cached support on downgrade and never infers support from the versi
 
 it("maps later checkpoint flags only from their own named capabilities", () => {
   expect(capabilitiesOf({ api_version: "3.36.0", capabilities: ["environments.create", "projects.addedSources", "projects.archive", "environments.rename", "secrets.environmentScope"] }).environments)
-    .toEqual({ ...unsupported, create: true, addedSources: true, archive: true, rename: true, secrets: true });
-  expect(capabilitiesOf({ api_version: "3.36.0", capabilities: ["projects.rename"] }).environments.rename).toBe(false);
+    .toEqual({ ...unsupported, create: true, addedSources: true, archive: true, environmentRename: true, secrets: true });
+  expect(capabilitiesOf({ api_version: "3.36.0", capabilities: ["projects.rename"] }).environments.environmentRename).toBe(false);
 });
 
 it("does not let a retired greeting change the support record", async () => {
   await rememberEnvironmentSupport("dev-1", { environments: m1 });
   await rememberEnvironmentSupport("dev-1", { environments: unsupported }, () => false);
   expect(await readEnvironmentSupport("dev-1")).toEqual(m1);
+});
+
+it.each([
+  [["projects.rename"], { projectRename: true, environmentRename: false, archive: false }],
+  [["environments.rename"], { projectRename: false, environmentRename: true, archive: false }],
+  [["projects.archive"], { projectRename: false, environmentRename: false, archive: true }],
+])("keeps project/environment rename and archive separate for %j", async (names, expected) => {
+  await greet(names);
+  expect(bridgeCapabilities("dev-1").environments).toMatchObject(expected);
+  await vi.waitFor(async () => expect(await readEnvironmentSupport("dev-1")).toMatchObject(expected));
 });

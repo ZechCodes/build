@@ -77,7 +77,7 @@ function environmentHtml(environment, listing, device, error, support) {
   const members = listing.rows?.filter(project => project.environment_id === environment.environment_id);
   return `<article class="panel" data-environment="${esc(environment.environment_id)}">
     <h3>${kindGlyphHtml("environment")} ${esc(environment.name)} ${deviceTagHtml(device)}</h3>
-    ${support?.rename ? `<button class="btn mini" data-environment-settings="${esc(environment.environment_id)}">Settings…</button>` : ""}
+    ${support?.environmentRename ? `<button class="btn mini" data-environment-settings="${esc(environment.environment_id)}">Settings…</button>` : ""}
     <p class="ppath">${esc(environment.home_path)}</p>
     <p class="dim">${environmentTotalsText(environment, members, listing.countsKnown)}</p>
     ${environmentProjectsHtml(members?.filter(project => !projectIsArchived(project)), listing, device, error)}${archivedProjectsHtml(members, device, support)}${environmentShortcuts(environment,members,listing,support)}</article>`;

@@ -1,3 +1,4 @@
+import { archiveBlockerChanges } from "./archiveBlockerChanges.js";
 import { pullDeviceProjection } from "../core/scopedDeviceReads.js";
 import { scopedCompactionEditorHtml, mountScopedCompactionEditor } from "../core/scopedCompactionEditor.js";
 import { $ } from "../dom.js";
@@ -172,7 +173,13 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     await mergeCachedAtomically(projectSettingsAddress(deviceId, projectId), latest =>
       current() && latest ? withNewerSyncs(latest, row) : null);
   };
+  const blockerChange = archiveBlockerChanges(deviceId, projectId, () => painted, () => {
+    if (!archiveRefusal || !current()) return;
+    archiveRefusal = null;
+    void record.read();
+  });
   const unsubscribeSupport = subscribeCache({ deviceId }, (address) => {
+    blockerChange(address);
     if ([SOURCE_EDIT_SUPPORT_KIND, environmentSupportAddress(deviceId).kind, environmentsAddress(deviceId).kind].includes(address?.kind)) void readSupport();
     if (address?.kind === "projects" && !address.entityId) void adoptListedSyncs();
   });
@@ -219,7 +226,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     sheet.innerHTML = settingsSheetHtml({
       title: "Project settings",
       bodyHtml: `${projectGeneralHtml(project, { ...actionSupport, environmentName, deviceId })}
-      ${sourcesSectionHtml(project, { editing, editsSources, environmentSupport, environmentName, editEnvironment: actionSupport.rename, notices, sync: { syncsBase, syncing, inFlight: syncInFlight } })}
+      ${sourcesSectionHtml(project, { editing, editsSources, environmentSupport, environmentName, editEnvironment: actionSupport.environmentRename, notices, sync: { syncsBase, syncing, inFlight: syncInFlight } })}
       ${isolationHtml()}
       ${scopedCompactionEditorHtml({ scope: "project", prefix: "project-compaction" })}
       ${projectArchiveHtml(project, actionSupport, archiveRefusal)}
@@ -251,7 +258,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     if (draft.edits === cachedDraft?.edits) displayedDraft.edits = draft.edits;
     if (draft.source === cachedDraft?.source) displayedDraft.source = draft.source;
     mountProjectGeneral(sheet, project, {
-      deviceId, callRpc, onArchiveRefused: message => { archiveRefusal = message; },
+      deviceId, callRpc, onArchiveRefused: refusal => { archiveRefusal = refusal; },
       openEnvironment: () => { close(); openEnvironmentSettings(project.environment_id, { deviceId, callRpc }); },
     });
     lockArchivedSettings(sheet, project);

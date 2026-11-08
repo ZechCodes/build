@@ -122,7 +122,7 @@ const NO_CAPABILITIES = Object.freeze({
   push: Object.freeze({ registerKey: false, revokeKey: false }),
   agents: Object.freeze({ createdBy: false, projectWorkers: false }),
   projects: Object.freeze({ updateSource: false, syncBase: false, syncBasePath: false }),
-  environments: Object.freeze({ list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false }),
+  environments: Object.freeze({ list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false }),
   workspaces: Object.freeze({ measureSizes: false, setLocked: false }),
 });
 

@@ -67,12 +67,15 @@ impl Fixture {
     }
 
     fn create(&self) -> std::thread::JoinHandle<Value> {
+        self.create_at(json!({"project_id":self.project}))
+    }
+
+    fn create_at(&self, params: Value) -> std::thread::JoinHandle<Value> {
         let handler = self.handler.clone();
-        let project = self.project.clone();
         let spawns = Arc::clone(&self.spawns);
         std::thread::spawn(move || {
             crate::timing::observe_test_terminal_spawns(spawns);
-            call(&handler, "term.create", json!({"project_id":project}))
+            call(&handler, "term.create", params)
         })
     }
 
@@ -213,4 +216,67 @@ fn archive_session_refused_agent_start_keeps_changed_choice_record_byte_unchange
         "a refused start must not persist its requested model"
     );
     assert!(f.state.lock().unwrap().delivery_queue.is_idle());
+}
+
+fn assert_live_shell_blocks_archive(f: &Fixture, params: Value) {
+    let created = f.create_at(params).join().unwrap();
+    assert_eq!(created["ok"], true, "{created}");
+    assert_eq!(
+        f.state
+            .lock()
+            .unwrap()
+            .session_registry
+            .pending_shell_count(),
+        0
+    );
+    let archived = f.archive();
+    f.close(&created); // Also retire the live shell when reproducing the old gap.
+    assert_eq!(archived["error_code"], "conflict", "{archived}");
+    assert!(
+        archived["error"]
+            .as_str()
+            .unwrap()
+            .contains("close the open terminal in this project"),
+        "{archived}"
+    );
+    assert_eq!(f.archive()["ok"], true);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn archive_session_live_primary_shell_blocks_archive_until_closed() {
+    let f = Fixture::new();
+    assert_live_shell_blocks_archive(&f, json!({"project_id":f.project}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn archive_session_live_source_shell_blocks_archive_until_closed() {
+    let f = Fixture::new();
+    let params = {
+        let app = f.state.lock().unwrap();
+        let source = app.project(&f.project).unwrap().sources.first().unwrap();
+        json!({"project_id":f.project,"source_id":source.id,"source_path":source.path})
+    };
+    assert_live_shell_blocks_archive(&f, params);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn archive_session_exited_but_listed_shell_does_not_block_archive() {
+    let f = Fixture::new();
+    let created = f.create().join().unwrap();
+    assert_eq!(created["ok"], true, "{created}");
+    // Hold the guard across process exit and admission so its EOF pump cannot
+    // remove the listed shell before archive observes it. No production wait
+    // or lock scope changes are needed to exercise this short-lived state.
+    let mut app = f.state.lock().unwrap();
+    let key = app
+        .tab_key_of_wire_id(created["result"]["term_id"].as_str().unwrap())
+        .unwrap();
+    let tab = app.session_registry.test_tab(&key).unwrap();
+    let child = Arc::clone(&tab.session);
+    child.end();
+    assert!(child.exited_within(Duration::from_secs(2)));
+    assert!(tab.live, "the EOF pump has not settled the listed tab");
+    assert!(!tab.session_is_live());
+    assert_eq!(app.shell_tab_count(), 1);
+    assert!(app.project_archive(&f.project).is_ok());
 }

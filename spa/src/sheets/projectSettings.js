@@ -14,7 +14,8 @@ import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
 import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
 import { readSourceSupport, SOURCE_EDIT_SUPPORT_KIND } from "../core/sourceEditSupport.js";
-import { environmentSupportAddress, readEnvironmentSupportRecord } from "../core/environmentSupport.js";
+import { environmentSupportAddress } from "../core/environmentSupport.js";
+import { guardProjectSourceRpc, readSourceOwnershipEvidence } from "../core/sourceOwnership.js";
 import { environmentsAddress, readCachedEnvironments } from "../core/environmentCache.js";
 import { mountSourceCards, readSourceEdits, restoreSourceEdits, sourceEditing, sourcesSectionHtml } from "./projectSources.js";
 import { withNewerSyncs } from "../core/sourceSyncModel.js";
@@ -140,6 +141,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     else void draftRecord?.write(snapshot);
   };
   const refresh = () => pullProjectSettings(projectId, { callRpc, deviceId, record });
+  const sourceRpc = guardProjectSourceRpc(deviceId, callRpc, async () => (await readCached(projectSettingsAddress(deviceId, projectId)))?.value);
   const current = () => sheet.isConnected && sheet.firstElementChild === frame && $("#scrim").classList.contains("show");
   // Asked again when the machine greets while THIS opening is on screen.
   const repoAsk = refreshGithubRepos(deviceId, callRpc, { wanted: current });
@@ -147,7 +149,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   // to the cache; the cards repaint when it lands.
   const readSupport = async () => {
     const [sources, support, rows] = await Promise.all([
-      readSourceSupport(deviceId), readEnvironmentSupportRecord(deviceId), readCachedEnvironments(deviceId),
+      readSourceSupport(deviceId), readSourceOwnershipEvidence(deviceId), readCachedEnvironments(deviceId),
     ]);
     ({ editsSources, syncsBase } = sources);
     environmentSupport = support;
@@ -220,7 +222,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     painted = project;
     mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), deviceId, fromProjectRecord: true });
     mountSources(project, {
-      callRpc, record, deviceId, editing, refresh,
+      callRpc: sourceRpc, record, deviceId, editing, refresh,
       saveDraft,
       onSaved: (sourceId, notice) => { notices[sourceId] = notice; },
       onSyncAsked: (source) => { syncing.set(source.id, source.sync?.last_attempt_ms ?? null); },

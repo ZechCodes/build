@@ -14,11 +14,12 @@ export async function readEnvironmentSupportRecord(deviceId = "") {
   return (await readCached(environmentSupportAddress(deviceId)))?.value ?? null;
 }
 
-export function rememberEnvironmentSupport(deviceId, capabilities, current = () => true) {
+export function rememberEnvironmentSupport(deviceId, capabilities, current = () => true, bridgeEpoch = null) {
   if (!deviceId) return Promise.resolve(false);
-  const support = supportOf(capabilities?.environments);
-  return mergeCachedAtomically(environmentSupportAddress(deviceId), (held) =>
-    current() && FLAGS.some((flag) => held?.[flag] !== support[flag]) ? support : null);
+  const support = { ...supportOf(capabilities?.environments), bridge_epoch: bridgeEpoch };
+  // Every accepted greeting announces its evidence, including a new opening
+  // in the same bridge epoch. No wall-clock freshness or separate epoch exists.
+  return mergeCachedAtomically(environmentSupportAddress(deviceId), () => current() ? support : null);
 }
 
 export async function readEnvironmentSupport(deviceId) {

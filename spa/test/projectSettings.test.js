@@ -14,6 +14,16 @@ import { sourceEditSupportAddress } from "../src/core/sourceEditSupport.js";
 import { environmentSupportAddress, rememberEnvironmentSupport } from "../src/core/environmentSupport.js";
 import { environmentsAddress } from "../src/core/environmentCache.js";
 
+const sourceAuthority = vi.hoisted(() => ({ epoch: "legacy-epoch" }));
+vi.mock("../src/core/deviceContexts.js", async importOriginal => ({
+  ...await importOriginal(),
+  captureDeviceGreeting: () => {
+    const epoch = sourceAuthority.epoch;
+    return epoch ? { epoch, current: () => sourceAuthority.epoch === epoch } : null;
+  },
+  whenGreeted: async (_context, dispatch) => ({ sent: dispatch() }),
+}));
+
 const openWizard = vi.fn();
 vi.mock("../src/core/createWorkspaceWizard.js", () => ({ openCreateWorkspaceWizard: (...args) => openWizard(...args) }));
 
@@ -47,9 +57,10 @@ const type = (element, value) => {
 beforeEach(async () => {
   await wipeCache();
   await wipeUiRecords();
+  sourceAuthority.epoch = "legacy-epoch";
   // Legacy fixtures positively identify a device that predates environments.
   for (const deviceId of ["", "dev-1"]) await writeCached(environmentSupportAddress(deviceId), {
-    list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false,
+    list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false, bridge_epoch: "legacy-epoch",
   });
   confirmAction.mockReset();
   openWizard.mockReset();
@@ -642,7 +653,7 @@ describe("project settings added sources", () => {
     });
 
     it("retains legacy Save and Sync only on a positively identified old device", async () => {
-      await rememberEnvironmentSupport("dev-1", { environments: {} });
+      await rememberEnvironmentSupport("dev-1", { environments: {} }, () => true, "legacy-epoch");
       await writeCached(sourceEditSupportAddress("dev-1"), { editsSources: true, syncsBase: true });
       await open(PROJECT);
       expect(input("source-1", "name").readOnly).toBe(false);
@@ -650,6 +661,42 @@ describe("project settings added sources", () => {
       expect(card("source-1").querySelector("[data-sync-base]")).toBeTruthy();
       expect(card("source-1").querySelector("[data-sync-now]")).toBeTruthy();
       expect(group("unknown")).toBeNull();
+    });
+  });
+
+  describe("legacy source epoch authority", () => {
+    it.each(["unchanged pre-upgrade", "unstamped", "no current greeting", "environment identity"])("keeps %s cache read-only through Save and both Sync controls", async kind => {
+      const address = environmentSupportAddress("dev-1");
+      const support = (await readCached(address)).value;
+      const old = { ...PROJECT };
+      if (kind === "unchanged pre-upgrade") sourceAuthority.epoch = "upgraded-epoch";
+      if (kind === "unstamped") { delete support.bridge_epoch; await writeCached(address, support); }
+      if (kind === "no current greeting") sourceAuthority.epoch = null;
+      if (kind === "environment identity") old.environment_id = "environment";
+      await writeCached(sourceEditSupportAddress("dev-1"), { editsSources: true, syncsBase: true });
+      await open(old);
+      expect(document.querySelector('[data-source-ownership="unknown"]')).toBeTruthy();
+      for (const source of old.sources) {
+        expect(card(source.id).querySelector("[data-save-source]")).toBeNull();
+        expect(card(source.id).querySelector("[data-sync-base]")).toBeNull();
+        expect(card(source.id).querySelector("[data-sync-now]")).toBeNull();
+      }
+      expect((await readCached(address)).value).toEqual(support);
+    });
+
+    it.each(["save", "sync toggle", "sync now"])("blocks a retained legacy %s handler after an epoch replacement without changing support", async action => {
+      await writeCached(sourceEditSupportAddress("dev-1"), { editsSources: true, syncsBase: true });
+      const callRpc = await open(PROJECT);
+      const original = (await readCached(environmentSupportAddress("dev-1"))).value;
+      type(input("source-1", "name"), "Attempted edit");
+      const selector = { save: "[data-save-source]", "sync toggle": "[data-sync-base]", "sync now": "[data-sync-now]" }[action];
+      const control = card("source-1").querySelector(selector);
+      sourceAuthority.epoch = "upgraded-epoch";
+      if (action === "sync toggle") { control.checked = true; control.dispatchEvent(new Event("change")); }
+      else control.click();
+      await vi.waitFor(() => expect(card("source-1").querySelector("[data-source-error]").textContent).toMatch(/ownership|read-only/i));
+      expect(callRpc.mock.calls.some(([method]) => ["project.update_source", "project.sync_source", "project.set_remote"].includes(method))).toBe(false);
+      expect((await readCached(environmentSupportAddress("dev-1"))).value).toEqual(original);
     });
   });
 

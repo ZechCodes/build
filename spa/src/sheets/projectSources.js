@@ -13,7 +13,7 @@ import { workspaceDisplayName } from "../core/workspaceModel.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { attachRepoPicker } from "./repoPicker.js";
 import { mountSyncControls, syncControlsHtml } from "./sourceSyncControls.js";
-import { predatesEnvironments } from "../core/environmentSupport.js";
+import { sourceOwnershipState } from "../core/sourceOwnership.js";
 
 /** The parts of a source a card shows, in the order it shows them. */
 const FIELDS = ["name", "path", "base_branch", "remote"];
@@ -55,11 +55,6 @@ export function sourceEditing(project, editsSources, environmentSupport) {
 }
 
 const READ_ONLY = { editable: () => false };
-
-function sourceOwnershipState(project, environmentSupport) {
-  if (Array.isArray(project.added_sources)) return "known";
-  return predatesEnvironments(environmentSupport) ? "legacy" : "unknown";
-}
 
 const shownFields = (source) => FIELDS.filter((field) => source.is_git !== false || !GIT_FIELDS.has(field));
 

@@ -7,11 +7,21 @@ const mountWorkspaceChanges = vi.fn((host, options) => ({
   workspaceMoved: vi.fn(), selectDirectory: vi.fn((id) => options.onSelectDirectory(id)), setVisible() {}, dispose() {},
 }));
 vi.mock("../src/views/workspaceChanges.js", () => ({ mountWorkspaceChanges: (...args) => mountWorkspaceChanges(...args) }));
+vi.mock("../src/core/deviceContexts.js", async importOriginal => ({
+  ...await importOriginal(),
+  captureDeviceGreeting: () => ({ epoch: "changes-epoch", current: () => true }),
+  whenGreeted: async (_context, dispatch) => ({ sent: dispatch() }),
+}));
+vi.mock("../src/core/changeEvents.js", async importOriginal => ({
+  ...await importOriginal(), bridgeCapabilities: () => ({ projects: { syncBase: true }, git: { projectSources: true } }),
+}));
 const { mountProjectChanges } = await import("../src/views/projectChanges.js");
 const { rememberProjectChangesSupport } = await import("../src/core/projectChangesSupport.js");
 const { writeUiRecord, wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { App } = await import("../src/appState.js");
 const { directoryCacheId } = await import("../src/core/directoryScope.js");
+const { writeCached, wipeCache } = await import("../src/core/localCache.js");
+const { environmentSupportAddress } = await import("../src/core/environmentSupport.js");
 const project = { id: "p", sources: [{ id: "code", name: "Code", path: "/code", is_git: true }] };
 const draftAddress = (deviceId, projectId, sourceId, path) => {
   const entityId = directoryCacheId({ project_id: projectId, source_id: sourceId, source_path: path });
@@ -19,21 +29,46 @@ const draftAddress = (deviceId, projectId, sourceId, path) => {
 };
 let handle;
 let host;
+const changesRpc = vi.fn(async () => ({}));
 const mount = (initial = project, route = {}) => {
   host = document.createElement("div");
   document.body.append(host);
   const onSourceSelection = vi.fn();
   handle = mountProjectChanges(host, { project: initial, route: { projectId: "p", ...route },
-    context: { deviceId: "d", cacheScope: { deviceId: "d", address: (address) => ({ deviceId: "d", ...address }) } },
+    context: { deviceId: "d", rpc: changesRpc, cacheScope: { deviceId: "d", address: (address) => ({ deviceId: "d", ...address }) } },
     onSourceSelection, onCommitSelection() {} });
   return onSourceSelection;
 };
 beforeEach(async () => {
   mountWorkspaceChanges.mockClear();
+  changesRpc.mockClear();
+  await wipeCache();
   await wipeUiRecords();
   await rememberProjectChangesSupport("d", { git: { projectSources: true } });
 });
 afterEach(() => { handle?.dispose(); document.body.replaceChildren(); });
+
+it.each(["inherited", "unknown", "added", "legacy"])("protects the Sync base affordance and handler for %s sources", async kind => {
+  await rememberProjectChangesSupport("d", { git: { projectSources: true }, projects: { syncBase: true } });
+  await writeCached(environmentSupportAddress("d"), {
+    list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false,
+    bridge_epoch: kind === "unknown" ? "pre-upgrade-epoch" : "changes-epoch",
+  });
+  const current = { ...project };
+  if (kind === "inherited") { current.environment_id = "env"; current.added_sources = []; }
+  if (kind === "added") current.added_sources = project.sources;
+  mount(current);
+  await vi.waitFor(() => expect(mountWorkspaceChanges).toHaveBeenCalled());
+  const sync = host.querySelector("[data-project-sync-base]");
+  const allowed = ["added", "legacy"].includes(kind);
+  expect(sync.hidden).toBe(!allowed);
+  sync.click();
+  if (allowed) await vi.waitFor(() => expect(changesRpc).toHaveBeenCalledWith("project.sync_source", expect.objectContaining({ project_id: "p", source_id: "code" })));
+  else {
+    await vi.waitFor(() => expect(host.querySelector("[data-project-sync-error]").textContent).toMatch(/read-only|ownership/i));
+    expect(changesRpc).not.toHaveBeenCalled();
+  }
+});
 
 it("preserves a commit-only deep link until the default source resolves", async () => {
   const selected = mount({ id: "p", sources: [] }, { commit: "abc" });

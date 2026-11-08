@@ -606,6 +606,7 @@ impl AppState {
         if let Some(primary) = self.entity_agents(entity_id)?.primary() {
             return Ok(primary.id.clone());
         }
+        self.refuse_run_recovery(entity_id)?;
         let choice = match asked {
             Some(asked) => asked,
             None => self.mint_model_choice(entity_id)?,
@@ -1054,6 +1055,7 @@ impl AppState {
 
     pub(crate) fn agent_add(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
+        self.refuse_run_recovery(&entity_id)?;
         // Named at creation when the caller knows what it is making, which is
         // the usual case: whoever cuts an agent for a piece of work can say
         // what that work is better than the agent can before it has read

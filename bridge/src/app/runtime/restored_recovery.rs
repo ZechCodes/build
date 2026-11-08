@@ -13,6 +13,7 @@ pub(in crate::app) struct RestoredRecovery {
     pub in_flight: HashSet<String>,
     ready: HashSet<String>,
     pub provider_projects: HashSet<String>,
+    pub provider_discovery_retry: bool,
 }
 
 struct RestoreRun {
@@ -65,13 +66,35 @@ impl OffLockJob for RestoreRun {
 }
 
 impl AppState {
+    pub(in crate::app) fn run_recovery_reserved(&self, id: &str) -> bool {
+        self.restored_recovery.ready.contains(id)
+    }
+
     pub(in crate::app) fn refuse_run_recovery(&self, id: &str) -> Result<(), String> {
-        if self.restored_recovery.in_flight.contains(id) {
+        if self.run_recovery_reserved(id) {
             return Err(crate::api::v1::reviews::errors::encode(
                 "busy",
                 "Run recovery is in progress; try again",
                 serde_json::Value::Null,
             ));
+        }
+        Ok(())
+    }
+
+    pub(in crate::app) fn refuse_recovering_checkout(
+        &self,
+        project: &str,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        for id in &self.restored_recovery.ready {
+            let Some(active) = self.runs.get(id) else {
+                continue;
+            };
+            if self.projects.project_id_of(id) == Some(project)
+                && crate::app::workspaces::same_path(path, &active.worktree.path)
+            {
+                self.refuse_run_recovery(id)?;
+            }
         }
         Ok(())
     }
@@ -117,7 +140,8 @@ impl AppState {
             .filter(|id| !self.run_recovery_held(id))
             .cloned()
             .collect();
-        for id in ids.into_iter().take(8) {
+        let capacity = 8usize.saturating_sub(self.restored_recovery.in_flight.len());
+        for id in ids.into_iter().take(capacity) {
             let Some(record) = self.recovery_run_record(&id) else {
                 continue;
             };
@@ -156,6 +180,9 @@ impl AppState {
     }
 
     pub(in crate::app) fn retry_restored_provider_notices(&mut self) {
+        if self.restored_recovery.provider_discovery_retry {
+            self.rebuild_provider_notice_retries();
+        }
         let projects: Vec<_> = self
             .restored_recovery
             .provider_projects

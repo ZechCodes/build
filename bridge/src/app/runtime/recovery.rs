@@ -254,6 +254,7 @@ impl AppState {
         self.migrate_legacy_dismissals();
         self.close_recovered_working_intervals();
         self.initialize_device_lifecycle()?;
+        self.rebuild_provider_notice_retries();
         Ok(())
     }
 
@@ -838,6 +839,7 @@ impl AppState {
     fn recut_project_scratches(&self) {
         for (run_id, active) in &self.runs {
             if self.refuse_archived_entity(run_id).is_err()
+                || self.run_recovery_reserved(run_id)
                 || active.run.state.is_terminal()
                 || active.worktree.path.is_dir()
                 || !self.is_project_conversation_owner(run_id)

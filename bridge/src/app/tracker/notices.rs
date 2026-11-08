@@ -39,6 +39,7 @@ impl AppState {
         entity_id: &str,
         agent_id: &str,
     ) -> Result<AddressedAgent, String> {
+        self.refuse_run_recovery(entity_id)?;
         let mut params = self.current_thread_params(&serde_json::json!({
             "entity_id": entity_id, "agent_id": agent_id,
         }))?;
@@ -262,6 +263,7 @@ impl AppState {
         (phase, kind): (&'static str, Option<crate::agent_message::MessageKind>),
         write: impl FnOnce(&mut crate::thread::Thread, &str),
     ) -> Result<(), String> {
+        self.refuse_run_recovery(entity_id)?;
         let addressed = self.current_service_agent(entity_id, agent_id)?;
         let now = crate::store::now_rfc3339();
         self.edit_agent_conversation(entity_id, agent_id, |thread, _| {

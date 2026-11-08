@@ -10,6 +10,12 @@ use crate::thread::{MessageOutcome, TaskEnvelope, ThreadItem, ThreadMessage};
 
 impl AppState {
     pub(in crate::app) fn replay_provider_recovery_episodes(&mut self) -> Result<(), String> {
+        let result = self.replay_boot_provider_episodes();
+        self.rebuild_provider_notice_retries();
+        result
+    }
+
+    fn replay_boot_provider_episodes(&mut self) -> Result<(), String> {
         let episodes = provider_recovery::all_episodes(&self.state_root)?;
         let mut first_error = None;
         for episode in episodes {
@@ -53,13 +59,78 @@ impl AppState {
         if !source && !recipient {
             return Ok(true);
         }
+        if !episode.needs_notice
+            && matches!(
+                episode.stage,
+                RecoveryStage::Terminal | RecoveryStage::Resolved
+            )
+        {
+            return Ok(true);
+        }
+        self.refuse_provider_run_recovery(&episode)?;
         let scope = episode.scope.clone();
         let id = episode.id.clone();
         self.replay_provider_episode(episode)?;
         // A fenced or live episode can return successfully without delivering.
         // Keep the restore obligation until the durable checkpoint settles.
         let saved = provider_recovery::read_episode(&self.state_root, &scope.agent_id, &id)?;
-        Ok(saved.is_none_or(|saved| !saved.active && !saved.needs_notice))
+        Ok(saved.is_none_or(|saved| !saved.needs_notice))
+    }
+
+    /// Retry state is derived from durable owed notices, not a restore-only
+    /// memory entry. Pending execution checkpoints also need boot abandonment.
+    pub(in crate::app) fn rebuild_provider_notice_retries(&mut self) {
+        self.restored_recovery.provider_discovery_retry = false;
+        let episodes = match provider_recovery::independent_episodes(&self.state_root) {
+            Ok(episodes) => episodes,
+            Err(error) => {
+                self.restored_recovery.provider_discovery_retry = true;
+                eprintln!("discover provider notice retries: {error}");
+                return;
+            }
+        };
+        for episode in episodes {
+            match episode {
+                Ok(episode) => self.remember_provider_notice_retry(&episode),
+                Err(error) => {
+                    self.restored_recovery.provider_discovery_retry = true;
+                    eprintln!("discover provider notice retry: {error}");
+                }
+            }
+        }
+    }
+
+    fn remember_provider_notice_retry(&mut self, episode: &RecoveryEpisode) {
+        let owed = episode.needs_notice
+            || (episode.active
+                && matches!(
+                    episode.stage,
+                    RecoveryStage::Pending | RecoveryStage::InFlight
+                ));
+        if !owed || self.provider_episode_archived(episode) {
+            return;
+        }
+        let owners = std::iter::once(&episode.scope.entity_id).chain(
+            episode
+                .recipient
+                .iter()
+                .map(|recipient| &recipient.scope.entity_id),
+        );
+        for owner in owners {
+            if let Some(project) = self.projects.project_id_of(owner) {
+                self.restored_recovery
+                    .provider_projects
+                    .insert(project.to_string());
+            }
+        }
+    }
+
+    fn refuse_provider_run_recovery(&self, episode: &RecoveryEpisode) -> Result<(), String> {
+        self.refuse_run_recovery(&episode.scope.entity_id)?;
+        if let Some(recipient) = &episode.recipient {
+            self.refuse_run_recovery(&recipient.scope.entity_id)?;
+        }
+        Ok(())
     }
 
     fn provider_episode_archived(&self, episode: &RecoveryEpisode) -> bool {
@@ -87,11 +158,16 @@ impl AppState {
         if episode.stage != RecoveryStage::Terminal {
             return Err("live provider failure has no terminal outbox checkpoint".into());
         }
-        if episode.needs_notice {
+        let pending = episode.clone();
+        let result = if episode.needs_notice {
             self.persist_provider_failure_notice(episode)
         } else {
             self.queue_recovery_recipient(episode.recipient.as_ref())
+        };
+        if result.is_err() {
+            self.remember_provider_notice_retry(&pending);
         }
+        result
     }
 
     pub(in crate::app) fn provider_recovery_blocks_resume(
@@ -180,6 +256,7 @@ impl AppState {
         &mut self,
         mut episode: RecoveryEpisode,
     ) -> Result<(), String> {
+        self.refuse_provider_run_recovery(&episode)?;
         if self.provider_episode_archived(&episode) {
             return Ok(());
         }
@@ -198,6 +275,9 @@ impl AppState {
             sha256_hex(format!("{}:{}:{}", scope.agent_id, scope.thread_id, episode.id).as_bytes());
         if episode.recipient.is_none() {
             let recipient = self.choose_recovery_recipient(scope, operation.as_ref(), &key)?;
+            if let Some(recipient) = &recipient {
+                self.refuse_run_recovery(&recipient.scope.entity_id)?;
+            }
             if recipient.as_ref().is_some_and(|recipient| {
                 self.refuse_archived_entity(&recipient.scope.entity_id)
                     .is_err()
@@ -388,6 +468,7 @@ impl AppState {
         let Some(recipient) = recipient else {
             return Ok(());
         };
+        self.refuse_run_recovery(&recipient.scope.entity_id)?;
         if self
             .refuse_archived_entity(&recipient.scope.entity_id)
             .is_err()

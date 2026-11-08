@@ -172,6 +172,8 @@ impl AppState {
         self.validate_checkout_snapshot(&adopted.project_id, &checkouts)?;
         #[cfg(test)]
         fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Open)?;
+        self.refuse_run_recovery(&adopted.run_id)?;
+        self.refuse_recovering_checkout(&adopted.project_id, &adopted.checkout.path)?;
         let project_id = adopted.project_id.clone();
         let run_id = adopted.run_id.clone();
         let choice = adopted.model_choice.clone();
@@ -187,7 +189,7 @@ impl AppState {
             choice,
             &adopted.checkout.branch,
             adopted.checkout.path.clone(),
-        );
+        )?;
         if let Some(reason) = downgrade {
             self.note_isolation_downgrade(&run_id, &mut active, &reason);
         }
@@ -223,11 +225,13 @@ impl AppState {
             branch,
             root,
         } = joined;
+        self.refuse_run_recovery(&run_id)?;
         let instruction = DispatchInstruction::routed(instruction, routed.as_ref());
         let human_dispatched = instruction.from_agent.is_none();
         let route = self.record_dispatch_route(routed, &project_id, &run_id, &branch)?;
         let mut active = self.take_run(&run_id)?;
-        let agent = self.dispatch_to_run(&run_id, &mut active, instruction, choice, &branch, root);
+        let agent =
+            self.dispatch_to_run(&run_id, &mut active, instruction, choice, &branch, root)?;
         #[cfg(test)]
         if let Err(error) = fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Settle) {
             self.restore_run_after_failed_save(&run_id, active);
@@ -262,7 +266,8 @@ impl AppState {
         choice: ModelChoice,
         branch: &str,
         root: std::path::PathBuf,
-    ) -> DispatchedAgent {
+    ) -> Result<DispatchedAgent, String> {
+        self.refuse_run_recovery(run_id)?;
         let now = now_rfc3339();
         // A dispatch always adds the agent it is about to speak to — an
         // adoption mints none, and a branch Build already runs keeps the agents
@@ -306,6 +311,6 @@ impl AppState {
             wants_catch_up: true,
             survives_refusal: false,
         });
-        DispatchedAgent { branch, agent_id }
+        Ok(DispatchedAgent { branch, agent_id })
     }
 }

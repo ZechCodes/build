@@ -3378,11 +3378,18 @@ sweep settlement. Boot recovery hydrates archived plan/run records without
 persisting lifecycle or missing-disk changes. It retains skipped run-recovery
 obligations: restore runs the same captured publication/worktree decision off
 lock, with per-run mutation/spawn admission and a committed-revision check at
-apply. Vanished-run sweeps defer those runs until recovery settles. A restart
+apply. Every ready run is reserved until settlement, including runs waiting for
+the eight-job concurrency limit. Branch joins, adoption and agent minting check
+the same reservation at their shared mutation boundary. Vanished-run sweeps
+defer those runs until recovery settles. A restart
 reconstructs obligations from archived records or performs ordinary boot recovery.
 Stale restart rosters cannot queue archived agents. Durable provider-failure
 notices replay independently on restore; failed checkpoints remain pending and
 retry on the restored-recovery service tick, without requiring another restart.
+Boot reconstructs notice retry obligations from durable owed checkpoints on
+active projects, including after an unsuccessful startup replay. A delivered
+terminal notice ends that retry obligation without changing its active flag or
+rewriting/waking it on later retry ticks.
 Snapshot refresh preserves archived finished-workspace records until restore.
 Configured conversation-item retention applies independently of project archive.
 The two method names are explicitly withheld from greetings, `projects.archive`

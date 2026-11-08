@@ -443,7 +443,10 @@ pub(in crate::app) async fn handle_coding_mcp_frame(
             if let Err(error) = generation.guard(&app) {
                 return Some(mcp_action_response(Err(error)));
             }
-            if let Err(error) = app.refuse_archived_entity(&generation.entity_id) {
+            if let Err(error) = app
+                .refuse_archived_entity(&generation.entity_id)
+                .and_then(|_| app.refuse_run_recovery(&generation.entity_id))
+            {
                 return Some(mcp_action_response(Err(error)));
             }
             app.done_deferring_for_agent(&generation.entity_id, &generation.agent_id, report)

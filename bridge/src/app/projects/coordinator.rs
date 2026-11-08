@@ -83,6 +83,22 @@ impl AppState {
         owner: &str,
         asked: Option<ModelChoice>,
     ) -> Result<String, String> {
+        if self.run_recovery_reserved(owner) {
+            if let Some(pin) = self
+                .runs
+                .get(owner)
+                .and_then(|active| {
+                    active
+                        .pinned_agent_id
+                        .as_ref()
+                        .filter(|pin| active.agents.by_id(pin).is_some())
+                })
+                .cloned()
+            {
+                return Ok(pin);
+            }
+            self.refuse_run_recovery(owner)?;
+        }
         let choice = match asked {
             Some(asked) => asked,
             None => self.mint_model_choice(owner)?,

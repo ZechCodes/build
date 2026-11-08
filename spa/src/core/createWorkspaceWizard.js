@@ -89,7 +89,7 @@ function pickerKey(event,body) {
   if(event.key === '/' && event.target.tagName !== 'INPUT') {event.preventDefault();body.querySelector('#create-workspace-search')?.focus();return;}
   const direction={ArrowDown:1,ArrowUp:-1}[event.key];
   if(!direction) return;
-  const rows=[...body.querySelectorAll('[data-create-target]')];
+  const rows=[...body.querySelectorAll('[data-create-target], [data-create-new-environment]')];
   if(!rows.length) return;
   event.preventDefault();const at=rows.indexOf(document.activeElement);rows[(at+direction+rows.length)%rows.length].focus();
 }
@@ -114,7 +114,7 @@ function openLegacySurface(options,savedDraft) {
     name:savedDraft?.name || '',isolation:savedDraft?.isolation || '',onClose:()=>{void deleteDraft(wizardDraftAddress(options));}});
 }
 function openCreationSurface(options,snapshot,savedDraft) {
-  if(supportsWorkspaceWizard(snapshot,options))return mountCreateWorkspaceWizard(options,snapshot);
+  if(supportsWorkspaceWizard(snapshot,options))return mountCreateWorkspaceWizard(options,snapshot,null,savedDraft);
   const attempt=retainedCreationAttempt(snapshot,options);
   if(attempt)return mountCreateWorkspaceWizard(options,snapshot,attempt);
   return options.fromShortcut ? null : openLegacySurface(options,savedDraft?.continues ? savedDraft:undefined);
@@ -132,12 +132,13 @@ export function openCreateWorkspaceWizard(options = {}) {
     flushDraft:()=>ready.then(()=>screen?.flushDraft?.()),
   };
 }
-function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null) {
+function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null,savedDraft=null) {
   const fixedProject=options.fixedProject ?? Boolean(options.projectId);
   let snapshot=initialSnapshot;
   const initial=createWorkspaceWizardModel({...snapshot,...options,fixedProject});
   const state={...initial,query:'',name:'',isolation:'',error:options.error || '',busy:false,operationId:null,fixedProject,
     environmentDraft:initialEnvironmentDraft(options,initial),addedSources:[],advancedExpanded:options.advancedExpanded === true,folderReferences:snapshot};
+  if(savedDraft)Object.assign(state,savedDraft);
   updateAdvanced();
   const opener=document.activeElement;
   const address=uiAddress({deviceId:options.deviceId,entityId:options.projectId || options.environmentId,view:'create-workspace',kind:'draft'});
@@ -262,7 +263,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     const advanced=modal.body.querySelector('[data-create-advanced]');
     if(!advanced)return;
     advanced.ontoggle=()=>{state.advancedExpanded=advanced.open;save();};
-    wireFolderDrafts(modal.body,{sources:state.addedSources,deviceId:state.target.deviceId,changed:save,repaint:paint,fail});
+    wireFolderDrafts(modal.body,{sources:state.addedSources,deviceId:state.target.deviceId,changed:()=>{save();modal.body.querySelector('.create-sources').innerHTML=workspaceSourcesHtml(state);},repaint:paint,fail});
   }
   function nextPage() {
     state.error=environmentDraftError(state.environmentDraft);

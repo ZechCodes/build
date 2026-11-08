@@ -76,3 +76,8 @@ it('returns an added-folder refusal to expanded Advanced, retaining the environm
  click('[data-create-advanced] summary');click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/extra.git');click('[data-create-go]');
  await vi.waitFor(()=>expect(query('[data-create-advanced]')?.open).toBe(true));expect(query('#create-work-input').value).toBe('Ship');expect(document.body.textContent).toContain('source overlaps');
 });
+it('includes New environment in picker arrow navigation',async()=>{
+ const held=snapshot();held.environments=[{id:'e1',deviceId:'d1',name:'Sources',sources:[]}];mocks.read.mockResolvedValue(held);
+ await open();query('[data-create-target]').focus();document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));
+ expect(document.activeElement).toBe(query('[data-create-new-environment]'));
+});

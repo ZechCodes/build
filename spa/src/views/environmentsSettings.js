@@ -80,7 +80,7 @@ function environmentHtml(environment, listing, device, error, support) {
 }
 
 function creationButton(action, label, environmentId = '') {
-  return `<button class="btn" type="button" data-environment-create="${action}" data-environment-id="${esc(environmentId)}">${esc(label)}<span class="sub"> · Creates a workspace</span></button>`;
+  return `<button class="btn" type="button" data-environment-create="${action}" data-environment-id="${esc(environmentId)}">${esc(label)}<br><span class="sub">Creates a workspace</span></button>`;
 }
 function environmentShortcuts(environment,members,listing,support) {
   if (!support?.create || !support.createProject) return '';

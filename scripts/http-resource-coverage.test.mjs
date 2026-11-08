@@ -338,8 +338,8 @@ const sourceFingerprintParts = {
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
   // #997 runtime-board inboxView.js:193,206,320: scoped pending display and cached branch choices; existing RPC and mutation dispatch unchanged.
   // #1051: cached environment identity and wizard entry points; existing RPC methods, producers and assignment edges are unchanged.
-  "core/inboxView.js": ["af9155dc", "2c6d74b7", "97e7f019", "14d8568c", "80f5eca0", "0842642e", "1b519057", "512e963e"],
-  "core/isolation.js": ["1b646651", "086eea7f", "b0a97d6f", "8993ed77", "7e6e246e", "4110fbc2", "7defb076", "77f79221"],
+  "core/inboxView.js": ["7aa726e7", "3e51f395", "6d4e1fd9", "5350f8b1", "98c34631", "60205f21", "c86b581d", "f79ec95e"],
+  "core/isolation.js": ["e0f94fdb", "5efa8bd1", "633758d8", "bf506b89", "9ee7b957", "40e0c0e8", "30be0ed3", "d178b6d9"],
   "core/markdownFences.js": ["10057396", "68214f4d", "d193015e", "2552698e", "c48313df", "6df2e223", "7e3bc837", "2805a4bb"],
   "core/modelCatalog.js": ["c293ea11", "fff0969f", "7852c8cd", "0c252f82", "fe666159", "95919417", "25a661ec", "c93fd9b4"],
   "core/navigationVisits.js": ["f8d32f7a", "6bf64af6", "81866475", "02ebd8fc", "3a0be61c", "c9f0d9f3", "e1cc0c06", "dd4dc05a"],
@@ -433,8 +433,8 @@ const sourceFingerprintParts = {
   // #1052: nested creation execution evidence changes display state; transport method edges stay unchanged.
   "core/writeOperations.js": ["8dd06f02", "c7f3f56e", "ae6bcbca", "76665c9a", "452af3df", "6352b83c", "113b36cc", "193b6b1b"],
   "push.js": ["c7a3eb27", "240e0a4d", "3e314aee", "369bea39", "25bf83e0", "f105e41a", "0e4ed716", "4e53028b"],
-  "sheets/browser.js": ["e226c6fb", "9689c6bc", "39ba311b", "335481c7", "f444e696", "36c5c8b6", "013588ec", "bd2a4dbe"],
-  "sheets/newRepo.js": ["e1addf8b", "abc706f6", "ca74fa24", "7e1f3208", "aae3d460", "37157135", "21e46d2f", "f187cdfa"],
+  "sheets/browser.js": ["f29e68d9", "6231a5cd", "1b35fff6", "20bf39c0", "22040456", "1a9bea95", "2fdd2c81", "d3a23914"],
+  "sheets/newRepo.js": ["2aa62eb9", "1256b93f", "6d69e55c", "9aadf051", "0ca4505a", "35eb191a", "7c08d8f9", "f4a68f66"],
   // #997 projectSettings.js:232: the existing project.list loader delegates to owned device recovery.
   "sheets/projectSettings.js": ["1e7423ec", "47cd628d", "c76970e7", "fca5da5f", "c623809c", "c51769ab", "1b172bb1", "906737ee"],
   "sheets/projectSources.js": ["f9eb9e2b", "9c526294", "46090552", "02740c7a", "25e0f849", "8162d486", "fd90c590", "05524d9d"],
@@ -446,10 +446,10 @@ const sourceFingerprintParts = {
   "views/archive.js": ["6f4a7962", "88f34292", "73eafead", "5dc6229b", "5b040b7a", "09baf137", "8cbbce83", "6c83d400"],
   "views/branchView.js": ["bd60fcf4", "7c212e82", "4972bdd1", "5b4a3563", "54913179", "782e8a54", "ea8d0a73", "30816a7d"],
   // #997 deviceProjects.js:82: the existing project.list loader delegates to owned device recovery.
-  "views/deviceProjects.js": ["4e4add8c", "613568da", "f8200bad", "b7b27066", "84e7ddaa", "62bfbbbe", "cee788f9", "586de842"],
+  "views/deviceProjects.js": ["4257defb", "fb7f67ef", "3d2210d6", "e161c7ce", "51a0b534", "5a1ae958", "faa56fb5", "c1f45a4d"],
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
   // #1052 retry review: settings-owned results alone authorize totals/empty states; pending pulls hide earlier errors. RPC edges stay unchanged.
-  "views/environmentsSettings.js": ["6f77cec3", "03735073", "2f1399fa", "fd4ef088", "1bfffde5", "647b567f", "bdd5bcf9", "4416e4c5"],
+  "views/environmentsSettings.js": ["51ea91dd", "d5d58b35", "e7be60fe", "5c87925d", "bdcb47f5", "0e4a947a", "38e05bc8", "711f8244"],
   "views/files.js": ["bc4913c5", "865b9dd0", "e28f655f", "242c9011", "456a4139", "b2cfd372", "6498e15b", "f3116261"],
   "views/projectChanges.js": ["e195b594", "3a7689fe", "14bfc899", "18ada18d", "ab36cd52", "ad96ba97", "a877c4da", "c9c3b78f"],
   "views/projectView.js": ["76123138", "7ded30d0", "0893b5ef", "5d880782", "137464b9", "5b123e76", "48f1a9d5", "28144478"],
@@ -461,9 +461,9 @@ const sourceFingerprintParts = {
   "core/directoryWatcher.js": ["3016199e", "f2ebe782", "5731fa24", "665dba3a", "6fd96a9e", "f5a4ee11", "c6841b70", "db07db4f"],
   "core/taskTimelinePages.js": ["da2840fb", "5992d7ce", "038bbc4d", "9c01a8ab", "c320a6f3", "7592e5be", "d5cbf08c", "4fcf8220"],
 
-  "core/createWorkspaceProgress.js": ["23545d1a", "2869a6af", "bf4236b1", "fe88db74", "0d1ef48f", "26ef00cc", "59429500", "927a7ad7"],
-  "core/createWorkspaceTargets.js": ["a069d309", "99c91164", "1312556e", "14af5950", "01144734", "5b805997", "5b7b7161", "22f1e394"],
-  "core/writeOperationProgress.js": ["1092c480", "f4c49dde", "dbbef23b", "5cdbfadb", "2beab767", "146717b7", "ddf2e984", "9ba42bcb"],
+  "core/createWorkspaceProgress.js": ["085b76b2", "2f0901e7", "0afb6d37", "c07529dd", "8db67e4d", "92c3d88f", "1506edf2", "99260dbb"],
+  "core/createWorkspaceTargets.js": ["6eeb4744", "1f87f69d", "caca6fc3", "eef793a2", "db8a23cc", "76e4d381", "a9ef089a", "4a67593f"],
+  "core/writeOperationProgress.js": ["ac050549", "7335cecf", "6135e1e7", "b2c49caa", "3067cebd", "dbda8162", "eaab247e", "e703d6c1"],
 };
 const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintParts)
   .map(([file, parts]) => [file, parts.join("")]));

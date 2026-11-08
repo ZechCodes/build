@@ -238,10 +238,14 @@ pub(in crate::app) fn claim_agent_spawn(
     key: &TabKey,
     request: &AgentSpawnRequest<'_>,
     timer: &FrameTimer,
-) -> Result<SpawnDecision, String> {
+) -> Result<SpawnDecision, StartFailure> {
     let deadline = std::time::Instant::now() + AGENT_SPAWN_WAIT;
     let mut s = timer.lock(state);
     loop {
+        s.refuse_archived_entity(request.owner)
+            .map_err(StartFailure::Deferred)?;
+        s.refuse_run_recovery(request.owner)
+            .map_err(StartFailure::Deferred)?;
         if !s.agent_target_exists(
             request.owner,
             request.agent_id,
@@ -259,7 +263,8 @@ pub(in crate::app) fn claim_agent_spawn(
             SpawnAvailability::Live(wire_id) => return Ok(SpawnDecision::Live(wire_id)),
             SpawnAvailability::Available => {
                 return reserve_agent_spawn(&mut s, key, request)
-                    .map(|reserved| SpawnDecision::Reserved(Box::new(reserved)));
+                    .map(|reserved| SpawnDecision::Reserved(Box::new(reserved)))
+                    .map_err(StartFailure::Failed);
             }
             SpawnAvailability::Claimed => {}
         }
@@ -268,7 +273,8 @@ pub(in crate::app) fn claim_agent_spawn(
             return Err(format!(
                 "timed out waiting for the agent starting in {}",
                 key.root.display()
-            ));
+            )
+            .into());
         }
         let finished = s.session_registry.spawn_finished();
         s = s.wait_until(&finished, left, |state| {
@@ -305,6 +311,8 @@ pub(in crate::app) fn reserve_agent_spawn(
     }
     // A project whose folder was away is loaded again the moment it is back.
     s.revive_parked_projects();
+    s.refuse_archived_entity(owner)?;
+    s.refuse_run_recovery(owner)?;
     s.refuse_worker_without_sources(owner, agent_id)?;
     s.refuse_worker_during_source_move(owner, agent_id)?;
     // A router session belongs to no project — deciding which one

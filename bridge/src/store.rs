@@ -64,6 +64,7 @@ mod conversation_reset;
 mod conversations;
 mod delivery_intents;
 mod documents;
+mod project_archive;
 pub use delivery_intents::{DeliveryIntent, DeliveryNotice};
 mod entities;
 mod legacy;

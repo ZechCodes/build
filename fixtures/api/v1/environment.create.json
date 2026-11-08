@@ -256,7 +256,8 @@
     "conflict",
     "busy",
     "unavailable",
-    "internal"
+    "internal",
+    "project_archived"
   ],
   "note": "M2.1 bridge contract; environments.create and projects.addedSources remain withheld until the M2.2 consumer."
 }

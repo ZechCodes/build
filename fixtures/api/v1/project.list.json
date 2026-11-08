@@ -98,7 +98,7 @@
         "environment_name": "build",
         "project_key": "/home/ada/code/build",
         "diverged": false,
-        "device": "Ada’s workstation",
+        "device": "Ada\u2019s workstation",
         "open_tasks": 3,
         "total_tasks": 5,
         "workspaces": 1,
@@ -115,6 +115,7 @@
             "sync": null
           }
         ],
+        "archived_at": null,
         "added_sources": []
       }
     ]

@@ -44,6 +44,7 @@ impl AppState {
                         .read_value(),
                     compaction: self.scope_compaction_observation(&scope),
                     project_id: project.id.clone(),
+                    archived_at: project.archived_at,
                     environment_id: project.environment_id.clone(),
                     environment_name: self
                         .projects
@@ -117,6 +118,7 @@ impl AppState {
             .collect::<Vec<_>>();
         let value = json!({
             "project_id": p.id,
+            "archived_at": p.archived_at,
             "compaction_thresholds": self.compaction_thresholds(&crate::compaction::CompactionScope::Project(p.id.clone())).unwrap_or_default().read_value(),
             "compaction": self.scope_compaction_observation(&crate::compaction::CompactionScope::Project(p.id.clone())),
             "name": p.name,

@@ -155,6 +155,12 @@ impl AppState {
         Ok(())
     }
 
+    /// The exact durable revision, without probing Git while a recovery job
+    /// captures or checks its optimistic write fence under the app mutex.
+    pub(in crate::app) fn committed_run_snapshot(&self, id: &str) -> Option<PersistedRun> {
+        self.committed_entities.run(id).cloned()
+    }
+
     fn run_record(&self, run_id: &str, active: &ActiveRun, clock: EntityClock) -> PersistedRun {
         let now = now_rfc3339();
         let created_at = clock.created_at.unwrap_or_else(|| now.clone());

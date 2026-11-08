@@ -70,9 +70,18 @@ impl Store {
     /// Saved intents only. Admitted work remains discoverable when reblocked,
     /// so startup can reconcile its receipt without admitting another message.
     pub fn delivery_intents_ready(&self, limit: usize) -> Result<Vec<DeliveryIntent>, StoreError> {
+        self.delivery_intents_ready_excluding_projects(limit, &[])
+    }
+
+    pub(crate) fn delivery_intents_ready_excluding_projects(
+        &self,
+        limit: usize,
+        excluded_projects: &[String],
+    ) -> Result<Vec<DeliveryIntent>, StoreError> {
+        let excluded = serde_json::to_string(excluded_projects).expect("project keys serialize");
         self.in_waiting_on_transaction(|tx| {
-            let mut statement = tx.prepare("SELECT id, record FROM tracker_delivery_intents WHERE state IN ('queued', 'provisioning') ORDER BY rowid LIMIT ?1")?;
-            let intents = statement.query_map([limit.clamp(1, 100) as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            let mut statement = tx.prepare("SELECT id, record FROM tracker_delivery_intents WHERE state IN ('queued', 'provisioning') AND project_key NOT IN (SELECT value FROM json_each(?2)) ORDER BY rowid LIMIT ?1")?;
+            let intents = statement.query_map(params![limit.clamp(1, 100) as i64, excluded], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
                 .map(|r| { let (id, raw) = r?; tracker::decode::<DeliveryIntent>(&raw, "tracker_delivery_intents", &id) }).collect::<Result<Vec<_>, StoreError>>()?;
             drop(statement);
             let mut ready = Vec::new();

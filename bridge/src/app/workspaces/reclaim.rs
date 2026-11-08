@@ -596,7 +596,8 @@ impl AppState {
         reserved: bool,
     ) -> Option<(Vec<&'static str>, Vec<LinkedTask>)> {
         let workspace = self.workspaces.get(workspace_id)?;
-        let busy = self.project_deletion_in_progress
+        let busy = self.refuse_archived_project(&workspace.project_id).is_err()
+            || self.project_deletion_in_progress
             || self.deferred_work.is_some()
             || self.active_deferred_filesystem_jobs > 0
             || self.workspace_contains_pending_shell(workspace_id)
@@ -619,6 +620,7 @@ impl AppState {
     pub(in crate::app) fn reclaim_subjects(&self) -> Vec<Subject> {
         let linked = self.tasks_linking_workspaces();
         self.measured_workspaces(None)
+            .filter(|workspace| self.refuse_archived_project(&workspace.project_id).is_ok())
             .map(|workspace| {
                 let tasks = tasks_of(&linked, &workspace.id);
                 self.reclaim_subject(workspace, tasks)
@@ -816,6 +818,10 @@ impl AppState {
             let Some(workspace) = self.workspaces.get(&subject.workspace_id) else {
                 continue;
             };
+            // Archive may have won after the off-lock measurement was captured.
+            if self.refuse_archived_project(&workspace.project_id).is_err() {
+                continue;
+            }
             // The user can change the lock while measurement runs off the mutex.
             record.holds.retain(|hold| hold != HOLD_LOCKED);
             record.hold(if workspace.locked {

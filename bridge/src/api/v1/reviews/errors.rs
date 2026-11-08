@@ -50,6 +50,7 @@ pub(crate) fn decode(message: &str) -> Option<ApiError> {
         "invalid_params" => ApiError::InvalidParams { message, details },
         "not_found" => ApiError::NotFound { message, details },
         "conflict" => ApiError::Conflict { message, details },
+        "project_archived" => ApiError::ProjectArchived { message, details },
         "busy" => ApiError::Busy { message, details },
         "stale_version" => ApiError::StaleVersion { message, details },
         "unavailable" => ApiError::Unavailable { message, details },

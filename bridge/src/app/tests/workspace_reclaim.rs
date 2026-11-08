@@ -880,3 +880,35 @@ fn the_verdict_is_kept_across_a_restart() {
     let reopened = Arc::new(Mutex::new(reopened));
     assert_eq!(lifecycle(&reopened, &ws), before);
 }
+
+#[test]
+fn archived_reclaim_keeps_work_until_restore() {
+    let (_tmp, state, project, ws, task) = linked_workspace();
+    state.lock().unwrap().projects.at_mut(0).archived_at = Some(1);
+    let before = call(&state, "tasks.get", json!({"task_id":task}))["result"].clone();
+    let at = quiet_day();
+    AppState::sweep_workspaces(&state, &impatient(), at);
+    assert_eq!(
+        call(&state, "tasks.get", json!({"task_id":task}))["result"],
+        before
+    );
+    assert_eq!(lifecycle(&state, &ws), Value::Null);
+    assert!(!state
+        .lock()
+        .unwrap()
+        .idle_digest_sent
+        .contains_key(&project));
+    assert_eq!(
+        call(&state, "project.restore", json!({"project_id":project}))["ok"],
+        true
+    );
+    AppState::sweep_workspaces(&state, &impatient(), at);
+    assert_eq!(timeline_kinds(&state, &task).len(), 1);
+    assert!(state
+        .lock()
+        .unwrap()
+        .idle_digest_sent
+        .contains_key(&project));
+    AppState::sweep_workspaces(&state, &impatient(), at);
+    assert_eq!(timeline_kinds(&state, &task).len(), 1);
+}

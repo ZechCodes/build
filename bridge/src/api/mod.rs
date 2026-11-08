@@ -210,6 +210,8 @@ pub const UNADVERTISED_CAPABILITIES: &[&str] = &[
     "environment.update_source",
     "environment.sync_source",
     "environment.set_isolation",
+    "project.archive",
+    "project.restore",
 ];
 
 /// Everything this bridge can serve on a session, as exact method names and
@@ -260,6 +262,11 @@ pub enum ApiError {
         message: String,
         details: Option<Value>,
     },
+    /// Retained project data is read-only until restored.
+    ProjectArchived {
+        message: String,
+        details: Option<Value>,
+    },
     /// A stale `expected_revision` / `expected_choice_revision`; `details`
     /// carries the current value.
     Conflict {
@@ -305,12 +312,13 @@ pub enum ApiError {
 
 impl ApiError {
     /// Every code, as a fixture may cite it.
-    pub const CODES: [&'static str; 12] = [
+    pub const CODES: [&'static str; 13] = [
         "unknown_method",
         "invalid_params",
         "not_found",
         "already_exists",
         "locked",
+        "project_archived",
         "conflict",
         "stale_version",
         "stale_body",
@@ -405,6 +413,7 @@ impl ApiError {
             ApiError::NotFound { .. } => "not_found",
             ApiError::AlreadyExists { .. } => "already_exists",
             ApiError::Locked { .. } => "locked",
+            ApiError::ProjectArchived { .. } => "project_archived",
             ApiError::Conflict { .. } => "conflict",
             ApiError::StaleVersion { .. } => "stale_version",
             ApiError::StaleBody { .. } => "stale_body",
@@ -430,6 +439,7 @@ impl ApiError {
             | ApiError::NotFound { message, details }
             | ApiError::AlreadyExists { message, details }
             | ApiError::Locked { message, details }
+            | ApiError::ProjectArchived { message, details }
             | ApiError::Conflict { message, details }
             | ApiError::StaleVersion { message, details }
             | ApiError::StaleBody { message, details }
@@ -551,6 +561,11 @@ impl ApiError {
 
 impl From<String> for ApiError {
     fn from(message: String) -> ApiError {
+        if let Some(error) = crate::api::v1::reviews::errors::decode(&message) {
+            if error.code() == "project_archived" {
+                return error;
+            }
+        }
         ApiError::internal(message)
     }
 }
@@ -641,6 +656,10 @@ mod tests {
             ApiError::not_found("m"),
             ApiError::already_exists("m"),
             ApiError::locked("m"),
+            ApiError::ProjectArchived {
+                message: "m".into(),
+                details: None,
+            },
             ApiError::conflict("m", None),
             ApiError::StaleVersion {
                 message: "m".into(),

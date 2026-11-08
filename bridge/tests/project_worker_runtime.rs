@@ -31,11 +31,15 @@ fn a_project_with_two_sources(bridge: &Bridge, root: &Path, repo: &Path) -> Proj
     std::fs::create_dir(&notes).unwrap();
     let project_id = bridge.ok(
         "project.create",
-        json!({ "name": "repo", "sources": [{ "path": repo }, { "path": notes }] }),
+        json!({ "name": "repo", "sources": [{ "path": repo }] }),
     )["project_id"]
         .as_str()
         .unwrap()
         .to_string();
+    bridge.ok(
+        "project.add_source",
+        json!({ "project_id": project_id, "path": notes }),
+    );
     let owner = bridge.ensure(&project_id);
     let pin = bridge.roster(&owner, true)["pinned_agent_id"]
         .as_str()

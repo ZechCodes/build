@@ -9,9 +9,10 @@ use serde_json::{json, Value};
 
 impl AppState {
     pub(super) fn pump_task_delivery_notices(&mut self) -> Result<bool, String> {
+        let excluded = self.archived_project_keys();
         let Some(mut notice) = self
             .tracker_store()?
-            .delivery_notices_ready(1)
+            .delivery_notices_ready_excluding_projects(1, &excluded)
             .stored()?
             .into_iter()
             .next()

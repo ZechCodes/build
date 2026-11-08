@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 /// presence fan-out and were split around `DeviceWatch` / `ClientWatch`.
 /// Retiring the validation gate and the recovery agent took two more:
 /// `on_run_agent_done` came under the cap and `consume_recovery_report` is gone.
-const RATCHETED_FUNCTIONS: usize = 19;
+/// Archive recovery extracted publication and missing-checkout decisions from recover_run.
+const RATCHETED_FUNCTIONS: usize = 18;
 
 const ALLOW: &str = "#[allow(clippy::cognitive_complexity)]";
 

@@ -56,10 +56,19 @@ fn write_notice(conn: &Connection, notice: &DeliveryNotice) -> Result<(), StoreE
 
 impl Store {
     pub fn delivery_notices_ready(&self, limit: usize) -> Result<Vec<DeliveryNotice>, StoreError> {
+        self.delivery_notices_ready_excluding_projects(limit, &[])
+    }
+
+    pub(crate) fn delivery_notices_ready_excluding_projects(
+        &self,
+        limit: usize,
+        excluded_projects: &[String],
+    ) -> Result<Vec<DeliveryNotice>, StoreError> {
         let conn = self.connection();
-        let mut statement = conn.prepare("SELECT id,record FROM tracker_delivery_notices WHERE state='queued' ORDER BY rowid LIMIT ?1")?;
+        let excluded = serde_json::to_string(excluded_projects).expect("project keys serialize");
+        let mut statement = conn.prepare("SELECT id,record FROM tracker_delivery_notices WHERE state='queued' AND project_key NOT IN (SELECT value FROM json_each(?2)) ORDER BY rowid LIMIT ?1")?;
         let notices = statement
-            .query_map([limit.clamp(1, 100) as i64], |r| {
+            .query_map(params![limit.clamp(1, 100) as i64, excluded], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             })?
             .map(|r| {

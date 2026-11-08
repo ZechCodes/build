@@ -720,3 +720,17 @@ fn an_agent_resumed_by_the_boot_that_ran_the_task_rename_is_told_the_new_tool_na
         "{body}"
     );
 }
+
+#[test]
+fn archived_restart_roster_writes_no_notice_or_turn() {
+    let mut fixture = standing();
+    let (state, _root, owner, agent) = fixture.parts();
+    set_state(state, &owner, &agent, AgentLifecycle::Live, true);
+    let roster = state.resume_roster("before-archive");
+    state.projects.at_mut(0).archived_at = Some(1);
+    assert!(state
+        .resume_recorded_agents(&roster, "after-archive")
+        .is_empty());
+    assert!(state.delivery_queue.queued_is_empty());
+    assert_eq!(build_said(state, &owner, &agent), None);
+}

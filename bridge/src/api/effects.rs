@@ -119,6 +119,8 @@ const WRITE_METHODS: &[&str] = &[
     "environment.set_isolation",
     "environment.create",
     "environment.discard_unused",
+    "project.archive",
+    "project.restore",
     "environment.create_project",
     "project.discard_unused",
     "secrets.create",

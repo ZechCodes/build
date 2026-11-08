@@ -119,6 +119,7 @@ impl ProjectConfiguration {
 
 struct ProjectConfigurationRecord {
     name: String,
+    archived_at: Option<u64>,
     base_branch: String,
     is_git: bool,
     sources: Vec<ProjectSource>,
@@ -131,6 +132,7 @@ impl ProjectConfigurationRecord {
     fn capture(project: &Project) -> Self {
         Self {
             name: project.name.clone(),
+            archived_at: project.archived_at,
             base_branch: project.base_branch.clone(),
             is_git: project.is_git,
             sources: project.sources.clone(),
@@ -148,6 +150,7 @@ impl ProjectConfigurationRecord {
             .find(|project| project.id == id)
             .expect("staged project remains registered under the app lock");
         std::mem::swap(&mut self.name, &mut project.name);
+        std::mem::swap(&mut self.archived_at, &mut project.archived_at);
         std::mem::swap(&mut self.base_branch, &mut project.base_branch);
         std::mem::swap(&mut self.is_git, &mut project.is_git);
         std::mem::swap(&mut self.sources, &mut project.sources);
@@ -506,6 +509,16 @@ impl ProjectRegistry {
     }
 
     /// Update only the registered project's configuration-owned isolation.
+    pub(super) fn set_archived_at(&mut self, id: &str, archived_at: Option<u64>) {
+        self.observation_projects.mark(id);
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|p| p.id == id)
+            .expect("resolved project");
+        project.archived_at = archived_at;
+    }
+
     pub(in crate::app) fn set_isolation(
         &mut self,
         project_id: &str,

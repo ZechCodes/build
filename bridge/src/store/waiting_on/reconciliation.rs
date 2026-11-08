@@ -247,8 +247,8 @@ struct Marker {
     causes: Vec<String>,
 }
 
-fn first_marker(tx: &Transaction) -> Result<Option<Marker>, StoreError> {
-    let row = tx.query_row("SELECT id, source_task_id, after_number, self_done, cause_event_ids, fanout FROM tracker_dependency_reconcile ORDER BY id LIMIT 1", [], |r| {
+fn first_marker(tx: &Transaction, excluded: &str) -> Result<Option<Marker>, StoreError> {
+    let row = tx.query_row("SELECT m.id, m.source_task_id, m.after_number, m.self_done, m.cause_event_ids, m.fanout FROM tracker_dependency_reconcile m JOIN tracker_tasks t ON t.id=m.source_task_id WHERE t.project_key NOT IN (SELECT value FROM json_each(?1)) ORDER BY m.id LIMIT 1", [excluded], |r| {
         Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? as u64, r.get::<_, bool>(3)?, r.get::<_, String>(4)?, r.get::<_, bool>(5)?))
     }).optional()?;
     row.map(|(id, source, after, self_done, raw, fanout)| {
@@ -268,8 +268,12 @@ fn first_marker(tx: &Transaction) -> Result<Option<Marker>, StoreError> {
     .transpose()
 }
 
-pub(super) fn page(tx: &Transaction, limit: usize) -> Result<WaitingOnPage, StoreError> {
-    let Some(marker) = first_marker(tx)? else {
+pub(super) fn page(
+    tx: &Transaction,
+    limit: usize,
+    excluded: &str,
+) -> Result<WaitingOnPage, StoreError> {
+    let Some(marker) = first_marker(tx, excluded)? else {
         return Ok(WaitingOnPage::default());
     };
     let project: String = tx.query_row(
@@ -312,8 +316,8 @@ pub(super) fn page(tx: &Transaction, limit: usize) -> Result<WaitingOnPage, Stor
         )?;
     }
     page.pending = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM tracker_dependency_reconcile)",
-        [],
+        "SELECT EXISTS(SELECT 1 FROM tracker_dependency_reconcile m JOIN tracker_tasks t ON t.id=m.source_task_id WHERE t.project_key NOT IN (SELECT value FROM json_each(?1)))",
+        [excluded],
         |r| r.get(0),
     )?;
     Ok(page)

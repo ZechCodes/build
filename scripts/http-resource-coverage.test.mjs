@@ -289,7 +289,7 @@ const sourceFingerprintParts = {
   "core/agentRolesPanel.js": ["c05b7c96", "5849ec7f", "0d258bc2", "96a7795e", "2a4663f4", "57e78316", "de145b90", "699b4a91"],
   "core/agentSurfacesModel.js": ["546cf5aa", "3a478c63", "4a0f02f5", "4eafcae5", "53a5ffd3", "3ad4f563", "c075aa93", "dcbbef9d"],
   "core/bridgeApi/v1/compactionParams.js": ["506db6e2", "f8148bc4", "925e889b", "61c6fe15", "d8cf74e2", "ef7e468f", "b610115f", "7132ce5b"],
-  "core/bridgeApi/v1/index.js": ["00cede56", "dcb787eb", "81b48380", "e344c0d8", "d4d50562", "f0199b46", "f582666f", "7110ce9e"],
+  "core/bridgeApi/v1/index.js": ["7d95f70a", "81488421", "6c559f32", "56d1c080", "b60e760f", "37f3da1f", "9346b8c4", "6b84ed81"],
   "core/bridgeApi/v1/writeMethods.js": ["c78ae754", "d23774c3", "664a2901", "97e2fcce", "bf94d04d", "13e8fc66", "96313eb2", "3ea76832"],
   "core/bridgeEpoch.js": ["e04a0a11", "6535b020", "abcac20c", "972a554f", "8d51fbb9", "6ef07fd8", "16062ed0", "9cd4d213"],
   "core/bridgeUpdatePanel.js": ["f9b19cc7", "4abdfc5a", "d159194d", "49ee91ed", "d39ab2e7", "15a6a80f", "0cb51530", "623ca8e5"],
@@ -389,7 +389,7 @@ const sourceFingerprintParts = {
   "core/taskComposer.js": ["44233e6a", "d60f8251", "f724f7bc", "af16b319", "2c205f31", "5a10e50b", "b233a25f", "ed90f8ad"],
   "core/taskCountReaderRuntime.js": ["dc823412", "765c408d", "09a4bd9d", "959b3450", "116e39aa", "fb67622c", "6afd9df6", "ce9e3eff"],
   "core/taskFilterChoices.js": ["6e7fca24", "b96c853f", "5baa71d1", "9e8c17fc", "9a8ad6ff", "14e53667", "9d583cd0", "032ce3ee"],
-  "core/taskMutationFence.js": ["1f7ac815", "7e25b93b", "78989130", "90e22a43", "b6c956a5", "2cb5f2a0", "e424fb92", "d8c7cd29"],
+  "core/taskMutationFence.js": ["0d352485", "54a207f5", "8caf3698", "07516276", "d853a678", "ecccfc9a", "77ee9c4b", "9aa02945"],
   "core/taskPaneSummaryReads.js": ["38940784", "0edcdfa7", "9b24a843", "58a0edf6", "142d6012", "742d2793", "d3f0c487", "d74a2d8e"],
   "core/taskReferenceLookups.js": ["d96512cb", "87a770a1", "4a0ecbe7", "c26db1f1", "e7ad9481", "284534db", "db18cad9", "3cc292af"],
   "core/taskReviewBatch.js": ["fc2f7cbe", "2ead7274", "41b47492", "2284e88a", "57cfa35f", "c5247a57", "2d78ccd0", "49e11c3e"],
@@ -1167,7 +1167,7 @@ test("secrets metadata routes are explicit and sealed uploads are bounded", asyn
 
 test("the generator inventories ordinary, required-context and optional-context methods", () => {
   const output = execFileSync(process.execPath, [fileURLToPath(new URL("scripts/http-resource-manifest.mjs", root)), "--check"], { encoding: "utf8" });
-  assert.match(output, /169 explicit resource routes; generated artifacts current/);
+  assert.match(output, /171 explicit resource routes; generated artifacts current/);
 });
 
 

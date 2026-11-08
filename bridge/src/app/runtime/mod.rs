@@ -16,3 +16,6 @@ pub(in crate::app) mod storage_maintenance;
 pub(in crate::app) mod terminals;
 pub(in crate::app) mod turn_failures;
 pub(in crate::app) mod usage_limits;
+
+pub(in crate::app) mod restored_recovery;
+mod run_recovery;

@@ -397,6 +397,7 @@ pub struct AppState {
     /// deciding right now. Single-flight, for the same reason a diff refresh
     /// is: the board polls faster than a fetch per stage returns.
     vanished_run_sweep_in_flight: bool,
+    restored_recovery: runtime::restored_recovery::RestoredRecovery,
     /// Test seam: see [`OffLockGate`]. `None` in production.
     #[cfg(test)]
     off_lock_gate: Option<OffLockGate>,
@@ -759,6 +760,7 @@ impl AppState {
             router_choice: None,
             board: BoardIndex::new(HashMap::new(), HashMap::new()),
             vanished_run_sweep_in_flight: false,
+            restored_recovery: Default::default(),
             diff_compute_observer: None,
             #[cfg(test)]
             off_lock_gate: None,
@@ -1010,6 +1012,7 @@ impl AppState {
         // runs off this mutex.
         ChangeBus::spawn_flusher_on(Arc::clone(&changes), push_runtime);
         WorktreeWatchers::spawn_reconciler(watchers, changes);
+        Self::spawn_restored_recovery_service(&state);
         Self::spawn_waiting_on_service(&state);
         Self::spawn_task_delivery_service(&state);
         state

@@ -350,7 +350,7 @@ fn failed_removal_retires_live_binding_without_reactivating_task_identity() {
     {
         let mut app = state.lock().unwrap();
         let fresh = terminal_free_agent_tab(&tab.root, &fixture.entity, &fixture.removed);
-        app.session_registry.insert_opened(tab, fresh);
+        app.session_registry.insert_opened(tab, fresh, None);
         app.publish_read_metadata();
     }
     assert_routed_availability(&state, &fixture, true);

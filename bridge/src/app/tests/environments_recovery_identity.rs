@@ -299,6 +299,346 @@ fn recovery_uses_home_path_for_a_resolved_project_with_a_missing_repo() {
 }
 
 #[test]
+fn archived_boot_recovery_keeps_plan_and_run_records_unchanged() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let mut state = rooted(root.path())
+        .with_task_store(root.path().join("store"))
+        .unwrap();
+    let project = state.add_project(home.clone(), "main".into());
+    let key = state.project(&project).unwrap().project_key.clone();
+    let store = state.store.clone().unwrap();
+    let plan = plan_record("plan-archived", &key);
+    let run = run_record("run-archived", &key, &root.path().join("missing-checkout"));
+    store.save_task_plan(&plan).unwrap();
+    store.save_run(&run).unwrap();
+    assert_eq!(
+        state.handle(req("project.archive", json!({"project_id":project})))["ok"],
+        true
+    );
+    std::fs::remove_dir(&home).unwrap();
+    state.recover_plan(plan.clone()).unwrap();
+    state.recover_run(run.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(store.load_all_plans().unwrap()[0].clone()).unwrap(),
+        serde_json::to_value(&plan).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(store.load_all_runs().unwrap()[0].clone()).unwrap(),
+        serde_json::to_value(&run).unwrap()
+    );
+    assert_eq!(state.plans[&plan.id].last_error, None);
+    assert_eq!(state.runs[&run.id].last_error, None);
+    assert!(state.projects.project_id_of(&plan.id).is_some());
+    assert!(state.projects.project_id_of(&run.id).is_some());
+}
+
+#[test]
+fn archived_idle_monitor_waits_for_restore() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let checkout = root.path().join("checkout");
+    std::fs::create_dir(&checkout).unwrap();
+    let mut state = rooted(root.path())
+        .with_task_store(root.path().join("store"))
+        .unwrap();
+    let project = state.add_project(home, "main".into());
+    let key = state.project(&project).unwrap().project_key.clone();
+    state
+        .recover_run(run_record("run-idle-archived", &key, &checkout))
+        .unwrap();
+    let mut active = state.take_run("run-idle-archived").unwrap();
+    active.run.state = RunState::Building;
+    state
+        .finish_run_mutation("run-idle-archived".into(), active)
+        .unwrap();
+    assert_eq!(
+        state.handle(req("project.archive", json!({"project_id":project})))["ok"],
+        true
+    );
+    assert!(state.mark_idle_tasks(Duration::ZERO).is_empty());
+    assert_eq!(
+        state.runs["run-idle-archived"].run.state,
+        RunState::Building
+    );
+    assert_eq!(
+        state.handle(req("project.restore", json!({"project_id":project})))["ok"],
+        true
+    );
+    assert_eq!(state.mark_idle_tasks(Duration::ZERO), ["run-idle-archived"]);
+}
+
+#[test]
+fn archived_vanished_run_settlement_waits_for_restore() {
+    use crate::app::runtime::recovery::DecidedVanishedRun;
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let checkout = root.path().join("checkout");
+    std::fs::create_dir(&checkout).unwrap();
+    let mut state = rooted(root.path())
+        .with_task_store(root.path().join("store"))
+        .unwrap();
+    let project = state.add_project(home, "main".into());
+    let key = state.project(&project).unwrap().project_key.clone();
+    state
+        .recover_run(run_record("run-vanished-archived", &key, &checkout))
+        .unwrap();
+    assert_eq!(
+        state.handle(req("project.archive", json!({"project_id":project})))["ok"],
+        true
+    );
+    std::fs::remove_dir(&checkout).unwrap();
+    let decide = || {
+        vec![DecidedVanishedRun {
+            run_id: "run-vanished-archived".into(),
+            published: Default::default(),
+        }]
+    };
+    state.archive_vanished_runs(decide());
+    assert_eq!(
+        state.runs["run-vanished-archived"].run.state,
+        RunState::Interrupted
+    );
+    assert_eq!(
+        state.handle(req("project.restore", json!({"project_id":project})))["ok"],
+        true
+    );
+    state.archive_vanished_runs(decide());
+    assert_eq!(
+        state.runs["run-vanished-archived"].run.state,
+        RunState::Archived
+    );
+}
+
+fn deferred_run_fixture(root: &Path, adopted: bool) -> (AppState, String, PersistedRun) {
+    let (mut state, project) = super::tracker::tracked_with_origin(root);
+    let checkout = state
+        .project(&project)
+        .unwrap()
+        .orch
+        .worktrees()
+        .create(
+            "restore-obligation",
+            "main",
+            crate::isolation::Isolation::Worktree,
+        )
+        .unwrap()
+        .worktree;
+    let mut record = run_record(
+        "run-restore-obligation",
+        &state.project(&project).unwrap().project_key,
+        &checkout.path,
+    );
+    record.branch = checkout.branch();
+    record.worktree_name = checkout.name;
+    record.adopted = adopted;
+    state.store.as_ref().unwrap().save_run(&record).unwrap();
+    state.projects.at_mut(0).archived_at = Some(1);
+    (state, project, record)
+}
+
+#[test]
+fn restore_resumes_boot_deferred_publication_with_existing_checkout() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, project, mut record) = deferred_run_fixture(root.path(), true);
+    let checkout = Path::new(&record.worktree_path);
+    crate::git_fixture::git_in(checkout, &["push", "-u", "origin", &record.branch]);
+    let head = git2::Repository::open(checkout)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap()
+        .to_string();
+    record.publication_attempt = Some(crate::run::PublicationAttempt {
+        action: "push".into(),
+        candidate_sha: head,
+        started_at: record.updated_at.clone(),
+    });
+    state.store.as_ref().unwrap().save_run(&record).unwrap();
+    state.recover_run(record.clone()).unwrap();
+    assert!(state.runs[&record.id].publication_attempt.is_some());
+    assert_eq!(
+        state.handle(req("project.restore", json!({"project_id":project})))["ok"],
+        true
+    );
+    assert!(
+        state.runs[&record.id].publication_attempt.is_none(),
+        "restore must discharge the skipped publication journal"
+    );
+    assert_eq!(state.runs[&record.id].last_error, None);
+    let before =
+        serde_json::to_value(state.store.as_ref().unwrap().load_all_runs().unwrap()).unwrap();
+    state.handle(req("project.restore", json!({"project_id":project})));
+    assert_eq!(
+        serde_json::to_value(state.store.as_ref().unwrap().load_all_runs().unwrap()).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn restore_resumes_boot_deferred_native_checkout_before_vanished_sweep() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, project, record) = deferred_run_fixture(root.path(), false);
+    std::fs::remove_dir_all(&record.worktree_path).unwrap();
+    state.recover_run(record.clone()).unwrap();
+    assert!(!Path::new(&record.worktree_path).exists());
+    assert_eq!(
+        state.handle(req("project.restore", json!({"project_id":project})))["ok"],
+        true
+    );
+    state.sweep_vanished_runs();
+    assert!(
+        Path::new(&record.worktree_path).is_dir(),
+        "restore must remake the native checkout from its retained branch"
+    );
+    assert_eq!(state.runs[&record.id].run.state, RunState::Interrupted);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restore_run_recovery_keeps_git_off_lock_and_refuses_a_racing_start() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, project, record) = deferred_run_fixture(root.path(), false);
+    std::fs::remove_dir_all(&record.worktree_path).unwrap();
+    state.recover_run(record.clone()).unwrap();
+    let agent = state.runs[&record.id].agents.primary().unwrap().id.clone();
+    let (gate, handle) = crate::app::OffLockGate::new();
+    state.off_lock_gate = Some(gate);
+    let shared = state.shared();
+    assert_eq!(
+        shared
+            .lock()
+            .unwrap()
+            .handle(req("project.restore", json!({"project_id":project})))["ok"],
+        true
+    );
+    let handle = tokio::task::spawn_blocking(move || {
+        handle.wait_for_arrival();
+        handle
+    })
+    .await
+    .unwrap();
+    // Acquiring the app mutex while Git is paused demonstrates the split.
+    let start = shared
+        .lock()
+        .unwrap()
+        .handle(req("agent.start", json!({"id":record.id,"agent_id":agent})));
+    assert_eq!(start["error_code"], "busy", "{start}");
+    shared.lock().unwrap().off_lock_gate = None;
+    handle.release();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while shared
+            .lock()
+            .unwrap()
+            .restored_recovery
+            .deferred
+            .contains(&record.id)
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let app = shared.lock().unwrap();
+    assert_eq!(app.runs[&record.id].run.state, RunState::Interrupted);
+    assert_eq!(app.active_deferred_filesystem_jobs, 0);
+    assert!(Path::new(&record.worktree_path).is_dir());
+}
+
+async fn wait_for_restore_claims_to_settle(state: &Arc<Mutex<AppState>>) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !state.lock().unwrap().restored_recovery.in_flight.is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_reservation_fences_the_ninth_ready_run_before_claim() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, project, original) = deferred_run_fixture(root.path(), false);
+    for n in 0..9 {
+        let mut record = original.clone();
+        record.id = format!("run-ready-{n}");
+        record.agents = crate::agent::stored_agents(&record.id);
+        state.store.as_ref().unwrap().save_run(&record).unwrap();
+        state.recover_run(record).unwrap();
+    }
+    let (gate, handle) = crate::app::OffLockGate::new();
+    state.off_lock_gate = Some(gate);
+    let shared = state.shared();
+    let (reply, before, queued) = {
+        let mut app = shared.lock().unwrap();
+        assert_eq!(
+            app.handle(req("project.restore", json!({"project_id":project})))["ok"],
+            true
+        );
+        let queued = app
+            .restored_recovery
+            .deferred
+            .iter()
+            .find(|id| !app.restored_recovery.in_flight.contains(*id))
+            .unwrap()
+            .clone();
+        let before = serde_json::to_value(app.committed_run_snapshot(&queued)).unwrap();
+        let reply = app.handle(req("agent.add", json!({"entity_id":queued})));
+        app.off_lock_gate = None;
+        (reply, before, queued)
+    };
+    for _ in 0..8 {
+        handle.release();
+    }
+    wait_for_restore_claims_to_settle(&shared).await;
+    assert_eq!(reply["error_code"], "busy", "{reply}");
+    assert_eq!(
+        serde_json::to_value(shared.lock().unwrap().committed_run_snapshot(&queued)).unwrap(),
+        before
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_reservation_fences_branch_dispatch_during_paused_git() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, project, record) = deferred_run_fixture(root.path(), false);
+    state.recover_run(record.clone()).unwrap();
+    let (gate, handle) = crate::app::OffLockGate::new();
+    state.off_lock_gate = Some(gate);
+    let shared = state.shared();
+    shared
+        .lock()
+        .unwrap()
+        .handle(req("project.restore", json!({"project_id":project})));
+    let handle = tokio::task::spawn_blocking(move || {
+        handle.wait_for_arrival();
+        handle
+    })
+    .await
+    .unwrap();
+    let (reply, before) = {
+        let mut app = shared.lock().unwrap();
+        app.off_lock_gate = None;
+        let before = serde_json::to_value(app.committed_run_snapshot(&record.id)).unwrap();
+        let reply = app.handle(req(
+            "branch.dispatch",
+            json!({"project_id":project,"branch":record.branch,"instruction":"Join this branch"}),
+        ));
+        (reply, before)
+    };
+    handle.release();
+    wait_for_restore_claims_to_settle(&shared).await;
+    assert_eq!(reply["error_code"], "busy", "{reply}");
+    assert_eq!(
+        serde_json::to_value(shared.lock().unwrap().committed_run_snapshot(&record.id)).unwrap(),
+        before
+    );
+}
+
+#[test]
 fn new_project_runs_recover_to_their_project() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");

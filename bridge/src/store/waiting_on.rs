@@ -106,7 +106,18 @@ impl Store {
     /// One bounded fan-out page, including its cursor and transition receipts.
     /// Repeating after restart never repeats a transition already committed.
     pub fn reconcile_waiting_on(&self, limit: usize) -> Result<WaitingOnPage, StoreError> {
-        self.in_waiting_on_transaction(|tx| reconciliation::page(tx, limit.clamp(1, 100)))
+        self.reconcile_waiting_on_excluding_projects(limit, &[])
+    }
+
+    pub(crate) fn reconcile_waiting_on_excluding_projects(
+        &self,
+        limit: usize,
+        excluded_projects: &[String],
+    ) -> Result<WaitingOnPage, StoreError> {
+        let excluded = serde_json::to_string(excluded_projects).expect("project keys serialize");
+        self.in_waiting_on_transaction(|tx| {
+            reconciliation::page(tx, limit.clamp(1, 100), &excluded)
+        })
     }
 
     /// Browser invalidations are separate from the durable transition outbox

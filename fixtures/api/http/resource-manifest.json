@@ -81,6 +81,7 @@
       "models_list",
       "ping",
       "project_add_source",
+      "project_archive",
       "project_create",
       "project_delete",
       "project_discard_unused",
@@ -88,6 +89,7 @@
       "project_init_git",
       "project_list",
       "project_remove_source",
+      "project_restore",
       "project_set_compaction",
       "project_set_isolation",
       "project_set_remote",
@@ -1421,6 +1423,26 @@
       }
     },
     {
+      "method": "project.archive",
+      "operationId": "project_archive",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/archives",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "ProjectParams",
+        "result": "ProjectArchiveResult"
+      }
+    },
+    {
       "method": "project.create",
       "operationId": "project_create",
       "verb": "POST",
@@ -1555,6 +1577,26 @@
         "source": "bridge/src/api/v1/board.rs",
         "params": "ProjectRemoveSourceParams",
         "result": "ProjectRow"
+      }
+    },
+    {
+      "method": "project.restore",
+      "operationId": "project_restore",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/restores",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "ProjectParams",
+        "result": "ProjectArchiveResult"
       }
     },
     {

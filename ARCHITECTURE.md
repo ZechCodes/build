@@ -3424,6 +3424,84 @@ workspace never retires a project worker, even one its agents made.
 `project.delete` retires the pin and every worker, revokes their tokens and
 queued turns, and removes the project's scratch; its sources stay.
 
+**Project archive (staged M3.1, #1059).** `project.archive` and
+`project.restore` retain the project's identity and all history, persisting
+`archived_at` in `config.json`. Project-list publication carries the timestamp,
+including archived rows. Archive reports every unfinished/provisioning workspace,
+held worker/coordinator session, pending assignment or waiting-on dependency,
+Needs-you task and review awaiting a verdict. Nothing is stopped implicitly.
+The existing global filesystem-job fence also keeps archive out while deferred
+work is active; journaled workspace admission holds that fence until its durable
+reservation exists. A configuration failure publishes no archive state.
+
+`app/projects/archive_guard.rs` shares one archived-project refusal across
+routed/session RPCs, MCP mutations and final agent spawn reservation. Framed
+routing checks archive admission inside its existing routed/session mutation
+guards; clock-only snapshots and global presence gain no app-mutex acquisition.
+Shell reservation and final registration recheck archive under their existing
+guards; pending shell reservations and registered live shells block archive.
+The registry retains the reservation's project attribution at registration;
+exited shell rows do not block while awaiting cleanup. Removal and replacement
+retain project-attributed shell and agent retirement receipts until reaping
+completes, separate from the tab list. Archive polls and prunes these receipts
+without waiting under the app guard, retaining the existing conflict response.
+Agent start checks its addressed owner before resolving or changing the roster.
+RPC write classification comes from the effect registry, with project scope
+resolved from project, workspace, task or conversation identities; upload calls resolve their
+retained scope after owner validation. Reads and screen-attachment bookkeeping
+remain available. Restore and project deletion remain allowed. Environment
+reference maintenance can still update archived projects' effective sources.
+Pending verdict/revision handoffs and unposted failure/dependency notices also
+block archive. The background delivery service excludes archived project keys
+before each bounded page, including receipt polling and revision failure notices.
+Rows, operation identities and retry budgets stay unchanged while suspended;
+other projects continue draining. Restore makes the saved rows eligible on the
+normal service tick, using the ordinary delivery/supersession/failure policy.
+The workspace-admission hold releases its count even if unwinding poisons the
+app mutex; its destructor preserves the poison flag and never panics.
+Pending dependency-reconciliation markers also block archive; their worker excludes
+archived keys before paging and leaves markers/cursors intact until restore.
+Review autosync acquires a filesystem admission lease through persistence and
+publication; denied tasks retain their queued work and retry deadlines. Reclaim
+excludes archived projects during selection, final prune/settle checks and digest
+admission, retaining owed work for the first normal sweep after restore.
+Idle detection and vanished-run sweeps skip archived owners, including late
+sweep settlement. Boot recovery hydrates archived plan/run records without
+persisting lifecycle or missing-disk changes. It retains skipped run-recovery
+obligations: restore runs the same captured publication/worktree decision off
+lock, with per-run mutation/spawn admission and a committed-revision check at
+apply. Every ready run is reserved until settlement, including runs waiting for
+the eight-job concurrency limit. Branch joins, adoption and agent minting check
+the same reservation at their shared mutation boundary. Vanished-run sweeps
+defer those runs until recovery settles. A restart
+reconstructs obligations from archived records or performs ordinary boot recovery.
+Stale restart rosters cannot queue archived agents. Durable provider-failure
+notices replay independently on restore; failed checkpoints remain pending and
+retry on the restored-recovery service tick, without requiring another restart.
+Boot reconstructs notice retry obligations from durable owed checkpoints on
+active projects, including after an unsuccessful startup replay. A delivered
+terminal notice ends that retry obligation without changing its active flag or
+rewriting/waking it on later retry ticks. Restore separately requeues already-written
+terminal notices once when their durable native acknowledgement is still unseen;
+this pass neither rewrites checkpoints nor enrolls them in notice retries.
+Archived boot defers coordinator roster repair until the owner's restore recovery
+settles. Archive admission counts settling wakes alongside queued/in-flight work.
+Ready owners retain their existing turns until recovery settles, including a hold
+at final spawn admission; settlement releases delivery off the app lock.
+Usage-limit resets and shared-harness success retain each stopped agent's owed
+retry before consuming it when its owner is archived or ready; eligible agents
+continue, and the held agent resumes once after admission reopens.
+Snapshot refresh preserves archived finished-workspace records until restore.
+Journaled environment/project replay resolves archive admission from the saved
+project key, while fresh sibling creation remains allowed. Recorded pending
+attempts are refused on user retry and excluded by recovery before claim/effects
+or retry backoff changes; restore makes them eligible on the normal service tick.
+The workspace admission hold spans both retained retries and new reservation
+through durable admission. Terminal environment-creation results remain readable.
+Configured conversation-item retention applies independently of project archive.
+The two method names are explicitly withheld from greetings, `projects.archive`
+is not advertised, and the wire stays at 3.36.0 until the consumer checkpoint.
+
 **Waiting-on tools.** `create_task` accepts `waiting_on`; `link_task` adds
 those edges atomically with its ordinary links. `unlink_task` removes only
 waiting-on edges, and `list_task_dependents` pages same-project reverse digests

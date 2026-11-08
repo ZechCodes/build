@@ -44,6 +44,16 @@ impl Retirement {
         Retirement { reaped }
     }
 
+    /// Observe completion without waiting for the process. The flag mutex is
+    /// never held across `end()`, so this is safe under the application guard.
+    pub fn is_reaped(&self) -> bool {
+        *self
+            .reaped
+            .0
+            .lock()
+            .expect("the reaper only holds this flag while writing it")
+    }
+
     /// Whether the process is reaped, waiting up to `timeout` for it.
     ///
     /// Callable only with the app mutex released: it is the wait the daemon's
@@ -131,3 +141,6 @@ fn retiring_name(dir: &std::path::Path) -> PathBuf {
         std::process::id()
     ))
 }
+
+#[cfg(test)]
+mod tests;

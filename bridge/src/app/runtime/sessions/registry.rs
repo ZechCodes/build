@@ -44,6 +44,9 @@ pub(in crate::app) struct SessionRegistry {
     shell_generation: u64,
     spawn_claims: HashSet<TabKey>,
     shell_checkout_holds: HashMap<TabKey, ShellCheckoutHold>,
+    /// Accepted project attribution survives owner unbinding and tab removal.
+    tab_projects: HashMap<TabKey, String>,
+    retiring: Vec<ProjectRetirement>,
     spawn_finished: Arc<Condvar>,
     waiting_screens: HashMap<TabKey, ScreenHandle>,
     mcp_tokens: HashMap<String, String>,
@@ -63,6 +66,12 @@ struct SecretLaunchContext {
     device: Option<String>,
     channel: String,
     socket: String,
+}
+
+struct ProjectRetirement {
+    project: String,
+    blocker: String,
+    receipt: Retirement,
 }
 
 struct ShellCheckoutHold {
@@ -245,6 +254,8 @@ impl SessionRegistry {
             shell_generation: 0,
             spawn_claims: HashSet::new(),
             shell_checkout_holds: HashMap::new(),
+            tab_projects: HashMap::new(),
+            retiring: Vec::new(),
             spawn_finished: Arc::new(Condvar::new()),
             waiting_screens: HashMap::new(),
             mcp_tokens: HashMap::new(),
@@ -259,7 +270,11 @@ impl SessionRegistry {
 
     fn insert_tab(&mut self, key: TabKey, tab: Tab) -> Option<Tab> {
         let shell = tab.role == TabRole::Shell;
+        let project = self.tab_projects.remove(&key);
         let previous = self.tabs.insert(key, tab);
+        if let Some(previous) = previous.as_ref().filter(|_| project.is_some()) {
+            self.begin_retirement(previous, project);
+        }
         if shell
             || previous
                 .as_ref()
@@ -270,15 +285,44 @@ impl SessionRegistry {
         previous
     }
 
-    fn remove_tab(&mut self, key: &TabKey) -> Option<Tab> {
+    fn remove_tab(&mut self, key: &TabKey) -> Option<(Tab, Option<String>)> {
         let tab = self.tabs.remove(key)?;
+        let project = self.tab_projects.remove(key);
         if let Some((_, agent)) = tab.role.agent() {
             self.secret_authority.revoke(agent);
         }
         if tab.role == TabRole::Shell {
             self.shell_generation += 1;
         }
-        Some(tab)
+        Some((tab, project))
+    }
+
+    fn begin_retirement(&mut self, tab: &Tab, project: Option<String>) -> Retirement {
+        let receipt = Retirement::begin(Arc::clone(&tab.session));
+        if let Some(project) = project {
+            self.retiring.retain(|entry| !entry.receipt.is_reaped());
+            let subject = if tab.role == TabRole::Shell {
+                "closed terminal"
+            } else {
+                "stopped agent"
+            };
+            self.retiring.push(ProjectRetirement {
+                project,
+                blocker: format!("wait for the {subject} to exit ({})", tab.wire_id()),
+                receipt: receipt.clone(),
+            });
+        }
+        receipt
+    }
+
+    /// Nonblocking receipts remain separate from the visible tab list.
+    pub(in crate::app) fn retiring_project_blockers(&mut self, project: &str) -> Vec<String> {
+        self.retiring.retain(|entry| !entry.receipt.is_reaped());
+        self.retiring
+            .iter()
+            .filter(|entry| entry.project == project)
+            .map(|entry| entry.blocker.clone())
+            .collect()
     }
 
     pub(in crate::app) fn set_push_runtime(&mut self, runtime: tokio::runtime::Handle) {
@@ -321,6 +365,16 @@ impl SessionRegistry {
         self.shell_checkout_holds
             .values()
             .any(|hold| hold.project_id == project_id)
+    }
+
+    pub(in crate::app) fn live_shell_for_project(&self, project_id: &str) -> bool {
+        self.tab_projects.iter().any(|(key, project)| {
+            project == project_id
+                && self
+                    .tabs
+                    .get(key)
+                    .is_some_and(|tab| tab.role == TabRole::Shell && tab.session_is_live())
+        })
     }
 
     pub(in crate::app) fn pending_shell_for_workspace(&self, workspace_id: &str) -> bool {
@@ -461,7 +515,11 @@ impl SessionRegistry {
 
     /// The adapter must call this before an under-lock RAII wrapper is dropped.
     pub(in crate::app) fn settle_spawn_claim(&mut self, claim: SpawnClaimToken) {
-        self.shell_checkout_holds.remove(&claim.key);
+        if let Some(hold) = self.shell_checkout_holds.remove(&claim.key) {
+            if self.tab_is_shell(&claim.key) {
+                self.tab_projects.insert(claim.key.clone(), hold.project_id);
+            }
+        }
         self.spawn_claims.remove(&claim.key);
         self.spawn_finished.notify_all();
     }
@@ -1097,11 +1155,14 @@ impl SessionRegistry {
     }
 
     /// Publication step 3. Existing insertion is intentionally infallible.
-    pub(in crate::app) fn insert_opened(&mut self, key: TabKey, tab: Tab) {
+    pub(in crate::app) fn insert_opened(&mut self, key: TabKey, tab: Tab, project: Option<String>) {
         if let Some((_, agent)) = tab.role.agent() {
             self.forget_retired_agent(agent);
         }
-        self.insert_tab(key, tab);
+        self.insert_tab(key.clone(), tab);
+        if let Some(project) = project {
+            self.tab_projects.insert(key, project);
+        }
     }
 
     /// Publication step 7, after the app adapter records lineage.
@@ -1125,10 +1186,11 @@ impl SessionRegistry {
         key: &TabKey,
         diagnostic: LifecycleDiagnostic<'_>,
     ) -> Option<RetainedTab> {
-        let tab = self.remove_tab(key)?;
+        let (tab, project) = self.remove_tab(key)?;
         tab.log_lifecycle(diagnostic);
+        let retirement = self.begin_retirement(&tab, project);
         Some(RetainedTab {
-            retirement: Retirement::begin(tab.session),
+            retirement,
             screen: tab.screen,
         })
     }
@@ -1140,8 +1202,9 @@ impl SessionRegistry {
         reason: &str,
         diagnostic: LifecycleDiagnostic<'_>,
     ) -> Option<RetiredAgent> {
-        let tab = self.remove_tab(key)?;
+        let (tab, project) = self.remove_tab(key)?;
         tab.log_lifecycle(diagnostic);
+        let retirement = self.begin_retirement(&tab, project);
         let wire_id = tab.wire_id();
         if let Some(screen) = &tab.screen {
             screen.close(reason);
@@ -1149,7 +1212,7 @@ impl SessionRegistry {
         Some(RetiredAgent {
             wire_id,
             instance: tab.session_instance,
-            retirement: Retirement::begin(tab.session),
+            retirement,
         })
     }
 
@@ -1182,7 +1245,15 @@ impl SessionRegistry {
 
     #[cfg(test)]
     pub(in crate::app) fn test_remove_tab(&mut self, key: &TabKey) -> Option<Tab> {
-        self.remove_tab(key)
+        self.remove_tab(key).map(|(tab, _)| tab)
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn test_retirements(&self) -> Vec<Retirement> {
+        self.retiring
+            .iter()
+            .map(|entry| entry.receipt.clone())
+            .collect()
     }
 
     #[cfg(test)]

@@ -514,3 +514,287 @@ fn revision_621_stale_failure_scope_does_not_mutate_replacement_thread() {
     assert!(thread.items.is_empty());
     assert!(!fixture.persisted_episode().active);
 }
+
+#[test]
+fn archived_provider_recovery_keeps_episode_and_task_until_restore() {
+    let mut fixture = RecoveryFixture::new();
+    let task = fixture.task.clone();
+    fixture.state().projects.at_mut(0).archived_at = Some(1);
+    let before = fixture
+        .state()
+        .handle(req("tasks.get", json!({"task_id":task})))["result"]
+        .clone();
+    fixture.state().replay_provider_recovery_episodes().unwrap();
+    assert_eq!(fixture.persisted_episode(), fixture.episode);
+    assert_eq!(
+        fixture
+            .state()
+            .handle(req("tasks.get", json!({"task_id":task})))["result"],
+        before
+    );
+    let project = fixture.state().projects.iter().next().unwrap().id.clone();
+    let restored = fixture
+        .state()
+        .handle(req("project.restore", json!({"project_id":project})));
+    assert_eq!(restored["ok"], true, "{restored}");
+    fixture.assert_single_reports();
+    fixture.state().replay_provider_recovery_episodes().unwrap();
+    fixture.assert_single_reports();
+}
+
+#[tokio::test]
+async fn restore_provider_episodes_continue_after_failure_and_retry_without_restart() {
+    let mut fixture = RecoveryFixture::new();
+    let mut blocked = fixture.episode.clone();
+    blocked.summary = "blocked episode".into();
+    crate::provider_recovery::save_episode(fixture.root.path(), &blocked).unwrap();
+    let mut healthy = blocked.clone();
+    healthy.id = "zz-later-independent-episode".into();
+    healthy.summary = "healthy episode".into();
+    crate::provider_recovery::save_episode(fixture.root.path(), &healthy).unwrap();
+    let project = fixture.state().projects.iter().next().unwrap().id.clone();
+    let task = fixture.task.clone();
+    let store = fixture.state().store.clone().unwrap();
+    store.writer_for_test().execute_batch("CREATE TRIGGER fail_one_provider_notice BEFORE INSERT ON tracker_comments WHEN json_extract(NEW.record,'$.body') LIKE '%blocked episode%' BEGIN SELECT RAISE(ABORT,'temporary provider notice failure'); END;").unwrap();
+    fixture.state().projects.at_mut(0).archived_at = Some(1);
+    let restored = fixture
+        .state()
+        .handle(req("project.restore", json!({"project_id":project})));
+    assert_eq!(restored["ok"], true, "{restored}");
+    let comments = || {
+        store
+            .load_tracker_timeline(&task)
+            .unwrap()
+            .iter()
+            .filter(|entry| matches!(entry, crate::tracker::TimelineEntry::Comment(_)))
+            .count()
+    };
+    assert_eq!(
+        comments(),
+        1,
+        "a failed episode must not strand the later healthy episode"
+    );
+    assert!(
+        crate::provider_recovery::read_episode(
+            fixture.root.path(),
+            &blocked.scope.agent_id,
+            &blocked.id
+        )
+        .unwrap()
+        .unwrap()
+        .needs_notice
+    );
+    store
+        .writer_for_test()
+        .execute_batch("DROP TRIGGER fail_one_provider_notice;")
+        .unwrap();
+    let shared = fixture.state.take().unwrap().shared();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while comments() < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("retained provider notice must retry without restart or another restore");
+    let settled = shared.lock().unwrap();
+    assert_eq!(comments(), 2);
+    assert!(
+        !crate::provider_recovery::read_episode(
+            fixture.root.path(),
+            &blocked.scope.agent_id,
+            &blocked.id
+        )
+        .unwrap()
+        .unwrap()
+        .needs_notice
+    );
+    let retry_queued = settled
+        .restored_recovery
+        .provider_projects
+        .contains(&project);
+    drop(settled);
+    assert!(
+        !retry_queued,
+        "a delivered terminal notice must leave the retry set"
+    );
+    let checkpoint = fixture
+        .root
+        .path()
+        .join("provider-recovery")
+        .join(sha256_hex(blocked.scope.agent_id.as_bytes()))
+        .join(format!("{}.json", blocked.id));
+    let before = std::fs::metadata(&checkpoint).unwrap().modified().unwrap();
+    for _ in 0..2 {
+        shared.lock().unwrap().retry_restored_provider_notices();
+    }
+    assert_eq!(
+        std::fs::metadata(checkpoint).unwrap().modified().unwrap(),
+        before
+    );
+    drop(shared);
+}
+
+#[tokio::test]
+async fn provider_notice_retry_survives_restart_without_another_restore() {
+    let mut fixture = RecoveryFixture::new();
+    let project = fixture.state().projects.iter().next().unwrap().id.clone();
+    fixture.state().store.as_ref().unwrap().writer_for_test().execute_batch("CREATE TRIGGER fail_boot_notice BEFORE INSERT ON tracker_comments BEGIN SELECT RAISE(ABORT,'temporary boot notice failure'); END;").unwrap();
+    fixture.state().projects.at_mut(0).archived_at = Some(1);
+    assert_eq!(
+        fixture
+            .state()
+            .handle(req("project.restore", json!({"project_id":project})))["ok"],
+        true
+    );
+    assert!(fixture.persisted_episode().needs_notice);
+    fixture.reopen();
+    assert!(fixture.state().replay_provider_recovery_episodes().is_err());
+    assert!(
+        fixture
+            .state()
+            .restored_recovery
+            .provider_projects
+            .contains(&project),
+        "boot must reconstruct the retry obligation from the durable owed notice"
+    );
+    fixture
+        .state()
+        .store
+        .as_ref()
+        .unwrap()
+        .writer_for_test()
+        .execute_batch("DROP TRIGGER fail_boot_notice;")
+        .unwrap();
+    let root = fixture.root.path().to_path_buf();
+    let scope = fixture.episode.scope.clone();
+    let episode = fixture.episode.id.clone();
+    let shared = fixture.state.take().unwrap().shared();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while crate::provider_recovery::read_episode(&root, &scope.agent_id, &episode)
+            .unwrap()
+            .unwrap()
+            .needs_notice
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("boot retry must deliver after the fault clears");
+    let app = shared.lock().unwrap();
+    assert!(!app.restored_recovery.provider_projects.contains(&project));
+    let comments = app
+        .store
+        .as_ref()
+        .unwrap()
+        .load_tracker_timeline(&fixture.task)
+        .unwrap()
+        .iter()
+        .filter(|entry| matches!(entry, crate::tracker::TimelineEntry::Comment(_)))
+        .count();
+    assert_eq!(comments, 1);
+}
+
+#[test]
+fn archive_round_restore_requeues_only_unseen_terminal_notice_once() {
+    for seen in [false, true] {
+        let mut fixture = RecoveryFixture::new();
+        fixture.state().replay_provider_recovery_episodes().unwrap();
+        let recipient = fixture.persisted_episode().recipient.unwrap();
+        fixture.state().delivery_queue.lapse_settle_windows();
+        assert_eq!(
+            fixture.state().delivery_queue.take_ready(|_| false).len(),
+            1
+        );
+        if seen {
+            fixture
+                .state()
+                .edit_agent_conversation(
+                    &recipient.scope.entity_id,
+                    &recipient.scope.agent_id,
+                    |thread, _| {
+                        let sequence = thread
+                            .items
+                            .iter()
+                            .find_map(|item| match item {
+                                crate::thread::ThreadItem::Message(m)
+                                    if m.id == recipient.message_id =>
+                                {
+                                    Some(m.sequence)
+                                }
+                                _ => None,
+                            })
+                            .unwrap();
+                        thread.read_native_legacy_messages(sequence, sequence, &now_rfc3339());
+                        Ok(())
+                    },
+                )
+                .unwrap();
+        }
+        // Only the durable unseen message remains; finish the workspace before archive.
+        let project = fixture.state().projects.iter().next().unwrap().id.clone();
+        let workspaces: Vec<_> = fixture
+            .state()
+            .workspaces
+            .list(Some(&project))
+            .into_iter()
+            .cloned()
+            .collect();
+        for mut ws in workspaces {
+            ws.status = crate::workspace::WorkspaceStatus::Finished;
+            fixture
+                .state()
+                .workspaces
+                .apply_local_capabilities(ws)
+                .unwrap();
+        }
+        let archived = fixture
+            .state()
+            .handle(req("project.archive", json!({"project_id":project})));
+        assert_eq!(archived["ok"], true, "{archived}");
+        fixture.reopen();
+        fixture.state().replay_provider_recovery_episodes().unwrap();
+        assert!(fixture.state().delivery_queue.is_idle());
+        let checkpoint = fixture
+            .root
+            .path()
+            .join("provider-recovery")
+            .join(sha256_hex(fixture.episode.scope.agent_id.as_bytes()))
+            .join(format!("{}.json", fixture.episode.id));
+        let before = std::fs::metadata(&checkpoint).unwrap().modified().unwrap();
+        let restored = fixture
+            .state()
+            .handle(req("project.restore", json!({"project_id":project})));
+        assert_eq!(restored["ok"], true, "{restored}");
+        fixture.state().delivery_queue.lapse_settle_windows();
+        assert_eq!(
+            fixture.state().delivery_queue.take_ready(|_| false).len(),
+            usize::from(!seen),
+            "restore requeues exactly the unseen notice"
+        );
+        for _ in 0..2 {
+            fixture.state().retry_restored_provider_notices();
+        }
+        assert!(fixture.state().restored_recovery.recipient_wakes.is_empty());
+        assert_eq!(
+            fixture
+                .state()
+                .handle(req("project.restore", json!({"project_id":project})))["ok"],
+            true
+        );
+        fixture.state().delivery_queue.lapse_settle_windows();
+        assert!(fixture
+            .state()
+            .delivery_queue
+            .take_ready(|_| false)
+            .is_empty());
+        assert!(!fixture
+            .state()
+            .restored_recovery
+            .provider_projects
+            .contains(&project));
+        assert_eq!(
+            std::fs::metadata(checkpoint).unwrap().modified().unwrap(),
+            before
+        );
+    }
+}

@@ -15,8 +15,9 @@ impl AppState {
         let Some(store) = self.store.clone() else {
             return Ok(());
         };
+        let excluded = self.archived_project_keys();
         let (deliveries, next) = store
-            .review_verdict_delivery_page(DELIVERY_PAGE, self.review_verdict_poll_after)
+            .review_verdict_delivery_page(DELIVERY_PAGE, self.review_verdict_poll_after, &excluded)
             .map_err(|error| error.to_string())?;
         self.review_verdict_poll_after = next;
         for delivery in deliveries {

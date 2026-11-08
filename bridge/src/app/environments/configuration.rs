@@ -73,7 +73,14 @@ impl ConfigurationSettlement {
         app: &mut AppState,
         result: Result<ConfigurationObserved, String>,
     ) -> Result<Value, String> {
+        let roots = result
+            .as_ref()
+            .map(|observed| observed.changed_roots.clone())
+            .unwrap_or_default();
         let result = result.and_then(|observed| self.commit(app, observed));
+        if result.is_err() {
+            app.invalidate_source_remote_observations(&roots);
+        }
         (self.finish)(app, result)
     }
     fn commit(

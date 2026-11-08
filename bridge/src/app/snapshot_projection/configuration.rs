@@ -100,7 +100,6 @@ impl AppState {
             self.invalidate_snapshot_checkout_observations(root);
             self.note_git_at(root);
         }
-        self.invalidate_source_remote_observations(roots);
         if !roots.is_empty() {
             self.note_board_lists_changed(crate::changes::BoardLists {
                 projects: true,
@@ -124,6 +123,9 @@ impl AppState {
             &mut self.snapshot_observations.environments.lock().unwrap(),
             roots,
         );
+        if !roots.is_empty() {
+            self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
+        }
     }
 }
 fn invalidate_remotes(observations: &mut BTreeMap<String, ProjectObservation>, roots: &[PathBuf]) {

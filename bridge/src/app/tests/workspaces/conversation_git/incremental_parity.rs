@@ -79,6 +79,7 @@ fn requests(state: &AppState) -> Vec<FactsRequest> {
         entity_id: crate::changes::BOARD_ITEM_ID.into(),
         lists: BoardLists {
             projects: true,
+            environments: true,
             workspaces: true,
             usage_limits: true,
         },

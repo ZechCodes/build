@@ -284,6 +284,8 @@ pub enum Scope {
     Board,
     /// One task, run, or worktree.
     Entity(String),
+    /// One environment, identified independently of its projects.
+    Environment(String),
     /// Every entity the board currently lists, tracked as the board changes.
     All,
     /// One original project source, where the client opened it
@@ -389,7 +391,7 @@ impl Scope {
     fn covers(&self, entity_id: &str) -> bool {
         match self {
             Scope::Board => entity_id == BOARD_ITEM_ID,
-            Scope::Entity(id) => id == entity_id,
+            Scope::Entity(id) | Scope::Environment(id) => id == entity_id,
             Scope::All => !is_project_source_entity(entity_id),
             Scope::ProjectSource(source) => source.entity_id == entity_id,
         }
@@ -400,7 +402,7 @@ impl Scope {
         match self {
             Scope::Entity(id) => Some(id),
             Scope::ProjectSource(source) => Some(source.entity_id()),
-            Scope::Board | Scope::All => None,
+            Scope::Board | Scope::All | Scope::Environment(_) => None,
         }
     }
 }
@@ -414,6 +416,11 @@ impl Serialize for Scope {
             },
             Scope::Entity(id) => ScopeWire {
                 kind: "entity".into(),
+                id: Some(id.clone()),
+                ..ScopeWire::default()
+            },
+            Scope::Environment(id) => ScopeWire {
+                kind: "environment".into(),
                 id: Some(id.clone()),
                 ..ScopeWire::default()
             },
@@ -440,10 +447,13 @@ impl<'de> Deserialize<'de> for Scope {
             ("board", _) => Ok(Scope::Board),
             ("all", _) => Ok(Scope::All),
             ("entity", Some(id)) => Ok(Scope::Entity(id.clone())),
-            ("entity", None) => Err(serde::de::Error::custom("missing required param: scope.id")),
+            ("environment", Some(id)) => Ok(Scope::Environment(id.clone())),
+            ("entity" | "environment", None) => {
+                Err(serde::de::Error::custom("missing required param: scope.id"))
+            }
             ("project_source", _) => wire.project_source(),
             (other, _) => Err(serde::de::Error::custom(format!(
-                "unknown scope kind {other:?} — board, entity, all, or project_source"
+                "unknown scope kind {other:?} — board, entity, environment, all, or project_source"
             ))),
         }
     }
@@ -608,6 +618,7 @@ pub struct SubscribeOutcome {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BoardLists {
     pub projects: bool,
+    pub environments: bool,
     pub workspaces: bool,
     /// The harnesses out of usage on this device (task #58).
     pub usage_limits: bool,
@@ -617,12 +628,21 @@ impl BoardLists {
     /// The project list moved: one was added, hidden, deleted, or renamed.
     pub const PROJECTS: BoardLists = BoardLists {
         projects: true,
+        environments: true,
+        workspaces: false,
+        usage_limits: false,
+    };
+    /// Environment membership, settings or source observations moved.
+    pub const ENVIRONMENTS: BoardLists = BoardLists {
+        projects: false,
+        environments: true,
         workspaces: false,
         usage_limits: false,
     };
     /// The workspace list moved: one was created, renamed, or deleted.
     pub const WORKSPACES: BoardLists = BoardLists {
         projects: false,
+        environments: false,
         workspaces: true,
         usage_limits: false,
     };
@@ -630,16 +650,18 @@ impl BoardLists {
     /// had.
     pub const USAGE_LIMITS: BoardLists = BoardLists {
         projects: false,
+        environments: false,
         workspaces: false,
         usage_limits: true,
     };
 
     pub fn is_empty(self) -> bool {
-        !self.projects && !self.workspaces && !self.usage_limits
+        !self.projects && !self.environments && !self.workspaces && !self.usage_limits
     }
 
     fn merge(&mut self, other: BoardLists) {
         self.projects |= other.projects;
+        self.environments |= other.environments;
         self.workspaces |= other.workspaces;
         self.usage_limits |= other.usage_limits;
     }
@@ -650,6 +672,7 @@ impl BoardLists {
     fn names(self) -> impl Iterator<Item = &'static str> {
         [
             ("projects", self.projects),
+            ("environments", self.environments),
             ("workspaces", self.workspaces),
             ("usage_limits", self.usage_limits),
         ]
@@ -1561,6 +1584,7 @@ fn answered_list<'a>(answer: Option<&'a Map<String, Value>>, name: &str) -> Opti
 fn unanswered_lists(owed: BoardLists, answer: Option<&Map<String, Value>>) -> BoardLists {
     BoardLists {
         projects: owed.projects && answered_list(answer, "projects").is_none(),
+        environments: owed.environments && answered_list(answer, "environments").is_none(),
         workspaces: owed.workspaces && answered_list(answer, "workspaces").is_none(),
         usage_limits: owed.usage_limits && answered_list(answer, "usage_limits").is_none(),
     }
@@ -4316,6 +4340,18 @@ mod subscriptions {
             Value::Null,
             "it left once: {again:?}"
         );
+    }
+
+    #[test]
+    fn environment_scope_round_trips_and_filters_entities() {
+        let wire = json!({"kind":"environment","id":"env-1"});
+        let scope: Scope =
+            serde_json::from_value(wire.clone()).expect("environment scope is recognized");
+        assert_eq!(serde_json::to_value(&scope).unwrap(), wire);
+        assert!(scope.covers("env-1"));
+        assert!(!scope.covers("env-2"));
+        assert!(!scope.covers(BOARD_ITEM_ID));
+        assert!(serde_json::from_value::<Scope>(json!({"kind":"environment"})).is_err());
     }
 
     /// A bus whose lookup answers the project list for any request that asks

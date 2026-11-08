@@ -344,6 +344,7 @@ impl AppState {
         // stood in it from the other.
         self.note_board_lists_changed(crate::changes::BoardLists {
             projects: true,
+            environments: true,
             workspaces: true,
             usage_limits: false,
         });

@@ -97,6 +97,10 @@ impl GlobalProjection {
             "usage_limits".into(),
             SharedJson::value(app.usage_limits_json()),
         );
+        next.board_fields.insert(
+            "environments".into(),
+            SharedJson::value(app.snapshot_environment_list()["environments"].clone()),
+        );
         #[cfg(test)]
         drop(_dynamic_phase);
         Some((next, owners))

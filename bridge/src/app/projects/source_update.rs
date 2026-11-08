@@ -18,6 +18,9 @@ use std::path::PathBuf;
 /// Longer than any label a person types; a cap so nothing unbounded is stored.
 const MAX_LABEL_LEN: usize = 200;
 
+#[cfg(test)]
+mod settlement_tests;
+
 /// The parts of a source an edit names, each checked.
 struct SourceEdit {
     name: Option<String>,

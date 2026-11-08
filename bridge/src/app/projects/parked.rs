@@ -31,13 +31,7 @@ impl AppState {
             .filter_map(|entry| self.restore_configured_project(entry))
             .collect();
         for project_id in &revived {
-            let repo = self
-                .projects
-                .get(project_id)
-                .map(|project| project.repo_path.clone());
-            if let Some(repo) = repo {
-                self.projects.bind_retained_entities(project_id, &repo);
-            }
+            self.projects.bind_retained_entities(project_id);
         }
         if !revived.is_empty() {
             self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);

@@ -160,6 +160,12 @@ pub(super) struct ProjectCandidate {
 }
 
 impl ProjectCandidate {
+    #[cfg(test)]
+    pub(super) fn set_test_identity(&mut self, environment_id: String, key: String) {
+        self.project.environment_id = environment_id;
+        self.project.project_key = key;
+    }
+
     pub(super) fn set_environment(&mut self, id: &str) {
         self.project.environment_id = id.to_string();
     }
@@ -399,14 +405,17 @@ impl ProjectRegistry {
         back
     }
 
-    /// Bind every entity a boot could bind to no project, because the
-    /// folder its record names was away, to `project_id` standing at `repo`.
-    pub(in crate::app) fn bind_retained_entities(&mut self, project_id: &str, repo: &Path) {
+    /// Rebind retained entities by exact key, including a returning parked project.
+    pub(in crate::app) fn bind_retained_entities(&mut self, project_id: &str) {
+        let Some(project) = self.get(project_id) else {
+            return;
+        };
+        let key = &project.project_key;
         let unbound: Vec<String> = self
             .entity_project_path
             .iter()
             .filter(|(entity_id, _)| !self.entity_project.contains_key(*entity_id))
-            .filter(|(_, path)| std::fs::canonicalize(path).is_ok_and(|path| path == repo))
+            .filter(|(_, retained)| *retained == key)
             .map(|(entity_id, _)| entity_id.clone())
             .collect();
         for entity_id in unbound {
@@ -674,7 +683,16 @@ impl ProjectRegistry {
     pub(in crate::app) fn project_path_for(&self, entity_id: &str) -> String {
         self.project_id_of(entity_id)
             .and_then(|project_id| self.get(project_id))
-            .map(|project| project.repo_path.display().to_string())
+            .map(|project| project.home_path.display().to_string())
+            .or_else(|| self.entity_project_path.get(entity_id).cloned())
+            .unwrap_or_default()
+    }
+
+    /// Identity for persistence and routing; the display path is separate.
+    pub(in crate::app) fn project_key_for(&self, entity_id: &str) -> String {
+        self.project_id_of(entity_id)
+            .and_then(|project_id| self.get(project_id))
+            .map(|project| project.project_key.clone())
             .or_else(|| self.entity_project_path.get(entity_id).cloned())
             .unwrap_or_default()
     }
@@ -788,9 +806,10 @@ impl ProjectRegistry {
         self.entity_project.remove(entity_id);
     }
 
-    pub(in crate::app) fn retain_entity_path(&mut self, entity_id: String, stored_path: String) {
+    /// Retain the opaque key while its registered project is unavailable.
+    pub(in crate::app) fn retain_entity_path(&mut self, entity_id: String, stored_key: String) {
         self.observation_bindings.mark(&entity_id);
-        self.entity_project_path.insert(entity_id, stored_path);
+        self.entity_project_path.insert(entity_id, stored_key);
     }
 }
 

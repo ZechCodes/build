@@ -54,7 +54,7 @@ impl<'a> Inputs<'a> {
                 .map(|project| {
                     #[cfg(test)]
                     super::work_counts::source_row();
-                    (project.id.clone(), roots.get(app, &project.repo_path))
+                    (project.id.clone(), roots.get(app, &project.home_path))
                 })
                 .collect(),
             runs_by_owner: HashMap::new(),
@@ -138,21 +138,23 @@ fn capture_runs<'a>(app: &'a AppState, roots: &mut Roots) -> Vec<RunInput<'a>> {
     for entry in app.projects.parked() {
         #[cfg(test)]
         super::work_counts::source_row();
-        if let Some(path) = crate::app::projects::configured_primary_path(entry) {
+        if let Some(path) = crate::app::projects::configured_project_key(entry) {
             parked
                 .entry(path)
                 .or_insert_with(|| entry["id"].as_str().map(str::to_owned));
         }
     }
-    let projects: HashMap<_, _> = app
-        .projects
-        .iter()
-        .map(|project| {
-            #[cfg(test)]
-            super::work_counts::source_row();
-            (project.id.as_str(), project.repo_path.as_path())
-        })
-        .collect();
+    let mut projects = HashMap::new();
+    let mut projects_by_key = HashMap::new();
+    for project in app.projects.iter() {
+        #[cfg(test)]
+        super::work_counts::source_row();
+        projects.insert(project.id.as_str(), project);
+        // Match project_by_key's first registered match for lossy legacy keys.
+        projects_by_key
+            .entry(project.project_key.as_str())
+            .or_insert(project);
+    }
     // HashMap iteration is intentional: the first live fallback owner in
     // that exact traversal has always won shared-root workspaces.
     app.runs
@@ -165,20 +167,22 @@ fn capture_runs<'a>(app: &'a AppState, roots: &mut Roots) -> Vec<RunInput<'a>> {
             let root = roots.get(app, &active.worktree.path);
             let project = app.projects.project_id_of(owner);
             let retained = if project.is_none() {
-                app.projects.project_path_for(owner)
+                app.projects.project_key_for(owner)
             } else {
                 String::new()
             };
-            let project_path = project
+            let project_key = project
                 .and_then(|id| projects.get(id))
-                .map(|path| path.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from(app.projects.project_path_for(owner)));
-            let project_owner = !project_path.as_os_str().is_empty()
-                && root
-                    == roots.get(
-                        app,
-                        &crate::app::projects::scratch_dir(&app.state_root, &project_path),
-                    );
+                .map(|project| project.project_key.clone())
+                .unwrap_or_else(|| app.projects.project_key_for(owner));
+            let native_project = project
+                .and_then(|id| projects.get(id))
+                .or_else(|| projects_by_key.get(project_key.as_str()));
+            let scratch = native_project.map_or_else(
+                || crate::app::projects::scratch_dir(&app.state_root, &project_key),
+                |project| crate::app::projects::scratch_dir_for_project(&app.state_root, project),
+            );
+            let project_owner = !project_key.is_empty() && root == roots.get(app, &scratch);
             RunInput {
                 owner,
                 root,

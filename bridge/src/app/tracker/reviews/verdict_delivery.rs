@@ -152,7 +152,7 @@ impl AppState {
             .projects
             .project_id_of(&owner)
             .and_then(|id| self.projects.get(id))?;
-        (project.repo_path.to_string_lossy() == project_path).then_some(owner)
+        (project.project_key == project_path).then_some(owner)
     }
 
     fn note_unreceived_verdict(
@@ -250,11 +250,7 @@ impl AppState {
     }
 
     fn note_verdict_delivery_changed(&self, delivery: &ReviewVerdictDelivery) {
-        if let Some(project) = self
-            .projects
-            .iter()
-            .find(|project| project.repo_path.to_string_lossy() == delivery.project_path)
-        {
+        if let Some(project) = self.project_by_key(&delivery.project_path) {
             self.note_tasks_changed(&project.id, &delivery.task_id);
         }
     }

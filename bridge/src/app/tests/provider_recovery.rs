@@ -17,6 +17,10 @@ impl RecoveryFixture {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
         let (home, mut state, project) = tracked(root.path());
+        // Reopening must restore configured identities before recovering records.
+        // Records alone never register projects, even when their homes exist.
+        state = state.with_config(root.path().join("config.json")).unwrap();
+        state.persist();
         let (coordinator_owner, coordinator) = project_agent(&mut state, &project);
         let ws = workspace(&mut state, &project, "durable provider failure");
         let task = filed(&mut state, &project, "Report abandoned provider recovery");
@@ -99,6 +103,8 @@ impl RecoveryFixture {
         drop(self.state.take());
         self.state = Some(
             rooted(self.root.path())
+                .with_config(self.root.path().join("config.json"))
+                .unwrap()
                 .with_task_store(self.root.path().join("store"))
                 .unwrap(),
         );

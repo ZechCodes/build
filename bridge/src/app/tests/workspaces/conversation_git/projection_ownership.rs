@@ -22,7 +22,7 @@ fn ownership_edge_cases(state: &mut AppState, root: &Path) {
     std::fs::create_dir(&other_root).unwrap();
     let other = state.add_project(other_root, "main".into());
     state.projects.bind_entity("run-04".into(), other);
-    let scratch = crate::app::projects::scratch_dir(&state.state_root, root);
+    let scratch = crate::app::projects::scratch_dir(&state.state_root, root.to_str().unwrap());
     std::fs::create_dir_all(&scratch).unwrap();
     state.runs.get_mut("run-06").unwrap().worktree.path = scratch.clone();
     state.workspaces.adopt_root(

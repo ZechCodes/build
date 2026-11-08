@@ -48,7 +48,7 @@ fn fixture() -> ScopeReadContext {
                 checkout_git: true,
                 canonical_checkout: root.clone(),
                 project_id: Some("project".into()),
-                project_path: native_root(99),
+                project_path: Some(native_root(99)),
                 checkout: root.clone(),
                 git_root: root,
                 base_sha: Some(format!("base-{index}")),
@@ -207,7 +207,7 @@ fn unchanged_workspace_owner_patches_do_not_rewrite_membership() {
         row.canonical_checkout = native_root(100 + index);
         row.checkout = row.canonical_checkout.clone();
         row.git_root = native_root(200 + index);
-        row.project_path = native_root(300 + index);
+        row.project_path = Some(native_root(300 + index));
         row.base_sha = Some(format!("new-base-{index}"));
         row.base_branch = format!("new-branch-{index}");
         row.stages

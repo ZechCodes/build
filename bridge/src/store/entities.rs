@@ -39,10 +39,9 @@ thread_local! {
 pub struct PersistedPlan {
     pub id: String,
     pub goal: String,
-    /// Canonical path of the project repo the plan belongs to. Stored as a
-    /// path (not the in-memory project id) because a `proj-N` id is not
-    /// durable: a boot mints ids from the config that restored them, and the
-    /// same repository can come back wearing another one.
+    /// Stable opaque project key. Legacy records contain the canonical home
+    /// path, which remains the migrated project's key. The historical field
+    /// name is retained for storage compatibility; it is not a filesystem path.
     pub project_path: String,
     pub base_branch: String,
     pub state: PlanState,
@@ -103,7 +102,7 @@ pub struct PersistedRun {
     #[serde(default)]
     pub plan_id: Option<String>,
     pub goal: String,
-    /// Canonical path of the project repo (same rationale as on the plan).
+    /// Stable opaque project key, with the same compatibility name as on plans.
     pub project_path: String,
     pub base_branch: String,
     pub state: RunState,
@@ -264,9 +263,8 @@ pub enum WorktreeFinishStatus {
 }
 
 /// Durable intent and eventual history for an external worktree finished
-/// through a branch finish. Project ids are intentionally absent because a
-/// `proj-N` id is not durable across boots; the canonical project path is the
-/// stable identity.
+/// through a branch finish. The historical `project_path` field retains an
+/// opaque project key; legacy canonical paths are the migrated projects' keys.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedArchivedWorktree {
     #[serde(default)]

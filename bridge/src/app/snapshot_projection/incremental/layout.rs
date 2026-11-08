@@ -81,7 +81,7 @@ impl Layout {
                 .iter()
                 .map(|project| {
                     (
-                        project.repo_path.clone(),
+                        project.home_path.clone(),
                         app.project_worktrees_root(&project.id),
                     )
                 })
@@ -278,7 +278,7 @@ fn owner_layouts(app: &AppState) -> Vec<OwnerLayout> {
             .project_id_of(id)
             .unwrap_or_default()
             .to_owned(),
-        retained_project_path: app.projects.project_path_for(id),
+        retained_project_path: app.projects.project_key_for(id),
         root: Some(app.snapshot_root(&active.worktree.path)),
         raw_root: Some(active.worktree.path.clone()),
         docs_root: None,
@@ -301,7 +301,7 @@ fn owner_layouts(app: &AppState) -> Vec<OwnerLayout> {
             .project_id_of(id)
             .unwrap_or_default()
             .to_owned(),
-        retained_project_path: app.projects.project_path_for(id),
+        retained_project_path: app.projects.project_key_for(id),
         root: active
             .workspace
             .as_ref()

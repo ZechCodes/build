@@ -161,6 +161,29 @@ fn parked_capture_stops_at_the_first_matching_path_even_without_an_id() {
 }
 
 #[cfg(unix)]
+fn assert_native_scratch_routes(app: &AppState, project: &str, scratch: &Path) {
+    let key = &app.project(project).unwrap().project_key;
+    assert!(app.is_project_conversation_owner("owner"));
+    assert!(app.is_project_scratch(key, scratch));
+    assert_eq!(
+        app.project_snapshot_scratch_path("owner"),
+        Some(scratch.to_path_buf())
+    );
+    assert!(app
+        .project_snapshot_scratch_paths()
+        .contains(&scratch.to_path_buf()));
+    assert_eq!(
+        app.project_conversation_run(project).as_deref(),
+        Some("owner")
+    );
+    assert_eq!(
+        app.project_snapshot_conversation_run(project).as_deref(),
+        Some("owner")
+    );
+    assert_eq!(app.conversation_owner_ref("owner").unwrap().id, project);
+}
+
+#[cfg(unix)]
 #[test]
 fn captured_project_owner_keeps_non_utf8_project_path_bytes() {
     use std::os::unix::ffi::OsStringExt;
@@ -171,10 +194,56 @@ fn captured_project_owner_keeps_non_utf8_project_path_bytes() {
         .join(std::ffi::OsString::from_vec(b"project-\xff".to_vec()));
     std::fs::create_dir(&root).unwrap();
     let project = app.add_project(root.clone(), "main".into());
-    app.projects.bind_entity("owner".into(), project);
-    let scratch = crate::app::projects::scratch_dir(&app.state_root, &root);
+    app.projects.bind_entity("owner".into(), project.clone());
+    // Freeze the pre-M0.2 scratch format from the native path, not its lossy key.
+    let name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("project");
+    let digest = crate::app::sha256_hex(root.as_os_str().as_encoded_bytes());
+    let scratch = app.state_root.join("project-scratch").join(format!(
+        "{}-{}",
+        crate::app::projects::safe_mount_name(name),
+        &digest[..12]
+    ));
     std::fs::create_dir_all(&scratch).unwrap();
-    app.runs.get_mut("owner").unwrap().worktree.path = scratch;
+    app.runs.get_mut("owner").unwrap().worktree.path = scratch.clone();
+    let key = app.project(&project).unwrap().project_key.clone();
     assert!(app.is_project_snapshot_conversation_owner("owner"));
+    assert!(app.capture_snapshot_ownership().is_project_owner("owner"));
+    assert_native_scratch_routes(&app, &project, &scratch);
+    let conversation = app
+        .project_ensure_conversation(&serde_json::json!({"project_id":project}))
+        .unwrap();
+    assert_eq!(
+        conversation["entity_id"], "owner",
+        "legacy scratch must not mint a second owner"
+    );
+    assert_eq!(app.runs.len(), 1);
+
+    let sibling = crate::app::projects::test_support::register_sibling(&mut app, &project);
+    let sibling_key = app.project(&sibling).unwrap().project_key.clone();
+    let keyed_scratch = crate::app::projects::scratch_dir(&app.state_root, &sibling_key);
+    let conversation = app
+        .project_ensure_conversation(&serde_json::json!({"project_id":sibling}))
+        .unwrap();
+    let sibling_owner = conversation["entity_id"].as_str().unwrap();
+    assert_eq!(app.runs[sibling_owner].worktree.path, keyed_scratch);
+    assert_ne!(
+        keyed_scratch, scratch,
+        "a UUID sibling still hashes its opaque key"
+    );
+
+    // A second native path can have the same lossy spelling. Retained lookup
+    // must keep project_by_key's first-match behavior in captured ownership too.
+    let other_root = tmp
+        .path()
+        .join(std::ffi::OsString::from_vec(b"project-\xfe".to_vec()));
+    std::fs::create_dir(&other_root).unwrap();
+    let other = app.add_project(other_root, "main".into());
+    assert_eq!(app.project(&other).unwrap().project_key, key);
+    app.projects.retain_entity_path("owner".into(), key);
+    app.projects.unbind_live_entity("owner");
+    assert!(app.is_project_conversation_owner("owner"));
     assert!(app.capture_snapshot_ownership().is_project_owner("owner"));
 }

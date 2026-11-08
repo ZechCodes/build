@@ -377,7 +377,8 @@ fn warm_roots_resolution_matches_legacy_direct_terminal_project_missing_and_alia
     let missing = f.app.runs["run-03"].worktree.path.clone();
     std::fs::remove_dir_all(&missing).unwrap();
     let project_root = f.app.projects.get(&f.project).unwrap().repo_path.clone();
-    let scratch = crate::app::projects::scratch_dir(&f.app.state_root, &project_root);
+    let scratch =
+        crate::app::projects::scratch_dir(&f.app.state_root, project_root.to_str().unwrap());
     std::fs::create_dir_all(&scratch).unwrap();
     f.app.runs.get_mut("run-04").unwrap().worktree.path = scratch;
     let other_path = f._root.path().join("other-project");

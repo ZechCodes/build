@@ -90,6 +90,7 @@ impl AppState {
     }
 }
 type RegistryRows = (BTreeMap<Entity, Value>, BTreeMap<String, String>);
+
 fn project_rows(
     project: &Value,
     rows: &mut BTreeMap<Entity, Value>,
@@ -98,7 +99,10 @@ fn project_rows(
     let (Some(id), Some(path)) = (project["id"].as_str(), project["path"].as_str()) else {
         return;
     };
-    projects.insert(path.to_owned(), id.to_owned());
+    let Some(key) = crate::app::projects::configured_project_key(project) else {
+        return;
+    };
+    projects.insert(key.to_owned(), id.to_owned());
     let mut row = project.clone();
     row.as_object_mut()
         .expect("project object")
@@ -118,5 +122,27 @@ fn project_rows(
             Entity::new("project_source", &format!("{id}/{source_id}")),
             row,
         );
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn device_project_ids_keep_sibling_keys_distinct() {
+        let mut rows = BTreeMap::new();
+        let mut projects = BTreeMap::new();
+        for (id, key) in [("proj-1", "/checkout"), ("proj-2", "project:opaque")] {
+            project_rows(
+                &json!({"id":id,"path":"/checkout","project_key":key}),
+                &mut rows,
+                &mut projects,
+            );
+        }
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects["/checkout"], "proj-1");
+        assert_eq!(projects["project:opaque"], "proj-2");
+        assert_eq!(rows[&Entity::new("project", "proj-2")]["path"], "/checkout");
     }
 }

@@ -67,6 +67,9 @@ fn assert_count(state: &mut AppState, project: &str, id: &str, count: u64) {
 fn explicit_task_watch_excludes_history_and_rewatch_resets_persisted_baseline() {
     let tmp = tempfile::tempdir().unwrap();
     let (_home, mut state, project) = tracked(tmp.path());
+    let config = tmp.path().join("config.json");
+    state = state.with_config(&config).unwrap();
+    state.persist();
     let who = coding_agent(&mut state, &project);
     let created = filed(&mut state, &project, "explicit watch");
     let id = created["id"].as_str().unwrap();
@@ -81,24 +84,14 @@ fn explicit_task_watch_excludes_history_and_rewatch_resets_persisted_baseline() 
     assert_eq!(task(&mut state, id)["watch_started_after"], baseline);
     assert_count(&mut state, &project, id, 1);
 
-    let path = state
-        .projects
-        .iter()
-        .find(|p| p.id == project)
-        .unwrap()
-        .repo_path
-        .clone();
+    let key = state.project(&project).unwrap().project_key.clone();
     drop(state);
     let mut restored = rooted(tmp.path())
+        .with_config(&config)
+        .unwrap()
         .with_task_store(tmp.path().join("store"))
         .unwrap();
-    let project = restored
-        .projects
-        .iter()
-        .find(|p| p.repo_path == path)
-        .unwrap()
-        .id
-        .clone();
+    let project = restored.project_by_key(&key).unwrap().id.clone();
     assert_eq!(task(&mut restored, id)["watch_started_after"], baseline);
     assert_count(&mut restored, &project, id, 1);
     restored.handle(req("tasks.unwatch", json!({"task_id": id})));

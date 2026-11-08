@@ -40,7 +40,7 @@ impl AppState {
         let paths: imbl::OrdMap<String, String> = self
             .projects
             .iter()
-            .map(|project| (project.id.clone(), project.repo_path.display().to_string()))
+            .map(|project| (project.id.clone(), project.project_key.clone()))
             .collect();
         let ids = paths
             .iter()

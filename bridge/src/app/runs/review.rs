@@ -115,7 +115,10 @@ impl AppState {
         let object_database = if worktree_path.exists() {
             worktree_path
         } else {
-            std::path::PathBuf::from(self.project_path_for(&run_id))
+            let key = self.projects.project_key_for(&run_id);
+            self.project_by_key(&key)
+                .map(|project| project.home_path.clone())
+                .ok_or("stage diff unavailable: project repository is unavailable")?
         };
         let subject = ReadSubject::Stage {
             run_id,

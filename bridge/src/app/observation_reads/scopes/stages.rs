@@ -54,6 +54,7 @@ impl ScopeReadContext {
                         checkout
                     } else {
                         project_path
+                            .ok_or("stage diff unavailable: project repository is unavailable")?
                     },
                     start_sha: start_sha.clone(),
                     completion_sha: completion_sha.clone(),

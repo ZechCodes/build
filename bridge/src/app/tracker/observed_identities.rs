@@ -62,9 +62,9 @@ impl AppState {
             .get(&workspace.project_id)
             .is_some_and(|project| {
                 if self.snapshot_projection_initialized() {
-                    self.observed_same_path(&workspace.root, &project.repo_path)
+                    self.observed_same_path(&workspace.root, &project.home_path)
                 } else {
-                    workspace.root == project.repo_path
+                    workspace.root == project.home_path
                 }
             })
     }

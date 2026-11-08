@@ -8,7 +8,7 @@ use std::path::PathBuf;
 pub(super) struct Witness {
     state_root: PathBuf,
     paths: BTreeMap<PathBuf, PathBuf>,
-    projects: Vec<(String, PathBuf)>,
+    projects: Vec<(String, PathBuf, String)>,
     parked: Vec<(Option<String>, Option<String>)>,
     plans: Vec<Roster>,
     runs: Vec<Run>,
@@ -64,7 +64,11 @@ impl Witness {
                 .iter()
                 .map(|project| {
                     source_row();
-                    (project.id.clone(), project.repo_path.clone())
+                    (
+                        project.id.clone(),
+                        project.home_path.clone(),
+                        project.project_key.clone(),
+                    )
                 })
                 .collect(),
             parked: app
@@ -74,7 +78,7 @@ impl Witness {
                 .map(|entry| {
                     source_row();
                     (
-                        crate::app::projects::configured_primary_path(entry).map(str::to_owned),
+                        crate::app::projects::configured_project_key(entry).map(str::to_owned),
                         entry["id"].as_str().map(str::to_owned),
                     )
                 })
@@ -105,10 +109,14 @@ impl Witness {
             && self
                 .projects
                 .iter()
-                .map(|(id, path)| (id.as_str(), path.as_path()))
+                .map(|(id, path, key)| (id.as_str(), path.as_path(), key.as_str()))
                 .eq(app.projects.iter().map(|project| {
                     source_row();
-                    (project.id.as_str(), project.repo_path.as_path())
+                    (
+                        project.id.as_str(),
+                        project.home_path.as_path(),
+                        project.project_key.as_str(),
+                    )
                 }))
             && self
                 .parked
@@ -117,7 +125,7 @@ impl Witness {
                 .eq(app.projects.parked().iter().map(|entry| {
                     source_row();
                     (
-                        crate::app::projects::configured_primary_path(entry),
+                        crate::app::projects::configured_project_key(entry),
                         entry["id"].as_str(),
                     )
                 }))
@@ -169,12 +177,12 @@ impl Roster {
 impl Run {
     fn capture(app: &AppState, owner: &str, active: &crate::orchestrator::ActiveRun) -> Self {
         let project = app.projects.project_id_of(owner);
-        // For registered projects, native repo paths above already cover the
+        // For registered projects, native home paths and keys above already cover the
         // scratch input. Only an absent project needs retained recovery text.
         let recovery_path = project
             .and_then(|id| app.projects.get(id))
             .is_none()
-            .then(|| app.projects.project_path_for(owner));
+            .then(|| app.projects.project_key_for(owner));
         Self {
             roster: Roster::capture(owner, &active.agents),
             root: active.worktree.path.clone(),
@@ -197,7 +205,7 @@ impl Run {
             && self
                 .recovery_path
                 .as_ref()
-                .is_none_or(|path| *path == app.projects.project_path_for(owner))
+                .is_none_or(|path| *path == app.projects.project_key_for(owner))
     }
 }
 
@@ -242,4 +250,30 @@ impl Workspaces {
 fn source_row() {
     #[cfg(test)]
     super::super::work_counts::source_row();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn environments_extra_identity_ownership_witness_tracks_project_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let context = crate::harness::HarnessContext::resolved(
+            dir.path().join("mcp.sock"),
+            dir.path().to_path_buf(),
+        )
+        .unwrap();
+        let mut app =
+            AppState::new_unrooted_configured(dir.path().join("worktrees"), "main", true, context);
+        app.add_project(dir.path().to_path_buf(), "main".into());
+        app.initialize_snapshot_projection();
+        let witness = Witness::capture(&app, &inputs::Inputs::capture(&app)).unwrap();
+        assert!(witness.matches(&app));
+        app.projects.at_mut(0).project_key = format!("project:{}", uuid::Uuid::new_v4());
+        assert!(
+            !witness.matches(&app),
+            "a new identity changes scratch ownership even at the same home"
+        );
+    }
 }

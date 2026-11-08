@@ -589,11 +589,18 @@ fn edge_removal_case(assignment: &str) {
 #[tokio::test]
 async fn deferred_delivery_startup_runs_without_rpc_or_connected_client() {
     let mut fixture = WaitingDelivery::new();
+    // Startup restores registered projects from config; run records never
+    // recreate a project that was removed from the registry.
+    let config = fixture.root.path().join("config.json");
+    fixture.app = fixture.app.with_config(&config).unwrap();
+    fixture.app.persist();
     let intent = fixture.assign(json!({"kind":"new_project_agent","agent_name":"startup worker"}));
     fixture.release();
     let root = fixture.root.path().to_path_buf();
     drop(fixture.app);
     let app = rooted(&root)
+        .with_config(&config)
+        .unwrap()
         .with_task_store(root.join("store"))
         .unwrap()
         .shared();

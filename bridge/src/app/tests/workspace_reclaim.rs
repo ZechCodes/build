@@ -88,6 +88,8 @@ pub(super) fn linked_workspace() -> (
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (mut state, project_id) = tracked_with_origin(&state_root);
+    state = state.with_config(state_root.join("config.json")).unwrap();
+    state.persist();
     let ws = workspace(&mut state, &project_id, "quiet");
     let task = task_id(&filed(&mut state, &project_id, "Quiet work"));
     let linked = link_task(&mut state, json!({ "task_id": task, "workspace_id": ws }));
@@ -506,6 +508,8 @@ fn a_restart_does_not_send_the_digest_twice() {
 
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let reopened = rooted(&state_root)
+        .with_config(state_root.join("config.json"))
+        .unwrap()
         .with_task_store(state_root.join("store"))
         .expect("the store opens");
     let reopened = Arc::new(Mutex::new(reopened));
@@ -576,8 +580,8 @@ fn a_missed_scan_is_caught_up_once() {
 /// returned path is removed to let it through again.
 fn block_project_agent(state: &Arc<Mutex<AppState>>, project_id: &str) -> PathBuf {
     let app = state.lock().unwrap();
-    let repo = app.projects.get(project_id).unwrap().repo_path.clone();
-    let scratch = crate::app::projects::scratch_dir(&app.state_root, &repo);
+    let project = app.projects.get(project_id).unwrap();
+    let scratch = crate::app::projects::scratch_dir(&app.state_root, &project.project_key);
     std::fs::create_dir_all(scratch.parent().unwrap()).unwrap();
     std::fs::write(&scratch, "not a directory").unwrap();
     scratch
@@ -869,6 +873,8 @@ fn the_verdict_is_kept_across_a_restart() {
 
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let reopened = rooted(&state_root)
+        .with_config(state_root.join("config.json"))
+        .unwrap()
         .with_task_store(state_root.join("store"))
         .expect("the store opens");
     let reopened = Arc::new(Mutex::new(reopened));

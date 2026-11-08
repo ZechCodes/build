@@ -97,7 +97,9 @@ mod conversation;
 mod coordinator;
 #[cfg(test)]
 pub(in crate::app) use conversation::PROJECT_SCRATCH_DIR_NAME;
-pub(in crate::app) use conversation::{is_project_scratch, recut_project_scratch, scratch_dir};
+pub(in crate::app) use conversation::{
+    recut_project_scratch, scratch_dir, scratch_dir_for_project,
+};
 pub(crate) use coordinator::PINNED_AGENT_STAYS;
 mod deletion;
 mod lifecycle;
@@ -112,6 +114,8 @@ mod requests;
 mod source_directory_claims;
 pub(in crate::app) use source_directory_claims::SourceDirectoryClaims;
 mod source_holds;
+#[cfg(test)]
+pub(in crate::app) mod test_support;
 pub(in crate::app) use source_holds::SourceMoves;
 mod source_scope;
 pub(in crate::app) use source_scope::ResolvedProjectSource;
@@ -260,6 +264,13 @@ pub(in crate::app) fn configured_primary_path(project: &Value) -> Option<&str> {
                 .get("path")?
                 .as_str()
         })
+}
+
+/// A configured project's opaque key, including unmigrated legacy fixtures.
+pub(in crate::app) fn configured_project_key(project: &Value) -> Option<&str> {
+    project["project_key"]
+        .as_str()
+        .or_else(|| configured_primary_path(project))
 }
 
 /// The `N` of a configured project's `proj-N` id, when it carries one.
@@ -446,9 +457,8 @@ impl AppState {
         self
     }
 
-    /// The project repo path to stamp on a persisted record: the live project's
-    /// canonical path if it is registered, else the retained record path (a
-    /// parked repo-missing entity), else empty.
+    /// Display the live project home, then the retained recovery text, else empty.
+    /// Persistence and identity routing use ProjectRegistry::project_key_for.
     pub(in crate::app) fn project_path_for(&self, entity_id: &str) -> String {
         self.projects.project_path_for(entity_id)
     }
@@ -626,6 +636,13 @@ impl AppState {
         self.projects.get(project_id)
     }
 
+    /// Resolve a persisted, opaque project identity without interpreting it as a path.
+    pub(in crate::app) fn project_by_key(&self, key: &str) -> Option<&Project> {
+        self.projects
+            .iter()
+            .find(|project| project.project_key == key)
+    }
+
     pub(in crate::app) fn sources_for(
         &self,
         project_id: &str,
@@ -671,7 +688,7 @@ impl AppState {
         &self,
         project_id: &str,
     ) -> Result<std::path::PathBuf, String> {
-        Ok(self.project_for(project_id)?.repo_path.clone())
+        Ok(self.project_for(project_id)?.home_path.clone())
     }
 
     /// Whether a run stands in its project's repository rather than in a
@@ -680,9 +697,9 @@ impl AppState {
     /// Nothing mints such a run any more — work happens in workspaces — but a
     /// store written before that holds runs adopted on the repo root, and the
     /// verbs that remove a run's directory must never remove the repository.
-    /// Compared by canonical path, off the two paths the run record already
-    /// carries, so the guard holds for a run this daemon never minted and can
-    /// never disagree with where the run actually works.
+    /// Callers require a live project binding first. Compare its resolved home
+    /// with the recorded checkout by canonical path, including legacy runs
+    /// this daemon never minted.
     pub(in crate::app) fn stands_in_the_repository(
         &self,
         run_id: &str,

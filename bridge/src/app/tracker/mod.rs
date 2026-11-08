@@ -696,8 +696,8 @@ impl AppState {
 
     /// One task and the project id it belongs to.
     ///
-    /// The record holds a path; the wire holds an id. Resolving here means no
-    /// verb above ever sees the path, and a task whose project has been
+    /// The record holds an opaque key; the wire holds an id. Resolving here means no
+    /// verb above ever sees the key, and a task whose project has been
     /// removed reads as unknown rather than as a task nobody can act on.
     pub(in crate::app) fn tracker_task(&mut self, task_id: &str) -> Result<(String, Task), String> {
         let task = self
@@ -706,19 +706,17 @@ impl AppState {
             .stored()?
             .ok_or_else(|| format!("unknown task_id: {task_id}"))?;
         let project_id = self
-            .projects
-            .find_by_canonical_path(std::path::Path::new(&task.project_path))
+            .project_by_key(&task.project_path)
             .map(|project| project.id.clone())
             .ok_or_else(|| format!("unknown task_id: {task_id}"))?;
         Ok((project_id, task))
     }
 
-    /// Where a project's tasks are stored, by the canonical path that outlives
-    /// its `proj-N` id.
+    /// The opaque identity used by task storage, under its legacy path name.
     pub(in crate::app) fn tracker_project_path(&self, project_id: &str) -> Result<String, String> {
         self.projects
             .get(project_id)
-            .map(|project| project.repo_path.display().to_string())
+            .map(|project| project.project_key.clone())
             .ok_or_else(|| format!("unknown project_id: {project_id}"))
     }
 

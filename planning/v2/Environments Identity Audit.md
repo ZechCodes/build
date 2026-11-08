@@ -80,6 +80,12 @@ file/function name is the durable locator. Test-only uses are listed explicitly
 in their own section. Supplemental identity consumers with different variable
 names follow the lexical inventory.
 
+The final source snapshot has **834 lexical occurrences across 222 files**,
+classified in **257 occurrence groups** (129 production, 102 test/fixture and
+26 declaration/comment groups). The supplemental table adds 42 groups for
+aliases and renamed readers: **299 classified rows total**. Every
+classification cell is exactly Identity, Location or Neither.
+
 ### Production readers
 
 | File under `bridge/src/` | Function and matching lines | Classification | Reason | Coverage |
@@ -104,7 +110,9 @@ names follow the lexical inventory.
 | `app/projects/deletion.rs` | `retire_project_task_deliveries` L238 | Identity | Reads tracker_project_path to retire only the removed project’s tasks/deliveries. | T; existing project deletion and tracker_deferred_delivery suites |
 | `app/projects/lifecycle.rs` | `register_opened_project_sources` L39; `register_opened_repository` L122 | Neither | Legacy project.create source/repository dedupe remains canonical-path-based. | Existing project creation/configuration suites |
 | `app/projects/list.rs` | `project_list_rows` L46 | Location | Supplies/display-validates the real project source/home directory; project ID carries owner identity. | Existing area suites; migrated location behavior is unchanged |
-| `app/projects/mod.rs` | `register_configured_project` L429,434; `add_project` L465,466,467,470,471 | Neither + location | Keeps legacy canonical-directory creation dedupe; opens/registers an actual home directory, never a persisted task key. | Existing configuration and project_registry suites; T |
+| `app/projects/mod.rs` | `register_configured_project` L429; `add_project` L467 | Neither | Keeps legacy canonical-directory creation dedupe; this is not a durable identity resolver. | Existing configuration and project_registry suites; T |
+| `app/projects/mod.rs` | `register_configured_project` L434; `add_project` L466,470,471 | Location | Canonicalizes/probes the supplied home, constructs its runtime, or checks that a known configured ID still names the expected home. | Existing configuration and project_registry suites |
+| `app/projects/mod.rs` | `add_project` L465 | Neither | Declares the real-directory registration argument; no value is read on this line. | — |
 | `app/projects/mod.rs` | `project_candidate` L477,481; `project_candidate_at` L486,491,506,511; `project_candidate_with_sources` L521,526; `stands_in_the_repository` L704,705,706 | Location | Constructs or returns a real project/source directory, or fences repository-root deletion against the actual run checkout. | Existing project_agent_base and workflow/repo_root_runs suites |
 | `app/projects/mod.rs` | `project_candidate_with_sources_at` L531,542,544,546,552,561,566 | Location | Constructs real home/orchestrator/source locations; the separate project_key initialization is inventoried as identity. | P; existing environments/runtime_tests.rs::assert_home_metadata |
 | `app/projects/mod.rs` | `project_candidate_with_sources_at` L560 | Identity | Initial legacy project registration freezes its canonical-home text as the stable key. | P; existing environments/runtime_tests.rs::assert_home_metadata |
@@ -360,39 +368,46 @@ or `home_path`.
 | File:function | Classification | Reason and coverage |
 | --- | --- | --- |
 | `app/board/archive.rs::archive_read_input` | Identity | Captures (display name, project key) for record joins; the private key is not a rendered home path. X. |
-| `app/workspaces/ownership/inputs.rs::capture_runs` | Identity + location | Derives scratch ownership and parked-project ownership from exact project keys; the recorded run checkout remains a real location. X. |
+| `app/workspaces/ownership/inputs.rs::capture_runs` | Identity | Derives scratch ownership and parked-project ownership from exact project keys. X. |
 | `app/workspaces/ownership/inputs.rs::Inputs::capture` | Location | Captures project home roots for physical checkout matching; project IDs and keys carry ownership separately. X and existing workspace ownership regressions. |
-| `app/projects/parked.rs::revive_parked_projects` | Identity + location | A returned real home admits its saved project record; retained owners bind by that restored project's key, never by sibling home equality. P, R, X and existing parked-project tests. |
-| `app/projects/project_registry.rs::project_path_for` | Location + identity display fallback | Returns resolved home_path for display; only an unbound entity falls back to verbatim retained text. Key persistence/routing uses project_key_for. P and existing registry display-fallback tests. |
+| `app/projects/parked.rs::revive_parked_projects` (retained owner binding) | Identity | Binds retained owners by the restored project's key, never by sibling home equality. P, R, X and existing parked-project tests. |
+| `app/projects/parked.rs::revive_parked_projects` (returned-home check) | Location | Tests the configured real home directory for availability before restoring its saved record. Existing parked-project tests. |
+| `app/projects/project_registry.rs::project_path_for` (bound display) | Location | Returns resolved home_path for display. P and existing registry display-fallback tests. |
+| `app/projects/project_registry.rs::project_path_for` (unbound fallback) | Identity | Preserves the retained key verbatim as fallback text; identity persistence/routing uses project_key_for and filesystem readers require a resolved home. P and existing registry display-fallback tests. |
 | `app/projects/list.rs::{project_list_rows, project_json}` | Location | Captures/renders home_path under the existing wire path field; adds no identity field or capability. Existing project-list/API contract tests. |
 | `app/projects/agent_tools.rs::{project_agent_prompt, project_worker_prompt}` | Location | Uses home_path for prompt cwd/source instructions and excludes that actual directory from additional-source displays. Existing project agent/worker prompt tests. |
 | `app/projects/conversation.rs::project_base`, `app/projects/mod.rs::repo_path_for` | Location | Returns a real home checkout for agent/process and filesystem callers; does not resolve identity from a directory. Existing project_agent_base/project_conversation tests. |
 | `app/tracker/identities.rs::live_task_identity`, `app/tracker/observed_identities.rs::observed_workspace_is_project_root` | Location | Compares a workspace checkout to the resolved home for source-root alias classification; project ID already supplies ownership. Existing tracker_summary_identity_availability and tracker/read_identities tests. |
 | `app/snapshot_projection/incremental/layout.rs::capture_with_projects` | Location | Tracks home and worktree-root locations for incremental layout invalidation; owner_layouts captures keys separately. X and existing snapshot projection regressions. |
-| `app/snapshot_projection/tests/warm_work.rs::warm_roots_resolution_matches_legacy_direct_terminal_project_missing_and_alias_cases`, `app/tests/workspace_reclaim.rs::block_project_agent`, `app/tracker/read_identities/tests.rs::captured_project_owner_keeps_non_utf8_project_path_bytes` | Identity (test fixture) | Existing regression fixtures now derive project scratch from the project key; each enclosing test validates its ownership/reclaim behavior. P, X and the named existing tests. |
+| `app/snapshot_projection/tests/warm_work.rs::warm_roots_resolution_matches_legacy_direct_terminal_project_missing_and_alias_cases`, `app/tests/workspace_reclaim.rs::block_project_agent`, `app/tracker/read_identities/tests.rs::captured_project_owner_keeps_non_utf8_project_path_bytes` | Identity | Existing regression fixtures now derive project scratch from the project key; each enclosing test validates its ownership/reclaim behavior. P, X and the named existing tests. |
 | `app/tracker/mod.rs::{tracker_project_path, tracker_task}` | Identity | Returns project_key and resolves stored task keys through the central accessor; T. |
 | `app/tracker/read.rs::task_project_maps` | Identity | Maps public IDs to opaque keys one-to-one, never shared home directories; T. |
 | `app/projects/conversation.rs::{scratch_dir, scratch_key, is_project_scratch, project_ensure_conversation, is_project_conversation_owner, is_project_snapshot_conversation_owner, project_snapshot_scratch_path, project_snapshot_scratch_paths, project_snapshot_conversation_run, project_conversation_run}` | Identity | Hashes/recognizes keyed scratch and separates sibling conversation owners; P, R, X. Legacy stem/digest bytes are preserved. |
-| `app/runtime/terminals/create_scope.rs::capture_workspace` | Identity + location | Generates the keyed scratch denial root separately from the real terminal cwd; P, R, X and existing `terminal_creation_scope` denial tests. |
+| `app/runtime/terminals/create_scope.rs::capture_workspace` (scratch denial) | Identity | Generates the forbidden scratch root from the project key. P, R, X and existing terminal_creation_scope denial tests. |
+| `app/runtime/terminals/create_scope.rs::capture_workspace` (cwd) | Location | The original legacy-project selector supplies the resolved home checkout as terminal cwd. Existing terminal_creation_scope tests. |
 | `app/conversations/senders.rs::conversation_owner_candidates` | Identity | Resolves project conversation sender roots using project_key; P, X. |
 | `app/session_summaries.rs::apply_device_session_summaries` | Identity | Rebinds retained pools through project_by_key; D. |
 | `app/tracker/reviews/revision_dispatch.rs::post_revision_failure_notice` | Identity | Resolves failed revision notices through project_by_key; D. |
 | `app/tracker/reviews/verdict_delivery.rs::{verdict_agent_owner, note_verdict_delivery_changed}` | Identity | Validates recipient key equality and routes board publication by key; V. |
 | `app/tracker/waiting_on.rs::{pending_task_delivery_holder, reconcile_page}` | Identity | Resolves project agent intent and changed-board notifications by key; D. |
-| `app/runtime/recovery.rs::{bind_recovered_project, recovery_repo_location}` | Identity then location | Retains/resolves the record key; checks only resolved home_path and reports that home or the unresolved key. R. |
-| `app/projects/test_support.rs::register_sibling` | Neither (test support) | Creates the sibling fixture in the existing environment with the same home and a fresh project:uuid key; no production registration RPC. T, P, R, X, F. |
+| `app/runtime/recovery.rs::{bind_recovered_project, recovery_repo_location}` (key lookup/fallback) | Identity | Retains/resolves the exact record key and reports an unresolved key verbatim. R. |
+| `app/runtime/recovery.rs::{bind_recovered_project, recovery_repo_location}` (resolved-home use) | Location | Checks only the resolved home_path for availability and displays that home when reporting a missing repository. R. |
+| `app/projects/test_support.rs::register_sibling` | Neither | Creates the sibling fixture in the existing environment with the same home and a fresh project:uuid key; no production registration RPC. T, P, R, X, F. |
 | `app/projects/mod.rs::configured_project_key` | Identity | Reads the configured project_key; only legacy records lacking the field fall back to the configured home path. R, X and parked compaction regression. |
 | `app/projects/mod.rs::project_by_key` | Identity | Central exact-equality resolver; T, D, R, V. |
 | `app/projects/project_registry.rs::{retain_entity_path, bind_retained_entities, project_key_for}` | Identity | Retains exact storage key, binds only equal project keys and supplies identity to persistence; P, R. `project_path_for` separately prefers home_path for display. |
-| `app/device_lifecycle.rs::project_rows` | Identity + location | `device_project_ids` input map uses config project_key, while the public row’s path/name continue to derive from the home directory; S. |
+| `app/device_lifecycle.rs::project_rows` (SQL identity map) | Identity | The device_project_ids input map uses the config project_key, keeping siblings distinct. S. |
+| `app/device_lifecycle.rs::project_rows` (public path/name) | Location | The public row retains the real home directory for path/name display. Existing device_lifecycle registry projection tests. |
 | `store/sync/lifecycle.rs::reconcile_project_ids` | Identity | The legacy SQL column `path` stores the opaque key supplied above; map reconciliation does not canonicalize it; S. |
-| `store/sync/task_publication.rs::inbox_projection` | Identity then neither | Looks up public project_id using task.project_path, then strips the private storage field; T, S. |
+| `store/sync/task_publication.rs::inbox_projection` (public project lookup) | Identity | Resolves public project_id using the task key through device_project_ids. T, S. |
+| `store/sync/task_publication.rs::inbox_projection` (wire field removal) | Neither | Strips the private storage field from the public row; this is serialization shape, not identity or filesystem resolution. T, S. |
 | `store/sync/device_sessions.rs::{project_key, project_id}` | Identity | Maps pooled summary keys through the same SQL identity map; D, S. |
 | `store/sync/device_session_backfill.rs::mapping` | Identity | Iterates legacy SQL `path` keys without opening directories; D, S. |
 | `app/observation_reads/mixed/capture.rs::{MixedPatch::project, MixedReadContext::apply}` | Identity | The project patch feeds its key to update_scope_project and the archive join; T, X. |
 | `app/config/compaction.rs::compaction_project_of` | Identity | Finds the exact parked project by retained key, rather than whichever sibling shares its home; `app/tests/environments_project_identity.rs::parked_compaction_project_resolves_retained_key`. |
-| `app/workspaces/ownership/structure/witness.rs::{Witness::capture, Witness::matches, Run::capture, Run::matches}` | Identity + location | Cache witness includes key inputs used for scratch/parked owner classification, plus source directory inputs for actual checkout matching; X. |
-| `app/snapshot_projection/incremental/layout.rs::owner_layouts` | Identity fallback | Retained recovery text is an input to unbound owner projection; X, R. |
+| `app/workspaces/ownership/structure/witness.rs::{Witness::capture, Witness::matches, Run::capture, Run::matches}` (project/retained keys) | Identity | The cache witness tracks keys used for scratch/parked owner classification. X. |
+| `app/workspaces/ownership/structure/witness.rs::{Witness::capture, Witness::matches}` (home roots) | Location | The same witness separately tracks real home directories used for physical checkout matching. Existing ownership-cache regressions and X. |
+| `app/snapshot_projection/incremental/layout.rs::owner_layouts` | Identity | Retained recovery text is an input to unbound owner projection; X, R. |
 | `app/observation_reads/scopes/capture.rs::run`, `app/runs/review.rs::plan_run_stage_diff`, `app/projects/coordinator.rs::refuse_worker_without_sources`, `app/projects/mod.rs::stands_in_the_repository` | Location | Stage fallback and worker-start guards require a resolved home; surviving stage checkouts remain readable. The repository-deletion guard is reached only after project_of requires a live binding. F, `unbound_project_worker_cannot_start_in_scratch_when_old_home_exists`, and existing repo-root tests. |
 
 The attachment resolver’s `local_attachments_dir()` containment does not read a

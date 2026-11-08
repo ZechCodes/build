@@ -21,6 +21,8 @@ pub(super) fn display_name(name: &str) -> Result<String, String> {
 impl AppState {
     pub(crate) fn project_rename(&mut self, params: &Value) -> Result<Value, String> {
         let id = require_str(params, "project_id")?;
+        self.refuse_archived_project(&id)
+            .map_err(crate::app::projects::archive_error_string)?;
         let name = display_name(&require_str(params, "name")?)?;
         let environment = self.project_for(&id)?.environment_id.clone();
         let result_id = id.clone();

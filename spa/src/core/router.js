@@ -12,7 +12,7 @@
 //   #/project/<projectId>/branch/<name>/<tab>   — tab is changes | files
 //   #/project/<projectId>/plan/<planId>[/stage/<stageId>]
 //   #/capture/<captureId>                       — what to do with a capture
-//   #/account[/<page>]                          — page is settings | devices | archive
+//   #/account[/<page>]                          — page is settings | devices | archive | environments
 //
 // Every URL the pre-redesign client could mint still opens the nearest of
 // those. Conversation and Agent are the agent rail now, terminals are the
@@ -33,7 +33,7 @@ import { currentId } from "./renamedIds.js";
 import { parseReviewRoute, reviewRoutePath, reviewRouteQuery } from "./taskReviewSelection.js";
 
 const BRANCH_TABS = new Set(["changes", "files"]);
-const ACCOUNT_PAGES = new Set(["settings", "devices", "archive"]);
+const ACCOUNT_PAGES = new Set(["settings", "devices", "archive", "environments"]);
 
 /// The project workspace's default Tasks face and tracker collection.
 /// One word for both, because `#/project/<p>/tasks` IS that tab.

@@ -504,11 +504,12 @@
               "state": "unknown",
               "project_id": "proj-2",
               "project_key": "project:reserved",
-              "steps": {
-                "project": {
+              "steps": [
+                {
+                  "step": "project",
                   "state": "done"
                 }
-              }
+              ]
             }
           }
         ]
@@ -569,11 +570,12 @@
               "state": "reconciling",
               "project_id": "proj-2",
               "project_key": "project:reserved",
-              "steps": {
-                "project": {
+              "steps": [
+                {
+                  "step": "project",
                   "state": "done"
                 }
-              }
+              ]
             }
           }
         ]

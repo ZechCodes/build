@@ -21,7 +21,7 @@ import { readCached, mergeCachedAtomically } from "../core/localCache.js";
 
 export function deviceProjectsPanelHtml() {
   return `<div class="panel" data-device-projects>
-      <h3>📁 Projects</h3>
+      <h3><a href="#/account/environments">Environments</a></h3>
       <div id="projlist"><span class="dim" style="font-size:13px">loading…</span></div>
       <div class="addproj">
         <button class="btn primary" id="newrepo">Add project…</button>

@@ -998,6 +998,20 @@ describe.each([false, true])("environment lists (device sync owns lists: %s)", (
     environmentsSupported = true;
   });
 
+  it("re-pulls environment.list on reconnect when board.list omits environments", async () => {
+    script["environment.list"] = () => ({ environments: [environment("Before disconnect")] });
+    await boot([]);
+    script["board.list"] = () => ({ items: [] });
+    const rows = [environment("Created while disconnected")];
+    script["environment.list"] = () => ({ environments: rows });
+    bridge.call.mockClear();
+    contexts.get("dev-1").session = { reconnected: true };
+    stateListeners.forEach(listener => listener());
+    await passesSettled(sync, "dev-1");
+    expect(calls("environment.list")).toHaveLength(1);
+    expect(await readEnvironments()).toEqual(cachedRows(rows));
+  });
+
   it("lands the capable device's environment.list in its cache for independent readers", async () => {
     const rows = [environment("Pulled environment")];
     script["environment.list"] = () => ({ environments: rows });

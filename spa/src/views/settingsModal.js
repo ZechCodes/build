@@ -4,8 +4,13 @@ import { onDeviceStateChanged } from "../core/deviceContexts.js";
 import { renderSettings } from "./settings.js";
 import { renderDeviceSettings } from "./deviceSettings.js";
 import { renderArchive } from "./archive.js";
+import { renderEnvironmentsSettings } from "./environmentsSettings.js";
+
 import { onDevicesChanged, paintDevicePicker, readCachedDevices } from "../devices.js";
 import { bridgeUpdateNotifies, bridgeUpdateStatus, onBridgeUpdatesChanged } from "../core/bridgeUpdates.js";
+
+const ACCOUNT_PANELS = Object.assign(Object.create(null), { archive: renderArchive, environments: renderEnvironmentsSettings });
+const accountPanelOf = hash => hash.startsWith("#/account/") && ACCOUNT_PANELS[hash.slice(10)] ? hash.slice(10) : null;
 
 export function isSettingsRoute(route) {
   return route.name === "device" || route.name === "account";
@@ -36,7 +41,7 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
   document.body.classList.add("settings-open");
   let disposePanel = null;
   let generation = 0;
-  let selected = App.route.name === "device" ? App.route.id : App.route.page === "archive" ? "archive" : null;
+  let selected = App.route.name === "device" ? App.route.id : ACCOUNT_PANELS[App.route.page] ? App.route.page : null;
   const content = scrim.querySelector(".settings-content");
   const sidebar = scrim.querySelector("nav");
   const close = () => go(returnRoute);
@@ -44,14 +49,14 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
   const focusedSidebarEntry = () => {
     if (!sidebar.contains(document.activeElement)) return null;
     if (document.activeElement.matches("[data-local]")) return { kind: "local" };
-    if (document.activeElement.matches(".settings-archive")) return { kind: "archive" };
+    if (document.activeElement.dataset.settingsAccount) return { kind: document.activeElement.dataset.settingsAccount };
     return document.activeElement.dataset.settingsDevice
       ? { kind: "device", id: document.activeElement.dataset.settingsDevice }
       : null;
   };
   const restoreSidebarFocus = (entry) => {
     if (entry?.kind === "local") sidebar.querySelector("[data-local]")?.focus();
-    if (entry?.kind === "archive") sidebar.querySelector(".settings-archive")?.focus();
+    if (ACCOUNT_PANELS[entry?.kind]) sidebar.querySelector(`[data-settings-account="${entry.kind}"]`)?.focus();
     if (entry?.kind === "device") {
       [...sidebar.querySelectorAll("[data-settings-device]")]
         .find((button) => button.dataset.settingsDevice === entry.id)
@@ -60,12 +65,13 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
   };
   const paintSidebar = () => {
     const html = `<button class="btn" data-local ${selected === null ? 'aria-current="page"' : ""}>Local settings</button>
+      <a class="btn settings-environments" data-settings-account="environments" href="#/account/environments" ${selected === "environments" ? 'aria-current="page"' : ""}>Environments</a>
       <h3>Devices</h3>${App.devices.map((device) => {
         const update = device.status === "online" && bridgeUpdateNotifies(bridgeUpdateStatus(device.id));
         return `<button class="btn${update ? " has-bridge-update" : ""}" data-settings-device="${esc(device.id)}" ${selected === device.id ? 'aria-current="page"' : ""}>${esc(device.name)}<small>${esc(device.status)}${update ? '<span class="bridge-update-sidebar-note">Update available</span>' : ""}</small>${update ? '<span class="bridge-update-dot" aria-hidden="true"></span>' : ""}</button>`;
       }).join("")}
       ${App.devices.length ? "" : '<p class="dim">No paired devices</p>'}
-      <a class="btn settings-archive" href="#/account/archive" ${selected === "archive" ? 'aria-current="page"' : ""}>Archived work</a>`;
+      <a class="btn settings-archive" data-settings-account="archive" href="#/account/archive" ${selected === "archive" ? 'aria-current="page"' : ""}>Archived work</a>`;
     if (sidebarHtml === html) return;
     const focusedEntry = focusedSidebarEntry();
     sidebarHtml = html;
@@ -78,7 +84,7 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
   };
   const renderSelectedPanel = async (deviceId, options, current) => {
     if (deviceId === null) return renderSettings(options);
-    if (deviceId === "archive") return renderArchive(options);
+    if (ACCOUNT_PANELS[deviceId]) return ACCOUNT_PANELS[deviceId](options);
     await readCachedDevices();
     if (generation !== current) return;
     return renderDeviceSettings(options);
@@ -90,8 +96,8 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
     selected = deviceId;
     const route = deviceId === null
       ? { name: "account", page: "settings" }
-      : deviceId === "archive"
-        ? { name: "account", page: "archive" }
+      : ACCOUNT_PANELS[deviceId]
+        ? { name: "account", page: deviceId }
         : { name: "device", id: deviceId };
     markRoute(route);
     paintSidebar();
@@ -126,9 +132,9 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
     if (link.hash === "#/account/settings") {
       event.preventDefault();
       void select(null);
-    } else if (link.hash === "#/account/archive") {
+    } else if (accountPanelOf(link.hash)) {
       event.preventDefault();
-      void select("archive");
+      void select(accountPanelOf(link.hash));
     } else if (link.classList.contains("devsettings")) {
       event.preventDefault();
       const deviceId = decodeURIComponent(link.hash.split("/")[2]);

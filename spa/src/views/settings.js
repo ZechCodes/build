@@ -177,6 +177,7 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
     ${connectionDiagnosticsPanelHtml()}
     ${buildVersionLineHtml(BUNDLE_VERSION)}
     ${cacheHealthLineHtml()}
+    <p><a class="btn" href="#/account/environments">Environments</a></p>
     <div class="panel">
       <h3>📱 Devices &amp; keys</h3>
       <div class="dim" style="font-size:13px;margin-bottom:8px">Only paired devices can read your tasks. When you add one, confirm its fingerprint matches what the bridge printed. Each device's own settings — its projects, its folder, how agents run there — live on its page.</div>

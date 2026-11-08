@@ -34,12 +34,14 @@ impl AppState {
         ProjectSnapshotRefresh {
             version: self.read_view.next_version(),
             rows: self.project_list_rows(),
+            environments: self.capture_environment_snapshot_rows(),
         }
     }
     pub(in crate::app) fn install_project_snapshot_refresh(
         &self,
         refresh: RenderedProjectSnapshotRefresh,
     ) {
+        self.install_environment_snapshot_refresh(refresh.version, refresh.environments);
         let current = self.project_list_rows();
         let mut observations = self.snapshot_observations.projects.lock().unwrap();
         for (row, value) in refresh.rows {

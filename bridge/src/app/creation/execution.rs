@@ -2,6 +2,8 @@ use super::*;
 use crate::app::workspaces::journal_creation::{WorkspaceCreationEvent, WorkspaceCreationObserver};
 use crate::workspace::Workspace;
 
+const STALE_PROJECT_IDENTITY: &str = "saved creation project identity is no longer available";
+
 pub(super) fn execute(
     state: &Arc<Mutex<AppState>>,
     mut record: MutationRecord,
@@ -33,7 +35,9 @@ pub(super) fn execute(
         .track_creation_workspace(&record.execution);
     let _activity = CreationActivity::new(state);
     let service = state.lock().unwrap().mutation_service();
-    let result = if record.state == "reconciling" {
+    // A stale identity parks cleanup as unknown without discarding its residue.
+    // If authority returns, resume that cleanup rather than provisioning again.
+    let result = if record.state == "reconciling" || !record.execution["residue"].is_null() {
         cleanup(state, &writer, &record)
     } else {
         provision(state, &writer, &record)
@@ -344,6 +348,15 @@ fn finish_failure(
         .map_err(string)?
         .ok_or("creation disappeared")?;
     let mut evidence = record.execution;
+    if error == STALE_PROJECT_IDENTITY
+        || (record.state != "reconciling" && ambiguous_workspace(&evidence, error))
+    {
+        state.lock().unwrap().mutation_service().clear_progress(id);
+        writer
+            .park_creation(PRINCIPAL, id, "unknown", evidence)
+            .map_err(string)?;
+        return Ok(());
+    }
     if record.state == "reconciling" {
         progress(
             state,
@@ -353,13 +366,6 @@ fn finish_failure(
             "failed",
             Some(&format!("Needs cleanup: {error}")),
         );
-        return Ok(());
-    }
-    if ambiguous_workspace(&evidence, error) {
-        state.lock().unwrap().mutation_service().clear_progress(id);
-        writer
-            .park_creation(PRINCIPAL, id, "unknown", evidence)
-            .map_err(string)?;
         return Ok(());
     }
     // A workspace command captures its existing project's key for authority;
@@ -431,13 +437,14 @@ fn failure_resources(state: &Arc<Mutex<AppState>>, key: Option<&str>) -> (bool, 
 fn validate_saved_project(state: &Arc<Mutex<AppState>>, evidence: &Value) -> Result<(), String> {
     let id = evidence["project_id"]
         .as_str()
-        .ok_or("saved project id missing")?;
+        .ok_or(STALE_PROJECT_IDENTITY)?;
     let key = evidence["project_key"]
         .as_str()
-        .ok_or("saved project key missing")?;
+        .ok_or(STALE_PROJECT_IDENTITY)?;
     let app = state.lock().unwrap();
-    if app.project_for(id)?.project_key != key {
-        return Err("saved creation project key no longer matches the project".into());
+    let project = app.project_for(id).map_err(|_| STALE_PROJECT_IDENTITY)?;
+    if project.project_key != key {
+        return Err(STALE_PROJECT_IDENTITY.into());
     }
     Ok(())
 }

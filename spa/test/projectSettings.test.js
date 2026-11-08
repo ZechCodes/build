@@ -14,6 +14,7 @@ import { sourceEditSupportAddress } from "../src/core/sourceEditSupport.js";
 import { environmentSupportAddress, rememberEnvironmentSupport } from "../src/core/environmentSupport.js";
 import { environmentsAddress } from "../src/core/environmentCache.js";
 
+vi.mock("../src/core/changeEvents.js", async original => ({ ...await original(), bridgeCapabilities: () => ({ environments: { archive: true, rename: true } }) }));
 const sourceAuthority = vi.hoisted(() => ({ epoch: "legacy-epoch", greetingError: null, greetingWait: null, waiting: 0 }));
 vi.mock("../src/core/deviceContexts.js", async importOriginal => ({
   ...await importOriginal(),
@@ -1195,4 +1196,44 @@ it("preserves the cached compaction editor and focused draft across project and 
   expect([input.selectionStart, input.selectionEnd]).toEqual([1, 4]);
   expect(document.querySelector("#sheet").textContent).toContain("Compaction defaults for this project");
   document.querySelector("#pscancel").click();
+});
+
+describe("M3 settings", () => {
+  const row = { ...PROJECT, environment_id: "e1", environment_name: "Shared", added_sources: [] };
+  async function mountM3(callRpc, support = { archive: true, rename: true }) {
+    await writeCached(environmentSupportAddress("dev-1"), support);
+    await writeCached(environmentsAddress("dev-1"), [{ environment_id: "e1", name: "Shared", home_path: "/shared", sources: [] }]);
+    await writeCached(projectSettingsAddress("dev-1", "proj-1"), row);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, [row]);
+    openProjectSettings("proj-1", { deviceId: "dev-1", callRpc });
+    await vi.waitFor(() => expect(document.querySelector("#psproject")).not.toBeNull());
+  }
+  it("archive refusal shows each blocker verbatim and disables the button", async () => {
+    const blockers = ["finish or delete workspace W <one>", "answer #12"];
+    const callRpc = vi.fn(async method => {
+      if (method === "project.archive") throw Object.assign(new Error("Cannot archive build: " + blockers.join("; ")), { details: { blockers } });
+      return new Promise(() => {});
+    });
+    await mountM3(callRpc); document.querySelector("#psarchive").click();
+    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toContain(blockers[0]));
+    for (const blocker of blockers) expect(document.querySelector("#psarchiveerr").textContent).toContain(blocker);
+    expect(document.querySelector("#psarchive").disabled).toBe(true); expect(document.querySelector("one")).toBeNull();
+  });
+  it("rename writes the cache then redraws", async () => {
+    const callRpc = vi.fn(async (method, params) => method === "project.rename" ? { ...row, name: params.name } : new Promise(() => {}));
+    await mountM3(callRpc); document.querySelector("#psproject").value = "New name"; document.querySelector("#psrename").click();
+    await vi.waitFor(() => expect(document.querySelector("#psproject").value).toBe("New name"));
+    await vi.waitFor(async () => expect((await readCached(projectSettingsAddress("dev-1", "proj-1"))).value.name).toBe("New name"));
+    expect((await readCached({ deviceId: "dev-1", entityId: "", kind: "projects" })).value[0].name).toBe("New name");
+  });
+  it("edit in environment opens the environment sheet", async () => {
+    await mountM3(vi.fn(() => new Promise(() => {})));
+    expect(document.querySelector("[data-edit-environment]").textContent).toBe("Edit in Shared"); document.querySelector("[data-edit-environment]").click();
+    await vi.waitFor(() => expect(document.querySelector("#sheet h3").textContent).toBe("Environment settings"));
+  });
+  it("no archive or rename controls without the capability", async () => {
+    await mountM3(vi.fn(() => new Promise(() => {})), {});
+    expect(document.querySelector("#psproject").readOnly).toBe(true);
+    for (const selector of ["#psrename", "#psarchive", "[data-edit-environment]"]) expect(document.querySelector(selector)).toBeNull();
+  });
 });

@@ -15,6 +15,9 @@ import { taskCountText } from "../core/taskCountText.js";
 import { esc } from "../core/text.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
 
+import { openEnvironmentSettings } from "../sheets/environmentSettings.js";
+import { projectIsArchived, restoreEnvironmentProject } from "../core/environmentWrites.js";
+
 const projectsAddress = deviceId => ({ deviceId, entityId: "", kind: "projects" });
 const knownCount = value => Number.isSafeInteger(value) && value >= 0;
 
@@ -74,9 +77,19 @@ function environmentHtml(environment, listing, device, error, support) {
   const members = listing.rows?.filter(project => project.environment_id === environment.environment_id);
   return `<article class="panel" data-environment="${esc(environment.environment_id)}">
     <h3>${kindGlyphHtml("environment")} ${esc(environment.name)} ${deviceTagHtml(device)}</h3>
+    ${support?.rename ? `<button class="btn mini" data-environment-settings="${esc(environment.environment_id)}">Settings…</button>` : ""}
     <p class="ppath">${esc(environment.home_path)}</p>
     <p class="dim">${environmentTotalsText(environment, members, listing.countsKnown)}</p>
-    ${environmentProjectsHtml(members, listing, device, error)}${environmentShortcuts(environment,members,listing,support)}</article>`;
+    ${environmentProjectsHtml(members?.filter(project => !projectIsArchived(project)), listing, device, error)}${archivedProjectsHtml(members, device, support)}${environmentShortcuts(environment,members,listing,support)}</article>`;
+}
+
+
+function archivedProjectsHtml(members = [], device, support) {
+  const archived = members?.filter(projectIsArchived) || [];
+  if (!archived.length || !support?.archive) return "";
+  return `<details data-archived-projects><summary>Archived (${archived.length})</summary>${archived.map(project =>
+    `<div class="projrow"><a href="#/device/${encodeURIComponent(device.id)}/project/${encodeURIComponent(project.project_id)}">${esc(project.name)}</a>
+    <span class="dim">Archived</span><button class="btn mini" data-restore-project="${esc(project.project_id)}">Restore</button><span class="adderr" role="alert"></span></div>`).join("")}</details>`;
 }
 
 function creationButton(action, label, environmentId = '') {
@@ -119,6 +132,16 @@ async function mountDeviceEnvironments(host, device, active) {
     if (!active()) return;
     host.innerHTML = `<h2>${esc(device.name)}</h2>${deviceListHtml(state, device)}${deviceCreationHtml(state.support)}`;
     wireCreation();
+    host.querySelectorAll("[data-environment-settings]").forEach(button => {
+      button.onclick = () => openEnvironmentSettings(button.dataset.environmentSettings, { callRpc, deviceId: device.id });
+    });
+    host.querySelectorAll("[data-restore-project]").forEach(button => {
+      button.onclick = async () => {
+        button.disabled = true;
+        try { await restoreEnvironmentProject(device.id, button.dataset.restoreProject, callRpc); }
+        catch (error) { button.nextElementSibling.textContent = error.message; button.disabled = false; }
+      };
+    });
     host.querySelectorAll("[data-environment-project]").forEach(button => {
       button.onclick = () => openProjectSettings(button.dataset.environmentProject, { callRpc, deviceId: device.id, onDeleted: refresh });
     });

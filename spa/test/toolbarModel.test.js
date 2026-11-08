@@ -478,3 +478,15 @@ it("prefers authoritative added_sources even without a cached environment or com
   const projects = [on("dev-1", { id: "p", name: "Project", environment_id: "e", added_sources: [{ id: "extra" }] })];
   expect(switcherModel(navigationCatalog({ projects }), { support: { "dev-1": true } }).groups[0].destinations[0].addedFolders).toBe(1);
 });
+
+it("archived project appears only in search with a tag", () => {
+  const catalog = navigationCatalog({ projects: [{ id: "p1", deviceId: "d1", name: "Archived line", archived_at: 1 }] });
+  const options = { support: { d1: true } };
+  expect(switcherModel(catalog, options).groups).toHaveLength(0);
+  const result = switcherModel(catalog, { ...options, query: "Archived" }).groups[0].destinations[0];
+  expect(result.archived).toBe(true);
+});
+it("project selector hides archived projects", () => {
+  const projects = [{ id: "old", projectKey: "d1/old", name: "Old", archived_at: 1 }, { id: "live", projectKey: "d1/live", name: "Live" }];
+  expect(projectMenuModel({ projects }).map(row => row.id)).toEqual(["live"]);
+});

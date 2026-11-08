@@ -1,3 +1,4 @@
+import { visibleProjectRows } from "./archivedProjectModel.js";
 // The inbox's pure model: which work items the rail lists, in what order, what
 // each row says, and what Done promises before it destroys anything.
 //
@@ -739,8 +740,8 @@ export function captureEntries(items = []) {
  * old while no agent is working. Unknown activity remains in the Inbox proper;
  * missing data is not evidence that a row is stale.
  */
-export function inboxEntries({ items = [], nowMs = Date.now() } = {}) {
-  const rows = items.filter(isListed).map(toEntry).sort(byAnchor);
+export function inboxEntries({ items = [], projects = [], nowMs = Date.now() } = {}) {
+  const rows = visibleProjectRows(items, projects).filter(isListed).map(toEntry).sort(byAnchor);
   const quiet = (entry) => workspaceIsRecent(entry, nowMs);
   const entries = rows.filter((entry) => !quiet(entry));
   const recent = rows.filter(quiet);

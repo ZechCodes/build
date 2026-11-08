@@ -1,3 +1,5 @@
+import { mountArchivedProjectView } from "../core/archivedProjectView.js";
+import { projectIsArchived } from "../core/archivedProjectModel.js";
 // The project's own surface: what the project holds, and who you talk to about
 // it.
 //
@@ -162,14 +164,17 @@ function paintWorkspaces(pane, ui) {
  *  repaint, so it rebuilds only when the project it names has changed. */
 function paintProjectVerbs(host, state) {
   const name = state.page.name;
-  if (host.dataset.project === name && host.querySelector("[data-project-create]")) return;
+  const archived = projectIsArchived(projectRecord(state));
+  if (host.dataset.archived === String(archived) && host.dataset.project === name && host.querySelector("[data-project-create]")) return;
   host.dataset.project = name;
-  host.innerHTML = `<button class="iconbtn" type="button" data-project-create aria-label="New workspace in ${esc(name)}" title="New workspace in ${esc(name)}">${ICON_PLUS}</button>`;
+  host.dataset.archived = String(archived);
+  host.innerHTML = `<button class="iconbtn" type="button" ${archived ? "disabled" : ""} data-project-create aria-label="New workspace in ${esc(name)}" title="New workspace in ${esc(name)}">${ICON_PLUS}</button>`;
   host.querySelector("[data-project-create]").onclick = () => createWorkspace(state);
 }
 
 /** The + : one workspace in this project, on the machine the project is on. */
 function createWorkspace(state) {
+  if (projectIsArchived(projectRecord(state))) return;
   openCreateWorkspaceWizard({
     projectId: state.route.projectId,
     deviceId: state.context.deviceId,
@@ -492,6 +497,8 @@ export async function renderProject() {
   };
   state.verb = (host) => paintProjectVerbs(host, state);
   root.innerHTML = `<div id="tabbody" class="flush"><div id="project-pane" class="project-page"></div></div>`;
+  const archiveView = mountArchivedProjectView(root, { deviceId: context.deviceId, projectId: route.projectId, callRpc: context.rpc });
+  state.context = { ...context, rpc: archiveView.callRpc };
   // The four tabs are the rail's faces. A press switches in place rather than
   // navigating, because a navigation would remount the agent rail beside the
   // page; the shell's route rule never sees it (#62), so where the chat lies
@@ -522,6 +529,7 @@ export async function renderProject() {
   paint(state);
   App.viewDispose = () => {
     state.disposed = true;
+    archiveView.dispose();
     unsubscribe();
     unwatchSizeSupport();
     unwatchFilesSupport();

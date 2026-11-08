@@ -98,6 +98,7 @@ function presetTarget(options, context, targets) {
   if (options.environmentId) return targets.find(row => row.kind === "environment" && row.id === options.environmentId && row.deviceId === options.deviceId) || null;
   if (!options.projectId || !options.deviceId) return null;
   if (!options.fixedProject && wizardEntrySupported(context,options.deviceId)) return null;
+  if ((options.projects || []).some(row => keyOf(row) === deviceKey(options.deviceId, options.projectId) && row.archived_at != null)) return null;
   const key = deviceKey(options.deviceId, options.projectId);
   const held = targets.find((row) => row.key === key);
   return held || projectTarget({ id: options.projectId, deviceId: options.deviceId, name: options.projectName || options.projectId }, context);

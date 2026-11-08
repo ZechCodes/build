@@ -1186,3 +1186,9 @@ describe("cacheableEntityIds", () => {
     expect(cacheableEntityIds({ items, nowMs: NOW })).toEqual([]);
   });
 });
+
+it("inbox hides archived projects and their work rows", () => {
+  const archived = { id: "p1", deviceId: "dev-1", projectKey: "dev-1/p1", archived_at: 1 };
+  const model = inboxEntries({ items: [branch()], projects: [archived], nowMs: NOW });
+  expect([...model.entries, ...model.recent]).toHaveLength(0);
+});

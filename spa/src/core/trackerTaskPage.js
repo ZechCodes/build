@@ -1,3 +1,4 @@
+import { mountArchivedProjectView } from "./archivedProjectView.js";
 import { projectColumnsAddress, readProjectColumns } from "./projectColumnsCache.js";
 import { registerScopedSync, taskSyncScope } from "./scopedSyncRegistry.js";
 import { scopedSyncOwns, wakeScopedSync } from "./scopedSyncRuntime.js";
@@ -168,6 +169,8 @@ export function focusTaskComment(host, commentId, { scroll = true } = {}) {
 }
 
 export function mountTaskPage(host, options) {
+  const archiveView = mountArchivedProjectView(host, options);
+  options = { ...options, callRpc: archiveView.callRpc };
   wireReaderMotion(host);
   const replyNavigation = createTaskReplyNavigation(host, { reveal: readCommentAnchor });
   const readingPolicy = followConversation();
@@ -1447,6 +1450,7 @@ export function mountTaskPage(host, options) {
      *  assignee is named by may have. Nothing is re-read from the bridge. */
     feedMoved() { state.picker?.setOptions?.(assigneeOptions(groups())); paint(); reviewPage?.feedMoved(); },
     dispose() {
+      archiveView.dispose();
       state.disposed = true;
       releaseSyncTask();
       stopHeadMeasurement();

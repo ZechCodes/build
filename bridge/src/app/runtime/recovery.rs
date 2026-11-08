@@ -291,6 +291,28 @@ impl AppState {
         Ok(())
     }
 
+    /// Historical records carry a stable project key, even while the configured
+    /// project is parked or deleted. Recover only an existing identity whose
+    /// home is reachable; a record never registers a project.
+    fn bind_recovered_project(&mut self, entity_id: &str, key: &str) -> Option<String> {
+        self.projects
+            .retain_entity_path(entity_id.to_string(), key.to_string());
+        let project = self.project_by_key(key)?;
+        if !project.home_path.exists() {
+            return None;
+        }
+        let project_id = project.id.clone();
+        self.projects
+            .bind_entity(entity_id.to_string(), project_id.clone());
+        Some(project_id)
+    }
+
+    fn recovery_repo_location(&self, key: &str) -> String {
+        self.project_by_key(key)
+            .map(|project| project.home_path.display().to_string())
+            .unwrap_or_else(|| key.to_string())
+    }
+
     /// Re-attach one persisted plan on boot. The canonical docs live in the
     /// store, so a vanished scratch docs dir never abandons or archives a
     /// plan — a plan that was mid-draft simply surfaces `Interrupted` (its
@@ -322,25 +344,22 @@ impl AppState {
             state_changed = true;
         }
 
-        // A `proj-N` id is not durable across boots, so resolve by repo path.
-        // Retain the record's path unconditionally so a parked repo-missing
-        // plan keeps a real path to un-park to.
-        self.projects
-            .retain_entity_path(plan_id.clone(), record.project_path.clone());
-        let repo_path = std::path::PathBuf::from(&record.project_path);
-        if repo_path.exists() {
-            let project_id = self.add_project(repo_path, record.base_branch);
-            self.projects.bind_entity(plan_id.clone(), project_id);
-        } else {
+        // Project ids are persisted, but historical records identify their
+        // project by its opaque key. Never recreate a deleted identity from
+        // a record, even when its old home still exists.
+        let repo_location = self.recovery_repo_location(&record.project_path);
+        if self
+            .bind_recovered_project(&plan_id, &record.project_path)
+            .is_none()
+        {
             // The repo is gone; the plan can't be re-dispatched, but its docs
             // remain readable from the store. Keep it legible with a reason.
             eprintln!(
                 "recover {plan_id}: project repo {} is gone; plan kept (docs live in the store)",
-                record.project_path
+                repo_location
             );
             if !active.plan.state.is_terminal() {
-                active.last_error =
-                    Some(format!("project repo missing at {}", record.project_path));
+                active.last_error = Some(format!("project repo missing at {repo_location}"));
                 state_changed = true;
             }
         }
@@ -392,17 +411,8 @@ impl AppState {
             .unwrap_or_else(|| crate::templates::DEFAULT_PLAN_PATH.to_string());
         let mut active = ActiveRun::reattach(&record, plan_path);
 
-        self.projects
-            .retain_entity_path(run_id.clone(), record.project_path.clone());
-        let repo_path = std::path::PathBuf::from(&record.project_path);
-        let project_id = if repo_path.exists() {
-            let project_id = self.add_project(repo_path.clone(), record.base_branch.clone());
-            self.projects
-                .bind_entity(run_id.clone(), project_id.clone());
-            Some(project_id)
-        } else {
-            None
-        };
+        let repo_location = self.recovery_repo_location(&record.project_path);
+        let project_id = self.bind_recovered_project(&run_id, &record.project_path);
 
         let mut state_changed = false;
         let mut recovery_event = None;
@@ -468,7 +478,7 @@ impl AppState {
         // again rather than restored from a branch it never had.
         let project_owner = crate::app::projects::is_project_scratch(
             &self.state_root,
-            std::path::Path::new(&record.project_path),
+            record.project_path.as_ref(),
             &active.worktree.path,
         );
         if project_owner && !active.run.state.is_terminal() {
@@ -527,7 +537,11 @@ impl AppState {
                         .run
                         .apply(RunEvent::Abandon)
                         .map_err(|e| format!("recover {run_id}: {e}"))?;
-                    active.last_error = Some(format!("worktree recovery failed: {error}"));
+                    active.last_error = Some(if project_id.is_some() {
+                        format!("worktree recovery failed: {error}")
+                    } else {
+                        format!("project repo missing at {repo_location}")
+                    });
                     recovery_event = Some((
                         crate::thread::ThreadEventKind::RecoveryFailed,
                         format!(
@@ -555,7 +569,7 @@ impl AppState {
                 // run needs-attention instead of abandoning.
                 eprintln!(
                     "recover {run_id}: project repo {} is gone; parking adopted run",
-                    record.project_path
+                    repo_location
                 );
                 if active.run.state.is_working() {
                     active
@@ -564,28 +578,26 @@ impl AppState {
                         .map_err(|e| format!("recover {run_id}: {e}"))?;
                     interrupted = true;
                 }
-                active.last_error =
-                    Some(format!("project repo missing at {}", record.project_path));
+                active.last_error = Some(format!("project repo missing at {repo_location}"));
                 state_changed = true;
             } else {
                 // No project to route to and no repo to advance on: abandon it
                 // so it stays legible with a reason rather than an orphan.
                 eprintln!(
                     "recover {run_id}: project repo {} is gone; abandoning",
-                    record.project_path
+                    repo_location
                 );
                 active
                     .run
                     .apply(RunEvent::Abandon)
                     .map_err(|e| format!("recover {run_id}: {e}"))?;
-                active.last_error =
-                    Some(format!("project repo missing at {}", record.project_path));
+                active.last_error = Some(format!("project repo missing at {repo_location}"));
                 state_changed = true;
             }
         } else if project_id.is_none() {
             eprintln!(
                 "recover {run_id}: project repo {} is gone; run kept as history",
-                record.project_path
+                repo_location
             );
         }
 

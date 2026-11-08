@@ -569,3 +569,106 @@ fn fallback_promotion_preserves_hidden_source_one_and_saved_choices() {
         assert_eq!(stored_home["id"], promoted.id);
     }
 }
+
+#[test]
+fn fallback_promotion_reserves_parked_legacy_source_ids() {
+    for number in [10, 40] {
+        assert_fallback_promotion_reservation(Some(number), 11, "source-1", number + 1, number + 2);
+    }
+}
+
+#[test]
+fn fallback_promotion_reserves_retired_ids_below_parked_counter() {
+    assert_fallback_promotion_reservation(None, 11, "source-1", 11, 12);
+}
+
+#[test]
+fn fallback_promotion_preserves_parked_counter_without_id_collision() {
+    assert_fallback_promotion_reservation(None, 11, "source-2", 1, 11);
+}
+
+fn assert_fallback_promotion_reservation(
+    held: Option<u64>,
+    counter: u64,
+    hidden_id: &str,
+    expected: u64,
+    expected_counter: u64,
+) {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let missing = root.path().join("missing");
+    let added = root.path().join("added");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::create_dir(&added).unwrap();
+    let path = root.path().join("config.json");
+    std::fs::write(
+        &path,
+        json!({"projects":[{
+            "id":"proj-1","path":home,"next_source":9,"sources":[
+                {"id":hidden_id,"name":"missing","mount":"missing","path":missing}
+            ]
+        }]})
+        .to_string(),
+    )
+    .unwrap();
+    state(root.path()).with_config(&path).unwrap();
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let legacy_sources = held
+        .into_iter()
+        .map(|number| {
+            json!({
+                "id":format!("source-{number}"),"path":root.path().join("parked-source")
+            })
+        })
+        .collect::<Vec<_>>();
+    config["projects"].as_array_mut().unwrap().push(json!({
+        "id":"proj-7","environment_id":"env-1","project_key":"project:parked",
+        "home_path":root.path().join("away"),"path":root.path().join("away"),
+        "sources":legacy_sources,"added_sources":[],"next_source":counter
+    }));
+    std::fs::write(&path, config.to_string()).unwrap();
+    let mut app = state(root.path()).with_config(&path).unwrap();
+    let appended = rpc(
+        &mut app,
+        "project.add_source",
+        json!({
+            "project_id":"proj-1","path":added,"name":"added"
+        }),
+    );
+    assert_eq!(appended["ok"], true, "{appended}");
+    for reload in [false, true] {
+        if reload {
+            app = state(root.path()).with_config(&path).unwrap();
+        }
+        let sources = app.sources_for("proj-1").unwrap();
+        let promoted = sources.iter().find(|source| source.path == home).unwrap();
+        assert_eq!(
+            promoted.id,
+            format!("source-{expected}"),
+            "fresh home ID, reload={reload}"
+        );
+        assert_ne!(promoted.id, "source-9");
+        if let Some(number) = held {
+            assert_ne!(promoted.id, format!("source-{number}"));
+        }
+        assert_eq!(
+            app.projects.environment("env-1").unwrap().next_source,
+            expected_counter
+        );
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let parked = saved["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == "proj-7")
+            .unwrap();
+        assert_eq!(parked["sources"], json!(legacy_sources));
+        assert_eq!(parked["next_source"], counter);
+        assert_eq!(
+            saved["environments"][0]["sources"][0]["path"],
+            json!(missing)
+        );
+    }
+}

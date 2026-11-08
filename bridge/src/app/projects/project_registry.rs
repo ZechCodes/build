@@ -1,9 +1,31 @@
 use super::{next_source_number, Project, ProjectSource};
 use crate::app::environments::Environment;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::isolation::Isolation;
+
+#[derive(Default)]
+struct SourceReservations {
+    used_ids: HashSet<String>,
+    next_source: u64,
+}
+
+impl SourceReservations {
+    fn reserve<'a>(&mut self, counter: u64, ids: impl IntoIterator<Item = &'a str>) {
+        self.next_source = self.next_source.max(counter).max(1);
+        for id in ids {
+            self.used_ids.insert(id.to_string());
+            if let Some(number) = id
+                .strip_prefix("source-")
+                .and_then(|number| number.parse::<u64>().ok())
+            {
+                let next = number.checked_add(1).expect("source id counter exhausted");
+                self.next_source = self.next_source.max(next);
+            }
+        }
+    }
+}
 
 /// Only configuration-owned project fields; runtime orchestrators stay installed.
 pub(super) struct ProjectConfiguration {
@@ -397,7 +419,11 @@ impl ProjectRegistry {
             .added_sources
             .retain(|source| !removed.contains(&source.id));
         let environment_id = project.environment_id.clone();
-        project.next_source = project.next_source.max(next_source_number(&sources));
+        let reservation_floor = promoted_home.as_ref().map_or(0, |(_, floor)| *floor);
+        project.next_source = project
+            .next_source
+            .max(next_source_number(&sources))
+            .max(reservation_floor);
         project.sources = sources;
         if let Some(environment) = self
             .environments
@@ -408,7 +434,7 @@ impl ProjectRegistry {
                 .sources
                 .retain(|source| !removed.contains(&source.id));
         }
-        if let Some(home) = promoted_home {
+        if let Some((home, _)) = promoted_home {
             self.promote_home_source(project_id, &home);
         }
         self.reconcile_project_sources(project_id);
@@ -904,66 +930,84 @@ impl ProjectRegistry {
         id: &str,
         incoming: &mut [ProjectSource],
         fallback: Option<&ProjectSource>,
-    ) -> Option<ProjectSource> {
+    ) -> Option<(ProjectSource, u64)> {
         let fallback = fallback?;
         let index = incoming
             .iter()
             .position(|source| source.id == fallback.id && source.path == fallback.path)?;
         let project = self.get(id)?;
         let environment = self.environment(&project.environment_id)?;
-        let registered = self.stored_source_ids(&project.environment_id);
-        let collides = registered.contains(&incoming[index].id.as_str())
-            || incoming
-                .iter()
-                .enumerate()
-                .any(|(other, source)| other != index && source.id == incoming[index].id);
-        if collides {
-            let next = registered
-                .into_iter()
-                .chain(incoming.iter().map(|source| source.id.as_str()))
-                .filter_map(|id| id.strip_prefix("source-")?.parse::<u64>().ok())
-                .max()
-                .unwrap_or(0)
-                + 1;
-            let next = next.max(environment.next_source).max(project.next_source);
-            incoming[index].id = format!("source-{next}");
+        let reservations = self.source_reservations(environment, incoming, fallback);
+        if reservations.used_ids.contains(&incoming[index].id) {
+            incoming[index].id = format!("source-{}", reservations.next_source);
         }
-        Some(incoming[index].clone())
+        // Keep every observed counter floor even when the existing home ID
+        // needs no replacement. The caller stages this with the membership edit.
+        Some((incoming[index].clone(), reservations.next_source))
     }
 
-    /// Parked lines retain ownership of their source IDs too.
-    fn stored_source_ids(&self, environment_id: &str) -> Vec<&str> {
-        let mut ids = self
-            .environment(environment_id)
-            .into_iter()
-            .flat_map(|environment| &environment.sources)
-            .map(|source| source.id.as_str())
-            .collect::<Vec<_>>();
-        ids.extend(
-            self.projects
-                .iter()
-                .filter(|project| project.environment_id == environment_id)
-                .flat_map(|project| &project.added_sources)
-                .map(|source| source.id.as_str()),
+    /// Reserve both held references and retired IDs recorded by every line.
+    fn source_reservations(
+        &self,
+        environment: &Environment,
+        incoming: &[ProjectSource],
+        fallback: &ProjectSource,
+    ) -> SourceReservations {
+        let mut reservations = SourceReservations::default();
+        reservations.reserve(
+            environment.next_source,
+            environment.sources.iter().map(|source| source.id.as_str()),
         );
-        ids.extend(
-            self.parked
-                .iter()
-                .filter(|project| {
+        for project in self
+            .projects
+            .iter()
+            .filter(|project| project.environment_id == environment.id)
+        {
+            reservations.reserve(
+                project.next_source,
+                project
+                    .sources
+                    .iter()
+                    .filter(|source| source.id != fallback.id || source.path != fallback.path)
+                    .map(|source| source.id.as_str()),
+            );
+            reservations.reserve(
+                0,
+                project
+                    .added_sources
+                    .iter()
+                    .map(|source| source.id.as_str()),
+            );
+        }
+        for project in self.parked.iter().filter(|project| {
+            project
+                .get("environment_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(environment.id.as_str())
+        }) {
+            let counter = project
+                .get("next_source")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(1);
+            let ids = ["sources", "added_sources"]
+                .into_iter()
+                .flat_map(|field| {
                     project
-                        .get("environment_id")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(environment_id)
-                })
-                .flat_map(|project| {
-                    project
-                        .get("added_sources")
+                        .get(field)
                         .and_then(serde_json::Value::as_array)
                         .into_iter()
                         .flatten()
                 })
-                .filter_map(|source| source.get("id").and_then(serde_json::Value::as_str)),
+                .filter_map(|source| source.get("id").and_then(serde_json::Value::as_str));
+            reservations.reserve(counter, ids);
+        }
+        reservations.reserve(
+            0,
+            incoming
+                .iter()
+                .filter(|source| source.id != fallback.id || source.path != fallback.path)
+                .map(|source| source.id.as_str()),
         );
-        ids
+        reservations
     }
 }

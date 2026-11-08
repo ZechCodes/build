@@ -1684,8 +1684,10 @@ folders, while live source projections and workspace cuts skip missing or
 non-directory paths, as the legacy loader did. When all references are
 unavailable, the live home fallback stays temporary until a membership edit
 adopts it. Promotion preserves its settings and allocates a fresh ID if its
-legacy ID belongs to a stored reference, including references in parked
-projects; hidden references are never replaced by the fallback.
+legacy ID belongs to a stored reference. Allocation reserves source IDs in
+both canonical and legacy records, including parked projects and pending
+additions, and respects every member's recorded counter even after an ID has
+been removed. Hidden references are never replaced by the fallback.
 A configured project whose home folder is missing at boot is parked, not
 dropped (`bridge/src/app/projects/parked.rs`): its configuration is kept
 verbatim and written back on every save, its `proj-N` stays reserved, and

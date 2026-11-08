@@ -33,7 +33,7 @@ fn schema20_upgrade_creates_empty_verdict_journal_without_changing_tasks() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(schema, 25);
+    assert_eq!(schema, 26);
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM review_revision_dispatches",

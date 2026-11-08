@@ -460,7 +460,7 @@ const sourceFingerprintParts = {
   "core/taskTimelinePages.js": ["da2840fb", "5992d7ce", "038bbc4d", "9c01a8ab", "c320a6f3", "7592e5be", "d5cbf08c", "4fcf8220"],
 
   "core/createWorkspaceProgress.js": ["922a8bc9", "b3e85951", "e842198f", "d17a5a65", "43189650", "e6884023", "c72af97b", "98af5057"],
-  "core/createWorkspaceTargets.js": ["e8958cfe", "1c0206ce", "9f7dc1b4", "e5e875b1", "a8bcfe18", "e6653372", "eb934b9d", "40907e22"],
+  "core/createWorkspaceTargets.js": ["a069d309", "99c91164", "1312556e", "14af5950", "01144734", "5b805997", "5b7b7161", "22f1e394"],
   "core/writeOperationProgress.js": ["1092c480", "f4c49dde", "dbbef23b", "5cdbfadb", "2beab767", "146717b7", "ddf2e984", "9ba42bcb"],
 };
 const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintParts)

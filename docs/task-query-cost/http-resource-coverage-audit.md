@@ -172,3 +172,24 @@ recognizers, dispatch inventory and every coverage assertion remain intact.
 
 The recovery Back transition retains keyboard focus in its replacement dialog;
 only the progress view source fingerprint changes, with no new RPC or producer.
+
+
+### Combined #1034 / #1035 cache-reader integration
+
+Rebased the wizard onto the merged M1.2 cache revision. The combined adapter
+retains M1.2's named environment capability metadata and M1.3's progress push
+labels. The adapter, write-method and change-event source pins were recomputed
+from the combined files, rather than choosing either branch's hashes. M1.2's
+occurrence-scoped staged `environment.list` exclusion and its dispatcher
+inventory remain intact, alongside M1.3's two documented manifest exclusions.
+Neither the staged-call guards nor the scanner and coverage assertions were
+weakened. The earlier review sections above remain applicable to each slice.
+
+`createWorkspaceTargets.js` now imports `readEnvironmentSupport` from
+`environmentSupport.js`, `readCachedEnvironments` from `environmentCache.js`
+and `taskCountText` from `taskCountText.js`; all local stand-ins are removed.
+The count helper remains re-exported for the pure target model. Only the
+adapter's exact-source pin changes for this import swap: it still produces
+the same three creation/recovery verbs and no new dynamic dispatch site.
+Real-cache integration tests cover admission-ordered environment publication,
+device-qualified targets, cached support downgrade and malformed-list fallback.

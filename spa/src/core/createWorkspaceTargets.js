@@ -1,6 +1,5 @@
 // The wizard's only boundary to environment/support plumbing and device writes.
-// M1.2 supplies the support/list/count readers; until then absent cache records
-// keep the existing current-project flow available.
+// Cached support selects the legacy flow without consulting connection state.
 import { App } from '../appState.js';
 import { readCached, subscribeCache, mergeCachedAtomically } from './localCache.js';
 import { readUiRecord, subscribeUiRecords } from './localUiStore.js';
@@ -11,18 +10,14 @@ import { stampProject, stampWorkspace } from './feedMerge.js';
 import { upsertSessionRow } from './sessionListCache.js';
 import { workspaceRoute } from './projectModel.js';
 import { isCreationWrite } from './writeOperationProgress.js';
+import { readEnvironmentSupport } from './environmentSupport.js';
+import { readCachedEnvironments } from './environmentCache.js';
+import { taskCountText } from './taskCountText.js';
 
-export const taskCountText = (open, total) => open > 0 ? `${open} open tasks` : `${total || 0} tasks`;
+export { taskCountText };
 const visitsAddress = uiAddress({view:'navigation',kind:'history',sub:'visits'});
 const listAddress = (deviceId,kind) => ({deviceId,entityId:'',kind});
 const cachedList = async (deviceId,kind) => (await readCached(listAddress(deviceId,kind)))?.value || [];
-// Local stand-ins have M1.2's signatures, replaced by imports once it lands.
-const readCachedEnvironments = deviceId => cachedList(deviceId,'environments');
-const readEnvironmentSupport = async deviceId => {
-  const held=(await readCached(listAddress(deviceId,'environment-support')))?.value;
-  return {list:held?.list === true,createProject:held?.createProject === true};
-};
-
 async function readDeviceTargets(device) {
   const [projects,environments,workspaces,support,attempts] = await Promise.all([
     cachedList(device.id,'projects'),readCachedEnvironments(device.id),cachedList(device.id,'workspaces'),readEnvironmentSupport(device.id),deviceWriteOperations(device.id)?.list() || [],

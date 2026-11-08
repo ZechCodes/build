@@ -447,6 +447,9 @@ impl AppState {
         // A folder that is back answers as the project it was, not a new one.
         self.revive_parked_projects();
         let name = usable_project_name(require_str(params, "name")?)?;
+        if let Some(environment) = params["environment_id"].as_str() {
+            return self.project_create_in_environment(environment, &name, params);
+        }
         if params.get("sources").is_some() {
             return self.project_from_sources(params, Some(name));
         }
@@ -822,5 +825,86 @@ impl AppState {
             serde_json::json!({"source":ProjectSource::added(request.id,request.name,request.mount,path,false,request.base_branch.clone().unwrap_or_else(||"main".into())),"remote":request.remote,"base_branch":request.base_branch})
         }).collect::<Vec<_>>();
         Ok(serde_json::json!(planned))
+    }
+}
+
+impl AppState {
+    fn project_create_in_environment(
+        &mut self,
+        environment: &str,
+        name: &str,
+        params: &Value,
+    ) -> Result<Value, String> {
+        let inherited = self
+            .projects
+            .environment(environment)
+            .ok_or("unknown environment")?
+            .sources
+            .clone();
+        let entries = params["sources"].as_array().cloned().unwrap_or_default();
+        let key = format!("project:{}", uuid::Uuid::new_v4());
+        if entries.is_empty() {
+            let provisional = format!("proj-{}", self.projects.next_id());
+            let id = self.create_environment_project(
+                environment,
+                name,
+                &key,
+                &provisional,
+                Vec::new(),
+                |_| Ok(()),
+            )?;
+            return Ok(self.project_json(self.projects.get(&id).expect("published project")));
+        }
+        let mut taken = TakenSourceNames::over(&inherited);
+        let first = super::next_source_number(&inherited);
+        let requests = entries
+            .iter()
+            .enumerate()
+            .map(|(n, e)| {
+                self.source_request(e, format!("source-{}", first + n as u64), &mut taken)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let root = self
+            .projects_dir
+            .join(format!("{}-sources", safe_mount_name(name)));
+        taken.refuse_managed_destinations(
+            &requests,
+            &crate::worktree::canonical_planned_path(&root),
+            &self.projects.registered_sources(),
+        )?;
+        let mutation = self.reserve_source_opening(requests, root.clone())?;
+        let environment = environment.to_owned();
+        let name = name.to_owned();
+        self.defer_project(
+            root,
+            name.clone(),
+            PendingState::Creating,
+            mutation,
+            move |app: &mut AppState, result: Result<PreparedSources, String>| {
+                let prepared = result?;
+                let result = (|| {
+                    let mut added = prepared.sources;
+                    app.validate_creation_additions(
+                        &environment,
+                        &mut added,
+                        &prepared.cloned_paths,
+                    )?;
+                    let provisional = format!("proj-{}", app.projects.next_id());
+                    let id = app.create_environment_project(
+                        &environment,
+                        &name,
+                        &key,
+                        &provisional,
+                        added,
+                        |_| Ok(()),
+                    )?;
+                    Ok(app.project_json(app.projects.get(&id).expect("published project")))
+                })();
+                if result.is_err() {
+                    app.cleanup_unregistered_sources(prepared.created_checkouts);
+                }
+                result
+            },
+        )
     }
 }

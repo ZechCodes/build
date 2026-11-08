@@ -211,6 +211,8 @@ pub struct ProjectSourceParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectCreateParams {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
     /// The multi-source form. Takes precedence over `parent`/`remote`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sources: Option<Vec<ProjectSourceParams>>,

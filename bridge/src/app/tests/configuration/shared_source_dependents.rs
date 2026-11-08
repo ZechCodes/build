@@ -76,3 +76,59 @@ fn inherited_source_repoint_refuses_duplicate_in_sibling_project() {
         }
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn managed_clone_destination_symlink_into_registered_source_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    let shared = root.path().join("shared");
+    let projects = root.path().join("projects");
+    for path in [&a, &b, &shared, &projects] {
+        std::fs::create_dir(path).unwrap();
+    }
+    std::os::unix::fs::symlink(&shared, projects.join("b-sources")).unwrap();
+    let config = root.path().join("config.json");
+    std::fs::write(
+        &config,
+        json!({
+            "projects_dir":projects,
+            "projects":[
+                {"id":"proj-1","path":a,"sources":[
+                    {"id":"source-1","path":a,"name":"a","mount":"a"},
+                    {"id":"source-2","path":shared,"name":"shared","mount":"shared"}
+                ]},
+                {"id":"proj-2","path":b,"sources":[
+                    {"id":"source-1","path":b,"name":"b","mount":"b"}
+                ]}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let context = crate::harness::HarnessContext::resolved(
+        root.path().join("mcp.sock"),
+        root.path().join("state"),
+    )
+    .unwrap();
+    let mut app =
+        AppState::new_unrooted_configured(root.path().join("workspaces"), "main", true, context)
+            .with_config(&config)
+            .unwrap();
+    let before = std::fs::read(&config).unwrap();
+    let answer = app.handle(req(
+        "project.add_source",
+        json!({"project_id":"proj-2","name":"nested","remote":"https://example.invalid/nested.git"}),
+    ));
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert!(
+        answer["error"]
+            .as_str()
+            .unwrap()
+            .contains("managed source destination"),
+        "{answer}"
+    );
+    assert_eq!(std::fs::read(&config).unwrap(), before);
+    assert!(!shared.join("nested").exists());
+}

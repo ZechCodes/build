@@ -1,6 +1,6 @@
 {
   "method": "environment.create",
-  "since": "3.36.0",
+  "since": "3.37.0",
   "params": {
     "name": "Build",
     "sources": [

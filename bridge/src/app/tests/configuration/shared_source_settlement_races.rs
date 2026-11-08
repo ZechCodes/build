@@ -104,3 +104,44 @@ fn legacy_project_registration_refuses_containing_registered_source() {
     );
     assert_eq!(app.projects.len(), 1);
 }
+
+#[test]
+fn new_project_clone_refuses_remote_already_in_local_batch_source() {
+    for clone_first in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let upstream = init_repo_named(root.path(), "upstream");
+        let local = init_repo_named(root.path(), "local");
+        git2::Repository::open(&local)
+            .unwrap()
+            .remote("origin", upstream.to_str().unwrap())
+            .unwrap();
+        let mut app = state_at(root.path());
+        let before = std::fs::read(root.path().join("config.json")).unwrap();
+        let mut sources = vec![
+            json!({"path":local,"name":"local"}),
+            json!({"remote":upstream,"name":"cloned"}),
+        ];
+        if clone_first {
+            sources.reverse();
+        }
+        let answer = app.handle(req(
+            "project.create",
+            json!({"name":"attempt","sources":sources}),
+        ));
+        assert_eq!(answer["ok"], false, "clone_first={clone_first}: {answer}");
+        assert!(
+            answer["error"].as_str().unwrap().contains("remote"),
+            "{answer}"
+        );
+        assert_eq!(app.projects.len(), 0);
+        assert_eq!(
+            std::fs::read(root.path().join("config.json")).unwrap(),
+            before
+        );
+        assert!(
+            local.join(".git").is_dir(),
+            "the existing local source is never cleanup-owned"
+        );
+        assert!(!root.path().join("projects/attempt-sources/cloned").exists());
+    }
+}

@@ -13,13 +13,16 @@ const byRecency = (left, right) => right.at - left.at || left.name.localeCompare
 const archived = (row) => !!(row.archived || row.archived_at);
 
 function addedFolderCount(project, environments = []) {
+  // M1 assumes the cache is current: an undetectably older environment can count a new inherited source until the next refresh.
   if (Array.isArray(project.added_sources)) return project.added_sources.length;
-  if (!project.diverged) return 0;
+  if (typeof project.diverged !== "boolean" || !Array.isArray(project.sources)) return null;
   const key = deviceKey(project.deviceId, project.environment_id);
   const environment = environments.find(row => environmentKeyOf(row) === key);
-  if (!environment) return 0;
-  const inherited = new Set((environment.sources || []).map(source => source.id));
-  return (project.sources || []).filter(source => !inherited.has(source.id)).length;
+  if (!Array.isArray(environment?.sources)) return null;
+  const projectIds = new Set(project.sources.map(source => source.id));
+  if (!environment.sources.every(source => projectIds.has(source.id))) return null;
+  const inherited = new Set(environment.sources.map(source => source.id));
+  return project.diverged ? project.sources.filter(source => !inherited.has(source.id)).length : 0;
 }
 
 function projectDestination(group, visits, environments) {

@@ -294,6 +294,12 @@ impl WorkspaceCreateWork {
             detail: None,
         })?;
         let result = self.materialize_inner(source, destination, isolation);
+        #[cfg(test)]
+        if result.is_ok() {
+            self.creation_event(
+                journal_creation::WorkspaceCreationEvent::MaterializedBeforeCheckpoint,
+            )?;
+        }
         self.creation_event(journal_creation::WorkspaceCreationEvent::Step {
             step,
             state: if result.is_ok() { "done" } else { "failed" }.into(),

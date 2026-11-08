@@ -2,7 +2,7 @@ use super::admission_recovery::SimulatedCrash;
 use super::*;
 use crate::workspace::Workspace;
 
-fn workspace_attempt(f: &Fixture, id: &str, project: &str) -> MutationRecord {
+pub(super) fn workspace_attempt(f: &Fixture, id: &str, project: &str) -> MutationRecord {
     admit(
         &f.state,
         "workspace.create",
@@ -91,7 +91,7 @@ fn root_only_removal_does_not_prove_workspace_settlement() {
     assert!(f.state.lock().unwrap().workspace_reserved(&workspace.id));
 }
 
-fn git(repo: &std::path::Path, args: &[&str]) -> String {
+pub(super) fn git(repo: &std::path::Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(repo)

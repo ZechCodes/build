@@ -37,10 +37,13 @@ fn assert_unrelated_is_not_fenced(f: &Fixture) {
         .unwrap();
 }
 
-fn reopen_reuse_and_reconcile(f: Fixture, id: &str) {
+fn reopen_reuse_and_reconcile(f: Fixture, id: &str, failed: bool) {
     let f = f.reopen();
     f.store.writer().recover_mutations().unwrap();
-    assert_eq!(f.record(id).state, "unknown");
+    assert_eq!(
+        f.record(id).state,
+        if failed { "reconciling" } else { "unknown" }
+    );
     assert_eq!(f.record(id).execution["project_id"], "proj-2");
     register_legacy(&f.state, f._root.path());
     let marker = f._root.path().join("legacy/owned");
@@ -55,16 +58,27 @@ fn reopen_reuse_and_reconcile(f: Fixture, id: &str) {
     f.run(id);
     f.run(id);
     let record = f.record(id);
-    assert_eq!(record.state, "succeeded", "{record:?}");
-    assert_eq!(record.execution["project_id"], "proj-3");
+    assert_eq!(
+        record.state,
+        if failed { "failed" } else { "succeeded" },
+        "{record:?}"
+    );
+    if failed {
+        assert_eq!(record.outcome.unwrap()["effect"], "unapplied");
+    } else {
+        assert_eq!(record.execution["project_id"], "proj-3");
+    }
     let app = f.state.lock().unwrap();
-    assert_eq!(app.projects.len(), 3);
+    assert_eq!(app.projects.len(), if failed { 2 } else { 3 });
     assert_eq!(
         app.project_json(app.projects.get("proj-2").unwrap()),
         legacy
     );
     assert!(app.workspaces.list(Some("proj-2")).is_empty());
-    assert_eq!(app.workspaces.list(Some("proj-3")).len(), 1);
+    assert_eq!(
+        app.workspaces.list(Some("proj-3")).len(),
+        usize::from(!failed)
+    );
     assert_eq!(std::fs::read(marker).unwrap(), b"legacy-owned");
 }
 
@@ -80,7 +94,7 @@ fn pre_config_crash_does_not_fence_reused_project_id() {
     });
     crash_in_project_step(&f, &id);
     assert_eq!(f.record(&id).execution["project_id"], "proj-2");
-    reopen_reuse_and_reconcile(f, &id);
+    reopen_reuse_and_reconcile(f, &id, false);
 }
 
 #[test]
@@ -101,14 +115,14 @@ fn config_and_terminal_write_failures_do_not_fence_reused_project_id() {
     assert!(error.contains("injected store failure"), "{error}");
     drop(_observer);
     let pending = f.record(&id);
-    assert_eq!(pending.state, "executing");
+    assert_eq!(pending.state, "reconciling");
     assert!(pending.outcome.is_none());
     assert_eq!(
         f.state.lock().unwrap().projects.len(),
         1,
         "config save did not land"
     );
-    reopen_reuse_and_reconcile(f, &id);
+    reopen_reuse_and_reconcile(f, &id, true);
 }
 
 #[test]

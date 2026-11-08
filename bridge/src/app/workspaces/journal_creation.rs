@@ -16,6 +16,8 @@ pub(super) fn take_preparation_failure() -> Option<String> {
 }
 
 pub(in crate::app) enum WorkspaceCreationEvent {
+    #[cfg(test)]
+    MaterializedBeforeCheckpoint,
     Started,
     RolledBack {
         error: String,

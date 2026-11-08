@@ -7,6 +7,7 @@ mod continuation_identity;
 mod discard_identity;
 mod failure_finalization;
 mod project_identity;
+mod review_followup;
 mod settlement;
 mod stale_replay;
 mod unlanded_identity;
@@ -23,6 +24,7 @@ pub(super) enum Boundary {
     SettlementCheckpointed,
     WorkspaceMaterialized,
     BeforeResidueCheckpoint,
+    BeforeDirectoryCheckpoint,
 }
 type BoundaryObserver = Box<dyn FnMut(Boundary)>;
 thread_local! {

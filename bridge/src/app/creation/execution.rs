@@ -293,6 +293,10 @@ fn observer(
     Arc::new(move |event| {
         let mut saved = evidence.lock().unwrap();
         match event {
+            #[cfg(test)]
+            WorkspaceCreationEvent::MaterializedBeforeCheckpoint => {
+                tests::at_boundary(tests::Boundary::BeforeDirectoryCheckpoint);
+            }
             WorkspaceCreationEvent::Started => {
                 saved["effect_step"] = json!("workspace");
                 checkpoint_effect(&writer, &id, &mut saved, "started")?;

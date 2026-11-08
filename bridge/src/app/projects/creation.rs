@@ -83,6 +83,7 @@ impl AppState {
         if !matches!(record.state.as_str(), "succeeded" | "failed") {
             return Err("creation is still checking or needs cleanup".into());
         }
+        self.refuse_pending_creation(&id)?;
         self.refuse_used_creation_project(&id, &project.project_key)?;
         let mut config =
             self.config_value(&self.projects_dir, self.default_harness, self.isolation);

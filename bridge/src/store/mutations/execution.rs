@@ -115,7 +115,7 @@ impl StoreWriter {
                 terminal(transaction,&mut record,"failed",json!({"effect":"unapplied","error":{"code":"dependency_failed","message":"A predecessor failed","retryable":false}}))?;
                 return Ok(false);
             }
-            if pending || owner_blocked(transaction,&record)? {return Ok(false);}
+            if pending || owner_blocked(transaction,&record)? || super::creation::project_blocked(transaction,&record)? {return Ok(false);}
             record.state="executing".into();record.revision+=1;save(transaction,&record)?;Ok(true)
         })?;
         self.wakeup.notify_waiters();

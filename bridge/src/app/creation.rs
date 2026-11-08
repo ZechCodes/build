@@ -197,6 +197,22 @@ fn validate_continuation(
     Ok(())
 }
 impl AppState {
+    pub(in crate::app) fn refuse_pending_creation(&self, project_id: &str) -> Result<(), String> {
+        let Some(store) = &self.store else {
+            return Ok(());
+        };
+        let pending = store
+            .writer()
+            .pending_creations()
+            .map_err(|e| e.to_string())?;
+        if pending
+            .iter()
+            .any(|record| record.execution["project_id"].as_str() == Some(project_id))
+        {
+            return Err(crate::reclaim::BUSY.into());
+        }
+        Ok(())
+    }
     pub(in crate::app) fn track_creation_workspace(&mut self, evidence: &Value) {
         if let (Some(id), Some(root)) = (
             evidence["workspace"]["id"].as_str(),

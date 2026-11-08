@@ -71,6 +71,7 @@ impl AppState {
         if params.get("confirm").and_then(Value::as_bool) != Some(true) {
             return Err("project.delete requires confirm: true".into());
         }
+        self.refuse_pending_creation(&project_id)?;
         if self.deferred_work.is_some()
             || self.active_deferred_filesystem_jobs > 0
             || self.session_registry.pending_shell_for_project(&project_id)

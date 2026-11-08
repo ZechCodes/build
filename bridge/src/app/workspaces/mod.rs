@@ -902,6 +902,7 @@ impl AppState {
             return Err("another filesystem operation is still running".to_string());
         }
         let project_id = require_str(params, "project_id")?;
+        self.refuse_pending_creation(&project_id)?;
         let requested_name = params
             .get("name")
             .and_then(Value::as_str)

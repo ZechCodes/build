@@ -65,5 +65,8 @@ fn create_project(
     app: &mut AppState,
     params: CreateProjectParams,
 ) -> Result<Answer<CreateProjectResult>, ApiError> {
-    answer(app.environment_create_project(&params.wire()))
+    let value = app
+        .environment_create_project(&params.wire())
+        .map_err(ApiError::invalid_params)?;
+    answer(Ok(value))
 }

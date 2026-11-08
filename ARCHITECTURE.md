@@ -1356,7 +1356,9 @@ tasks, and live or retained agent sessions.
 
 Creation stores completed sub-outcomes and residual-resource evidence in its
 schema-18 record. `unknown` and `reconciling` remain non-terminal and retain owner
-fences; an equivalent new intent cannot execute beside them. Cleanup requires
+fences; an equivalent new intent cannot execute beside them. A project-scoped
+workspace claim also waits behind an environment-owned unknown attempt for that
+project. Legacy creation and project removal check pending creation ownership. Cleanup requires
 the saved reservation's ownership proof and runs off the app mutex. A failed
 cleanup remains recoverable until its residue is cleared. Only a proven terminal
 outcome enters the confirmation outbox. `continues` and `continued_by` in status

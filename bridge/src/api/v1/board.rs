@@ -1595,5 +1595,24 @@ fn project_discard_unused(
     app: &mut AppState,
     params: ProjectDiscardUnusedParams,
 ) -> Result<Answer<EmptyResult>, ApiError> {
-    answer(app.project_discard_unused(&params.wire()))
+    let value = app
+        .project_discard_unused(&params.wire())
+        .map_err(discard_unused_error)?;
+    answer(Ok(value))
+}
+
+fn discard_unused_error(message: String) -> ApiError {
+    if message == "discard needs a durable store" {
+        return ApiError::unavailable(message);
+    }
+    if message == "creation attempt not found" {
+        return ApiError::not_found(message);
+    }
+    if message.starts_with("creation is still") {
+        return ApiError::busy(message);
+    }
+    if message.starts_with("project has ") || message == "project was not created by this attempt" {
+        return ApiError::conflict(message, None);
+    }
+    ApiError::classify(message)
 }

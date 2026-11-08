@@ -39,6 +39,20 @@ pub(super) fn check_conflicting_intent(
     }
     Ok(())
 }
+/// A landed project's workspace retry has a different owner kind from the
+/// environment attempt that created it. Keep that boundary inside the claim.
+pub(super) fn project_blocked(
+    tx: &Transaction<'_>,
+    record: &MutationRecord,
+) -> Result<bool, StoreError> {
+    if !is_creation(&record.method) {
+        return Ok(false);
+    }
+    let Some(project) = record.execution["project_id"].as_str() else {
+        return Ok(false);
+    };
+    Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM mutation_commands WHERE command_id<>?1 AND state IN ('unknown','reconciling') AND json_extract(record,'$.method') IN ('environment.create_project','workspace.create') AND json_extract(record,'$.execution.project_id')=?2)",params![record.command_id,project],|row|row.get(0))?)
+}
 impl StoreWriter {
     pub fn creation_record(
         &self,

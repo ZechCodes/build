@@ -461,3 +461,39 @@ fn creation_cleanup_reservation_blocks_legacy_workspace_retry() {
         .workspace_set_locked(&json!({"workspace_id":workspace.id,"locked":true}))
         .is_err());
 }
+
+#[test]
+fn unknown_project_creation_fences_other_provisioning() {
+    let f = Fixture::new();
+    let prior = operation(91);
+    let record = f.admit(&prior);
+    f.store.writer().claim_mutation(PRINCIPAL, &prior).unwrap();
+    let evidence = project_step(&f.state, &record).unwrap();
+    f.store
+        .writer()
+        .park_creation(PRINCIPAL, &prior, "unknown", evidence)
+        .unwrap();
+    let retry = operation(92);
+    admit(
+        &f.state,
+        "workspace.create",
+        json!({"project_id":"proj-2","name":"retry"}),
+        WriteMetadata {
+            operation_id: retry.clone(),
+            after: None,
+        },
+    )
+    .unwrap();
+    assert!(
+        !f.store.writer().claim_mutation(PRINCIPAL, &retry).unwrap(),
+        "an environment-owned unknown attempt must fence project-owned provisioning"
+    );
+    let mut app = f.state.lock().unwrap();
+    assert!(app
+        .workspace_create(&json!({"project_id":"proj-2","name":"legacy retry"}))
+        .is_err());
+    assert!(app
+        .project_delete(&json!({"project_id":"proj-2","confirm":true}))
+        .is_err());
+    assert!(app.projects.get("proj-2").is_some());
+}

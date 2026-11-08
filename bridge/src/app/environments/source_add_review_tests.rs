@@ -1,6 +1,5 @@
 use super::edit_tests::{fixture, ok};
 use crate::app::runtime::deferred::DeferredNext;
-use crate::app::OffLockGate;
 use serde_json::json;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -20,12 +19,10 @@ fn source_add_progress(clone_settlement: bool) {
     );
     let origin = crate::git_fixture::init_repo_named(root.path(), "new-origin");
     app.initialize_snapshot_projection();
-    let (gate, control) = OffLockGate::new();
-    if clone_settlement {
-        app.off_lock_environment_source_clone_gate = Some(gate);
-    } else {
-        app.off_lock_environment_source_admission_gate = Some(gate);
-    }
+    // Admission reads this origin once. Skipping that call pauses the clone
+    // settlement inside the next actual origin read, with its repository open.
+    let (_pause, control) =
+        crate::test_support::off_lock::pause_origin_read(&existing, usize::from(clone_settlement));
     let state = app.shared();
     let worker_state = state.clone();
     let worker = std::thread::spawn(move || {
@@ -207,4 +204,100 @@ fn environment_clone_refuses_an_unreadable_registered_origin() {
         app.projects.environment("env-1").unwrap().sources.len(),
         before["sources"].as_array().unwrap().len()
     );
+}
+
+fn clone_claim_after_repository_wait(final_duplicate: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let mut app = fixture(root.path());
+    let existing = crate::git_fixture::init_repo_named(root.path(), "existing");
+    let other = "https://example.invalid/other.git";
+    git2::Repository::open(&existing)
+        .unwrap()
+        .remote("origin", other)
+        .unwrap();
+    let before = ok(
+        &mut app,
+        "environment.add_source",
+        json!({"environment_id":"env-1","path":existing}),
+    );
+    let count = before["sources"].as_array().unwrap().len();
+    let origin = crate::git_fixture::init_repo_named(root.path(), "new-origin");
+    app.initialize_snapshot_projection();
+    let params = json!({"environment_id":"env-1","remote":origin});
+    let (answer, admission) = app.dispatch_deferring("environment.add_source", &params);
+    assert!(answer.is_ok());
+    let opening =
+        match app.apply_deferred_stage("environment.add_source", &params, admission.unwrap().run())
+        {
+            DeferredNext::Again(job) => job,
+            _ => panic!("expected source opening"),
+        };
+    let claims = match app.apply_deferred_stage("environment.add_source", &params, opening.run()) {
+        DeferredNext::Again(job) => job,
+        _ => panic!("expected clone claim discovery"),
+    };
+    let (held, _) =
+        crate::source_sync::SyncLock::acquire(&existing, Duration::from_secs(3)).unwrap();
+    let (started, starting) = mpsc::channel();
+    let (send, receive) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        send.send(claims.run()).unwrap();
+    });
+    starting.recv().unwrap();
+    assert!(
+        matches!(
+            receive.recv_timeout(Duration::from_millis(200)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ),
+        "claim discovery must wait for the held repository"
+    );
+    // A newer capture publishes while discovery waits. External Git then changes
+    // the origin again, before discovery gets its lock and actually reads it.
+    let cached = if final_duplicate {
+        other
+    } else {
+        origin.to_str().unwrap()
+    };
+    let actual = if final_duplicate {
+        origin.to_str().unwrap()
+    } else {
+        other
+    };
+    let repository = git2::Repository::open(&existing).unwrap();
+    repository.remote_set_url("origin", cached).unwrap();
+    let newer = app.capture_project_snapshot_refresh().render();
+    app.install_project_snapshot_refresh(newer);
+    repository.remote_set_url("origin", actual).unwrap();
+    drop(held);
+    let observed = receive.recv_timeout(Duration::from_secs(30)).unwrap();
+    worker.join().unwrap();
+    let result = app.apply_deferred("environment.add_source", &params, observed);
+    if final_duplicate {
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| error.contains("source remote is already registered")),
+            "later actual duplicate must be refused: {result:?}"
+        );
+    } else {
+        assert!(
+            result.is_ok(),
+            "later actual nonduplicate must be accepted: {result:?}"
+        );
+    }
+    assert_eq!(
+        app.projects.environment("env-1").unwrap().sources.len(),
+        count + usize::from(!final_duplicate)
+    );
+}
+
+#[test]
+fn environment_clone_refuses_duplicate_observed_after_repository_lock_wait() {
+    clone_claim_after_repository_wait(true);
+}
+
+#[test]
+fn environment_clone_accepts_nonduplicate_observed_after_repository_lock_wait() {
+    clone_claim_after_repository_wait(false);
 }

@@ -51,6 +51,8 @@ pub(crate) fn git_origin_url(dir: &Path) -> Option<String> {
 
 pub(crate) fn git_origin_url_observed(dir: &Path) -> Result<Option<String>, git2::Error> {
     let repository = git2::Repository::open(dir)?;
+    #[cfg(test)]
+    crate::test_support::off_lock::inside_origin_read(dir);
     let remote = match repository.find_remote("origin") {
         Ok(remote) => remote,
         Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(None),

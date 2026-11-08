@@ -3,6 +3,77 @@ use std::path::Path;
 
 const REMOTE: &str = "https://example.invalid/environment.git";
 
+#[test]
+fn environment_source_remote_uses_newest_observation() {
+    let root = tempfile::tempdir().unwrap();
+    let home = repository(root.path());
+    let mut app = state(root.path());
+    let project = app.add_project(home.clone(), "main".into());
+    let sibling = app.add_environment_sibling_for_test(&project);
+    let source = app.project_for(&project).unwrap().sources[0].clone();
+    let environment = app.project_for(&project).unwrap().environment_id.clone();
+    {
+        let mut observations = app.snapshot_observations.projects.lock().unwrap();
+        observations.insert(
+            project.clone(),
+            source_observation(&source, 1, json!("old-project")),
+        );
+        observations.insert(
+            sibling.clone(),
+            source_observation(&source, 2, json!("older-sibling")),
+        );
+    }
+    app.snapshot_observations
+        .environments
+        .lock()
+        .unwrap()
+        .insert(
+            environment.clone(),
+            source_observation(&source, 3, json!("new-environment")),
+        );
+    assert_eq!(environment_remote(&app), "new-environment");
+
+    app.snapshot_observations.projects.lock().unwrap().insert(
+        sibling,
+        source_observation(&source, 4, json!("newest-project")),
+    );
+    assert_eq!(environment_remote(&app), "newest-project");
+
+    let mut wrong_id = source.clone();
+    wrong_id.id = "different-source".into();
+    let mut wrong_path = source.clone();
+    wrong_path.path = home.join("different-location");
+    app.snapshot_observations.projects.lock().unwrap().insert(
+        project,
+        ProjectObservation {
+            version: 5,
+            value: json!({"sources":[
+                wrong_id.wire_observed(json!("wrong-id")),
+                wrong_path.wire_observed(json!("wrong-path")),
+            ]}),
+        },
+    );
+    assert_eq!(environment_remote(&app), "newest-project");
+
+    app.snapshot_observations
+        .environments
+        .lock()
+        .unwrap()
+        .insert(environment, source_observation(&source, 6, Value::Null));
+    assert_eq!(environment_remote(&app), Value::Null);
+}
+
+fn source_observation(source: &ProjectSource, version: u64, remote: Value) -> ProjectObservation {
+    ProjectObservation {
+        version,
+        value: json!({"sources":[source.wire_observed(remote)]}),
+    }
+}
+
+fn environment_remote(app: &AppState) -> Value {
+    app.environment_list()["environments"][0]["sources"][0]["remote"].clone()
+}
+
 fn state(root: &Path) -> AppState {
     let context =
         crate::harness::HarnessContext::resolved(root.join("mcp.sock"), root.join("state"))

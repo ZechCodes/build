@@ -1055,6 +1055,11 @@ it("keeps the open search node, focus and caret across a cached capability chang
   expect(popup.querySelector(".tb-filter")).toBe(input);
   expect(document.activeElement).toBe(input);
   expect([input.selectionStart, input.selectionEnd]).toEqual([1, 2]);
+  await writeCached({ deviceId: "dev-1", entityId: "", kind: "environment-support" }, { list: false, createProject: false });
+  await vi.waitFor(() => expect(popup.querySelector('[data-create="global"]')).toBeNull());
+  expect(popup.querySelector(".tb-filter")).toBe(input);
+  expect(document.activeElement).toBe(input);
+  expect([input.selectionStart, input.selectionEnd]).toEqual([1, 2]);
 });
 
 describe("review regressions", () => {
@@ -1072,6 +1077,12 @@ describe("review regressions", () => {
 
   it.each(["project", "workspace"])("preserves every mounted toolbar node and focused %s control across both capability directions", async select => {
     await seed();
+    if (select === "workspace") await standOnWorkspace();
+    else {
+      App.route = { name: "project", deviceId: "dev-1", projectId: "p1" };
+      toolbarRouteChanged();
+      await flush();
+    }
     const original = [...bar().querySelectorAll("*")];
     const toolbar = bar();
     const trigger = bar().querySelector(`[data-select="${select}"]`);
@@ -1115,4 +1126,22 @@ describe("review regressions", () => {
     expect(popup.querySelector(".tb-filter")).toBe(input);
     expect(document.activeElement).toBe(input);
   });
+});
+
+
+it("applies new visit order in the open workspace selector while retaining rows and input selection", async () => {
+  feed = { ...savedFeed, projects: savedFeed.projects.map(project => ({ ...project, environment_id: "env" })) };
+  workshopHolds({ p1: [{ ...payments, last_activity_ms: 10 }, { ...payments, id: "other", workspace_id: "other", name: "Other work", last_activity_ms: 10 }] });
+  await writeCached({ deviceId: "dev-1", entityId: "", kind: "environment-support" }, { list: true, createProject: true });
+  App.route = { name: "project", deviceId: "dev-1", projectId: "p1" }; toolbarRouteChanged();
+  await refreshFeed();
+  const popup = await openJump("workspace");
+  const input = popup.querySelector(".tb-filter");
+  await vi.waitFor(() => expect(labels("[data-workspace]")).toEqual(["payment-work", "Other work"]));
+  const rows = groupedRows("[data-workspace]");
+  await writeUiRecord(uiAddress({ view: "navigation", kind: "history", sub: "visits" }), [{ kind: "workspace", key: "dev-1/other", at: NOW }]);
+  await vi.waitFor(() => expect(labels("[data-workspace]")).toEqual(["Other work", "payment-work"]));
+  expect(groupedRows("[data-workspace]")).toEqual([rows[1], rows[0]]);
+  expect(popup.querySelector(".tb-filter")).toBe(input);
+  expect(document.activeElement).toBe(input);
 });

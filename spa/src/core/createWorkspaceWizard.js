@@ -48,7 +48,7 @@ function nameHtml(state) {
 function wizardActionsHtml(state) {
   const back=state.page === 3 && !state.fixedProject ? '<button class="btn" type="button" data-create-back>Back</button>':'';
   const create=state.page === 3 ? `<button class="btn primary" type="button" data-create-go${state.busy || state.operationId ? ' disabled':''}>${state.busy ? 'Creating…':'Create workspace'}</button>`:'';
-  return `<div class="row create-row">${back}<button class="btn" type="button" data-create-cancel${state.busy ? ' disabled':''}>Cancel</button>${create}</div>`;
+  return `<div class="row create-row">${back}<button class="btn" type="button" data-create-cancel${state.busy ? ' disabled':''}>${state.operationId ? 'Close':'Cancel'}</button>${create}</div>`;
 }
 export function createWorkspaceWizardBodyHtml(state) {
   const page=state.page === 3 && state.target ? nameHtml(state):pickerHtml(state);
@@ -58,7 +58,7 @@ export function createWorkspaceWizardBodyHtml(state) {
 export function createWorkspaceWizardHtml(state) {
   return modalDialogHtml(createWorkspaceWizardBodyHtml(state),{className:'modal-create create-workspace-sheet'});
 }
-const draftOf = state => ({target:state.target,page:state.page,name:state.name,isolation:state.isolation,operationId:state.operationId});
+const draftOf = state => ({target:state.target,page:state.page,name:state.name,isolation:state.isolation,operationId:state.operationId,continues:state.continues});
 async function deleteDraft(address) {
   const record=await readUiRecord(address);
   if(record) await deleteUiDraftsIfUnwritten([{address,record}],()=>true);
@@ -77,11 +77,16 @@ function pickerKey(event,body) {
   if(!rows.length) return;
   event.preventDefault();const at=rows.indexOf(document.activeElement);rows[(at+direction+rows.length)%rows.length].focus();
 }
+function validName(input,target,name) {
+  input.setCustomValidity(target.kind === 'environment' && !name.trim() ? 'Enter a name for this line of work.':'');
+  if(input.checkValidity()) return true;
+  input.reportValidity();return false;
+}
 export function openCreateWorkspaceWizard(options = {}) {
   const fixedProject=options.fixedProject ?? Boolean(options.projectId);
   let snapshot={};
   const initial=createWorkspaceWizardModel({...options,fixedProject});
-  const state={...initial,query:'',name:'',isolation:'',error:'',busy:false,operationId:null,fixedProject};
+  const state={...initial,query:'',name:'',isolation:'',error:options.error || '',busy:false,operationId:null,fixedProject};
   const opener=document.activeElement;
   const address=uiAddress({deviceId:options.deviceId,entityId:options.projectId,view:'create-workspace',kind:'draft'});
   let detached=false,submitting=false,readGeneration=0;
@@ -103,7 +108,7 @@ export function openCreateWorkspaceWizard(options = {}) {
   async function detach() {await draft.flush();dispose();await modal.close();}
   async function cancelled() {
     if(detached) return;
-    await draft.flush();dispose();await deleteDraft(address);opener?.focus();
+    await draft.flush();dispose();if(!state.operationId)await deleteDraft(address);opener?.focus();
   }
   async function cancel() {
     if(state.busy) return;
@@ -169,7 +174,7 @@ export function openCreateWorkspaceWizard(options = {}) {
   async function submit() {
     if(submitting || state.operationId || !state.target) return;
     const input=modal.body.querySelector('#create-work-input');
-    if(!input.checkValidity()){input.reportValidity();return;}
+    if(!validName(input,state.target,state.name))return;
     submitting=true;state.busy=true;state.error='';paint();
     try {
       await draft.write(draftOf(state));
@@ -179,10 +184,11 @@ export function openCreateWorkspaceWizard(options = {}) {
     finally{submitting=false;}
   }
   async function submitLegacy() {
+    if(state.target.kind !== 'project') throw new Error('This device needs an update to create environments here');
     const route=await createLegacyWorkspace({target:state.target,name:state.name,isolation:state.isolation});
     await deleteDraft(address);dispose();await modal.close();(options.navigate || go)(route);
   }
-  async function submitDurable(continues) {
+  async function submitDurable(continues=state.continues) {
     const attempt=submitCreateWorkspace({...draftOf(state),continues,draft:draftOf(state)});
     state.operationId=attempt.operationId;state.busy=false;
     await draft.write(draftOf(state));
@@ -192,21 +198,30 @@ export function openCreateWorkspaceWizard(options = {}) {
       await screen.close();await returnToWizard(error.message || String(error));
     });
   }
-  async function returnToWizard(error='') {
-    await updateUiState(address,held=>({...held,operationId:null}));
-    const next=openCreateWorkspaceWizard(options);await next.ready;
-    if(error){const element=document.querySelector('#create-scrim .create-error');if(element){element.hidden=false;element.textContent=error;}}
+  async function returnToWizard(error='',continues=state.operationId) {
+    await updateUiState(address,held=>({...held,operationId:null,continues}));
+    const next=openCreateWorkspaceWizard({...options,error});await next.ready;
+  }
+  function landedProjectTarget(project) {
+    const deviceId=state.target.deviceId;
+    const id=project.project_id || project.id;
+    const projects=[...(snapshot.projects || []).filter(row=>row.deviceId !== deviceId || row.id !== id),{...project,id,deviceId}];
+    return createWorkspaceWizardModel({...snapshot,projects,projectId:id,deviceId,fixedProject:true}).target;
   }
   async function retryWorkspace({project,operationId}) {
-    const target={...state.target,...project,id:project.project_id || project.id,kind:'project'};
-    const attempt=submitCreateWorkspace({target,name:state.name,isolation:state.isolation,continues:operationId,draft:{...draftOf(state),target}});
-    state.target=target;state.operationId=attempt.operationId;
+    state.target=landedProjectTarget(project);
+    const attempt=submitCreateWorkspace({target:state.target,name:state.name,isolation:state.isolation,continues:operationId,draft:draftOf(state)});
+    state.operationId=attempt.operationId;
     await updateUiState(address,()=>draftOf(state));
-    void attempt.completion.catch(()=>{});
-    openProgress(attempt.operationId);
+    const screen=openProgress(attempt.operationId);
+    void attempt.completion.catch(async error=>{
+      if(await attempt.get())return;
+      await screen.close();await returnToWizard(error.message || String(error),operationId);
+    });
   }
   function openProgress(operationId) {
-    return openCreateWorkspaceProgress({operationId,deviceId:state.target.deviceId,targetSummary:targetText(state.target),
+    return openCreateWorkspaceProgress({operationId,deviceId:state.target.deviceId,target:state.target,targetSummary:targetText(state.target),
+      onKeepProject:()=>deleteDraft(address),onClose:()=>{if(!document.activeElement?.closest('[role="dialog"]'))opener?.focus();},
       onBack:()=>returnToWizard(),onRetryWorkspace:retryWorkspace,
       onDiscardProject:async payload=>{await discardCreatedProject({...payload,target:state.target});await deleteDraft(address);},
       onOpenWorkspace:async({record,workspace})=>{

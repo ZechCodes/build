@@ -56,6 +56,8 @@ export function submitCreateWorkspace(input) {
   if(!service) throw new Error('Sign in before creating a workspace.');
   const operationId = input.operationId || crypto.randomUUID();
   const completion = service.submit({...creationRequest(input),operationId,draft:input.draft || input});
+  // The screen is mounted asynchronously; retain early admission refusals.
+  void completion.catch(()=>{});
   return {operationId,completion,get:()=>service.get(operationId)};
 }
 export async function cacheCreatedWorkspace(deviceId,answer) {

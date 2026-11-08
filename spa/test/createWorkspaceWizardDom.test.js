@@ -95,4 +95,33 @@ describe('workspace wizard pages',()=>{
     const html=createWorkspaceWizardHtml({page:3,target:{kind:'project',id:'p',label:'<Payments>',name:'<Payments>',sources:[]},name:'',isolation:''});
     expect(html).toContain('create-workspace-sheet');expect(html).toContain('&lt;Payments&gt;');expect(html).not.toContain('<Payments>');
   });
+  it('reopens a retained attempt without a second Create and Close keeps its link',async()=>{
+    const options={projectId:'p1',deviceId:'d1'};
+    await open(options);name('Retained');dialog().querySelector('[data-create-go]').click();
+    await vi.waitFor(()=>expect(mocks.progress).toHaveBeenCalledTimes(1));
+    await open(options);expect(dialog().textContent).toContain('Still creating ‹Retained›');
+    await opened.close();opened=null;await open(options);
+    expect(dialog().querySelector('[data-create-resume]')).not.toBeNull();expect(mocks.submit).toHaveBeenCalledTimes(1);
+  });
+  it('retries only the landed project with its own summary and predecessor',async()=>{
+    await open({fixedProject:false});clickTarget('environment');name('New board');dialog().querySelector('[data-create-go]').click();
+    await vi.waitFor(()=>expect(mocks.progress).toHaveBeenCalledTimes(1));
+    await mocks.progress.mock.calls[0][0].onRetryWorkspace({project:{project_id:'landed',name:'New board',environment_id:'e1'},operationId:'failed-attempt'});
+    expect(mocks.submit.mock.calls[1][0]).toMatchObject({target:{kind:'project',id:'landed',key:'d1/landed',summaryLabel:'Platform › New board'},continues:'failed-attempt'});
+  });
+  it('returns to the retained draft if durable admission refuses before persisting',async()=>{
+    let refuse;const completion=new Promise((resolve,reject)=>{refuse=reject;});
+    mocks.submit.mockReturnValue({operationId:'refused',completion,get:async()=>null});
+    await open({projectId:'p1',deviceId:'d1'});name('Keep my name');dialog().querySelector('[data-create-go]').click();
+    await vi.waitFor(()=>expect(mocks.progress).toHaveBeenCalledTimes(1));refuse(new Error('Update the bridge first'));
+    await vi.waitFor(()=>expect(dialog()?.querySelector('.create-error').textContent).toContain('Update the bridge first'));
+    expect(dialog().querySelector('#create-work-input').value).toBe('Keep my name');
+    expect(dialog().querySelector('[data-create-go]').disabled).toBe(false);
+    dialog().querySelector('[data-create-cancel]').click();await vi.waitFor(()=>expect(dialog()).toBeNull());
+  });
+  it('does not accept a whitespace-only name for a new task board',async()=>{
+    await open({fixedProject:false});clickTarget('environment');name('   ');dialog().querySelector('[data-create-go]').click();
+    await new Promise(resolve=>setTimeout(resolve,10));expect(mocks.submit).not.toHaveBeenCalled();
+  });
+
 });

@@ -9,6 +9,7 @@ pub(crate) enum Boundary {
     BeforeRemove,
     AfterRemove(bool),
     BeforeRefRemoval,
+    AfterRefLookup(Option<git2::ErrorCode>),
 }
 type Observer = Box<dyn FnMut(Boundary, &Path, &str) -> Result<(), WorktreeError>>;
 thread_local! {

@@ -12,6 +12,34 @@ enum Fault {
     Delete,
     Lookup,
 }
+#[derive(Default)]
+struct LookupFault {
+    original: Option<(std::path::PathBuf, Vec<u8>)>,
+    observed: bool,
+}
+impl LookupFault {
+    fn at(&mut self, boundary: CutBoundary, source: &std::path::Path, branch: &str) {
+        match boundary {
+            CutBoundary::BeforeRefRemoval => {
+                let repository = git2::Repository::open(source).unwrap();
+                let path = repository.commondir().join(format!("refs/heads/{branch}"));
+                self.original = Some((path.clone(), std::fs::read(&path).unwrap()));
+                std::fs::write(path, "invalid loose ref contents\n").unwrap();
+            }
+            CutBoundary::AfterRefLookup(code) => {
+                assert!(
+                    code.is_some_and(|code| code != git2::ErrorCode::NotFound),
+                    "actual find_branch must fail with a non-NotFound error: {code:?}"
+                );
+                self.observed = true;
+                let (path, original) = self.original.take().unwrap();
+                std::fs::write(path, original).unwrap();
+            }
+            _ => {}
+        }
+    }
+}
+
 fn inject_checkout_failure(
     boundary: CutBoundary,
     path: &std::path::Path,
@@ -41,16 +69,21 @@ fn inject_ref_failure(
     source: &std::path::Path,
     branch: &str,
     fault: Fault,
+    lookup: &Mutex<LookupFault>,
 ) -> Result<(), WorktreeError> {
+    if fault == Fault::Lookup {
+        lookup.lock().unwrap().at(boundary, source, branch);
+        return Ok(());
+    }
     if boundary != CutBoundary::BeforeRefRemoval {
         return Ok(());
     }
-    if fault == Fault::Lookup {
-        return Err(WorktreeError::Git(git2::Error::new(
-            git2::ErrorCode::Locked,
-            git2::ErrorClass::Reference,
-            "injected lookup failure",
-        )));
+    if fault == Fault::Checkout {
+        // The injected backend removal failed before pruning its registration.
+        // Make the ref deletion independently succeed, without claiming that
+        // the failed removal itself supplied positive settlement proof.
+        git(source, &["worktree", "prune", "--expire=now"]);
+        return Ok(());
     }
     let repository = git2::Repository::open(source).unwrap();
     let lock = repository
@@ -70,25 +103,30 @@ fn fail_unwind(at: CutBoundary, fault: Fault) {
     let removal_failed = Arc::new(AtomicBool::new(false));
     let captured = removal_failed.clone();
     let source = repo.clone();
+    let lookup = Arc::new(Mutex::new(LookupFault::default()));
+    let lookup_saved = lookup.clone();
     let observer = workspace_checkout_test::observe(move |boundary, path, branch| {
         if boundary == at {
             return Err(WorktreeError::Command("injected materializer error".into()));
         }
         inject_checkout_failure(boundary, path, fault, &captured);
-        inject_ref_failure(boundary, &source, branch, fault)
+        inject_ref_failure(boundary, &source, branch, fault, &lookup_saved)
     });
     f.run(&id);
     drop(observer);
+    assert_eq!(lookup.lock().unwrap().observed, fault == Fault::Lookup);
     if fault == Fault::Checkout {
         assert!(removal_failed.load(Ordering::SeqCst));
     }
     let record = f.record(&id);
     assert!(!workspace.directories[0].path.exists());
-    assert!(
-        !git(&repo, &["branch", "--list", "build/*"])
-            .trim()
-            .is_empty(),
-        "unwind must leave a real branch behind"
+    let branch_absent = git(&repo, &["branch", "--list", "build/*"])
+        .trim()
+        .is_empty();
+    assert_eq!(
+        branch_absent,
+        fault == Fault::Checkout,
+        "checkout-only failure must allow the real ref deletion"
     );
     assert!(
         matches!(record.state.as_str(), "unknown" | "reconciling"),
@@ -101,6 +139,12 @@ fn fail_unwind(at: CutBoundary, fault: Fault) {
     f.run(&id);
     assert!(f.record(&id).outcome.is_none());
     assert!(f.state.lock().unwrap().workspace_reserved(&workspace.id));
+    assert_eq!(
+        git(&repo, &["branch", "--list", "build/*"])
+            .trim()
+            .is_empty(),
+        fault == Fault::Checkout
+    );
 }
 
 #[test]
@@ -214,5 +258,52 @@ fn started_checkpoint_precedes_workspace_effects_initial_and_replay() {
         assert!(stopped.unwrap_err().is::<SimulatedCrash>());
         assert!(reached.load(Ordering::SeqCst));
         drop(observer);
+    }
+}
+
+#[test]
+fn already_missing_ref_proves_complete_unwind_on_both_routes() {
+    for at in [CutBoundary::Materialize, CutBoundary::Teardown] {
+        let (f, repo, project) = git_fixture(false);
+        let id = operation(203);
+        let record = workspace_attempt(&f, &id, &project);
+        let workspace: Workspace =
+            serde_json::from_value(record.execution["workspace"].clone()).unwrap();
+        let observed = Arc::new(AtomicBool::new(false));
+        let saved = observed.clone();
+        let source = repo.clone();
+        let observer = workspace_checkout_test::observe(move |boundary, _, branch| {
+            if boundary == at {
+                return Err(WorktreeError::Command("injected materializer error".into()));
+            }
+            match boundary {
+                CutBoundary::BeforeRefRemoval => {
+                    let repository = git2::Repository::open(&source).unwrap();
+                    repository
+                        .find_branch(branch, git2::BranchType::Local)
+                        .unwrap()
+                        .delete()
+                        .unwrap();
+                }
+                CutBoundary::AfterRefLookup(code) => {
+                    assert_eq!(code, Some(git2::ErrorCode::NotFound));
+                    saved.store(true, Ordering::SeqCst);
+                }
+                _ => {}
+            }
+            Ok(())
+        });
+        f.run(&id);
+        drop(observer);
+        assert!(observed.load(Ordering::SeqCst));
+        let record = f.record(&id);
+        assert_eq!(record.state, "failed", "{record:?}");
+        assert_eq!(record.execution["effect_state"], "settled");
+        assert_eq!(record.outcome.unwrap()["effect"], "unapplied");
+        assert!(!workspace.root.exists());
+        assert_eq!(
+            git(&repo, &["branch", "--format=%(refname:short)"]).trim(),
+            "main"
+        );
     }
 }

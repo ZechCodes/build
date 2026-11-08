@@ -74,15 +74,7 @@ impl WorktreeManager {
         let branch = self.branch_name(&name);
         repo.branch(&branch, &base_commit, false)?;
         *unwind = CheckoutUnwind::Incomplete;
-        let materialized = (|| {
-            #[cfg(test)]
-            super::workspace_checkout_test::at(
-                super::workspace_checkout_test::Boundary::Materialize,
-                destination,
-                &branch,
-            )?;
-            backend.materialize(&self.repo_path, &branch, destination)
-        })();
+        let materialized = self.materialize_workspace_cut(backend, destination, &branch);
         if let Err(error) = materialized {
             *unwind = self.unwind_workspace_checkout(
                 backend,
@@ -94,15 +86,7 @@ impl WorktreeManager {
             return Err(error);
         }
         let teardown = BranchTeardown::DeletesBranch;
-        let stamped = (|| {
-            #[cfg(test)]
-            super::workspace_checkout_test::at(
-                super::workspace_checkout_test::Boundary::Teardown,
-                destination,
-                &branch,
-            )?;
-            record_branch_teardown(destination, teardown)
-        })();
+        let stamped = stamp_workspace_teardown(destination, &branch, teardown);
         if let Err(error) = stamped {
             *unwind = self.unwind_workspace_checkout(
                 backend,
@@ -122,6 +106,21 @@ impl WorktreeManager {
             },
             teardown,
         })
+    }
+
+    fn materialize_workspace_cut(
+        &self,
+        backend: &dyn IsolationBackend,
+        destination: &Path,
+        branch: &str,
+    ) -> Result<(), WorktreeError> {
+        #[cfg(test)]
+        super::workspace_checkout_test::at(
+            super::workspace_checkout_test::Boundary::Materialize,
+            destination,
+            branch,
+        )?;
+        backend.materialize(&self.repo_path, branch, destination)
     }
 
     fn unwind_workspace_checkout(
@@ -166,6 +165,21 @@ impl WorktreeManager {
     }
 }
 
+fn stamp_workspace_teardown(
+    destination: &Path,
+    branch: &str,
+    teardown: BranchTeardown,
+) -> Result<(), WorktreeError> {
+    let _ = branch;
+    #[cfg(test)]
+    super::workspace_checkout_test::at(
+        super::workspace_checkout_test::Boundary::Teardown,
+        destination,
+        branch,
+    )?;
+    record_branch_teardown(destination, teardown)
+}
+
 fn discard_workspace_ref(
     repo: &git2::Repository,
     branch: &str,
@@ -177,7 +191,17 @@ fn discard_workspace_ref(
         _destination,
         branch,
     )?;
-    match repo.find_branch(branch, git2::BranchType::Local) {
+    let found = repo.find_branch(branch, git2::BranchType::Local);
+    #[cfg(test)]
+    super::workspace_checkout_test::at(
+        super::workspace_checkout_test::Boundary::AfterRefLookup(
+            found.as_ref().err().map(|error| error.code()),
+        ),
+        _destination,
+        branch,
+    )
+    .unwrap();
+    match found {
         Ok(mut created) => created.delete().map_err(WorktreeError::from),
         Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(()),
         Err(error) => Err(error.into()),

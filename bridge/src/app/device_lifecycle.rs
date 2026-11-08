@@ -91,28 +91,6 @@ impl AppState {
 }
 type RegistryRows = (BTreeMap<Entity, Value>, BTreeMap<String, String>);
 
-#[cfg(test)]
-mod identity_tests {
-    use super::*;
-
-    #[test]
-    fn device_project_ids_keep_sibling_keys_distinct() {
-        let mut rows = BTreeMap::new();
-        let mut projects = BTreeMap::new();
-        for (id, key) in [("proj-1", "/checkout"), ("proj-2", "project:opaque")] {
-            project_rows(
-                &json!({"id":id,"path":"/checkout","project_key":key}),
-                &mut rows,
-                &mut projects,
-            );
-        }
-        assert_eq!(projects.len(), 2);
-        assert_eq!(projects["/checkout"], "proj-1");
-        assert_eq!(projects["project:opaque"], "proj-2");
-        assert_eq!(rows[&Entity::new("project", "proj-2")]["path"], "/checkout");
-    }
-}
-
 fn project_rows(
     project: &Value,
     rows: &mut BTreeMap<Entity, Value>,
@@ -144,5 +122,27 @@ fn project_rows(
             Entity::new("project_source", &format!("{id}/{source_id}")),
             row,
         );
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn device_project_ids_keep_sibling_keys_distinct() {
+        let mut rows = BTreeMap::new();
+        let mut projects = BTreeMap::new();
+        for (id, key) in [("proj-1", "/checkout"), ("proj-2", "project:opaque")] {
+            project_rows(
+                &json!({"id":id,"path":"/checkout","project_key":key}),
+                &mut rows,
+                &mut projects,
+            );
+        }
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects["/checkout"], "proj-1");
+        assert_eq!(projects["project:opaque"], "proj-2");
+        assert_eq!(rows[&Entity::new("project", "proj-2")]["path"], "/checkout");
     }
 }

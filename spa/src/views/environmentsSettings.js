@@ -26,7 +26,7 @@ function projectCountText(project) {
 
 function environmentWorkspaceText(projects) {
   const counts = projects.map(project => project.workspaces).filter(knownCount);
-  return counts.length ? ` · ${counts.reduce((total, count) => total + count, 0)} workspaces` : "";
+  return counts.length ? `${counts.reduce((total, count) => total + count, 0)} workspaces` : "";
 }
 
 function deviceTagHtml(device) {
@@ -34,35 +34,60 @@ function deviceTagHtml(device) {
   return label ? `<span class="dim inbox-device">${esc(label)}</span>` : "";
 }
 
-function projectHtml(project, device) {
-  const folders = Array.isArray(project.added_sources) ? `+${project.added_sources.length} folders` : "";
+function projectHtml(project, device, countsKnown) {
+  const folders = countsKnown && Array.isArray(project.added_sources) ? `+${project.added_sources.length} folders` : "";
   return `<div class="projrow"><span class="pname">${kindGlyphHtml("project")} ${esc(project.name)} ${deviceTagHtml(device)}</span>
     <span class="dim">${folders}</span>
-    <span class="dim">${esc(projectCountText(project))}</span>
+    <span class="dim">${countsKnown ? esc(projectCountText(project)) : ""}</span>
     <button class="btn mini projsettings" data-environment-project="${esc(project.project_id)}">Settings…</button></div>`;
 }
 
-function environmentHtml(environment, projects, device) {
-  const members = projects.filter(project => project.environment_id === environment.environment_id);
-  const workspaceText = environmentWorkspaceText(members);
+/** Count fields are authoritative only in the settings-owned project.list.
+ * Journal replicas may retain legacy enrichment, so fallback rows are identity. */
+function projectListing(settingsProjects, journalProjects) {
+  if (Array.isArray(settingsProjects)) return { rows: settingsProjects, countsKnown: true };
+  return { rows: Array.isArray(journalProjects) ? journalProjects : null, countsKnown: false };
+}
+
+function listStatusHtml(error) {
+  return `<p class="${error ? "adderr" : "dim"}">${esc(error || "loading…")}</p>`;
+}
+
+function environmentTotalsText(environment, members, countsKnown) {
+  const parts = [];
+  if (Array.isArray(environment.sources)) parts.push(`${environment.sources.length} sources`);
+  if (members) parts.push(`${members.length} projects`);
+  const workspaceText = countsKnown ? environmentWorkspaceText(members) : "";
+  if (workspaceText) parts.push(workspaceText);
+  return parts.join(" · ");
+}
+
+function environmentProjectsHtml(members, listing, device, error) {
+  if (!members) return listStatusHtml(error);
+  return members.map(project => projectHtml(project, device, listing.countsKnown)).join("")
+    || '<p class="dim">no projects yet</p>';
+}
+
+function environmentHtml(environment, listing, device, error) {
+  const members = listing.rows?.filter(project => project.environment_id === environment.environment_id);
   return `<article class="panel" data-environment="${esc(environment.environment_id)}">
     <h3>${kindGlyphHtml("environment")} ${esc(environment.name)} ${deviceTagHtml(device)}</h3>
     <p class="ppath">${esc(environment.home_path)}</p>
-    <p class="dim">${environment.sources?.length || 0} sources · ${members.length} projects${workspaceText}</p>
-    ${members.map(project => projectHtml(project, device)).join("") || '<p class="dim">no projects yet</p>'}</article>`;
+    <p class="dim">${environmentTotalsText(environment, members, listing.countsKnown)}</p>
+    ${environmentProjectsHtml(members, listing, device, error)}</article>`;
 }
 
-function legacyProjectsHtml(projects, device) {
+function legacyProjectsHtml(listing, device) {
   return `<div class="panel"><h3>Projects (this device needs an update to use environments)</h3>
-    ${projects.map(project => projectHtml(project, device)).join("") || '<p class="dim">No projects yet.</p>'}</div>`;
+    ${listing.rows.map(project => projectHtml(project, device, listing.countsKnown)).join("") || '<p class="dim">No projects yet.</p>'}</div>`;
 }
 
 function deviceListHtml({ support, environments, projects: settingsProjects, journalProjects, error }, device) {
-  const projects = settingsProjects ?? journalProjects;
-  const rows = support?.list ? environments : projects;
-  if (!Array.isArray(rows)) return `<p class="${error ? "adderr" : "dim"}">${esc(error || "loading…")}</p>`;
-  if (!support?.list) return legacyProjectsHtml(projects, device);
-  return environments.map(environment => environmentHtml(environment, projects || [], device)).join("")
+  const listing = projectListing(settingsProjects, journalProjects);
+  const rows = support?.list ? environments : listing.rows;
+  if (!Array.isArray(rows)) return listStatusHtml(error);
+  if (!support?.list) return legacyProjectsHtml(listing, device);
+  return environments.map(environment => environmentHtml(environment, listing, device, error)).join("")
     || '<p class="dim">No environments on this device yet</p>';
 }
 

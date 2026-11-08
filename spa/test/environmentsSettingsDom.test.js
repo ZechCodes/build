@@ -209,3 +209,43 @@ it("renders both kinds with the shared environment identity glyphs", async () =>
     expect(svg?.outerHTML).toBe(expected.content.firstChild.outerHTML);
   }
 });
+
+it.each([
+  { workspaces: 23, open_tasks: 17, total_tasks: 19 },
+  { workspaces: 0, open_tasks: 0, total_tasks: 0 },
+])("ignores retained legacy counts in fallback rows after a lean snapshot: %j", async counts => {
+  state.deviceOwned = true;
+  await seed("laptop", [environment()], [{ ...project, ...counts }], true, false);
+  await seed("desktop", [], []);
+  const journal = await publishJournalProjects();
+  expect(journal[0]).toMatchObject(counts); // the real projection retains the legacy enrichment
+  await mount(); // the settings-owned project.list call remains unresolved
+  const card = document.querySelector('[data-environment="env-1"]');
+  const row = card.querySelector(".projrow");
+  expect(row.querySelector(".pname").textContent).toContain("source");
+  expect(row.textContent).not.toMatch(/workspaces|tasks|folders/);
+  expect(card.querySelector("p.dim").textContent).toBe("2 sources · 1 projects");
+  expect(await readCached(address("laptop", "environment-settings-projects"))).toBeUndefined();
+});
+
+it.each([true, false])("keeps absent project lists unknown with cached environment sources known=%s", async sourcesKnown => {
+  state.support.set("laptop", true);
+  await writeCached(address("laptop", "environment-support"), { list: true });
+  const cached = environment();
+  if (!sourcesKnown) delete cached.sources;
+  await writeCached(address("laptop", "environments"), [cached]);
+  await seed("desktop", [], []);
+  let refuseProjects;
+  state.calls.set("laptop", vi.fn(method => method === "project.list"
+    ? new Promise((_resolve, reject) => { refuseProjects = reject; }) : new Promise(() => {})));
+  await mount();
+  const host = document.querySelector('[data-environments-device="laptop"]');
+  expect(host.textContent).not.toMatch(/0 projects|no projects yet|0 workspaces|0 sources/);
+  expect(host.querySelector("p.dim").textContent).toBe(sourcesKnown ? "2 sources" : "");
+  expect(host.textContent).toContain("loading…");
+  await vi.waitFor(() => expect(refuseProjects).toBeTypeOf("function"));
+  refuseProjects(new Error("project list refused"));
+  await vi.waitFor(() => expect(host.textContent).toContain("project list refused"));
+  expect(host.textContent).toContain("Sources"); // retain the cached environment card
+  expect(host.textContent).not.toMatch(/loading…|0 projects|no projects yet/);
+});

@@ -367,3 +367,5 @@ fn archived_project_refuses_router_dispatch() {
     let refusal = crate::app::mcp::mcp_action_response(refusal);
     assert_eq!(refusal["error_code"], "project_archived", "{refusal}");
 }
+
+mod deliveries;

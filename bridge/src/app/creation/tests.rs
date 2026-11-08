@@ -569,3 +569,20 @@ fn archive_refused_during_journaled_workspace_admission() {
         .contains("wait for workspace Not yet visible creation to finish"));
     assert!(app.project("proj-1").unwrap().archived_at.is_none());
 }
+
+#[test]
+fn archive_admission_hold_releases_poisoned_mutex() {
+    let f = Fixture::new();
+    let hold = ArchiveAdmissionHold::enter(&f.state, "workspace.create", &json!({"project_id":"proj-1"})).unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let app = f.state.lock().unwrap();
+        assert_eq!(app.active_deferred_filesystem_jobs, 1);
+        panic!("panic while reserving a workspace under the app mutex");
+    }));
+    assert!(panic.is_err());
+    assert!(f.state.is_poisoned());
+    // Catch Drop separately so the regression fails safely instead of aborting the test binary.
+    let dropped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(hold)));
+    assert!(dropped.is_ok(), "the hold destructor must never panic");
+    assert_eq!(f.state.lock().unwrap_or_else(|poison| poison.into_inner()).active_deferred_filesystem_jobs, 0);
+}

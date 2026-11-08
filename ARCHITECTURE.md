@@ -3375,9 +3375,14 @@ excludes archived projects during selection, final prune/settle checks and diges
 admission, retaining owed work for the first normal sweep after restore.
 Idle detection and vanished-run sweeps skip archived owners, including late
 sweep settlement. Boot recovery hydrates archived plan/run records without
-persisting lifecycle or missing-disk changes; startup Git recovery remains a
-startup operation. Stale restart rosters cannot queue archived agents. Durable
-provider-failure notices retain their checkpoints and replay on project restore.
+persisting lifecycle or missing-disk changes. It retains skipped run-recovery
+obligations: restore runs the same captured publication/worktree decision off
+lock, with per-run mutation/spawn admission and a committed-revision check at
+apply. Vanished-run sweeps defer those runs until recovery settles. A restart
+reconstructs obligations from archived records or performs ordinary boot recovery.
+Stale restart rosters cannot queue archived agents. Durable provider-failure
+notices replay independently on restore; failed checkpoints remain pending and
+retry on the restored-recovery service tick, without requiring another restart.
 Snapshot refresh preserves archived finished-workspace records until restore.
 Configured conversation-item retention applies independently of project archive.
 The two method names are explicitly withheld from greetings, `projects.archive`

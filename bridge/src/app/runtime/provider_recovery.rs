@@ -24,18 +24,42 @@ impl AppState {
     pub(in crate::app) fn replay_provider_recovery_for_project(
         &mut self,
         project: &str,
-    ) -> Result<(), String> {
-        let episodes = provider_recovery::all_episodes(&self.state_root)?;
+    ) -> Result<bool, String> {
+        let episodes = provider_recovery::independent_episodes(&self.state_root)?;
+        let mut first_error = None;
+        let mut complete = true;
         for episode in episodes {
-            let source = self.projects.project_id_of(&episode.scope.entity_id) == Some(project);
-            let recipient = episode.recipient.as_ref().is_some_and(|recipient| {
-                self.projects.project_id_of(&recipient.scope.entity_id) == Some(project)
-            });
-            if source || recipient {
-                self.replay_provider_episode(episode)?;
+            let result = episode
+                .and_then(|episode| self.replay_provider_episode_for_project(project, episode));
+            match result {
+                Ok(settled) => complete &= settled,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
             }
         }
-        Ok(())
+        first_error.map_or(Ok(complete), Err)
+    }
+
+    fn replay_provider_episode_for_project(
+        &mut self,
+        project: &str,
+        episode: RecoveryEpisode,
+    ) -> Result<bool, String> {
+        let source = self.projects.project_id_of(&episode.scope.entity_id) == Some(project);
+        let recipient = episode.recipient.as_ref().is_some_and(|recipient| {
+            self.projects.project_id_of(&recipient.scope.entity_id) == Some(project)
+        });
+        if !source && !recipient {
+            return Ok(true);
+        }
+        let scope = episode.scope.clone();
+        let id = episode.id.clone();
+        self.replay_provider_episode(episode)?;
+        // A fenced or live episode can return successfully without delivering.
+        // Keep the restore obligation until the durable checkpoint settles.
+        let saved = provider_recovery::read_episode(&self.state_root, &scope.agent_id, &id)?;
+        Ok(saved.is_none_or(|saved| !saved.active && !saved.needs_notice))
     }
 
     fn provider_episode_archived(&self, episode: &RecoveryEpisode) -> bool {

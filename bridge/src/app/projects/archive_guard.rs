@@ -89,6 +89,8 @@ impl AppState {
             if let Some(owner) = params.get(field).and_then(Value::as_str) {
                 self.refuse_archived_entity(owner)
                     .map_err(ApiError::classify)?;
+                self.refuse_run_recovery(owner)
+                    .map_err(ApiError::classify)?;
             }
         }
         Ok(())
@@ -125,6 +127,7 @@ impl AppState {
     ) -> Result<(), String> {
         if !action_is_read(action) {
             self.refuse_archived_entity(owner)?;
+            self.refuse_run_recovery(owner)?;
         }
         Ok(())
     }

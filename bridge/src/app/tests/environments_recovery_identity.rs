@@ -415,9 +415,23 @@ fn archived_vanished_run_settlement_waits_for_restore() {
 
 fn deferred_run_fixture(root: &Path, adopted: bool) -> (AppState, String, PersistedRun) {
     let (mut state, project) = super::tracker::tracked_with_origin(root);
-    let checkout = state.project(&project).unwrap().orch.worktrees()
-        .create("restore-obligation", "main", crate::isolation::Isolation::Worktree).unwrap().worktree;
-    let mut record = run_record("run-restore-obligation", &state.project(&project).unwrap().project_key, &checkout.path);
+    let checkout = state
+        .project(&project)
+        .unwrap()
+        .orch
+        .worktrees()
+        .create(
+            "restore-obligation",
+            "main",
+            crate::isolation::Isolation::Worktree,
+        )
+        .unwrap()
+        .worktree;
+    let mut record = run_record(
+        "run-restore-obligation",
+        &state.project(&project).unwrap().project_key,
+        &checkout.path,
+    );
     record.branch = checkout.branch();
     record.worktree_name = checkout.name;
     record.adopted = adopted;
@@ -432,17 +446,37 @@ fn restore_resumes_boot_deferred_publication_with_existing_checkout() {
     let (mut state, project, mut record) = deferred_run_fixture(root.path(), true);
     let checkout = Path::new(&record.worktree_path);
     crate::git_fixture::git_in(checkout, &["push", "-u", "origin", &record.branch]);
-    let head = git2::Repository::open(checkout).unwrap().head().unwrap().target().unwrap().to_string();
-    record.publication_attempt = Some(crate::run::PublicationAttempt {action:"push".into(),candidate_sha:head,started_at:record.updated_at.clone()});
+    let head = git2::Repository::open(checkout)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap()
+        .to_string();
+    record.publication_attempt = Some(crate::run::PublicationAttempt {
+        action: "push".into(),
+        candidate_sha: head,
+        started_at: record.updated_at.clone(),
+    });
     state.store.as_ref().unwrap().save_run(&record).unwrap();
     state.recover_run(record.clone()).unwrap();
     assert!(state.runs[&record.id].publication_attempt.is_some());
-    assert_eq!(state.handle(req("project.restore", json!({"project_id":project})))["ok"], true);
-    assert!(state.runs[&record.id].publication_attempt.is_none(), "restore must discharge the skipped publication journal");
+    assert_eq!(
+        state.handle(req("project.restore", json!({"project_id":project})))["ok"],
+        true
+    );
+    assert!(
+        state.runs[&record.id].publication_attempt.is_none(),
+        "restore must discharge the skipped publication journal"
+    );
     assert_eq!(state.runs[&record.id].last_error, None);
-    let before = serde_json::to_value(state.store.as_ref().unwrap().load_all_runs().unwrap()).unwrap();
+    let before =
+        serde_json::to_value(state.store.as_ref().unwrap().load_all_runs().unwrap()).unwrap();
     state.handle(req("project.restore", json!({"project_id":project})));
-    assert_eq!(serde_json::to_value(state.store.as_ref().unwrap().load_all_runs().unwrap()).unwrap(), before);
+    assert_eq!(
+        serde_json::to_value(state.store.as_ref().unwrap().load_all_runs().unwrap()).unwrap(),
+        before
+    );
 }
 
 #[test]
@@ -452,8 +486,64 @@ fn restore_resumes_boot_deferred_native_checkout_before_vanished_sweep() {
     std::fs::remove_dir_all(&record.worktree_path).unwrap();
     state.recover_run(record.clone()).unwrap();
     assert!(!Path::new(&record.worktree_path).exists());
-    assert_eq!(state.handle(req("project.restore", json!({"project_id":project})))["ok"], true);
+    assert_eq!(
+        state.handle(req("project.restore", json!({"project_id":project})))["ok"],
+        true
+    );
     state.sweep_vanished_runs();
-    assert!(Path::new(&record.worktree_path).is_dir(), "restore must remake the native checkout from its retained branch");
+    assert!(
+        Path::new(&record.worktree_path).is_dir(),
+        "restore must remake the native checkout from its retained branch"
+    );
     assert_eq!(state.runs[&record.id].run.state, RunState::Interrupted);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restore_run_recovery_keeps_git_off_lock_and_refuses_a_racing_start() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut state, project, record) = deferred_run_fixture(root.path(), false);
+    std::fs::remove_dir_all(&record.worktree_path).unwrap();
+    state.recover_run(record.clone()).unwrap();
+    let agent = state.runs[&record.id].agents.primary().unwrap().id.clone();
+    let (gate, handle) = crate::app::OffLockGate::new();
+    state.off_lock_gate = Some(gate);
+    let shared = state.shared();
+    assert_eq!(
+        shared
+            .lock()
+            .unwrap()
+            .handle(req("project.restore", json!({"project_id":project})))["ok"],
+        true
+    );
+    let handle = tokio::task::spawn_blocking(move || {
+        handle.wait_for_arrival();
+        handle
+    })
+    .await
+    .unwrap();
+    // Acquiring the app mutex while Git is paused demonstrates the split.
+    let start = shared
+        .lock()
+        .unwrap()
+        .handle(req("agent.start", json!({"id":record.id,"agent_id":agent})));
+    assert_eq!(start["error_code"], "busy", "{start}");
+    shared.lock().unwrap().off_lock_gate = None;
+    handle.release();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while shared
+            .lock()
+            .unwrap()
+            .restored_recovery
+            .deferred
+            .contains(&record.id)
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let app = shared.lock().unwrap();
+    assert_eq!(app.runs[&record.id].run.state, RunState::Interrupted);
+    assert_eq!(app.active_deferred_filesystem_jobs, 0);
+    assert!(Path::new(&record.worktree_path).is_dir());
 }

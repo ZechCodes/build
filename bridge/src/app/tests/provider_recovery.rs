@@ -549,7 +549,7 @@ async fn restore_provider_episodes_continue_after_failure_and_retry_without_rest
     blocked.summary = "blocked episode".into();
     crate::provider_recovery::save_episode(fixture.root.path(), &blocked).unwrap();
     let mut healthy = blocked.clone();
-    healthy.id = "later-independent-episode".into();
+    healthy.id = "zz-later-independent-episode".into();
     healthy.summary = "healthy episode".into();
     crate::provider_recovery::save_episode(fixture.root.path(), &healthy).unwrap();
     let project = fixture.state().projects.iter().next().unwrap().id.clone();
@@ -557,17 +557,57 @@ async fn restore_provider_episodes_continue_after_failure_and_retry_without_rest
     let store = fixture.state().store.clone().unwrap();
     store.writer_for_test().execute_batch("CREATE TRIGGER fail_one_provider_notice BEFORE INSERT ON tracker_comments WHEN json_extract(NEW.record,'$.body') LIKE '%blocked episode%' BEGIN SELECT RAISE(ABORT,'temporary provider notice failure'); END;").unwrap();
     fixture.state().projects.at_mut(0).archived_at = Some(1);
-    let restored = fixture.state().handle(req("project.restore", json!({"project_id":project})));
+    let restored = fixture
+        .state()
+        .handle(req("project.restore", json!({"project_id":project})));
     assert_eq!(restored["ok"], true, "{restored}");
-    let comments = || store.load_tracker_timeline(&task).unwrap().iter().filter(|entry| matches!(entry, crate::tracker::TimelineEntry::Comment(_))).count();
-    assert_eq!(comments(), 1, "a failed episode must not strand the later healthy episode");
-    assert!(crate::provider_recovery::read_episode(fixture.root.path(), &blocked.scope.agent_id, &blocked.id).unwrap().unwrap().needs_notice);
-    store.writer_for_test().execute_batch("DROP TRIGGER fail_one_provider_notice;").unwrap();
+    let comments = || {
+        store
+            .load_tracker_timeline(&task)
+            .unwrap()
+            .iter()
+            .filter(|entry| matches!(entry, crate::tracker::TimelineEntry::Comment(_)))
+            .count()
+    };
+    assert_eq!(
+        comments(),
+        1,
+        "a failed episode must not strand the later healthy episode"
+    );
+    assert!(
+        crate::provider_recovery::read_episode(
+            fixture.root.path(),
+            &blocked.scope.agent_id,
+            &blocked.id
+        )
+        .unwrap()
+        .unwrap()
+        .needs_notice
+    );
+    store
+        .writer_for_test()
+        .execute_batch("DROP TRIGGER fail_one_provider_notice;")
+        .unwrap();
     let shared = fixture.state.take().unwrap().shared();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while comments() < 2 { tokio::time::sleep(std::time::Duration::from_millis(20)).await; }
-    }).await.expect("retained provider notice must retry without restart or another restore");
+        while comments() < 2 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("retained provider notice must retry without restart or another restore");
+    let settled = shared.lock().unwrap();
     assert_eq!(comments(), 2);
-    assert!(!crate::provider_recovery::read_episode(fixture.root.path(), &blocked.scope.agent_id, &blocked.id).unwrap().unwrap().needs_notice);
+    assert!(
+        !crate::provider_recovery::read_episode(
+            fixture.root.path(),
+            &blocked.scope.agent_id,
+            &blocked.id
+        )
+        .unwrap()
+        .unwrap()
+        .needs_notice
+    );
+    drop(settled);
     drop(shared);
 }

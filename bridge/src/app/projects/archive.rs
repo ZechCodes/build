@@ -36,9 +36,8 @@ impl AppState {
 
     pub(crate) fn project_restore(&mut self, id: &str) -> Result<Value, ApiError> {
         let restored = self.set_project_archive(id, None)?;
-        if let Err(error) = self.replay_provider_recovery_for_project(id) {
-            eprintln!("restore provider failure notices: {error}");
-        }
+        self.schedule_restored_run_recovery(Some(id));
+        self.replay_restored_provider_notices(id);
         Ok(restored)
     }
 

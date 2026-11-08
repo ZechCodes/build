@@ -217,6 +217,7 @@ pub(in crate::app) fn agent_start(
         }
         let agent = s.addressed_agent(params)?;
         s.refuse_archived_entity(&agent.entity_id)?;
+        s.refuse_run_recovery(&agent.entity_id)?;
         s.delivery_queue.enqueue(PendingAgentTurn {
             operation_id: None,
             root: agent.root.clone(),

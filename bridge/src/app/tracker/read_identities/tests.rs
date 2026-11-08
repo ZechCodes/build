@@ -169,7 +169,9 @@ fn assert_native_scratch_routes(app: &AppState, project: &str, scratch: &Path) {
         app.project_snapshot_scratch_path("owner"),
         Some(scratch.to_path_buf())
     );
-    assert!(app.project_snapshot_scratch_paths().contains(&scratch));
+    assert!(app
+        .project_snapshot_scratch_paths()
+        .contains(&scratch.to_path_buf()));
     assert_eq!(
         app.project_conversation_run(project).as_deref(),
         Some("owner")

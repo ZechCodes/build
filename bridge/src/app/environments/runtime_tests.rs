@@ -219,3 +219,51 @@ fn source_configuration_does_not_invalidate_unrelated_environment() {
         after.iter().find(|(id, _)| id == &unrelated)
     );
 }
+
+#[test]
+fn seeded_project_rebind_keeps_other_loaded_environments() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let other = root.path().join("other");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    let mut app = state(root.path());
+    assert_eq!(app.add_project(home.clone(), "main".into()), "proj-1");
+    let config = json!({
+        "environments":[
+            {"id":"env-1","name":"other","sources":[{"id":"source-1","path":other,"name":"other","mount":"other"}]},
+            {"id":"env-2","name":"home","sources":[{"id":"source-1","path":home,"name":"home","mount":"home"}]}
+        ],
+        "projects":[
+            {"id":"proj-1","environment_id":"env-2","project_key":home,"home_path":home,"path":home,"added_sources":[]},
+            {"id":"proj-2","environment_id":"env-1","project_key":other,"home_path":other,"path":other,"added_sources":[]}
+        ]
+    });
+    app.projects.restore_environments(&config);
+    app.restore_configured_projects(&config);
+    assert!(app.projects.environment("env-1").is_some());
+    assert!(app.projects.environment("env-2").is_some());
+    assert_eq!(app.project_for("proj-1").unwrap().sources[0].path, home);
+    assert_eq!(app.project_for("proj-2").unwrap().sources[0].path, other);
+    assert!(app.projects.parked().is_empty());
+}
+
+#[test]
+fn unknown_environment_reference_reserves_runtime_id() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let other = root.path().join("other");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    let mut app = state(root.path());
+    let config = json!({"next_environment":1,"environments":[],"projects":[{
+        "id":"proj-7","environment_id":"env-99","project_key":home,
+        "home_path":home,"path":home,"added_sources":[]} ]});
+    app.projects.restore_environments(&config);
+    app.restore_configured_projects(&config);
+    assert_eq!(app.projects.parked().len(), 1);
+    let added = app.add_project(other, "main".into());
+    assert_eq!(app.project_for(&added).unwrap().environment_id, "env-100");
+    assert!(app.revive_parked_projects().is_empty());
+    assert!(app.projects.environment("env-99").is_none());
+}

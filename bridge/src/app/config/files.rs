@@ -48,8 +48,13 @@ pub(super) fn backup_before_environments(path: &Path) -> Result<(), String> {
 }
 
 fn sync_parent(path: &Path) -> Result<(), String> {
-    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-    std::fs::File::open(parent).and_then(|directory| directory.sync_all()).map_err(|error| io_error(path, error))
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| io_error(path, error))
 }
 
 fn with_temporary(

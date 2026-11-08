@@ -554,6 +554,23 @@ impl ProjectRegistry {
         {
             self.next_environment = self.next_environment.max(next);
         }
+        // Missing owners stay parked. Never allocate one of their retained IDs
+        // to an unrelated environment and accidentally revive that project.
+        for project in config
+            .get("projects")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(number) = project
+                .get("environment_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|id| id.strip_prefix("env-"))
+                .and_then(|number| number.parse::<u64>().ok())
+            {
+                self.next_environment = self.next_environment.max(number.saturating_add(1));
+            }
+        }
         for entry in config
             .get("environments")
             .and_then(serde_json::Value::as_array)
@@ -720,14 +737,6 @@ impl ProjectRegistry {
                     source.is_git = source.path.join(".git").exists();
                 }
             }
-        }
-        let generated = self
-            .get(id)
-            .expect("registered project")
-            .environment_id
-            .clone();
-        if generated != environment_id {
-            self.environments.retain(|e| e.id != generated);
         }
         let project = self
             .projects

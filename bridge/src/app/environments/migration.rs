@@ -82,6 +82,7 @@ fn migrate_project(project: &Value, environment_id: &str) -> Result<(Value, Valu
         .filter(|path| !path.is_empty())
         .ok_or("legacy project has no home path")?;
     let home = canonical_home(named)?;
+    let home_text = home.display().to_string();
     let name = project
         .get("name")
         .and_then(Value::as_str)
@@ -98,15 +99,15 @@ fn migrate_project(project: &Value, environment_id: &str) -> Result<(Value, Valu
         "next_source":next_source,"isolation":isolation});
     let mut migrated = project.clone();
     migrated["environment_id"] = json!(environment_id);
-    migrated["project_key"] = json!(home);
-    migrated["home_path"] = json!(home);
+    migrated["project_key"] = json!(home_text);
+    migrated["home_path"] = json!(home_text);
     migrated["name"] = json!(name);
     migrated["added_sources"] = json!([]);
     migrated["archived_at"] = Value::Null;
     // Retain the override too: M0.1 mirrors edits to both 1:1 records. The
     // legacy reader ignores the environment, so removing this loses isolation.
     migrated["isolation"] = isolation;
-    migrated["path"] = json!(home);
+    migrated["path"] = json!(home_text);
     migrated["sources"] = json!(sources);
     migrated["next_source"] = json!(next_source);
     if migrated.get("base_branch").is_none() {
@@ -149,7 +150,7 @@ fn legacy_sources(
     if sources.is_empty() {
         return Ok(vec![
             json!({"id":"source-1","name":name,"mount":crate::app::projects::safe_mount_name(name),
-            "path":home,"is_git":home.join(".git").exists(),
+            "path":home.display().to_string(),"is_git":home.join(".git").exists(),"sync_base":true,
             "base_branch":project.get("base_branch").and_then(Value::as_str).unwrap_or("main")}),
         ]);
     }

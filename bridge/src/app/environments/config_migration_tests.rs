@@ -257,7 +257,10 @@ fn path_only_legacy_project_keeps_source_defaults() {
     let app = fixture.state();
     let after = LegacyLoader::load(&fixture.read());
     assert_eq!(after.projects, before.projects);
-    assert_eq!(app.project_for("proj-2").unwrap().sources[0].sync_base, Some(true));
+    assert_eq!(
+        app.project_for("proj-2").unwrap().sources[0].sync_base,
+        Some(true)
+    );
 }
 
 #[test]

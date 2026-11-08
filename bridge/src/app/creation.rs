@@ -129,6 +129,8 @@ fn reserve_attempt(
         id: id.into(),
         owner: owner.clone(),
     };
+    let mut creation = creation;
+    creation["effect_state"] = json!("not_started");
     Ok((json!({"creation":creation}), vec![reservation]))
 }
 fn admission_error(error: crate::store::StoreError) -> ApiError {

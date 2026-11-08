@@ -3,6 +3,8 @@ use super::*;
 use std::sync::Arc;
 
 pub(in crate::app) enum WorkspaceCreationEvent {
+    Started,
+    RolledBack,
     Step {
         step: String,
         state: String,

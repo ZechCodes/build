@@ -57,7 +57,7 @@ pub(super) fn execute(
         }
         Ok(None) => {}
         Err(error) => {
-            finish_failure(state, &writer, &record.operation_id, &error)?;
+            finish_failure(state, &writer, &record, &error)?;
         }
     }
     if let Some(record) = writer
@@ -233,7 +233,7 @@ pub(super) fn project_step(
         .as_str()
         .ok_or("id missing")?
         .to_owned();
-    state.lock().unwrap().create_environment_project(
+    let result = state.lock().unwrap().create_environment_project(
         record.params["environment_id"]
             .as_str()
             .ok_or("environment missing")?,
@@ -242,6 +242,7 @@ pub(super) fn project_step(
         &provisional_id,
         |project_id| {
             evidence["project_id"] = json!(project_id);
+            evidence["effect_state"] = json!("started");
             writer
                 .checkpoint_creation(PRINCIPAL, &record.operation_id, evidence.clone())
                 .map_err(string)?;
@@ -249,7 +250,15 @@ pub(super) fn project_step(
             tests::at_boundary(tests::Boundary::ProjectIdentityCheckpointed);
             Ok(())
         },
-    )?;
+    );
+    if let Err(error) = result {
+        // Config replacement reports errors only before its atomic rename.
+        // With no project by this key and no workspace, its effects are settled.
+        if evidence.get("workspace").is_none() && !failure_resources(state, Some(&key)).0 {
+            checkpoint_effect(&writer, &record.operation_id, &mut evidence, "settled")?;
+        }
+        return Err(error);
+    }
     #[cfg(test)]
     tests::at_boundary(tests::Boundary::ProjectPersisted);
     set_step(&mut evidence, "project", "done", None);
@@ -278,6 +287,12 @@ fn observer(
     Arc::new(move |event| {
         let mut saved = evidence.lock().unwrap();
         match event {
+            WorkspaceCreationEvent::Started => {
+                checkpoint_effect(&writer, &id, &mut saved, "started")?;
+            }
+            WorkspaceCreationEvent::RolledBack => {
+                checkpoint_effect(&writer, &id, &mut saved, "settled")?;
+            }
             WorkspaceCreationEvent::Step {
                 step,
                 state: status,
@@ -340,40 +355,26 @@ fn run_work(state: &Arc<Mutex<AppState>>, work: crate::app::DeferredGit) -> Resu
 fn finish_failure(
     state: &Arc<Mutex<AppState>>,
     writer: &StoreWriter,
-    id: &str,
+    prior: &MutationRecord,
     error: &str,
 ) -> Result<(), String> {
+    let id = &prior.operation_id;
     let record = writer
         .creation_record(PRINCIPAL, id)
         .map_err(string)?
         .ok_or("creation disappeared")?;
-    let mut evidence = record.execution;
-    if error == STALE_PROJECT_IDENTITY
-        || (record.state != "reconciling" && ambiguous_workspace(&evidence, error))
-    {
-        state.lock().unwrap().mutation_service().clear_progress(id);
-        writer
-            .park_creation(PRINCIPAL, id, "unknown", evidence)
-            .map_err(string)?;
-        return Ok(());
-    }
-    if record.state == "reconciling" {
-        progress(
-            state,
-            id,
-            &evidence,
-            "workspace",
-            "failed",
-            Some(&format!("Needs cleanup: {error}")),
-        );
-        return Ok(());
-    }
     // A workspace command captures its existing project's key for authority;
     // only environment.create_project can have landed a new project step.
-    let created_key = evidence["project_key"]
+    let created_key = record.execution["project_key"]
         .as_str()
         .filter(|_| record.method == "environment.create_project");
     let (landed, details) = failure_resources(state, created_key);
+    // This is the sole failure-finalization gate. Neither an error's spelling
+    // nor a checkpoint resetting state to executing proves that effects vanished.
+    if retain_failure(prior, &record, landed, error) {
+        return retain_nonterminal(state, writer, &record, error);
+    }
+    let mut evidence = record.execution;
     if landed {
         let project_id = details["project"]["project_id"]
             .as_str()
@@ -395,6 +396,69 @@ fn finish_failure(
     #[cfg(test)]
     tests::at_boundary(tests::Boundary::BeforeFailureTerminal);
     writer.finish_creation(PRINCIPAL,id,json!({"state":"failed","effect":if landed{"partial"}else{"unapplied"},"error":{"code":"creation_failed","message":error,"retryable":false,"details":details}})).map_err(string)?;
+    Ok(())
+}
+fn retain_failure(
+    prior: &MutationRecord,
+    current: &MutationRecord,
+    landed: bool,
+    error: &str,
+) -> bool {
+    let evidence = &current.execution;
+    if !evidence["residue"].is_null() {
+        return true;
+    }
+    if error == STALE_PROJECT_IDENTITY || ambiguous_workspace(evidence, error) {
+        return true;
+    }
+    if evidence["effect_state"] == "settled" {
+        return false;
+    }
+    if !matches!(prior.state.as_str(), "accepted" | "executing")
+        || !matches!(current.state.as_str(), "accepted" | "executing")
+    {
+        return true;
+    }
+    let before_first_step = evidence["effect_state"] == "not_started"
+        && evidence["steps"].as_array().is_some_and(Vec::is_empty);
+    !landed && !before_first_step
+}
+fn retain_nonterminal(
+    state: &Arc<Mutex<AppState>>,
+    writer: &StoreWriter,
+    record: &MutationRecord,
+    error: &str,
+) -> Result<(), String> {
+    let id = &record.operation_id;
+    let retained_state = if record.state == "reconciling" && error != STALE_PROJECT_IDENTITY {
+        progress(
+            state,
+            id,
+            &record.execution,
+            "workspace",
+            "failed",
+            Some(&format!("Needs cleanup: {error}")),
+        );
+        "reconciling"
+    } else {
+        state.lock().unwrap().mutation_service().clear_progress(id);
+        "unknown"
+    };
+    writer
+        .park_creation(PRINCIPAL, id, retained_state, record.execution.clone())
+        .map_err(string)?;
+    Ok(())
+}
+fn checkpoint_effect(
+    writer: &StoreWriter,
+    id: &str,
+    evidence: &mut Value,
+    effect: &str,
+) -> Result<(), String> {
+    evidence["effect_state"] = json!(effect);
+    writer
+        .checkpoint_creation(PRINCIPAL, id, evidence.clone())
+        .map_err(string)?;
     Ok(())
 }
 fn ambiguous_workspace(evidence: &Value, error: &str) -> bool {
@@ -487,6 +551,7 @@ fn cleanup(
         .as_object_mut()
         .ok_or("creation evidence missing")?
         .remove("residue");
+    evidence["effect_state"] = json!("settled");
     writer
         .checkpoint_creation(PRINCIPAL, &record.operation_id, evidence)
         .map_err(string)?;

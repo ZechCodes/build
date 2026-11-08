@@ -61,6 +61,7 @@ impl DeferredGitWork for WorkspaceCreateWork {
     }
 
     fn run(&self, _params: &Value) -> Result<Value, String> {
+        self.creation_event(journal_creation::WorkspaceCreationEvent::Started)?;
         // A journal reservation must prove ownership before any failure path
         // can remove its private root. Legacy callers already prepared theirs.
         if self.unpublished && self.recover_existing {
@@ -131,7 +132,7 @@ impl DeferredGitWork for WorkspaceCreateWork {
                         }
                     });
                 return match cleanup {
-                    Ok(()) => Err(error),
+                    Ok(()) => self.rolled_back(error),
                     Err(cleanup_error) => {
                         let message=format!("{error}; additionally could not fully roll back workspace creation: {cleanup_error}");
                         self.record_residue(workspace, &message)?;
@@ -241,8 +242,10 @@ impl WorkspaceCreateWork {
             return Err(error);
         }
         match std::fs::remove_dir_all(&self.workspace.root) {
-            Ok(()) => Err(error),
-            Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => Err(error),
+            Ok(()) => self.rolled_back(error),
+            Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => {
+                self.rolled_back(error)
+            }
             Err(cleanup) => {
                 let message = format!(
                     "{error}; additionally could not remove {}: {cleanup}",
@@ -252,6 +255,11 @@ impl WorkspaceCreateWork {
                 Err(message)
             }
         }
+    }
+
+    fn rolled_back(&self, error: String) -> Result<Value, String> {
+        self.creation_event(journal_creation::WorkspaceCreationEvent::RolledBack)?;
+        Err(error)
     }
 
     fn record_residue(&self, mut workspace: Workspace, error: &str) -> Result<(), String> {

@@ -100,8 +100,11 @@ export function sourcesSectionHtml(project, { editing, editsSources, addedSource
 function sourceGroupsHtml(project, { editing, addedSources, environmentName, notices, sync }) {
   const sources = project.sources || [];
   const addedIds = new Set((project.added_sources || []).map(source => source.id));
+  // An environment-bearing row can outlive its capability record. It must
+  // never fall back to the legacy writer, which can edit shared sources.
+  const environmentProject = addedSources || Boolean(project.environment_id || project.environment_name);
   const cards = sources.map((source, index) => {
-    const inherited = addedSources && !addedIds.has(source.id);
+    const inherited = environmentProject && (!addedSources || !addedIds.has(source.id));
     return { inherited, html: cardHtml(source, index, {
       editing: inherited ? READ_ONLY : editing,
       removable: !inherited && sources.length > 1,

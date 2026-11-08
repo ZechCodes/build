@@ -520,6 +520,38 @@ describe("project settings added sources", () => {
     return callRpc;
   };
 
+  describe("source capability safety", () => {
+    it.each([
+      ["absent", undefined], ["stale", { addedSources: false }],
+      ["empty", {}], ["partial", { list: true, createProject: true }],
+    ])("keeps environment sources read-only with %s capability records", async (_label, cachedSupport) => {
+      if (cachedSupport) await writeCached(environmentSupportAddress("dev-1"), cachedSupport);
+      await writeCached(sourceEditSupportAddress("dev-1"), { editsSources: true, syncsBase: true });
+      const callRpc = await open({ ...ENV_PROJECT, added_sources: [] });
+      for (const source of ENV_PROJECT.sources) {
+        expect([...card(source.id).querySelectorAll("input")].every(field => field.readOnly)).toBe(true);
+        expect(card(source.id).querySelector("button, [data-sync-base]")).toBeNull();
+      }
+      expect(callRpc.mock.calls.some(([method]) => /^project\.(update_source|set_remote|sync_source|remove_source)$/.test(method))).toBe(false);
+    });
+
+    it("does not expose the legacy first-remote editor for an environment project", async () => {
+      await open({ ...ENV_PROJECT, added_sources: [] });
+      expect(input("source-1", "remote").readOnly).toBe(true);
+      expect(card("source-1").querySelector("[data-save-source]")).toBeNull();
+    });
+
+    it("retains legacy edit and sync controls for a genuine old project", async () => {
+      await writeCached(sourceEditSupportAddress("dev-1"), { editsSources: true, syncsBase: true });
+      await open(PROJECT);
+      await vi.waitFor(() => expect(input("source-1", "name")?.readOnly).toBe(false));
+      expect(card("source-1").querySelector("[data-save-source]")).toBeTruthy();
+      expect(card("source-1").querySelector("[data-remove-source]")).toBeTruthy();
+      expect(card("source-1").querySelector("[data-sync-base]")).toBeTruthy();
+      expect(card("source-1").querySelector("[data-sync-now]")).toBeTruthy();
+    });
+  });
+
   it("shows added folder cards as editable from cached support before any RPC answers", async () => {
     await support();
     await open();
@@ -597,7 +629,7 @@ describe("project settings added sources", () => {
   it("keeps capability-absent devices' existing source cards and actions unchanged", async () => {
     await editsInPlace();
     await writeCached(environmentSupportAddress("dev-2"), { addedSources: true });
-    await open();
+    await open(PROJECT);
     await vi.waitFor(() => expect(input("source-1", "name")?.readOnly).toBe(false));
     expect(group("added")).toBeNull();
     expect(group("environment")).toBeNull();

@@ -823,6 +823,7 @@ function updateStatusPayload(payload) {
  *  not its change subscriptions are armed. */
 const DEVICE_EVENTS = new Map([
   ["writes.confirmed", dispatchWriteConfirmation],
+  ["writes.progress", dispatchWriteConfirmation],
   ["bridge.update_status", (payload, deviceId) => {
     void rememberBridgeUpdateStatus(deviceId, updateStatusPayload(payload));
   }],

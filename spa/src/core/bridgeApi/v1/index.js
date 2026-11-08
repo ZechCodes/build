@@ -68,6 +68,7 @@ export const EVENT_TYPES = Object.freeze([
   "compaction.changed",
   "secrets.changed",
   "writes.confirmed",
+  "writes.progress",
   "bridge.restarting",
 ]);
 

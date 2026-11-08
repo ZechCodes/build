@@ -10,7 +10,7 @@ const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S
 // Generated from a real bridge MCP tools/call and checked by the Rust test.
 const mcpCases = JSON.parse(readFileSync(resolve("../fixtures/watching/mcp_inbox.json"), "utf8"));
 let App, writeCached, startFeed, stopFeed, dropFeedDevice, subscribeFeed, mountInboxList, unmountInboxList, setInboxView;
-let openCreateWork, adoptDeviceSession, resetDeviceContexts;
+let openCreateWorkspaceWizard, adoptDeviceSession, resetDeviceContexts;
 let liveFeedSnapshot, stampRow;
 let removeFeedRow, patchFeedRow, feedRowTarget, hideProject;
 const deviceId = "watching-device";
@@ -40,7 +40,7 @@ beforeEach(async () => {
   ({ writeCached } = await import("../src/core/localCache.js"));
   ({ startFeed, stopFeed, dropFeedDevice, subscribeFeed } = await import("../src/core/taskFeed.js"));
   ({ mountInboxList, unmountInboxList, setInboxView } = await import("../src/core/inboxView.js"));
-  ({ openCreateWork } = await import("../src/core/createWork.js"));
+  ({ openCreateWorkspaceWizard } = await import("../src/core/createWorkspaceWizard.js"));
   ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
   ({ liveFeedSnapshot, stampRow } = await import("../src/core/feedMerge.js"));
   ({ removeFeedRow, patchFeedRow, feedRowTarget } = await import("../src/core/cachedRows.js"));
@@ -275,7 +275,7 @@ describe("cached watching on both inbox faces", () => {
       : {});
     adoptDeviceSession({ deviceId, call: bridge, close: () => {}, peer: () => {}, onCarrier: () => {} });
 
-    openCreateWork({ projectId: "project-1", deviceId, projectName: "Payments", navigate: vi.fn() });
+    await openCreateWorkspaceWizard({ projectId: "project-1", deviceId, projectName: "Payments", navigate: vi.fn() }).ready;
     document.querySelector("#create-scrim [data-create-go]").click();
     await vi.waitFor(() => expect(rows().some((row) => row.textContent.includes("My workspace"))).toBe(true));
     expect(bridge).toHaveBeenCalledWith("workspace.create", { project_id: "project-1", name: "" });

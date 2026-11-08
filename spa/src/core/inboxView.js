@@ -66,7 +66,7 @@ import {
   workspaceProjectBlocks,
 } from "./inboxProjects.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
-import { openCreateWork } from "./createWork.js";
+import { openCreateWorkspaceWizard } from "./createWorkspaceWizard.js";
 import { openNewRepo } from "../sheets/newRepo.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
 import { pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
@@ -638,7 +638,7 @@ function createInBlock(projectKey) {
   expandFold(projectKey);
   closeMenu();
   if (!block) return;
-  openCreateWork({
+  openCreateWorkspaceWizard({
     projectId: block.id,
     deviceId: block.deviceId,
     projectName: block.name,

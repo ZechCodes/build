@@ -65,6 +65,19 @@ describe("epoch fences and durable acknowledgements", () => {
   const greeting = (bridge_epoch) => ({ bridge_epoch, journal_incarnation: "journal-A", capabilities: ["bridge.epoch"], ack_confirm_methods: ["tasks.comment"] });
   const ack = (id, bridge_epoch = "boot-A") => ({ id, ok: true, bridge_epoch, write: { phase: "ack", operation_id: "op-A", revision: 1, state: "accepted" }, result: { comment_id: "comment-A" } });
 
+  it("routes progress only from the current carrier and epoch to the operation cache listener", async () => {
+    const old = fakeCarrier(); const next = fakeCarrier();
+    const epoch = createBridgeEpoch(); epoch.acceptGreeting(greeting("boot-A"));
+    const rpc = rpcOn(old, { bridgeEpoch: epoch });
+    const frames = vi.fn(); rpc.onWriteFrame(frames);
+    const progress = { type: "writes.progress", bridge_epoch: "boot-A", operation_id: "op-A", progress: [{ step: "workspace", state: "running" }] };
+    old.deliver(progress); await tick();
+    rpc.rideOn(next);
+    old.deliver(progress); next.deliver({ ...progress, bridge_epoch: "old" }); next.deliver(progress); await tick();
+    expect(frames.mock.calls.map(([frame]) => frame)).toEqual([progress, progress]);
+    rpc.close();
+  });
+
   it("preserves correlated same-epoch write replies on their captured carrier during migration", async () => {
     const old = fakeCarrier();
     const next = fakeCarrier();

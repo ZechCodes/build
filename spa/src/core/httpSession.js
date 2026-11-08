@@ -79,7 +79,7 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
     for (const listener of [...pushListeners]) await listener(data);
   };
   const publishWrite = (frame) => {
-    if (frame.type !== "writes.confirmed" && frame.write?.phase !== "ack") return;
+    if (!["writes.confirmed", "writes.progress"].includes(frame.type) && frame.write?.phase !== "ack") return;
     for (const listener of [...writeListeners]) listener(frame);
   };
 

@@ -8,10 +8,8 @@ import { loadBrowserModules, mountLayout, openLayoutSession } from "./layoutHarn
 import { navigationAppShim } from "./navigationBreadcrumbSeed.mjs";
 
 const phase = process.argv[2] || "after";
-const output = process.argv[3] || "/tmp/workspace-terminology-captures";
-const hint = phase === "before"
-  ? "Copies every source in this project into one durable workspace."
-  : "Creates a separate checkout of the project sources.";
+const output = process.argv[3] || "/home/zech/Projects/.agent-scratch/env-m13/workspace-captures";
+const creationPath = phase === "before" ? "src/core/createWork.js" : "src/core/createWorkspaceWizard.js";
 await mkdir(output, { recursive: true });
 const beforeBody = phase === "before"
   ? execFileSync("git", ["show", "dd7c1b064:spa/src/core/createWork.js"], { encoding: "utf8" }) : null;
@@ -23,16 +21,17 @@ try {
   for (const width of [1280, 390]) for (const theme of ["light", "dark"]) {
     await session.withPage(async ({ page, basePath }) => {
       await mountLayout(page, '<div class="modal-scrim" id="creation"></div>', { basePath });
-      await loadBrowserModules(page, { creation: "src/core/createWork.js" }, basePath);
-      await page.evaluate(({ theme }) => {
+      await loadBrowserModules(page, { creation: creationPath }, basePath);
+      await page.evaluate(({ theme, phase }) => {
         document.documentElement.dataset.theme = theme;
-        document.querySelector("#creation").innerHTML = window.__layoutModules.creation.createWorkHtml({
-          projectName: "Build", name: "Release", isolation: "", busy: false, error: "",
-        });
-      }, { theme });
+        const creation = window.__layoutModules.creation;
+        document.querySelector("#creation").innerHTML = phase === "before"
+          ? creation.createWorkHtml({ projectName: "Build", name: "Release", isolation: "", busy: false, error: "" })
+          : creation.createWorkspaceWizardHtml({ page: 3, target: { kind: "project", id: "p1", deviceId: "dev-1", name: "Build", label: "Build", sources: [], taskText: "0 tasks" }, name: "Release", isolation: "", error: "" });
+      }, { theme, phase });
       assert.equal(await page.getByRole("heading", { name: "New workspace in Build" }).count(), 1);
-      assert.equal(await page.locator(".create-hint").textContent(), hint);
-      assert.equal(await page.getByLabel("Workspace label").inputValue(), "Release");
+      if (phase === "before") assert.equal(await page.locator(".create-hint").textContent(), "Copies every source in this project into one durable workspace.");
+      assert.equal(await page.getByLabel(phase === "before" ? "Workspace label" : "Name (optional)").inputValue(), "Release");
       assert.equal(await page.getByRole("button", { name: "Create workspace", exact: true }).count(), 1);
       await page.screenshot({ path: join(output, `${phase}-${width}-${theme}.png`) });
     }, { width, height: width === 390 ? 844 : 800 });

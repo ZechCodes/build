@@ -132,7 +132,7 @@ describe("all session list writers", () => {
   });
 
   it("the real create flow keeps another workspace and its newer summary", async () => {
-    const { cacheCreatedWorkspace } = await import("../src/core/createWork.js");
+    const { cacheCreatedWorkspace } = await import("../src/core/createWorkspaceTargets.js");
     await cache.writeCached(address("workspaces"), [row("workspaces", "A", fresh)]);
     await cacheCreatedWorkspace("dev-1", {
       workspace_id: "B", project_id: "project-1", ...old,

@@ -7,6 +7,18 @@ const fixture = (name) => JSON.parse(readFileSync(new URL(`../../fixtures/api/v1
 const greeting = (over = {}) => ({ ...fixture("epoch-greeting").result, ack_confirm_methods: ["tasks.comment"], ...over });
 
 describe("the coordinated write protocol adapter", () => {
+  it("recognizes display progress and gates durable creation on environments", async () => {
+    const progress = { type: "writes.progress", operation_id: "attempt", progress: [{ step: "workspace", state: "running" }] };
+    expect(v1.parseEvent(progress)).toEqual(progress);
+    const methods = ["environment.create_project", "workspace.create"];
+    const flags = v1.capabilitiesOf(greeting({ ack_confirm_methods: methods }));
+    expect(flags.writes.ackConfirmMethods).toEqual([]);
+    const submit = vi.fn(async () => ({})); const raw = vi.fn();
+    const adapter = v1.create(raw, greeting({ capabilities: ["bridge.epoch", "environments"], ack_confirm_methods: methods }), { writeOperations: { submit } });
+    await adapter.call("workspace.create", { project_id: "P", name: "Work" }, { operationId: "attempt" });
+    expect(submit).toHaveBeenCalledWith(expect.objectContaining({ operationId: "attempt", params: { project_id: "P", name: "Work" } }));
+    expect(raw).not.toHaveBeenCalled();
+  });
   it("requires the coordinated release, including a real versioned greeting", () => {
     expect(SPA_API_RANGE).toBe(">=3.24.0 <4.0.0");
     expect(v1.range).toBe(SPA_API_RANGE);

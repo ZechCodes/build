@@ -203,7 +203,7 @@ export function createSessionRpc({
   };
 
   const routeWriteFrame = (payload) => {
-    if (payload?.write?.phase === "ack" || payload?.type === "writes.confirmed") {
+    if (writeFrame(payload)) {
       for (const listener of [...writeListeners]) listener(payload);
     }
   };
@@ -481,5 +481,5 @@ function writeMetadata(write) {
 }
 
 const bootstrapMethod = (method) => method === "ping" || method?.startsWith("rtc.");
-const writeFrame = (payload) => payload?.write?.phase === "ack" || payload?.type === "writes.confirmed";
+const writeFrame = (payload) => payload?.write?.phase === "ack" || ["writes.confirmed", "writes.progress"].includes(payload?.type);
 const writeCall = (waiting) => waiting?.write || waiting?.method.startsWith("writes.");

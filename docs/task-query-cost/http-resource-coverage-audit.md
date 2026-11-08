@@ -127,3 +127,77 @@ forwards the seed to its bound history. A reset can leave the shared current
 conversation null while an older seed completes; the observer no longer reads
 that nullable shared pointer. The hidden-reset witness and historical control
 pin both the absence of a rejection and preservation of the seeded record.
+
+
+## #1035 workspace creation and progress
+
+The new `createWorkspaceTargets.js` produces `workspace.create`,
+`environment.create_project` and `project.discard_unused`. The first retains its
+existing resource route. The latter two are staged SPA consumers, absent from
+the manifest because the bridge does not register them yet. M0.4 owns the
+creation executor and both bridge verbs; M1.1 owns creation wire/HTTP placement.
+Exact occurrence exclusions live in `stagedConsumerExclusions`, using the same
+pattern as the existing staged `environment.list` read. Two occurrences are in
+`core/createWorkspaceTargets.js` (creation and discard), and one classifies
+creation in `core/writeOperationProgress.js`. Each entry records its owner and
+must be removed when its bridge verb and manifest coverage land. Copied, moved
+or changed occurrences are not covered. No route is invented, and the generated
+manifest contains only registered bridge methods.
+
+`writes.progress` is a pushed event, never a callable RPC. Reviewed finite
+metadata occurrences cover the adapter's push-kind list, device-event map,
+HTTP/WebRTC write-frame classifiers, and write-service frame router. Existing
+event-label statement fingerprints change with these additions. The
+`bridge.epoch` occurrence in write admission still names a capability; its
+statement now also checks the creation-method gate.
+
+Exact source pins move from the deleted `createWork.js` to the new target,
+progress and creation-method helpers. Existing pins update only for the
+reviewed caller substitutions, progress routing/storage, and admission changes.
+The pure wizard view/model contain no additional recognized RPC producers.
+Dynamic dispatch expressions remain identical to the existing inventory; the
+scanner, helper recognition and all coverage assertions remain unchanged.
+
+
+### #1035 accepted-review recovery and legacy follow-up
+
+Reviewed the recovery lifecycle and immediate user-write changes in the target
+adapter and wizard. Terminal attempts remain visible until explicitly consumed
+through the existing local operation service; the only bridge methods remain
+`workspace.create`, `environment.create_project` and `project.discard_unused`.
+The legacy surface delegates creation to that same adapter and introduces no
+additional verb or dynamic dispatch expansion. Cached capability reads preserve
+legacy entry behavior without connection-state rendering.
+
+The creation write service records transport handoff and evidence generations.
+It locally refuses only proven-unsent downgraded attempts, retains possibly-sent
+uncertainty, and fences inactive-opening errors against newer evidence. The
+`writes.confirmed` literal in `unsupportedCreationOutcome` is a local terminal
+record type, not an RPC; its exact finite metadata occurrence is pinned.
+Source fingerprints cover the changed helper/cache/service definitions. Scanner
+recognizers, dispatch inventory and every coverage assertion remain intact.
+
+The recovery Back transition retains keyboard focus in its replacement dialog;
+only the progress view source fingerprint changes, with no new RPC or producer.
+
+
+### Combined #1034 / #1035 cache-reader integration
+
+Rebased the wizard onto the merged M1.2 cache revision. The combined adapter
+retains M1.2's named environment capability metadata and M1.3's progress push
+labels. The adapter, write-method and change-event source pins were recomputed
+from the combined files, rather than choosing either branch's hashes. M1.2's
+occurrence-scoped staged `environment.list` exclusion and its dispatcher
+inventory remain intact, alongside M1.3's three occurrence-scoped staged
+consumer exclusions for its two future verbs.
+Neither the staged-call guards nor the scanner and coverage assertions were
+weakened. The earlier review sections above remain applicable to each slice.
+
+`createWorkspaceTargets.js` now imports `readEnvironmentSupport` from
+`environmentSupport.js`, `readCachedEnvironments` from `environmentCache.js`
+and `taskCountText` from `taskCountText.js`; all local stand-ins are removed.
+The count helper remains re-exported for the pure target model. Only the
+adapter's exact-source pin changes for this import swap: it still produces
+the same three creation/recovery verbs and no new dynamic dispatch site.
+Real-cache integration tests cover admission-ordered environment publication,
+device-qualified targets, cached support downgrade and malformed-list fallback.

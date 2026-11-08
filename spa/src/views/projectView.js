@@ -13,7 +13,7 @@ import { collapseChatOverPage, shellSelection } from "../core/shell.js";
 import { surfaceContext } from "../core/surfaceContext.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
-import { openCreateWork } from "../core/createWork.js";
+import { openCreateWorkspaceWizard } from "../core/createWorkspaceWizard.js";
 import { mountProjectChanges } from "./projectChanges.js";
 import { renderFilesTab } from "./files.js";
 import { rememberProjectRailRoute } from "../core/projectRailState.js";
@@ -170,7 +170,7 @@ function paintProjectVerbs(host, state) {
 
 /** The + : one workspace in this project, on the machine the project is on. */
 function createWorkspace(state) {
-  openCreateWork({
+  openCreateWorkspaceWizard({
     projectId: state.route.projectId,
     deviceId: state.context.deviceId,
     projectName: state.page.name,

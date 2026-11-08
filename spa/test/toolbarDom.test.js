@@ -80,8 +80,8 @@ vi.mock("../src/core/taskFeed.js", () => ({
 }));
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notifySuccess: () => {} }));
-const openCreateWork = vi.fn();
-vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openCreateWork(...args) }));
+const openCreateWorkspaceWizard = vi.fn();
+vi.mock("../src/core/createWorkspaceWizard.js", () => ({ openCreateWorkspaceWizard: (...args) => openCreateWorkspaceWizard(...args) }));
 
 const { App } = await import("../src/app.js");
 const { clearToolbarVerb, initToolbar, setToolbarVerb, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
@@ -170,7 +170,7 @@ beforeEach(async () => {
     { id: "dev-1", name: "workshop", status: "online" },
     { id: "dev-2", name: "laptop", status: "online" },
   ];
-  openCreateWork.mockClear();
+  openCreateWorkspaceWizard.mockClear();
   notifyError.mockClear();
   await rememberDeviceFilter(null);
   workshopCall.mockReset();
@@ -179,6 +179,11 @@ beforeEach(async () => {
   laptopCall.mockImplementation(async () => ({}));
   openSession("dev-1", workshopCall);
   openSession("dev-2", laptopCall);
+  await writeCached({deviceId:"",entityId:"",kind:"devices"}, [
+    {id:"dev-1",name:"workshop",status:"online"},{id:"dev-2",name:"laptop",status:"online"},
+  ]);
+  await flush();
+  for (const deviceId of ["dev-1", "dev-2"]) await writeCached({deviceId,entityId:"",kind:"environment-support"}, {list:true,createProject:true});
   await initToolbar();
   // The cache wipe announces to the app's device watcher asynchronously; give
   // this fixture its known devices after that readback has completed.
@@ -735,10 +740,11 @@ describe("creating from the menu", () => {
     workshopHolds({ p1: [] });
     await standOnWorkspace();
     (await openJump("workspace")).querySelector('[data-create="workspace"]').click();
-    expect(openCreateWork).toHaveBeenCalledWith({
+    expect(openCreateWorkspaceWizard).toHaveBeenCalledWith({
       projectId: "p1",
       deviceId: "dev-1",
       projectName: "relaydb",
+      fixedProject: true,
       navigate: expect.any(Function),
     });
     await waitMenuClosed();
@@ -757,22 +763,116 @@ describe("creating from the menu", () => {
     toolbarRouteChanged();
     const local = await openJump("workspace");
     local.querySelector('[data-create="workspace"]').click();
-    expect(openCreateWork).toHaveBeenCalledWith({
-      projectId: "p1", deviceId: "dev-2", projectName: "their relaydb", navigate: expect.any(Function),
+    expect(openCreateWorkspaceWizard).toHaveBeenCalledWith({
+      projectId: "p1", deviceId: "dev-2", projectName: "their relaydb", fixedProject: true, navigate: expect.any(Function),
     });
     feed = savedFeed;
     await refreshFeed();
   });
 
-  it("says so instead of opening anything when the account has no project", async () => {
+  it("opens the target picker when the account has no current project", async () => {
     feed = { items: [], projects: [] };
     await refreshFeed();
     await standOnWorkspace();
     (await openJump("workspace")).querySelector('[data-create="workspace"]').click();
-    expect(openCreateWork).not.toHaveBeenCalled();
-    expect(notifyError).toHaveBeenCalledWith("No project to create in.", expect.any(String));
+    await vi.waitFor(()=>expect(openCreateWorkspaceWizard).toHaveBeenCalledWith(expect.objectContaining({ fixedProject: false })));
+    expect(notifyError).not.toHaveBeenCalled();
     feed = savedFeed;
     await refreshFeed();
+  });
+  it("keeps the old no-project refusal when no device supports environments", async () => {
+    await stopToolbar();
+    for (const deviceId of ["dev-1", "dev-2"]) await writeCached({deviceId,entityId:"",kind:"environment-support"}, {list:false,createProject:false});
+    const original=feed;feed={items:[],projects:[],workspaces:[]};
+    try {
+      await initToolbar();await standOnWorkspace();
+      (await openJump("workspace")).querySelector('[data-create="workspace"]').click();
+      await vi.waitFor(()=>expect(notifyError).toHaveBeenCalledWith("No project to create in.","Add a project in Settings first."));
+      expect(openCreateWorkspaceWizard).not.toHaveBeenCalled();
+    } finally {feed=original;await refreshFeed();}
+  });
+
+});
+
+describe("global workspace creation shortcut", () => {
+  const press = (target, options = {}) => {
+    const event = new KeyboardEvent("keydown", { key: "n", ctrlKey: true, bubbles: true, cancelable: true, ...options });
+    target.dispatchEvent(event);
+    return event;
+  };
+
+  it.each(["ctrlKey", "metaKey"])("opens the target picker with %s-N and retains the current project as fallback", async (modifier) => {
+    await standOnWorkspace();
+    const event = press(document, { ctrlKey: false, [modifier]: true });
+    expect(event.defaultPrevented).toBe(true);
+    expect(openCreateWorkspaceWizard).toHaveBeenCalledExactlyOnceWith({
+      projectId: "p1", deviceId: "dev-1", projectName: "relaydb", fixedProject: false,
+      fromShortcut: true, navigate: expect.any(Function),
+    });
+    expect(menu()).toBeNull();
+  });
+
+  it.each(["ctrlKey","metaKey"])("does not claim %s-N on an old bridge", async modifier => {
+    await stopToolbar();
+    await writeCached({deviceId:"dev-1",entityId:"",kind:"environment-support"},{list:false,createProject:false});
+    await initToolbar();
+    const event=press(document,{ctrlKey:false,[modifier]:true});
+    expect(event.defaultPrevented).toBe(false);
+    expect(openCreateWorkspaceWizard).not.toHaveBeenCalled();
+  });
+
+  it("learns shortcut support from a cached capability update", async () => {
+    await stopToolbar();
+    await writeCached({deviceId:"dev-1",entityId:"",kind:"environment-support"},{list:false,createProject:false});
+    await initToolbar();
+    expect(press(document).defaultPrevented).toBe(false);
+    await writeCached({deviceId:"dev-1",entityId:"",kind:"environment-support"},{list:true,createProject:true});
+    await vi.waitFor(()=>{
+      expect(press(document).defaultPrevented).toBe(true);
+      expect(openCreateWorkspaceWizard).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it.each(["input", "textarea", "select", '[contenteditable="true"]', ".terminal", "[data-terminal]"])("leaves typing in %s alone", (selector) => {
+    const host = document.createElement("div");
+    if (selector.startsWith("[")) host.setAttribute(selector.includes("contenteditable") ? "contenteditable" : "data-terminal", "true");
+    else if (selector.startsWith(".")) host.className = selector.slice(1);
+    else host.appendChild(document.createElement(selector));
+    document.body.appendChild(host);
+    try {
+      const event = press(host.querySelector(selector) || host);
+      expect(event.defaultPrevented).toBe(false);
+      expect(openCreateWorkspaceWizard).not.toHaveBeenCalled();
+    } finally { host.remove(); }
+  });
+
+  it.each([{ altKey: true }, { isComposing: true }])("ignores another shortcut or an unfinished composition: %j", (options) => {
+    expect(press(document, options).defaultPrevented).toBe(false);
+    expect(openCreateWorkspaceWizard).not.toHaveBeenCalled();
+  });
+
+  it("leaves a previously handled event alone", () => {
+    const event = new KeyboardEvent("keydown", { key: "n", ctrlKey: true, bubbles: true, cancelable: true });
+    event.preventDefault();
+    document.dispatchEvent(event);
+    expect(openCreateWorkspaceWizard).not.toHaveBeenCalled();
+  });
+
+  it("leaves an open dialog in control of the keyboard", () => {
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.appendChild(dialog);
+    try {
+      expect(press(document).defaultPrevented).toBe(false);
+      expect(openCreateWorkspaceWizard).not.toHaveBeenCalled();
+    } finally { dialog.remove(); }
+  });
+
+  it("keeps Ctrl-K opening the destination picker", () => {
+    const event = press(document, { key: "k" });
+    expect(event.defaultPrevented).toBe(true);
+    expect(menu()).not.toBeNull();
+    expect(openCreateWorkspaceWizard).not.toHaveBeenCalled();
   });
 });
 

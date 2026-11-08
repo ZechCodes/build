@@ -203,6 +203,7 @@ pub(in crate::app) struct Synced {
     subject: SyncSubject,
     report: SyncReport,
     start: Option<String>,
+    environments: Option<crate::app::snapshot_projection::EnvironmentRepositoryRefresh>,
 }
 
 impl Synced {
@@ -284,10 +285,16 @@ fn sync_for_the_service(subject: SyncSubject, state: &Arc<Mutex<AppState>>) -> O
         return None;
     }
     let report = sync_base(&subject.path, &subject.base_branch, subject.fetch);
+    let environments = state
+        .lock()
+        .unwrap()
+        .capture_environment_repository_refresh();
+    environments.observe(&[subject.path.clone()]);
     Some(Synced {
         subject,
         report,
         start: None,
+        environments: Some(environments),
     })
 }
 
@@ -333,10 +340,19 @@ fn sync_for_a_cut(
             })
             .map_err(|error| format!("cannot pin workspace base: {error}"))?,
     };
+    let environments = state.and_then(std::sync::Weak::upgrade).map(|state| {
+        let refresh = state
+            .lock()
+            .unwrap()
+            .capture_environment_repository_refresh();
+        refresh.observe(&[subject.path.clone()]);
+        refresh
+    });
     Ok(Synced {
         subject,
         report,
         start: Some(start),
+        environments,
     })
 }
 
@@ -621,6 +637,9 @@ impl AppState {
     /// service.
     pub(in crate::app) fn settle_source_syncs(&mut self, synced: Vec<Synced>, now_ms: i64) {
         for sync in synced.iter().filter(|sync| sync.changed_repository()) {
+            if let Some(refresh) = &sync.environments {
+                refresh.install(self);
+            }
             self.invalidate_shared_repository_views(&sync.subject.path);
         }
         for left in synced.iter().filter(|synced| synced.left_the_checkout()) {

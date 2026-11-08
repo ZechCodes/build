@@ -2,9 +2,11 @@
 //! are captured by lifecycle work; publication consumes only owned observations.
 
 mod configuration;
+mod repository_refresh;
 use super::read_view::{ReadView, SnapshotDelta};
 use super::workspaces::ProjectionOwnership;
 use super::{AppState, ProjectListRow};
+pub(in crate::app) use repository_refresh::EnvironmentRepositoryRefresh;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;

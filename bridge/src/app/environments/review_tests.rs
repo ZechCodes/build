@@ -188,3 +188,132 @@ fn cached_project_remote_requires_both_source_id_and_path() {
     let rendered = row.render_observed(json!({"rift":false,"reason":null}), Some(&cached));
     assert_eq!(rendered["sources"][1]["remote"], Value::Null);
 }
+
+fn orphan_shared_checkout(
+    root: &std::path::Path,
+) -> (AppState, std::path::PathBuf, std::path::PathBuf) {
+    use crate::git_fixture::{git_in, init_repo_named};
+    let upstream = init_repo_named(root, "upstream");
+    let checkout = root.join("checkout");
+    git_in(
+        root,
+        &["clone", "-q", upstream.to_str().unwrap(), "checkout"],
+    );
+    let home = init_repo_named(root, "other-home");
+    let config = root.join("config.json");
+    std::fs::write(&config, json!({
+        "environments":[
+            {"id":"orphan","name":"Orphan","sources":[{"id":"source-1","path":checkout,"name":"shared","mount":"shared","sync_base":true}]},
+            {"id":"live","name":"Live","sources":[{"id":"source-1","path":home,"name":"home","mount":"home"}]}
+        ],
+        "projects":[{"id":"proj-1","environment_id":"live","project_key":"other","path":home,
+            "added_sources":[{"id":"source-2","path":checkout,"name":"shared","mount":"shared"}]}]
+    }).to_string()).unwrap();
+    let mut app = super::runtime_tests::state(root)
+        .with_config(config)
+        .unwrap();
+    app.initialize_snapshot_projection();
+    (app, checkout, upstream)
+}
+
+fn pushed_orphan_remote(app: &AppState) -> Value {
+    let pushed = app
+        .read_view
+        .load()
+        .get_owned("environment.list", "")
+        .unwrap();
+    let row = pushed["environments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["environment_id"] == "orphan")
+        .unwrap();
+    assert_eq!(row["project_ids"], json!([]));
+    row["sources"][0]["remote"].clone()
+}
+
+#[test]
+fn orphan_shared_remote_is_pushed_immediately_after_git_and_project_mutations() {
+    for method in ["git.fetch", "project.update_source"] {
+        let root = tempfile::tempdir().unwrap();
+        let (mut app, checkout, upstream) = orphan_shared_checkout(root.path());
+        assert_eq!(pushed_orphan_remote(&app), json!(upstream));
+        let mut params =
+            json!({"project_id":"proj-1","source_id":"source-2","source_path":checkout});
+        let expected = if method == "project.update_source" {
+            let next = crate::git_fixture::init_repo_named(root.path(), "next-origin");
+            params["remote"] = json!(next);
+            next
+        } else {
+            upstream
+        };
+        ok(&mut app, method, params);
+        assert_eq!(pushed_orphan_remote(&app), json!(expected), "{method}");
+    }
+}
+
+#[test]
+fn orphan_shared_remote_is_pushed_immediately_after_timed_fetch() {
+    use crate::app::projects::base_sync::SyncPass;
+    let root = tempfile::tempdir().unwrap();
+    let (mut app, _, upstream) = orphan_shared_checkout(root.path());
+    ok(
+        &mut app,
+        "environment.sync_source",
+        json!({"environment_id":"orphan","source_id":"source-1"}),
+    );
+    let state = Arc::new(Mutex::new(app));
+    AppState::sync_sources(&state, SyncPass::Requested, 1000);
+    // The due pass must fetch after the immediate queue has drained.
+    AppState::sync_sources(&state, SyncPass::Due, 400000);
+    let app = state.lock().unwrap();
+    let status = app.projects.environment("orphan").unwrap().sources[0]
+        .sync_status
+        .as_ref()
+        .unwrap();
+    assert_eq!(status.last_attempt_ms, 400000);
+    assert_eq!(status.last_fetched_ms, Some(400000));
+    assert_eq!(pushed_orphan_remote(&app), json!(upstream));
+}
+
+#[test]
+fn older_git_observation_cannot_replace_a_newer_orphan_remote() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut app, checkout, _) = orphan_shared_checkout(root.path());
+    let params = json!({"project_id":"proj-1","source_id":"source-2","source_path":checkout});
+    let (answer, job) = app.dispatch_deferring("git.fetch", &params);
+    assert!(answer.is_ok());
+    let older = job.unwrap().run();
+    let next = crate::git_fixture::init_repo_named(root.path(), "next-origin");
+    git2::Repository::open(&checkout)
+        .unwrap()
+        .remote_set_url("origin", next.to_str().unwrap())
+        .unwrap();
+    ok(&mut app, "git.fetch", params.clone());
+    assert_eq!(pushed_orphan_remote(&app), json!(next));
+    app.apply_deferred("git.fetch", &params, older).unwrap();
+    assert_eq!(pushed_orphan_remote(&app), json!(next));
+}
+
+#[test]
+fn git_environment_observation_leaves_the_app_lock_free() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut app, checkout, upstream) = orphan_shared_checkout(root.path());
+    let (gate, control) = OffLockGate::new();
+    app.off_lock_environment_probe_gate = Some(gate);
+    let params = json!({"project_id":"proj-1","source_id":"source-2","source_path":checkout});
+    let (answer, job) = app.dispatch_deferring("git.fetch", &params);
+    assert!(answer.is_ok());
+    let state = Arc::new(Mutex::new(app));
+    let worker = std::thread::spawn(move || job.unwrap().run());
+    control.wait_for_arrival();
+    assert!(
+        state.try_lock().is_ok(),
+        "the post-Git environment probe must run off-lock"
+    );
+    control.release();
+    let done = worker.join().unwrap();
+    let mut app = state.lock().unwrap();
+    app.apply_deferred("git.fetch", &params, done).unwrap();
+    assert_eq!(pushed_orphan_remote(&app), json!(upstream));
+}

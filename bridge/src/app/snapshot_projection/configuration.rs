@@ -108,12 +108,6 @@ impl AppState {
             });
         }
     }
-    pub(in crate::app) fn invalidate_environment_remote_observations(&self, roots: &[PathBuf]) {
-        invalidate_remotes(
-            &mut self.snapshot_observations.environments.lock().unwrap(),
-            roots,
-        );
-    }
     pub(in crate::app) fn invalidate_source_remote_observations(&self, roots: &[PathBuf]) {
         invalidate_remotes(
             &mut self.snapshot_observations.projects.lock().unwrap(),

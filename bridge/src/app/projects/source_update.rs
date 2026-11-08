@@ -105,10 +105,12 @@ impl AppState {
             None,
             super::MOVED_GIT_SOURCE,
         )?;
+        let environments = self.capture_environment_repository_refresh();
         let mutation = SerializedSourceUpdate {
             mutation,
             captured: SourceUpdateScope::Project(captured),
             state: self.source_validation_handle(),
+            environments: Some(environments.clone()),
         };
         let project_id = address.project_id.clone();
         let deferred = self.defer_project(
@@ -117,6 +119,7 @@ impl AppState {
             PendingState::Updating,
             mutation,
             move |state: &mut AppState, result: Result<LockedSourceUpdate, String>| {
+                environments.install(state);
                 if moves {
                     state.source_moves.end(&address.project_id);
                 }
@@ -336,6 +339,8 @@ pub(in crate::app) struct SerializedSourceUpdate {
     pub(in crate::app) mutation: UpdateSource,
     pub(in crate::app) captured: SourceUpdateScope,
     pub(in crate::app) state: Option<std::sync::Weak<std::sync::Mutex<AppState>>>,
+    pub(in crate::app) environments:
+        Option<crate::app::snapshot_projection::EnvironmentRepositoryRefresh>,
 }
 
 pub(in crate::app) struct LockedSourceUpdate {
@@ -362,7 +367,11 @@ impl crate::lifecycle::WorktreeMutation for SerializedSourceUpdate {
             self.captured
                 .validate(&app, self.mutation.new_path.as_deref())?;
         }
-        let performed = self.mutation.perform()?;
+        let performed = self.mutation.perform();
+        if let Some(refresh) = &self.environments {
+            refresh.observe(&paths);
+        }
+        let performed = performed?;
         Ok(crate::lifecycle::Performed {
             change: performed.change,
             output: LockedSourceUpdate {

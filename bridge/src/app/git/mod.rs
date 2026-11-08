@@ -629,12 +629,15 @@ impl AppState {
         invalidates: bool,
     ) -> Value {
         let registry_change = invalidates && scope.changes_device_registry();
+        let scope_has_repository = scope.mutation_path().is_some();
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(ScopedGitCall {
                 scope,
                 work,
                 serialized: invalidates,
                 state: self.source_validation_handle(),
+                environments: (invalidates && scope_has_repository)
+                    .then(|| self.capture_environment_repository_refresh()),
             }),
             params: params.clone(),
             invalidates,
@@ -822,7 +825,6 @@ impl AppState {
             self.note_git_at(path);
         }
         self.refresh_project_source_remote_observations(&roots);
-        self.invalidate_environment_remote_observations(&roots);
         self.note_board_lists_changed(crate::changes::BoardLists {
             projects: true,
             workspaces: true,

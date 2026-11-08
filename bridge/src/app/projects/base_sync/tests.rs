@@ -78,6 +78,7 @@ impl Fixture {
                 subject,
                 report,
                 start: None,
+                environments: None,
             }],
             now_ms,
         );
@@ -373,6 +374,7 @@ fn cut_settlement_does_not_request_sync_for_a_moved_source() {
                 fetched: true,
             },
             start: None,
+            environments: None,
         }],
         START_MS,
     );

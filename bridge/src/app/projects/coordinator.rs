@@ -186,10 +186,15 @@ impl AppState {
         {
             return Ok(());
         }
-        // The record's path when no project is bound: a boot that could not
-        // reach the folder bound none, and the folder is still missing.
+        // A retained key can name a deleted project whose old directory still
+        // exists. Only a live binding gives the worker a project cwd.
         let project_path = self.projects.project_path_for(owner);
-        if std::path::Path::new(&project_path).is_dir() {
+        if self
+            .projects
+            .project_id_of(owner)
+            .and_then(|id| self.project(id))
+            .is_some_and(|project| project.home_path.is_dir())
+        {
             return Ok(());
         }
         Err(format!(

@@ -263,9 +263,8 @@ pub enum WorktreeFinishStatus {
 }
 
 /// Durable intent and eventual history for an external worktree finished
-/// through a branch finish. Project ids are intentionally absent because a
-/// `proj-N` id is not durable across boots; the canonical project path is the
-/// stable identity.
+/// through a branch finish. The historical `project_path` field retains an
+/// opaque project key; legacy canonical paths are the migrated projects' keys.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedArchivedWorktree {
     #[serde(default)]

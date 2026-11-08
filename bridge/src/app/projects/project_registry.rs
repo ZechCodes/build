@@ -609,9 +609,10 @@ impl ProjectRegistry {
         self.entity_project.remove(entity_id);
     }
 
-    pub(in crate::app) fn retain_entity_path(&mut self, entity_id: String, stored_path: String) {
+    /// Retain the opaque key while its registered project is unavailable.
+    pub(in crate::app) fn retain_entity_path(&mut self, entity_id: String, stored_key: String) {
         self.observation_bindings.mark(&entity_id);
-        self.entity_project_path.insert(entity_id, stored_path);
+        self.entity_project_path.insert(entity_id, stored_key);
     }
 }
 

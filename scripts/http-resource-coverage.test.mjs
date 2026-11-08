@@ -275,8 +275,8 @@ const stagedConsumerExclusions = {
 // modules; neither delegating view has its own RPC/producer occurrence.
 // #894 finite metadata/call-edge audit: docs/task-query-cost/http-resource-coverage-audit.md
 const sourceFingerprintParts = {
-  // #1065: accepted-epoch ownership guard wraps existing settings source calls; no new wire method.
-  "core/sourceOwnership.js": ["406521c6", "897ca0e0", "1c97baf1", "ac3f5042", "a5eb913a", "6ac791e9", "7a6d38b5", "30813463"],
+  // #1065: cached eligibility is separate from current-greeting dispatch; epoch and genuine no-epoch legacy paths wrap existing source calls.
+  "core/sourceOwnership.js": ["5bb01dc9", "cd302bf9", "b640e0f4", "b396ab65", "8c8d6b7e", "9183fa6a", "22b5fb05", "0d37ee27"],
   "app.js": ["e9b93f5b", "01a713dd", "1c1f8ef7", "00229053", "d2bf2d3a", "b372d574", "81aaff15", "71dc3f58"],
   "appState.js": ["d24d9edc", "6e4988f0", "8a5289ee", "6c449b3f", "91bdbe42", "7cd43ada", "7a9df6a4", "acd39971"],
   "connection.js": ["009f7235", "cbcbf300", "43c93b7c", "bcfb2243", "e17e2797", "d809e8af", "5e60cb14", "d0fe86f7"],
@@ -320,7 +320,7 @@ const sourceFingerprintParts = {
   // #1006 held secret posts use the current session safely because thread.post
   // deduplicates the preserved operation_id; the dispatch methods are unchanged.
   // #1026 greeted epoch projection changes no RPC/producer aliases or assignment edges.
-  "core/deviceContexts.js": ["60eec962", "33ad7c40", "7757cb5b", "2947fb31", "25131dfc", "894c0f7c", "9f34926a", "62782eae"],
+  "core/deviceContexts.js": ["fdd83b7c", "ff47f7f7", "8fd4ebed", "ebf89dab", "257e322d", "934f3215", "b95d426d", "b042b271"],
   "core/diffSort.js": ["9ef743b8", "16f0a5ae", "1d9ec36a", "455f0e76", "c04a0902", "8deca6c7", "70acd150", "dbe96ac6"],
   "core/directoryRail.js": ["98080c38", "f2152285", "3e025868", "10652120", "d12c8ead", "cfa571c6", "6c3476c8", "b6b56ef2"],
   "core/fileDiffs.js": ["708cce52", "81bbdc00", "82791bce", "f9d05524", "b3b3b017", "d283e106", "e977da82", "b3b2707e"],
@@ -455,7 +455,7 @@ const sourceFingerprintParts = {
   // #1052 retry review: settings-owned results alone authorize totals/empty states; pending pulls hide earlier errors. RPC edges stay unchanged.
   "views/environmentsSettings.js": ["6f77cec3", "03735073", "2f1399fa", "fd4ef088", "1bfffde5", "647b567f", "bdd5bcf9", "4416e4c5"],
   "views/files.js": ["bc4913c5", "865b9dd0", "e28f655f", "242c9011", "456a4139", "b2cfd372", "6498e15b", "f3116261"],
-  "views/projectChanges.js": ["015c68ac", "3ef0e89a", "495d1e47", "4a36ec6b", "3ba7af0f", "4d0201df", "70bc5312", "b8baeab1"],
+  "views/projectChanges.js": ["601d957b", "35e2b919", "ff4c83f8", "9946e6e7", "ff9a9b16", "8d93be43", "466971da", "d1d4dc94"],
   "views/projectView.js": ["76123138", "7ded30d0", "0893b5ef", "5d880782", "137464b9", "5b123e76", "48f1a9d5", "28144478"],
   "views/taskReview.js": ["7d540d05", "70beae35", "200434ea", "decae581", "f1b126d6", "9a38fe38", "642a621a", "2e34a257"],
   "views/taskView.js": ["483fdb16", "52a51dd3", "ea9f60d0", "c21f16a9", "090b27a4", "4839602c", "4653bfcc", "38959753"],

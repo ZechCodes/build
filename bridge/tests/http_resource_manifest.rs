@@ -101,5 +101,29 @@ fn retired_legacy_writes_keep_http_routes_for_structured_refusals() {
             "missing compatibility route {method}"
         );
     }
-    assert_eq!(manifest["operations"].as_array().unwrap().len(), 158);
+    assert_eq!(manifest["operations"].as_array().unwrap().len(), 160);
+}
+
+#[test]
+fn creation_attempts_have_explicit_http_resources() {
+    let manifest = json(root().join("fixtures/api/http/resource-manifest.json"));
+    for (method, path) in [
+        (
+            "environment.create_project",
+            "/v1/environments/{environment_id}/projects",
+        ),
+        (
+            "project.discard_unused",
+            "/v1/projects/{project_id}/unused-discards",
+        ),
+    ] {
+        let operation = manifest["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|operation| operation["method"] == method)
+            .unwrap_or_else(|| panic!("missing creation resource {method}"));
+        assert_eq!(operation["verb"], "POST");
+        assert_eq!(operation["path"], path);
+    }
 }

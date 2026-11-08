@@ -33,7 +33,7 @@ fn method_fixtures() -> Vec<(String, Value)> {
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
         .map(|entry| entry.expect("readable entry").path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
-        .filter(|path| path.file_stem().is_some_and(|stem| stem != "events"))
+        .filter(|path| path.file_stem().is_some_and(|stem| stem != "events" && stem != "writes.progress"))
         .map(|path| {
             let fixture = read_json(&path);
             let method = fixture["method"]
@@ -1536,6 +1536,10 @@ fn every_event_example_is_what_the_bridge_serialises() {
             "term.closed" => check_untyped_push(event, &["term_id", "reason"]),
             "rtc.ice" => check_untyped_push(event, &["candidate"]),
             "bridge.restarting" => assert_eq!(event.as_object().unwrap().len(), 1),
+            "writes.progress" => {
+                let progress: build_bridge::api::writes::WriteProgressEvent = typed(envelope, "write progress");
+                assert_eq!(serde_json::to_value(progress).unwrap(), *envelope);
+            }
             "writes.confirmed" => {
                 let confirmation: build_bridge::api::writes::WriteConfirmation =
                     typed(envelope, "write confirmation");
@@ -2566,5 +2570,43 @@ fn secrets_contract_is_advertised_with_the_complete_feature() {
     ] {
         assert!(!UNADVERTISED_CAPABILITIES.contains(&feature));
         assert!(advertised.contains(feature), "missing advertised {feature}");
+    }
+}
+
+#[test]
+fn creation_attempt_contracts_are_additive_and_strict() {
+    assert_eq!(API_VERSION, "3.36.0");
+    assert!(!capabilities(false).contains(&"environments"));
+    for method in ["environment.create_project", "project.discard_unused"] {
+        let (_, handler) = v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap_or_else(|| panic!("missing creation method {method}"));
+        let fixture = read_json(&fixtures_root().join(format!("v1/{method}.json")));
+        handler.parse_params(&fixture["params"]).unwrap();
+        assert_eq!(
+            handler.round_trip_result(&fixture["result"]).unwrap(),
+            fixture["result"]
+        );
+        let mut invalid = fixture["params"].clone();
+        invalid["unknown_creation_param"] = serde_json::json!(true);
+        assert!(handler.parse_params(&invalid).is_err());
+    }
+    let (_, workspace) = v1::methods()
+        .iter()
+        .find(|(name, _)| *name == "workspace.create")
+        .unwrap();
+    let fixture = read_json(&fixtures_root().join("v1/workspace.create.json"));
+    assert!(fixture["params"]["continues"].is_string());
+    workspace.parse_params(&fixture["params"]).unwrap();
+}
+
+#[test]
+fn creation_progress_fixture_is_typed_and_nonterminal() {
+    let fixture=read_json(&fixtures_root().join("v1/writes.progress.json"));
+    for event in fixture["events"].as_array().unwrap() {
+        let value: build_bridge::api::writes::WriteProgressEvent = typed(event,"write progress");
+        assert_eq!(serde_json::to_value(value).unwrap(),*event);
+        assert!(event.get("outcome").is_none());
     }
 }

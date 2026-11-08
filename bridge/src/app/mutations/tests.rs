@@ -38,13 +38,17 @@ impl Fixture {
     }
 
     fn admit_in_project(&self, principal: &str, id: &str, body: &str, project: &str) {
+        self.admit_params(principal, id, body, project, json!({}));
+    }
+
+    fn admit_params(&self, principal: &str, id: &str, body: &str, project: &str, params: Value) {
         self.store
             .writer()
             .admit_mutation(&MutationAdmission {
                 principal: principal.into(),
                 operation_id: id.into(),
                 method: "test.command".into(),
-                params: json!({}),
+                params,
                 scope: json!({"project_id":project}),
                 owners: vec![MutationOwner {
                     kind: "project".into(),
@@ -555,4 +559,76 @@ async fn retired_application_binding_cannot_register_after_snapshot_with_live_re
     assert!(current.sender.events_are_live());
     assert!(current.ids.contains(&id(2)));
     assert!(!current.ids.contains(&id(1)));
+}
+
+#[tokio::test]
+async fn writes_progress_never_marks_outcome() {
+    let fixture = Fixture::new();
+    fixture.admit(DEVICE_USER, &id(41), "creating");
+    let (sender, mut rx, key) = SessionSender::observable("progress");
+    fixture
+        .call(
+            sender.clone(),
+            "writes.subscribe",
+            json!({"operation_ids":[id(41)]}),
+        )
+        .await;
+    let progress = vec![writes::WriteProgress {
+        step: "workspace".into(),
+        state: writes::ProgressState::Running,
+        detail: None,
+    }];
+    fixture.service.set_progress(&id(41), progress.clone());
+    let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let event = SessionSender::decrypt_push(&key, &event);
+    assert_eq!(event["type"], "writes.progress");
+    assert!(event.get("outcome").is_none());
+    let status = fixture
+        .call(
+            sender.clone(),
+            "writes.status",
+            json!({"operation_ids":[id(41)]}),
+        )
+        .await;
+    assert_eq!(status["result"]["operations"][0]["state"], "accepted");
+    assert_eq!(
+        status["result"]["operations"][0]["progress"],
+        json!(progress)
+    );
+    fixture.succeed(&id(41), json!({"saved":true}));
+    let status = fixture
+        .call(sender, "writes.status", json!({"operation_ids":[id(41)]}))
+        .await;
+    assert_eq!(status["result"]["operations"][0]["state"], "succeeded");
+    assert!(status["result"]["operations"][0].get("progress").is_none());
+}
+
+#[tokio::test]
+async fn continued_attempt_links_prior_operation() {
+    let fixture = Fixture::new();
+    fixture.admit(DEVICE_USER, &id(51), "first");
+    fixture.succeed(&id(51), json!({"saved":true}));
+    fixture.admit_params(
+        DEVICE_USER,
+        &id(52),
+        "continued",
+        "project-test",
+        json!({"continues":id(51)}),
+    );
+    let (sender, _rx, _) = SessionSender::observable("continued");
+    let status = fixture
+        .call(
+            sender,
+            "writes.status",
+            json!({"operation_ids":[id(51),id(52)]}),
+        )
+        .await;
+    assert_eq!(
+        status["result"]["operations"][0]["continued_by"],
+        json!([id(52)])
+    );
+    assert_eq!(status["result"]["operations"][1]["continues"], id(51));
 }

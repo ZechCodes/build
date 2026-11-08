@@ -135,9 +135,8 @@ describe('workspace wizard pages',()=>{
   it.each(['succeeded','failed'])('recovers cache-only terminal %s results and consumes them only on an explicit action',async state=>{
     const record={operationId:'finished',createdAt:200,state,effect:state==='failed'?'partial':undefined,request:{method:'environment.create_project'},draft:{target:{id:'e1',deviceId:'d1',kind:'environment',name:'Platform',key:'d1/e1'},name:'Finished'}};
     mocks.read.mockResolvedValue({...snapshot(),attempts:[record]});
-    await open({fixedProject:false});expect(dialog().querySelector('[data-create-go]').disabled).toBe(true);
-    expect(mocks.consume).not.toHaveBeenCalled();dialog().querySelector('[data-create-resume]').click();
-    await vi.waitFor(()=>expect(mocks.progress).toHaveBeenCalledTimes(1));expect(mocks.submit).not.toHaveBeenCalled();
+    await open({fixedProject:false});expect(mocks.consume).not.toHaveBeenCalled();
+    expect(mocks.progress).toHaveBeenCalledTimes(1);expect(dialog()).toBeNull();expect(mocks.submit).not.toHaveBeenCalled();
     const progress=mocks.progress.mock.calls[0][0];expect(progress.operationId).toBe('finished');
     if(state==='failed')await progress.onKeepProject({operationId:'finished',record});
     else await progress.onOpenWorkspace({operationId:'finished',record:{...record,confirmation:{result:{workspace:{id:'w1',project_id:'p1'}}}},workspace:{id:'w1',project_id:'p1'}});

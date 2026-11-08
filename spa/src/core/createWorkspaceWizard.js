@@ -101,13 +101,15 @@ export function openCreateWorkspaceWizard(options = {}) {
   return {ready,close:cancel,detach,flushDraft:()=>draft.flush()};
 
   async function recoverAttempt() {
-    if(detached || state.operationId)return;
+    if(detached)return;
     const attempts=(snapshot.attempts || []).filter(row=>!fixedProject ||
       row.draft.target.id===options.projectId && row.draft.target.deviceId===options.deviceId);
-    const attempt=[...attempts].sort((left,right)=>(right.localOrder ?? right.createdAt ?? 0)-(left.localOrder ?? left.createdAt ?? 0))[0];
+    const latest=[...attempts].sort((left,right)=>(right.localOrder ?? right.createdAt ?? 0)-(left.localOrder ?? left.createdAt ?? 0));
+    const attempt=state.operationId ? latest.find(row=>row.operationId===state.operationId):latest[0];
     if(!attempt)return;
     Object.assign(state,attempt.draft,{operationId:attempt.operationId,page:3});updateModel();paint();
     await draft.write(draftOf(state));
+    if(['succeeded','failed','result_expired'].includes(attempt.state))await showProgress(attempt.operationId);
   }
   function restoreDraft(value) {
     if(!value || detached || JSON.stringify(value) === JSON.stringify(draftOf(state))) return;

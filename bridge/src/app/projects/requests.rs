@@ -234,6 +234,24 @@ impl WorktreeMutation for ReservedCreateRepository {
 }
 
 impl AppState {
+    /// A retained home may revive without an RPC source admission. Exclude
+    /// recorded locations before any clone or initializer can write there.
+    fn reserve_source_destinations(
+        &self,
+        paths: &[std::path::PathBuf],
+    ) -> Result<Vec<SourceDirectoryLease>, String> {
+        for path in paths {
+            self.validate_secret_source(path)?;
+            if self.source_directory_has_owner(path) {
+                return Err(format!(
+                    "managed source destination overlaps a project or workspace location: {}",
+                    path.display()
+                ));
+            }
+        }
+        self.source_directory_claims.reserve_destinations(paths)
+    }
+
     fn reserve_source_opening(
         &self,
         mut requests: Vec<SourceRequest>,
@@ -245,16 +263,13 @@ impl AppState {
             .filter(|request| request.remote.is_some())
         {
             let path = crate::worktree::canonical_planned_path(&managed_root.join(&request.mount));
-            self.validate_secret_source(&path)?;
             destinations.push(path.clone());
             request.destination = Some(path);
         }
         Ok(OpenProjectSources {
             requests,
             managed_root,
-            destination_claims: self
-                .source_directory_claims
-                .reserve_destinations(&destinations)?,
+            destination_claims: self.reserve_source_destinations(&destinations)?,
         })
     }
 
@@ -459,9 +474,7 @@ impl AppState {
             .filter(|remote| !remote.is_empty())
             .map(usable_remote_url)
             .transpose()?;
-        let destination_claims = self
-            .source_directory_claims
-            .reserve_destinations(std::slice::from_ref(&dest))?;
+        let destination_claims = self.reserve_source_destinations(std::slice::from_ref(&dest))?;
         self.defer_project(
             dest.clone(),
             name.clone(),

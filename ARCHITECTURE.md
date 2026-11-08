@@ -233,13 +233,20 @@ ping/signaling fast paths bypass this lane. The daemon calls
 constructing intake or accepting relay/client work, so all eight SQL workers
 are ready before the first read. Handler clones share that executor.
 
-The fifteen published reads (`board.list`, `project.list`, `workspace.list`,
+The sixteen published reads (`board.list`, `project.list`, `environment.list`, `workspace.list`,
 `workspace.get`, `agent.list`, `settings.get`, `models.list`, `harnesses.list`,
 `bridge.update_status`, `capture.get`, `task.get`, `task.stages`, `tasks.columns`,
 `stream.events` and `stream.state`) answer at intake from immutable snapshots.
 They take no SQL permit, dispatch slot or app lock, including when those lanes are
 full. Typed parameter normalization and result validation still apply to v1
 verbs; the two stream reads retain their legacy shapes and QA-only gate.
+
+`environment.list` and the board's carried `environments` list share the same
+producer-owned source observations. The staged read and the `environments`
+feature remain unadvertised until the M1 closing slice. Environment recovery
+uses a fresh list pull; no durable whole-board row is added to device sync.
+Project list task counts are captured with task publication, so list intake
+continues to avoid SQL and the app lock.
 
 The task detail and stage snapshots follow committed owner publication,
 including changes to a linked implementation. Task history is rendered from
@@ -356,7 +363,7 @@ after a quiet probe and a brief recheck that no leases remain. Rollback and
 reopen invalidate the claim before notifying waiting work.
 
 **The verb registry** is `bridge/src/api/v1/mod.rs`. Each family file (`board.rs`,
-`changes.rs`, `git.rs`, `harnesses.rs`, `push.rs`, `tasks.rs`, `lifecycle.rs`, `thread.rs`, `updates.rs`,
+`changes.rs`, `environment.rs`, `git.rs`, `harnesses.rs`, `push.rs`, `tasks.rs`, `lifecycle.rs`, `thread.rs`, `updates.rs`,
 `workspace.rs`) has a `methods()` table built with the `v1_method!` macro, which
 names the verb, its handler and its typed params and result. Handler signatures
 never take `serde_json::Value`; a test in that module enforces it. Slow git work

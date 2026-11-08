@@ -659,6 +659,16 @@ must never travel on it. M1 adds:
 
 `secrets.changed` carries the environment scope in Stage 2.
 
+**M1.1 implementation amendment (#1043):** environment recovery uses the
+capability-gated `environment.list` pull and ordinary carried board pushes.
+There is no durable board aggregate in `sync.snapshot` / `sync.changes`:
+the existing device journal has bounded per-entity rows (64 KiB), and its SPA
+consumer does not accept a board family. Durable per-environment rows and their
+consumer are deferred. Board lists continue to travel whole on the existing
+push path; the existing HTTP SSE 1 MiB event limit rejects oversized frames.
+Creation belongs to M0.4, and independent sibling task numbering to M0.2;
+neither is part of the M1.1 read-wire acceptance tests.
+
 ### 2.5 Storage
 
 **`config.json`** (written by `config_value_with_project`,
@@ -1028,7 +1038,7 @@ bumped to the next minor and `environments` advertised only in M1.4.
 
 | # | slice | acceptance | TDD tests |
 | --- | --- | --- | --- |
-| M1.1 | **Bridge: M1 wire** (`environment.list`, `environment.create_project`, project/workspace row fields incl. `device`, counts, `board.list.environments`, board-scope push, fixtures, manifest; capability constant present but advertised in M1.4) | contract tests pass; `create_project` returns a project with a fresh key and its first workspace; two projects in one environment number tasks from #1; `project.create` without `environment_id` makes an implicit environment | fixtures; `implicit_environment_from_legacy_project_create`; `create_project_mints_fresh_key_and_workspace`; push test for `environments` board list |
+| M1.1 | **Bridge: M1 read wire** (`environment.list`, project/workspace row fields incl. `device` and counts, `board.list.environments`, board-scope push, fixtures, HTTP manifest; capabilities withheld until M1.4) | contract tests pass; legacy `project.create` makes an implicit environment; pull and carried board pushes use the same environment rows | `implicit_environment_from_legacy_project_create`; `environment_list_rows_match_fixture`; `board_list_includes_environments`; `board_push_publishes_environments` |
 | M1.2 | **SPA: capability + cache plumbing** (`environment-support`, `capabilitiesOf().environments`, `NO_CAPABILITIES`, `environments` list, `writePushedBoard` third list, `readSyncLists` asks `environment.list` when supported, `taskCountText`) | greeting writes the record; a board push updates environments; without the capability nothing new is asked; count text rule | `environmentSupportWiring.test.js`, `cacheSyncChanges.test.js`, `namedCapabilitiesWiring.test.js`, `taskCountText.test.js` |
 | M1.3 | **SPA: wizard pages 1 and 3 + progress screen** (`core/createWorkspaceWizard.js`, `createWorkspaceProgress.js`, target model with recents, drafts in `build-ui`, keyboard, mobile sheet, device labels, kind glyphs; replaces and **deletes** `createWork.js` modal; every caller switched; fixed-project mode) | sections and order; recents; empty states; old-bridge fallback; Create submits one `write.operation_id`; progress paints from the write-operation record across reload; outcomes Done/Failed/Checking render per 2.3 with the right actions; Cancel leaves no draft; Close detaches | `createWorkspaceWizardModel.test.js` (recents, order, empty, fallback, fixed mode, count text, device labels), `createWorkspaceWizardDom.test.js` (pages, keyboard, a11y names, mobile), `createWorkspaceProgress.test.js` (done, failed-with-landed-project, checking, reload, close), `createWork.test.js` removed with the modal |
 | M1.4 | **SPA + bridge: top nav, inbox heads, read-only settings list, advertise** (switcher grouped with recents and device labels, crumb rule, workspace selector by recency with Finished fold, inbox "E › P" heads and adjacency, "New workspace" buttons; `#/account/environments` route with the read-only list of 3.3 and the old-bridge note; `environments` advertised; `API_VERSION` to the next minor) | grouping and order; selector order; crumb shows P alone for a one-project environment; settings list paints from cache with device labels and counts; layout tests unchanged | `toolbarModel.test.js` (`switcherModel`, `workspaceMenuModel`), `toolbarDom.test.js`, `navigationPicker.test.js`, `inboxProjects.test.js`, `environmentsSettingsDom.test.js` (read-only list, empty, old bridge), `test/browser/pinnedInboxToolbarLayout.test.js` unchanged |

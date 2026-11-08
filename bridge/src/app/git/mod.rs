@@ -815,14 +815,7 @@ impl AppState {
             self.invalidate_snapshot_checkout_observations(path);
             self.note_git_at(path);
         }
-        for project in self.projects.iter().filter(|project| {
-            project
-                .sources
-                .iter()
-                .any(|source| roots.contains(&source.path))
-        }) {
-            self.project_json(project);
-        }
+        self.refresh_project_source_remote_observations(&roots);
         self.note_board_lists_changed(crate::changes::BoardLists {
             projects: true,
             workspaces: true,

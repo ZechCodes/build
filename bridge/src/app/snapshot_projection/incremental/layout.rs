@@ -338,6 +338,8 @@ fn project_layouts(app: &AppState, projects: Option<&[crate::app::ProjectListRow
     };
     projects.iter().map(|row| json!({
         "id": row.project_id, "name": row.name, "base": row.base_branch, "git": row.is_git,
+        "environment_id":row.environment_id, "environment_name":row.environment_name,
+        "project_key":row.project_key, "diverged":row.diverged, "device":row.device,
         "sources": row.sources.iter().map(|source| source.wire_observed(Value::Null)).collect::<Vec<_>>(),
         "isolation": row.isolation, "default": row.isolation_default,
         "compaction": row.compaction, "thresholds": row.compaction_thresholds, "owner": row.conversation,

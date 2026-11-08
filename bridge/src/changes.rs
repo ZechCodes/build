@@ -639,9 +639,9 @@ impl BoardLists {
         workspaces: false,
         usage_limits: false,
     };
-    /// The workspace list moved: one was created, renamed, or deleted.
+    /// The workspace list and its projects' workspace counts moved.
     pub const WORKSPACES: BoardLists = BoardLists {
-        projects: false,
+        projects: true,
         environments: false,
         workspaces: true,
         usage_limits: false,

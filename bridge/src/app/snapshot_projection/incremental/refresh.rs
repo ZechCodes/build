@@ -178,9 +178,18 @@ fn refresh_projects(
         .chain(owners.iter().map(String::as_str))
         .collect::<BTreeSet<_>>();
     let observed = app.snapshot_observations.projects.lock().unwrap();
+    let previous = rows
+        .iter()
+        .map(|row| (row.id.as_str(), row))
+        .collect::<HashMap<_, _>>();
     let mut captured = captured
         .into_iter()
-        .filter(|row| projects.contains(row.project_id.as_str()))
+        .filter(|row| {
+            projects.contains(row.project_id.as_str())
+                || previous
+                    .get(row.project_id.as_str())
+                    .is_some_and(|cached| project_counts_changed(row, cached))
+        })
         .map(|row| (row.project_id.clone(), row))
         .collect::<HashMap<_, _>>();
     #[cfg(test)]
@@ -198,4 +207,13 @@ fn refresh_projects(
         );
         *row = Row::new("project_id", value);
     }
+}
+
+/// Counts change without changing the registry's layout or requesting an owner.
+/// Project rows are rendered leaves, so inspecting them does not materialize a list.
+fn project_counts_changed(captured: &crate::app::ProjectListRow, cached: &Row) -> bool {
+    let previous = cached.value.leaf().expect("project row is a rendered leaf");
+    previous["open_tasks"].as_u64() != Some(captured.open_tasks)
+        || previous["total_tasks"].as_u64() != Some(captured.total_tasks)
+        || previous["workspaces"].as_u64() != u64::try_from(captured.workspaces).ok()
 }

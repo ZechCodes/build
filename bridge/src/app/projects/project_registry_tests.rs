@@ -169,3 +169,160 @@ fn configured_source_keeps_a_filesystem_root_reference() {
     assert_eq!(source.path, PathBuf::from("/"));
     assert_eq!(source.name, "root");
 }
+
+#[test]
+fn environments_referencing_reads_owners_instead_of_home_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let shared = root.path().join("shared");
+    let home = root.path().join("home");
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::create_dir(&home).unwrap();
+    let mut registry = ProjectRegistry::new();
+    registry.restore_environments(&serde_json::json!({"environments":[
+        {"id":"env-1","sources":[{"id":"source-1","path":shared}]},
+        {"id":"env-2","sources":[{"id":"source-1","path":home}]},
+        {"id":"env-3","sources":[]}
+    ]}));
+    let mut project = candidate(&registry, home.clone(), project_fixture);
+    project.set_environment("env-2");
+    registry.publish(project);
+    registry.at_mut(0).added_sources =
+        super::configured_sources(&[serde_json::json!({"id":"source-2","path":shared})]);
+    registry.park(serde_json::json!({
+        "id":"proj-2", "environment_id":"env-3", "path":root.path().join("away"),
+        "added_sources":[{"id":"source-7","path":shared}]
+    }));
+    assert_eq!(
+        registry
+            .environments_referencing(&shared.join("."))
+            .iter()
+            .map(|environment| environment.id.as_str())
+            .collect::<Vec<_>>(),
+        ["env-1", "env-2", "env-3"]
+    );
+    assert!(registry
+        .environments_referencing(&root.path().join("absent"))
+        .is_empty());
+}
+
+#[test]
+fn registered_sources_include_hidden_and_parked_references() {
+    let root = tempfile::tempdir().unwrap();
+    let hidden = root.path().join("hidden");
+    let parked_added = root.path().join("parked-added");
+    let parked_legacy = root.path().join("parked-legacy");
+    let unknown_owner = root.path().join("unknown-owner");
+    let mut registry = ProjectRegistry::new();
+    registry.restore_environments(&serde_json::json!({"environments":[
+        {"id":"env-1","sources":[{"id":"source-1","path":hidden}]}
+    ]}));
+    registry.park(serde_json::json!({
+        "id":"proj-1", "environment_id":"env-1", "path":root.path().join("away"),
+        "added_sources":[{"id":"source-2","path":parked_added}],
+        "sources":[{"id":"source-3","path":parked_legacy}]
+    }));
+    registry.park(serde_json::json!({
+        "id":"proj-2", "environment_id":"env-missing", "path":root.path().join("away-2"),
+        "sources":[{"id":"source-4","path":unknown_owner}]
+    }));
+    let paths = registry
+        .registered_sources()
+        .into_iter()
+        .map(|source| source.path)
+        .collect::<Vec<_>>();
+    assert!(paths.contains(&hidden));
+    assert!(paths.contains(&parked_added));
+    assert!(
+        !paths.contains(&parked_legacy),
+        "a known environment owns the current references"
+    );
+    assert!(
+        paths.contains(&unknown_owner),
+        "a parked unknown owner keeps its legacy references reserved"
+    );
+}
+
+#[test]
+fn source_repoint_excludes_only_owning_record_from_containment_checks() {
+    let root = tempfile::tempdir().unwrap();
+    let shared = root.path().join("shared");
+    let home = root.path().join("home");
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::create_dir(&home).unwrap();
+    let mut registry = ProjectRegistry::new();
+    registry.restore_environments(&serde_json::json!({"environments":[
+        {"id":"env-1","sources":[{"id":"source-1","path":shared}]},
+        {"id":"env-2","sources":[{"id":"source-1","path":shared}]},
+        {"id":"env-3","sources":[{"id":"source-1","path":home}]}
+    ]}));
+    for environment in ["env-1", "env-3"] {
+        let mut project = candidate(&registry, home.clone(), project_fixture);
+        project.set_environment(environment);
+        registry.publish(project);
+    }
+    registry.at_mut(0).sources =
+        super::configured_sources(&[serde_json::json!({"id":"source-1","path":shared})]);
+    registry.at_mut(1).added_sources =
+        super::configured_sources(&[serde_json::json!({"id":"source-2","path":shared})]);
+    assert_eq!(
+        registry
+            .registered_sources_except("proj-1", "source-1")
+            .iter()
+            .filter(|source| source.path == shared)
+            .count(),
+        2,
+        "a sibling environment and project addition still reference the old folder"
+    );
+    assert_eq!(
+        registry
+            .registered_sources_except("proj-2", "source-2")
+            .iter()
+            .filter(|source| source.path == shared)
+            .count(),
+        2,
+        "removing a project addition must retain both environment references"
+    );
+}
+
+#[test]
+fn new_sibling_projection_does_not_copy_environment_sync_status() {
+    let root = tempfile::tempdir().unwrap();
+    let shared = root.path().join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    let mut registry = ProjectRegistry::new();
+    let sources = super::configured_sources(&[serde_json::json!({"id":"source-1","path":shared})]);
+    // The candidate publishes its own environment with these references.
+    let first = candidate(&registry, shared.clone(), |id, path, base| {
+        let mut project = project_fixture(id, path, base);
+        project.sources = sources;
+        project
+    });
+    registry.publish(first);
+    let status = super::base_sync::SyncStatus {
+        state: super::base_sync::SyncState::Synced,
+        reason: None,
+        ahead: 0,
+        behind: 0,
+        commits: 3,
+        needs_you: false,
+        last_attempt_ms: 100,
+        last_synced_ms: Some(100),
+        last_fetched_ms: Some(100),
+        timeouts: 0,
+    };
+    registry
+        .source_mut("proj-1", "source-1")
+        .unwrap()
+        .sync_status = Some(status.clone());
+    registry.reconcile_project_sources("proj-1");
+    let mut second = candidate(&registry, shared, project_fixture);
+    second.set_environment("env-1");
+    registry.publish(second);
+    registry.reconcile_project_sources("proj-2");
+    assert_eq!(
+        registry.get("proj-1").unwrap().sources[0].sync_status,
+        Some(status)
+    );
+    assert_eq!(registry.get("proj-2").unwrap().sources[0].sync_status, None,
+        "a new reference has never synced even when its environment source carries another owner's runtime projection");
+}

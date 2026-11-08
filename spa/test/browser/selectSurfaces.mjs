@@ -10,7 +10,8 @@ export const SELECT_SOURCES = {
   "core/agentRolesPanel.js": "device settings",
   "core/captureDecision.js": "task controls",
   "core/composeView.js": "compose",
-  "core/createWorkspaceWizard.js": "task controls",
+  "core/createWorkspaceEnvironmentDraft.js": "new environment",
+  "core/createWorkspaceWizard.js": "task controls / new environment / workspace advanced folders",
   "core/createWorkspaceLegacy.js": "task controls",
   "core/defaultHarness.js": "device settings",
   "core/diffSort.js": "task controls",
@@ -36,6 +37,8 @@ export const SELECT_SURFACES = [
   { name: "local settings", selectors: ["#creationdev", "#defprovider", "[data-harness-model]", "[data-harness-effort]"] },
   { name: "device settings", selectors: ["#device-transport", "[data-agent-mode]", "#defaultharness", "#projectagentharness", "#projectagentmodel", "#projectagenteffort", "[data-capability]", '[data-isolation="select"]'] },
   { name: "task controls", selectors: ["#task-status", "#task-priority", "[data-waiting-choice]", "#assign-assignee", "#assign-isolation", "#assign-choice-provider", "#assign-choice-model", "#assign-choice-effort", "#capture-project", "#create-work-isolation", ".diffsort-select", "select.mini"] },
+  { name: "new environment", selectors: ["#create-environment-device", "#create-environment-isolation"] },
+  { name: "workspace advanced folders", selectors: ["#create-work-isolation", "[data-create-advanced][open]"] },
   { name: "compose", selectors: ["#compose-project", "#compose-choice-provider", "#compose-choice-model", "#compose-choice-effort"] },
   { name: "workspace settings", selectors: ["#wsdiradd", "#wsdefprovider", "[data-harness-model]", "[data-harness-effort]"] },
   { name: "project settings", selectors: ['[data-isolation="select"]'] },
@@ -116,6 +119,25 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
     const transportHost = document.createElement("section");
     root.append(transportHost);
     disposers.push(m.httpControls.mountHttpTransportControls(transportHost, device.id));
+  }
+  // Render the production page bodies, including both remote and local-folder
+  // rows. These surfaces are shared by input and native-select paint checks.
+  const wizardFolders = [
+    { kind: "remote", remote: "https://github.com/org/api.git", name: "api", base_branch: "main" },
+    { kind: "path", path: "/code/shared", name: "shared", base_branch: "main" },
+  ];
+  if (name === "new environment") {
+    root.innerHTML = m.create.createWorkspaceWizardHtml({
+      page: 2, newEnvironmentDevices: [device, { id: "other-device", name: "Desktop" }],
+      environmentDraft: { deviceId: device.id, name: "Platform", isolation: "", sources: wizardFolders },
+    });
+  }
+  if (name === "workspace advanced folders") {
+    root.innerHTML = m.create.createWorkspaceWizardHtml({
+      page: 3, target: { kind: "environment", id: "env-1", deviceId: device.id, name: "Platform", sources: project.sources },
+      name: "Ship wizard", isolation: "", showAdvanced: true, advancedExpanded: true, addedSources: wizardFolders,
+      folderReferences: { environments: [{ deviceId: device.id, name: "Tools", sources: [{ path: "/code/shared" }] }] },
+    });
   }
   if (name === "task controls") {
     const task = { id: "task-1", state: "open", status: "backlog", priority: "medium", labels: [] };

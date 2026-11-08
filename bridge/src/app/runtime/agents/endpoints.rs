@@ -215,9 +215,11 @@ pub(in crate::app) fn agent_start(
         if requested_entity.is_some_and(|entity_id| s.plans.contains_key(entity_id)) {
             return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string().into());
         }
+        if let Some(entity_id) = requested_entity {
+            s.refuse_archived_entity(entity_id)?;
+            s.refuse_run_recovery(entity_id)?;
+        }
         let agent = s.addressed_agent(params)?;
-        s.refuse_archived_entity(&agent.entity_id)?;
-        s.refuse_run_recovery(&agent.entity_id)?;
         s.delivery_queue.enqueue(PendingAgentTurn {
             operation_id: None,
             root: agent.root.clone(),

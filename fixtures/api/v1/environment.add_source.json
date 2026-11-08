@@ -1,6 +1,6 @@
 {
   "method": "environment.add_source",
-  "since": "3.37.0",
+  "since": "3.38.0",
   "params": {
     "environment_id": "env-1",
     "path": "/home/ada/code/docs",

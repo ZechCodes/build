@@ -209,14 +209,13 @@ fn environment_availability_uses_its_current_home_and_newest_matching_probe() {
     let project = "proj-1".to_owned();
     let secondary = app.sources_for(&project).unwrap().pop().unwrap();
     assert!(app.projects.set_sources(&project, vec![secondary]));
-    assert!(app.projects.set_isolation(&project, Some(Isolation::Rift)));
     assert_eq!(app.project_for(&project).unwrap().home_path, original_home);
     let environment_id = app.project_for(&project).unwrap().environment_id.clone();
-    // Environment and project choices are independent after M3.2.
-    app.projects
-        .environment_mut(&environment_id)
-        .unwrap()
-        .isolation = Some(Isolation::Rift);
+    // This preference belongs to the environment and must survive its last project.
+    let mut configured = app.config_value(&app.projects_dir, app.default_harness, app.isolation);
+    configured["environments"][0]["isolation"] = json!("rift");
+    app.projects.restore_environments(&configured);
+    assert_eq!(app.project_for(&project).unwrap().isolation, None);
     app.snapshot_observations.projects.lock().unwrap().insert(
         project.clone(),
         ProjectObservation {

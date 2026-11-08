@@ -536,6 +536,27 @@ impl ProjectRegistry {
         true
     }
 
+    /// Older project-only config stored its environment default on the project.
+    /// Keep that initialization separate from edits to a current project.
+    pub(in crate::app) fn initialize_legacy_isolation(
+        &mut self,
+        project_id: &str,
+        isolation: Option<Isolation>,
+    ) -> bool {
+        if !self.set_isolation(project_id, isolation) {
+            return false;
+        }
+        let environment_id = self.get(project_id).unwrap().environment_id.clone();
+        if let Some(environment) = self
+            .environments
+            .iter_mut()
+            .find(|e| e.id == environment_id)
+        {
+            environment.isolation = isolation;
+        }
+        true
+    }
+
     pub(in crate::app) fn mark_git(&mut self, project_id: &str) -> bool {
         self.observation_projects.mark(project_id);
         let Some(project) = self

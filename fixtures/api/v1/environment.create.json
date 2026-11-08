@@ -1,6 +1,6 @@
 {
   "method": "environment.create",
-  "since": "3.37.0",
+  "since": "3.38.0",
   "params": {
     "name": "Build",
     "sources": [
@@ -50,7 +50,7 @@
       "project_ids": [
         "proj-2"
       ],
-      "device": "Ada’s workstation"
+      "device": "Ada\u2019s workstation"
     },
     "project": {
       "project_id": "proj-2",
@@ -259,5 +259,10 @@
     "internal",
     "project_archived"
   ],
-  "note": "M2.1 bridge contract; environments.create and projects.addedSources remain withheld until the M2.2 consumer."
+  "note": "Creates the environment, project and first workspace in one journaled attempt; page 2 only edits drafts.",
+  "capability": "environments.create",
+  "added_sources": {
+    "since": "3.38.0",
+    "capability": "projects.addedSources"
+  }
 }

@@ -1,4 +1,5 @@
 // Rendering remembers the latest greeting; dispatch requires the live capability.
+export { environmentWizardSupported } from "./writeOperationProgress.js";
 import { mergeCachedAtomically, readCached } from "./localCache.js";
 
 const FLAGS = ["list", "createProject", "create", "addedSources", "archive", "rename", "secrets"];

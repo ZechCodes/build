@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createWorkspaceProgressModel, openCreateWorkspaceProgress } from "../src/core/createWorkspaceProgress.js";
+import * as supportCache from "../src/core/environmentSupport.js";
+import { createWorkspaceProgressModel as progressModel, openCreateWorkspaceProgress } from "../src/core/createWorkspaceProgress.js";
 vi.mock("../src/core/motion.js", () => ({ reveal: async e => { e.hidden = false; }, hide: async e => { e.hidden = true; }, settleHidden: () => {} }));
+const createWorkspaceProgressModel=record=>progressModel(record,{create:true,createProject:true});
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
 const operation = (fields = {}) => ({ operationId: "attempt-1", request: { method: "environment.create_project", params: { name: "Release" } }, state: "executing", ...fields });
 const workspace = { id: "ws-1", project_id: "p1", name: "Release", directories: [] };
@@ -17,11 +19,11 @@ function serviceFor(initial) {
 let dialogs;
 function open(row, extra = {}) {
   const writeOperations = serviceFor(row);
-  const dialog = openCreateWorkspaceProgress({ operationId: "attempt-1", deviceId: "laptop", targetSummary: "Laptop · Sources › Payments", writeOperations, autoOpenDelay: 0, ...extra });
+  const dialog = openCreateWorkspaceProgress({ operationId: "attempt-1", deviceId: "laptop", targetSummary: "Laptop · Sources › Payments", writeOperations, environmentSupport:{create:true,createProject:true}, autoOpenDelay: 0, ...extra });
   dialogs.push(dialog); return { ...dialog, writeOperations };
 }
 beforeEach(() => { document.body.innerHTML = ""; dialogs = []; });
-afterEach(async () => { await Promise.all(dialogs.map(dialog => dialog.close())); vi.useRealTimers(); });
+afterEach(async () => { await Promise.all(dialogs.map(dialog => dialog.close())); vi.useRealTimers(); vi.restoreAllMocks(); });
 describe("workspace creation progress", () => {
   it("paints cached Done with the target summary and opens the workspace", async () => {
     const onOpenWorkspace = vi.fn(); open(completed(), { onOpenWorkspace });
@@ -182,4 +184,80 @@ it('keeps focus in the replacement dialog when Back opens the recovered legacy f
   const screen=open(operation({state:'failed',effect:'unapplied',confirmation:{error:{message:'Update first'}}}),{onBack});await screen.ready;
   document.querySelector('[data-progress-action="back"]').click();await flush();
   expect(document.activeElement).toBe(field);
+});
+
+it("shows all three environment-create steps and infers partial states from landed resources", () => {
+  const environment = {environment_id:"e1",name:"Sources"};
+  const model=createWorkspaceProgressModel(operation({request:{method:"environment.create"},state:"failed",effect:"partial",confirmation:{error:{message:"project refused",details:{environment}}}}));
+  expect(model.steps.map(({step,state})=>[step,state])).toEqual([["environment","done"],["project","failed"],["workspace","waiting"]]);
+  expect(model.actions.map(([action])=>action)).toEqual(["resume","keepEnvironment","discardEnvironment"]);
+  expect(model.message).toContain("no projects yet");
+});
+it.each([["resume","onResumeEnvironment"],["discardEnvironment","onDiscardEnvironment"]])("passes the landed environment and creating attempt to %s", async(action,handler)=>{
+  const environment={environment_id:"e1",name:"Sources"}; const callback=vi.fn();
+  open(operation({request:{method:"environment.create"},state:"failed",effect:"partial",confirmation:{error:{message:"refused",details:{environment}}}}),{[handler]:callback});
+  document.querySelector(`[data-progress-action="${action}"]`).click(); await flush();
+  expect(callback).toHaveBeenCalledWith(expect.objectContaining({environment,operationId:"attempt-1"}));
+});
+it("lists both landed resources when the workspace fails after environment and project creation",()=>{
+ const environment={environment_id:"e1",name:"Sources"};
+ const model=createWorkspaceProgressModel(operation({request:{method:"environment.create"},state:"failed",effect:"partial",confirmation:{error:{message:"checkout refused",details:{environment,project}}}}));
+ expect(model.steps.map(step=>step.state)).toEqual(["done","done","failed"]);
+ expect(model.message).toContain("Environment Sources was created");expect(model.message).toContain("Project Payments was created");
+});
+
+it.each(['project','environment','new-environment'])('uses the shared identity SVG in progress for %s',async kind=>{
+ const {kindGlyphHtml}=await import('../src/core/environmentIdentity.js');
+ open(operation(),{target:{kind,name:'Target'}});
+ const template=document.createElement('template');template.innerHTML=kindGlyphHtml(kind==='project'?'project':'environment');
+ expect(document.querySelector('.create-target-summary .identity-kind')?.outerHTML).toBe(template.content.firstChild.outerHTML);
+});
+
+it.each([true,false])("holds failed actions neutral until cached support resolves (supported: %s)",async supported=>{
+ let release;
+ const read=vi.spyOn(supportCache,"readEnvironmentSupport").mockReturnValue(new Promise(resolve=>{release=resolve;}));
+ const screen=open(failed(),{environmentSupport:null});
+ await flush();
+ expect(read).toHaveBeenCalledWith("laptop");
+ const actions=()=>[...document.querySelectorAll("[data-progress-action]")].map(button=>button.dataset.progressAction);
+ expect(document.body.textContent).toContain("checkout refused");
+ expect(document.body.textContent).not.toContain("Update Build");
+ expect(actions()).toEqual(["close"]);
+ screen.writeOperations.update(failed());
+ expect(document.body.textContent).not.toContain("Update Build");
+ expect(actions()).toEqual(["close"]);
+ release({createProject:supported});await screen.ready;
+ expect(actions()).toEqual(supported?["retry","keep","discard","close"]:["keep","close"]);
+ expect(document.body.textContent.includes("Update Build")).toBe(!supported);
+});
+
+it("focuses and auto-opens Done only after delayed cached support is read",async()=>{
+ vi.useFakeTimers();let release;
+ vi.spyOn(supportCache,"readEnvironmentSupport").mockReturnValue(new Promise(resolve=>{release=resolve;}));
+ const onOpenWorkspace=vi.fn();const screen=open(completed(),{environmentSupport:null,onOpenWorkspace,autoOpenDelay:900});
+ expect(document.querySelector('[data-progress-action="open"]')).toBeNull();
+ await vi.advanceTimersByTimeAsync(1000);expect(onOpenWorkspace).not.toHaveBeenCalled();
+ release({createProject:true});await screen.ready;
+ expect(document.activeElement).toBe(document.querySelector('[data-progress-action="open"]'));
+ await vi.advanceTimersByTimeAsync(900);expect(onOpenWorkspace).toHaveBeenCalledTimes(1);
+});
+
+it.each(['close','outside','back-to-close','interaction-only'])("preserves user takeover during delayed support: %s",async destination=>{
+ vi.useFakeTimers();let release;
+ vi.spyOn(supportCache,"readEnvironmentSupport").mockReturnValue(new Promise(resolve=>{release=resolve;}));
+ const onOpenWorkspace=vi.fn();const screen=open(completed(),{environmentSupport:null,onOpenWorkspace,autoOpenDelay:900});
+ const outside=document.createElement('button');document.body.append(outside);
+ const close=()=>document.querySelector('[data-progress-action="close"]');
+ if(destination==='outside'||destination==='back-to-close')outside.focus();
+ if(destination==='close')close().dispatchEvent(new Event('pointerdown',{bubbles:true}));
+ if(destination==='back-to-close')close().focus();
+ if(destination==='interaction-only')document.querySelector('[role="dialog"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Shift',bubbles:true}));
+ const expected=()=>destination==='outside'?outside:close();
+ expect(document.activeElement).toBe(expected());
+ release({createProject:true});await screen.ready;
+ expect(document.querySelector('[data-progress-action="open"]')).not.toBeNull();
+ expect(document.activeElement).toBe(expected());
+ await vi.advanceTimersByTimeAsync(1800);
+ expect(onOpenWorkspace).not.toHaveBeenCalled();
+ expect(document.activeElement).toBe(expected());
 });

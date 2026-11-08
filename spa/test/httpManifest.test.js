@@ -10,9 +10,9 @@ describe("reviewed REST manifest consumption", () => {
     expect(createHash("sha256").update(bytes).digest("hex")).toBe("1d0a0f110121629079963bb737a79d81e80fee2f4435831c225da2d2fcdd119f");
     expect(createHttpRoutes(manifest).operationIds()).toEqual(manifest.transport.operation_ids);
     expect(createHttpRoutes(manifest).operationIds()).toContain("tasks_review_retryDelivery");
-    // Combined M2.1/M3.1/M3.2 routes remain staged before capability activation.
+    // Creation routes are advertised; M3.1 and M3.2 edits remain staged.
     expect(manifest.operations).toHaveLength(171);
-    for (const operation of ["project_rename", "environment_rename", "environment_add_source", "environment_remove_source", "environment_update_source", "environment_sync_source", "environment_set_isolation", "environment_create", "environment_discard_unused", "project_archive", "project_restore", "environment_list", "tasks_review_snapshot", "tasks_review_act", "tasks_review_complete", "sync_head", "sync_snapshot", "sync_changes", "secrets_create", "secrets_list", "secrets_revoke", "secrets_audit"]) {
+    for (const operation of ["project_rename", "environment_rename", "environment_add_source", "environment_remove_source", "environment_update_source", "environment_sync_source", "environment_set_isolation", "environment_create_project", "environment_create", "environment_discard_unused", "project_archive", "project_restore", "environment_list", "tasks_review_snapshot", "tasks_review_act", "tasks_review_complete", "sync_head", "sync_snapshot", "sync_changes", "secrets_create", "secrets_list", "secrets_revoke", "secrets_audit"]) {
       expect(createHttpRoutes(manifest).operationIds()).toContain(operation);
     }
   });

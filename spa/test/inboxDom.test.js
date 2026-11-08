@@ -1298,3 +1298,20 @@ describe("cached environment inbox", () => {
     expect(rows()[0].querySelector('.inbox-project-line [data-kind="project"]')).not.toBeNull();
   });
 });
+it("excludes modern devices from the legacy sheet opened on an older sidebar device",async()=>{
+  const {writeCached}=await import('../src/core/localCache.js');
+  App.devices=[{id:'dev-1',name:'Modern'},{id:'dev-2',name:'Older'}];feed([workspace()],[project()]);App.deviceFilter=null;
+  document.querySelector('#inbox-new-project').innerHTML='<span>New project</span>';mountInboxList();
+  await writeCached({deviceId:'dev-1',entityId:'',kind:'environment-support'},{list:true,createProject:true,create:true});
+  await vi.waitFor(()=>expect(document.querySelector('#inbox-new-project span').textContent).toBe('New workspace'));
+  App.deviceFilter='dev-2';openNewProject();
+  expect(newRepoSheet.mock.calls[0][1].devices.map(device=>device.id)).toEqual(['dev-2']);
+});
+it('opens the wizard from cached create-only support even without the environment-list flag',async()=>{
+ const {writeCached}=await import('../src/core/localCache.js');
+ App.devices=[{id:'dev-1',name:'Modern'}];App.deviceFilter='dev-1';feed([workspace()],[project()]);
+ document.querySelector('#inbox-new-project').innerHTML='<span>New project</span>';mountInboxList();
+ await writeCached({deviceId:'dev-1',entityId:'',kind:'environment-support'},{create:true,createProject:false,list:false});
+ await vi.waitFor(()=>expect(document.querySelector('#inbox-new-project span').textContent).toBe('New workspace'));
+ openNewProject();expect(createWorkspace).toHaveBeenCalledWith(expect.objectContaining({deviceId:'dev-1',fixedProject:false}));expect(newRepoSheet).not.toHaveBeenCalled();
+});

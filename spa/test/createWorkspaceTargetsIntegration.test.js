@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+vi.mock("../src/core/changeEvents.js",()=>({bridgeCapabilities:()=>({environments:{}})}));
 
 const runtime = vi.hoisted(() => ({ list: vi.fn(), call: vi.fn() }));
 vi.mock("../src/core/writeOperationRuntime.js", () => ({
@@ -91,4 +92,10 @@ describe("workspace targets with the environment cache", () => {
     expect(model.sections[0].targets[0].name).toBe("Existing board");
     expect(model.legacyNote).toBe("This device needs an update to create environments here");
   });
+});
+it("reads new-environment and added-folder rendering support from persisted cache flags",async()=>{
+ await rememberEnvironmentSupport('laptop',{environments:{list:true,createProject:true,create:true,addedSources:true}});
+ const snapshot=await readCreateWorkspaceTargets();
+ expect(snapshot.features.laptop).toMatchObject({create:true,addedSources:true});
+ expect(createWorkspaceWizardModel(snapshot).newEnvironmentDevices).toEqual(App.devices);
 });

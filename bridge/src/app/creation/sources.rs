@@ -20,13 +20,23 @@ pub(super) fn reserve(
         .unwrap_or_else(|| app.projects_dir.clone());
     let root =
         crate::worktree::canonical_planned_path(&parent.join(format!("environment-{operation}")));
-    app.validate_secret_source(&root).map_err(ApiError::from)?;
+    app.validate_secret_source(&root).map_err(|message| {
+        source_refusal(
+            message,
+            if method == "environment.create" {
+                "environment"
+            } else {
+                "project"
+            },
+        )
+    })?;
     let mut evidence = json!({"project_key":format!("project:{}",uuid::Uuid::new_v4()),"steps":[],"source_root":root,"source_owner":operation});
     let (inherited, project) = if method == "environment.create" {
         evidence["environment_id"] = json!(format!("env-{operation}"));
         let plan = app
             .plan_creation_sources(params["sources"].as_array().unwrap(), &[], &root)
-            .map_err(ApiError::from)?;
+            .map(|plan| scope_source_plan(plan, "environment"))
+            .map_err(|message| source_refusal(message, "environment"))?;
         let inherited = planned_sources(&plan).map_err(ApiError::from)?;
         evidence["environment_source_count"] = json!(inherited.len());
         evidence["source_plan"] = plan;
@@ -49,7 +59,8 @@ pub(super) fn reserve(
         .unwrap_or_default();
     let additions = app
         .plan_creation_sources(&extra, &inherited, &root)
-        .map_err(ApiError::from)?;
+        .map(|plan| scope_source_plan(plan, "project"))
+        .map_err(|message| source_refusal(message, "project"))?;
     evidence["source_plan"]
         .as_array_mut()
         .unwrap()
@@ -58,6 +69,32 @@ pub(super) fn reserve(
     // that were absent at admission, and only while they are still empty.
     evidence["source_parents"] = json!(missing_parents(&root));
     Ok(evidence)
+}
+fn source_details(scope: &str) -> Value {
+    json!({"step":"sources","source_scope":scope})
+}
+fn source_refusal(message: String, scope: &str) -> ApiError {
+    ApiError::Internal {
+        message,
+        details: Some(json!({"creation":source_details(scope)})),
+    }
+}
+fn scope_source_plan(mut plan: Value, scope: &str) -> Value {
+    for entry in plan.as_array_mut().into_iter().flatten() {
+        entry["creation_source"] = source_details(scope);
+    }
+    plan
+}
+fn retain_source_refusal(evidence: &mut Value, method: &str) {
+    if evidence["source_refusal"].is_object() {
+        return;
+    }
+    let scope = if method == "environment.create" {
+        "environment"
+    } else {
+        "project"
+    };
+    evidence["source_refusal"] = source_details(scope);
 }
 fn planned_sources(plan: &Value) -> Result<Vec<ProjectSource>, String> {
     plan.as_array()
@@ -104,6 +141,7 @@ pub(super) fn prepare(
     let sources = match prepared {
         Ok(sources) => sources,
         Err(error) => {
+            retain_source_refusal(evidence, &record.method);
             // A cleanup failure must never turn a known source failure into a
             // later provisioning run. Freeze intent before attempting unwind.
             evidence["source_failure"] = json!(error);
@@ -139,7 +177,10 @@ pub(super) fn prepare(
     );
     Ok(())
 }
-fn prepare_all(evidence: &Value, recovering_started: bool) -> Result<Vec<ProjectSource>, String> {
+fn prepare_all(
+    evidence: &mut Value,
+    recovering_started: bool,
+) -> Result<Vec<ProjectSource>, String> {
     let root = PathBuf::from(
         evidence["source_root"]
             .as_str()
@@ -147,9 +188,10 @@ fn prepare_all(evidence: &Value, recovering_started: bool) -> Result<Vec<Project
     );
     let plan = evidence["source_plan"]
         .as_array()
+        .cloned()
         .ok_or("source plan missing")?;
     if plan.iter().any(|entry| entry["remote"].is_string()) {
-        if recovering_started && !clones_have_completion_proof(&root, plan) {
+        if recovering_started && !clones_have_completion_proof(&root, &plan) {
             return Err(
                 "source clone was interrupted before completion was recorded; outcome unknown"
                     .into(),
@@ -157,7 +199,23 @@ fn prepare_all(evidence: &Value, recovering_started: bool) -> Result<Vec<Project
         }
         prepare_root(&root, evidence)?;
     }
-    plan.iter().map(|entry| open_source(entry, &root)).collect()
+    plan.iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            open_source(entry, &root).inspect_err(|_| {
+                evidence["source_refusal"] =
+                    entry.get("creation_source").cloned().unwrap_or_else(|| {
+                        let count =
+                            evidence["environment_source_count"].as_u64().unwrap_or(0) as usize;
+                        source_details(if index < count {
+                            "environment"
+                        } else {
+                            "project"
+                        })
+                    });
+            })
+        })
+        .collect()
 }
 fn prepare_root(root: &Path, evidence: &Value) -> Result<(), String> {
     if crate::worktree::canonical_planned_path(root) != root {

@@ -660,7 +660,8 @@ pub(in crate::app) fn publish_agent_tab(
         } else {
             reported_effort.or_else(|| model_choice.effort.clone())
         };
-        s.session_registry.insert_opened(key.clone(), tab);
+        let project = s.project_of(&owner).ok();
+        s.session_registry.insert_opened(key.clone(), tab, project);
         claim.settle(&mut s);
         s.record_agent_runtime_choice(&owner, &agent_id, running, running_effort);
         stranded = !s.agent_target_exists(&owner, &agent_id, conversation_id, &key.root);

@@ -37,13 +37,22 @@ impl TakenSourceNames {
     /// appended to it rather than opened with it.
     fn over(sources: &[ProjectSource]) -> Self {
         TakenSourceNames {
-            paths: sources.iter().map(|source| source.path.clone()).collect(),
+            paths: sources
+                .iter()
+                .map(|source| crate::worktree::canonical_planned_path(&source.path))
+                .collect(),
             remotes: sources.iter().filter_map(ProjectSource::origin).collect(),
             mounts: sources.iter().map(|source| source.mount.clone()).collect(),
         }
     }
 
     fn claim_path(&mut self, candidate: &std::path::Path) -> Result<(), String> {
+        if self.paths.iter().any(|existing| candidate == existing) {
+            return Err(format!(
+                "source is already included in this project: {}",
+                candidate.display()
+            ));
+        }
         if self.paths.iter().any(|existing: &std::path::PathBuf| {
             candidate.starts_with(existing) || existing.starts_with(candidate)
         }) {
@@ -69,12 +78,14 @@ impl TakenSourceNames {
         &self,
         requests: &[SourceRequest],
         managed_root: &std::path::Path,
+        registered: &[ProjectSource],
     ) -> Result<(), String> {
         for request in requests.iter().filter(|request| request.remote.is_some()) {
             let destination = managed_root.join(&request.mount);
             if self
                 .paths
                 .iter()
+                .chain(registered.iter().map(|source| &source.path))
                 .any(|source| destination.starts_with(source) || source.starts_with(&destination))
             {
                 return Err(format!(
@@ -176,6 +187,95 @@ impl WorktreeMutation for OpenProjectSources {
 }
 
 impl AppState {
+    /// Stored references also reserve membership when a folder was absent
+    /// during projection. Include the live home fallback without adopting it.
+    pub(super) fn project_reference_sources(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ProjectSource>, String> {
+        let project = self.project_for(project_id)?;
+        let environment = self
+            .projects
+            .environment(&project.environment_id)
+            .ok_or_else(|| format!("unknown environment: {}", project.environment_id))?;
+        Ok(environment
+            .sources
+            .iter()
+            .chain(&project.added_sources)
+            .chain(&project.sources)
+            .cloned()
+            .collect())
+    }
+
+    pub(super) fn refuse_source_duplicate(
+        &self,
+        project_id: &str,
+        candidate: &std::path::Path,
+        except: Option<&str>,
+    ) -> Result<(), String> {
+        let project = self.project_for(project_id)?;
+        let included_environment = self
+            .projects
+            .environments_referencing(candidate)
+            .iter()
+            .any(|environment| environment.id == project.environment_id);
+        let duplicate = included_environment
+            && self
+                .project_reference_sources(project_id)?
+                .iter()
+                .filter(|source| Some(source.id.as_str()) != except)
+                .any(|source| {
+                    std::fs::canonicalize(&source.path).is_ok_and(|path| path == candidate)
+                });
+        if duplicate {
+            return Err(format!(
+                "source is already included in this project: {}",
+                candidate.display()
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn refuse_source_containment(
+        &self,
+        candidate: &std::path::Path,
+        replacing: Option<(&str, &str)>,
+    ) -> Result<(), String> {
+        let registered = match replacing {
+            Some((project_id, source_id)) => self
+                .projects
+                .registered_sources_except(project_id, source_id),
+            None => self.projects.registered_sources(),
+        };
+        if registered.iter().any(|source| {
+            source.path != candidate
+                && (candidate.starts_with(&source.path) || source.path.starts_with(candidate))
+        }) {
+            return Err(format!(
+                "source overlaps a registered project source: {}",
+                candidate.display()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Off-lock preparations can race with another addition. Recheck current
+    /// membership before allocating IDs or writing configuration.
+    pub(super) fn validate_source_additions(
+        &self,
+        project_id: &str,
+        added: &[ProjectSource],
+    ) -> Result<(), String> {
+        let mut taken = TakenSourceNames::over(&self.project_reference_sources(project_id)?);
+        for source in added {
+            let candidate = canonical_source_path(&source.path)?;
+            self.validate_secret_source(&candidate)?;
+            taken.claim_path(&candidate)?;
+            self.refuse_source_containment(&candidate, None)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn project_init_git(&mut self, params: &Value) -> Result<Value, String> {
         self.mark_device_lifecycle_dirty()?;
         let project_id = require_str(params, "project_id")?;
@@ -306,26 +406,14 @@ impl AppState {
         let canonical = path.as_deref().map(canonical_source_path).transpose()?;
         if let Some(candidate) = &canonical {
             self.validate_secret_source(candidate)?;
-            if self
-                .projects
-                .iter()
-                .flat_map(|project| &project.sources)
-                .any(|existing| {
-                    candidate.starts_with(&existing.path) || existing.path.starts_with(candidate)
-                })
-            {
-                return Err(format!(
-                    "source overlaps a registered project source: {}",
-                    candidate.display()
-                ));
-            }
             taken.claim_path(candidate)?;
+            self.refuse_source_containment(candidate, None)?;
         }
         if let Some(remote) = remote {
             if self
                 .projects
+                .registered_sources()
                 .iter()
-                .flat_map(|project| &project.sources)
                 .filter_map(ProjectSource::origin)
                 .any(|origin| crate::worktree::remotes_match(&origin, remote))
             {
@@ -393,10 +481,13 @@ impl AppState {
             .unwrap_or_else(|| requests[0].name.clone());
         let project_name = usable_project_name(safe_mount_name(&project_name))?;
         let managed_root = self.projects_dir.join(format!("{project_name}-sources"));
-        let canonical_projects_dir =
-            std::fs::canonicalize(&self.projects_dir).unwrap_or_else(|_| self.projects_dir.clone());
+        let canonical_projects_dir = crate::worktree::canonical_planned_path(&self.projects_dir);
         let planned_managed_root = canonical_projects_dir.join(format!("{project_name}-sources"));
-        taken.refuse_managed_destinations(&requests, &planned_managed_root)?;
+        taken.refuse_managed_destinations(
+            &requests,
+            &planned_managed_root,
+            &self.projects.registered_sources(),
+        )?;
         let title = project_name;
         self.defer_project(
             managed_root.clone(),
@@ -435,7 +526,7 @@ impl AppState {
         let project_id = require_str(params, "project_id")?;
         let project = self.project_for(&project_id)?;
         let project_name = usable_project_name(safe_mount_name(&project.name))?;
-        let sources = project.sources.clone();
+        let sources = self.project_reference_sources(&project_id)?;
         let id = self
             .projects
             .allocate_source_ids(Some(&project_id), 1)?
@@ -444,10 +535,13 @@ impl AppState {
         let mut taken = TakenSourceNames::over(&sources);
         let request = self.source_request(params, id, &mut taken)?;
         let managed_root = self.projects_dir.join(format!("{project_name}-sources"));
-        let canonical_projects_dir =
-            std::fs::canonicalize(&self.projects_dir).unwrap_or_else(|_| self.projects_dir.clone());
+        let canonical_projects_dir = crate::worktree::canonical_planned_path(&self.projects_dir);
         let planned_managed_root = canonical_projects_dir.join(format!("{project_name}-sources"));
-        taken.refuse_managed_destinations(std::slice::from_ref(&request), &planned_managed_root)?;
+        taken.refuse_managed_destinations(
+            std::slice::from_ref(&request),
+            &planned_managed_root,
+            &self.projects.registered_sources(),
+        )?;
         // The directory the source will be read or written at is the row's
         // identity, as it is for every other project verb: what a second
         // `add_source` collides with is the folder, not the project's record.

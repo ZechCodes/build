@@ -84,22 +84,26 @@ impl AppState {
             return Err(format!("unknown project: {project_id}"));
         };
         let mut sources = project.sources.clone();
-        let value = self.commit_project_configuration(project_id, |projects| {
-            // Prepared IDs were never published. Reassign the entire new batch
-            // against current state before appending, under the same app lock
-            // and rollback snapshot as the durable membership change.
-            let ids = projects.allocate_source_ids(Some(project_id), added.len())?;
-            let mut added = added;
-            for (source, id) in added.iter_mut().zip(ids) {
-                source.id = id;
-            }
-            sources.extend(added);
-            assert!(
-                projects.set_sources(project_id, sources),
-                "project was resolved"
-            );
-            Ok(())
-        });
+        let value = self
+            .validate_source_additions(project_id, &added)
+            .and_then(|()| {
+                self.commit_project_configuration(project_id, |projects| {
+                    // Prepared IDs were never published. Reassign the entire new batch
+                    // against current state before appending, under the same app lock
+                    // and rollback snapshot as the durable membership change.
+                    let ids = projects.allocate_source_ids(Some(project_id), added.len())?;
+                    let mut added = added;
+                    for (source, id) in added.iter_mut().zip(ids) {
+                        source.id = id;
+                    }
+                    sources.extend(added);
+                    assert!(
+                        projects.set_sources(project_id, sources),
+                        "project was resolved"
+                    );
+                    Ok(())
+                })
+            });
         let value = match value {
             Ok(value) => value,
             Err(error) => {

@@ -1692,6 +1692,19 @@ promotion share the same mint function. Additions prepared off lock receive
 final IDs again inside their membership transaction, against current
 reservations, so concurrent preparations cannot publish duplicate identities.
 Hidden references are never replaced by the fallback.
+Source references use canonical directory paths as their location identity.
+Different environments or projects may reference the same directory; one
+project's effective sources may include it only once. Admission checks owning
+environment and project-added records, including parked references, rather
+than only the live projections. Strict containment remains refused, as do
+vault overlap, a managed clone destination overlapping a source, and cloning
+an already registered remote. Linked worktrees remain distinct directories.
+Unlinking a reference never deletes its folder, even for the last reference
+to a managed clone. Reference settings update their owning record and its
+dependent project projections; other references to the directory keep their
+settings. Git mutations invalidate views for every referencing project and
+affected checkout, while sync status remains keyed by project and source.
+The shared common-Git-directory lock continues to serialize repository work.
 A configured project whose home folder is missing at boot is parked, not
 dropped (`bridge/src/app/projects/parked.rs`): its configuration is kept
 verbatim and written back on every save, its `proj-N` stays reserved, and

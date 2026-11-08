@@ -55,6 +55,17 @@ pub(in crate::app) fn admit(
         Some(record) => (record.acceptance, record.reservations),
         None => reserve_attempt(state, method, &params, &owner, &metadata.operation_id)?,
     };
+    // The new environment owns its attempt before its config exists. This also
+    // orders later create_project claims behind an unresolved first attempt.
+    let owner = if method == "environment.create" {
+        reservations
+            .first()
+            .ok_or_else(|| ApiError::unavailable("environment reservation missing"))?
+            .owner
+            .clone()
+    } else {
+        owner
+    };
     #[cfg(test)]
     tests::at_boundary(tests::Boundary::AdmissionPrepared);
     writer
@@ -136,11 +147,6 @@ fn capture_scope(app: &AppState, method: &str, params: &Value) -> Result<Creatio
         app.projects
             .environment(id)
             .ok_or_else(|| ApiError::invalid_params("unknown environment"))?;
-        if app.config_path.is_none() {
-            return Err(ApiError::unavailable(
-                "creation needs durable project configuration",
-            ));
-        }
         ("environment", id, None)
     } else {
         let id = params["project_id"].as_str().unwrap();
@@ -186,7 +192,18 @@ fn reserve_attempt(
     let reservation = MutationResource {
         kind: kind.into(),
         id: id.into(),
-        owner: owner.clone(),
+        owner: if method == "environment.create" {
+            MutationOwner {
+                kind: "environment".into(),
+                id: creation["environment_id"]
+                    .as_str()
+                    .ok_or_else(|| ApiError::unavailable("environment reservation missing"))?
+                    .into(),
+                generation: 0,
+            }
+        } else {
+            owner.clone()
+        },
     };
     let mut creation = creation;
     creation["effect_state"] = json!("not_started");
@@ -333,6 +350,27 @@ impl AppState {
             record.execution["project_key"].as_str() == Some(project.project_key.as_str())
         }) {
             return Err(crate::reclaim::BUSY.into());
+        }
+        Ok(())
+    }
+    pub(in crate::app) fn refuse_pending_environment_creation(
+        &self,
+        environment: &str,
+    ) -> Result<(), String> {
+        let Some(store) = &self.store else {
+            return Ok(());
+        };
+        if store
+            .writer()
+            .pending_creations()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .any(|r| {
+                r.execution["environment_id"] == environment
+                    || r.scope["environment_id"] == environment
+            })
+        {
+            return Err("environment has a pending creation; wait for it to settle".into());
         }
         Ok(())
     }

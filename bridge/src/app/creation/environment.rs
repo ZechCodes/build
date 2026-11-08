@@ -37,11 +37,13 @@ pub(super) fn step(
     }
     #[cfg(test)]
     tests::at_boundary(tests::Boundary::EnvironmentStarted);
-    if let Err(error)=persist(state,record,evidence,&id,sources) {
-        if evidence["effect_step"]=="environment" && state.lock().unwrap().projects.environment(&id).is_none() {
+    if let Err(error) = persist(state, record, evidence, &id, sources) {
+        if evidence["effect_step"] == "environment"
+            && state.lock().unwrap().projects.environment(&id).is_none()
+        {
             // Atomic config replacement failed before rename; no environment
             // by this reserved identity landed. Preserve that positive proof.
-            checkpoint_effect(writer,&record.operation_id,evidence,"not_started")?;
+            checkpoint_effect(writer, &record.operation_id, evidence, "not_started")?;
         }
         return Err(error);
     }
@@ -65,19 +67,39 @@ pub(super) fn step(
     );
     Ok(())
 }
-fn persist(state:&Arc<Mutex<AppState>>,record:&MutationRecord,evidence:&Value,id:&str,mut sources:Vec<crate::app::projects::ProjectSource>)->Result<(),String> {
-    let mut app=state.lock().unwrap();
-    if app.projects.environment(id).is_some() {return Ok(());}
-    if evidence["effect_step"]!="environment" {
-        return Err("saved creation environment identity is no longer available; outcome unknown".into());
+fn persist(
+    state: &Arc<Mutex<AppState>>,
+    record: &MutationRecord,
+    evidence: &Value,
+    id: &str,
+    mut sources: Vec<crate::app::projects::ProjectSource>,
+) -> Result<(), String> {
+    let mut app = state.lock().unwrap();
+    if app.projects.environment(id).is_some() {
+        return Ok(());
+    }
+    if evidence["effect_step"] != "environment" {
+        return Err(
+            "saved creation environment identity is no longer available; outcome unknown".into(),
+        );
     }
     app.publish_creation_sources(evidence);
-    app.validate_creation_environment_sources(&mut sources,&cloned_paths(evidence))?;
-    let home=sources.first().ok_or("environment has no sources")?;
-    let name=record.params["name"].as_str().unwrap_or(&home.name).to_owned();
-    let next_source=sources.len() as u64+1;
-    app.persist_creation_environment(Environment {id:id.into(),name,sources,next_source,
-        isolation:record.params["isolation"].as_str().and_then(crate::isolation::Isolation::from_wire)})
+    app.validate_creation_environment_sources(&mut sources, &cloned_paths(evidence))?;
+    let home = sources.first().ok_or("environment has no sources")?;
+    let name = record.params["name"]
+        .as_str()
+        .unwrap_or(&home.name)
+        .to_owned();
+    let next_source = sources.len() as u64 + 1;
+    app.persist_creation_environment(Environment {
+        id: id.into(),
+        name,
+        sources,
+        next_source,
+        isolation: record.params["isolation"]
+            .as_str()
+            .and_then(crate::isolation::Isolation::from_wire),
+    })
 }
 pub(super) fn cloned_paths(evidence: &Value) -> Vec<std::path::PathBuf> {
     evidence["source_plan"]

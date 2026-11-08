@@ -49,6 +49,9 @@ impl MutationAuthority {
     }
 
     fn permits(&self, operation: &MutationRecord) -> bool {
+        if operation.method == "environment.create" {
+            return permits_reserved_environment(operation);
+        }
         // These existing owner identities have no reset generation. Future
         // enabled methods must publish their own generation-aware authority.
         !operation.owners.is_empty()
@@ -72,6 +75,26 @@ impl MutationAuthority {
                 })
             })
     }
+}
+
+// A paired device user's creation intent must remain observable before the
+// environment lands, after a refusal, and after an unused environment is
+// discarded. Its reserved opaque ID is authority to read this intent only;
+// it grants no RPC authority over an environment that does not exist.
+fn permits_reserved_environment(operation: &MutationRecord) -> bool {
+    let Some(id) = operation.execution["environment_id"].as_str() else {
+        return false;
+    };
+    operation.principal == DEVICE_USER
+        && operation.scope == json!({"device_id":"local"})
+        && id
+            .strip_prefix("env-")
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+        && operation.owners.len() == 1
+        && operation
+            .owners
+            .iter()
+            .all(|owner| owner.kind == "environment" && owner.id == id && owner.generation == 0)
 }
 
 #[derive(Clone)]

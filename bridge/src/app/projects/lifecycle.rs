@@ -38,7 +38,7 @@ impl OffLockJob for RemoveUnregisteredProject {
 }
 
 impl AppState {
-    pub(super) fn source_directory_has_owner(&self, path: &Path) -> bool {
+    pub(in crate::app) fn source_directory_has_owner(&self, path: &Path) -> bool {
         let project_owner = self
             .projects
             .registered_sources()

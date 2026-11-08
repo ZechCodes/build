@@ -446,7 +446,8 @@ fn finish_failure(
         details["environment"] = environment;
     }
     let landed = project_landed || environment_landed;
-    if !landed && !error.contains("outcome unknown")
+    if !landed
+        && (!error.contains("outcome unknown") || record.execution["source_failure"].is_string())
         && source_rollback_is_proven_safe(&record.execution)
         && record.execution["source_plan"]
             .as_array()
@@ -469,35 +470,13 @@ fn finish_failure(
         return retain_nonterminal(state, writer, &record, error);
     }
     let mut evidence = record.execution;
-    if environment_landed {
-        set_step(&mut evidence, "environment", "done", None);
-        if evidence["effect_step"] == "environment" {
-            evidence["effect_step"] = json!("project");
-            evidence["effect_state"] = json!("not_started");
-        }
-    }
-    if project_landed {
-        let project_id = details["project"]["project_id"]
-            .as_str()
-            .ok_or("landed project identity missing")?;
-        evidence["project_id"] = json!(project_id);
-        set_step(&mut evidence, "project", "done", None);
-        if evidence["effect_step"] == "project" {
-            evidence["effect_step"] = json!("workspace");
-            evidence["effect_state"] = json!("not_started");
-        }
-    }
-    let step = if record.method == "workspace.create" || project_landed {
-        "workspace"
-    } else if record.method == "environment.create" && !environment_landed {
-        if evidence["effect_step"] == "sources" {
-            "sources"
-        } else {
-            "environment"
-        }
-    } else {
-        "project"
-    };
+    checkpoint_landed_steps(&mut evidence, &details, project_landed, environment_landed)?;
+    let step = failed_step(
+        &record.method,
+        &evidence,
+        project_landed,
+        environment_landed,
+    );
     set_step(&mut evidence, step, "failed", Some(error));
     // The failed step and its terminal intent must survive the same checkpoint.
     // Restart completes this failure; it must never provision this attempt again.
@@ -522,6 +501,9 @@ fn retain_failure(
     let evidence = &current.execution;
     if !evidence["residue"].is_null() {
         return true;
+    }
+    if evidence["source_failure"].is_string() && evidence["effect_state"] == "settled" {
+        return !evidence["failure_intent"]["error"].is_string();
     }
     if error == STALE_PROJECT_IDENTITY || ambiguous_workspace(evidence, error) {
         return true;
@@ -772,7 +754,53 @@ fn created_environment(state: &Arc<Mutex<AppState>>, record: &MutationRecord) ->
         .cloned()
 }
 
-fn source_rollback_is_proven_safe(evidence:&Value)->bool {
-    evidence.get("workspace").is_none() && (evidence["effect_step"]=="sources" ||
-        (evidence["effect_state"]=="not_started" && matches!(evidence["effect_step"].as_str(),Some("environment"|"project"))))
+fn source_rollback_is_proven_safe(evidence: &Value) -> bool {
+    if evidence.get("workspace").is_some() {
+        return false;
+    }
+    match evidence["effect_step"].as_str() {
+        Some("sources") => evidence["effect_state"] == "started",
+        Some("environment" | "project") => {
+            evidence["effect_state"] == "not_started" && evidence["sources_prepared"] == true
+        }
+        _ => false,
+    }
+}
+fn checkpoint_landed_steps(
+    evidence: &mut Value,
+    details: &Value,
+    project: bool,
+    environment: bool,
+) -> Result<(), String> {
+    if environment {
+        set_step(evidence, "environment", "done", None);
+        advance_effect_step(evidence, "environment", "project");
+    }
+    if project {
+        evidence["project_id"] = json!(details["project"]["project_id"]
+            .as_str()
+            .ok_or("landed project identity missing")?);
+        set_step(evidence, "project", "done", None);
+        advance_effect_step(evidence, "project", "workspace");
+    }
+    Ok(())
+}
+fn advance_effect_step(evidence: &mut Value, from: &str, to: &str) {
+    if evidence["effect_step"] == from {
+        evidence["effect_step"] = json!(to);
+        evidence["effect_state"] = json!("not_started");
+    }
+}
+fn failed_step(method: &str, evidence: &Value, project: bool, environment: bool) -> &'static str {
+    if method == "workspace.create" || project {
+        return "workspace";
+    }
+    if method == "environment.create" && !environment {
+        return if evidence["effect_step"] == "sources" {
+            "sources"
+        } else {
+            "environment"
+        };
+    }
+    "project"
 }

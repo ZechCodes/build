@@ -14,14 +14,16 @@ pub(super) fn reserve(
     let app = state.lock().unwrap();
     let parent = params["parent"]
         .as_str()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
         .map(crate::app::expand_tilde)
         .unwrap_or_else(|| app.projects_dir.clone());
     let root =
         crate::worktree::canonical_planned_path(&parent.join(format!("environment-{operation}")));
     app.validate_secret_source(&root).map_err(ApiError::from)?;
     let mut evidence = json!({"project_key":format!("project:{}",uuid::Uuid::new_v4()),"steps":[],"source_root":root,"source_owner":operation});
-    let (mut inherited, project) = if method == "environment.create" {
-        evidence["environment_id"] = json!(format!("env-{}", uuid::Uuid::new_v4()));
+    let (inherited, project) = if method == "environment.create" {
+        evidence["environment_id"] = json!(format!("env-{operation}"));
         let plan = app
             .plan_creation_sources(params["sources"].as_array().unwrap(), &[], &root)
             .map_err(ApiError::from)?;
@@ -48,7 +50,6 @@ pub(super) fn reserve(
     let additions = app
         .plan_creation_sources(&extra, &inherited, &root)
         .map_err(ApiError::from)?;
-    inherited.extend(planned_sources(&additions).map_err(ApiError::from)?);
     evidence["source_plan"]
         .as_array_mut()
         .unwrap()
@@ -84,6 +85,8 @@ pub(super) fn prepare(
     {
         return Ok(());
     }
+    let recovering_started =
+        evidence["effect_step"] == "sources" && evidence["effect_state"] == "started";
     state.lock().unwrap().hold_creation_sources(evidence)?;
     progress(
         state,
@@ -97,10 +100,17 @@ pub(super) fn prepare(
     checkpoint_effect(writer, &record.operation_id, evidence, "started")?;
     #[cfg(test)]
     tests::at_boundary(tests::Boundary::SourceStarted);
-    let prepared = prepare_all(evidence);
+    let prepared = prepare_all(evidence, recovering_started);
     let sources = match prepared {
         Ok(sources) => sources,
         Err(error) => {
+            // A cleanup failure must never turn a known source failure into a
+            // later provisioning run. Freeze intent before attempting unwind.
+            evidence["source_failure"] = json!(error);
+            evidence["failure_intent"] = json!({"error":error});
+            writer
+                .checkpoint_creation(PRINCIPAL, &record.operation_id, evidence.clone())
+                .map_err(|e| e.to_string())?;
             rollback(state, writer, record, evidence, &error)?;
             return Err(error);
         }
@@ -129,7 +139,7 @@ pub(super) fn prepare(
     );
     Ok(())
 }
-fn prepare_all(evidence: &Value) -> Result<Vec<ProjectSource>, String> {
+fn prepare_all(evidence: &Value, recovering_started: bool) -> Result<Vec<ProjectSource>, String> {
     let root = PathBuf::from(
         evidence["source_root"]
             .as_str()
@@ -139,11 +149,20 @@ fn prepare_all(evidence: &Value) -> Result<Vec<ProjectSource>, String> {
         .as_array()
         .ok_or("source plan missing")?;
     if plan.iter().any(|entry| entry["remote"].is_string()) {
+        if recovering_started && !clones_have_completion_proof(&root, plan) {
+            return Err(
+                "source clone was interrupted before completion was recorded; outcome unknown"
+                    .into(),
+            );
+        }
         prepare_root(&root, evidence)?;
     }
     plan.iter().map(|entry| open_source(entry, &root)).collect()
 }
 fn prepare_root(root: &Path, evidence: &Value) -> Result<(), String> {
+    if crate::worktree::canonical_planned_path(root) != root {
+        return Err("source parent ownership proof changed; outcome unknown".into());
+    }
     if std::fs::symlink_metadata(root).is_ok() {
         return prove_root(root, evidence);
     }
@@ -185,7 +204,11 @@ fn open_source(entry: &Value, root: &Path) -> Result<ProjectSource, String> {
         if crate::worktree::canonical_planned_path(&source.path) != source.path {
             return Err("source ownership proof changed; outcome unknown".into());
         }
-        CloneRepo {
+        let completion = clone_completion(root, &source.id);
+        if source.path.exists() && !completion_is_ready(&completion) {
+            return Err("source clone completion proof missing; outcome unknown".into());
+        }
+        let opened = CloneRepo {
             url: remote.into(),
             name: source.name.clone(),
             dest: source.path.clone(),
@@ -193,7 +216,21 @@ fn open_source(entry: &Value, root: &Path) -> Result<ProjectSource, String> {
             requested_base,
         }
         .perform()?
-        .output
+        .output;
+        if !completion.exists() {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&completion)
+                .map_err(|e| e.to_string())?;
+            file.write_all(b"ready").map_err(|e| e.to_string())?;
+            file.sync_all().map_err(|e| e.to_string())?;
+            std::fs::File::open(root)
+                .and_then(|dir| dir.sync_all())
+                .map_err(|e| e.to_string())?;
+        }
+        opened
     } else {
         OpenRepo {
             path: source.path.clone(),
@@ -206,6 +243,25 @@ fn open_source(entry: &Value, root: &Path) -> Result<ProjectSource, String> {
     source.is_git = opened.is_git;
     source.base_branch = opened.base;
     Ok(source)
+}
+fn clone_completion(root: &Path, id: &str) -> PathBuf {
+    root.join(format!(".build-{id}.ready"))
+}
+fn completion_is_ready(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file())
+        && std::fs::read(path).is_ok_and(|value| value == b"ready")
+}
+fn clones_have_completion_proof(root: &Path, plan: &[Value]) -> bool {
+    plan.iter()
+        .filter(|entry| entry["remote"].is_string())
+        .all(|entry| {
+            entry["source"]["id"]
+                .as_str()
+                .is_some_and(|id| completion_is_ready(&clone_completion(root, id)))
+                && entry["source"]["path"]
+                    .as_str()
+                    .is_some_and(|path| Path::new(path).exists())
+        })
 }
 pub(super) fn prepared(evidence: &Value) -> Result<Vec<ProjectSource>, String> {
     if evidence["prepared_sources"].is_null() {
@@ -227,48 +283,17 @@ pub(super) fn rollback(
             .as_str()
             .ok_or("source root missing")?,
     );
+    progress(
+        state,
+        &record.operation_id,
+        evidence,
+        "sources",
+        "running",
+        Some("Cleaning up…"),
+    );
     if has_clones(evidence) {
-        let app = state.lock().unwrap();
-        if let Some(claims) = evidence["source_owner"]
-            .as_str()
-            .and_then(|o| app.creation_source_claims.get(o))
-        {
-            for claim in claims {
-                claim.hold_writing();
-            }
-        }
-        if app
-            .projects
-            .registered_sources()
-            .iter()
-            .any(|s| s.path.starts_with(&root))
-        {
-            return Err("source acquired another owner; outcome unknown".into());
-        }
-        // Claims stay Writing until configuration is ready to publish, so no
-        // registration can enter while removal runs off the application lock.
-        drop(app);
-        if std::fs::symlink_metadata(&root).is_ok() {
-            prove_root(&root, evidence)?;
-            std::fs::remove_dir_all(&root)
-                .map_err(|e| format!("could not fully roll back source: {e}; outcome unknown"))?;
-        }
-        for path in evidence["source_parents"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-        {
-            match std::fs::remove_dir(path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    return Err(format!(
-                        "could not fully roll back source parent: {e}; outcome unknown"
-                    ))
-                }
-            }
-        }
+        exclude_new_source_owners(state, evidence, &root)?;
+        remove_owned_source_root(evidence, &root)?;
     }
     evidence["effect_state"] = json!("settled");
     evidence["failure_intent"] = json!({"error":error});
@@ -280,6 +305,49 @@ pub(super) fn rollback(
             evidence.clone(),
         )
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+fn exclude_new_source_owners(
+    state: &Arc<Mutex<AppState>>,
+    evidence: &Value,
+    root: &Path,
+) -> Result<(), String> {
+    let app = state.lock().unwrap();
+    if let Some(claims) = evidence["source_owner"]
+        .as_str()
+        .and_then(|o| app.creation_source_claims.get(o))
+    {
+        for claim in claims {
+            claim.hold_writing();
+        }
+    }
+    if app.source_directory_has_owner(root) {
+        return Err("source acquired another owner; outcome unknown".into());
+    }
+    Ok(())
+}
+fn remove_owned_source_root(evidence: &Value, root: &Path) -> Result<(), String> {
+    if std::fs::symlink_metadata(root).is_ok() {
+        prove_root(root, evidence)?;
+        std::fs::remove_dir_all(root)
+            .map_err(|e| format!("could not fully roll back source: {e}; outcome unknown"))?;
+    }
+    for path in evidence["source_parents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        match std::fs::remove_dir(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "could not fully roll back source parent: {e}; outcome unknown"
+                ))
+            }
+        }
+    }
     Ok(())
 }
 fn has_clones(evidence: &Value) -> bool {

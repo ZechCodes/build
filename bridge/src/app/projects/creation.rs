@@ -224,9 +224,15 @@ impl AppState {
             .sources
             .clone();
         for source in added.iter() {
-            let path=crate::worktree::canonical_planned_path(&source.path);
-            if inherited.iter().any(|s|crate::worktree::canonical_planned_path(&s.path)==path) {
-                return Err(format!("source is already included in this project: {}",path.display()));
+            let path = crate::worktree::canonical_planned_path(&source.path);
+            if inherited
+                .iter()
+                .any(|s| crate::worktree::canonical_planned_path(&s.path) == path)
+            {
+                return Err(format!(
+                    "source is already included in this project: {}",
+                    path.display()
+                ));
             }
         }
         // Existing environment references can be temporarily unavailable. New

@@ -835,6 +835,7 @@ impl AppState {
         name: &str,
         params: &Value,
     ) -> Result<Value, String> {
+        self.refuse_pending_environment_creation(environment)?;
         let inherited = self
             .projects
             .environment(environment)

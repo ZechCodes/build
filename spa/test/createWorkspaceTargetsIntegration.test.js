@@ -92,3 +92,9 @@ describe("workspace targets with the environment cache", () => {
     expect(model.legacyNote).toBe("This device needs an update to create environments here");
   });
 });
+it("reads new-environment and added-folder rendering support from persisted cache flags",async()=>{
+ await rememberEnvironmentSupport('laptop',{environments:{list:true,createProject:true,create:true,addedSources:true}});
+ const snapshot=await readCreateWorkspaceTargets();
+ expect(snapshot.features.laptop).toMatchObject({create:true,addedSources:true});
+ expect(createWorkspaceWizardModel(snapshot).newEnvironmentDevices).toEqual(App.devices);
+});

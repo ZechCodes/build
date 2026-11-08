@@ -106,3 +106,7 @@ it("marks empty environments resumable while keeping their no-project descriptio
   const row = section(createWorkspaceWizardModel({...base,projects:[]}),"environments").targets[0];
   expect(row).toMatchObject({empty:true}); expect(row.description).toContain("no projects yet");
 });
+it("replaces the M1 add-project empty state when a cached device can create environments",()=>{
+ const model=createWorkspaceWizardModel({devices:[device],support:{d1:true},features:{d1:{create:true}}});
+ expect(model.emptyText).not.toContain("Add a project");expect(model.newEnvironmentDevices).toEqual([device]);
+});

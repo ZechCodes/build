@@ -191,7 +191,7 @@ export async function openBrowser(opts) {
       return;
     }
   };
-  $("#scrim").classList.add("show");
+  if (!embedded) $("#scrim").classList.add("show");
   container.innerHTML = present(`<div class="dim browse-loading" style="padding:14px">loading…</div>
     ${cancelHtml}<div class="adderr" id="berr" role="status"></div>`);
   renderedRoot = container.firstElementChild;

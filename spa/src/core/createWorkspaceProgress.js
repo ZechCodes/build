@@ -18,7 +18,11 @@ function resourcesOf(record) {
   const result = operationResult(record);
   const details = operationError(record)?.details || {};
   return { environment: result.environment || details.environment || null, project: result.project || details.project || null,
-    workspace: result.workspace || (result.project_id && (result.workspace_id || result.id) ? result : null) };
+    workspace: result.workspace || bareWorkspace(result) };
+}
+
+function bareWorkspace(result) {
+  return result.project_id && (result.workspace_id || result.id) ? result : null;
 }
 
 function progressSteps(record, phase, resources) {
@@ -86,7 +90,9 @@ function outcomeMessage(phase, {environment, project}, error) {
   if (phase === "checking") return "Build lost the reply; checking what happened";
   if (phase !== "failed") return "";
   if (!project && environment) return `Environment ${environment.name || environment.environment_id} was created with no projects yet: ${error}`;
-  return project ? `Project ${project.name || project.id} was created. Its workspace was not: ${error}` : "Nothing was created.";
+  if (!project) return "Nothing was created.";
+  const prefix = environment ? `Environment ${environment.name || environment.environment_id} was created. ` : "";
+  return `${prefix}Project ${project.name || project.id} was created. Its workspace was not: ${error}`;
 }
 
 function outcomeActions(phase, {environment, project, workspace}) {

@@ -114,9 +114,10 @@ function targetSections(projects, environments, query, now) {
   ].filter((row) => row.targets.length);
 }
 
-function emptyText(sections, query) {
+function emptyText(sections, query, canCreate) {
   if (sections.length) return "";
-  return query?.trim() ? "No matching projects or environments" : "Add a project from settings first";
+  if (query?.trim()) return "No matching projects or environments";
+  return canCreate ? "No environments or projects yet" : "Add a project from settings first";
 }
 
 function modelContext(options) {
@@ -138,7 +139,7 @@ export function createWorkspaceWizardModel(options = {}) {
   return {
     sections, target, page: options.newEnvironment && options.features?.[options.deviceId]?.create ? 2 : target ? 3 : 1,
     newEnvironmentDevices: context.devices.filter(row => options.features?.[row.id]?.create),
-    emptyText: emptyText(sections, options.query),
+    emptyText: emptyText(sections, options.query, context.devices.some(row => options.features?.[row.id]?.create)),
     legacyNote: legacy ? "This device needs an update to create environments here" : "",
   };
 }

@@ -197,3 +197,9 @@ it.each([["resume","onResumeEnvironment"],["discardEnvironment","onDiscardEnviro
   document.querySelector(`[data-progress-action="${action}"]`).click(); await flush();
   expect(callback).toHaveBeenCalledWith(expect.objectContaining({environment,operationId:"attempt-1"}));
 });
+it("lists both landed resources when the workspace fails after environment and project creation",()=>{
+ const environment={environment_id:"e1",name:"Sources"};
+ const model=createWorkspaceProgressModel(operation({request:{method:"environment.create"},state:"failed",effect:"partial",confirmation:{error:{message:"checkout refused",details:{environment,project}}}}));
+ expect(model.steps.map(step=>step.state)).toEqual(["done","done","failed"]);
+ expect(model.message).toContain("Environment Sources was created");expect(model.message).toContain("Project Payments was created");
+});

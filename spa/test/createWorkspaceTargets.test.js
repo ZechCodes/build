@@ -55,3 +55,9 @@ it.each(['succeeded','failed'])('retains unconsumed terminal %s attempts until e
  expect((await readCreateWorkspaceTargets()).attempts).toEqual([attempt]);
  mocked.service.get.mockResolvedValue(attempt);await consumeCreateWorkspaceAttempt('d1','finished');expect(mocked.service.dismiss).toHaveBeenCalledWith('finished');
 });
+it('sends a new environment, project, workspace and added sources as one retained command',()=>{
+ const source={kind:'remote',remote:'https://github.com/org/api.git',name:'api',base_branch:'main'};
+ submitCreateWorkspace({target:{kind:'new-environment',deviceId:'d1'},environmentDraft:{name:'Sources',sources:[source],isolation:'worktree'},name:'Ship',addedSources:[{...source,remote:'https://github.com/org/extra.git',name:'extra'}],isolation:'rift',operationId:'one'});
+ expect(mocked.service.submit).toHaveBeenCalledTimes(1);
+ expect(mocked.service.submit).toHaveBeenCalledWith(expect.objectContaining({operationId:'one',method:'environment.create',params:{name:'Sources',sources:[{remote:source.remote,name:'api',base_branch:'main'}],isolation:'worktree',project:{name:'Ship',workspace:{name:'Ship',isolation:'rift'},added_sources:[{remote:'https://github.com/org/extra.git',name:'extra',base_branch:'main'}]}}}));
+});

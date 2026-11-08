@@ -1,5 +1,6 @@
 // The wizard's only boundary to environment/support plumbing and device writes.
 // Cached support selects the legacy flow without consulting connection state.
+import { sourceDraftParams } from './sourceDraft.js';
 import { App } from '../appState.js';
 import { readCached, subscribeCache, mergeCachedAtomically } from './localCache.js';
 import { readUiRecord, subscribeUiRecords } from './localUiStore.js';
@@ -24,7 +25,7 @@ async function readDeviceTargets(device) {
   ]);
   return { projects:projects.map(row=>stampProject(row,device.id)),
     environments:environments.map(row=>({...row,id:row.environment_id || row.id,deviceId:device.id})),
-    workspaces:workspaces.map(row=>stampWorkspace(row,device.id)), environmentsSupported:support.createProject,attempts:attempts.filter(recoverableCreation) };
+    workspaces:workspaces.map(row=>stampWorkspace(row,device.id)), environmentsSupported:support.createProject,features:support,attempts:attempts.filter(recoverableCreation) };
 }
 // A result is still recoverable until the user explicitly consumes it. Closing
 // the screen is not consumption: the operation may have finished off-screen.
@@ -40,6 +41,7 @@ export async function readCreateWorkspaceTargets() {
   const rows = await Promise.all(devices.map(readDeviceTargets));
   return { devices, projects:rows.flatMap(row=>row.projects), environments:rows.flatMap(row=>row.environments),
     workspaces:rows.flatMap(row=>row.workspaces), support:Object.fromEntries(rows.map((row,index)=>[devices[index].id,row.environmentsSupported])),
+    features:Object.fromEntries(rows.map((row,index)=>[devices[index].id,row.features])),
     visits:(await readUiRecord(visitsAddress))?.value || [],attempts:rows.flatMap(row=>row.attempts) };
 }
 export function followCreateWorkspaceTargets(listener) {
@@ -53,8 +55,13 @@ export function workspaceCreateParams({target,name='',isolation='',continues}) {
 function creationRequest(input) {
   if(input.target.kind === 'project') return {method:'workspace.create',params:workspaceCreateParams(input)};
   const {target,name,isolation,continues}=input;
-  return {method:'environment.create_project',params:{environment_id:target.id,name,
-    workspace:{name,...(isolation ? {isolation}:{})},...(continues ? {continues}:{})}};
+  const added = input.addedSources?.length ? {added_sources:input.addedSources.map(sourceDraftParams)} : {};
+  const project = {name,workspace:{name,...(isolation ? {isolation}:{})},...added};
+  const continuation = continues ? {continues} : {};
+  if(target.kind !== 'new-environment') return {method:'environment.create_project',params:{environment_id:target.id,...project,...continuation}};
+  const environment = input.environmentDraft;
+  return {method:'environment.create',params:{name:environment.name.trim(),sources:environment.sources.map(sourceDraftParams),
+    ...(environment.isolation ? {isolation:environment.isolation}:{}),project,...continuation}};
 }
 export function submitCreateWorkspace(input) {
   const service = deviceWriteOperations(input.target.deviceId);
@@ -92,7 +99,7 @@ export async function cacheCreatedResources(deviceId,answer) {
     const id=answer.environment.environment_id || answer.environment.id;
     return [...rows.filter(row=>(row.environment_id || row.id)!==id),answer.environment];
   });
-  await cacheCreatedWorkspace(deviceId,answer);
+  if(hasWorkspaceResult(answer)) await cacheCreatedWorkspace(deviceId,answer);
 }
 export function createdWorkspaceRoute(deviceId,answer) {
   const workspace=answer?.workspace || answer;
@@ -111,4 +118,14 @@ export async function discardCreatedProject({target,project,operationId}) {
   const projectId=project.project_id || project.id;
   await deviceCall(target.deviceId,'discard this project')('project.discard_unused',{project_id:projectId,creation_operation_id:operationId});
   await mergeCachedAtomically(listAddress(target.deviceId,'projects'),held=>(held || []).filter(row=>(row.project_id || row.id)!==projectId));
+}
+
+export async function discardCreatedEnvironment({target,environment,operationId}) {
+  const environmentId=environment.environment_id || environment.id;
+  await deviceCall(target.deviceId,'discard the environment')('environment.discard_unused',{environment_id:environmentId,creation_operation_id:operationId});
+  await mergeCachedAtomically(listAddress(target.deviceId,'environments'),held=>(held || []).filter(row=>(row.environment_id || row.id)!==environmentId));
+}
+
+function hasWorkspaceResult(answer) {
+  return answer?.workspace || (!answer?.environment && !answer?.project);
 }

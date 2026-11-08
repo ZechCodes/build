@@ -1,5 +1,5 @@
 // Creation progress is display evidence. It has no authority over an outcome.
-const creationMethods = new Set(["environment.create_project", "workspace.create"]);
+const creationMethods = new Set(["environment.create", "environment.create_project", "workspace.create"]);
 const progressStates = new Set(["running", "done", "failed"]);
 
 export const isCreationWrite = method => creationMethods.has(method);
@@ -11,8 +11,10 @@ export function creationSendEvidenceMatches(retained, sent) {
     && retained.revision === sent.revision && retained.state === sent.state && retained.acknowledged === sent.acknowledged
     && (retained.creationEvidence || 0) === (sent.creationEvidence || 0);
 }
-export const creationWritesSupported = (greeting, method) => !isCreationWrite(method)
-  || greeting?.capabilities?.includes("environments") === true;
+export function creationWritesSupported(greeting, method) {
+  if (!isCreationWrite(method)) return true;
+  return greeting?.capabilities?.includes(method === "environment.create" ? "environments.create" : "environments") === true;
+}
 
 export const creationNeverSent = row => row.transportAttempted === false && row.state === "queued"
   && !row.acknowledged && !row.progress?.length;

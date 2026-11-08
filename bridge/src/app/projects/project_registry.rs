@@ -128,6 +128,12 @@ pub(super) struct ProjectCandidate {
 }
 
 impl ProjectCandidate {
+    #[cfg(test)]
+    pub(super) fn set_test_identity(&mut self, environment_id: String, key: String) {
+        self.project.environment_id = environment_id;
+        self.project.project_key = key;
+    }
+
     pub(super) fn set_environment(&mut self, id: &str) {
         self.project.environment_id = id.to_string();
     }

@@ -108,6 +108,8 @@ mod parked;
 mod project_registry;
 #[cfg(test)]
 mod project_registry_tests;
+#[cfg(test)]
+pub(in crate::app) mod test_support;
 mod requests;
 mod source_holds;
 pub(in crate::app) use source_holds::SourceMoves;

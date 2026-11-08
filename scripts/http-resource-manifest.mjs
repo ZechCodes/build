@@ -57,6 +57,9 @@ for (const key of ["method", "operationId"]) {
 const keys = operations.map((op) => `${op.verb} ${op.path.replace(/\{\w+\}/g, "{}")}`);
 if (new Set(keys).size !== keys.length) throw new Error("Ambiguous resource routes");
 const exclusions = [
+  // #1035: planned creation consumers are capability-gated; M0.4/M1.1 own
+  // the bridge verbs and their future HTTP resource placements.
+  ...["environment.create_project", "project.discard_unused"].map((method) => ({ method, reason: "planned environment creation/recovery verb; bridge implementation and HTTP resource route have not landed" })),
   ...["agent.attach", "term.create", "term.close", "term.attach", "term.input", "term.resize", "term.ack"].map((method) => ({ method, reason: "terminal control/output uses a separately authenticated WebRTC path" })),
   ...["rtc.offer", "rtc.ice", "rtc.close"].map((method) => ({ method, reason: "authenticated WebRTC signaling only" })),
   ...["stream.start", "stream.events", "stream.state"].map((method) => ({ method, reason: "QA-only; never exported by HTTP" })),

@@ -127,3 +127,26 @@ forwards the seed to its bound history. A reset can leave the shared current
 conversation null while an older seed completes; the observer no longer reads
 that nullable shared pointer. The hidden-reset witness and historical control
 pin both the absence of a rejection and preservation of the seeded record.
+
+
+## #1035 workspace creation and progress
+
+The new `createWorkspaceTargets.js` produces `workspace.create`,
+`environment.create_project` and `project.discard_unused`. The first retains its
+existing resource route. The latter two receive explicit manifest exclusions:
+the SPA is built against the Environments plan, while M0.4/M1.1 still own their
+bridge implementations and eventual resource placements. No route is invented.
+
+`writes.progress` is a pushed event, never a callable RPC. Reviewed finite
+metadata occurrences cover the adapter's push-kind list, device-event map,
+HTTP/WebRTC write-frame classifiers, and write-service frame router. Existing
+event-label statement fingerprints change with these additions. The
+`bridge.epoch` occurrence in write admission still names a capability; its
+statement now also checks the creation-method gate.
+
+Exact source pins move from the deleted `createWork.js` to the new target,
+progress and creation-method helpers. Existing pins update only for the
+reviewed caller substitutions, progress routing/storage, and admission changes.
+The pure wizard view/model contain no additional recognized RPC producers.
+Dynamic dispatch expressions remain identical to the existing inventory; the
+scanner, helper recognition and all coverage assertions remain unchanged.

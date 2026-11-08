@@ -29,16 +29,17 @@ const metadataUses = {
     ["build.agentDefaults","const AGENT_DEFAULTS_KEY = [\"build.agentDefaults\"] ; const NO_PREFERENCE","0948c02e682985320b70eb74656594986171f9c647c57de29ba950da34507beb"],
   ],
   "core/bridgeApi/v1/index.js": [
-    ["term.output","[ \"changes\" , [\"term.output\"] , \"term.reset\" ,","3e19187efe49908cdfeb0d84c47dc2475bc1dd8e34ff78ddf5033f3f43de41a1"],
-    ["term.reset",", \"term.output\" , [\"term.reset\"] , \"term.closed\" ,","3e19187efe49908cdfeb0d84c47dc2475bc1dd8e34ff78ddf5033f3f43de41a1"],
-    ["term.closed",", \"term.reset\" , [\"term.closed\"] , \"rtc.ice\" ,","3e19187efe49908cdfeb0d84c47dc2475bc1dd8e34ff78ddf5033f3f43de41a1"],
-    ["rtc.diagnostics",", \"rtc.ice\" , [\"rtc.diagnostics\"] , \"bridge.update_status\" ,","3e19187efe49908cdfeb0d84c47dc2475bc1dd8e34ff78ddf5033f3f43de41a1"],
-    ["models.changed",", \"bridge.update_status\" , [\"models.changed\"] , \"harnesses.changed\" ,","3e19187efe49908cdfeb0d84c47dc2475bc1dd8e34ff78ddf5033f3f43de41a1"],
-    ["harnesses.changed",", \"models.changed\" , [\"harnesses.changed\"] , \"compaction.changed\" ,","3e19187efe49908cdfeb0d84c47dc2475bc1dd8e34ff78ddf5033f3f43de41a1"],
-    ["compaction.changed",", \"harnesses.changed\" , [\"compaction.changed\"] , \"secrets.changed\" ,","3e19187efe49908cdfeb0d84c47dc2475bc1dd8e34ff78ddf5033f3f43de41a1"],
-    ["secrets.changed",", \"compaction.changed\" , [\"secrets.changed\"] , \"writes.confirmed\" ,","3e19187efe49908cdfeb0d84c47dc2475bc1dd8e34ff78ddf5033f3f43de41a1"],
-    ["writes.confirmed",", \"secrets.changed\" , [\"writes.confirmed\"] , \"bridge.restarting\" ,","3e19187efe49908cdfeb0d84c47dc2475bc1dd8e34ff78ddf5033f3f43de41a1"],
-    ["bridge.restarting",", \"writes.confirmed\" , [\"bridge.restarting\"] , ] )","3e19187efe49908cdfeb0d84c47dc2475bc1dd8e34ff78ddf5033f3f43de41a1"],
+    ["term.output","[ \"changes\" , [\"term.output\"] , \"term.reset\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
+    ["term.reset",", \"term.output\" , [\"term.reset\"] , \"term.closed\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
+    ["term.closed",", \"term.reset\" , [\"term.closed\"] , \"rtc.ice\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
+    ["rtc.diagnostics",", \"rtc.ice\" , [\"rtc.diagnostics\"] , \"bridge.update_status\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
+    ["models.changed",", \"bridge.update_status\" , [\"models.changed\"] , \"harnesses.changed\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
+    ["harnesses.changed",", \"models.changed\" , [\"harnesses.changed\"] , \"compaction.changed\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
+    ["compaction.changed",", \"harnesses.changed\" , [\"compaction.changed\"] , \"secrets.changed\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
+    ["secrets.changed",", \"compaction.changed\" , [\"secrets.changed\"] , \"writes.confirmed\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
+    ["writes.confirmed",", \"secrets.changed\" , [\"writes.confirmed\"] , \"writes.progress\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
+    ["writes.progress",", \"writes.confirmed\" , [\"writes.progress\"] , \"bridge.restarting\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
+    ["bridge.restarting",", \"writes.progress\" , [\"bridge.restarting\"] , ] )","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
     ["secrets.attachments",". has ( [\"secrets.attachments\"] ) , sealedUpload","d602aee9fb486c0ef7a43dd7fc204224b250ee6b9c56e419bed26ac4f56d6adf"],
     ["secrets.sealedUpload",". has ( [\"secrets.sealedUpload\"] ) , metadataEvents","d602aee9fb486c0ef7a43dd7fc204224b250ee6b9c56e419bed26ac4f56d6adf"],
     ["secrets.metadataEvents",". has ( [\"secrets.metadataEvents\"] ) , }","d602aee9fb486c0ef7a43dd7fc204224b250ee6b9c56e419bed26ac4f56d6adf"],
@@ -145,7 +146,8 @@ const metadataUses = {
   "core/changeEvents.js": [
     ["compaction.changed","kinds : [ [\"compaction.changed\"] ] , mode","c27346939208820b8d95aac7199bdd6db22004a95ed5f68d962b5f368551d091"],
     ["files.hints",". includes ( [\"files.hints\"] ) ) ;","696d73df4befe57fd7f675bf2f6987edd81138ce7ab50f6fc79994f47cc2f3ba"],
-    ["writes.confirmed","( [ [ [\"writes.confirmed\"] , dispatchWriteConfirmation ]","7d1824116f67f0f38b9e63b9075e5815ffe18dd3c1abf9c0594e78a8921fbde6"],
+    ["writes.confirmed","( [ [ [\"writes.confirmed\"] , dispatchWriteConfirmation ]","06d4c42e09cfd3e624d0ea7aaa97f7753fe7b0cbbfa181303be348210ace0719"],
+    ["writes.progress","] , [ [\"writes.progress\"] , dispatchWriteConfirmation ]","06d4c42e09cfd3e624d0ea7aaa97f7753fe7b0cbbfa181303be348210ace0719"],
     ["models.changed","] , [ [\"models.changed\"] , ( _payload","33ace9748a13b4576ffe10b64014d642396cfb0f1a542e1a4b41fd9e51122e9c"],
     ["harnesses.changed","] , [ [\"harnesses.changed\"] , ( {","33ace9748a13b4576ffe10b64014d642396cfb0f1a542e1a4b41fd9e51122e9c"],
     ["compaction.changed","] , [ [\"compaction.changed\"] , ( payload","33ace9748a13b4576ffe10b64014d642396cfb0f1a542e1a4b41fd9e51122e9c"],
@@ -178,7 +180,8 @@ const metadataUses = {
     ["build.navigation.previous","const TAB_KEY = [\"build.navigation.previous\"] ; const trackers","3206e95b6e23daf65fdc6baad67c4da1b71cd4755605050775f71e498dbdbc37"],
   ],
   "core/httpSession.js": [
-    ["writes.confirmed",". type !== [\"writes.confirmed\"] && frame .","3b24f398d622d2aa8992d6ad855350470b4dca2fff709938cc6670e90e8f5ebc"],
+    ["writes.confirmed","( ! [ [\"writes.confirmed\"] , \"writes.progress\" ]","f18c0c901618e0fa60c5b764429dc17bfe9267b2b04576dce46159b37451e991"],
+    ["writes.progress","[ \"writes.confirmed\" , [\"writes.progress\"] ] . includes","f18c0c901618e0fa60c5b764429dc17bfe9267b2b04576dce46159b37451e991"],
   ],
   "core/peerLink.js": [
     ["rtc.diagnostics","] , [ [\"rtc.diagnostics\"] , receiveCandidateDiagnostic ]","4448b1282477bfb9c6ed1d5b46934f4b21fb358494a5cfdb2c0e66a5961690a3"],
@@ -188,8 +191,8 @@ const metadataUses = {
     ["build.inbox.folded","const FOLDED_PROJECTS_KEY = [\"build.inbox.folded\"] ; export const","c1ab98d6500b1cd02b0622be2d3293ffb0daba16f73b43cf6e9d0ad6da47d86d"],
   ],
   "core/sessionRpc.js": [
-    ["writes.confirmed","?. type === [\"writes.confirmed\"] ) { for","2b746622f13a67218656ffc40b51cba120d1b486e3cd30b9e6cf7741f060347f"],
-    ["writes.confirmed","?. type === [\"writes.confirmed\"] ; const writeCall","ec4fe8cbf8b6ecf2ddf61b0e21907ee76a514e858855b0ff3a88e345b591166f"],
+    ["writes.confirmed","\"ack\" || [ [\"writes.confirmed\"] , \"writes.progress\" ]","80db7e5b7207daa0c7240a67f0e355ef95e66f90df7804a8cd292ee6dcc73163"],
+    ["writes.progress","[ \"writes.confirmed\" , [\"writes.progress\"] ] . includes","80db7e5b7207daa0c7240a67f0e355ef95e66f90df7804a8cd292ee6dcc73163"],
   ],
   "core/syncDiagnostics.js": [
     ["project.agents",", \"worktree.diff\" , [\"project.agents\"] , \"changes.subscribe\" ,","c315d26ed94189e1621144d5736f4bb9c0da7cf78a7bfa4b91698875e9757c36"],
@@ -228,11 +231,11 @@ const metadataUses = {
     ["writes.confirmed",", type : [\"writes.confirmed\"] } ; }","2795e7db179ba7f242de1da4e2c5374014e01a2176db36eb7c134a3ad5e54510"],
   ],
   "core/writeOperations.js": [
-    ["bridge.epoch","?. includes ( [\"bridge.epoch\"] ) && greeting","7fb697f58374322f54a61ff6a979eaaf56611e419dca5a93142337282dabbee9"],
+    ["bridge.epoch","?. includes ( [\"bridge.epoch\"] ) && greeting","428ea3a7d297cf7ceb2ece1d250853754aef00a51d4e20d5bb94f00d77da4dcc"],
     ["writes.confirmed","{ type : [\"writes.confirmed\"] , operation_id :","c1701f080374ab4e940f9471b5b7ccc8ea63d20d8d6db08923dcabad029fd094"],
+    ["writes.progress","?. type !== [\"writes.progress\"] ) return applyFrame","5f285552dbc8815a63d3a48a44366608ef6006aed58f2e6fd0da7eba36c92859"],
     ["writes.confirmed",". type === [\"writes.confirmed\"] ) await confirm","fc7814e39ce3ed405f1ea69157ed241114a19cae1bc1e82c992227434461e8e9"],
     ["writes.confirmed",". type !== [\"writes.confirmed\"] ) return false","a3baa2366329368c852eaeaeb88463572c57f72296698d2135dd910b7ec7ccb1"],
-    // writeOperations.js compatibleRows: capability check before quarantining an incapable bridge.
     ["bridge.epoch","?. includes ( [\"bridge.epoch\"] ) ) await","7c787332c8e6015f1f2ed010aadd1ebeb550f2a72eb52c8ef56a130374268a4a"],
   ],
   "push.js": [
@@ -287,8 +290,8 @@ const sourceFingerprintParts = {
   "core/agentRolesPanel.js": ["c05b7c96", "5849ec7f", "0d258bc2", "96a7795e", "2a4663f4", "57e78316", "de145b90", "699b4a91"],
   "core/agentSurfacesModel.js": ["546cf5aa", "3a478c63", "4a0f02f5", "4eafcae5", "53a5ffd3", "3ad4f563", "c075aa93", "dcbbef9d"],
   "core/bridgeApi/v1/compactionParams.js": ["506db6e2", "f8148bc4", "925e889b", "61c6fe15", "d8cf74e2", "ef7e468f", "b610115f", "7132ce5b"],
-  "core/bridgeApi/v1/index.js": ["2eba1594", "8b57ad55", "3e738a17", "8b0e3a06", "73b25a1a", "35d41784", "2b12400c", "06280519"],
-  "core/bridgeApi/v1/writeMethods.js": ["f311847f", "da193503", "678520ec", "e289e013", "fbbcc9f9", "26f2aae9", "32c184fe", "7f27b03d"],
+  "core/bridgeApi/v1/index.js": ["00cede56", "dcb787eb", "81b48380", "e344c0d8", "d4d50562", "f0199b46", "f582666f", "7110ce9e"],
+  "core/bridgeApi/v1/writeMethods.js": ["c78ae754", "d23774c3", "664a2901", "97e2fcce", "bf94d04d", "13e8fc66", "96313eb2", "3ea76832"],
   "core/bridgeEpoch.js": ["e04a0a11", "6535b020", "abcac20c", "972a554f", "8d51fbb9", "6ef07fd8", "16062ed0", "9cd4d213"],
   "core/bridgeUpdatePanel.js": ["f9b19cc7", "4abdfc5a", "d159194d", "49ee91ed", "d39ab2e7", "15a6a80f", "0cb51530", "623ca8e5"],
   "core/bridgeUpdates.js": ["279cb932", "0495aa46", "c347f93b", "10a492d5", "8d29b0a9", "e9309a9a", "91de7993", "e5f40ad3"],
@@ -297,7 +300,7 @@ const sourceFingerprintParts = {
   // #997 runtime-board captureDecisionView.js:142: branch choices join cached runtime run bodies; existing RPC and mutation dispatch unchanged.
   "core/captureDecisionView.js": ["15299f0a", "f1762e74", "8af22269", "0f16e798", "ccf8e367", "d2d759e2", "554ce8fc", "002692f1"],
   // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
-  "core/changeEvents.js": ["1eedc033", "010c4a58", "e191c6bc", "2a017d67", "8c7e18d7", "d8fc9712", "7f9a9084", "92f1bc12"],
+  "core/changeEvents.js": ["1a9948ba", "17d25952", "ae16d89d", "fe6b09e5", "3f000048", "05d4e5b1", "7d6b1d36", "592084a5"],
   "core/changesComments.js": ["7a5e0b06", "c47bf122", "ac5370b8", "debd8dc8", "388227b8", "f9ea1623", "d413134a", "635a2a7d"],
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],
@@ -312,7 +315,6 @@ const sourceFingerprintParts = {
   "core/consoleModel.js": ["4feba529", "663ba471", "6fe6e2a1", "3eb66e5c", "815545f8", "f70a5b48", "a6248d75", "94d9ed20"],
   "core/conversationCompaction.js": ["4e076445", "2fd7fb1d", "1ca9681e", "b39ea814", "01d5b9f9", "26f91118", "a52788ca", "54220e9e"],
   "core/conversationDetail.js": ["a54ac9f8", "f54c61d4", "cea363a5", "b098964f", "16ecc016", "490b853d", "76d94602", "ad5a773a"],
-  "core/createWork.js": ["42444ebc", "8ae4117e", "ba2cdde6", "7d740ba3", "1850d7a6", "a63c9fd2", "50784964", "18d57196"],
   "core/defaultHarness.js": ["b7ed5ad6", "9fdfdc35", "84dd803d", "3c0e95fd", "72904016", "4cb29938", "97723e94", "2ace812d"],
   // #1006 held secret posts use the current session safely because thread.post
   // deduplicates the preserved operation_id; the dispatch methods are unchanged.
@@ -329,12 +331,12 @@ const sourceFingerprintParts = {
   "core/fileUploadsModel.js": ["d11fdd79", "8bb9318c", "fbc2cff2", "29b16930", "9d73b3ee", "89d5d976", "7e2b756a", "69d40aac"],
   "core/githubRepos.js": ["4526fb16", "bfe42e0f", "57b963ea", "fe623873", "0fe9ccce", "521ecc83", "b9117e59", "af64462f"],
   "core/gitPane.js": ["3b9c66d1", "186e1669", "3ecc46b0", "0afe28d8", "10e87dd3", "55dfbb00", "44fa79f8", "88d71409"],
-  "core/httpSession.js": ["d126ceab", "0dd1f2ad", "df3cd6a9", "0af4113e", "228a2843", "14eb6c04", "36b84eb3", "0c8342b1"],
+  "core/httpSession.js": ["0b7b82e7", "b8028927", "c780566d", "761fc9fc", "12ca2faa", "7e626b1a", "c51ecf85", "3e85059a"],
   "core/inboxCaptures.js": ["48a7f5fb", "b2132a83", "5901fb31", "4fb0c5ae", "97005297", "2d0b9db6", "be2c3e6d", "1271b663"],
   "core/inboxDevices.js": ["f9a293e4", "dff4b2b4", "f5fc7940", "f5c1f48d", "a66a5718", "238826a6", "e3dc6b9f", "4060a79e"],
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
   // #997 runtime-board inboxView.js:193,206,320: scoped pending display and cached branch choices; existing RPC and mutation dispatch unchanged.
-  "core/inboxView.js": ["73e318f8", "d3681787", "0ff602b2", "03923c2e", "8ac8746f", "13fd8ee3", "d314907b", "c5aa4b97"],
+  "core/inboxView.js": ["2745a252", "ec325f63", "1dbfa229", "8378b996", "0e3367b6", "c65295cc", "0096487f", "e26dc771"],
   "core/isolation.js": ["1b646651", "086eea7f", "b0a97d6f", "8993ed77", "7e6e246e", "4110fbc2", "7defb076", "77f79221"],
   "core/markdownFences.js": ["10057396", "68214f4d", "d193015e", "2552698e", "c48313df", "6df2e223", "7e3bc837", "2805a4bb"],
   "core/modelCatalog.js": ["c293ea11", "fff0969f", "7852c8cd", "0c252f82", "fe666159", "95919417", "25a661ec", "c93fd9b4"],
@@ -368,7 +370,7 @@ const sourceFingerprintParts = {
   "core/secretDrafts.js": ["8d98dad3", "bcad794d", "d621f14a", "9e6a58b6", "e36e2e52", "5b82c46b", "6f82d443", "d4712ffb"],
   "core/secretMetadataCache.js": ["06759ad6", "c728c4c1", "2c49dcb7", "bff92033", "da9b45f7", "99cccfe5", "496164ab", "3c96c0e1"],
   "core/session.js": ["3d180500", "f13f38ec", "64d5d01d", "ec44e3c7", "ef80b3cc", "85470f82", "ad7080e1", "69c47137"],
-  "core/sessionRpc.js": ["5d583ef2", "0faaf478", "09fbf975", "ab15af9f", "a78fd5f8", "fc4bab2e", "49d4ef64", "4e13ad2d"],
+  "core/sessionRpc.js": ["11569cd1", "0840b413", "9f5e3cca", "af2c8f93", "9da0933e", "35717c2d", "41d6f18b", "2a893133"],
   "core/sessionSwitch.js": ["dc232a71", "5b006195", "d7910b8e", "8c59e611", "a36dd264", "8bbcfcc8", "0d8739f3", "371accc7"],
   "core/shell.js": ["0f5d52c0", "19499900", "de686569", "6e687a5e", "abf49c6a", "8801b17a", "a3446163", "1a1df469"],
   // #1003: bounded secret metadata reads use the shared SQL admission lane.
@@ -422,11 +424,11 @@ const sourceFingerprintParts = {
   "core/workspaceReviewForm.js": ["c73939fb", "cb195111", "85819eed", "9716f89b", "6a8f72bb", "026af5b9", "6dc154e9", "e67e42b5"],
   "core/workspaceReviewTasks.js": ["0ce927c3", "057199b7", "8c84154f", "aee738c5", "02391da6", "be84ac08", "d1190908", "5073f226"],
   "core/workspaceSizes.js": ["5906d4c2", "fda13846", "3542c664", "26018741", "0bf741e3", "1a10dc8e", "e5feb8ee", "9c08416d"],
-  "core/writeOperationCache.js": ["9da4e187", "2b41988a", "a54e493e", "ddeb5d8b", "40288fd9", "7b4b4a3c", "1f1a816f", "c8847f4b"],
+  "core/writeOperationCache.js": ["e22af84f", "192612c2", "07ecae37", "a54cb614", "cd6e5b16", "d42a357c", "1229f89c", "f1bd11d7"],
   "core/writeOperationEffects.js": ["d30332d1", "89b12c79", "150580d0", "aede7e2b", "d2e23499", "d6003a79", "f13412fe", "b895c728"],
   "core/writeOperationIntent.js": ["5476394a", "087dc5ce", "5c71e673", "8b977ba3", "e665bf53", "fa9529be", "78bf2c38", "48f27991"],
   "core/writeOperationRefresh.js": ["b5d241f8", "64bba629", "58a8bbab", "6673dafa", "0c5490bc", "2e70cbc9", "d0048bf4", "20e4c528"],
-  "core/writeOperations.js": ["481c19c9", "ae1ee5a1", "f4fd6d5d", "5b18407c", "247e31a0", "d6052460", "338b6ed7", "3cf163ac"],
+  "core/writeOperations.js": ["9cace0cd", "ada7aa0f", "ffed64f2", "39ba9a87", "fb81c45d", "53b0edd7", "c59695f9", "edd046a0"],
   "push.js": ["c7a3eb27", "240e0a4d", "3e314aee", "369bea39", "25bf83e0", "f105e41a", "0e4ed716", "4e53028b"],
   "sheets/browser.js": ["e226c6fb", "9689c6bc", "39ba311b", "335481c7", "f444e696", "36c5c8b6", "013588ec", "bd2a4dbe"],
   "sheets/newRepo.js": ["e1addf8b", "abc706f6", "ca74fa24", "7e1f3208", "aae3d460", "37157135", "21e46d2f", "f187cdfa"],
@@ -445,7 +447,7 @@ const sourceFingerprintParts = {
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
   "views/files.js": ["bc4913c5", "865b9dd0", "e28f655f", "242c9011", "456a4139", "b2cfd372", "6498e15b", "f3116261"],
   "views/projectChanges.js": ["e195b594", "3a7689fe", "14bfc899", "18ada18d", "ab36cd52", "ad96ba97", "a877c4da", "c9c3b78f"],
-  "views/projectView.js": ["b790e1ad", "c92e3880", "d880307e", "45527ad4", "70eade31", "b21f74d0", "423e637a", "6999aa4e"],
+  "views/projectView.js": ["76123138", "7ded30d0", "0893b5ef", "5d880782", "137464b9", "5b123e76", "48f1a9d5", "28144478"],
   "views/taskReview.js": ["7d540d05", "70beae35", "200434ea", "decae581", "f1b126d6", "9a38fe38", "642a621a", "2e34a257"],
   "views/taskView.js": ["483fdb16", "52a51dd3", "ea9f60d0", "c21f16a9", "090b27a4", "4839602c", "4653bfcc", "38959753"],
   "views/workspaceView.js": ["a8297151", "b9889eea", "1ef6492b", "4242340b", "21deba98", "2afe3f42", "4f4be235", "4268410b"],
@@ -453,6 +455,10 @@ const sourceFingerprintParts = {
   "core/directoryPages.js": ["1114bcb9", "d7703490", "4542e5ef", "d06e4f25", "b52d6e2e", "4c206d81", "9586fd6a", "92ccc080"],
   "core/directoryWatcher.js": ["3016199e", "f2ebe782", "5731fa24", "665dba3a", "6fd96a9e", "f5a4ee11", "c6841b70", "db07db4f"],
   "core/taskTimelinePages.js": ["da2840fb", "5992d7ce", "038bbc4d", "9c01a8ab", "c320a6f3", "7592e5be", "d5cbf08c", "4fcf8220"],
+
+  "core/createWorkspaceProgress.js": ["5aea6af6", "f4421d06", "d5bc29c5", "3939163d", "79b5ba53", "0dd1b8e9", "cb202c04", "b5981c75"],
+  "core/createWorkspaceTargets.js": ["306138eb", "92158814", "a0895edb", "eb8e2543", "18627eb0", "4af7efe7", "edfaa288", "46a3b51c"],
+  "core/writeOperationProgress.js": ["620a3c41", "9487e451", "52b5d67a", "66fd384f", "8a40b2fb", "50bdc244", "0b4b7545", "744c8427"],
 };
 const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintParts)
   .map(([file, parts]) => [file, parts.join("")]));

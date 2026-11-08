@@ -353,9 +353,9 @@ fn capture_workspace(app: &AppState, id: &str) -> Result<CapturedScope, String> 
         if let Some(project) = app.projects.get(project) {
             captured
                 .denied_roots
-                .push(crate::app::projects::scratch_dir(
+                .push(crate::app::projects::scratch_dir_for_project(
                     &app.state_root,
-                    &project.project_key,
+                    project,
                 ));
         }
         if run.worktree.base_branch.is_empty() {

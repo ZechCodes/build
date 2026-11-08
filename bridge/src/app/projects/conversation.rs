@@ -12,7 +12,7 @@
 //! its standing instructions forbid it to change anything there — every change
 //! goes through a workspace.
 
-use super::safe_mount_name;
+use super::{safe_mount_name, Project};
 use crate::agent::AgentOwner;
 use crate::app::{has_agent_choice, model_choice_from, require_str, sha256_hex, AppState};
 use crate::models::{AgentProvider, ModelChoice};
@@ -26,23 +26,27 @@ use std::path::{Path, PathBuf};
 /// has to be too.
 pub(in crate::app) const PROJECT_SCRATCH_DIR_NAME: &str = "project-scratch";
 
-/// Where the conversation owner identified by an opaque project key works.
-/// The key's complete bytes determine identity; migrated keys keep the legacy
-/// cosmetic basename and digest, so existing scratch directories do not move.
+/// Scratch for an opaque key when no registered native path is available.
 pub(in crate::app) fn scratch_dir(state_root: &Path, project_key: &str) -> PathBuf {
-    state_root
-        .join(PROJECT_SCRATCH_DIR_NAME)
-        .join(scratch_key(project_key))
+    scratch_dir_for_identity(state_root, Path::new(project_key))
 }
 
-/// Recognize scratch using the record's key even when its project is unavailable.
-pub(in crate::app) fn is_project_scratch(
-    state_root: &Path,
-    project_key: &str,
-    root: &Path,
-) -> bool {
-    !project_key.is_empty()
-        && crate::app::workspaces::same_path(root, &scratch_dir(state_root, project_key))
+/// Path-derived keys retain the native bytes and basename used before keys
+/// existed, including paths whose display string is lossy. Other keys use
+/// their own bytes, so siblings sharing a home still have separate scratch.
+pub(in crate::app) fn scratch_dir_for_project(state_root: &Path, project: &Project) -> PathBuf {
+    let identity = if project.home_path.to_string_lossy().as_ref() == project.project_key.as_str() {
+        project.home_path.as_path()
+    } else {
+        Path::new(&project.project_key)
+    };
+    scratch_dir_for_identity(state_root, identity)
+}
+
+fn scratch_dir_for_identity(state_root: &Path, identity: &Path) -> PathBuf {
+    state_root
+        .join(PROJECT_SCRATCH_DIR_NAME)
+        .join(scratch_key(identity))
 }
 
 /// Cut a project owner's scratch directory at `root` again when it is gone.
@@ -62,17 +66,30 @@ pub(in crate::app) fn recut_project_scratch(root: &Path) -> Result<(), String> {
     })
 }
 
-fn scratch_key(project_key: &str) -> String {
-    // Preserve the old cosmetic label; it never participates in project lookup.
-    let name = Path::new(project_key)
+fn scratch_key(identity: &Path) -> String {
+    // Preserve the native basename fallback as well as the digest.
+    let name = identity
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("project");
-    let digest = sha256_hex(project_key.as_bytes());
+    let digest = sha256_hex(identity.as_os_str().as_encoded_bytes());
     format!("{}-{}", safe_mount_name(name), &digest[..12])
 }
 
 impl AppState {
+    fn project_scratch_for_key(&self, key: &str) -> PathBuf {
+        self.project_by_key(key).map_or_else(
+            || scratch_dir(&self.state_root, key),
+            |project| scratch_dir_for_project(&self.state_root, project),
+        )
+    }
+
+    /// Recognize a recovered owner using its registered native identity when available.
+    pub(in crate::app) fn is_project_scratch(&self, key: &str, root: &Path) -> bool {
+        !key.is_empty()
+            && crate::app::workspaces::same_path(root, &self.project_scratch_for_key(key))
+    }
+
     /// Ensure this project has an entity for conversations and agents. Like
     /// `workspace.ensure_conversation` this performs no Git adoption and
     /// chooses no source checkout: the owner is minted over the project's own
@@ -92,7 +109,7 @@ impl AppState {
             .get(&project_id)
             .ok_or_else(|| format!("unknown project_id: {project_id}"))?;
         let project_name = project.name.clone();
-        let scratch = scratch_dir(&self.state_root, &project.project_key);
+        let scratch = scratch_dir_for_project(&self.state_root, project);
         if let Some(run_id) = self.project_conversation_owner(&project_id, &scratch) {
             // An owner a boot restored while the project's folder was away
             // is bound to no project; the project it stands for is this one.
@@ -189,8 +206,10 @@ impl AppState {
         let Some(active) = self.runs.get(run_id) else {
             return false;
         };
-        let key = self.projects.project_key_for(run_id);
-        is_project_scratch(&self.state_root, &key, &active.worktree.path)
+        self.project_snapshot_scratch_path(run_id)
+            .is_some_and(|scratch| {
+                crate::app::workspaces::same_path(&active.worktree.path, &scratch)
+            })
     }
 
     pub(in crate::app) fn is_project_snapshot_conversation_owner(&self, run_id: &str) -> bool {
@@ -200,20 +219,27 @@ impl AppState {
         let Some(active) = self.runs.get(run_id) else {
             return false;
         };
-        let key = self.projects.project_key_for(run_id);
-        !key.is_empty()
-            && self.observed_same_path(&active.worktree.path, &scratch_dir(&self.state_root, &key))
+        self.project_snapshot_scratch_path(run_id)
+            .is_some_and(|scratch| self.observed_same_path(&active.worktree.path, &scratch))
     }
 
     pub(in crate::app) fn project_snapshot_scratch_path(&self, owner: &str) -> Option<PathBuf> {
+        if let Some(project) = self
+            .projects
+            .project_id_of(owner)
+            .and_then(|id| self.projects.get(id))
+        {
+            return (!project.project_key.is_empty())
+                .then(|| scratch_dir_for_project(&self.state_root, project));
+        }
         let key = self.projects.project_key_for(owner);
-        (!key.is_empty()).then(|| scratch_dir(&self.state_root, &key))
+        (!key.is_empty()).then(|| self.project_scratch_for_key(&key))
     }
 
     pub(in crate::app) fn project_snapshot_scratch_paths(&self) -> Vec<PathBuf> {
         self.projects
             .iter()
-            .map(|project| scratch_dir(&self.state_root, &project.project_key))
+            .map(|project| scratch_dir_for_project(&self.state_root, project))
             .collect()
     }
 
@@ -295,13 +321,13 @@ impl AppState {
         project_id: &str,
     ) -> Option<String> {
         let project = self.projects.get(project_id)?;
-        let scratch = scratch_dir(&self.state_root, &project.project_key);
+        let scratch = scratch_dir_for_project(&self.state_root, project);
         self.project_conversation_owner_using(project_id, &scratch, true)
     }
 
     pub(in crate::app) fn project_conversation_run(&self, project_id: &str) -> Option<String> {
         let project = self.projects.get(project_id)?;
-        let scratch = scratch_dir(&self.state_root, &project.project_key);
+        let scratch = scratch_dir_for_project(&self.state_root, project);
         self.project_conversation_owner(project_id, &scratch)
     }
 }

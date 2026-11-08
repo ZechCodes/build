@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use crate::app::projects::scratch_dir;
+use crate::app::projects::scratch_dir_for_project;
 use crate::app::workspaces::same_path;
 use crate::app::AppState;
 use crate::thread::{AgentIdentity, AgentOwnerKind, AgentOwnerRef};
@@ -93,7 +93,7 @@ impl AppState {
             root,
             project: self.projects.get(project_id).map(|project| {
                 (
-                    scratch_dir(&self.state_root, &project.project_key),
+                    scratch_dir_for_project(&self.state_root, project),
                     AgentOwnerRef {
                         kind: AgentOwnerKind::Project,
                         id: project.id.clone(),

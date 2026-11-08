@@ -97,7 +97,9 @@ mod conversation;
 mod coordinator;
 #[cfg(test)]
 pub(in crate::app) use conversation::PROJECT_SCRATCH_DIR_NAME;
-pub(in crate::app) use conversation::{is_project_scratch, recut_project_scratch, scratch_dir};
+pub(in crate::app) use conversation::{
+    recut_project_scratch, scratch_dir, scratch_dir_for_project,
+};
 pub(crate) use coordinator::PINNED_AGENT_STAYS;
 mod deletion;
 mod lifecycle;

@@ -476,11 +476,7 @@ impl AppState {
 
         // A project's owner stands in Build's own scratch, which is cut
         // again rather than restored from a branch it never had.
-        let project_owner = crate::app::projects::is_project_scratch(
-            &self.state_root,
-            record.project_path.as_str(),
-            &active.worktree.path,
-        );
+        let project_owner = self.is_project_scratch(&record.project_path, &active.worktree.path);
         if project_owner && !active.run.state.is_terminal() {
             if let Err(error) = crate::app::projects::recut_project_scratch(&active.worktree.path) {
                 active.last_error = Some(error);

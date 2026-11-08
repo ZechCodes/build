@@ -1181,7 +1181,8 @@ archives and SQL project mappings retain that key. Recovery never registers a
 project from a record: an unresolved key keeps the repo-missing behavior. Stage
 reads fall back only to a resolved project home; a surviving recorded checkout
 remains readable. Project workers require a live binding and available home.
-Project scratch hashes the key, preserving migrated folders and separating siblings.
+Project scratch hashes opaque keys; path-derived legacy keys preserve the original
+native path bytes and basename, including non-UTF-8 paths. Siblings keep distinct scratch.
 The per-usage inventory is `planning/v2/Environments Identity Audit.md`. The
 registry keeps environment-owned source references and their monotonic counter,
 plus project-owned added sources, and projects retain an effective-source read

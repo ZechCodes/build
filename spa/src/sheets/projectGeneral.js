@@ -1,4 +1,3 @@
-import { archiveBlockersObservable } from "./archiveBlockerChanges.js";
 import { App } from "../app.js";
 import { esc } from "../core/text.js";
 import { fieldTraits } from "../core/fieldTraits.js";
@@ -14,16 +13,17 @@ export function projectGeneralHtml(project, { projectRename, environmentRename, 
     ${environment}${deviceId ? `<p class="dim">Device: ${esc(deviceLabelOf(deviceId))}</p>` : ""}<div class="adderr" id="psrenameerr" role="alert"></div></section>`;
 }
 
-export function projectArchiveHtml(project, support, refusal) {
+export function projectArchiveHtml(project, support, action) {
   if (!support.archive) return "";
   const archived = projectIsArchived(project);
   return `<section class="ps-section"><h4>${archived ? "Archived" : "Archive"}</h4>
     <p class="sub">${archived ? "Restore this project to make changes." : "Keep this project's history and hide it from active work."}</p>
-    <button class="btn" id="psarchive"${refusal && !archived ? " disabled" : ""}>${archived ? "Restore" : "Archive project"}</button>
-    <div class="adderr" id="psarchiveerr" role="alert">${esc(refusal?.message || "")}</div></section>`;
+    <button class="btn" id="psarchive"${action.pending ? " disabled" : ""}>${archived ? "Restore" : "Archive project"}</button>
+    <div class="adderr" id="psarchiveerr" role="alert">${esc(action.message || "")}</div></section>`;
 }
 
-export function mountProjectGeneral(sheet, project, { deviceId, callRpc, onArchiveRefused, beforeArchive, openEnvironment }) {
+export function mountProjectGeneral(sheet, project, options) {
+  const { deviceId, callRpc, openEnvironment } = options;
   const environment = sheet.querySelector("[data-project-environment]");
   if (environment) environment.onclick = openEnvironment;
   const edit = sheet.querySelector("[data-edit-environment]");
@@ -33,21 +33,13 @@ export function mountProjectGeneral(sheet, project, { deviceId, callRpc, onArchi
     const name = sheet.querySelector("#psproject").value.trim();
     return environmentAction(deviceId, "projectRename", () => callRpc("project.rename", { project_id: project.project_id, name }));
   });
-  const archive = sheet.querySelector("#psarchive");
-  let baseline;
-  if (archive) archive.onclick = () => void write(archive, sheet.querySelector("#psarchiveerr"), async () => {
-    if (!projectIsArchived(project)) baseline = await beforeArchive();
-    return environmentAction(deviceId, "archive", () => projectIsArchived(project) ? callRpc("project.restore", { project_id: project.project_id }) : callRpc("project.archive", { project_id: project.project_id }));
-  }, failure => {
-    if (projectIsArchived(project) || !archiveBlockersObservable(failure.details?.blockers)) return false;
-    return onArchiveRefused({ message: failure.message, blockers: failure.details.blockers }, baseline);
-  });
-  async function write(button, error, send, refused) {
+  mountArchive(sheet, project, options);
+  async function write(button, error, send) {
     button.disabled = true; error.textContent = "";
     try { await writeEnvironmentProject(deviceId, await send()); }
     catch (failure) {
       error.textContent = failure.message;
-      button.disabled = await refused?.(failure) === true;
+      button.disabled = false;
     }
   }
 }
@@ -57,4 +49,27 @@ function projectEnvironmentHtml(project, name, editable) {
   if (!project.environment_id) return "";
   const label = name || project.environment_name || project.environment_id;
   return `<p>In environment ${editable ? `<button class="btn mini" data-project-environment>${esc(label)}</button>` : esc(label)}</p>`;
+}
+
+// The opening owns this latch and message, so cache repaints cannot arm a
+// second request. Every settled refusal is retryable; only the bridge judges.
+function mountArchive(sheet, project, { deviceId, callRpc, archiveAction, onArchiveSettled }) {
+  const button = sheet.querySelector("#psarchive");
+  if (!button) return;
+  button.onclick = async () => {
+    if (archiveAction.pending) return;
+    archiveAction.pending = true; archiveAction.message = "";
+    button.disabled = true; sheet.querySelector("#psarchiveerr").textContent = "";
+    try {
+      const reply = await environmentAction(deviceId, "archive", () => projectIsArchived(project)
+        ? callRpc("project.restore", { project_id: project.project_id })
+        : callRpc("project.archive", { project_id: project.project_id }));
+      await writeEnvironmentProject(deviceId, reply);
+    } catch (failure) {
+      archiveAction.message = failure.message;
+    } finally {
+      archiveAction.pending = false;
+      onArchiveSettled();
+    }
+  };
 }

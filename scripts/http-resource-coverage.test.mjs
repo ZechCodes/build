@@ -283,7 +283,7 @@ const sourceFingerprintParts = {
   "core/archivedProjectView.js": ["a2004a3e", "c4442470", "1a8276a8", "aecbc55a", "3d0397df", "1ad2013b", "f2cc8fd6", "240b1d52"],
   "core/environmentWrites.js": ["035dbf26", "683d9297", "9306e4cc", "51f549d6", "c0cad335", "51198b2c", "3981d520", "129d2b31"],
   "sheets/environmentSettings.js": ["46b8c3c8", "c4c507ab", "4e081f06", "84ba399f", "32479c6d", "4110a01f", "e3233fe3", "f1acab81"],
-  "sheets/projectGeneral.js": ["fc98cc90", "55895a93", "1ca3f5e6", "daa62883", "bcf775e9", "fa459fa0", "cd1b1240", "35ac3f25"],
+  "sheets/projectGeneral.js": ["a89586e4", "f50590d4", "7dfb57a5", "46b4313c", "b7cf7255", "76085087", "8abea538", "ec72d05c"],
   // #1065: cached eligibility is separate from current-greeting dispatch; epoch and genuine no-epoch legacy paths wrap existing source calls.
   "core/sourceOwnership.js": ["5bb01dc9", "cd302bf9", "b640e0f4", "b396ab65", "8c8d6b7e", "9183fa6a", "22b5fb05", "0d37ee27"],
   // #1065: accepted navigation notifies only opted-in project settings; RPC edges are unchanged.
@@ -454,7 +454,7 @@ const sourceFingerprintParts = {
   // Source replies use the shared identity-preserving writer; project-scoped methods/selectors and project.list refresh are unchanged.
   // Opening teardown and atomic Sync adoption retain current project metadata; no RPC edge changes.
   // Retired-frame picker cleanup and committed navigation release only the project settings opening.
-  "sheets/projectSettings.js": ["369fb5e3", "231480bd", "20ce152f", "22359a86", "3bfaee0d", "fffb7074", "093d50d7", "888ae85b"],
+  "sheets/projectSettings.js": ["4bc2a192", "cca0df99", "310d0353", "b8b61c8f", "fd4566f8", "424f7544", "b97b9252", "e2cc1a20"],
   "sheets/projectSources.js": ["17ec839a", "a3661e22", "07af1ed0", "5a245332", "c4f9c5f4", "0723dd01", "7b85eb65", "ec71d3d5"],
   // #1065: sheet-owned in-flight state blocks duplicate Sync requests; the accepted callback, RPC method and selectors are unchanged.
   "sheets/sourceSyncControls.js": ["49045a5b", "1fd03d03", "c9e574df", "020f32ea", "5d64bdd0", "3ab970b7", "1c98dee9", "cb20c875"],

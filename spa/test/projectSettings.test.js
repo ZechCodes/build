@@ -14,19 +14,6 @@ import { sourceEditSupportAddress } from "../src/core/sourceEditSupport.js";
 import { environmentSupportAddress, rememberEnvironmentSupport } from "../src/core/environmentSupport.js";
 import { environmentsAddress } from "../src/core/environmentCache.js";
 
-// A delayed IndexedDB baseline must finish before archive dispatch.
-const baselineRead = vi.hoisted(() => ({ hold: null, entered: false }));
-vi.mock("../src/core/localCache.js", async original => {
-  const cache = await original();
-  return { ...cache, readCachedMany: async addresses => {
-    if (baselineRead.hold && addresses.some(address => address.kind === "workspaces")) {
-      baselineRead.entered = true;
-      await baselineRead.hold;
-    }
-    return cache.readCachedMany(addresses);
-  } };
-});
-
 const actionCapabilities = vi.hoisted(() => ({ archive: true, projectRename: true, environmentRename: true }));
 vi.mock("../src/core/changeEvents.js", async original => ({ ...await original(), bridgeCapabilities: () => ({ environments: actionCapabilities }) }));
 const sourceAuthority = vi.hoisted(() => ({ epoch: "legacy-epoch", greetingError: null, greetingWait: null, waiting: 0 }));
@@ -77,7 +64,6 @@ beforeEach(async () => {
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
   await wipeCache();
   await wipeUiRecords();
-  baselineRead.hold = null; baselineRead.entered = false;
   actionCapabilities.archive = true; actionCapabilities.projectRename = true; actionCapabilities.environmentRename = true;
   sourceAuthority.epoch = "legacy-epoch";
   sourceAuthority.greetingError = null;
@@ -1224,16 +1210,59 @@ describe("M3 settings", () => {
     openProjectSettings("proj-1", { deviceId: "dev-1", callRpc });
     await vi.waitFor(() => expect(document.querySelector("#psproject")).not.toBeNull());
   }
-  it("archive refusal shows each blocker verbatim and disables the button", async () => {
+  it.each(["refusal", "success"])("archive refusal shows blockers verbatim, stays enabled and retries to a new %s", async result => {
     const blockers = ["finish or delete workspace W <one>", "answer #12"];
+    const first = "Cannot archive build: " + blockers.join("; ");
+    let attempts = 0;
     const callRpc = vi.fn(async method => {
-      if (method === "project.archive") throw Object.assign(new Error("Cannot archive build: " + blockers.join("; ")), { details: { blockers } });
-      return new Promise(() => {});
+      if (method !== "project.archive") return new Promise(() => {});
+      attempts += 1;
+      if (attempts === 2 && result === "success") return { project: { ...row, archived_at: 12 } };
+      const message = attempts === 1 ? first : "Cannot archive build: answer #21";
+      throw Object.assign(new Error(message), { details: { blockers: attempts === 1 ? blockers : ["answer #21"] } });
     });
     await mountM3(callRpc); document.querySelector("#psarchive").click();
-    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toContain(blockers[0]));
+    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toBe(first));
     for (const blocker of blockers) expect(document.querySelector("#psarchiveerr").textContent).toContain(blocker);
-    expect(document.querySelector("#psarchive").disabled).toBe(true); expect(document.querySelector("one")).toBeNull();
+    expect(document.querySelector("#psarchive").disabled).toBe(false); expect(document.querySelector("one")).toBeNull();
+    // An identical refresh must retain the refusal without blocking a retry.
+    await writeCached(projectSettingsAddress("dev-1", "proj-1"), row);
+    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toBe(first));
+    document.querySelector("#psarchive").click();
+    await vi.waitFor(() => expect(attempts).toBe(2));
+    if (result === "refusal") {
+      await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toBe("Cannot archive build: answer #21"));
+    } else {
+      await vi.waitFor(() => expect(document.querySelector("#psarchive").textContent).toBe("Restore"));
+      expect(document.querySelector("#psarchiveerr").textContent).toBe("");
+      expect((await readCached(projectSettingsAddress("dev-1", "proj-1"))).value.archived_at).toBe(12);
+    }
+    expect(document.querySelector("#psarchive").disabled).toBe(false);
+  });
+  it("Archive stays single flight through cache repaints and retries after refusal", async () => {
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    const callRpc = vi.fn(async method => {
+      if (method === "project.archive") {
+        await held;
+        throw Object.assign(new Error("answer #12"), { details: { blockers: ["answer #12"] } });
+      }
+      return new Promise(() => {});
+    });
+    await mountM3(callRpc);
+    const first = document.querySelector("#psarchive"); first.click(); first.onclick();
+    await vi.waitFor(() => expect(callRpc.mock.calls.filter(([method]) => method === "project.archive")).toHaveLength(1));
+    await writeCached(projectSettingsAddress("dev-1", "proj-1"), { ...row, name: "Changed in cache" });
+    await vi.waitFor(() => expect(document.querySelector("#psproject").value).toBe("Changed in cache"));
+    const repainted = document.querySelector("#psarchive");
+    expect(repainted).not.toBe(first); expect(repainted.disabled).toBe(true);
+    repainted.onclick();
+    expect(callRpc.mock.calls.filter(([method]) => method === "project.archive")).toHaveLength(1);
+    release();
+    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toBe("answer #12"));
+    expect(document.querySelector("#psarchive").disabled).toBe(false);
+    document.querySelector("#psarchive").click();
+    await vi.waitFor(() => expect(callRpc.mock.calls.filter(([method]) => method === "project.archive")).toHaveLength(2));
   });
   it("rename writes the cache then redraws", async () => {
     const callRpc = vi.fn(async (method, params) => method === "project.rename" ? { ...row, name: params.name } : new Promise(() => {}));
@@ -1270,23 +1299,6 @@ describe("M3 settings", () => {
     document.querySelector("#psarchive").click();
     await vi.waitFor(() => expect(callRpc.mock.calls.filter(([method]) => method === "project.archive")).toHaveLength(2));
   });
-  it.each(["tracker-task", "tracker-tasks", "task-review", "workspaces"])("clears blocker refusals after a relevant cached %s change", async kind => {
-    const callRpc = vi.fn(async method => {
-      if (method === "project.archive") throw Object.assign(new Error("finish or delete workspace W; answer #12"), { code: "conflict", details: { blockers: ["finish or delete workspace W", "answer #12"] } });
-      return new Promise(() => {});
-    });
-    await mountM3(callRpc); document.querySelector("#psarchive").click();
-    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toContain("answer #12"));
-    expect(document.querySelector("#psarchive").disabled).toBe(true);
-    await writeCached({ deviceId: "dev-1", entityId: "another-project", kind }, { changed: true });
-    expect(document.querySelector("#psarchive").disabled).toBe(true);
-    const entityId = kind === "workspaces" ? "" : "proj-1";
-    await writeCached({ deviceId: "dev-1", entityId, kind }, kind === "workspaces" ? [{ project_id: "proj-1", id: "W", status: "finished" }] : { changed: true });
-    await vi.waitFor(() => expect(document.querySelector("#psarchive").disabled).toBe(false));
-    expect(document.querySelector("#psarchiveerr").textContent).toBe("");
-    document.querySelector("#psarchive").click();
-    await vi.waitFor(() => expect(callRpc.mock.calls.filter(([method]) => method === "project.archive")).toHaveLength(2));
-  });
   it("Restore failure stays retryable in the project sheet", async () => {
     const archived = { ...row, archived_at: 1 };
     const callRpc = vi.fn(async method => { if (method === "project.restore") throw new Error("Restore unavailable"); return new Promise(() => {}); });
@@ -1319,81 +1331,6 @@ describe("M3 settings", () => {
     await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toContain("Update Build"));
     expect(document.querySelector("#psarchive").disabled).toBe(false);
     expect(callRpc.mock.calls.some(([method]) => method === "project.archive")).toBe(false);
-  });
-
-  it.each(["tracker-task", "tracker-tasks", "task-review", "project-settings"])("unchanged %s writes keep blocker refusals disabled", async kind => {
-    const address = { deviceId: "dev-1", entityId: "proj-1", kind, sub: kind === "tracker-task" || kind === "task-review" ? "task-1" : "" };
-    const held = kind === "project-settings" ? row : { state: "waiting", task: { id: "task-1", status: "in_review" } };
-    await writeCached(address, held);
-    const callRpc = vi.fn(async method => {
-      if (method === "project.archive") throw Object.assign(new Error("answer #12"), { code: "conflict", details: { blockers: ["answer #12"] } });
-      return new Promise(() => {});
-    });
-    await mountM3(callRpc); document.querySelector("#psarchive").click();
-    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toBe("answer #12"));
-    // Same value, new cache write/order stamps; key order does not change data.
-    await writeCached(address, Object.fromEntries(Object.entries(held).reverse()));
-    await new Promise(resolve => setTimeout(resolve, 30));
-    expect(document.querySelector("#psarchive").disabled).toBe(true);
-    expect(document.querySelector("#psarchiveerr").textContent).toBe("answer #12");
-    await writeCached(address, { ...held, resolved: true });
-    await vi.waitFor(() => expect(document.querySelector("#psarchive").disabled).toBe(false));
-  });
-
-  it.each([
-    ["finish or delete workspace W", true], ["answer #12", true],
-    ["resolve waiting-on for #12", true], ["give a verdict on #12", true],
-    ["stop coordinator C", false], ["stop worker W", false],
-    ["wait for pending wake for run-1", false], ["wait for workspace W creation to finish", false],
-    ["wait for filesystem operations to finish", false], ["settle pending delivery for #12", false],
-    ["settle pending dependency reconciliation for #12", false], ["settle pending verdict delivery for #12", false],
-    ["settle pending revision dispatch for #12", false], ["settle revision delivery notice for #12", false],
-    ["settle pending task notice for #12", false], ["a new bridge blocker", false],
-  ])("only cache-observable blocker %s disables Archive (%s)", async (blocker, disabled) => {
-    const callRpc = vi.fn(async method => {
-      if (method === "project.archive") throw Object.assign(new Error(blocker), { details: { blockers: [blocker] } });
-      return new Promise(() => {});
-    });
-    await mountM3(callRpc); document.querySelector("#psarchive").click();
-    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toBe(blocker));
-    expect(document.querySelector("#psarchive").disabled).toBe(disabled);
-    if (!disabled) {
-      document.querySelector("#psarchive").click();
-      await vi.waitFor(() => expect(callRpc.mock.calls.filter(([method]) => method === "project.archive")).toHaveLength(2));
-    }
-  });
-  it("keeps mixed observable and unobservable refusals retryable", async () => {
-    const blockers = ["answer #12", "wait for filesystem operations to finish"];
-    const callRpc = vi.fn(async method => {
-      if (method === "project.archive") throw Object.assign(new Error(blockers.join("; ")), { details: { blockers } });
-      return new Promise(() => {});
-    });
-    await mountM3(callRpc); document.querySelector("#psarchive").click();
-    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toBe(blockers.join("; ")));
-    expect(document.querySelector("#psarchive").disabled).toBe(false);
-  });
-  it("finishes the baseline before dispatch and sees a blocker resolve while priming was held", async () => {
-    const address = { deviceId: "dev-1", entityId: "proj-1", kind: "tracker-task", sub: "task-12" };
-    await writeCached(address, { attention_asked: true });
-    let release;
-    baselineRead.hold = new Promise(resolve => { release = resolve; });
-    const callRpc = vi.fn(async method => {
-      if (method === "project.archive") {
-        // Old dispatch resolves this during priming; fixed dispatch follows it.
-        await writeCached(address, { attention_asked: false });
-        throw Object.assign(new Error("answer #12"), { details: { blockers: ["answer #12"] } });
-      }
-      return new Promise(() => {});
-    });
-    await mountM3(callRpc); document.querySelector("#psarchive").click();
-    await vi.waitFor(() => expect(baselineRead.entered).toBe(true));
-    await new Promise(resolve => setTimeout(resolve, 30));
-    const sentBeforeBaseline = callRpc.mock.calls.some(([method]) => method === "project.archive");
-    release(); baselineRead.hold = null;
-    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.archive", { project_id: "proj-1" }));
-    await vi.waitFor(() => expect(document.querySelector("#psarchive").disabled).toBe(false));
-    expect(sentBeforeBaseline).toBe(false);
-    expect(document.querySelector("#psarchiveerr").textContent).toBe("");
   });
 
 });

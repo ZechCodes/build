@@ -1,4 +1,3 @@
-import { archiveBlockerChanges } from "./archiveBlockerChanges.js";
 import { pullDeviceProjection } from "../core/scopedDeviceReads.js";
 import { scopedCompactionEditorHtml, mountScopedCompactionEditor } from "../core/scopedCompactionEditor.js";
 import { $ } from "../dom.js";
@@ -137,7 +136,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   const syncInFlight = new Set();
   const notices = {};
   let actionSupport = {};
-  let archiveRefusal = "";
+  const archiveAction = { pending: false, message: "" };
   let cachedDraft = null;
   let displayedDraft = {};
   let draftRecord;
@@ -173,13 +172,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     await mergeCachedAtomically(projectSettingsAddress(deviceId, projectId), latest =>
       current() && latest ? withNewerSyncs(latest, row) : null);
   };
-  const blockerChange = archiveBlockerChanges(deviceId, projectId, () => painted, () => {
-    if (!archiveRefusal || !current()) return;
-    archiveRefusal = null;
-    void record.read();
-  });
   const unsubscribeSupport = subscribeCache({ deviceId }, (address) => {
-    blockerChange(address);
     if ([SOURCE_EDIT_SUPPORT_KIND, environmentSupportAddress(deviceId).kind, environmentsAddress(deviceId).kind].includes(address?.kind)) void readSupport();
     if (address?.kind === "projects" && !address.entityId) void adoptListedSyncs();
   });
@@ -229,7 +222,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
       ${sourcesSectionHtml(project, { editing, editsSources, environmentSupport, environmentName, editEnvironment: actionSupport.environmentRename, notices, sync: { syncsBase, syncing, inFlight: syncInFlight } })}
       ${isolationHtml()}
       ${scopedCompactionEditorHtml({ scope: "project", prefix: "project-compaction" })}
-      ${projectArchiveHtml(project, actionSupport, archiveRefusal)}
+      ${projectArchiveHtml(project, actionSupport, archiveAction)}
       ${dangerHtml()}
       <div class="row"><button class="btn" id="pscancel" style="margin-left:auto">Close</button></div>`,
     });
@@ -258,13 +251,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     if (draft.edits === cachedDraft?.edits) displayedDraft.edits = draft.edits;
     if (draft.source === cachedDraft?.source) displayedDraft.source = draft.source;
     mountProjectGeneral(sheet, project, {
-      deviceId, callRpc, beforeArchive: () => blockerChange.prepare(),
-      onArchiveRefused: async (refusal, baseline) => {
-        const unchanged = await blockerChange.unchanged(baseline);
-        archiveRefusal = unchanged ? refusal : null;
-        void record.read();
-        return unchanged;
-      },
+      deviceId, callRpc, archiveAction, onArchiveSettled: () => { void record.read(); },
       openEnvironment: () => { close(); openEnvironmentSettings(project.environment_id, { deviceId, callRpc }); },
     });
     lockArchivedSettings(sheet, project);

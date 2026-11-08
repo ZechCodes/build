@@ -137,17 +137,7 @@ fn project_and_workspace_rows_carry_environment_membership_and_counts() {
     assert_eq!(workspace["ok"], true, "{workspace}");
     let projects = rpc(&mut app, "project.list", json!({}));
     let row = &projects["result"]["projects"][0];
-    assert_eq!(row["environment_id"], "env-1");
-    assert_eq!(row["environment_name"], "home");
-    assert_eq!(
-        row["project_key"],
-        json!(app.project_for(&project).unwrap().project_key)
-    );
-    assert_eq!(row["diverged"], false);
-    assert_eq!(row["open_tasks"], 1);
-    assert_eq!(row["total_tasks"], 1);
-    assert_eq!(row["workspaces"], 1);
-    assert!(row["device"].is_string());
+    assert_project_membership_and_counts(row, &app.project_for(&project).unwrap().project_key);
     let params = json!({"workspace_id":workspace["result"]["workspace_id"]});
     let get = rpc(&mut app, "workspace.get", params);
     let list = rpc(&mut app, "workspace.list", json!({}));
@@ -162,4 +152,15 @@ fn project_and_workspace_rows_carry_environment_membership_and_counts() {
     let projects = rpc(&mut app, "project.list", json!({}));
     assert_eq!(projects["result"]["projects"][0]["open_tasks"], 0);
     assert_eq!(projects["result"]["projects"][0]["total_tasks"], 1);
+}
+
+fn assert_project_membership_and_counts(row: &Value, project_key: &str) {
+    assert_eq!(row["environment_id"], "env-1");
+    assert_eq!(row["environment_name"], "home");
+    assert_eq!(row["project_key"], project_key);
+    assert_eq!(row["diverged"], false);
+    assert_eq!(row["open_tasks"], 1);
+    assert_eq!(row["total_tasks"], 1);
+    assert_eq!(row["workspaces"], 1);
+    assert!(row["device"].is_string());
 }

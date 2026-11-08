@@ -141,17 +141,7 @@ impl AppState {
             .sources
             .iter()
             .map(|source| {
-                let remote = observed
-                    .iter()
-                    .copied()
-                    .chain(cached)
-                    .flat_map(|row| row.value["sources"].as_array().into_iter().flatten())
-                    .find(|row| {
-                        row["id"] == source.id && row["path"] == source.path.display().to_string()
-                    })
-                    .map(|row| row["remote"].clone())
-                    .unwrap_or(Value::Null);
-                source.wire_observed(remote)
+                source.wire_observed(environment_source_remote(source, &observed, cached))
             })
             .collect::<Vec<_>>();
         let home = environment.sources.first();
@@ -196,6 +186,28 @@ impl AppState {
             .copied()
             .unwrap_or_default()
     }
+}
+
+fn environment_source_remote(
+    source: &ProjectSource,
+    projects: &[&ProjectObservation],
+    cached: Option<&ProjectObservation>,
+) -> Value {
+    let path = source.path.display().to_string();
+    projects
+        .iter()
+        .copied()
+        .chain(cached)
+        .filter_map(|observed| {
+            let sources = observed.value["sources"].as_array()?;
+            let row = sources
+                .iter()
+                .find(|row| row["id"] == source.id && row["path"] == path)?;
+            Some((observed.version, &row["remote"]))
+        })
+        .max_by_key(|(version, _)| *version)
+        .map(|(_, remote)| remote.clone())
+        .unwrap_or(Value::Null)
 }
 
 /// A project's legacy home can differ from the environment's first source.

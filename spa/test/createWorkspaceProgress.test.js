@@ -162,3 +162,8 @@ describe("workspace creation progress", () => {
     await vi.advanceTimersByTimeAsync(900); expect(onOpenWorkspace).toHaveBeenCalledTimes(1);
   });
 });
+
+it('shows a retained transport uncertainty as Checking while the worker keeps polling', () => {
+ const model=createWorkspaceProgressModel({operationId:'lost',state:'queued',checking:true,request:{method:'workspace.create',params:{project_id:'p'}}});
+ expect(model.phase).toBe('checking');expect(model.actions).toEqual([]);expect(model.message).toBe('Build lost the reply; checking what happened');
+});

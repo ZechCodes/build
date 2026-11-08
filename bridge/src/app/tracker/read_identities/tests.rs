@@ -171,8 +171,9 @@ fn captured_project_owner_keeps_non_utf8_project_path_bytes() {
         .join(std::ffi::OsString::from_vec(b"project-\xff".to_vec()));
     std::fs::create_dir(&root).unwrap();
     let project = app.add_project(root.clone(), "main".into());
-    app.projects.bind_entity("owner".into(), project);
-    let scratch = crate::app::projects::scratch_dir(&app.state_root, &root);
+    app.projects.bind_entity("owner".into(), project.clone());
+    let key = &app.project(&project).unwrap().project_key;
+    let scratch = crate::app::projects::scratch_dir(&app.state_root, key.as_ref());
     std::fs::create_dir_all(&scratch).unwrap();
     app.runs.get_mut("owner").unwrap().worktree.path = scratch;
     assert!(app.is_project_snapshot_conversation_owner("owner"));

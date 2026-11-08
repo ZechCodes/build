@@ -76,7 +76,7 @@ fn intent_for(task: &Task) -> crate::store::DeliveryIntent {
 fn thread_count(app: &AppState, owner: &str, agent: &str) -> usize {
     app.runs[owner]
         .agents
-        .get(agent)
+        .by_id(agent)
         .unwrap()
         .thread
         .items

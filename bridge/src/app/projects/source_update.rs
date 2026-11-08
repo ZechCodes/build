@@ -369,6 +369,9 @@ impl crate::lifecycle::WorktreeMutation for SerializedSourceUpdate {
         }
         let performed = self.mutation.perform();
         if let Some(refresh) = &self.environments {
+            if let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) {
+                refresh.recapture(&state.lock().unwrap());
+            }
             refresh.observe(&paths);
         }
         let performed = performed?;

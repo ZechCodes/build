@@ -84,6 +84,9 @@ impl<S: GitCallScope> DeferredGitWork for ScopedGitCall<S> {
         }
         let result = (self.work)(&self.scope, params);
         if let (Some(refresh), Some(path)) = (&self.environments, self.scope.mutation_path()) {
+            if let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) {
+                refresh.recapture(&state.lock().unwrap());
+            }
             refresh.observe(&[path.to_path_buf()]);
         }
         result

@@ -35,6 +35,16 @@ impl AppState {
 }
 
 impl EnvironmentRepositoryRefresh {
+    /// Refresh immutable inputs after the repository work. Configuration can
+    /// gain or change references while a queued Git job waits for its lock.
+    /// Inline lifecycle drains use the admission snapshot because they already
+    /// own AppState; shared drains briefly lock only to copy these inputs.
+    pub(in crate::app) fn recapture(&self, app: &AppState) {
+        if let RefreshState::Pending(refresh) = &mut *self.state.lock().unwrap() {
+            refresh.environments = app.capture_environment_snapshot_rows();
+        }
+    }
+
     /// Called after Git work, while its repository locks are still held. Both
     /// common-directory discovery and source/availability probes run off-lock.
     pub(in crate::app) fn observe(&self, roots: &[PathBuf]) {

@@ -32,22 +32,9 @@ impl AppState {
     }
     pub(in crate::app) fn install_environment_edit_refresh(
         &self,
-        environment: &str,
+        _environment: &str,
         refresh: RenderedProjectSnapshotRefresh,
     ) {
-        // Inputs were checked against the complete durable configuration before
-        // staging. Dependent references need the prospective rows immediately.
-        let ids = self.environment_project_ids(environment);
-        self.snapshot_observations
-            .projects
-            .lock()
-            .unwrap()
-            .retain(|id, _| !ids.contains(id));
-        self.snapshot_observations
-            .environments
-            .lock()
-            .unwrap()
-            .remove(environment);
         self.install_project_snapshot_refresh(refresh);
     }
     pub(in crate::app) fn project_json_observed(&self, id: &str) -> Result<Value, String> {
@@ -108,34 +95,8 @@ impl AppState {
             });
         }
     }
-    pub(in crate::app) fn invalidate_source_remote_observations(&self, roots: &[PathBuf]) {
-        invalidate_remotes(
-            &mut self.snapshot_observations.projects.lock().unwrap(),
-            roots,
-        );
-        invalidate_remotes(
-            &mut self.snapshot_observations.environments.lock().unwrap(),
-            roots,
-        );
-        if !roots.is_empty() {
-            self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
-        }
-    }
 }
-fn invalidate_remotes(observations: &mut BTreeMap<String, ProjectObservation>, roots: &[PathBuf]) {
-    for observation in observations.values_mut() {
-        if let Some(sources) = observation.value["sources"].as_array_mut() {
-            for source in sources {
-                if source["path"]
-                    .as_str()
-                    .is_some_and(|path| roots.iter().any(|root| root == std::path::Path::new(path)))
-                {
-                    source["remote"] = Value::Null;
-                }
-            }
-        }
-    }
-}
+
 impl RenderedProjectSnapshotRefresh {
     pub(in crate::app) fn validate_environment_isolation(
         &self,
@@ -185,5 +146,42 @@ impl ProjectSnapshotRefresh {
         });
         self.environments
             .retain(|e| e.id == environment || (!repositories.is_empty() && affected(&e.sources)));
+    }
+}
+
+impl ProjectSnapshotRefresh {
+    /// Complete a prospective project edit using filesystem results, then probe
+    /// its future references before the app lock is acquired for settlement.
+    pub(in crate::app) fn render_updated_source(
+        mut self,
+        project: &str,
+        source: &str,
+        updated: &crate::lifecycle::SourceUpdated,
+        version: u64,
+    ) -> RenderedProjectSnapshotRefresh {
+        let environment = self
+            .rows
+            .iter()
+            .find(|row| row.project_id == project)
+            .map(|row| row.environment_id.clone())
+            .expect("captured project");
+        self.rows.retain(|row| row.environment_id == environment);
+        self.environments.retain(|row| row.id == environment);
+        for sources in self
+            .rows
+            .iter_mut()
+            .map(|row| &mut row.sources)
+            .chain(self.environments.iter_mut().map(|row| &mut row.sources))
+        {
+            for captured in sources
+                .iter_mut()
+                .filter(|s| s.id == source && s.path == updated.path)
+            {
+                captured.is_git = updated.is_git;
+                captured.base_branch = updated.base_branch.clone();
+            }
+        }
+        self.version = version;
+        self.render()
     }
 }

@@ -46,6 +46,7 @@ fn environment_source_remote_uses_newest_observation() {
     app.snapshot_observations.projects.lock().unwrap().insert(
         project,
         ProjectObservation {
+            source_versions: Default::default(),
             version: 5,
             value: json!({"sources":[
                 wrong_id.wire_observed(json!("wrong-id")),
@@ -65,6 +66,7 @@ fn environment_source_remote_uses_newest_observation() {
 
 fn source_observation(source: &ProjectSource, version: u64, remote: Value) -> ProjectObservation {
     ProjectObservation {
+        source_versions: Default::default(),
         version,
         value: json!({"sources":[source.wire_observed(remote)]}),
     }
@@ -218,11 +220,13 @@ fn environment_availability_uses_its_current_home_and_newest_matching_probe() {
     app.snapshot_observations.projects.lock().unwrap().insert(
         project.clone(),
         ProjectObservation {
+            source_versions: Default::default(),
             version: 2,
             value: json!({"path":original_home,"sources":[],"isolation_available":{"rift":true}}),
         },
     );
     app.snapshot_observations.environments.lock().unwrap().insert(environment_id.clone(), ProjectObservation {
+        source_versions: Default::default(),
         version:3, value:json!({"path":environment_home,"sources":[],"isolation_available":{"rift":false}}),
     });
     let row = &app.environment_list()["environments"][0];
@@ -251,6 +255,7 @@ fn environment_availability_uses_its_current_home_and_newest_matching_probe() {
     let latest_remote = "https://example.invalid/latest-secondary.git";
     let source = app.project_for(&project).unwrap().sources[0].wire_observed(json!(latest_remote));
     app.snapshot_observations.projects.lock().unwrap().insert(project.clone(), ProjectObservation {
+        source_versions: Default::default(),
         version:4, value:json!({"path":original_home,"sources":[source],"isolation_available":{"rift":false}}),
     });
     app.dispatch(

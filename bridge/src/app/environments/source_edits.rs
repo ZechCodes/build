@@ -70,6 +70,7 @@ impl AppState {
             },
             state: self.source_validation_handle(),
             environments: None,
+            configuration_probe: None,
         };
         let title = self.projects.environment(&id).unwrap().name.clone();
         let address = SourceAddress {

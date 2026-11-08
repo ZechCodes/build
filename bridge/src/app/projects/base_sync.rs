@@ -203,7 +203,7 @@ pub(in crate::app) struct Synced {
     subject: SyncSubject,
     report: SyncReport,
     start: Option<String>,
-    environments: Option<crate::app::snapshot_projection::EnvironmentRepositoryRefresh>,
+    environments: Option<crate::app::snapshot_projection::RepositoryRefresh>,
 }
 
 impl Synced {
@@ -285,10 +285,7 @@ fn sync_for_the_service(subject: SyncSubject, state: &Arc<Mutex<AppState>>) -> O
         return None;
     }
     let report = sync_base(&subject.path, &subject.base_branch, subject.fetch);
-    let environments = state
-        .lock()
-        .unwrap()
-        .capture_environment_repository_refresh();
+    let environments = state.lock().unwrap().capture_repository_refresh();
     environments.observe(std::slice::from_ref(&subject.path));
     Some(Synced {
         subject,
@@ -341,10 +338,7 @@ fn sync_for_a_cut(
             .map_err(|error| format!("cannot pin workspace base: {error}"))?,
     };
     let environments = state.and_then(std::sync::Weak::upgrade).map(|state| {
-        let refresh = state
-            .lock()
-            .unwrap()
-            .capture_environment_repository_refresh();
+        let refresh = state.lock().unwrap().capture_repository_refresh();
         refresh.observe(std::slice::from_ref(&subject.path));
         refresh
     });
@@ -640,7 +634,6 @@ impl AppState {
             if let Some(refresh) = &sync.environments {
                 refresh.install(self);
             }
-            self.invalidate_shared_repository_views(&sync.subject.path);
         }
         for left in synced.iter().filter(|synced| synced.left_the_checkout()) {
             if left.subject.is_current(self) {

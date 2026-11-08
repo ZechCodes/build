@@ -5,7 +5,7 @@ use crate::app::projects::ProjectSource;
 use crate::isolation::{Isolation, IsolationAvailability};
 
 /// Immutable inputs captured by the maintenance producer before filesystem work.
-#[derive(Eq)]
+#[derive(Clone, Eq)]
 pub(super) struct EnvironmentSnapshotRow {
     pub(super) id: String,
     pub(super) sources: Vec<ProjectSource>,
@@ -68,12 +68,20 @@ impl AppState {
         let current = self.capture_environment_snapshot_rows();
         let mut observations = self.snapshot_observations.environments.lock().unwrap();
         for (row, value) in rows {
-            let unchanged = current.contains(&row);
-            let newer = observations
-                .get(&row.id)
-                .is_none_or(|old| old.version < version);
-            if unchanged && newer {
-                observations.insert(row.id, ProjectObservation { version, value });
+            if let Some(current) = current.iter().find(|current| current.id == row.id) {
+                let home = current
+                    .sources
+                    .first()
+                    .map(|s| s.path.as_path())
+                    .unwrap_or(std::path::Path::new(""));
+                publish_source_observation(
+                    &mut observations,
+                    &row.id,
+                    ProjectObservation::new(version, value),
+                    &current.sources,
+                    home,
+                    current.worktrees_root == row.worktrees_root,
+                );
             }
         }
         observations.retain(|id, _| current.iter().any(|row| row.id == *id));
@@ -84,29 +92,31 @@ impl AppState {
         let Some(environment) = self.projects.get(project).map(|p| &p.environment_id) else {
             return;
         };
-        let projects = self.snapshot_observations.projects.lock().unwrap();
-        let Some(observation) = projects.get(project) else {
+        let observation = self
+            .snapshot_observations
+            .projects
+            .lock()
+            .unwrap()
+            .get(project)
+            .cloned();
+        let (Some(observation), Some(current)) =
+            (observation, self.projects.environment(environment))
+        else {
             return;
         };
-        let mut environments = self.snapshot_observations.environments.lock().unwrap();
-        if environments
-            .get(environment)
-            .is_none_or(|old| old.version < observation.version)
-        {
-            let home = self
-                .projects
-                .environment(environment)
-                .and_then(|e| e.sources.first());
-            let value =
-                retained_environment_value(observation, environments.get(environment), home);
-            environments.insert(
-                environment.clone(),
-                ProjectObservation {
-                    version: observation.version,
-                    value,
-                },
-            );
-        }
+        let home = current
+            .sources
+            .first()
+            .map(|s| s.path.as_path())
+            .unwrap_or(std::path::Path::new(""));
+        publish_source_observation(
+            &mut self.snapshot_observations.environments.lock().unwrap(),
+            environment,
+            observation,
+            &current.sources,
+            home,
+            true,
+        );
     }
 
     pub(crate) fn environment_list(&self) -> Value {
@@ -211,7 +221,7 @@ fn environment_source_remote(
             let row = sources
                 .iter()
                 .find(|row| row["id"] == source.id && row["path"] == path)?;
-            Some((observed.version, &row["remote"]))
+            Some((observed.source_version(row), &row["remote"]))
         })
         .max_by_key(|(version, _)| *version)
         .map(|(_, remote)| remote.clone())
@@ -235,23 +245,6 @@ fn environment_rift_available(
         .filter(|observed| observed.value["path"] == path)
         .max_by_key(|observed| observed.version)
         .is_some_and(|observed| observed.value["isolation_available"]["rift"] == true)
-}
-
-fn retained_environment_value(
-    project: &ProjectObservation,
-    cached: Option<&ProjectObservation>,
-    home: Option<&ProjectSource>,
-) -> Value {
-    let mut value = project.value.clone();
-    if home.is_none_or(|source| value["path"] != source.path.display().to_string()) {
-        value["path"] = cached
-            .map(|old| old.value["path"].clone())
-            .unwrap_or(Value::Null);
-        value["isolation_available"] = cached
-            .map(|old| old.value["isolation_available"].clone())
-            .unwrap_or(Value::Null);
-    }
-    value
 }
 
 #[cfg(test)]

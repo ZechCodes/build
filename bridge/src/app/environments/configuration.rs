@@ -36,20 +36,10 @@ impl WorktreeMutation for ConfigurationProbe {
         if let Some(isolation) = self.isolation {
             refresh.validate_environment_isolation(&self.environment, isolation)?;
         }
-        let repositories = self
-            .repositories
-            .iter()
-            .map(|p| crate::source_sync::sync_lock_identity(p))
-            .collect::<std::collections::BTreeSet<_>>();
-        let changed_roots = if repositories.is_empty() {
-            vec![]
-        } else {
-            self.roots
-                .into_iter()
-                .chain(self.repositories)
-                .filter(|p| repositories.contains(&crate::source_sync::sync_lock_identity(p)))
-                .collect()
-        };
+        let changed_roots = crate::app::snapshot_projection::affected_repository_roots(
+            self.roots,
+            &self.repositories,
+        );
         Ok(Performed {
             change: WorktreeChange::nothing(),
             output: ConfigurationObserved {
@@ -73,14 +63,12 @@ impl ConfigurationSettlement {
         app: &mut AppState,
         result: Result<ConfigurationObserved, String>,
     ) -> Result<Value, String> {
-        let roots = result
-            .as_ref()
-            .map(|observed| observed.changed_roots.clone())
-            .unwrap_or_default();
-        let result = result.and_then(|observed| self.commit(app, observed));
-        if result.is_err() {
-            app.invalidate_source_remote_observations(&roots);
-        }
+        // Git facts survive a rejected configuration change. Publish compatible
+        // evidence before staging, and retain it if validation or persistence fails.
+        let result = result.and_then(|observed| {
+            app.install_project_snapshot_refresh(observed.refresh.clone());
+            self.commit(app, observed)
+        });
         (self.finish)(app, result)
     }
     fn commit(
@@ -168,16 +156,7 @@ impl AppState {
             Ok(row) => AppReservation::row_only(row),
             Err(error) => return finish(self, Err(error)),
         };
-        let roots = self
-            .worktree_roots()
-            .into_values()
-            .chain(
-                self.projects
-                    .registered_sources()
-                    .into_iter()
-                    .map(|s| s.path),
-            )
-            .collect();
+        let roots = self.capture_repository_roots();
         let probe = ConfigurationProbe {
             refresh,
             environment: id.to_owned(),

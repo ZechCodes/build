@@ -2,11 +2,14 @@
 //! are captured by lifecycle work; publication consumes only owned observations.
 
 mod configuration;
+mod source_publication;
+use source_publication::publish_source_observation;
 mod repository_refresh;
 use super::read_view::{ReadView, SnapshotDelta};
 use super::workspaces::ProjectionOwnership;
 use super::{AppState, ProjectListRow};
-pub(in crate::app) use repository_refresh::EnvironmentRepositoryRefresh;
+pub(in crate::app) use repository_refresh::affected_repository_roots;
+pub(in crate::app) use repository_refresh::RepositoryRefresh;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -33,10 +36,11 @@ pub(in crate::app) struct SnapshotObservations {
     workspace_reviews: BTreeMap<String, WorkspaceReviewObservation>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(in crate::app) struct ProjectObservation {
     version: u64,
     value: Value,
+    source_versions: BTreeMap<(String, String, bool), u64>,
 }
 
 pub(in crate::app) struct ProjectSnapshotRefresh {
@@ -45,6 +49,7 @@ pub(in crate::app) struct ProjectSnapshotRefresh {
     environments: Vec<environments::EnvironmentSnapshotRow>,
 }
 
+#[derive(Clone)]
 pub(in crate::app) struct RenderedProjectSnapshotRefresh {
     version: u64,
     rows: Vec<(ProjectListRow, Value)>,

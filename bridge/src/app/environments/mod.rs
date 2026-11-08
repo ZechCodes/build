@@ -46,3 +46,6 @@ mod source_edits;
 mod review_tests;
 
 mod configuration;
+
+#[cfg(test)]
+mod publication_review_tests;

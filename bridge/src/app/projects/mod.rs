@@ -109,6 +109,8 @@ mod project_registry;
 #[cfg(test)]
 mod project_registry_tests;
 mod requests;
+mod source_directory_claims;
+pub(in crate::app) use source_directory_claims::SourceDirectoryClaims;
 mod source_holds;
 pub(in crate::app) use source_holds::SourceMoves;
 mod source_scope;

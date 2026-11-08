@@ -26,6 +26,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod shared_tests;
 
 /// A cut that finds a fetch this recent moves the base to what it fetched
 /// rather than asking the remote again.

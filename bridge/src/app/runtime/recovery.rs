@@ -478,7 +478,7 @@ impl AppState {
         // again rather than restored from a branch it never had.
         let project_owner = crate::app::projects::is_project_scratch(
             &self.state_root,
-            record.project_path.as_ref(),
+            record.project_path.as_str(),
             &active.worktree.path,
         );
         if project_owner && !active.run.state.is_terminal() {

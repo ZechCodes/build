@@ -181,7 +181,7 @@ fn restart_recovery_preserves_sibling_run_plan_and_scratch_ownership() {
             [&migrated, &sibling].map(|id| state.projects.get(id).unwrap().project_key.clone());
         let scratches = keys
             .each_ref()
-            .map(|key| crate::app::projects::scratch_dir(root.path(), key.as_ref()));
+            .map(|key| crate::app::projects::scratch_dir(root.path(), key));
         state
             .persist_config(&state.config_value(
                 &state.projects_dir,

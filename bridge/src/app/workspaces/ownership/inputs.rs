@@ -54,7 +54,7 @@ impl<'a> Inputs<'a> {
                 .map(|project| {
                     #[cfg(test)]
                     super::work_counts::source_row();
-                    (project.id.clone(), roots.get(app, &project.repo_path))
+                    (project.id.clone(), roots.get(app, &project.home_path))
                 })
                 .collect(),
             runs_by_owner: HashMap::new(),
@@ -138,7 +138,7 @@ fn capture_runs<'a>(app: &'a AppState, roots: &mut Roots) -> Vec<RunInput<'a>> {
     for entry in app.projects.parked() {
         #[cfg(test)]
         super::work_counts::source_row();
-        if let Some(path) = crate::app::projects::configured_primary_path(entry) {
+        if let Some(path) = crate::app::projects::configured_project_key(entry) {
             parked
                 .entry(path)
                 .or_insert_with(|| entry["id"].as_str().map(str::to_owned));
@@ -150,7 +150,7 @@ fn capture_runs<'a>(app: &'a AppState, roots: &mut Roots) -> Vec<RunInput<'a>> {
         .map(|project| {
             #[cfg(test)]
             super::work_counts::source_row();
-            (project.id.as_str(), project.repo_path.as_path())
+            (project.id.as_str(), project.project_key.as_str())
         })
         .collect();
     // HashMap iteration is intentional: the first live fallback owner in
@@ -165,19 +165,19 @@ fn capture_runs<'a>(app: &'a AppState, roots: &mut Roots) -> Vec<RunInput<'a>> {
             let root = roots.get(app, &active.worktree.path);
             let project = app.projects.project_id_of(owner);
             let retained = if project.is_none() {
-                app.projects.project_path_for(owner)
+                app.projects.project_key_for(owner)
             } else {
                 String::new()
             };
-            let project_path = project
+            let project_key = project
                 .and_then(|id| projects.get(id))
-                .map(|path| path.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from(app.projects.project_path_for(owner)));
-            let project_owner = !project_path.as_os_str().is_empty()
+                .map(|key| key.to_string())
+                .unwrap_or_else(|| app.projects.project_key_for(owner));
+            let project_owner = !project_key.is_empty()
                 && root
                     == roots.get(
                         app,
-                        &crate::app::projects::scratch_dir(&app.state_root, &project_path),
+                        &crate::app::projects::scratch_dir(&app.state_root, &project_key),
                     );
             RunInput {
                 owner,

@@ -51,10 +51,9 @@ impl MixedPatch {
         self.projects.insert(
             id.into(),
             Project {
-                path: row.map(|row| row.repo_path.display().to_string()),
+                path: row.map(|row| row.project_key.clone()),
                 sources: row.map(|row| Arc::new(row.sources.clone())),
-                archive: row
-                    .map(|row| Arc::new((row.name.clone(), row.repo_path.display().to_string()))),
+                archive: row.map(|row| Arc::new((row.name.clone(), row.project_key.clone()))),
             },
         );
     }

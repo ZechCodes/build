@@ -41,10 +41,7 @@ impl AppState {
                 .map(|project| {
                     (
                         project.id.clone(),
-                        Arc::new((
-                            project.name.clone(),
-                            project.repo_path.display().to_string(),
-                        )),
+                        Arc::new((project.name.clone(), project.project_key.clone())),
                     )
                 })
                 .collect(),
@@ -68,7 +65,7 @@ impl AppState {
                 id: id.into(),
                 project_id: self.projects.project_id_of(id).map(str::to_string),
                 project: self.project_name_of(id),
-                project_path: self.project_path_for(id),
+                project_path: self.projects.project_key_for(id),
                 title: active.plan.goal.clone(),
                 state: plan_state_str(&active.plan.state),
                 finished_at: active.plan.archived_at.clone(),
@@ -88,7 +85,7 @@ impl AppState {
             id: id.into(),
             project_id: self.projects.project_id_of(id).map(str::to_string),
             project: self.project_name_of(id),
-            project_path: self.project_path_for(id),
+            project_path: self.projects.project_key_for(id),
             title: if active.run.goal.trim().is_empty() {
                 branch.clone()
             } else {

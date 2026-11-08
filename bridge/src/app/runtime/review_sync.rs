@@ -34,9 +34,7 @@ impl AppState {
         observed: Option<crate::app::snapshot_projection::WorkspaceReviewObservation>,
     ) {
         let Some(project) = self
-            .projects
-            .iter()
-            .find(|project| project.repo_path.to_string_lossy() == result.project_path)
+            .project_by_key(&result.project_path)
             .map(|project| project.id.clone())
         else {
             return;

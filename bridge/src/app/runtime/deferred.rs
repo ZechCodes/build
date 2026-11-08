@@ -499,6 +499,7 @@ pub(in crate::app) struct ProjectListRow {
     pub(in crate::app) base_branch: String,
     pub(in crate::app) is_git: bool,
     pub(in crate::app) sources: Vec<crate::app::projects::ProjectSource>,
+    pub(in crate::app) added_sources: Vec<crate::app::projects::ProjectSource>,
     pub(in crate::app) isolation: Option<Isolation>,
     pub(in crate::app) isolation_default: Isolation,
     /// The conversation owner this project has, or `None` for one nobody has
@@ -548,6 +549,10 @@ impl ProjectListRow {
             "environment_name": self.environment_name,
             "project_key": self.project_key,
             "diverged": self.diverged,
+            "added_sources": self.added_sources.iter().map(|source| {
+                let remote=sources.iter().find(|row|row["id"]==source.id).map(|row|row["remote"].clone()).unwrap_or(Value::Null);
+                source.wire_observed(remote)
+            }).collect::<Vec<_>>(),
             "device": self.device,
             "open_tasks": self.open_tasks,
             "total_tasks": self.total_tasks,

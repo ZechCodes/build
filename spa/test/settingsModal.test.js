@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-const { App, go, markRoute, local, device, archive, paintDevicePicker, listeners, deviceListeners } = vi.hoisted(() => ({
+const { App, go, markRoute, local, device, archive, environments, paintDevicePicker, listeners, deviceListeners } = vi.hoisted(() => ({
   App: { route: { name: "account", page: "settings" }, devices: [], viewDispose: null },
-  go: vi.fn(), markRoute: vi.fn(), local: vi.fn(), device: vi.fn(), archive: vi.fn(), paintDevicePicker: vi.fn(), listeners: new Set(), deviceListeners: new Set(),
+  go: vi.fn(), markRoute: vi.fn(), local: vi.fn(), device: vi.fn(), archive: vi.fn(), environments: vi.fn(), paintDevicePicker: vi.fn(), listeners: new Set(), deviceListeners: new Set(),
 }));
 vi.mock("../src/app.js", () => ({ App, go, markRoute }));
 vi.mock("../src/devices.js", () => ({
@@ -17,6 +17,7 @@ vi.mock("../src/devices.js", () => ({
 vi.mock("../src/views/settings.js", () => ({ renderSettings: local }));
 vi.mock("../src/views/deviceSettings.js", () => ({ renderDeviceSettings: device }));
 vi.mock("../src/views/archive.js", () => ({ renderArchive: archive }));
+vi.mock("../src/views/environmentsSettings.js", () => ({ renderEnvironmentsSettings: environments }));
 vi.mock("../src/core/deviceContexts.js", () => ({ onDeviceStateChanged: (listener) => {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -73,6 +74,16 @@ describe("settings modal", () => {
     await flush();
     expect(document.querySelector('[data-settings-device="a"] .bridge-update-dot')).toBeNull();
     expect(document.querySelector('[data-settings-device="a"]').textContent).not.toContain("Update available");
+  });
+  it("opens the environments deep link and switches to it through settings links", async () => {
+    App.route = { name: "account", page: "environments" };
+    openModal(); await flush();
+    expect(environments).toHaveBeenCalledOnce();
+    expect(document.querySelector('.settings-environments').getAttribute("aria-current")).toBe("page");
+    document.querySelector('[data-local]').click(); await flush();
+    document.querySelector('.settings-environments').click(); await flush();
+    expect(markRoute).toHaveBeenLastCalledWith({ name: "account", page: "environments" });
+    expect(environments).toHaveBeenCalledTimes(2);
   });
   it("lists local settings and devices over the existing surface, returning on close", async () => {
     const returnRoute = { name: "workspace", deviceId: "a", workspaceId: "w1" };

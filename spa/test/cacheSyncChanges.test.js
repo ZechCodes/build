@@ -998,6 +998,38 @@ describe.each([false, true])("environment lists (device sync owns lists: %s)", (
     environmentsSupported = true;
   });
 
+  it("re-pulls environment.list on reconnect when board.list omits environments", async () => {
+    script["environment.list"] = () => ({ environments: [environment("Before disconnect")] });
+    await boot([]);
+    script["board.list"] = () => ({ items: [] });
+    const rows = [environment("Created while disconnected")];
+    script["environment.list"] = () => ({ environments: rows });
+    bridge.call.mockClear();
+    contexts.get("dev-1").session = { reconnected: true };
+    stateListeners.forEach(listener => listener());
+    await passesSettled(sync, "dev-1");
+    expect(calls("environment.list")).toHaveLength(1);
+    expect(await readEnvironments()).toEqual(cachedRows(rows));
+  });
+
+  it.runIf(!owned)("refreshes project and environment source membership in the same sync pass", async () => {
+    let sources = [{ id: "source-1", path: "/synthetic/build", is_git: true }];
+    script["environment.list"] = () => ({ environments: [{ ...environment("Shared"), sources }] });
+    script["project.list"] = () => ({ projects: [{ id: "p1", name: "Build", environment_id: "env-1", diverged: true,
+      sources: [...sources, { id: "extra", path: "/synthetic/extra" }] }] });
+    await boot([]);
+    sources = [...sources, { id: "new-inherited", path: "/synthetic/inherited" }];
+    await sync.syncDevice("dev-1");
+    expect((await readEnvironments())[0].sources.map(source => source.id)).toEqual(["source-1", "new-inherited"]);
+    expect((await read("", "projects")).value[0].sources.map(source => source.id)).toEqual(["source-1", "new-inherited", "extra"]);
+    const { navigationCatalog } = await import("../src/core/navigationModel.js");
+    const { switcherModel } = await import("../src/core/environmentSwitcherModel.js");
+    const picker = switcherModel(navigationCatalog({ projects: (await read("", "projects")).value }), {
+      support: { "dev-1": true }, environments: await readEnvironments(),
+    });
+    expect(picker.groups[0].destinations[0].addedFolders).toBe(1);
+  });
+
   it("lands the capable device's environment.list in its cache for independent readers", async () => {
     const rows = [environment("Pulled environment")];
     script["environment.list"] = () => ({ environments: rows });

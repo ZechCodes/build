@@ -299,19 +299,15 @@ impl AppState {
         candidate: &std::path::Path,
         source_id: &str,
     ) -> Result<(), String> {
-        let project = self.project_for(project_id)?;
-        let included_environment = self
+        self.project_for(project_id)?;
+        // Use the same effective-membership check for project-owned and
+        // inherited edits. Environment edits also affect every sibling line.
+        if let Some(affected_project) = self
             .projects
-            .environments_referencing(candidate)
-            .iter()
-            .any(|environment| environment.id == project.environment_id);
-        let duplicate = included_environment
-            && self
-                .projects
-                .source_repoint_duplicates(project_id, source_id, candidate);
-        if duplicate {
+            .source_repoint_duplicate_project(project_id, source_id, candidate)
+        {
             return Err(format!(
-                "source is already included in this project: {}",
+                "source is already included in this project: {} (affected project {affected_project})",
                 candidate.display()
             ));
         }
@@ -447,6 +443,9 @@ impl AppState {
         // A folder that is back answers as the project it was, not a new one.
         self.revive_parked_projects();
         let name = usable_project_name(require_str(params, "name")?)?;
+        if let Some(environment) = params["environment_id"].as_str() {
+            return self.project_create_in_environment(environment, &name, params);
+        }
         if params.get("sources").is_some() {
             return self.project_from_sources(params, Some(name));
         }
@@ -693,6 +692,7 @@ impl AppState {
         self.mark_device_lifecycle_dirty()?;
         let project_id = require_str(params, "project_id")?;
         let source_id = require_str(params, "source_id")?;
+        self.check_project_source_edit(&project_id, &source_id, false)?;
         let project = self.project_for(&project_id)?;
         if !project.sources.iter().any(|source| source.id == source_id) {
             return Err(format!(
@@ -782,5 +782,126 @@ impl AppState {
         })?;
         self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
         Ok(value)
+    }
+}
+
+impl AppState {
+    pub(in crate::app) fn plan_creation_sources(
+        &self,
+        entries: &[Value],
+        inherited: &[ProjectSource],
+        managed_root: &std::path::Path,
+    ) -> Result<Value, String> {
+        let mut taken = TakenSourceNames::over(inherited);
+        let first = super::next_source_number(inherited);
+        let mut requests = Vec::new();
+        for (index, entry) in entries.iter().enumerate() {
+            requests.push(self.source_request(
+                entry,
+                format!("source-{}", first + index as u64),
+                &mut taken,
+            )?);
+        }
+        taken.refuse_managed_destinations(
+            &requests,
+            managed_root,
+            &self.projects.registered_sources(),
+        )?;
+        for request in requests.iter().filter(|r| r.remote.is_some()) {
+            let destination = managed_root.join(&request.mount);
+            self.validate_secret_source(&destination)?;
+            if self.source_directory_has_owner(&destination) {
+                return Err(
+                    "managed source destination overlaps a project or workspace location".into(),
+                );
+            }
+        }
+        let planned = requests.into_iter().map(|request| {
+            let path = request.path.unwrap_or_else(|| managed_root.join(&request.mount));
+            serde_json::json!({"source":ProjectSource::added(request.id,request.name,request.mount,path,false,request.base_branch.clone().unwrap_or_else(||"main".into())),"remote":request.remote,"base_branch":request.base_branch})
+        }).collect::<Vec<_>>();
+        Ok(serde_json::json!(planned))
+    }
+}
+
+impl AppState {
+    fn project_create_in_environment(
+        &mut self,
+        environment: &str,
+        name: &str,
+        params: &Value,
+    ) -> Result<Value, String> {
+        self.refuse_pending_environment_creation(environment)?;
+        let inherited = self
+            .projects
+            .environment(environment)
+            .ok_or("unknown environment")?
+            .sources
+            .clone();
+        let entries = params["sources"].as_array().cloned().unwrap_or_default();
+        let key = format!("project:{}", uuid::Uuid::new_v4());
+        if entries.is_empty() {
+            let provisional = format!("proj-{}", self.projects.next_id());
+            let id = self.create_environment_project(
+                environment,
+                name,
+                &key,
+                &provisional,
+                Vec::new(),
+                |_| Ok(()),
+            )?;
+            return Ok(self.project_json(self.projects.get(&id).expect("published project")));
+        }
+        let mut taken = TakenSourceNames::over(&inherited);
+        let first = super::next_source_number(&inherited);
+        let requests = entries
+            .iter()
+            .enumerate()
+            .map(|(n, e)| {
+                self.source_request(e, format!("source-{}", first + n as u64), &mut taken)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let root = self
+            .projects_dir
+            .join(format!("{}-sources", safe_mount_name(name)));
+        taken.refuse_managed_destinations(
+            &requests,
+            &crate::worktree::canonical_planned_path(&root),
+            &self.projects.registered_sources(),
+        )?;
+        let mutation = self.reserve_source_opening(requests, root.clone())?;
+        let environment = environment.to_owned();
+        let name = name.to_owned();
+        self.defer_project(
+            root,
+            name.clone(),
+            PendingState::Creating,
+            mutation,
+            move |app: &mut AppState, result: Result<PreparedSources, String>| {
+                let prepared = result?;
+                let result = (|| {
+                    let mut added = prepared.sources;
+                    app.validate_creation_additions(
+                        &environment,
+                        &mut added,
+                        &prepared.cloned_paths,
+                    )?;
+                    let provisional = format!("proj-{}", app.projects.next_id());
+                    let id = app.create_environment_project(
+                        &environment,
+                        &name,
+                        &key,
+                        &provisional,
+                        added,
+                        |_| Ok(()),
+                    )?;
+                    Ok(app.project_json(app.projects.get(&id).expect("published project")))
+                })();
+                if result.is_err() {
+                    app.cleanup_unregistered_sources(prepared.created_checkouts);
+                }
+                result
+            },
+        )
     }
 }

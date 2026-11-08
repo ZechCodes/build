@@ -223,6 +223,8 @@ pub struct ProjectSourceParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectCreateParams {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
     /// The multi-source form. Takes precedence over `parent`/`remote`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sources: Option<Vec<ProjectSourceParams>>,
@@ -601,6 +603,10 @@ pub struct ProjectRow {
     )]
     pub archived_at: Named<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_sources: Option<Vec<ProjectSourceRow>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diverged: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_thresholds: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<serde_json::Value>,
@@ -692,7 +698,6 @@ pub struct ListedProjectRow {
     pub environment_id: String,
     pub environment_name: String,
     pub project_key: String,
-    pub diverged: bool,
     pub device: String,
     pub open_tasks: u64,
     pub total_tasks: u64,
@@ -1157,8 +1162,11 @@ pub struct ModelsListResult {
 /// codes, so the phrases are matched here rather than the sentences rewritten:
 /// a message is the wire's, and changing one to win a code would be a change
 /// to what every existing client shows its user.
-const CONFLICTS: [&str; 13] = [
+const CONFLICTS: [&str; 16] = [
     "a project must have at least one source",
+    " belongs to environment ",
+    "environment has a pending creation",
+    "already included in this project",
     "source overlaps",
     "source remote is already registered",
     "is already a git repository",
@@ -1619,7 +1627,7 @@ fn project_discard_unused(
     answer(Ok(value))
 }
 
-fn discard_unused_error(message: String) -> ApiError {
+pub(super) fn discard_unused_error(message: String) -> ApiError {
     if message == "discard needs a durable store" {
         return ApiError::unavailable(message);
     }
@@ -1629,7 +1637,11 @@ fn discard_unused_error(message: String) -> ApiError {
     if message.starts_with("creation is still") {
         return ApiError::busy(message);
     }
-    if message.starts_with("project has ") || message == "project was not created by this attempt" {
+    if message.starts_with("project has ")
+        || message == "project was not created by this attempt"
+        || message.starts_with("environment has ")
+        || message == "environment was not created by this attempt"
+    {
         return ApiError::conflict(message, None);
     }
     ApiError::classify(message)

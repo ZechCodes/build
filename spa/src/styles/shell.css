@@ -1786,3 +1786,16 @@ body.gated #inbox-rail { display:none; }
 .console-source-control { width:9rem; }
 select.console-source { width:100%; max-width:100%; }
 @media (max-width:600px) { .console-source-control { width:108px; } }
+
+/* Identity glyphs occupy exactly their existing sixteen-pixel content slot. */
+.identity-kind { display:inline-block; flex:none; width:16px; height:16px; vertical-align:middle; }
+.identity-line { display:flex; align-items:center; min-width:0; }
+.tbmenu .identity-line { gap:0; }
+.tb-environment-group > span:not(.inbox-device) { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tb-environment-group .inbox-device { flex:none; }
+.tb-environment-project .tb-environment { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tb-environment-project .tb-environment-sep { flex:none; white-space:pre; }
+.tb-environment-project .tb-name { flex:0 0 auto; max-width:calc(100% - 16px); }
+@media (max-width:760px) {
+  .tb-environment-project :is(.tb-environment, .tb-environment-sep) { display:none; }
+}

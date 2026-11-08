@@ -7,7 +7,11 @@ use serde::{de::Error, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 /// Method enablement policy, advertised by hello rather than capability names.
-pub const ACK_CONFIRM_METHODS: &[&str] = &["environment.create_project", "workspace.create"];
+pub const ACK_CONFIRM_METHODS: &[&str] = &[
+    "environment.create",
+    "environment.create_project",
+    "workspace.create",
+];
 pub const MAX_DEPENDENCIES: usize = 8;
 pub const MAX_STATUS_OPERATIONS: usize = 128;
 pub const MAX_STATUS_BYTES: usize = 512 * 1024;

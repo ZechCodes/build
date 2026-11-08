@@ -12,7 +12,7 @@ pub(super) fn migrate_effect_evidence(tx: &Transaction<'_>) -> Result<(), StoreE
             '$.revision',coalesce(json_extract(record,'$.revision'),0)+1)
         WHERE state IN ('accepted','executing','unknown','reconciling','committed')
           AND CASE WHEN json_valid(record) THEN
-            json_extract(record,'$.method') IN ('environment.create_project','workspace.create')
+            json_extract(record,'$.method') IN ('environment.create','environment.create_project','workspace.create')
             AND (coalesce(json_type(record,'$.execution.effect_state'),'null')='null'
                  OR coalesce(json_type(record,'$.execution.effect_step'),'null')='null')
           ELSE 0 END;",
@@ -21,7 +21,10 @@ pub(super) fn migrate_effect_evidence(tx: &Transaction<'_>) -> Result<(), StoreE
 }
 
 pub(super) fn is_creation(method: &str) -> bool {
-    matches!(method, "environment.create_project" | "workspace.create")
+    matches!(
+        method,
+        "environment.create" | "environment.create_project" | "workspace.create"
+    )
 }
 fn nonterminal(record: &MutationRecord) -> bool {
     matches!(
@@ -70,7 +73,7 @@ pub(super) fn project_blocked(
     let Some(project_key) = record.execution["project_key"].as_str() else {
         return Ok(false);
     };
-    Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM mutation_commands WHERE command_id<>?1 AND state IN ('executing','unknown','reconciling') AND json_extract(record,'$.method') IN ('environment.create_project','workspace.create') AND json_extract(record,'$.execution.project_key')=?2)",params![record.command_id,project_key],|row|row.get(0))?)
+    Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM mutation_commands WHERE command_id<>?1 AND state IN ('executing','unknown','reconciling') AND json_extract(record,'$.method') IN ('environment.create','environment.create_project','workspace.create') AND json_extract(record,'$.execution.project_key')=?2)",params![record.command_id,project_key],|row|row.get(0))?)
 }
 impl StoreWriter {
     pub fn creation_record(
@@ -82,7 +85,7 @@ impl StoreWriter {
     }
     pub fn pending_creations(&self) -> Result<Vec<MutationRecord>, StoreError> {
         let connection = self.connection();
-        let mut statement = connection.prepare("SELECT record FROM mutation_commands WHERE state IN ('accepted','executing','unknown','reconciling','committed') AND json_extract(record,'$.method') IN ('environment.create_project','workspace.create') ORDER BY command_id")?;
+        let mut statement = connection.prepare("SELECT record FROM mutation_commands WHERE state IN ('accepted','executing','unknown','reconciling','committed') AND json_extract(record,'$.method') IN ('environment.create','environment.create_project','workspace.create') ORDER BY command_id")?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         rows.map(|row| decode(row?)).collect()
     }

@@ -57,6 +57,7 @@ impl AppState {
         self.mark_device_lifecycle_dirty()?;
         let project_id = require_str(params, "project_id")?;
         let source_id = require_str(params, "source_id")?;
+        self.check_project_source_edit(&project_id, &source_id, true)?;
         let project = self.project_for(&project_id)?;
         let (index, source) = project
             .sources

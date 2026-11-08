@@ -213,21 +213,24 @@ fn added_source_duplicate_within_project_refused() {
 
 #[test]
 fn unlink_keeps_folder_and_other_reference() {
-    let mut f = SharedSources::new(true);
+    let mut f = SharedSources::new(false);
     let before = std::fs::read(f.shared.join("README.md")).unwrap();
-    let answer = f.remove("proj-1", "source-2");
+    let shared = f.shared.clone();
+    assert_eq!(f.add("proj-2", &shared)["ok"], true);
+    assert_eq!(f.app.projects.get("proj-2").unwrap().added_sources.len(), 1);
+    let answer = f.remove("proj-2", "source-2");
     assert_eq!(answer["ok"], true, "{answer}");
     f.reload();
     assert_eq!(std::fs::read(f.shared.join("README.md")).unwrap(), before);
     assert!(f
         .app
-        .sources_for("proj-1")
+        .sources_for("proj-2")
         .unwrap()
         .iter()
         .all(|s| s.path != f.shared));
     assert!(f
         .app
-        .sources_for("proj-2")
+        .sources_for("proj-1")
         .unwrap()
         .iter()
         .any(|s| s.path == f.shared));
@@ -328,4 +331,95 @@ fn linked_worktrees_stay_distinct_sources() {
         crate::source_sync::sync_lock_identity(&f.shared),
         crate::source_sync::sync_lock_identity(&linked)
     );
+}
+
+#[test]
+fn added_source_repoint_refuses_another_added_source() {
+    let mut f = SharedSources::new(false);
+    let original = f.shared.clone();
+    let target = init_repo_named(f.root.path(), "added-target");
+    assert_eq!(f.add("proj-2", &original)["ok"], true);
+    assert_eq!(f.add("proj-2", &target)["ok"], true);
+    let before = std::fs::read(&f.config).unwrap();
+    let answer = f.call(
+        "project.update_source",
+        json!({"project_id":"proj-2","source_id":"source-2","path":target}),
+    );
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert!(
+        answer["error"]
+            .as_str()
+            .unwrap()
+            .contains("already included in this project"),
+        "{answer}"
+    );
+    assert!(
+        answer["error"].as_str().unwrap().contains("proj-2"),
+        "{answer}"
+    );
+    assert_eq!(std::fs::read(&f.config).unwrap(), before);
+}
+#[test]
+fn added_source_repoint_settlement_refuses_concurrent_added_duplicate() {
+    let mut f = SharedSources::new(false);
+    let original = f.shared.clone();
+    let target = init_repo_named(f.root.path(), "late-added-target");
+    assert_eq!(f.add("proj-2", &original)["ok"], true);
+    let params = json!({"project_id":"proj-2","source_id":"source-2","path":target});
+    f.app.project_update_source(&params).unwrap();
+    let work = f.app.take_deferred().unwrap();
+    let prepared = work.run();
+    assert_eq!(f.add("proj-2", &target)["ok"], true);
+    let before = std::fs::read(&f.config).unwrap();
+    let error = f
+        .app
+        .apply_deferred("project.update_source", &params, prepared)
+        .unwrap_err();
+    assert!(
+        error.contains("already included in this project"),
+        "{error}"
+    );
+    assert!(error.contains("proj-2"), "{error}");
+    assert_eq!(std::fs::read(&f.config).unwrap(), before);
+    assert_eq!(f.app.sources_for("proj-2").unwrap()[1].path, original);
+}
+#[test]
+fn inherited_source_repoint_settlement_names_sibling_added_source() {
+    let mut f = SharedSources::new(false);
+    let sibling = f.app.add_environment_sibling_for_test("proj-1");
+    f.app.persist();
+    let target = init_repo_named(f.root.path(), "sibling-target");
+    let params = json!({"project_id":"proj-1","source_id":"source-2","path":target});
+    f.app.project_update_source(&params).unwrap();
+    let work = f.app.take_deferred().unwrap();
+    let prepared = work.run();
+    assert_eq!(f.add(&sibling, &target)["ok"], true);
+    let before = std::fs::read(&f.config).unwrap();
+    let error = f
+        .app
+        .apply_deferred("project.update_source", &params, prepared)
+        .unwrap_err();
+    assert!(
+        error.contains(&sibling),
+        "the refusal must name the affected sibling {sibling}: {error}"
+    );
+    assert_eq!(std::fs::read(&f.config).unwrap(), before);
+    assert_eq!(f.app.sources_for("proj-1").unwrap()[1].path, f.shared);
+}
+#[test]
+fn added_source_repoint_may_share_an_unaffected_siblings_added_source() {
+    let mut f = SharedSources::new(false);
+    let original = f.shared.clone();
+    assert_eq!(f.add("proj-2", &original)["ok"], true);
+    let sibling = f.app.add_environment_sibling_for_test("proj-2");
+    f.app.persist();
+    let target = init_repo_named(f.root.path(), "shareable-target");
+    assert_eq!(f.add(&sibling, &target)["ok"], true);
+    let answer = f.call(
+        "project.update_source",
+        json!({"project_id":"proj-2","source_id":"source-2","path":target}),
+    );
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(f.app.sources_for("proj-2").unwrap()[1].path, target);
+    assert_eq!(f.app.sources_for(&sibling).unwrap()[1].path, target);
 }

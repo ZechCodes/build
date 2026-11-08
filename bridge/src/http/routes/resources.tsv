@@ -1,4 +1,4 @@
-# Environment reads and creation; 160 explicit operations.
+# Environment reads and creation; 162 explicit operations.
 # Explicit HTTP resource catalogue. method<TAB>verb<TAB>path. No wildcard methods.
 agent.add	POST	/v1/entities/{entity_id}/agents
 agent.choose	PATCH	/v1/entities/{entity_id}/agents/{agent_id}/model
@@ -162,3 +162,5 @@ workspace.set_locked	PUT	/v1/workspaces/{workspace_id}/lock
 worktree.diff	POST	/v1/projects/{project_id}/worktrees/{worktree_id}/diff-queries
 writes.status	POST	/v1/operation-status-queries
 writes.subscribe	POST	/v1/operation-subscriptions
+environment.create	POST	/v1/environments
+environment.discard_unused	POST	/v1/environments/{environment_id}/unused-discards

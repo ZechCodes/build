@@ -75,7 +75,8 @@ use std::collections::BTreeSet;
 /// 3.34.0 adds explicit device owner pins and live pooled session summaries (#997).
 /// 3.35.0 adds bounded task timelines, directory pages and file invalidation hints (#894).
 /// 3.36.0 adds sealed staged secrets and metadata-only attachment delivery (#1003).
-pub const API_VERSION: &str = "3.36.0";
+/// 3.37.0 exposes M1 environments with journaled creation and read-only settings.
+pub const API_VERSION: &str = "3.37.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -104,6 +105,7 @@ pub const QA_METHODS: &[&str] = &["stream.events", "stream.start", "stream.state
 /// Cross-verb wire features whose availability cannot be expressed by a
 /// single method name. The SPA consumes a subset as shape and behavior gates.
 pub const FEATURE_CAPABILITIES: &[&str] = &[
+    "environments",       // Since 3.37.0: M1 environments, project creation and recovery.
     "sync.device",        // Since 3.33.0: complete leased device recovery (#995).
     "sync.projectTasks",  // Since 3.32.0: durable filtered project task recovery (#892).
     "sync.task",          // Since 3.32.0: durable opened-task head recovery (#892).
@@ -198,8 +200,12 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
 
 /// Known methods or features deliberately held out of greetings while a later
 /// slice finishes their end-to-end product surface.
-pub const UNADVERTISED_CAPABILITIES: &[&str] =
-    &["environment.list", "project.archive", "project.restore"];
+pub const UNADVERTISED_CAPABILITIES: &[&str] = &[
+    "environment.create",
+    "environment.discard_unused",
+    "project.archive",
+    "project.restore",
+];
 
 /// Everything this bridge can serve on a session, as exact method names and
 /// explicit feature names. Sorting and deduplication make the greeting stable.

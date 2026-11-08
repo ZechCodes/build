@@ -29,6 +29,9 @@ pub(in crate::app) fn dispatch(
                 let mut app = state.lock().unwrap();
                 if !matches!(record.state.as_str(), "succeeded" | "failed") {
                     app.track_creation_workspace(&record.execution);
+                    if let Err(error) = app.hold_creation_sources(&record.execution) {
+                        eprintln!("restore creation sources: {error}");
+                    }
                 }
                 app.creation_wakeup.clone()
             };
@@ -57,6 +60,9 @@ pub(in crate::app) fn start(state: &Arc<Mutex<AppState>>) {
             let mut app = state.lock().unwrap();
             for record in records {
                 app.track_creation_workspace(&record.execution);
+                if let Err(error) = app.hold_creation_sources(&record.execution) {
+                    eprintln!("restore creation sources: {error}");
+                }
             }
         }
         Err(error) => eprintln!("restore creation reservations: {error}"),

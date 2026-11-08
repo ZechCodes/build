@@ -66,6 +66,10 @@ fn inherited_source_repoint_refuses_duplicate_in_sibling_project() {
                 .contains("already included in this project"),
             "parked={parked_sibling}: {answer}"
         );
+        assert!(
+            answer["error"].as_str().unwrap().contains("proj-2"),
+            "the refusal must name the affected sibling: {answer}"
+        );
         assert_eq!(std::fs::read(&config).unwrap(), before);
         assert_eq!(app.sources_for("proj-1").unwrap()[1].path, original);
         if !parked_sibling {

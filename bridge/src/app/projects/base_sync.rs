@@ -660,6 +660,7 @@ impl AppState {
     pub(crate) fn project_sync_source(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = crate::app::require_str(params, "project_id")?;
         let source_id = crate::app::require_str(params, "source_id")?;
+        self.check_project_source_edit(&project_id, &source_id, true)?;
         let project = self.project_for(&project_id)?;
         let source = project
             .sources

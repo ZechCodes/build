@@ -115,7 +115,8 @@
             "sync": null
           }
         ],
-        "archived_at": null
+        "archived_at": null,
+        "added_sources": []
       }
     ]
   },

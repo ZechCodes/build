@@ -267,11 +267,12 @@ export function createWriteOperationService(options) {
     }, { accept: () => !stopped });
     await refreshSnapshot();
   }
-  function recordCreationEvidence(row, held) {
+  function recordCreationEvidence(row, held, creation) {
     if (!isCreationWrite(row.request.method)) return;
     return cache.update(row.operationId, value => {
       if (!value || terminalWrite(value) || value.journalIncarnation !== held.greeting.journal_incarnation) return null;
-      return { ...value, creationEvidence: nextCreationEvidence(value), ...(value.checking ? { checking: false } : {}) };
+      return { ...value, creationEvidence: nextCreationEvidence(value),
+        ...(creation ? { creation, checking: ["unknown", "reconciling"].includes(creation.state) } : { checking: false }) };
     }, { accept: () => current(held) });
   }
   function eligibleToSend(row, held) {
@@ -528,8 +529,8 @@ export function createWriteOperationService(options) {
   }
   async function recordSummaryProgress(summary, row, held) {
     if (!["accepted", "executing"].includes(summary.state)) return;
-    await recordCreationEvidence(row, held);
-    if (Object.hasOwn(summary, "progress")) return recordProgress(summary, held);
+    if (Object.hasOwn(summary, "progress")) await recordProgress(summary, held);
+    await recordCreationEvidence(row, held, summary.creation);
   }
   async function recordExpired(summary, row, held) {
     const unapplied = provenExpiredFailure(summary);

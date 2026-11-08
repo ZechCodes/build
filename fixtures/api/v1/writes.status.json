@@ -450,5 +450,133 @@
       }
     }
   ],
-  "pagination_note": "The two pages illustrate continuation at a response byte boundary; small sample bodies keep this fixture readable. The cursor is opaque and bound to the authenticated principal, journal incarnation, and complete ordered ID list."
+  "pagination_note": "The two pages illustrate continuation at a response byte boundary; small sample bodies keep this fixture readable. The cursor is opaque and bound to the authenticated principal, journal incarnation, and complete ordered ID list.",
+  "creation_examples": [
+    {
+      "params": {
+        "operation_ids": [
+          "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301b"
+        ]
+      },
+      "result": {
+        "journal_incarnation": "276cf083-7e02-464e-af91-9ffaf0f3f516",
+        "operations": [
+          {
+            "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301b",
+            "revision": 2,
+            "state": "executing",
+            "ack": {
+              "phase": "ack",
+              "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301b",
+              "revision": 1,
+              "state": "accepted",
+              "accepted_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6",
+              "owners": [
+                {
+                  "kind": "environment",
+                  "id": "env-1",
+                  "sequence": 43,
+                  "generation": 0
+                }
+              ]
+            },
+            "result": {
+              "creation": {
+                "project_key": "project:0e503b36-0b39-4f85-9d0e-f87a3d63967a",
+                "steps": [],
+                "effect_state": "not_started",
+                "effect_step": "project"
+              }
+            },
+            "progress": [
+              {
+                "step": "project",
+                "state": "done"
+              },
+              {
+                "step": "workspace",
+                "state": "running"
+              }
+            ],
+            "creation": {
+              "state": "unknown",
+              "project_id": "proj-2",
+              "project_key": "project:0e503b36-0b39-4f85-9d0e-f87a3d63967a",
+              "steps": [
+                {
+                  "step": "project",
+                  "state": "done"
+                }
+              ],
+              "effect_step": "workspace",
+              "effect_state": "started"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "params": {
+        "operation_ids": [
+          "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301b"
+        ]
+      },
+      "result": {
+        "journal_incarnation": "276cf083-7e02-464e-af91-9ffaf0f3f516",
+        "operations": [
+          {
+            "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301b",
+            "revision": 2,
+            "state": "executing",
+            "ack": {
+              "phase": "ack",
+              "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301b",
+              "revision": 1,
+              "state": "accepted",
+              "accepted_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6",
+              "owners": [
+                {
+                  "kind": "environment",
+                  "id": "env-1",
+                  "sequence": 43,
+                  "generation": 0
+                }
+              ]
+            },
+            "result": {
+              "creation": {
+                "project_key": "project:0e503b36-0b39-4f85-9d0e-f87a3d63967a",
+                "steps": [],
+                "effect_state": "not_started",
+                "effect_step": "project"
+              }
+            },
+            "progress": [
+              {
+                "step": "project",
+                "state": "done"
+              },
+              {
+                "step": "workspace",
+                "state": "running"
+              }
+            ],
+            "creation": {
+              "state": "reconciling",
+              "project_id": "proj-2",
+              "project_key": "project:0e503b36-0b39-4f85-9d0e-f87a3d63967a",
+              "steps": [
+                {
+                  "step": "project",
+                  "state": "done"
+                }
+              ],
+              "effect_step": "workspace",
+              "effect_state": "started"
+            }
+          }
+        ]
+      }
+    }
+  ]
 }

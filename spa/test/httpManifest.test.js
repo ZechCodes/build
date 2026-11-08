@@ -7,12 +7,12 @@ import { createHttpRoutes } from "../src/core/httpRoutes.js";
 describe("reviewed REST manifest consumption", () => {
   it("pins the coordinator-released bytes and exact operation IDs", () => {
     const bytes = readFileSync(new URL("../../fixtures/api/http/resource-manifest.json", import.meta.url));
-    expect(createHash("sha256").update(bytes).digest("hex")).toBe("4c34d33ba8e915450466710abaf6aa5fe9f79265ff4f7c54301386b0d3545fd2");
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe("7a270a5f229cf2e5e7b4223df4104514d9220f6d7167ff512e5d89a8a4ffdca7");
     expect(createHttpRoutes(manifest).operationIds()).toEqual(manifest.transport.operation_ids);
     expect(createHttpRoutes(manifest).operationIds()).toContain("tasks_review_retryDelivery");
-    // M3.1 adds archive and restore before capability activation.
-    expect(manifest.operations).toHaveLength(162);
-    for (const operation of ["project_archive", "project_restore", "environment_list", "tasks_review_snapshot", "tasks_review_act", "tasks_review_complete", "sync_head", "sync_snapshot", "sync_changes", "secrets_create", "secrets_list", "secrets_revoke", "secrets_audit"]) {
+    // Combined M2.1/M3.1 routes remain staged before capability activation.
+    expect(manifest.operations).toHaveLength(164);
+    for (const operation of ["environment_create", "environment_discard_unused", "project_archive", "project_restore", "environment_list", "tasks_review_snapshot", "tasks_review_act", "tasks_review_complete", "sync_head", "sync_snapshot", "sync_changes", "secrets_create", "secrets_list", "secrets_revoke", "secrets_audit"]) {
       expect(createHttpRoutes(manifest).operationIds()).toContain(operation);
     }
   });

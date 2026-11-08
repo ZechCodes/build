@@ -1,6 +1,7 @@
 import { beforeEach, expect, it } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { navigationCatalog } from "../src/core/navigationModel.js";
+import { globalPickerEntries } from "../src/core/navigationPickerRender.js";
 import { globalNavigationPicker, reconcilePickerOrder } from "../src/core/navigationPickerModel.js";
 import { navigationVisitAddress, mountNavigationVisits, resetNavigationVisits } from "../src/core/navigationVisits.js";
 import { readUiRecord, wipeUiRecords } from "../src/core/localUiStore.js";
@@ -104,4 +105,37 @@ it("P5 visit_history_not_quiet_recent reset clears tab history and fences pendin
   const next = mountNavigationVisits({ storage: session }); await next.ready; await next.visit(route());
   expect((await readUiRecord(navigationVisitAddress)).value).toHaveLength(1);
   await next.dispose();
+});
+
+
+it("environment grouping searches workspace names while default rows go to projects", () => {
+  const envFeed = { projects: [{ ...project("one", "p", "Project"), environment_id: "e" }], workspaces: [workspace("one", "p", "w", "Café 文")] };
+  const options = { support: { one: true }, environments: [{ id: "e", deviceId: "one", name: "Environment" }], devices: [{ id: "one", name: "Workshop" }] };
+  const held = navigationCatalog(envFeed, options);
+  expect(globalNavigationPicker(held, options).groups[0].destinations.map(row => row.kind)).toEqual(["project"]);
+  const searched = globalNavigationPicker(held, { ...options, query: "Café 文" });
+  expect(searched.groups[0].kind).toBe("environment");
+  expect(searched.groups[0].destinations.map(row => row.key)).toEqual(["one/w"]);
+  expect(searched.lastVisited).toEqual([]);
+});
+
+it("environment search finds archived projects with a tag but omits them from the default list", () => {
+  const held = navigationCatalog({ projects: [{ ...project("one", "p", "Retired"), environment_id: "e", archived: true }], workspaces: [] });
+  const options = { support: { one: true }, environments: [{ id: "e", deviceId: "one", name: "Environment" }] };
+  expect(globalNavigationPicker(held, options).groups).toEqual([]);
+  expect(globalNavigationPicker(held, { ...options, query: "Retired" }).groups[0].destinations[0].archived).toBe(true);
+});
+
+it("preserves legacy Last visited alongside capable Recent in a mixed account", () => {
+  const held = navigationCatalog({ projects: [{ ...project("one", "p", "New"), environment_id: "e", last_activity_ms: 100 * 3600_000 }, project("two", "p", "Legacy")],
+    workspaces: [workspace("two", "p", "w", "Legacy work")] });
+  const visits = [{ kind: "workspace", key: "two/w", at: 1 }, { kind: "project", key: "two/p", at: 3 }, { kind: "project", key: "one/p", at: 4 }];
+  const picker = globalNavigationPicker(held, { visits, nowMs: 100 * 3600_000, support: { one: true }, environments: [{ id: "e", deviceId: "one", name: "New environment" }] });
+  expect(picker.legacyLastVisited.map(row => `${row.kind}:${row.key}`)).toEqual(["project:two/p", "workspace:two/w"]);
+  expect(picker.lastVisited.map(row => row.key)).toEqual(["one/p"]);
+  const rows = globalPickerEntries(picker);
+  expect(rows.find(row => row.key === "last-visited").html).toContain("Last visited");
+  expect(rows.filter(row => row.groupKey === "legacy-visits").slice(1).map(row => row.key))
+    .toEqual(["visit:project:two/p", "visit:workspace:two/w"]);
+  expect(globalNavigationPicker(held, { support: { one: true }, visits, query: "Legacy" }).legacyLastVisited).toEqual([]);
 });

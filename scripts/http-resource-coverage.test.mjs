@@ -328,6 +328,8 @@ const sourceFingerprintParts = {
   "core/fileUploadRpc.js": ["7891a6ca", "183a9b67", "b7fe41fc", "ba71c70a", "1896ec75", "2809155c", "1375617f", "a9ab96d0"],
   "core/fileUploads.js": ["a1a4c2df", "5ef03503", "483e7b99", "099e04a0", "77c9e865", "a22a23dd", "a704cd79", "6678f239"],
   "core/fileUploadsModel.js": ["d11fdd79", "8bb9318c", "fbc2cff2", "29b16930", "9d73b3ee", "89d5d976", "7e2b756a", "69d40aac"],
+  // #1052 retry review: current-attempt pending/error state accompanies the same mapped project.list read.
+  "core/environmentSettingsProjects.js": ["c9ca19e3", "8688e54f", "6e1b3396", "11a2c633", "08562858", "7da1d02a", "558a00e3", "84b1ebf8"],
   "core/githubRepos.js": ["4526fb16", "bfe42e0f", "57b963ea", "fe623873", "0fe9ccce", "521ecc83", "b9117e59", "af64462f"],
   "core/gitPane.js": ["3b9c66d1", "186e1669", "3ecc46b0", "0afe28d8", "10e87dd3", "55dfbb00", "44fa79f8", "88d71409"],
   "core/httpSession.js": ["0b7b82e7", "b8028927", "c780566d", "761fc9fc", "12ca2faa", "7e626b1a", "c51ecf85", "3e85059a"],
@@ -335,7 +337,8 @@ const sourceFingerprintParts = {
   "core/inboxDevices.js": ["f9a293e4", "dff4b2b4", "f5fc7940", "f5c1f48d", "a66a5718", "238826a6", "e3dc6b9f", "4060a79e"],
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
   // #997 runtime-board inboxView.js:193,206,320: scoped pending display and cached branch choices; existing RPC and mutation dispatch unchanged.
-  "core/inboxView.js": ["2745a252", "ec325f63", "1dbfa229", "8378b996", "0e3367b6", "c65295cc", "0096487f", "e26dc771"],
+  // #1051: cached environment identity and wizard entry points; existing RPC methods, producers and assignment edges are unchanged.
+  "core/inboxView.js": ["af9155dc", "2c6d74b7", "97e7f019", "14d8568c", "80f5eca0", "0842642e", "1b519057", "512e963e"],
   "core/isolation.js": ["1b646651", "086eea7f", "b0a97d6f", "8993ed77", "7e6e246e", "4110fbc2", "7defb076", "77f79221"],
   "core/markdownFences.js": ["10057396", "68214f4d", "d193015e", "2552698e", "c48313df", "6df2e223", "7e3bc837", "2805a4bb"],
   "core/modelCatalog.js": ["c293ea11", "fff0969f", "7852c8cd", "0c252f82", "fe666159", "95919417", "25a661ec", "c93fd9b4"],
@@ -427,7 +430,8 @@ const sourceFingerprintParts = {
   "core/writeOperationEffects.js": ["d30332d1", "89b12c79", "150580d0", "aede7e2b", "d2e23499", "d6003a79", "f13412fe", "b895c728"],
   "core/writeOperationIntent.js": ["5476394a", "087dc5ce", "5c71e673", "8b977ba3", "e665bf53", "fa9529be", "78bf2c38", "48f27991"],
   "core/writeOperationRefresh.js": ["b5d241f8", "64bba629", "58a8bbab", "6673dafa", "0c5490bc", "2e70cbc9", "d0048bf4", "20e4c528"],
-  "core/writeOperations.js": ["d58bf74a", "b4686c2a", "014911e0", "26a9705c", "66fccfb4", "d28f2488", "bc4a631b", "740a0d93"],
+  // #1052: nested creation execution evidence changes display state; transport method edges stay unchanged.
+  "core/writeOperations.js": ["8dd06f02", "c7f3f56e", "ae6bcbca", "76665c9a", "452af3df", "6352b83c", "113b36cc", "193b6b1b"],
   "push.js": ["c7a3eb27", "240e0a4d", "3e314aee", "369bea39", "25bf83e0", "f105e41a", "0e4ed716", "4e53028b"],
   "sheets/browser.js": ["e226c6fb", "9689c6bc", "39ba311b", "335481c7", "f444e696", "36c5c8b6", "013588ec", "bd2a4dbe"],
   "sheets/newRepo.js": ["e1addf8b", "abc706f6", "ca74fa24", "7e1f3208", "aae3d460", "37157135", "21e46d2f", "f187cdfa"],
@@ -442,8 +446,10 @@ const sourceFingerprintParts = {
   "views/archive.js": ["6f4a7962", "88f34292", "73eafead", "5dc6229b", "5b040b7a", "09baf137", "8cbbce83", "6c83d400"],
   "views/branchView.js": ["bd60fcf4", "7c212e82", "4972bdd1", "5b4a3563", "54913179", "782e8a54", "ea8d0a73", "30816a7d"],
   // #997 deviceProjects.js:82: the existing project.list loader delegates to owned device recovery.
-  "views/deviceProjects.js": ["8ff87af9", "bead4587", "20c4bc9d", "89c548aa", "9a137b45", "4cb5741b", "880a3013", "429a0844"],
+  "views/deviceProjects.js": ["4e4add8c", "613568da", "f8200bad", "b7b27066", "84e7ddaa", "62bfbbbe", "cee788f9", "586de842"],
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
+  // #1052 retry review: settings-owned results alone authorize totals/empty states; pending pulls hide earlier errors. RPC edges stay unchanged.
+  "views/environmentsSettings.js": ["6f77cec3", "03735073", "2f1399fa", "fd4ef088", "1bfffde5", "647b567f", "bdd5bcf9", "4416e4c5"],
   "views/files.js": ["bc4913c5", "865b9dd0", "e28f655f", "242c9011", "456a4139", "b2cfd372", "6498e15b", "f3116261"],
   "views/projectChanges.js": ["e195b594", "3a7689fe", "14bfc899", "18ada18d", "ab36cd52", "ad96ba97", "a877c4da", "c9c3b78f"],
   "views/projectView.js": ["76123138", "7ded30d0", "0893b5ef", "5d880782", "137464b9", "5b123e76", "48f1a9d5", "28144478"],
@@ -455,7 +461,7 @@ const sourceFingerprintParts = {
   "core/directoryWatcher.js": ["3016199e", "f2ebe782", "5731fa24", "665dba3a", "6fd96a9e", "f5a4ee11", "c6841b70", "db07db4f"],
   "core/taskTimelinePages.js": ["da2840fb", "5992d7ce", "038bbc4d", "9c01a8ab", "c320a6f3", "7592e5be", "d5cbf08c", "4fcf8220"],
 
-  "core/createWorkspaceProgress.js": ["922a8bc9", "b3e85951", "e842198f", "d17a5a65", "43189650", "e6884023", "c72af97b", "98af5057"],
+  "core/createWorkspaceProgress.js": ["23545d1a", "2869a6af", "bf4236b1", "fe88db74", "0d1ef48f", "26ef00cc", "59429500", "927a7ad7"],
   "core/createWorkspaceTargets.js": ["a069d309", "99c91164", "1312556e", "14af5950", "01144734", "5b805997", "5b7b7161", "22f1e394"],
   "core/writeOperationProgress.js": ["1092c480", "f4c49dde", "dbbef23b", "5cdbfadb", "2beab767", "146717b7", "ddf2e984", "9ba42bcb"],
 };
@@ -1167,7 +1173,7 @@ test("the generator inventories ordinary, required-context and optional-context 
 
 test("creation attempts use explicit resources without staged exclusions", async () => {
   const manifest = JSON.parse(await readFile(new URL("fixtures/api/http/resource-manifest.json", root), "utf8"));
-  for (const method of ["environment.create_project", "project.discard_unused"]) {
+  for (const method of ["environment.create", "environment.discard_unused", "environment.create_project", "project.discard_unused"]) {
     assert.ok(manifest.operations.some((operation) => operation.method === method), `Missing creation resource ${method}`);
     for (const exclusions of Object.values(stagedConsumerExclusions)) {
       assert.ok(!exclusions.some(({ use }) => use[0] === method));

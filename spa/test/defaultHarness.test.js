@@ -329,7 +329,11 @@ describe("the device's settings page", () => {
     const at = (word) => headings.findIndex((heading) => heading.includes(word));
     expect(at("Device label")).toBe(0);
     expect(at("Connection transport")).toBe(1);
-    expect(at("Projects")).toBe(2);
+    // The existing projects panel links to account-wide environment settings;
+    // the bridge's projects-folder preference remains the next panel.
+    expect(at("Environments")).toBe(2);
+    expect(at("Projects folder")).toBe(at("Environments") + 1);
+    expect(document.querySelector("[data-device-projects] h3 a")?.getAttribute("href")).toBe("#/account/environments");
     expect(at("Bridge updates")).toBe(at("Projects folder") + 1);
     expect(at("Agent modes")).toBe(at("Bridge updates") + 1);
     expect(at("Fallback agent")).toBe(at("Agent modes") + 1);

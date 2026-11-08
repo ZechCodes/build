@@ -338,7 +338,7 @@ fn unavailable_sources_are_stored_but_excluded_from_live_projects_and_workspaces
 }
 
 #[test]
-fn removing_first_source_preserves_project_home_metadata() {
+fn environment_source_removal_preserves_project_home_metadata() {
     for secondary_git in [false, true] {
         let root = tempfile::tempdir().unwrap();
         let home = crate::git_fixture::init_repo_named(root.path(), "home");
@@ -359,7 +359,27 @@ fn removing_first_source_preserves_project_home_metadata() {
             "project.remove_source",
             json!({"project_id":"proj-1","source_id":"source-1"}),
         );
-        assert_eq!(removed["ok"], true, "{removed}");
+        assert_eq!(removed["ok"], false, "{removed}");
+        assert!(removed["error"]
+            .as_str()
+            .unwrap()
+            .contains("belongs to environment"));
+        // Environment source editing ships in M3. Keep the registry invariant
+        // covered while project verbs now refuse inherited reference IDs.
+        let remaining = app
+            .projects
+            .get("proj-1")
+            .unwrap()
+            .sources
+            .iter()
+            .filter(|s| s.id != "source-1")
+            .cloned()
+            .collect();
+        app.commit_project_configuration("proj-1", |projects| {
+            assert!(projects.set_sources("proj-1", remaining));
+            Ok(())
+        })
+        .unwrap();
         assert_home_metadata(&app, &home, &secondary);
         let reloaded = state(root.path()).with_config(&path).unwrap();
         assert_home_metadata(&reloaded, &home, &secondary);

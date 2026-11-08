@@ -1,5 +1,5 @@
 //! Environment reads and journaled creation in an existing environment.
-use super::board::{ProjectRow, ProjectSourceRow};
+use super::board::{ProjectRow, ProjectSourceParams, ProjectSourceRow};
 use super::workspace::WorkspaceRow;
 use super::{answer, Answer, Handler, NoParams, WireParams};
 use crate::api::ApiError;
@@ -9,6 +9,13 @@ use serde::{Deserialize, Serialize};
 
 pub fn methods() -> &'static [(&'static str, Handler)] {
     v1_methods![
+        v1_method!("environment.create", create, CreateParams, CreateResult),
+        v1_method!(
+            "environment.discard_unused",
+            discard_unused,
+            DiscardUnusedParams,
+            super::board::EmptyResult
+        ),
         v1_method!(
             "environment.list",
             environment_list,
@@ -56,6 +63,8 @@ pub struct CreateProjectParams {
     pub name: String,
     pub workspace: CreateWorkspaceParams,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_sources: Option<Vec<ProjectSourceParams>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continues: Option<String>,
 }
 #[derive(Debug, Deserialize, Serialize)]
@@ -78,5 +87,52 @@ fn create_project(
     let value = app
         .environment_create_project(&params.wire())
         .map_err(ApiError::invalid_params)?;
+    answer(Ok(value))
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirstProjectParams {
+    pub name: String,
+    pub workspace: CreateWorkspaceParams,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_sources: Option<Vec<ProjectSourceParams>>,
+}
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CreateParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub sources: Vec<ProjectSourceParams>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    pub project: FirstProjectParams,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues: Option<String>,
+}
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CreateResult {
+    pub environment: EnvironmentRow,
+    pub project: ProjectRow,
+    pub workspace: WorkspaceRow,
+}
+fn create(_: &mut AppState, _: CreateParams) -> Result<Answer<CreateResult>, ApiError> {
+    Err(ApiError::invalid_params(
+        "environment.create requires frame write.operation_id",
+    ))
+}
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DiscardUnusedParams {
+    pub environment_id: String,
+    pub creation_operation_id: String,
+}
+fn discard_unused(
+    app: &mut AppState,
+    params: DiscardUnusedParams,
+) -> Result<Answer<super::board::EmptyResult>, ApiError> {
+    let value = app
+        .environment_discard_unused(&params.wire())
+        .map_err(super::board::discard_unused_error)?;
     answer(Ok(value))
 }

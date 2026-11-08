@@ -36,7 +36,7 @@ struct DirectoryClaim {
 pub(in crate::app) struct SourceDirectoryClaims(Mutex<Vec<Weak<DirectoryClaim>>>);
 
 #[derive(Clone)]
-pub(super) struct SourceDirectoryLease(Arc<DirectoryClaim>);
+pub(in crate::app) struct SourceDirectoryLease(Arc<DirectoryClaim>);
 
 pub(super) fn paths_overlap(left: &Path, right: &Path) -> bool {
     left.starts_with(right) || right.starts_with(left)
@@ -56,7 +56,7 @@ fn new_claim(path: PathBuf, phase: u8) -> Arc<DirectoryClaim> {
 }
 
 impl SourceDirectoryClaims {
-    pub(super) fn reserve_destinations(
+    pub(in crate::app) fn reserve_destinations(
         &self,
         paths: &[PathBuf],
     ) -> Result<Vec<SourceDirectoryLease>, String> {
@@ -137,7 +137,10 @@ impl SourceDirectoryLease {
     pub(super) fn path(&self) -> &Path {
         &self.0.path
     }
-    pub(super) fn mark_prepared(&self) {
+    pub(in crate::app) fn hold_writing(&self) {
+        self.0.phase.store(WRITING, Ordering::SeqCst);
+    }
+    pub(in crate::app) fn mark_prepared(&self) {
         *self.0.identity.lock().unwrap() = DirectoryIdentity::read(&self.0.path);
         self.0.phase.store(PREPARED, Ordering::SeqCst);
     }

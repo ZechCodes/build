@@ -1,6 +1,6 @@
 {
   "method": "environment.list",
-  "since": "3.36.0",
+  "since": "3.37.0",
   "params": {},
   "result": {
     "environments": [
@@ -35,5 +35,6 @@
   "errors": [
     "internal"
   ],
-  "note": "Staged M1 read side; the environments capability and method capability remain withheld until M1.4."
+  "note": "M1 read side, advertised with the environments capability in wire 3.37.0.",
+  "capability": "environments"
 }

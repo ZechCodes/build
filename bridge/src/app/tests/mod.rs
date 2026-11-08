@@ -224,6 +224,7 @@ fn req(method: &str, params: Value) -> Frame {
 mod support;
 use support::*;
 
+mod project_archive;
 mod environments_extra_identity;
 mod environments_project_identity;
 mod environments_recovery_identity;

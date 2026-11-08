@@ -232,7 +232,7 @@ const metadataUses = {
   ],
   "core/writeOperations.js": [
     ["bridge.epoch","?. includes ( [\"bridge.epoch\"] ) && greeting","428ea3a7d297cf7ceb2ece1d250853754aef00a51d4e20d5bb94f00d77da4dcc"],
-    ["writes.confirmed","{ type : [\"writes.confirmed\"] , operation_id :","c1701f080374ab4e940f9471b5b7ccc8ea63d20d8d6db08923dcabad029fd094"],
+    ["writes.confirmed","{ type : [\"writes.confirmed\"] , operation_id :","31545bdb087ec26aef325f6b4cf1527dafc45363de18af59526ee77e727625ed"],
     ["writes.progress","?. type !== [\"writes.progress\"] ) return applyFrame","5f285552dbc8815a63d3a48a44366608ef6006aed58f2e6fd0da7eba36c92859"],
     ["writes.confirmed",". type === [\"writes.confirmed\"] ) await confirm","fc7814e39ce3ed405f1ea69157ed241114a19cae1bc1e82c992227434461e8e9"],
     ["writes.confirmed",". type !== [\"writes.confirmed\"] ) return false","a3baa2366329368c852eaeaeb88463572c57f72296698d2135dd910b7ec7ccb1"],
@@ -252,7 +252,7 @@ const metadataUses = {
   ],
   "core/writeOperationProgress.js": [
     // Exact capability lookup; this literal is never a method producer.
-    ["environments.create","=== \"environment.create\" ? [\"environments.create\"] : \"environments\" )","449ca8ff7bdca667657cd6411b5301386329592bd10c064e5bba4a134a8874cf"],
+    ["environments.create",", capability : [\"environments.create\"] } ] ,","d53830d88fee0caa75da294ede724a16df8571784c93d722e4ffa047607917c0"],
     ["writes.confirmed","{ type : [\"writes.confirmed\"] , operation_id :","370627743b292ef60a20ca2575dd89f495ed572042809ce7d21773a999d6dc77"],
   ],
 };
@@ -340,7 +340,7 @@ const sourceFingerprintParts = {
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
   // #997 runtime-board inboxView.js:193,206,320: scoped pending display and cached branch choices; existing RPC and mutation dispatch unchanged.
   // #1051: cached environment identity and wizard entry points; existing RPC methods, producers and assignment edges are unchanged.
-  "core/inboxView.js": ["7aa726e7", "3e51f395", "6d4e1fd9", "5350f8b1", "98c34631", "60205f21", "c86b581d", "f79ec95e"],
+  "core/inboxView.js": ["8b134c8c", "978e124c", "ffd889f9", "58a1971d", "bd9e16e7", "54a3195f", "b36dd9e0", "b141065c"],
   "core/isolation.js": ["e0f94fdb", "5efa8bd1", "633758d8", "bf506b89", "9ee7b957", "40e0c0e8", "30be0ed3", "d178b6d9"],
   "core/markdownFences.js": ["10057396", "68214f4d", "d193015e", "2552698e", "c48313df", "6df2e223", "7e3bc837", "2805a4bb"],
   "core/modelCatalog.js": ["c293ea11", "fff0969f", "7852c8cd", "0c252f82", "fe666159", "95919417", "25a661ec", "c93fd9b4"],
@@ -430,10 +430,10 @@ const sourceFingerprintParts = {
   "core/workspaceSizes.js": ["5906d4c2", "fda13846", "3542c664", "26018741", "0bf741e3", "1a10dc8e", "e5feb8ee", "9c08416d"],
   "core/writeOperationCache.js": ["69aff39c", "9652c392", "a5220ffa", "cac0d5ce", "e0f10d2a", "6783d214", "8be8336e", "9f996bdb"],
   "core/writeOperationEffects.js": ["d30332d1", "89b12c79", "150580d0", "aede7e2b", "d2e23499", "d6003a79", "f13412fe", "b895c728"],
-  "core/writeOperationIntent.js": ["5476394a", "087dc5ce", "5c71e673", "8b977ba3", "e665bf53", "fa9529be", "78bf2c38", "48f27991"],
+  "core/writeOperationIntent.js": ["f91893fa", "a8a72805", "d4edc518", "cf01ddd6", "d1b2fb80", "2db8d877", "af171ff4", "cd082a67"],
   "core/writeOperationRefresh.js": ["b5d241f8", "64bba629", "58a8bbab", "6673dafa", "0c5490bc", "2e70cbc9", "d0048bf4", "20e4c528"],
   // #1052: nested creation execution evidence changes display state; transport method edges stay unchanged.
-  "core/writeOperations.js": ["8dd06f02", "c7f3f56e", "ae6bcbca", "76665c9a", "452af3df", "6352b83c", "113b36cc", "193b6b1b"],
+  "core/writeOperations.js": ["eb7e34fc", "2e61c22a", "e6a302e2", "fc74cb2c", "99a7d032", "0ea012eb", "9c4adb8f", "ebd06bfc"],
   "push.js": ["c7a3eb27", "240e0a4d", "3e314aee", "369bea39", "25bf83e0", "f105e41a", "0e4ed716", "4e53028b"],
   "sheets/browser.js": ["f29e68d9", "6231a5cd", "1b35fff6", "20bf39c0", "22040456", "1a9bea95", "2fdd2c81", "d3a23914"],
   "sheets/newRepo.js": ["2aa62eb9", "1256b93f", "6d69e55c", "9aadf051", "0ca4505a", "35eb191a", "7c08d8f9", "f4a68f66"],
@@ -464,8 +464,9 @@ const sourceFingerprintParts = {
   "core/taskTimelinePages.js": ["da2840fb", "5992d7ce", "038bbc4d", "9c01a8ab", "c320a6f3", "7592e5be", "d5cbf08c", "4fcf8220"],
 
   "core/createWorkspaceProgress.js": ["ad463c80", "42fac43e", "4c0bd20f", "e4ac893c", "c773ec61", "c34ed98a", "4c3cdfc6", "a102a9bf"],
-  "core/createWorkspaceTargets.js": ["6c5a6a0c", "0179a302", "d89818b7", "4ea6cc7d", "1d0ea45e", "196876a9", "97d2c59d", "c0d38204"],
-  "core/writeOperationProgress.js": ["ac050549", "7335cecf", "6135e1e7", "b2c49caa", "3067cebd", "dbda8162", "eaab247e", "e703d6c1"],
+  "core/createWorkspaceTargets.js": ["c0634f66", "07ae14f5", "3864dccd", "6a83b43c", "b19b9019", "974b18d0", "269159a1", "15678c38"],
+  "core/writeOperationProgress.js": ["54c1f2e5", "2ca5a4ee", "47eeeda3", "fe1bc71f", "fa8292fd", "7ed0fbf3", "ff216d0c", "89a4f42e"],
+  "core/createWorkspaceWizardModel.js": ["de971c24", "0b170e41", "219c3c43", "cb7db24a", "d2bb3c52", "d007f42a", "01ffa437", "9b1527a4"],
 };
 const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintParts)
   .map(([file, parts]) => [file, parts.join("")]));

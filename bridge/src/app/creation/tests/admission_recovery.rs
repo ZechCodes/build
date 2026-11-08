@@ -77,7 +77,7 @@ fn concurrent_workspace_same_operation_reuses_winning_ack() {
     );
 }
 
-fn register_legacy(state: &Arc<Mutex<AppState>>, home: &std::path::Path) {
+pub(super) fn register_legacy(state: &Arc<Mutex<AppState>>, home: &std::path::Path) {
     let path = home.join("legacy");
     std::fs::create_dir(&path).unwrap();
     let mut app = state.lock().unwrap();
@@ -121,9 +121,9 @@ fn legacy_registration_after_project_checkpoint_reallocates() {
 }
 
 #[derive(Debug)]
-struct SimulatedCrash;
+pub(super) struct SimulatedCrash;
 
-fn crash_in_project_step(f: &Fixture, id: &str) {
+pub(super) fn crash_in_project_step(f: &Fixture, id: &str) {
     let record = f.record(id);
     assert!(f.store.writer().claim_mutation(PRINCIPAL, id).unwrap());
     let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -151,6 +151,24 @@ fn restart_after_project_id_checkpoint_reallocates() {
 }
 
 pub(super) fn crash_before_post_project_checkpoint() {
+    let (f, id) = interrupted_reallocated_creation();
+    let saved = f.record(&id);
+    assert_eq!(saved.execution["project_id"], "proj-3");
+    assert_eq!(
+        saved.execution["steps"],
+        json!([]),
+        "post-project checkpoint was never written"
+    );
+    let f = f.reopen();
+    f.store.writer().recover_mutations().unwrap();
+    assert_eq!(f.record(&id).state, "unknown");
+    f.run(&id);
+    assert_reallocated_creation(&f, &id);
+    f.run(&id);
+    assert_reallocated_creation(&f, &id);
+}
+
+pub(super) fn interrupted_reallocated_creation() -> (Fixture, String) {
     let f = Fixture::new();
     let id = operation(3);
     let accepted = f.admit(&id);
@@ -163,7 +181,6 @@ pub(super) fn crash_before_post_project_checkpoint() {
     });
     crash_in_project_step(&f, &id);
     let saved = f.record(&id);
-    assert_eq!(saved.execution["project_id"], "proj-2");
     assert_eq!(
         saved.execution["steps"],
         json!([]),
@@ -173,11 +190,5 @@ pub(super) fn crash_before_post_project_checkpoint() {
         saved.execution["project_key"],
         accepted.execution["project_key"]
     );
-    let f = f.reopen();
-    f.store.writer().recover_mutations().unwrap();
-    assert_eq!(f.record(&id).state, "unknown");
-    f.run(&id);
-    assert_reallocated_creation(&f, &id);
-    f.run(&id);
-    assert_reallocated_creation(&f, &id);
+    (f, id)
 }

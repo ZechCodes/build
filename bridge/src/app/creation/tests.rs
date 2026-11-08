@@ -3,6 +3,7 @@ use crate::harness::HarnessContext;
 use tempfile::TempDir;
 
 mod admission_recovery;
+mod project_identity;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Boundary {

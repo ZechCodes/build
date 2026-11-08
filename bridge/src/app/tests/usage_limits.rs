@@ -573,25 +573,60 @@ impl ArchiveUsageFixture {
         let sibling = crate::app::projects::test_support::register_sibling(&mut state, &project);
         let (owner, agent) = super::project_agent::project_agent(&mut state, &project);
         let (other_owner, other_agent) = super::project_agent::project_agent(&mut state, &sibling);
-        assert_eq!(provider_of(&state, &owner, &agent), provider_of(&state, &other_owner, &other_agent));
-        Self { _repo: repo_home, _root: root_home, state, project, owner, agent, other_owner, other_agent }
+        assert_eq!(
+            provider_of(&state, &owner, &agent),
+            provider_of(&state, &other_owner, &other_agent)
+        );
+        Self {
+            _repo: repo_home,
+            _root: root_home,
+            state,
+            project,
+            owner,
+            agent,
+            other_owner,
+            other_agent,
+        }
     }
 
     fn stop_both(&mut self, reset: OffsetDateTime) {
-        for (owner, agent) in [(&self.owner, &self.agent), (&self.other_owner, &self.other_agent)] {
-            self.state.record_usage_limit(owner, agent, &limited(Some(reset)), &mut Default::default());
+        for (owner, agent) in [
+            (&self.owner, &self.agent),
+            (&self.other_owner, &self.other_agent),
+        ] {
+            self.state.record_usage_limit(
+                owner,
+                agent,
+                &limited(Some(reset)),
+                &mut Default::default(),
+            );
         }
     }
 
     fn archive(&mut self) {
-        let answer = self.state.handle(req("project.archive", json!({"project_id":self.project})));
-        assert_eq!(answer["ok"], true, "a future reset with no session/turn admits archive: {answer}");
+        let answer = self
+            .state
+            .handle(req("project.archive", json!({"project_id":self.project})));
+        assert_eq!(
+            answer["ok"], true,
+            "a future reset with no session/turn admits archive: {answer}"
+        );
     }
 }
 
 fn assert_usage_retry_counts(state: &mut AppState, owner: &str, agent: &str, expected: usize) {
-    assert_eq!(build_notices(state, owner, agent, "Retrying").len(), expected);
-    assert_eq!(state.delivery_queue.queued().filter(|turn| turn.owner == owner && turn.agent_id == agent).count(), expected);
+    assert_eq!(
+        build_notices(state, owner, agent, "Retrying").len(),
+        expected
+    );
+    assert_eq!(
+        state
+            .delivery_queue
+            .queued()
+            .filter(|turn| turn.owner == owner && turn.agent_id == agent)
+            .count(),
+        expected
+    );
 }
 
 #[test]
@@ -601,14 +636,27 @@ fn archive_usage_reset_retains_held_agent_and_does_not_starve_active_agent() {
     fixture.stop_both(reset);
     fixture.archive();
     fixture.state.release_usage_limits_due_at(reset);
-    assert_usage_retry_counts(&mut fixture.state, &fixture.other_owner, &fixture.other_agent, 1);
+    assert_usage_retry_counts(
+        &mut fixture.state,
+        &fixture.other_owner,
+        &fixture.other_agent,
+        1,
+    );
     assert_usage_retry_counts(&mut fixture.state, &fixture.owner, &fixture.agent, 0);
-    let answer = fixture.state.handle(req("project.restore", json!({"project_id":fixture.project})));
+    let answer = fixture.state.handle(req(
+        "project.restore",
+        json!({"project_id":fixture.project}),
+    ));
     assert_eq!(answer["ok"], true, "{answer}");
     fixture.state.release_usage_limits_due_at(reset);
     fixture.state.release_usage_limits_due_at(reset);
     assert_usage_retry_counts(&mut fixture.state, &fixture.owner, &fixture.agent, 1);
-    assert_usage_retry_counts(&mut fixture.state, &fixture.other_owner, &fixture.other_agent, 1);
+    assert_usage_retry_counts(
+        &mut fixture.state,
+        &fixture.other_owner,
+        &fixture.other_agent,
+        1,
+    );
 }
 
 #[test]
@@ -616,19 +664,39 @@ fn archive_usage_shared_harness_success_retains_archived_retry_until_restore() {
     let mut fixture = ArchiveUsageFixture::new();
     fixture.stop_both(an_hour_from_now());
     fixture.archive();
-    let added = fixture.state.handle(req("agent.add", json!({"entity_id":fixture.other_owner})));
+    let added = fixture
+        .state
+        .handle(req("agent.add", json!({"entity_id":fixture.other_owner})));
     assert_eq!(added["ok"], true, "{added}");
     let successful_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
-    fixture.state.record_usage_limit(&fixture.other_owner, &successful_agent, &successful(), &mut Default::default());
-    assert_usage_retry_counts(&mut fixture.state, &fixture.other_owner, &fixture.other_agent, 1);
+    fixture.state.record_usage_limit(
+        &fixture.other_owner,
+        &successful_agent,
+        &successful(),
+        &mut Default::default(),
+    );
+    assert_usage_retry_counts(
+        &mut fixture.state,
+        &fixture.other_owner,
+        &fixture.other_agent,
+        1,
+    );
     assert_usage_retry_counts(&mut fixture.state, &fixture.owner, &fixture.agent, 0);
     assert_eq!(fixture.state.usage_limits_json(), json!([]));
-    let answer = fixture.state.handle(req("project.restore", json!({"project_id":fixture.project})));
+    let answer = fixture.state.handle(req(
+        "project.restore",
+        json!({"project_id":fixture.project}),
+    ));
     assert_eq!(answer["ok"], true, "{answer}");
     fixture.state.release_due_usage_limits();
     fixture.state.release_due_usage_limits();
     assert_usage_retry_counts(&mut fixture.state, &fixture.owner, &fixture.agent, 1);
-    assert_usage_retry_counts(&mut fixture.state, &fixture.other_owner, &fixture.other_agent, 1);
+    assert_usage_retry_counts(
+        &mut fixture.state,
+        &fixture.other_owner,
+        &fixture.other_agent,
+        1,
+    );
 }
 
 async fn ready_usage_retry_roundtrip(success: bool) {
@@ -637,19 +705,39 @@ async fn ready_usage_retry_roundtrip(success: bool) {
     fixture.stop_both(reset);
     fixture.archive();
     // Inject the reservation boundary independently of boot's in-memory usage reset.
-    fixture.state.restored_recovery.deferred.insert(fixture.owner.clone());
-    let added = fixture.state.handle(req("agent.add", json!({"entity_id":fixture.other_owner})));
+    fixture
+        .state
+        .restored_recovery
+        .deferred
+        .insert(fixture.owner.clone());
+    let added = fixture
+        .state
+        .handle(req("agent.add", json!({"entity_id":fixture.other_owner})));
     let successful_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
     let (gate, handle) = crate::app::OffLockGate::new();
     fixture.state.off_lock_gate = Some(gate);
     let shared = fixture.state.shared();
-    let answer = shared.lock().unwrap().handle(req("project.restore", json!({"project_id":fixture.project})));
+    let _spawns = super::project_agent_base::record_spawns(&shared);
+    let answer = shared.lock().unwrap().handle(req(
+        "project.restore",
+        json!({"project_id":fixture.project}),
+    ));
     assert_eq!(answer["ok"], true, "{answer}");
-    let handle = tokio::task::spawn_blocking(move || {handle.wait_for_arrival(); handle}).await.unwrap();
+    let handle = tokio::task::spawn_blocking(move || {
+        handle.wait_for_arrival();
+        handle
+    })
+    .await
+    .unwrap();
     {
         let mut state = shared.lock().unwrap();
         if success {
-            state.record_usage_limit(&fixture.other_owner, &successful_agent, &successful(), &mut Default::default());
+            state.record_usage_limit(
+                &fixture.other_owner,
+                &successful_agent,
+                &successful(),
+                &mut Default::default(),
+            );
         } else {
             state.release_usage_limits_due_at(reset);
         }
@@ -674,11 +762,22 @@ async fn ready_usage_retry_roundtrip(success: bool) {
             drop(state);
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     let mut state = shared.lock().unwrap();
     state.release_usage_limits_due_at(reset);
     assert_usage_retry_counts(&mut state, &fixture.owner, &fixture.agent, 1);
-    assert_eq!(build_notices(&mut state, &fixture.other_owner, &fixture.other_agent, "Retrying").len(), 1);
+    assert_eq!(
+        build_notices(
+            &mut state,
+            &fixture.other_owner,
+            &fixture.other_agent,
+            "Retrying"
+        )
+        .len(),
+        1
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

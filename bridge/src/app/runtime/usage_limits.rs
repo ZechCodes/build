@@ -52,6 +52,9 @@ struct StoppedAgent {
     said: String,
     /// A resume turn has been queued for it.
     resumed: bool,
+    /// The reset passed or another response proved the harness usable. Kept
+    /// until owner admission permits this agent's single automatic retry.
+    retry_owed: bool,
 }
 
 /// What a limit lifting asks of the bridge: tell each agent whose turn died at
@@ -95,6 +98,7 @@ impl UsageLimits {
                 harness,
                 said: limit.said.clone(),
                 resumed: false,
+                retry_owed: false,
             },
         );
         let reset_retry_done = limit.resets_at.is_none_or(|at| at <= now);
@@ -134,16 +138,15 @@ impl UsageLimits {
         harness: AgentProvider,
         owner: &str,
         agent_id: &str,
+        can_resume: impl FnMut(&str) -> bool,
     ) -> (bool, Vec<Resume>) {
         self.stopped
             .remove(&(owner.to_string(), agent_id.to_string()));
         let cleared = self.by_harness.remove(harness.wire_id()).is_some();
-        let resumes = if cleared {
-            self.take_resumes(harness)
-        } else {
-            Vec::new()
-        };
-        (cleared, resumes)
+        if cleared {
+            self.owe_retries(harness);
+        }
+        (cleared, self.take_resumes(can_resume))
     }
 
     /// Whether this agent stopped at a limit and has not succeeded since.
@@ -153,7 +156,11 @@ impl UsageLimits {
     }
 
     /// Retry stopped agents once when their reported reset has passed.
-    pub(in crate::app) fn release_due(&mut self, now: OffsetDateTime) -> Vec<Resume> {
+    pub(in crate::app) fn release_due(
+        &mut self,
+        now: OffsetDateTime,
+        can_resume: impl FnMut(&str) -> bool,
+    ) -> Vec<Resume> {
         let due: Vec<AgentProvider> = self
             .by_harness
             .values_mut()
@@ -164,9 +171,12 @@ impl UsageLimits {
                 record.harness
             })
             .collect();
-        due.into_iter()
-            .flat_map(|harness| self.take_resumes(harness))
-            .collect()
+        for harness in due {
+            self.owe_retries(harness);
+        }
+        // Also release retries retained after a shared-harness success removed
+        // the device report, or after its reset was already handled globally.
+        self.take_resumes(can_resume)
     }
 
     /// The earliest reset nobody has asked to be woken for yet, marked asked.
@@ -191,16 +201,28 @@ impl UsageLimits {
         )
     }
 
-    fn take_resumes(&mut self, harness: AgentProvider) -> Vec<Resume> {
+    fn owe_retries(&mut self, harness: AgentProvider) {
+        for stopped in self
+            .stopped
+            .values_mut()
+            .filter(|stopped| stopped.harness == harness)
+        {
+            stopped.retry_owed = true;
+        }
+    }
+
+    fn take_resumes(&mut self, mut can_resume: impl FnMut(&str) -> bool) -> Vec<Resume> {
         self.stopped
             .iter_mut()
-            .filter(|(_, stopped)| stopped.harness == harness && !stopped.resumed)
+            .filter(|((owner, _), stopped)| {
+                stopped.retry_owed && !stopped.resumed && can_resume(owner)
+            })
             .map(|((owner, agent_id), stopped)| {
                 stopped.resumed = true;
                 Resume {
                     owner: owner.clone(),
                     agent_id: agent_id.clone(),
-                    harness,
+                    harness: stopped.harness,
                     said: stopped.said.clone(),
                 }
             })
@@ -308,9 +330,10 @@ impl AppState {
         owner: &str,
         agent_id: &str,
     ) -> bool {
-        let (cleared, resumes) = self
-            .usage_limits
-            .response_succeeded(harness, owner, agent_id);
+        let held = self.held_delivery_owners();
+        let (cleared, resumes) =
+            self.usage_limits
+                .response_succeeded(harness, owner, agent_id, |owner| !held.contains(owner));
         if cleared {
             eprintln!(
                 "usage limit cleared: harness={} agent={agent_id}",
@@ -327,7 +350,10 @@ impl AppState {
     }
 
     pub(in crate::app) fn release_usage_limits_due_at(&mut self, now: OffsetDateTime) {
-        let resumes = self.usage_limits.release_due(now);
+        let held = self.held_delivery_owners();
+        let resumes = self
+            .usage_limits
+            .release_due(now, |owner| !held.contains(owner));
         self.resume_after_usage_limit(resumes);
     }
 
@@ -444,10 +470,10 @@ mod tests {
         assert_eq!(limits.wake_due(), None, "asked once");
 
         assert!(limits
-            .release_due(datetime!(2026-09-20 22:19 UTC))
+            .release_due(datetime!(2026-09-20 22:19 UTC), |_| true)
             .is_empty());
 
-        let resumes = limits.release_due(reset);
+        let resumes = limits.release_due(reset, |_| true);
         assert_eq!(
             resumes,
             vec![Resume {
@@ -459,7 +485,10 @@ mod tests {
         );
         // A scheduled retry does not clear the report; a response must succeed.
         assert_eq!(limits.render().as_array().unwrap().len(), 1);
-        assert!(limits.release_due(reset).is_empty(), "started once");
+        assert!(
+            limits.release_due(reset, |_| true).is_empty(),
+            "started once"
+        );
     }
 
     #[test]
@@ -469,7 +498,9 @@ mod tests {
         assert!(limits.observe(HARNESS, "run-1", "agent-a", &limit(None), now));
         assert_eq!(limits.wake_due(), None);
         assert_eq!(limits.render()[0]["resets_at"], Value::Null);
-        assert!(limits.release_due(now + time::Duration::days(2)).is_empty());
+        assert!(limits
+            .release_due(now + time::Duration::days(2), |_| true)
+            .is_empty());
     }
 
     #[test]
@@ -480,7 +511,7 @@ mod tests {
         limits.observe(HARNESS, "run-1", "agent-a", &limit(reset), now);
         limits.observe(HARNESS, "run-2", "agent-b", &limit(reset), now);
 
-        let (cleared, resumes) = limits.response_succeeded(HARNESS, "run-1", "agent-a");
+        let (cleared, resumes) = limits.response_succeeded(HARNESS, "run-1", "agent-a", |_| true);
         assert!(cleared);
         assert_eq!(limits.render(), json!([]));
         assert!(!limits.stopped("run-1", "agent-a"));
@@ -489,7 +520,7 @@ mod tests {
         // Still stopped until its own response succeeds.
         assert!(limits.stopped("run-2", "agent-b"));
 
-        let (cleared, resumes) = limits.response_succeeded(HARNESS, "run-2", "agent-b");
+        let (cleared, resumes) = limits.response_succeeded(HARNESS, "run-2", "agent-b", |_| true);
         assert!(!cleared, "already clear");
         assert!(resumes.is_empty());
         assert!(!limits.stopped("run-2", "agent-b"));
@@ -501,7 +532,7 @@ mod tests {
         let now = datetime!(2026-09-20 21:30 UTC);
         limits.observe(HARNESS, "run-1", "agent-a", &limit(None), now);
         let (cleared, _) =
-            limits.response_succeeded(AgentProvider::CodexAppServer, "run-2", "agent-c");
+            limits.response_succeeded(AgentProvider::CodexAppServer, "run-2", "agent-c", |_| true);
         assert!(!cleared);
         assert_eq!(limits.render().as_array().unwrap().len(), 1);
     }
@@ -513,7 +544,7 @@ mod tests {
         let first = datetime!(2026-09-20 22:20 UTC);
         limits.observe(HARNESS, "run-1", "agent-a", &limit(Some(first)), now);
         limits.wake_due();
-        limits.release_due(first);
+        limits.release_due(first, |_| true);
         let later = datetime!(2026-09-21 03:20 UTC);
         let again = UsageLimited {
             said: "You've hit your session limit · resets 11:20pm (America/New_York)".into(),

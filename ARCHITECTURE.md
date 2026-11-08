@@ -3396,6 +3396,9 @@ Archived boot defers coordinator roster repair until the owner's restore recover
 settles. Archive admission counts settling wakes alongside queued/in-flight work.
 Ready owners retain their existing turns until recovery settles, including a hold
 at final spawn admission; settlement releases delivery off the app lock.
+Usage-limit resets and shared-harness success retain each stopped agent's owed
+retry before consuming it when its owner is archived or ready; eligible agents
+continue, and the held agent resumes once after admission reopens.
 Snapshot refresh preserves archived finished-workspace records until restore.
 Configured conversation-item retention applies independently of project archive.
 The two method names are explicitly withheld from greetings, `projects.archive`

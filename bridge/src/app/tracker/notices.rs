@@ -39,6 +39,7 @@ impl AppState {
         entity_id: &str,
         agent_id: &str,
     ) -> Result<AddressedAgent, String> {
+        self.refuse_archived_entity(entity_id)?;
         self.refuse_run_recovery(entity_id)?;
         let mut params = self.current_thread_params(&serde_json::json!({
             "entity_id": entity_id, "agent_id": agent_id,

@@ -138,6 +138,17 @@ fn cleared_project_override_inherits_environment_default_after_reload() {
             .isolation,
         Isolation::Rift
     );
+    assert_eq!(
+        reloaded
+            .decide_isolation(
+                reloaded.project_for("proj-1").unwrap(),
+                &crate::isolation::IsolationAvailability::unavailable(
+                    "unavailable in this fixture"
+                ),
+            )
+            .isolation,
+        Isolation::Worktree
+    );
 }
 
 #[test]

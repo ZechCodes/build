@@ -87,6 +87,9 @@ impl ProjectSource {
     }
 }
 
+mod archive;
+mod archive_guard;
+pub(in crate::app) use archive_guard::archive_error_string;
 mod agent_tools;
 mod agent_writes;
 pub(in crate::app) mod base_sync;

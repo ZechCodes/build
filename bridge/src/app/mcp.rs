@@ -443,6 +443,9 @@ pub(in crate::app) async fn handle_coding_mcp_frame(
             if let Err(error) = generation.guard(&app) {
                 return Some(mcp_action_response(Err(error)));
             }
+            if let Err(error) = app.refuse_archived_entity(&generation.entity_id) {
+                return Some(mcp_action_response(Err(error)));
+            }
             app.done_deferring_for_agent(&generation.entity_id, &generation.agent_id, report)
         };
         if let Some(deferred) = deferred {
@@ -826,6 +829,7 @@ impl AppState {
         // anything its launch declared — and the gate is here as well as in
         // the tool inventory each surface is shown: a harness that writes its
         // own frames must not reach past the surface it was opened on.
+        self.guard_archived_action(entity_id, &action)?;
         let surface = self.agent_mcp_surface(entity_id, agent_id);
         if !action.allowed_on(surface) {
             return Err(format!(

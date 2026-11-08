@@ -481,6 +481,7 @@ impl ReadSubject {
 
 #[derive(Clone)]
 pub(in crate::app) struct ProjectListRow {
+    pub(in crate::app) archived_at: Option<u64>,
     pub(in crate::app) compaction_thresholds: Value,
     pub(in crate::app) compaction: Value,
     pub(in crate::app) project_id: String,
@@ -542,6 +543,7 @@ impl ProjectListRow {
             .collect::<Vec<_>>();
         json!({
             "project_id": self.project_id,
+            "archived_at": self.archived_at,
             "environment_id": self.environment_id,
             "environment_name": self.environment_name,
             "project_key": self.project_key,

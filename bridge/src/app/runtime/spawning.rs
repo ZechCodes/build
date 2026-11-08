@@ -305,6 +305,7 @@ pub(in crate::app) fn reserve_agent_spawn(
     }
     // A project whose folder was away is loaded again the moment it is back.
     s.revive_parked_projects();
+    s.refuse_archived_entity(owner)?;
     s.refuse_worker_without_sources(owner, agent_id)?;
     s.refuse_worker_during_source_move(owner, agent_id)?;
     // A router session belongs to no project — deciding which one

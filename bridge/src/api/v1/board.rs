@@ -49,6 +49,18 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             ProjectDiscardUnusedParams,
             EmptyResult
         ),
+        v1_method!(
+            "project.archive",
+            project_archive,
+            ProjectParams,
+            ProjectArchiveResult
+        ),
+        v1_method!(
+            "project.restore",
+            project_restore,
+            ProjectParams,
+            ProjectArchiveResult
+        ),
         v1_method!("project.list", project_list, NoParams, ProjectListResult),
         v1_method!(
             "project.create",
@@ -582,6 +594,12 @@ pub struct ProjectConversation {
 /// isolation picture a control paints from.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectRow {
+    #[serde(
+        default,
+        deserialize_with = "named",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub archived_at: Named<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_thresholds: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1615,4 +1633,23 @@ fn discard_unused_error(message: String) -> ApiError {
         return ApiError::conflict(message, None);
     }
     ApiError::classify(message)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectArchiveResult {
+    pub project: ProjectRow,
+}
+
+fn project_archive(
+    app: &mut AppState,
+    params: ProjectParams,
+) -> Result<Answer<ProjectArchiveResult>, ApiError> {
+    answer(Ok(app.project_archive(&params.project_id)?))
+}
+
+fn project_restore(
+    app: &mut AppState,
+    params: ProjectParams,
+) -> Result<Answer<ProjectArchiveResult>, ApiError> {
+    answer(Ok(app.project_restore(&params.project_id)?))
 }

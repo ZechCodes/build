@@ -26,6 +26,7 @@ pub(in crate::app) fn admit(
 ) -> Result<MutationRecord, ApiError> {
     let params = crate::api::v1::normalize_read_params(method, &params)?;
     validate_creation(method, &params)?;
+    let _archive_hold = ArchiveAdmissionHold::enter(state, method, &params)?;
     let writer = state
         .lock()
         .unwrap()
@@ -304,5 +305,26 @@ impl AppState {
     }
     pub(crate) fn environment_create_project(&mut self, _params: &Value) -> Result<Value, String> {
         Err("environment.create_project requires frame write.operation_id".into())
+    }
+}
+
+/// Keep archive out of the admission gap before the durable reservation exists.
+struct ArchiveAdmissionHold(Option<Arc<Mutex<AppState>>>);
+impl ArchiveAdmissionHold {
+    fn enter(state: &Arc<Mutex<AppState>>, method: &str, params: &Value) -> Result<Self, ApiError> {
+        if method != "workspace.create" {
+            return Ok(Self(None));
+        }
+        let mut app = state.lock().unwrap();
+        app.guard_archived_rpc(method, params)?;
+        app.active_deferred_filesystem_jobs += 1;
+        Ok(Self(Some(Arc::clone(state))))
+    }
+}
+impl Drop for ArchiveAdmissionHold {
+    fn drop(&mut self) {
+        if let Some(state) = &self.0 {
+            state.lock().unwrap().active_deferred_filesystem_jobs -= 1;
+        }
     }
 }

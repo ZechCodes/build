@@ -731,12 +731,18 @@ a reason, never dropped.
 
 **M0.1 implementation amendment (#1033):** parked entries migrate immediately,
 without requiring their folders to return; their raw source records survive the
-migrating write. The project isolation override is retained as a legacy copy
-and also copied to the environment. During this one-to-one stage, setting or
-clearing it updates both copies atomically, so clearing still returns to the
-device default. Independent environment inheritance is deferred. Configuration
-staging includes environment records and dependent project source projections,
+migrating write. Migration retains the project isolation override as a legacy
+copy and also copies it to the environment. Configuration staging includes
+environment records and dependent project source projections,
 so a failed write restores both without replacing runtime orchestrators.
+
+**M2.2 implementation amendment:** `set_isolation` now changes only the project
+override; `initialize_legacy_isolation` separately initializes both copies when
+loading legacy project-only configuration. A project without an override uses
+its environment's setting, then the device default. Clearing the project
+override restores that inheritance without changing the environment or sibling
+projects; the M0.1 behavior of updating both copies on a project edit no longer
+applies.
 
 **Migration of every existing project** (first load of a bridge with this
 code, before anything is served, in `AppState` construction). Each existing
@@ -1121,12 +1127,26 @@ stays as a capability-gated component for old bridges until S4.2 (2.1);
 `environment.discard_unused` and the resumable empty environment of 2.3
 work end to end.
 
+**M2.4 documentation amendment (#1076):** `docs/using.md` describes the M2.2
+wizard and M2.3 project settings, including the exact recovery actions. The
+wizard's folder browser selects existing folders and performs only reads;
+drafts are submitted by **Create workspace**. Advanced labels known references
+as **shared with E** / **shared with P**, otherwise **new folder**; canonical
+duplicate and containment checks still run at creation. Project settings uses
+**From E** for read-only environment folders and **Added to this project** for
+editable project-owned cards; adding a folder there never opens the wizard.
+An empty environment has **Resume…** in the picker/settings; the failed
+attempt's progress screen offers **Resume**, **Keep the environment** and
+**Discard the environment**. Discard keeps source files. Archive, rename,
+environment-folder editing in settings and environment secrets remain outside
+M2; the limitations are listed separately so later slices can remove them.
+
 | # | slice | acceptance | TDD tests |
 | --- | --- | --- | --- |
 | M2.1 | **Bridge: `environment.create` as one attempt**, `environment.discard_unused`, `added_sources` on `create_project`, `project.*_source` on added sources with old-client routing, `diverged`, M2 fixtures; journal executor extended to `environment.create` | one operation id covers environment, project and workspace; refusals before any write leave nothing; a project-step failure leaves an environment with no projects that `create_project` can resume into; an added folder equal to **another** environment's or project's source is allowed, equal to one of the project's **own** effective sources refused, containment refused; env-source ids refused through project verbs | `environment_create_is_one_attempt`; `environment_create_refusal_writes_nothing`; `project_step_failure_leaves_resumable_empty_environment`; `environment_discard_unused_refused_with_projects`; `added_source_makes_project_diverged`; `added_source_may_equal_other_owners_source`; `added_source_equal_to_own_environment_source_refused`; `project_verbs_refuse_environment_source_ids`; `new_project_runs_recover_to_their_project` |
-| M2.2 | **SPA: wizard page 2 + Advanced + settings shortcuts** (draft-only page 2 sharing `newRepo.js` folder/URL logic; Advanced section on page 3 with shared/new labels; progress gains the environment step and the per-step actions of 2.3; "New environment…" row, "New project in E…" and "New project with extra folders in E…" settings shortcuts, all gated by `environments.create`/`projects.addedSources`; the legacy "Add project" sheet stays, reachable only without `environments.create`) | page 2 issues only read-only `fs.list`; Create submits one attempt; refusals land on the right page with drafts; Advanced absent in fixed mode; settings shortcuts open the wizard preselected and say they create a workspace; empty environment shows "no projects yet" with Resume; legacy sheet hidden when the capability is present and shown otherwise | `createWorkspaceWizardPage2.test.js`; `createWorkspaceWizardModel.test.js` (advanced, shared labels, empty environment); `createWorkspaceProgress.test.js` (three steps, resume, discard environment); `environmentsSettingsDom.test.js` (shortcuts, legacy gate); `newProjectDom.test.js` kept |
+| M2.2 | **SPA: wizard page 2 + Advanced + settings shortcuts** (draft-only page 2 in `createWorkspaceEnvironmentDraft.js` / `createWorkspaceFolders.js`, using shared `sourceDraft.js` folder/URL validation and the read-only browser; Advanced section on page 3 with shared/new labels; progress gains the environment step and the per-step actions of 2.3; "New environment…" row, "New project in E…" and "New project with extra folders in E…" settings shortcuts, all gated by `environments.create`/`projects.addedSources`; the legacy "Add project" sheet stays, reachable only without `environments.create`) | page 2 issues only read-only `fs.list`; Create submits one attempt; refusals land on the right page with drafts; Advanced absent in fixed mode; settings shortcuts open the wizard preselected and say they create a workspace; empty environment shows "no projects yet" with Resume; legacy sheet hidden when the capability is present and shown otherwise | `createWorkspaceWizardPage2.test.js`; `createWorkspaceWizardModel.test.js` (advanced, shared labels, empty environment); `createWorkspaceProgress.test.js` (three steps, resume, discard environment); `environmentsSettingsDom.test.js` (shortcuts, legacy gate); `newProjectDom.test.js` kept |
 | M2.3 | **SPA: project settings "Added to this project"** (editable cards via `project.*_source`; "From E" read-only; never opens the wizard) | adding/removing an added folder edits this project only | `projectSettings.test.js` |
-| M2.4 | **Docs**: M2 limitations, shared-folder behaviour in `docs/using.md` | | n/a |
+| M2.4 | **Docs**: fresh setup, recovery, project-added and shared folders, isolation inheritance and M2 limitations in `docs/using.md`; reconcile the M0.1 isolation amendment | folder/URL setup and environment → project → workspace attempt documented; refusals, clone failure, partial outcomes, Resume and discard named as shipped; shared originals versus workspace copies and per-reference settings explained; project-only edits and isolation clearing leave siblings unchanged; archive, rename, environment-folder editing and environment secrets listed as unavailable | n/a (docs only; names and behavior checked against M2.2/M2.3 code) |
 
 ### Stage 1, M3: sustained use (MVP complete)
 

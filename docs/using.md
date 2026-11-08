@@ -22,9 +22,10 @@ app.
 
 Each device has its own settings page: the settings cog beside a device in the
 dropdown opens it. That page is everything that belongs to that machine: its
-projects folder, its projects list, **Add project**, agent modes, the default
-harness, and its **Work isolation** choice (git worktrees or **Rift
-(copy-on-write)**, as below). The device must be online to open its page.
+projects folder, its projects list, **New environment…** (or **Add project…**
+on older devices), agent modes, the default harness, and its **Work isolation**
+choice (git worktrees or **Rift (copy-on-write)**, as below). The device must
+be online to open its page.
 
 **Settings** (the account page) holds what is not any one machine's: the
 **Creation device** ("New projects and captures go to"), plus agent defaults,
@@ -71,7 +72,8 @@ uncommitted edits remain in place; if a checkout would overwrite or otherwise
 lose local changes, Build leaves the source untouched and reports Git's reason.
 Selecting a tag results in a detached HEAD and the interface says so.
 
-The directory picker can create a new folder while adding project sources.
+The workspace wizard and project settings select existing folders. The legacy
+Add project… picker can also create a new folder while adding project sources.
 From a workspace directory, Initialize Git offers the workspace copy, the
 original project source, or both. Initializing the source enables Git for future
 workspaces; initializing only the copy leaves the original source unchanged.
@@ -103,37 +105,117 @@ by name; when more than one device is listed, rows carry device labels. The
 target you choose determines where the workspace runs. **New workspace in
 this project** starts with that project already selected.
 
-The next page asks **What are you working on?** A name is required for a new
+The naming page asks **What are you working on?** A name is required for a new
 line of work in an environment and optional for a workspace in an existing
 project. It previews the branch name, offers isolation, and lists the
 directories the workspace will contain. **Create workspace** starts one
-attempt: either a workspace in the selected project, or a new project and
-its first workspace in the selected environment.
+attempt: a workspace in the selected project, a new project and its first
+workspace in the selected environment, or a new environment, project and
+workspace together.
+
+### Create a new environment
+
+Choose **New environment…** in the picker. On **New environment**, choose the
+device if more than one is offered, then **Add folder** to select an existing
+folder, or **Add Git remote** and enter its **Git remote URL**. You can add
+several sources, give each a **Folder label**, set **Base branch (optional)**,
+and change **Environment name (optional)** and the environment's **Isolation**.
+A Git URL is cloned on that device when you create the workspace.
+
+**Next** opens the naming page. Until **Create workspace**, these are only
+drafts: browsing, naming and going back do not register an environment or
+project, clone a repository or create a workspace. Create workspace submits
+one attempt for all three, with **Creating environment**, **Creating project**
+and **Creating workspace** shown in order.
+
+The **Environments** settings page also offers **New environment…**, **New
+project in E…** and **New project with extra folders in E…**, where E is the
+environment's name. Each opens the same wizard and says **Creates a workspace**;
+the extra-folders shortcut opens **Advanced** for you.
+
+### If creation fails
 
 The progress screen shows Creating…, Done, Failed or **Checking…**. Checking
 means Build is finding out what happened; it does not offer a retry that could
 create duplicate work. If the project was created but its workspace failed,
-the screen offers **Try the workspace again**, **Keep it** and **Discard this
-project**. Discard only works for the project from that attempt while it has
-no workspace, task or agent session. If nothing was created, **Back to the
-wizard** lets you correct the draft. Closing progress leaves the attempt
-running; reopening the wizard can recover its saved progress, including after
-a page reload. Done offers **Open workspace**.
+the screen lists what landed, including the environment when it was created
+by this attempt, and offers **Try the workspace again**, **Keep it** and
+**Discard this project**. Retrying creates only the workspace in that project;
+it does not create another environment or board. Discard only works for the
+project from that attempt while it has no workspace, task or agent session.
 
-Devices without environments support use the legacy workspace form. To set up
-a new environment today, use **Add project** in device settings: the legacy
-sheet still registers the sources and an initial project. The wizard has no
-**New environment…** page yet. Add project starts with that device selected;
-the workspace picker uses the selected target's device. Items from the capture
-compose box use the **Creation device** default on Settings.
+A refusal before anything is written returns to the relevant folder or naming
+page with the draft intact. If a failure reaches progress with nothing
+created, **Back to the wizard** returns to that draft. A failed Git clone for
+a new environment leaves no environment registered.
 
-The current M1 limitations are:
+If the environment was created but the project was not, progress says **no
+projects yet** and offers **Resume**, **Keep the environment** and **Discard
+the environment**. Resume starts a new attempt for a project and workspace in
+that environment. Discard removes only the empty environment created by that
+attempt and keeps its source folders; it is refused once projects belong to
+it. A kept empty environment remains labelled **no projects yet** in the
+picker and Environments settings, with **Resume…** to continue later.
 
-- No extra-folder selection in the wizard; it uses the target's sources.
-- No archive or rename, and no new project lifecycle flow in environment
-  settings. Every new line of work stays in the inbox until archive arrives,
-  unless you delete the project.
-- No environment secrets.
+Closing progress leaves the attempt running; reopening the wizard can recover
+its saved progress, including after a page reload. Done offers **Open workspace**.
+
+Devices without environments support use the legacy workspace form. Devices
+without new-environment creation use **Add project…** in device settings;
+the legacy sheet registers sources and an initial project. New environment…
+in device settings starts with that device selected; the workspace picker
+uses the selected target's device. Items from the capture compose box use the
+**Creation device** default on Settings.
+
+### Extra folders for one project
+
+When starting a new line of work in an existing or new environment, expand
+**Advanced** on the naming page: **Also add folders to this project only**.
+Use **Add folder** or **Add Git remote** there. These sources belong to the
+new project, alongside the environment's folders; sibling projects do not
+gain them. Advanced is absent when adding a workspace to an existing project.
+
+For an existing project, open **Project settings** → **Sources**. **From E**
+lists the environment's folders read-only. **Added to this project** holds
+editable cards with **Save** and **Remove**; **Add folder…** and **Add Git
+remote…** add sources directly to this project without opening the workspace
+wizard. Changes to this source list affect new workspaces; existing workspaces
+keep their recorded directories.
+
+### Shared folders
+
+Two environments or projects can use the same folder. In Advanced, a known
+reference is labelled **shared with E** or **shared with P**, using the
+environment's or project's name; otherwise it says **new folder**. These
+labels describe known references; Create workspace still checks the actual
+folders. A folder already included in this project's environment or added
+folders is refused, as is a folder inside or containing any registered source.
+Use the existing folder to share a repository; cloning a second copy of an
+already registered remote is refused.
+
+Sharing points both projects at the same original files and repository. Edits
+in that original folder are visible to both projects. Each workspace still
+gets its own worktree or copy; the projects keep separate boards, agents and
+workspace lists. Folder labels, paths, base branches and sync choices belong
+to each reference: changing one does not retarget the other. Removing a
+reference leaves the files on disk, even for the last reference to a
+Build-managed clone.
+
+A remote change, fetch or other Git operation on the shared repository affects
+that repository for both projects. Build serializes repository operations and
+refreshes every referencing project's views. Sync status stays separate for
+each project's source, so projects using different
+base branches or sync choices keep their own results.
+
+### Current M2 limitations
+
+- Archive is not available yet. New lines of work stay listed until deleted.
+- Environment and project rename are not available yet.
+- Editing an environment's folders in settings is not available yet.
+- Environment secrets are not available yet; existing Agent and Project
+  secret scopes stay separate.
+
+### Delete a project
 
 **Delete project** remains available in **Project settings** for any project,
 including one under an environment. It requires confirmation and is refused
@@ -200,6 +282,14 @@ Build uses Git worktrees by default. For copy-on-write checkouts, install the
 bridge and make `rift` available on the bridge's `PATH`. Select **Rift
 (copy-on-write)** in Work isolation settings, either as that device's default
 or as a project override. The choice applies to new checkouts.
+
+A project without its own override inherits its environment's isolation
+setting, then the device default if the environment has no setting. In
+Project settings, clearing the override returns to the environment's setting
+without changing the environment or any sibling project. The inheritance
+option names the environment and the isolation it supplies. The wizard can
+also override isolation for the workspace being created; existing checkouts
+keep their isolation.
 
 Rift owns filesystem cloning and snapshot creation. Build requests full copies
 to retain ignored build caches, skips Rift hooks, and checks out the task's

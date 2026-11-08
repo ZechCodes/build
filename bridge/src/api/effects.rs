@@ -110,6 +110,13 @@ const EXTERNAL_READ_METHODS: &[&str] = &[
 const LEGACY_READ_METHODS: &[&str] = &["archived.list"];
 
 const WRITE_METHODS: &[&str] = &[
+    "project.rename",
+    "environment.rename",
+    "environment.add_source",
+    "environment.remove_source",
+    "environment.update_source",
+    "environment.sync_source",
+    "environment.set_isolation",
     "environment.create",
     "environment.discard_unused",
     "environment.create_project",

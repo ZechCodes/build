@@ -1,0 +1,41 @@
+{
+  "method": "environment.remove_source",
+  "since": "3.37.0",
+  "params": {
+    "environment_id": "env-1",
+    "source_id": "source-1"
+  },
+  "result": {
+    "environment_id": "env-1",
+    "name": "build",
+    "home_path": "/home/ada/code/build",
+    "is_git": true,
+    "base_branch": "main",
+    "sources": [
+      {
+        "id": "source-1",
+        "name": "build",
+        "mount": "build",
+        "path": "/home/ada/code/build",
+        "is_git": true,
+        "base_branch": "main",
+        "remote": "git@github.com:ada/build.git",
+        "sync_base": false,
+        "sync": null
+      }
+    ],
+    "isolation": null,
+    "isolation_effective": "worktree",
+    "project_ids": [
+      "proj-1"
+    ],
+    "device": "Ada’s workstation"
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "internal"
+  ],
+  "note": "Staged M3.2 contract; withheld from greetings until M3.3 ships the consumer."
+}

@@ -30,6 +30,12 @@ use std::collections::BTreeMap;
 pub fn methods() -> &'static [(&'static str, Handler)] {
     v1_methods![
         v1_method!(
+            "project.rename",
+            project_rename,
+            ProjectRenameParams,
+            ProjectRow
+        ),
+        v1_method!(
             "project.set_compaction",
             set_compaction,
             SetCompactionParams,
@@ -323,7 +329,7 @@ pub struct ProjectSetIsolationParams {
 /// A field that must be there and may be `null`. Serde reads a missing
 /// `Option` field as `None`, which would turn "you forgot to say" into "clear
 /// it"; a `deserialize_with` field is required, so the two stay distinct.
-fn required_nullable<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+pub(super) fn required_nullable<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -1196,7 +1202,7 @@ fn says(message: &str, phrases: &[&str]) -> bool {
 /// Name the refusal this family raised, where the sentence says what
 /// [`ApiError::classify`](crate::api::ApiError::classify) cannot read from
 /// its general rules. Anything unmatched keeps the code classify gave it.
-fn refine(error: ApiError) -> ApiError {
+pub(super) fn refine(error: ApiError) -> ApiError {
     let message = error.message();
     if says(message, &UNAVAILABLE) {
         return ApiError::unavailable(message);
@@ -1627,4 +1633,16 @@ pub(super) fn discard_unused_error(message: String) -> ApiError {
         return ApiError::conflict(message, None);
     }
     ApiError::classify(message)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectRenameParams {
+    pub project_id: String,
+    pub name: String,
+}
+fn project_rename(
+    app: &mut AppState,
+    params: ProjectRenameParams,
+) -> Result<Answer<ProjectRow>, ApiError> {
+    answer(app.project_rename(&params.wire())).map_err(refine)
 }

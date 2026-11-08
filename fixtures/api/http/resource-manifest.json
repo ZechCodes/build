@@ -43,10 +43,16 @@
       "entity_dismiss",
       "entity_mute",
       "entity_seen",
+      "environment_add_source",
       "environment_create",
       "environment_create_project",
       "environment_discard_unused",
       "environment_list",
+      "environment_remove_source",
+      "environment_rename",
+      "environment_set_isolation",
+      "environment_sync_source",
+      "environment_update_source",
       "fs_createDirectory",
       "fs_createFile",
       "fs_list",
@@ -88,6 +94,7 @@
       "project_init_git",
       "project_list",
       "project_remove_source",
+      "project_rename",
       "project_set_compaction",
       "project_set_isolation",
       "project_set_remote",
@@ -725,6 +732,26 @@
       }
     },
     {
+      "method": "environment.add_source",
+      "operationId": "environment_add_source",
+      "verb": "POST",
+      "path": "/v1/environments/{environment_id}/sources",
+      "pathParams": [
+        "environment_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/environment.rs",
+        "params": "AddSourceParams",
+        "result": "EnvironmentRow"
+      }
+    },
+    {
       "method": "environment.create",
       "operationId": "environment_create",
       "verb": "POST",
@@ -798,6 +825,109 @@
         "source": "bridge/src/api/v1/environment.rs",
         "params": "NoParams",
         "result": "EnvironmentListResult"
+      }
+    },
+    {
+      "method": "environment.remove_source",
+      "operationId": "environment_remove_source",
+      "verb": "DELETE",
+      "path": "/v1/environments/{environment_id}/sources/{source_id}",
+      "pathParams": [
+        "environment_id",
+        "source_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/environment.rs",
+        "params": "RemoveSourceParams",
+        "result": "EnvironmentRow"
+      }
+    },
+    {
+      "method": "environment.rename",
+      "operationId": "environment_rename",
+      "verb": "PATCH",
+      "path": "/v1/environments/{environment_id}",
+      "pathParams": [
+        "environment_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/environment.rs",
+        "params": "RenameParams",
+        "result": "EnvironmentRow"
+      }
+    },
+    {
+      "method": "environment.set_isolation",
+      "operationId": "environment_set_isolation",
+      "verb": "PUT",
+      "path": "/v1/environments/{environment_id}/isolation",
+      "pathParams": [
+        "environment_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/environment.rs",
+        "params": "SetIsolationParams",
+        "result": "EnvironmentRow"
+      }
+    },
+    {
+      "method": "environment.sync_source",
+      "operationId": "environment_sync_source",
+      "verb": "POST",
+      "path": "/v1/environments/{environment_id}/sources/{source_id}/syncs",
+      "pathParams": [
+        "environment_id",
+        "source_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/environment.rs",
+        "params": "SyncSourceParams",
+        "result": "super::board::SourceSyncRequested"
+      }
+    },
+    {
+      "method": "environment.update_source",
+      "operationId": "environment_update_source",
+      "verb": "PATCH",
+      "path": "/v1/environments/{environment_id}/sources/{source_id}",
+      "pathParams": [
+        "environment_id",
+        "source_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/environment.rs",
+        "params": "UpdateSourceParams",
+        "result": "SourceUpdated"
       }
     },
     {
@@ -1554,6 +1684,26 @@
       "contract": {
         "source": "bridge/src/api/v1/board.rs",
         "params": "ProjectRemoveSourceParams",
+        "result": "ProjectRow"
+      }
+    },
+    {
+      "method": "project.rename",
+      "operationId": "project_rename",
+      "verb": "PATCH",
+      "path": "/v1/projects/{project_id}",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "ProjectRenameParams",
         "result": "ProjectRow"
       }
     },

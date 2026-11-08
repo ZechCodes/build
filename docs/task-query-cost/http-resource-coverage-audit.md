@@ -150,3 +150,22 @@ reviewed caller substitutions, progress routing/storage, and admission changes.
 The pure wizard view/model contain no additional recognized RPC producers.
 Dynamic dispatch expressions remain identical to the existing inventory; the
 scanner, helper recognition and all coverage assertions remain unchanged.
+
+
+### #1035 accepted-review recovery and legacy follow-up
+
+Reviewed the recovery lifecycle and immediate user-write changes in the target
+adapter and wizard. Terminal attempts remain visible until explicitly consumed
+through the existing local operation service; the only bridge methods remain
+`workspace.create`, `environment.create_project` and `project.discard_unused`.
+The legacy surface delegates creation to that same adapter and introduces no
+additional verb or dynamic dispatch expansion. Cached capability reads preserve
+legacy entry behavior without connection-state rendering.
+
+The creation write service records transport handoff and evidence generations.
+It locally refuses only proven-unsent downgraded attempts, retains possibly-sent
+uncertainty, and fences inactive-opening errors against newer evidence. The
+`writes.confirmed` literal in `unsupportedCreationOutcome` is a local terminal
+record type, not an RPC; its exact finite metadata occurrence is pinned.
+Source fingerprints cover the changed helper/cache/service definitions. Scanner
+recognizers, dispatch inventory and every coverage assertion remain intact.

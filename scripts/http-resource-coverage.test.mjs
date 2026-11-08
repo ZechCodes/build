@@ -250,6 +250,9 @@ const metadataUses = {
     ["term.closed",". type === [\"term.closed\"] ) { if","0bd0e815159a22798b5a7c99442bf8e7596f328b4d9443124b96dd5dc3be6ba9"],
     ["term.output",". type === [\"term.output\"] ) { if","c359dc975880f6018fbadcb07010dee4f9c53b00da269d93fd6d01936f15a50d"],
   ],
+  "core/writeOperationProgress.js": [
+    ["writes.confirmed","{ type : [\"writes.confirmed\"] , operation_id :","370627743b292ef60a20ca2575dd89f495ed572042809ce7d21773a999d6dc77"],
+  ],
 };
 
 // Staged consumers remain real methods. Exclude only an audited occurrence
@@ -424,11 +427,11 @@ const sourceFingerprintParts = {
   "core/workspaceReviewForm.js": ["c73939fb", "cb195111", "85819eed", "9716f89b", "6a8f72bb", "026af5b9", "6dc154e9", "e67e42b5"],
   "core/workspaceReviewTasks.js": ["0ce927c3", "057199b7", "8c84154f", "aee738c5", "02391da6", "be84ac08", "d1190908", "5073f226"],
   "core/workspaceSizes.js": ["5906d4c2", "fda13846", "3542c664", "26018741", "0bf741e3", "1a10dc8e", "e5feb8ee", "9c08416d"],
-  "core/writeOperationCache.js": ["e22af84f", "192612c2", "07ecae37", "a54cb614", "cd6e5b16", "d42a357c", "1229f89c", "f1bd11d7"],
+  "core/writeOperationCache.js": ["69aff39c", "9652c392", "a5220ffa", "cac0d5ce", "e0f10d2a", "6783d214", "8be8336e", "9f996bdb"],
   "core/writeOperationEffects.js": ["d30332d1", "89b12c79", "150580d0", "aede7e2b", "d2e23499", "d6003a79", "f13412fe", "b895c728"],
   "core/writeOperationIntent.js": ["5476394a", "087dc5ce", "5c71e673", "8b977ba3", "e665bf53", "fa9529be", "78bf2c38", "48f27991"],
   "core/writeOperationRefresh.js": ["b5d241f8", "64bba629", "58a8bbab", "6673dafa", "0c5490bc", "2e70cbc9", "d0048bf4", "20e4c528"],
-  "core/writeOperations.js": ["9cace0cd", "ada7aa0f", "ffed64f2", "39ba9a87", "fb81c45d", "53b0edd7", "c59695f9", "edd046a0"],
+  "core/writeOperations.js": ["d58bf74a", "b4686c2a", "014911e0", "26a9705c", "66fccfb4", "d28f2488", "bc4a631b", "740a0d93"],
   "push.js": ["c7a3eb27", "240e0a4d", "3e314aee", "369bea39", "25bf83e0", "f105e41a", "0e4ed716", "4e53028b"],
   "sheets/browser.js": ["e226c6fb", "9689c6bc", "39ba311b", "335481c7", "f444e696", "36c5c8b6", "013588ec", "bd2a4dbe"],
   "sheets/newRepo.js": ["e1addf8b", "abc706f6", "ca74fa24", "7e1f3208", "aae3d460", "37157135", "21e46d2f", "f187cdfa"],
@@ -457,8 +460,8 @@ const sourceFingerprintParts = {
   "core/taskTimelinePages.js": ["da2840fb", "5992d7ce", "038bbc4d", "9c01a8ab", "c320a6f3", "7592e5be", "d5cbf08c", "4fcf8220"],
 
   "core/createWorkspaceProgress.js": ["5aea6af6", "f4421d06", "d5bc29c5", "3939163d", "79b5ba53", "0dd1b8e9", "cb202c04", "b5981c75"],
-  "core/createWorkspaceTargets.js": ["306138eb", "92158814", "a0895edb", "eb8e2543", "18627eb0", "4af7efe7", "edfaa288", "46a3b51c"],
-  "core/writeOperationProgress.js": ["620a3c41", "9487e451", "52b5d67a", "66fd384f", "8a40b2fb", "50bdc244", "0b4b7545", "744c8427"],
+  "core/createWorkspaceTargets.js": ["e8958cfe", "1c0206ce", "9f7dc1b4", "e5e875b1", "a8bcfe18", "e6653372", "eb934b9d", "40907e22"],
+  "core/writeOperationProgress.js": ["1092c480", "f4c49dde", "dbbef23b", "5cdbfadb", "2beab767", "146717b7", "ddf2e984", "9ba42bcb"],
 };
 const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintParts)
   .map(([file, parts]) => [file, parts.join("")]));

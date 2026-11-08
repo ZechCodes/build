@@ -362,19 +362,15 @@ impl ProjectRegistry {
     pub(in crate::app) fn set_sources(
         &mut self,
         project_id: &str,
-        sources: Vec<ProjectSource>,
+        mut sources: Vec<ProjectSource>,
     ) -> bool {
         self.observation_projects.mark(project_id);
         let fallback_home = self.get(project_id).and_then(|project| {
             let environment = self.environment(&project.environment_id)?;
             Self::unowned_home_source(project, environment)
         });
-        let promoted_home = fallback_home.as_ref().and_then(|fallback| {
-            sources
-                .iter()
-                .find(|source| source.id == fallback.id && source.path == fallback.path)
-                .cloned()
-        });
+        let promoted_home =
+            self.prepare_home_promotion(project_id, &mut sources, fallback_home.as_ref());
         let Some(project) = self
             .projects
             .iter_mut()
@@ -893,32 +889,81 @@ impl ProjectRegistry {
         })
     }
 
-    /// A membership edit explicitly adopts the legacy fallback as a reference.
+    /// A membership edit adopts the fallback without replacing another reference.
     fn promote_home_source(&mut self, id: &str, home: &ProjectSource) {
-        let environment_id = self
-            .get(id)
-            .expect("resolved project")
-            .environment_id
-            .clone();
-        let inherited = self
-            .environments
+        let project = self
+            .projects
             .iter_mut()
-            .find(|environment| environment.id == environment_id)
-            .and_then(|environment| {
-                environment
-                    .sources
-                    .iter_mut()
-                    .find(|source| source.id == home.id)
-            });
-        if let Some(source) = inherited {
-            *source = home.clone();
-        } else {
-            let project = self
-                .projects
-                .iter_mut()
-                .find(|project| project.id == id)
-                .expect("resolved project");
-            Self::upsert_added_source(&mut project.added_sources, home);
+            .find(|project| project.id == id)
+            .expect("resolved project");
+        Self::upsert_added_source(&mut project.added_sources, home);
+    }
+
+    fn prepare_home_promotion(
+        &self,
+        id: &str,
+        incoming: &mut [ProjectSource],
+        fallback: Option<&ProjectSource>,
+    ) -> Option<ProjectSource> {
+        let fallback = fallback?;
+        let index = incoming
+            .iter()
+            .position(|source| source.id == fallback.id && source.path == fallback.path)?;
+        let project = self.get(id)?;
+        let environment = self.environment(&project.environment_id)?;
+        let registered = self.stored_source_ids(&project.environment_id);
+        let collides = registered.contains(&incoming[index].id.as_str())
+            || incoming
+                .iter()
+                .enumerate()
+                .any(|(other, source)| other != index && source.id == incoming[index].id);
+        if collides {
+            let next = registered
+                .into_iter()
+                .chain(incoming.iter().map(|source| source.id.as_str()))
+                .filter_map(|id| id.strip_prefix("source-")?.parse::<u64>().ok())
+                .max()
+                .unwrap_or(0)
+                + 1;
+            let next = next.max(environment.next_source).max(project.next_source);
+            incoming[index].id = format!("source-{next}");
         }
+        Some(incoming[index].clone())
+    }
+
+    /// Parked lines retain ownership of their source IDs too.
+    fn stored_source_ids(&self, environment_id: &str) -> Vec<&str> {
+        let mut ids = self
+            .environment(environment_id)
+            .into_iter()
+            .flat_map(|environment| &environment.sources)
+            .map(|source| source.id.as_str())
+            .collect::<Vec<_>>();
+        ids.extend(
+            self.projects
+                .iter()
+                .filter(|project| project.environment_id == environment_id)
+                .flat_map(|project| &project.added_sources)
+                .map(|source| source.id.as_str()),
+        );
+        ids.extend(
+            self.parked
+                .iter()
+                .filter(|project| {
+                    project
+                        .get("environment_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(environment_id)
+                })
+                .flat_map(|project| {
+                    project
+                        .get("added_sources")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                })
+                .filter_map(|source| source.get("id").and_then(serde_json::Value::as_str)),
+        );
+        ids
     }
 }

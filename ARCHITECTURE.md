@@ -1681,7 +1681,11 @@ recorded home (orchestrator, registry identity), initially its first source.
 Unlinking that source does not retarget the home, its Git metadata or the
 orchestrator to the next source. Stored references can retain unavailable
 folders, while live source projections and workspace cuts skip missing or
-non-directory paths, as the legacy loader did.
+non-directory paths, as the legacy loader did. When all references are
+unavailable, the live home fallback stays temporary until a membership edit
+adopts it. Promotion preserves its settings and allocates a fresh ID if its
+legacy ID belongs to a stored reference, including references in parked
+projects; hidden references are never replaced by the fallback.
 A configured project whose home folder is missing at boot is parked, not
 dropped (`bridge/src/app/projects/parked.rs`): its configuration is kept
 verbatim and written back on every save, its `proj-N` stays reserved, and

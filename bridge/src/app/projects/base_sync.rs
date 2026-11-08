@@ -358,14 +358,7 @@ impl SyncSubject {
     }
 
     fn is_current(&self, app: &AppState) -> bool {
-        app.projects
-            .get(&self.project_id)
-            .and_then(|project| {
-                project
-                    .sources
-                    .iter()
-                    .find(|source| source.id == self.source_id)
-            })
+        app.sync_reference(&self.project_id, &self.source_id)
             .is_some_and(|source| {
                 source.path == self.path && source.base_branch == self.base_branch && source.is_git
             })
@@ -632,9 +625,7 @@ impl AppState {
             subject, report, ..
         } in synced.into_iter().filter(Synced::tells_the_timer)
         {
-            let Some(source) = self
-                .projects
-                .source_mut(&subject.project_id, &subject.source_id)
+            let Some(source) = self.sync_reference_mut(&subject.project_id, &subject.source_id)
             else {
                 continue;
             };
@@ -715,6 +706,9 @@ impl AppState {
         for (project_id, source) in self.projects.sources_mut() {
             source.sync_status = stored.remove(&status_key(project_id, &source.id));
         }
+        for (id, source) in self.projects.environment_sources_mut() {
+            source.sync_status = stored.remove(&status_key(id, &source.id));
+        }
         Ok(())
     }
 
@@ -722,7 +716,7 @@ impl AppState {
         let Some(store) = self.store.as_ref() else {
             return;
         };
-        let statuses: HashMap<String, &SyncStatus> = self
+        let mut statuses: HashMap<String, &SyncStatus> = self
             .projects
             .iter()
             .flat_map(|project| {
@@ -732,6 +726,13 @@ impl AppState {
                 })
             })
             .collect();
+        for environment in self.projects.environments() {
+            for source in &environment.sources {
+                if let Some(status) = &source.sync_status {
+                    statuses.insert(status_key(&environment.id, &source.id), status);
+                }
+            }
+        }
         if let Err(error) = store.save_source_syncs(&statuses) {
             eprintln!("source sync: persist: {error}");
         }
@@ -781,4 +782,43 @@ fn fetch_for_cut(source: &super::ProjectSource) -> Fetch {
 
 fn status_key(project_id: &str, source_id: &str) -> String {
     format!("{project_id}/{source_id}")
+}
+
+impl AppState {
+    // Project and environment IDs have disjoint prefixes. Statuses remain per reference.
+    fn sync_reference(&self, owner: &str, id: &str) -> Option<&super::ProjectSource> {
+        self.projects
+            .get(owner)
+            .map(|p| &p.sources)
+            .or_else(|| self.projects.environment(owner).map(|e| &e.sources))?
+            .iter()
+            .find(|s| s.id == id)
+    }
+    fn sync_reference_mut(&mut self, owner: &str, id: &str) -> Option<&mut super::ProjectSource> {
+        if self.projects.environment(owner).is_some() {
+            return self
+                .projects
+                .environment_mut(owner)?
+                .sources
+                .iter_mut()
+                .find(|s| s.id == id);
+        }
+        self.projects.source_mut(owner, id)
+    }
+    pub(in crate::app) fn request_environment_source_sync(&mut self, id: &str, source_id: &str) {
+        if let Some(source) = self.sync_reference(id, source_id) {
+            let captured = subject(
+                id,
+                source,
+                Fetch::Within(SERVICE_FETCH_DEADLINE),
+                SyncOrigin::Service,
+            );
+            self.source_sync_requested
+                .insert((id.to_string(), source_id.to_string()), captured);
+            self.source_sync_nudge.notify_one();
+        }
+        for project in self.environment_project_ids(id) {
+            self.request_source_sync(project, source_id.to_string());
+        }
+    }
 }

@@ -11,14 +11,14 @@ use crate::lifecycle::{
 use crate::remote_url::usable_remote_url;
 use serde_json::Value;
 
-struct SourceRequest {
+pub(in crate::app) struct SourceRequest {
     /// Preparation-local identity. Appended references receive final IDs under
     /// the app lock when their membership transaction publishes.
     id: String,
-    path: Option<std::path::PathBuf>,
+    pub(in crate::app) path: Option<std::path::PathBuf>,
     remote: Option<String>,
     name: String,
-    mount: String,
+    pub(in crate::app) mount: String,
     base_branch: Option<String>,
     destination: Option<std::path::PathBuf>,
 }
@@ -28,7 +28,7 @@ struct SourceRequest {
 /// to this as well as to every registered project, so two sources opened
 /// together cannot collide any more than two opened apart.
 #[derive(Default)]
-struct TakenSourceNames {
+pub(in crate::app) struct TakenSourceNames {
     paths: Vec<std::path::PathBuf>,
     remotes: std::collections::HashSet<String>,
     mounts: std::collections::HashSet<String>,
@@ -37,7 +37,7 @@ struct TakenSourceNames {
 impl TakenSourceNames {
     /// Seed the claim with what a project already holds, for a source being
     /// appended to it rather than opened with it.
-    fn over(sources: &[ProjectSource]) -> Self {
+    pub(in crate::app) fn over(sources: &[ProjectSource]) -> Self {
         TakenSourceNames {
             paths: sources
                 .iter()
@@ -76,7 +76,7 @@ impl TakenSourceNames {
 
     /// Where each remote source will be cloned, held to the directories the
     /// local sources stand over: a clone must not land inside one of them.
-    fn refuse_managed_destinations(
+    pub(in crate::app) fn refuse_managed_destinations(
         &self,
         requests: &[SourceRequest],
         managed_root: &std::path::Path,
@@ -114,15 +114,15 @@ impl TakenSourceNames {
     }
 }
 
-struct PreparedSources {
+pub(in crate::app) struct PreparedSources {
     opened: crate::lifecycle::OpenedRepository,
-    sources: Vec<ProjectSource>,
-    created_checkouts: Vec<std::path::PathBuf>,
-    cloned_paths: Vec<std::path::PathBuf>,
+    pub(in crate::app) sources: Vec<ProjectSource>,
+    pub(in crate::app) created_checkouts: Vec<std::path::PathBuf>,
+    pub(in crate::app) cloned_paths: Vec<std::path::PathBuf>,
     _destination_claims: Vec<SourceDirectoryLease>,
 }
 
-struct OpenProjectSources {
+pub(in crate::app) struct OpenProjectSources {
     requests: Vec<SourceRequest>,
     managed_root: std::path::PathBuf,
     destination_claims: Vec<SourceDirectoryLease>,
@@ -252,7 +252,7 @@ impl AppState {
         self.source_directory_claims.reserve_destinations(paths)
     }
 
-    fn reserve_source_opening(
+    pub(in crate::app) fn reserve_source_opening(
         &self,
         mut requests: Vec<SourceRequest>,
         managed_root: std::path::PathBuf,
@@ -314,7 +314,7 @@ impl AppState {
         Ok(())
     }
 
-    pub(super) fn refuse_source_containment(
+    pub(in crate::app) fn refuse_source_containment(
         &self,
         candidate: &std::path::Path,
         replacing: Option<(&str, &str)>,
@@ -337,7 +337,7 @@ impl AppState {
         Ok(())
     }
 
-    pub(super) fn validate_prepared_sources(
+    pub(in crate::app) fn validate_prepared_sources(
         &self,
         project_id: Option<&str>,
         sources: &mut [ProjectSource],
@@ -413,7 +413,7 @@ impl AppState {
     /// its git to the drain. The directory is the row's identity: there is no
     /// project id until the git lands, and what two project verbs collide over
     /// is the folder, not a name.
-    pub(super) fn defer_project<T, S>(
+    pub(in crate::app) fn defer_project<T, S>(
         &mut self,
         dest: std::path::PathBuf,
         title: String,
@@ -498,7 +498,7 @@ impl AppState {
     /// already registered and every source being opened beside it. The checks
     /// are the same whether the source is one a project is opened over or one
     /// appended to a project that already exists.
-    fn source_request(
+    pub(in crate::app) fn source_request(
         &self,
         entry: &Value,
         id: String,

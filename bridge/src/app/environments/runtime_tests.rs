@@ -75,7 +75,7 @@ fn next_source_continuity() {
 }
 
 #[test]
-fn clearing_project_override_restores_device_default() {
+fn clearing_project_override_preserves_environment_default() {
     use crate::isolation::Isolation;
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");
@@ -115,7 +115,11 @@ fn clearing_project_override_restores_device_default() {
             .environment(&environment_id)
             .unwrap()
             .isolation,
-        None
+        Some(Isolation::Rift)
+    );
+    assert_eq!(
+        reloaded.project_isolation(reloaded.project_for("proj-1").unwrap()),
+        Isolation::Rift
     );
     assert_eq!(
         reloaded.resolved_isolation("proj-1").isolation,
@@ -123,7 +127,11 @@ fn clearing_project_override_restores_device_default() {
     );
 }
 
-pub(super) fn rpc(app: &mut AppState, method: &str, params: serde_json::Value) -> serde_json::Value {
+pub(super) fn rpc(
+    app: &mut AppState,
+    method: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
     app.handle(crate::app::Frame {
         session_id: "test".into(),
         message_id: "test".into(),

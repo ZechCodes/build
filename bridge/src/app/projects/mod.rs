@@ -111,7 +111,7 @@ mod parked;
 mod project_registry;
 #[cfg(test)]
 mod project_registry_tests;
-mod requests;
+pub(in crate::app) mod requests;
 mod source_directory_claims;
 pub(in crate::app) use source_directory_claims::SourceDirectoryClaims;
 pub(in crate::app) use source_directory_claims::SourceDirectoryLease;
@@ -122,7 +122,7 @@ pub(in crate::app) use source_holds::SourceMoves;
 mod source_scope;
 pub(in crate::app) use source_scope::ResolvedProjectSource;
 pub(crate) use source_scope::{MOVED_GIT_SOURCE, NOT_GIT_SOURCE};
-mod source_update;
+pub(in crate::app) mod source_update;
 
 /// What an edit leaves a source's record as. `None` keeps its label.
 pub(in crate::app) struct SourceRecord {

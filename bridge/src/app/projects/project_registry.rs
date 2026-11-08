@@ -1,3 +1,5 @@
+mod environment_edits;
+
 use super::{next_source_number, Project, ProjectSource};
 use crate::app::environments::Environment;
 #[cfg(test)]
@@ -79,11 +81,15 @@ impl ProjectConfiguration {
             .get(project_id)
             .expect("resolved project")
             .environment_id;
+        Self::capture_environment(projects, environment_id)
+    }
+
+    pub(super) fn capture_environment(projects: &ProjectRegistry, environment_id: &str) -> Self {
         Self {
             records: projects
                 .projects
                 .iter()
-                .filter(|project| &project.environment_id == environment_id)
+                .filter(|project| project.environment_id == environment_id)
                 .map(|p| (p.id.clone(), ProjectConfigurationRecord::capture(p)))
                 .collect(),
             environments: projects.environments.clone(),
@@ -99,6 +105,7 @@ impl ProjectConfiguration {
 }
 
 struct ProjectConfigurationRecord {
+    name: String,
     base_branch: String,
     is_git: bool,
     sources: Vec<ProjectSource>,
@@ -110,6 +117,7 @@ struct ProjectConfigurationRecord {
 impl ProjectConfigurationRecord {
     fn capture(project: &Project) -> Self {
         Self {
+            name: project.name.clone(),
             base_branch: project.base_branch.clone(),
             is_git: project.is_git,
             sources: project.sources.clone(),
@@ -126,6 +134,7 @@ impl ProjectConfigurationRecord {
             .iter_mut()
             .find(|project| project.id == id)
             .expect("staged project remains registered under the app lock");
+        std::mem::swap(&mut self.name, &mut project.name);
         std::mem::swap(&mut self.base_branch, &mut project.base_branch);
         std::mem::swap(&mut self.is_git, &mut project.is_git);
         std::mem::swap(&mut self.sources, &mut project.sources);
@@ -498,14 +507,6 @@ impl ProjectRegistry {
             return false;
         };
         project.isolation = isolation;
-        let environment_id = project.environment_id.clone();
-        if let Some(environment) = self
-            .environments
-            .iter_mut()
-            .find(|e| e.id == environment_id)
-        {
-            environment.isolation = isolation;
-        }
         true
     }
 
@@ -1012,7 +1013,7 @@ impl ProjectRegistry {
         }
     }
 
-    fn refresh_environment_projects(&mut self, environment_id: &str) {
+    pub(in crate::app) fn refresh_environment_projects(&mut self, environment_id: &str) {
         let Some(environment) = self.environment(environment_id).cloned() else {
             return;
         };
@@ -1316,7 +1317,7 @@ impl ProjectRegistry {
     pub(in crate::app) fn remove_unused_environment(&mut self, id: &str) {
         self.environments.retain(|e| e.id != id);
     }
-    pub(super) fn allocate_environment_source_ids(
+    pub(in crate::app) fn allocate_environment_source_ids(
         &self,
         id: &str,
         count: usize,

@@ -1075,6 +1075,34 @@ describe("review regressions", () => {
   };
   afterAll(() => { feed = savedFeed; });
 
+  it("retains mounted crumb prefixes and focused trigger when a capable environment is renamed", async () => {
+    await seed();
+    await support(true);
+    const crumb = bar().querySelector("[data-project-return]");
+    const selectors = [".identity-kind", ".tb-environment", ".tb-environment-sep", ".tb-name"];
+    const nodes = selectors.map(selector => crumb.querySelector(selector));
+    const trigger = bar().querySelector('[data-select="project"]');
+    trigger.focus();
+    const assertRetainedAndVisible = () => {
+      selectors.forEach((selector, index) => {
+        const node = crumb.querySelector(selector);
+        expect(node).toBe(nodes[index]);
+        expect(node.isConnected).toBe(true);
+        expect(node.closest("[hidden]")).toBeNull();
+        expect(getComputedStyle(node).display).not.toBe("none");
+        expect(getComputedStyle(node).visibility).toBe("visible");
+      });
+      expect(document.activeElement).toBe(trigger);
+    };
+    assertRetainedAndVisible();
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "environments" }, [
+      { environment_id: "env", name: "Renamed environment", project_ids: ["p1", "p2"] },
+    ]);
+    await vi.waitFor(() => expect(nodes[1].textContent).toBe("Renamed environment"));
+    expect(crumb.textContent).toContain("Renamed environment › relaydb");
+    assertRetainedAndVisible();
+  });
+
   it.each(["project", "workspace"])("preserves every mounted toolbar node and focused %s control across both capability directions", async select => {
     await seed();
     if (select === "workspace") await standOnWorkspace();

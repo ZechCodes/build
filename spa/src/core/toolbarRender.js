@@ -41,7 +41,8 @@ function projectCrumbHtml(project, shown) {
 }
 
 /** Capability and environment changes only patch the existing project link.
- * Its label, ancestry, triggers and other mounted controls keep their nodes. */
+ * Its label, ancestry, triggers and other mounted controls keep their nodes.
+ * Turning capability off intentionally removes prefix nodes to restore legacy markup. */
 export function patchToolbarProjectIdentity(host, shown) {
   const link = host.querySelector("[data-project-return]");
   if (!link) return;

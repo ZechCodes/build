@@ -258,7 +258,13 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     if (draft.edits === cachedDraft?.edits) displayedDraft.edits = draft.edits;
     if (draft.source === cachedDraft?.source) displayedDraft.source = draft.source;
     mountProjectGeneral(sheet, project, {
-      deviceId, callRpc, onArchiveRefused: refusal => { archiveRefusal = refusal; void record.read(); },
+      deviceId, callRpc, beforeArchive: () => blockerChange.prepare(),
+      onArchiveRefused: async (refusal, baseline) => {
+        const unchanged = await blockerChange.unchanged(baseline);
+        archiveRefusal = unchanged ? refusal : null;
+        void record.read();
+        return unchanged;
+      },
       openEnvironment: () => { close(); openEnvironmentSettings(project.environment_id, { deviceId, callRpc }); },
     });
     lockArchivedSettings(sheet, project);

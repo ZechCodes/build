@@ -6,11 +6,35 @@ const keyOf = address => JSON.stringify([address.entityId, address.kind, address
 const signatureOf = value => JSON.stringify(value, (_key, item) => item && !Array.isArray(item) && typeof item === "object"
   ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 
+// M3.1 archive.rs and store/project_archive.rs emit these named kinds.
+// Only visible workspace/task/review state has a reliable cached clearing
+// signal here. Session holds span other owners; internal queues and creations
+// can finish without changing any of this sheet's rows. Unknown kinds retry.
+const blockerKinds = [
+  { matches: /^finish or delete workspace .+$/, cacheClears: true },
+  { matches: /^answer #\d+$/, cacheClears: true },
+  { matches: /^resolve waiting-on for #\d+$/, cacheClears: true },
+  { matches: /^give a verdict on #\d+$/, cacheClears: true },
+  { matches: /^stop (coordinator|worker) .+$/, cacheClears: false },
+  { matches: /^wait for pending wake for .+$/, cacheClears: false },
+  { matches: /^wait for workspace .+ creation to finish$/, cacheClears: false },
+  { matches: /^wait for filesystem operations to finish$/, cacheClears: false },
+  { matches: /^settle pending delivery for #\d+$/, cacheClears: false },
+  { matches: /^settle pending dependency reconciliation for #\d+$/, cacheClears: false },
+  { matches: /^settle pending verdict delivery for #\d+$/, cacheClears: false },
+  { matches: /^settle pending revision dispatch for #\d+$/, cacheClears: false },
+  { matches: /^settle revision delivery notice for #\d+$/, cacheClears: false },
+  { matches: /^settle pending task notice for #\d+$/, cacheClears: false },
+];
+export const archiveBlockersObservable = blockers => Array.isArray(blockers) && blockers.length > 0
+  && blockers.every(blocker => typeof blocker === "string" && blockerKinds.find(kind => kind.matches.test(blocker))?.cacheClears === true);
+
 // Observe values, not write stamps: a refresh can announce an identical value.
 // The sheet owns the subscription; this reader keeps each scoped sub-record
 // separate and filters device lists to the project whose blockers were refused.
 export function archiveBlockerChanges(deviceId, projectId, project, clear) {
   const signatures = new Map();
+  let revision = 0;
   const listAddress = kind => ({ deviceId, entityId: "", kind });
   const owner = () => project()?.entity_id || project()?.run_id;
   const listed = address => !address.entityId && ["projects", "workspaces"].includes(address.kind);
@@ -20,7 +44,7 @@ export function archiveBlockerChanges(deviceId, projectId, project, clear) {
   function remember(address, value, notify) {
     const rows = listed(address) ? (value || []).filter(row => address.kind === "projects" ? rowId(row) === projectId : row.project_id === projectId) : value;
     const key = keyOf(address), signature = signatureOf(rows);
-    if (notify && signatures.get(key) !== signature) clear();
+    if (notify && signatures.get(key) !== signature) { revision += 1; clear(); }
     signatures.set(key, signature);
   }
   async function prime() {
@@ -32,9 +56,17 @@ export function archiveBlockerChanges(deviceId, projectId, project, clear) {
     const held = await readCachedMany(addresses);
     addresses.forEach((address, index) => remember(address, held[index]?.value, false));
   }
-  let reads = prime();
-  return address => {
+  let reads = Promise.resolve();
+  const changed = address => {
     if (!relevant(address)) return;
     reads = reads.then(async () => remember(address, (await readCached(address))?.value, true));
   };
+  // Snapshot each attempt before dispatch. A notification after this snapshot
+  // must still invalidate a refusal even when it arrives before the RPC fails.
+  changed.prepare = () => {
+    reads = reads.catch(() => {}).then(prime);
+    return reads.then(() => revision);
+  };
+  changed.unchanged = async baseline => { await reads; return baseline === revision; };
+  return changed;
 }

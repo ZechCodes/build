@@ -1,3 +1,4 @@
+import { archiveBlockersObservable } from "./archiveBlockerChanges.js";
 import { App } from "../app.js";
 import { esc } from "../core/text.js";
 import { fieldTraits } from "../core/fieldTraits.js";
@@ -22,7 +23,7 @@ export function projectArchiveHtml(project, support, refusal) {
     <div class="adderr" id="psarchiveerr" role="alert">${esc(refusal?.message || "")}</div></section>`;
 }
 
-export function mountProjectGeneral(sheet, project, { deviceId, callRpc, onArchiveRefused, openEnvironment }) {
+export function mountProjectGeneral(sheet, project, { deviceId, callRpc, onArchiveRefused, beforeArchive, openEnvironment }) {
   const environment = sheet.querySelector("[data-project-environment]");
   if (environment) environment.onclick = openEnvironment;
   const edit = sheet.querySelector("[data-edit-environment]");
@@ -33,19 +34,20 @@ export function mountProjectGeneral(sheet, project, { deviceId, callRpc, onArchi
     return environmentAction(deviceId, "projectRename", () => callRpc("project.rename", { project_id: project.project_id, name }));
   });
   const archive = sheet.querySelector("#psarchive");
+  let baseline;
   if (archive) archive.onclick = () => void write(archive, sheet.querySelector("#psarchiveerr"), async () => {
+    if (!projectIsArchived(project)) baseline = await beforeArchive();
     return environmentAction(deviceId, "archive", () => projectIsArchived(project) ? callRpc("project.restore", { project_id: project.project_id }) : callRpc("project.archive", { project_id: project.project_id }));
   }, failure => {
-    if (projectIsArchived(project) || !archiveBlockers(failure)) return false;
-    onArchiveRefused({ message: failure.message, blockers: failure.details.blockers });
-    return true;
+    if (projectIsArchived(project) || !archiveBlockersObservable(failure.details?.blockers)) return false;
+    return onArchiveRefused({ message: failure.message, blockers: failure.details.blockers }, baseline);
   });
   async function write(button, error, send, refused) {
     button.disabled = true; error.textContent = "";
     try { await writeEnvironmentProject(deviceId, await send()); }
     catch (failure) {
       error.textContent = failure.message;
-      button.disabled = refused?.(failure) === true;
+      button.disabled = await refused?.(failure) === true;
     }
   }
 }
@@ -56,6 +58,3 @@ function projectEnvironmentHtml(project, name, editable) {
   const label = name || project.environment_name || project.environment_id;
   return `<p>In environment ${editable ? `<button class="btn mini" data-project-environment>${esc(label)}</button>` : esc(label)}</p>`;
 }
-
-const archiveBlockers = failure => Array.isArray(failure.details?.blockers)
-  && failure.details.blockers.some(blocker => typeof blocker === "string" && blocker.length > 0);

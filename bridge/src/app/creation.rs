@@ -26,8 +26,13 @@ pub(in crate::app) fn admit(
 ) -> Result<MutationRecord, ApiError> {
     let params = crate::api::v1::normalize_read_params(method, &params)?;
     validate_creation(method, &params)?;
-    let (writer, scope, owner) = capture_scope(&state.lock().unwrap(), method, &params)?;
-    validate_continuation(&writer, &params, &scope)?;
+    let CreationScope {
+        writer,
+        scope,
+        owner,
+        project_key,
+    } = capture_scope(&state.lock().unwrap(), method, &params)?;
+    validate_continuation(&writer, &params, &scope, project_key.as_deref())?;
     let retained = writer
         .creation_record(PRINCIPAL, &metadata.operation_id)
         .map_err(admission_error)?;
@@ -54,11 +59,13 @@ pub(in crate::app) fn admit(
         })
         .map_err(admission_error)
 }
-fn capture_scope(
-    app: &AppState,
-    method: &str,
-    params: &Value,
-) -> Result<(StoreWriter, Value, MutationOwner), ApiError> {
+struct CreationScope {
+    writer: StoreWriter,
+    scope: Value,
+    owner: MutationOwner,
+    project_key: Option<String>,
+}
+fn capture_scope(app: &AppState, method: &str, params: &Value) -> Result<CreationScope, ApiError> {
     if app.project_deletion_in_progress {
         return Err(ApiError::busy(super::rpc::PROJECT_DELETION_IN_PROGRESS));
     }
@@ -66,7 +73,7 @@ fn capture_scope(
         .store
         .as_ref()
         .ok_or_else(|| ApiError::unavailable("creation needs a durable store"))?;
-    let (kind, id) = if method == "environment.create_project" {
+    let (kind, id, project_key) = if method == "environment.create_project" {
         let id = params["environment_id"].as_str().unwrap();
         app.projects
             .environment(id)
@@ -76,21 +83,22 @@ fn capture_scope(
                 "creation needs durable project configuration",
             ));
         }
-        ("environment", id)
+        ("environment", id, None)
     } else {
         let id = params["project_id"].as_str().unwrap();
-        app.project_for(id).map_err(ApiError::from)?;
-        ("project", id)
+        let project = app.project_for(id).map_err(ApiError::from)?;
+        ("project", id, Some(project.project_key.clone()))
     };
-    Ok((
-        store.writer(),
-        json!({format!("{kind}_id"):id}),
-        MutationOwner {
+    Ok(CreationScope {
+        writer: store.writer(),
+        scope: json!({format!("{kind}_id"):id}),
+        owner: MutationOwner {
             kind: kind.into(),
             id: id.into(),
             generation: 0,
         },
-    ))
+        project_key,
+    })
 }
 fn reserve_attempt(
     state: &Arc<Mutex<AppState>>,
@@ -164,6 +172,7 @@ fn validate_continuation(
     writer: &StoreWriter,
     params: &Value,
     scope: &Value,
+    project_key: Option<&str>,
 ) -> Result<(), ApiError> {
     let Some(id) = params.get("continues").and_then(Value::as_str) else {
         return Ok(());
@@ -190,10 +199,13 @@ fn validate_continuation(
             "continued attempt is still checking or needs cleanup",
         ));
     }
-    let same_project = scope["project_id"]
-        .as_str()
-        .is_some_and(|id| record.execution["project_id"].as_str() == Some(id));
-    if record.scope != *scope && !same_project {
+    // A reused project number is not ownership evidence, even for equal scopes.
+    // Environment chaining remains bound to its existing environment scope.
+    let same_scope = match project_key {
+        Some(key) => record.execution["project_key"].as_str() == Some(key),
+        None => record.scope == *scope,
+    };
+    if !same_scope {
         return Err(ApiError::invalid_params(
             "continued attempt belongs to another scope",
         ));

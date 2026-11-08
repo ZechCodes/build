@@ -199,6 +199,7 @@ pub(super) fn project_step(
         .writer();
     let mut evidence = record.execution.clone();
     if record.method != "environment.create_project" {
+        validate_saved_project(state, &evidence)?;
         return Ok(evidence);
     }
     progress(
@@ -425,11 +426,25 @@ fn failure_resources(state: &Arc<Mutex<AppState>>, key: Option<&str>) -> (bool, 
         None => (false, json!({"workspace":null})),
     }
 }
+fn validate_saved_project(state: &Arc<Mutex<AppState>>, evidence: &Value) -> Result<(), String> {
+    let id = evidence["project_id"]
+        .as_str()
+        .ok_or("saved project id missing")?;
+    let key = evidence["project_key"]
+        .as_str()
+        .ok_or("saved project key missing")?;
+    let app = state.lock().unwrap();
+    if app.project_for(id)?.project_key != key {
+        return Err("saved creation project key no longer matches the project".into());
+    }
+    Ok(())
+}
 fn cleanup(
     state: &Arc<Mutex<AppState>>,
     writer: &StoreWriter,
     record: &MutationRecord,
 ) -> Result<Option<Value>, String> {
+    validate_saved_project(state, &record.execution)?;
     let reserved: Workspace =
         serde_json::from_value(record.execution["workspace"].clone()).map_err(string)?;
     progress(

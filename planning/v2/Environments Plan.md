@@ -13,6 +13,15 @@ Companions: `Project Workspace Spec.md` (#522), `Navigation Spec.md` (#523,
 
 ## The model in three lines
 
+**Merged status at `f4258eddea0ced8702e87d6340a1629e3e7a5173`:** M0 and
+M1 through M1.4 are merged. Wire 3.37.0 advertises `environments`: existing
+environment → new project + first workspace, existing project → new workspace,
+and read-only environment listings. M2 and later passages below remain plans:
+the wizard has no new-environment page or extra-folder selection, and archive,
+rename and environment secrets are unavailable. Fresh setup still uses the
+legacy Add project sheet. Legacy Project settings, including its Delete project
+action, remains available; see the M1 checkpoint for its actual limits.
+
 - **Environment** = the source directories and the secrets. It is where the
   code lives. It has no tasks, no agents and no workspaces of its own.
 - **Project** = **one line of work** inside an environment, with **its own
@@ -73,7 +82,7 @@ whether a project's tasks are deleted with it.
 
 ## 1. Model
 
-### 1.1 Today
+### 1.1 Before M0 (historical baseline)
 
 - A **project** (`bridge/src/app/projects/mod.rs:135`) is `{id: proj-N, name,
   repo_path, base_branch, is_git, sources: Vec<ProjectSource>, next_source,
@@ -152,7 +161,7 @@ whether a project's tasks are deleted with it.
   shows a device name on a project only when names clash (`deviceTagOf`,
   `spa/src/core/inboxProjects.js:178-186`).
 
-### 1.2 Proposed
+### 1.2 Environment model (M0/M1 merged; later extensions planned)
 
 ```
 device
@@ -498,7 +507,8 @@ Changed:
 | M1 | `board.list` | gains `environments: [EnvironmentRow]` beside `projects` (`fixtures/api/v1/board.list.json`) |
 | M1 | `project.create` | unchanged shape; without `environment_id` makes an implicit environment |
 | M2 | `project.create` | optional `environment_id`; `sources` are then added sources, `diverged: true` |
-| M2 | `project.add_source` / `remove_source` / `update_source` / `sync_source` | operate on **added** sources only; naming an environment source id is refused "source-N belongs to environment E; edit it there". Old-client routing: `update_source`/`sync_source` on an environment source id from a project with no added sources is routed to the environment (5C.5) |
+| M1 | `project.sync_source` | resolves the source from the project's effective sources, validates its captured path, and queues the existing project/source sync service (`{pending: true}`). It is not routed to a separate environment job; shared checkout mutations invalidate every referencing project's views, with sync status kept per reference |
+| M2 (planned restriction) | `project.add_source` / `remove_source` / `update_source` | operate on **added** sources only; naming an environment source id is refused "source-N belongs to environment E; edit it there". Planned old-client compatibility for `update_source` routes an environment source edit to its owning record (5C.5). M1 still accepts legacy project source edits; it does not enforce this future restriction |
 | M3 | every task/review/comment/workspace/source mutation | refused with `project_archived` on an archived project |
 | S2 | `secrets.create/list/revoke/audit` | `scope` accepts `{environment_id}` |
 | — | `tasks.*` | **unchanged** |
@@ -562,8 +572,11 @@ same command so `writes.status` for the one id reports where it stands:
     `workspace.create`, never a second `create_project`); **Keep it**;
     **Discard this project**, a narrow `project.discard_unused {project_id,
     creation_operation_id}` refused unless the project was created by that
-    attempt and has no workspace, task or agent session. These two discards
-    are the only removals the MVP ships; general deletion is Stage 2.
+    attempt and has no workspace, task or agent session. These are the
+    creation flow's narrow removals. Legacy Project settings still offers
+    `project.delete {confirm: true}` for any project, with the confirmation,
+    refusals and destructive scope described at M1. The new deletion flow
+    with explicit task handling remains planned for Stage 2.
   - *workspace candidate left behind* (rollback itself failed): the attempt
     is **not terminal yet**. It enters a non-terminal **reconciliation**
     state whose journal row persists the residual-resource evidence (the
@@ -745,17 +758,24 @@ sources; nothing is merged:
    moves**; every path-keyed value equals the migrated project's key (1.3).
    No `project_path` is reinterpreted; a path stays a path.
 
-**Downgrade boundary, tested not promised.** A bridge from before this
-change ignores `environments` and reads the legacy fields, so a device that
-has created **no** new project downgrades cleanly: same projects, same tasks,
-same scratch. Once a **sibling** exists the legacy reader sees two projects
-whose `path` is the same folder, and nothing about that is promised: the
-sibling's uuid-keyed tasks, scratch and runs are **not** guaranteed to stay
-bound or reachable under the old binary. M0.1 writes the test
+**Downgrade boundary, tested not promised.** M0.4 raised the store to schema
+26. A binary supporting a schema below 26 refuses to open the store before
+applying pragmas or DDL, and startup fails; downgrading across that boundary
+is unsupported even before a sibling project exists. Restoring only a config
+snapshot does not make that database compatible.
+
+The frozen legacy config reader ignores `environments` and reads the legacy
+fields: with no sibling, it loads the original projects. Once a **sibling**
+exists it sees two projects whose `path` is the same folder, collapses them
+into the first project and applies the later entry's source/isolation settings
+and counter. It ignores the sibling's opaque key; that sibling's tasks,
+scratch and runs are **not** guaranteed to stay bound or reachable.
+This config-only result does not establish binary/store compatibility.
+M0.1 added the test
 `downgrade_with_sibling_project` against a frozen copy of today's loader
 (old-version tests need frozen copies, not `git show main:`) to record what
 the legacy loader actually does, and `docs/using.md` states the boundary
-from that result. The supported path after the first new project is
+from that result. The supported recovery path across the schema boundary is
 **roll-forward**: fix on the new binary. Restoring the one-time pre-upgrade
 snapshot (`config.json.pre-environments`) is documented as **deliberate
 abandonment** of everything registered since (new projects' names, keys and
@@ -763,18 +783,22 @@ source references; their tasks and scratch rows stay in the store under keys
 no project claims), never as recovery. For recovery the bridge keeps the
 **previous current config** as `config.json.previous` on every atomic write
 (one generation), so a bad write on the new binary is undone without losing
-later state. Any rollback is `scripts/buildctl --env <env> bridge rollback`
-with the environment named, as `AGENTS.md` requires.
+later state. Any authorized binary rollback within a compatible store schema
+uses `scripts/buildctl --env <env> bridge rollback` with the environment named,
+as `AGENTS.md` requires.
 
-**SQLite**: no change through M3. Stage 2 needs **schema 26**:
+**SQLite:** M0.4 changed the schema to **26** for creation write-ahead
+effect evidence. Pending older creation records without that proof are marked
+unknown (`store/mutations/creation.rs:5-20`); creation uses the journal introduced
+in schema 18, with this additional migration. Stage 2 now plans **schema 27**:
 `secret_records.grant_scope` is `CHECK (grant_scope IN ('agent','project'))`
 with `grant_project_id` (`store/secrets/schema.rs:58-62`), so the environment
 scope is a table rebuild with `'environment'` and `grant_environment_id`,
-done in `migrations.rs` with a `pretend_to_be_v25` test (`migrations.rs:39-154`);
+planned with a schema-26 fixture for the migration test;
 `secret_final_bindings`/`secret_audit` (`schema.rs:110-141`) gain the
 environment id. A newer store is refused by an older binary before any write
-(`store.rs:369-386`). The journal (schema 18) needs no schema change to admit
-the creation verbs; `archived_at` lives in `config.json`.
+(`store.rs:368-386`). `archived_at` lives in `config.json`; the planned M2/M3
+config fields do not require another SQLite version in this plan.
 
 ---
 
@@ -1026,31 +1050,42 @@ two projects in tests. Wire unchanged; capability not advertised.
 | M0.4 | **Bridge: journal executor for creation** (`environment.create_project`, `workspace.create` admitted by `write.operation_id`; in-memory step progress, `writes.status.progress`, `writes.progress` push; `continues` chaining; unknown retained; terminal outcome; `recover_existing` reconciliation on restart; `project.discard_unused` guards) | a retried operation id returns the recorded outcome; a crash between project write and workspace cut reconciles to a terminal outcome on restart without a second project; unknown blocks a conflicting intent; progress never marks an outcome; a continued attempt links to its predecessor in status | `create_project_idempotent_by_operation_id`; `crash_between_steps_reconciles_without_duplicate`; `unknown_outcome_blocks_conflicting_retry`; `workspace_step_failure_reports_landed_project`; `writes_progress_never_marks_outcome`; `continued_attempt_links_prior_operation`; `discard_unused_refused_when_project_used` |
 
 M0.4 implementation note (#1042): additive creation verbs and progress fixtures
-use the current 3.36.0 wire contract; the `environments` feature and version
-boundary remain with M1.4. The existing recovery envelope has only accepted and
-executing non-terminal states, so unknown/reconciling creation records project as
+initially used the 3.36.0 wire contract; M1.4 has since advertised the
+`environments` feature at 3.37.0. The existing recovery envelope has only
+accepted and executing non-terminal states, so unknown/reconciling creation records project as
 executing with their precise durable state in `creation.state`. This preserves
-the existing client's finite summary contract. Until M0.2 identity routing is
-integrated, discard checks both the opaque project key and the current routing
-key, conservatively refusing ambiguous legacy task/session ownership.
+the existing client's finite summary contract. M0.2 identity routing is merged:
+`tracker_project_path` returns the opaque project key. Discard still checks
+both that key and the current routing key defensively, and refuses tasks and
+live or retained agent sessions belonging to the project.
 
 ### Stage 1, M1: first try (dogfood: separate work on the same environment)
 
-**Try:** on the Build device, open the wizard from the inbox, pick the
-"build" environment, name the work, watch the progress screen, land in the
+**Merged through M1.4 (wire 3.37.0). Try:** on the Build device, open the
+wizard from the inbox, pick the "build" environment, name the work, watch
+the progress screen, land in the
 new workspace; its board is empty while #1028 and the rest stay on the old
 board; the switcher shows both projects under one heading with device
-labels; the workspace selector orders by recency. **Unavailable, and said so
-in the UI and in `docs/using.md`:** new environment (the legacy "Add
-project" sheet still does that the old way), extra folders, archive, rename, delete of a
-new project (only "Discard this project" right after a failed attempt),
-environment secrets. **Honest limitation:** this is a first try; every new
-line of work stays in the inbox until M3 brings archive. **Failure checks:**
+labels; the workspace selector orders by recency. **Unavailable today:** new
+environment setup in the wizard (the legacy "Add project" sheet still does
+that the old way), wizard extra folders, archive, rename, the new project
+lifecycle flow in environment settings, and environment secrets. These limits
+are listed in `docs/using.md`. **Honest limitation:** every new line of work
+stays in the inbox until archive arrives, unless the project is deleted.
+**Delete project remains available** in Project settings for any project,
+including one under an environment. It requires confirmation and is refused
+while creation is pending, another filesystem operation is running, or a
+workspace is locked or provisioning. It removes the project and its workspaces
+from Build, including Build-managed workspace files and unsaved changes;
+original project folders and external checkouts are kept. The wizard's
+**Discard this project** remains the narrow action immediately after a failed
+attempt, guarded by that attempt's identity and absence of workspaces, tasks
+and sessions. **Failure checks:**
 transport cut during Create shows Checking… then the real outcome; a failing
 workspace cut leaves a visible project with "Try the workspace again";
 reload mid-progress re-finds the attempt. **Gate:** M0 merged; browser tests
 for the wizard, progress and nav; #523/#618/#631 layout tests green; wire
-bumped to the next minor and `environments` advertised only in M1.4.
+bumped to 3.37.0 and `environments` advertised in M1.4.
 
 | # | slice | acceptance | TDD tests |
 | --- | --- | --- | --- |
@@ -1058,7 +1093,7 @@ bumped to the next minor and `environments` advertised only in M1.4.
 | M1.2 | **SPA: capability + cache plumbing** (`environment-support`, `capabilitiesOf().environments`, `NO_CAPABILITIES`, `environments` list, `writePushedBoard` third list, `readSyncLists` asks `environment.list` when supported, `taskCountText`) | greeting writes the record; a board push updates environments; without the capability nothing new is asked; count text rule | `environmentSupportWiring.test.js`, `cacheSyncChanges.test.js`, `namedCapabilitiesWiring.test.js`, `taskCountText.test.js` |
 | M1.3 | **SPA: wizard pages 1 and 3 + progress screen** (`core/createWorkspaceWizard.js`, `createWorkspaceProgress.js`, target model with recents, drafts in `build-ui`, keyboard, mobile sheet, device labels, kind glyphs; replaces and **deletes** `createWork.js` modal; every caller switched; fixed-project mode) | sections and order; recents; empty states; old-bridge fallback; Create submits one `write.operation_id`; progress paints from the write-operation record across reload; outcomes Done/Failed/Checking render per 2.3 with the right actions; Cancel leaves no draft; Close detaches | `createWorkspaceWizardModel.test.js` (recents, order, empty, fallback, fixed mode, count text, device labels), `createWorkspaceWizardDom.test.js` (pages, keyboard, a11y names, mobile), `createWorkspaceProgress.test.js` (done, failed-with-landed-project, checking, reload, close), `createWork.test.js` removed with the modal |
 | M1.4 | **SPA + bridge: top nav, inbox heads, read-only settings list, advertise** (switcher grouped with recents and device labels, crumb rule, workspace selector by recency with Finished fold, inbox "E › P" heads and adjacency, "New workspace" buttons; `#/account/environments` route with the read-only list of 3.3 and the old-bridge note; `environments` advertised; `API_VERSION` to the next minor) | grouping and order; selector order; crumb shows P alone for a one-project environment; settings list paints from cache with device labels and counts; layout tests unchanged | `toolbarModel.test.js` (`switcherModel`, `workspaceMenuModel`), `toolbarDom.test.js`, `navigationPicker.test.js`, `inboxProjects.test.js`, `environmentsSettingsDom.test.js` (read-only list, empty, old bridge), `test/browser/pinnedInboxToolbarLayout.test.js` unchanged |
-| M1.5 | **Docs** (`ARCHITECTURE.md` Workspaces/RPC/Capability gating, `docs/using.md` with the M1 limitations list and the downgrade boundary, Tasks Spec note on `project_key`) | sections describe merged code; limitations listed | n/a |
+| M1.5 | **Docs** (`ARCHITECTURE.md` Workspaces/RPC/Capability gating/cache, `docs/using.md` with the M1 wizard, actual limitations, legacy deletion and schema-26 downgrade boundary, Tasks Spec note on `project_key`; plan corrected for merged M0/M1) | sections describe merged code at the base SHA; future stages remain explicitly planned | n/a |
 
 ### Stage 1, M2: fresh setup (dogfood: a new environment end to end, Advanced folders)
 
@@ -1126,7 +1161,7 @@ a migrated device:
 
 | # | slice | acceptance | TDD tests |
 | --- | --- | --- | --- |
-| S2.1 | **Bridge: environment secrets** (`GrantScope::Environment`, schema 26 rebuild, membership revalidated per read incl. archived = not current, revoke on environment delete, name override, `secrets.*` scope, `secrets.changed` scope, `secrets.environmentScope`) | readable by agents of every project in the environment and none outside; project secret of the same name wins; a sibling never reads another project's secret; archived project's agents refused; deletion revokes | `environment_scoped_secret_readable_across_projects`; `project_secret_overrides_environment_name`; `sibling_project_cannot_read_project_scoped_secret` (one per mechanism: release, list, attach, audit); `archived_project_agent_not_current_for_secrets`; `environment_delete_revokes_environment_scope`; leak sweep row 14 rerun |
+| S2.1 | **Bridge: environment secrets** (`GrantScope::Environment`, planned schema 27 rebuild, membership revalidated per read incl. archived = not current, revoke on environment delete, name override, `secrets.*` scope, `secrets.changed` scope, `secrets.environmentScope`) | readable by agents of every project in the environment and none outside; project secret of the same name wins; a sibling never reads another project's secret; archived project's agents refused; deletion revokes | `environment_scoped_secret_readable_across_projects`; `project_secret_overrides_environment_name`; `sibling_project_cannot_read_project_scoped_secret` (one per mechanism: release, list, attach, audit); `archived_project_agent_not_current_for_secrets`; `environment_delete_revokes_environment_scope`; leak sweep row 14 rerun |
 | S2.2 | **Bridge: environment delete, project delete with tasks** (`environment.delete`, `project.delete {tasks}` accepted on archived projects too, parked-project unpark migration) | environment delete refused with "Delete its N projects first" while any project, archived or not, belongs to it; project delete refused while a workspace is unfinished, otherwise removes tasks, reviews and intents under its key only | `environment_delete_refused_while_projects_exist` (incl. archived); `project_delete_removes_its_tasks_only`; `archived_project_accepts_delete` |
 | S2.3 | **Bridge: MCP** (`add_environment_source`/`remove_environment_source`, reworded `add_project_source`, templates) | project agent can add a folder to its environment; a Coding-surface agent has no such tool | `mcp_project_surface_lists_environment_source_tools`; template snapshot |
 | S2.4 | **SPA: secrets in environment settings + composer scope** (#1006 composer "This environment"; "overrides environment" chips) | create/list/revoke; old bridge hides the scope | `secretsWire.test.js`, `environmentSettingsSecrets.test.js` |
@@ -1155,7 +1190,7 @@ passes the named minor and the desktop app ships that SPA.
 | --- | --- | --- | --- |
 | S4.1 | Legacy project fields in `config.json` (`path`, `base_branch`, `next_source`, `sources`); `Project.repo_path/base_branch/next_source` replaced by accessors | after one release with no downgrade need (Zech's call); loader reads them one more release, writer stops | migration test drops legacy fields and reloads |
 | S4.2 | `project.create` without `environment_id` (implicit environment) → refused "name an environment"; the legacy "Add project" sheet (`newRepo.js`) and its old-bridge gate deleted from the SPA | SPA floor ≥ M2's minor | fixture flips; `newProjectDom.test.js` removed |
-| S4.3 | Old-client routing of `project.update_source`/`sync_source` to environment sources | SPA floor ≥ M2's minor | fixture flips |
+| S4.3 | Old-client compatibility routing of `project.update_source` to environment source records; `project.sync_source` continues through the project/source sync service | SPA floor ≥ M2's minor | fixture flips |
 | S4.4 | `WORKSPACE_STATUS_ORDER` in `toolbarModel.js` | M1.4 merge (replaced in the same slice) | removed with M1.4 |
 | S4.5 | `PersistedRun/PersistedPlan.project_path` renamed `project_key`; `schema.rs:226` comment reworded | any time after M0 (rename only) | entity round-trip |
 | S4.6 | `config.json.pre-environments` backup deleted by the bridge | after S4.1 | |
@@ -1219,8 +1254,9 @@ passes the named minor and the desktop app ships that SPA.
    sibling by any path; one negative test per mechanism; project-wins only;
    no "move secret up" (never re-seal a value).
 5. **`project.create` compatibility**: implicit environment; old-client
-   routing for `update_source`/`sync_source` on environment source ids until
-   S4.3.
+   compatibility for `update_source` on environment source ids is planned until
+   S4.3. `sync_source` queues the current project/source service, not an
+   environment-owned sync job.
 6. **Sources added to project vs environment**: the UI defaults to the
    environment; "this project only" is the Advanced section at creation and
    the "Added to this project" cards in settings; MCP `add_project_source`
@@ -1255,11 +1291,15 @@ passes the named minor and the desktop app ships that SPA.
     retry the workspace, discard); every retry is a new attempt linked by
     `continues`; discards name the creating `creation_operation_id`;
     unknown never retries into a duplicate; `project.discard_unused` (M1)
-    and `environment.discard_unused` (M2) are the only MVP removals.
-19. **Downgrade boundary**: clean until the first new project on a device;
-    after that roll-forward is the supported path, the pre-migration
-    snapshot is deliberate abandonment, and `config.json.previous` is the
-    recovery backup (2.5).
+    and `environment.discard_unused` (M2) are the creation flow's narrow
+    removals. Legacy `project.delete` is still exposed by Project settings
+    (M1); the Stage 2 flow adds explicit task handling.
+19. **Downgrade boundary**: M0.4's schema 26 is refused by binaries supporting
+    an earlier schema, even before a new project exists. Roll-forward is the
+    supported path across that boundary. The frozen legacy config loader
+    collapses siblings; its result is not binary/store compatibility. The
+    pre-migration snapshot is deliberate abandonment, and
+    `config.json.previous` is the recovery backup (2.5).
 20. **Provisioning cancel**: not in MVP; a `workspace.cancel_create` that
     turns an unpublished candidate into a terminal failed outcome is a
     candidate for Stage 2 if dogfooding asks for it.

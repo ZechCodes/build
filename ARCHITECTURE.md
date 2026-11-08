@@ -251,9 +251,10 @@ project and workspace through the creation journal described below.
 `diverged`, `device`, `open_tasks`, `total_tasks` and `workspaces` counts;
 their `path` remains the project home and `sources` lists effective sources.
 Workspace rows carry `environment_id` resolved from their project.
-`board.list` carries `environments` beside `projects` and `workspaces`.
-Board-scope change pushes carry the same lists when they change; project-list
-changes also refresh environment membership. Environment recovery
+`board.list` carries `environments` beside its projects and feed data.
+Board-scope change pushes carry `environments` as a third ownership list beside
+`projects` and `workspaces` when those lists change; project-list changes also
+refresh environment membership. Environment recovery
 uses a capability-gated fresh list pull; no durable whole-board row is added
 to device sync.
 Project list task counts are captured with task publication, so list intake
@@ -1786,7 +1787,7 @@ checkout's `origin`, read from the checkout for every row
 (`ProjectSource::origin`, via git2 in process). `config.json` keeps no copy of
 it, and ignores the copy older bridges wrote. The project row's `remote` is its
 first source's. Its `path`, `base_branch` and Git classification belong to its
-recorded home (orchestrator, registry identity), initially its first source.
+recorded home (the orchestrator's location), initially its first source.
 Unlinking that source does not retarget the home, its Git metadata or the
 orchestrator to the next source. Stored references can retain unavailable
 folders, while live source projections and workspace cuts skip missing or

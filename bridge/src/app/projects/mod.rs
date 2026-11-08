@@ -414,7 +414,7 @@ impl AppState {
                 self.projects.reserve_source_ids_through(&id, next);
             }
             let isolation = configured_isolation(project, "project isolation");
-            self.projects.set_isolation(&id, isolation);
+            self.projects.initialize_legacy_isolation(&id, isolation);
         }
         self.projects.restore_project_metadata(&id, project);
         Some(id)

@@ -639,3 +639,46 @@ fn a_run_in_a_worktree_is_refused_by_done_as_an_adopted_checkout() {
         "a refused Done retains the worktree and its work"
     );
 }
+
+#[test]
+fn project_list_and_detail_inherit_environment_isolation_before_first_workspace() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    state.isolation = Isolation::Rift;
+    let environment_id = state.project_at(0).environment_id.clone();
+    state.projects.restore_environments(
+        &json!({"environments":[{"id":environment_id,"isolation":"worktree"}]}),
+    );
+    state.project_at_mut(0).isolation = None;
+    let project = state.project_at(0);
+    assert_eq!(state.project_json(project)["isolation_default"], "worktree");
+    let rows = state.project_list_rows();
+    assert_eq!(rows[0].isolation_default, Isolation::Worktree);
+    assert_eq!(rows[0].render()["isolation_effective"], "worktree");
+}
+
+#[test]
+fn project_override_does_not_change_environment_default() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let environment_id = state.project_at(0).environment_id.clone();
+    state
+        .projects
+        .restore_environments(&json!({"environments":[{"id":environment_id,"isolation":"rift"}]}));
+    let project_id = state.project_at(0).id.clone();
+    let saved = state.handle(req(
+        "project.set_isolation",
+        json!({"project_id":project_id,"isolation":"worktree"}),
+    ));
+    assert_eq!(saved["ok"], true, "{saved}");
+    assert_eq!(
+        state
+            .projects
+            .environment(&environment_id)
+            .unwrap()
+            .isolation,
+        Some(Isolation::Rift)
+    );
+    assert_eq!(saved["result"]["isolation_default"], "rift");
+    assert_eq!(saved["result"]["isolation_effective"], "worktree");
+}

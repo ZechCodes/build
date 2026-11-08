@@ -67,7 +67,7 @@ impl AppState {
                     sources: project.sources.clone(),
                     added_sources: project.added_sources.clone(),
                     isolation: project.isolation,
-                    isolation_default: self.isolation,
+                    isolation_default: self.environment_isolation(project),
                     conversations: conversation
                         .as_deref()
                         .map(|id| self.conversation_activity_rows(id))
@@ -117,6 +117,8 @@ impl AppState {
             .collect::<Vec<_>>();
         let value = json!({
             "project_id": p.id,
+            "environment_id": p.environment_id,
+            "environment_name": self.projects.environment(&p.environment_id).map(|environment| &environment.name),
             "compaction_thresholds": self.compaction_thresholds(&crate::compaction::CompactionScope::Project(p.id.clone())).unwrap_or_default().read_value(),
             "compaction": self.scope_compaction_observation(&crate::compaction::CompactionScope::Project(p.id.clone())),
             "name": p.name,
@@ -128,7 +130,7 @@ impl AppState {
             "added_sources": p.added_sources.iter().map(ProjectSource::wire).collect::<Vec<_>>(),
             "diverged": !p.added_sources.is_empty(),
             "isolation": p.isolation,
-            "isolation_default": self.isolation,
+            "isolation_default": self.environment_isolation(p),
             "isolation_effective": effective,
             "isolation_available": available,
             "session_started_ms": self.session_summary(&p.id).session_started_ms,

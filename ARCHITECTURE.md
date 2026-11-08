@@ -1702,8 +1702,8 @@ effective membership and clone remotes against the current registry. This
 includes repoints, additions and new projects. Linked worktrees remain distinct
 directories.
 Managed clone and repository-creation destinations are checked against recorded
-sources, live and parked project homes, and workspace locations before any
-filesystem work. They have in-memory claims through preparation and settlement.
+sources, live and parked project homes, and workspace locations before creation
+starts. They have in-memory claims through preparation and settlement.
 While a batch is being written, other Build source registrations
 cannot enter its destinations. A fully prepared clone may be referenced by
 another owner at the same directory; containment and competing clones remain

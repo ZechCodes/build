@@ -149,3 +149,54 @@ fn fresh_workspace_preparation_failure_finalizes_unapplied() {
     assert!(!workspace.root.exists());
     assert!(!f.state.lock().unwrap().workspace_reserved(&workspace.id));
 }
+
+#[test]
+fn creation_effect_evidence_migrates_legacy_records_conservatively() {
+    let f = Fixture::new();
+    let id = operation(163);
+    let mut record = workspace_attempt(&f, &id);
+    record
+        .execution
+        .as_object_mut()
+        .unwrap()
+        .remove("effect_state");
+    {
+        let connection = f.store.writer_for_test();
+        connection
+            .execute(
+                "UPDATE mutation_commands SET record=?1 WHERE command_id=?2",
+                rusqlite::params![json!(record).to_string(), record.command_id],
+            )
+            .unwrap();
+        connection
+            .execute("UPDATE meta SET value='25' WHERE key='schema_version'", [])
+            .unwrap();
+    }
+    let f = f.reopen();
+    let migrated = f.record(&id);
+    assert_eq!(migrated.state, "unknown", "{migrated:?}");
+    assert_eq!(migrated.execution["effect_state"], "started");
+    assert!(migrated.outcome.is_none());
+    assert_eq!(migrated.reservations, record.reservations);
+    let f = f.reopen();
+    assert_eq!(f.record(&id), migrated, "migration must be idempotent");
+}
+
+#[test]
+fn missing_effect_evidence_never_reads_as_fresh_without_reopen() {
+    let f = Fixture::new();
+    let id = operation(164);
+    let record = workspace_attempt(&f, &id);
+    assert!(f.store.writer().claim_mutation(PRINCIPAL, &id).unwrap());
+    let mut evidence = record.execution;
+    evidence.as_object_mut().unwrap().remove("effect_state");
+    f.store
+        .writer()
+        .checkpoint_creation(PRINCIPAL, &id, evidence)
+        .unwrap();
+    f.store.fail_next_write();
+    f.run(&id);
+    let record = f.record(&id);
+    assert_eq!(record.state, "unknown", "{record:?}");
+    assert!(record.outcome.is_none());
+}

@@ -470,25 +470,20 @@
               "accepted_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6",
               "owners": [
                 {
-                  "kind": "project",
-                  "id": "proj-1",
+                  "kind": "environment",
+                  "id": "env-1",
                   "sequence": 43,
                   "generation": 0
                 }
               ]
             },
             "result": {
-              "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
-              "comment_id": "tc-executing-reserved",
-              "accepted_at": "2026-10-21T15:00:00Z",
-              "overlay": [
-                {
-                  "kind": "task_comment",
-                  "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
-                  "comment_id": "tc-executing-reserved",
-                  "body": "Reproduced: the drop handler writes before the column read settles."
-                }
-              ]
+              "creation": {
+                "project_key": "project:0e503b36-0b39-4f85-9d0e-f87a3d63967a",
+                "steps": [],
+                "effect_state": "not_started",
+                "effect_step": "project"
+              }
             },
             "progress": [
               {
@@ -503,13 +498,15 @@
             "creation": {
               "state": "unknown",
               "project_id": "proj-2",
-              "project_key": "project:reserved",
+              "project_key": "project:0e503b36-0b39-4f85-9d0e-f87a3d63967a",
               "steps": [
                 {
                   "step": "project",
                   "state": "done"
                 }
-              ]
+              ],
+              "effect_step": "workspace",
+              "effect_state": "started"
             }
           }
         ]
@@ -536,25 +533,20 @@
               "accepted_epoch": "88e0bcde-2db2-4f8c-96dd-d8aca78065b6",
               "owners": [
                 {
-                  "kind": "project",
-                  "id": "proj-1",
+                  "kind": "environment",
+                  "id": "env-1",
                   "sequence": 43,
                   "generation": 0
                 }
               ]
             },
             "result": {
-              "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
-              "comment_id": "tc-executing-reserved",
-              "accepted_at": "2026-10-21T15:00:00Z",
-              "overlay": [
-                {
-                  "kind": "task_comment",
-                  "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
-                  "comment_id": "tc-executing-reserved",
-                  "body": "Reproduced: the drop handler writes before the column read settles."
-                }
-              ]
+              "creation": {
+                "project_key": "project:0e503b36-0b39-4f85-9d0e-f87a3d63967a",
+                "steps": [],
+                "effect_state": "not_started",
+                "effect_step": "project"
+              }
             },
             "progress": [
               {
@@ -569,13 +561,15 @@
             "creation": {
               "state": "reconciling",
               "project_id": "proj-2",
-              "project_key": "project:reserved",
+              "project_key": "project:0e503b36-0b39-4f85-9d0e-f87a3d63967a",
               "steps": [
                 {
                   "step": "project",
                   "state": "done"
                 }
-              ]
+              ],
+              "effect_step": "workspace",
+              "effect_state": "started"
             }
           }
         ]

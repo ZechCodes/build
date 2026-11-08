@@ -244,6 +244,24 @@ fn restart_recovery_preserves_sibling_run_plan_and_scratch_ownership() {
             saved.project_path, keys[index],
             "write-back preserves identity"
         );
+        let mut plan = restarted.plans.remove(&plan_id).unwrap();
+        plan.last_summary = Some("persist plan after recovery".into());
+        restarted
+            .finish_plan_mutation(plan_id.clone(), plan)
+            .unwrap();
+        let saved_plan = restarted
+            .store
+            .as_ref()
+            .unwrap()
+            .load_all_plans()
+            .unwrap()
+            .into_iter()
+            .find(|plan| plan.id == plan_id)
+            .unwrap();
+        assert_eq!(
+            saved_plan.project_path, keys[index],
+            "plan write-back preserves identity"
+        );
     }
     assert_eq!(restarted.projects.len(), 2);
 }

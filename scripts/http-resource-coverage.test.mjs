@@ -281,7 +281,7 @@ const sourceFingerprintParts = {
   // #1073: archive observation forwards the caller unchanged; restore, rename,
   // and environment edits require a fresh capable greeting and publish cache
   // projections. Source cards translate only the three SOURCE_METHODS keys.
-  "core/archivedProjectView.js": ["c7b332bd", "c7874606", "784a3cef", "7148cb83", "377e2601", "5dbb8115", "117cb213", "741d7443"],
+  "core/archivedProjectView.js": ["9a70f19a", "036dddc5", "ab6acf75", "ada86605", "ff8b7ff1", "1092d443", "6bb26fc2", "6836a5a8"],
   "core/environmentWrites.js": ["035dbf26", "683d9297", "9306e4cc", "51f549d6", "c0cad335", "51198b2c", "3981d520", "129d2b31"],
   "sheets/environmentSettings.js": ["334948f4", "ec49985a", "de6ad0ec", "355e8940", "c61990a0", "6e133de4", "86ae083b", "61f450ed"],
   "sheets/projectGeneral.js": ["b0b81fa9", "d6a38cdb", "249a7b3f", "25bd2b0c", "094b8bdc", "1678045f", "c5378b42", "43e06991"],
@@ -469,10 +469,10 @@ const sourceFingerprintParts = {
   "views/deviceProjects.js": ["1a1e6df3", "03d87e50", "3c8c3e09", "d3d2ecc9", "2b9c040f", "df2d7629", "c493f430", "adcc7c93"],
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
   // #1052 retry review: settings-owned results alone authorize totals/empty states; pending pulls hide earlier errors. RPC edges stay unchanged.
-  "views/environmentsSettings.js": ["a9f0fd1a", "714bb1ea", "08fe6bae", "b25e5641", "a15cc08d", "19cde121", "6eea829f", "3b7657c1"],
+  "views/environmentsSettings.js": ["08dace56", "037e186b", "782ad9d2", "311217cd", "a487591b", "ac32e278", "75bfc8b8", "e182e9cf"],
   "views/files.js": ["bc4913c5", "865b9dd0", "e28f655f", "242c9011", "456a4139", "b2cfd372", "6498e15b", "f3116261"],
   "views/projectChanges.js": ["601d957b", "35e2b919", "ff4c83f8", "9946e6e7", "ff9a9b16", "8d93be43", "466971da", "d1d4dc94"],
-  "views/projectView.js": ["d9b3e886", "98d9bbae", "1ebc6d03", "df175412", "7f8f557a", "ea3cba7b", "84abd067", "c47f2cd5"],
+  "views/projectView.js": ["7766f9c3", "6a050e9d", "fb9b925e", "745247b9", "5f287056", "42cb9cd9", "3b5fd8f7", "4d693896"],
   "views/taskReview.js": ["7d540d05", "70beae35", "200434ea", "decae581", "f1b126d6", "9a38fe38", "642a621a", "2e34a257"],
   "views/taskView.js": ["483fdb16", "52a51dd3", "ea9f60d0", "c21f16a9", "090b27a4", "4839602c", "4653bfcc", "38959753"],
   "views/workspaceView.js": ["a8297151", "b9889eea", "1ef6492b", "4242340b", "21deba98", "2afe3f42", "4f4be235", "4268410b"],
@@ -484,7 +484,7 @@ const sourceFingerprintParts = {
   "core/createWorkspaceProgress.js": ["a1043060", "ec8923a1", "4ee1bd97", "a1af57f7", "03cee83a", "20d21308", "519bc541", "533aa650"],
   "core/createWorkspaceTargets.js": ["347b66ec", "6048a73a", "7fed190e", "94941cc7", "d0f0b8e6", "40a24973", "d73d1813", "321a5a8c"],
   "core/writeOperationProgress.js": ["612c1fc7", "78d4b658", "fb001a3b", "01eb5aba", "a6a82b1a", "0389924d", "06c8355f", "bdae5355"],
-  "core/createWorkspaceWizardModel.js": ["777033f1", "4cf54d45", "b1c6e3b8", "97af1b54", "c2ee0066", "9b22a831", "7617944b", "0cb1a082"],
+  "core/createWorkspaceWizardModel.js": ["cae57362", "049e30b3", "95d6b44d", "a45cffa5", "0ce4fccd", "72f82380", "4b8edb93", "3267389c"],
 };
 const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintParts)
   .map(([file, parts]) => [file, parts.join("")]));

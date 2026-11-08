@@ -26,6 +26,7 @@ import { App, go } from "../app.js";
 import { subscribeFeed } from "./taskFeed.js";
 import { notifyError } from "./notify.js";
 import { openCreateWorkspaceWizard } from "./createWorkspaceWizard.js";
+import { readCreateWorkspaceTargets, followCreateWorkspaceTargets } from "./createWorkspaceTargets.js";
 import { toolbarIdentity, toolbarDestinationModel } from "./toolbarModel.js";
 import { projectNameOf } from "./inboxProjects.js";
 import { filterByDevice } from "./deviceFilter.js";
@@ -94,6 +95,29 @@ let returnRead = 0;
 let visitTracker = null;
 let visits = [];
 let watchedTasks = null;
+let creationTargets = {support:{}};
+let stopCreationTargets = null;
+
+function watchCreationTargets(run) {
+  let pending = Promise.resolve();
+  const read = () => {
+    const next = pending.then(async () => {
+      if (!mounted || run !== toolbarRun) return;
+      const targets = await readCreateWorkspaceTargets();
+      if (mounted && run === toolbarRun) creationTargets = targets;
+    });
+    pending = next.catch(() => {});
+    return pending;
+  };
+  stopCreationTargets = followCreateWorkspaceTargets(() => { void read(); });
+  return read();
+}
+
+function supportsCreationShortcut() {
+  const deviceId = scopedProject()?.deviceId || App.route.deviceId;
+  return deviceId ? creationTargets.support?.[deviceId] === true : Object.values(creationTargets.support || {}).some(Boolean);
+}
+
 
 function watchStandingReviewSupport() {
   const deviceId = App.route.name === "workspace" ? App.route.deviceId : null;
@@ -395,6 +419,7 @@ function onGlobalShortcut(event) {
 
 function dispatchGlobalShortcut(event) {
   if (event.key.toLowerCase() === "n") {
+    if (!supportsCreationShortcut()) return;
     event.preventDefault();
     openCreate({ fromShortcut: true });
     return;
@@ -804,8 +829,21 @@ function onMenuClick(event) {
 function openCreate({ fromShortcut = false } = {}) {
   const project = scopedProject();
   closeMenu();
-  openCreateWorkspaceWizard({ projectId: project?.id, deviceId: project?.deviceId,
-    projectName: project ? nameOf(project) : "", fixedProject: Boolean(project) && !fromShortcut, ...(fromShortcut ? { fromShortcut: true } : {}), navigate: go });
+  if (!project) return openUnscopedCreate({ fromShortcut });
+  openCreateWorkspaceWizard({ projectId: project.id, deviceId: project.deviceId,
+    projectName: nameOf(project), fixedProject: !fromShortcut, ...(fromShortcut ? { fromShortcut: true } : {}), navigate: go });
+}
+
+async function openUnscopedCreate({ fromShortcut }) {
+  const run = toolbarRun;
+  const targets = await readCreateWorkspaceTargets().catch(() => ({ support: {} }));
+  if (!mounted || run !== toolbarRun) return;
+  if (!Object.values(targets.support || {}).some(Boolean)) {
+    if (!fromShortcut) notifyError("No project to create in.", "Add a project in Settings first.");
+    return;
+  }
+  openCreateWorkspaceWizard({ projectId: undefined, deviceId: undefined, projectName: "", fixedProject: false,
+    ...(fromShortcut ? { fromShortcut: true } : {}), navigate: go });
 }
 
 /** The project half's rows: which project — said with its machine when another
@@ -903,6 +941,7 @@ export function initToolbar() {
   }
   mounted = true;
   const run = ++toolbarRun;
+  const creationReady = watchCreationTargets(run);
   watchedTasks = followNavigationTaskUnread({ onChange: () => { if (mounted && run === toolbarRun && open) paintMenu(); } });
   document.addEventListener("keydown", onGlobalShortcut);
   visits = [];
@@ -929,7 +968,7 @@ export function initToolbar() {
     scopedProjectKey = typeof saved?.projectKey === "string" ? saved.projectKey : null;
     paint();
   });
-  toolbarReady = Promise.all([scopeRecord.ready, visitTracker.ready]).then(async () => {
+  toolbarReady = Promise.all([scopeRecord.ready, visitTracker.ready, creationReady]).then(async () => {
     if (!mounted || run !== toolbarRun) return;
     scopeReady = true;
     const routeKey = routeProjectKey(App.route);
@@ -959,6 +998,9 @@ export function stopToolbar() {
   visitTracker = null;
   visits = [];
   stopNavigationTaskUnread();
+  stopCreationTargets?.();
+  stopCreationTargets = null;
+  creationTargets = {support:{}};
   document.removeEventListener("keydown", onGlobalShortcut);
   mounted = false;
   stopLockSupport?.();

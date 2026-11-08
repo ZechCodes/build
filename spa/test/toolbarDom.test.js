@@ -179,6 +179,11 @@ beforeEach(async () => {
   laptopCall.mockImplementation(async () => ({}));
   openSession("dev-1", workshopCall);
   openSession("dev-2", laptopCall);
+  await writeCached({deviceId:"",entityId:"",kind:"devices"}, [
+    {id:"dev-1",name:"workshop",status:"online"},{id:"dev-2",name:"laptop",status:"online"},
+  ]);
+  await flush();
+  for (const deviceId of ["dev-1", "dev-2"]) await writeCached({deviceId,entityId:"",kind:"environment-support"}, {list:true,createProject:true});
   await initToolbar();
   // The cache wipe announces to the app's device watcher asynchronously; give
   // this fixture its known devices after that readback has completed.
@@ -770,11 +775,23 @@ describe("creating from the menu", () => {
     await refreshFeed();
     await standOnWorkspace();
     (await openJump("workspace")).querySelector('[data-create="workspace"]').click();
-    expect(openCreateWorkspaceWizard).toHaveBeenCalledWith(expect.objectContaining({ fixedProject: false }));
+    await vi.waitFor(()=>expect(openCreateWorkspaceWizard).toHaveBeenCalledWith(expect.objectContaining({ fixedProject: false })));
     expect(notifyError).not.toHaveBeenCalled();
     feed = savedFeed;
     await refreshFeed();
   });
+  it("keeps the old no-project refusal when no device supports environments", async () => {
+    await stopToolbar();
+    for (const deviceId of ["dev-1", "dev-2"]) await writeCached({deviceId,entityId:"",kind:"environment-support"}, {list:false,createProject:false});
+    const original=feed;feed={items:[],projects:[],workspaces:[]};
+    try {
+      await initToolbar();await standOnWorkspace();
+      (await openJump("workspace")).querySelector('[data-create="workspace"]').click();
+      await vi.waitFor(()=>expect(notifyError).toHaveBeenCalledWith("No project to create in.","Add a project in Settings first."));
+      expect(openCreateWorkspaceWizard).not.toHaveBeenCalled();
+    } finally {feed=original;await refreshFeed();}
+  });
+
 });
 
 describe("global workspace creation shortcut", () => {
@@ -793,6 +810,27 @@ describe("global workspace creation shortcut", () => {
       fromShortcut: true, navigate: expect.any(Function),
     });
     expect(menu()).toBeNull();
+  });
+
+  it.each(["ctrlKey","metaKey"])("does not claim %s-N on an old bridge", async modifier => {
+    await stopToolbar();
+    await writeCached({deviceId:"dev-1",entityId:"",kind:"environment-support"},{list:false,createProject:false});
+    await initToolbar();
+    const event=press(document,{ctrlKey:false,[modifier]:true});
+    expect(event.defaultPrevented).toBe(false);
+    expect(openCreateWorkspaceWizard).not.toHaveBeenCalled();
+  });
+
+  it("learns shortcut support from a cached capability update", async () => {
+    await stopToolbar();
+    await writeCached({deviceId:"dev-1",entityId:"",kind:"environment-support"},{list:false,createProject:false});
+    await initToolbar();
+    expect(press(document).defaultPrevented).toBe(false);
+    await writeCached({deviceId:"dev-1",entityId:"",kind:"environment-support"},{list:true,createProject:true});
+    await vi.waitFor(()=>{
+      expect(press(document).defaultPrevented).toBe(true);
+      expect(openCreateWorkspaceWizard).toHaveBeenCalledTimes(1);
+    });
   });
 
   it.each(["input", "textarea", "select", '[contenteditable="true"]', ".terminal", "[data-terminal]"])("leaves typing in %s alone", (selector) => {

@@ -16,6 +16,7 @@ export const INPUT_SOURCES = {
   "core/composeView.js": "compose",
   "core/composer.js": "new conversation / task composer",
   "core/createWorkspaceWizard.js": "task controls",
+  "core/createWorkspaceLegacy.js": "task controls",
   "core/fileEditor.js": "file editor",
   "core/filesUploadActions.js": "New folder",
   "core/filterMenuControl.js": "filter menu / task composer",

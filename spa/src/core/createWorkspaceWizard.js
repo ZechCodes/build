@@ -8,6 +8,7 @@ import { uiAddress, watchUiState, updateUiState } from './localUiState.js';
 import { readUiRecord, deleteUiDraftsIfUnwritten } from './localUiStore.js';
 import { createWorkspaceWizardModel } from './createWorkspaceWizardModel.js';
 import { openCreateWorkspaceProgress } from './createWorkspaceProgress.js';
+import { openCreateWorkspaceLegacy } from './createWorkspaceLegacy.js';
 import { readCreateWorkspaceTargets, followCreateWorkspaceTargets, submitCreateWorkspace,
   createLegacyWorkspace, cacheCreatedResources, createdWorkspaceRoute, discardCreatedProject, consumeCreateWorkspaceAttempt } from './createWorkspaceTargets.js';
 export { createWorkspaceWizardModel } from './createWorkspaceWizardModel.js';
@@ -82,13 +83,49 @@ function validName(input,target,name) {
   if(input.checkValidity()) return true;
   input.reportValidity();return false;
 }
-export function openCreateWorkspaceWizard(options = {}) {
+function supportsWorkspaceWizard(snapshot,options) {
+  return options.deviceId ? snapshot.support?.[options.deviceId] === true : Object.values(snapshot.support || {}).some(Boolean);
+}
+function retainedCreationAttempt(snapshot,options) {
   const fixedProject=options.fixedProject ?? Boolean(options.projectId);
-  let snapshot={};
-  const initial=createWorkspaceWizardModel({...options,fixedProject});
+  return (snapshot.attempts || []).filter(row=>!fixedProject ||
+    row.draft.target.id===options.projectId && row.draft.target.deviceId===options.deviceId)
+    .sort((left,right)=>(right.localOrder ?? right.createdAt ?? 0)-(left.localOrder ?? left.createdAt ?? 0))[0];
+}
+const wizardDraftAddress=options=>uiAddress({deviceId:options.deviceId,entityId:options.projectId,view:'create-workspace',kind:'draft'});
+function openLegacySurface(options,savedDraft) {
+  const target=!options.projectId && savedDraft?.target?.kind === 'project' ? savedDraft.target:null;
+  return openCreateWorkspaceLegacy({...options,...(target ? {projectId:target.id,deviceId:target.deviceId,projectName:target.name}:{}),
+    name:savedDraft?.name || '',isolation:savedDraft?.isolation || '',onClose:()=>{void deleteDraft(wizardDraftAddress(options));}});
+}
+function openCreationSurface(options,snapshot,savedDraft) {
+  if(supportsWorkspaceWizard(snapshot,options))return mountCreateWorkspaceWizard(options,snapshot);
+  const attempt=retainedCreationAttempt(snapshot,options);
+  if(attempt)return mountCreateWorkspaceWizard(options,snapshot,attempt);
+  return options.fromShortcut ? null : openLegacySurface(options,savedDraft);
+}
+export function openCreateWorkspaceWizard(options = {}) {
+  let screen=null,closed=false;
+  const ready=Promise.all([readCreateWorkspaceTargets(),readUiRecord(wizardDraftAddress(options))]).then(async([snapshot,record])=>{
+    if(closed)return;
+    screen=openCreationSurface(options,snapshot,record?.value);
+    await screen?.ready;
+  });
+  return {ready,
+    close:()=>{closed=true;return screen?.close?.();},
+    detach:()=>{closed=true;return (screen?.detach || screen?.close)?.();},
+    flushDraft:()=>ready.then(()=>screen?.flushDraft?.()),
+  };
+}
+function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null) {
+  const fixedProject=options.fixedProject ?? Boolean(options.projectId);
+  let snapshot=initialSnapshot;
+  const initial=createWorkspaceWizardModel({...snapshot,...options,fixedProject});
   const state={...initial,query:'',name:'',isolation:'',error:options.error || '',busy:false,operationId:null,fixedProject};
   const opener=document.activeElement;
   const address=uiAddress({deviceId:options.deviceId,entityId:options.projectId,view:'create-workspace',kind:'draft'});
+  if(recoveryAttempt)return recoverProgress(recoveryAttempt);
+  let legacyScreen=null;
   let detached=false,submitting=false,readGeneration=0;
   let draft,stop=()=>{};
   const modal=openModal({dialogHtml:createWorkspaceWizardHtml(state),scrimId:'create-scrim',canDismiss:()=>!state.busy,onClose:cancelled,initialFocus:':not(*)'});
@@ -97,8 +134,20 @@ export function openCreateWorkspaceWizard(options = {}) {
   draft=watchUiState(address,restoreDraft,{active:()=>!detached});
   stop=followCreateWorkspaceTargets(()=>{void refresh();});
   wire();
-  const ready=Promise.all([draft.ready,refresh()]).then(async()=>{await recoverAttempt();if(!detached)focusPage(options.fromShortcut);});
-  return {ready,close:cancel,detach,flushDraft:()=>draft.flush()};
+  const ready=draft.ready.then(async()=>{await recoverAttempt();if(!detached)focusPage(options.fromShortcut);});
+  return {ready,close:()=>legacyScreen ? legacyScreen.close():cancel(),
+    detach:()=>legacyScreen ? legacyScreen.detach():detach(),flushDraft:()=>draft.flush()};
+
+  function recoverProgress(attempt) {
+    Object.assign(state,attempt.draft,{operationId:attempt.operationId,page:3});
+    let progress=null,closed=false;
+    const ready=updateUiState(address,()=>draftOf(state)).then(async()=>{
+      if(closed)return;
+      progress=openProgress(attempt.operationId);await progress.ready;
+    });
+    const close=()=>{closed=true;return progress?.close();};
+    return {ready,close,detach:close};
+  }
 
   async function recoverAttempt() {
     if(detached)return;
@@ -157,7 +206,14 @@ export function openCreateWorkspaceWizard(options = {}) {
     const restored=id ? modal.body.querySelector(`#${id}`):null;
     restored?.focus();if(restored?.type==='text' && selection!==null) restored.setSelectionRange(selection,selection);
   }
-  function selectTarget(target) {state.target=target;state.page=3;state.error='';save();paint();focusPage();}
+  function selectTarget(target) {
+    if(!snapshot.support?.[target.deviceId]){void handoffLegacy(target);return;}
+    state.target=target;state.page=3;state.error='';save();paint();focusPage();
+  }
+  async function handoffLegacy(target) {
+    await cancel();
+    legacyScreen=openCreateWorkspaceLegacy({projectId:target.id,deviceId:target.deviceId,projectName:target.name,navigate:options.navigate || go});
+  }
   function wire() {
     const body=modal.body;
     body.onkeydown=event=>{

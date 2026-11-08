@@ -228,10 +228,7 @@ describe("current breadcrumb and picker destinations", () => {
     } else {
       menu().querySelector(action === "create" ? '[data-create="workspace"]' : "[data-manage-workspaces]").click();
       await vi.waitFor(() => expect(menu()).toBeNull());
-      if (action === "create") expect(state.openCreateWorkspaceWizard).toHaveBeenCalledExactlyOnceWith({
-        projectId: undefined, deviceId: undefined, projectName: "", fixedProject: false, navigate: state.go,
-      });
-      else expect(state.openCreateWorkspaceWizard).not.toHaveBeenCalled();
+      expect(state.openCreateWorkspaceWizard).not.toHaveBeenCalled();
       expect(state.go).not.toHaveBeenCalled();
     }
     expect(state.rpc).not.toHaveBeenCalled();

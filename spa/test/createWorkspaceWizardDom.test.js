@@ -158,4 +158,85 @@ describe('workspace wizard pages',()=>{
     } finally {vi.useRealTimers();}
   });
 
+  it('waits for cached capability before mounting any creation markup',async()=>{
+    let answer;mocks.read.mockReturnValue(new Promise(resolve=>{answer=resolve;}));
+    opened=openCreateWorkspaceWizard({projectId:'p1',deviceId:'d1',projectName:'Original project name'});
+    expect(dialog()).toBeNull();
+    answer({...snapshot(),support:{}});await opened.ready;
+    expect(dialog().querySelector('h3').textContent).toBe('New workspace in Original project name');
+    expect(dialog().querySelector('label[for="create-work-input"]').textContent).toBe('Workspace label');
+    expect(dialog().querySelector('.create-hint').textContent).toBe('Creates a separate checkout of the project sources.');
+    expect(dialog().querySelector('#create-workspace-search,[data-create-target]')).toBeNull();
+    expect(dialog().textContent).not.toMatch(/task board|What are you working on|Directories/);
+    expect(mocks.read).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an unpreset old-bridge entry on the original form and refusal',async()=>{
+    mocks.read.mockResolvedValue({...snapshot(),support:{}});
+    await open({fixedProject:false,projectName:'Original project name'});
+    expect(dialog().querySelector('h3').textContent).toBe('New workspace in Original project name');
+    expect(dialog().querySelector('#create-workspace-search,[data-create-target]')).toBeNull();
+    dialog().querySelector('[data-create-go]').click();
+    expect(dialog().querySelector('.create-error').textContent).toBe('No connected project to create in.');
+    expect(mocks.submit).not.toHaveBeenCalled();expect(mocks.legacy).not.toHaveBeenCalled();
+  });
+
+  it('does not expose the shortcut on a bridge without environments',async()=>{
+    mocks.read.mockResolvedValue({...snapshot(),support:{}});
+    await open({projectId:'p1',deviceId:'d1',fromShortcut:true,fixedProject:false});
+    expect(dialog()).toBeNull();expect(mocks.submit).not.toHaveBeenCalled();expect(mocks.legacy).not.toHaveBeenCalled();
+  });
+
+  it('preserves a scoped old bridge when another account device supports environments',async()=>{
+    mocks.read.mockResolvedValue({...snapshot(),support:{d1:false,d2:true}});
+    await open({projectId:'p1',deviceId:'d1',projectName:'Old machine project'});
+    expect(dialog().querySelector('label[for="create-work-input"]').textContent).toBe('Workspace label');
+    expect(dialog().querySelector('h3').textContent).toBe('New workspace in Old machine project');
+  });
+
+  it.each(['accepted','failed'])('reopens retained %s attempts directly in cached progress after a downgrade',async state=>{
+    const record={operationId:'downgraded',createdAt:300,state,effect:state==='failed'?'partial':undefined,request:{method:'environment.create_project'},draft:{target:{id:'e1',deviceId:'d1',kind:'environment',name:'Platform',key:'d1/e1'},name:'Retained work'}};
+    mocks.read.mockResolvedValue({...snapshot(),support:{},attempts:[record]});
+    await open({fixedProject:false});
+    expect(dialog()).toBeNull();expect(mocks.progress).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({operationId:'downgraded',deviceId:'d1'}));
+    expect(mocks.submit).not.toHaveBeenCalled();expect(mocks.legacy).not.toHaveBeenCalled();expect(mocks.consume).not.toHaveBeenCalled();
+    await mocks.progress.mock.calls[0][0].onKeepProject();expect(mocks.consume).toHaveBeenCalledWith('d1','downgraded');
+  });
+
+  it('does not mount after being closed while the initial cached read is pending',async()=>{
+    let answer;mocks.read.mockReturnValue(new Promise(resolve=>{answer=resolve;}));
+    opened=openCreateWorkspaceWizard({fixedProject:false});await opened.close();
+    answer(snapshot());await opened.ready;expect(dialog()).toBeNull();expect(mocks.progress).not.toHaveBeenCalled();
+  });
+
+  it('hands an incapable project from a mixed-device picker to the exact legacy form',async()=>{
+    const held=snapshot();
+    mocks.read.mockResolvedValue({...held,support:{d1:true,d2:false},projects:[...held.projects,{id:'old-p',deviceId:'d2',name:'Old device project',sources:[]}]});
+    await open({fixedProject:false});
+    const old=[...dialog().querySelectorAll('[data-create-target]')].find(row=>row.textContent.includes('Old device project'));
+    old.click();
+    await vi.waitFor(()=>expect(dialog()?.querySelector('label[for="create-work-input"]')?.textContent).toBe('Workspace label'));
+    expect(dialog().querySelector('h3').textContent).toBe('New workspace in Old device project');
+    expect(dialog().textContent).not.toMatch(/task board|What are you working on|Directories/);
+    expect(await readUiRecord(uiAddress({view:'create-workspace',kind:'draft'}))).toBeUndefined();
+    expect(mocks.submit).not.toHaveBeenCalled();expect(mocks.legacy).not.toHaveBeenCalled();
+  });
+
+  it('retains a downgraded cache-only draft before Back restores the legacy form',async()=>{
+    const target={id:'p1',deviceId:'d1',kind:'project',name:'Payments',key:'d1/p1'};
+    const record={operationId:'downgraded-back',createdAt:301,state:'failed',effect:'unapplied',request:{method:'workspace.create'},draft:{target,name:'Retained work',isolation:'rift'}};
+    mocks.read.mockResolvedValue({...snapshot(),support:{},attempts:[record]});
+    await open({projectId:'p1',deviceId:'d1',projectName:'Payments'});
+    const address=uiAddress({deviceId:'d1',entityId:'p1',view:'create-workspace',kind:'draft'});
+    expect((await readUiRecord(address))?.value.name).toBe('Retained work');
+    mocks.read.mockResolvedValue({...snapshot(),support:{},attempts:[]});
+    await mocks.progress.mock.calls[0][0].onBack();
+    expect(dialog().querySelector('label[for="create-work-input"]').textContent).toBe('Workspace label');
+    expect(dialog().querySelector('#create-work-input').value).toBe('Retained work');
+    expect(dialog().querySelector('#create-work-isolation').value).toBe('rift');
+    expect(mocks.consume).toHaveBeenCalledWith('d1','downgraded-back');
+    dialog().querySelector('[data-create-cancel]').click();await vi.waitFor(()=>expect(dialog()).toBeNull());
+    await vi.waitFor(async()=>expect(await readUiRecord(address)).toBeUndefined());
+  });
+
 });

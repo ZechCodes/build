@@ -275,7 +275,7 @@ describe("cached watching on both inbox faces", () => {
       : {});
     adoptDeviceSession({ deviceId, call: bridge, close: () => {}, peer: () => {}, onCarrier: () => {} });
 
-    openCreateWorkspaceWizard({ projectId: "project-1", deviceId, projectName: "Payments", navigate: vi.fn() });
+    await openCreateWorkspaceWizard({ projectId: "project-1", deviceId, projectName: "Payments", navigate: vi.fn() }).ready;
     document.querySelector("#create-scrim [data-create-go]").click();
     await vi.waitFor(() => expect(rows().some((row) => row.textContent.includes("My workspace"))).toBe(true));
     expect(bridge).toHaveBeenCalledWith("workspace.create", { project_id: "project-1", name: "" });

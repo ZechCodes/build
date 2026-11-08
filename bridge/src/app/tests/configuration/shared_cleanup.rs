@@ -223,10 +223,23 @@ fn failed_clone_settlement_keeps_directory_held_by_pending_workspace_add() {
         .as_str()
         .unwrap()
         .to_string();
-    let local = json!({"workspace_id":workspace_id,"path":cloned,"name":"borrowed"});
-    let (admitted, pending) = app.dispatch_deferring("workspace.add_directory", &local);
-    assert!(admitted.is_ok(), "{admitted:?}");
-    let pending = pending.expect("the workspace directory has not materialized yet");
+    // RPC admission waits behind the outstanding clone's filesystem job.
+    // Seed real pending registry metadata to cover a previously recorded or
+    // restored workspace holder independently of that admission guard.
+    let pending = app
+        .workspaces
+        .begin_directory(
+            &workspace_id,
+            &crate::workspace::WorkspaceSource {
+                id: "dir-borrowed".into(),
+                name: "borrowed".into(),
+                mount: "borrowed".into(),
+                path: cloned.clone(),
+                is_git: true,
+                base_branch: "main".into(),
+            },
+        )
+        .unwrap();
     assert!(app
         .workspaces
         .get(&workspace_id)
@@ -242,17 +255,13 @@ fn failed_clone_settlement_keeps_directory_held_by_pending_workspace_add() {
         cloned.join(".git").is_dir(),
         "cleanup deleted the source named by a pending workspace directory"
     );
-    app.config_persist_failure = None;
-    let materialized = app
-        .apply_deferred("workspace.add_directory", &local, pending.run())
-        .unwrap();
-    let borrowed = materialized["directories"]
-        .as_array()
+    assert!(app
+        .workspaces
+        .get(&workspace_id)
         .unwrap()
+        .directories
         .iter()
-        .find(|directory| directory["name"] == "borrowed")
-        .unwrap();
-    let checkout = Path::new(borrowed["path"].as_str().unwrap());
-    let repository = git2::Repository::open(checkout).unwrap();
+        .any(|directory| directory.id == pending.id && directory.source_path == cloned));
+    let repository = git2::Repository::open(&cloned).unwrap();
     assert!(repository.head().unwrap().peel_to_commit().is_ok());
 }

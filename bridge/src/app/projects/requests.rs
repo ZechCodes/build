@@ -352,7 +352,6 @@ impl AppState {
         cloned_paths: &[std::path::PathBuf],
     ) -> Result<(), String> {
         let registered = self.projects.registered_sources();
-        let mut remotes = Vec::new();
         for source in sources.iter().filter(|source| {
             cloned_paths
                 .iter()
@@ -361,14 +360,13 @@ impl AppState {
             if let Some(remote) = source.origin() {
                 if registered
                     .iter()
+                    .chain(sources)
                     .filter(|other| other.path != source.path)
                     .filter_map(ProjectSource::origin)
-                    .chain(remotes.iter().cloned())
                     .any(|origin| crate::worktree::remotes_match(&origin, &remote))
                 {
                     return Err(format!("source remote is already registered: {remote}"));
                 }
-                remotes.push(remote);
             }
         }
         Ok(())

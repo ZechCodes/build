@@ -89,6 +89,8 @@ impl AppState {
             route.agent_name = Some(crate::agent::agent_name_from(name)?);
         }
         let project_id = require_str(params, "project_id")?;
+        self.refuse_archived_project(&project_id)
+            .map_err(crate::app::projects::archive_error_string)?;
         if !self.projects.iter().any(|project| project.id == project_id) {
             return Err(format!("branch.dispatch: unknown project_id: {project_id}"));
         }

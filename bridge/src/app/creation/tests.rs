@@ -532,3 +532,40 @@ fn unknown_project_creation_fences_other_provisioning() {
         .is_err());
     assert!(app.projects.get("proj-2").is_some());
 }
+
+#[test]
+fn archive_refused_during_journaled_workspace_admission() {
+    let f = Fixture::new();
+    let state = Arc::clone(&f.state);
+    let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = Arc::clone(&observed);
+    let _observer = observe_boundary(move |boundary| {
+        if boundary == Boundary::AdmissionPrepared {
+            let refusal = state.lock().unwrap().project_archive("proj-1").unwrap_err();
+            assert_eq!(refusal.code(), "conflict");
+            assert!(refusal
+                .message()
+                .contains("wait for filesystem operations to finish"));
+            seen.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+    admit(
+        &f.state,
+        "workspace.create",
+        json!({"project_id":"proj-1","name":"Not yet visible"}),
+        WriteMetadata {
+            operation_id: operation(1059),
+            after: None,
+        },
+    )
+    .unwrap();
+    assert!(observed.load(std::sync::atomic::Ordering::SeqCst));
+    let mut app = f.state.lock().unwrap();
+    assert!(app.workspaces.list(None).is_empty());
+    let refusal = app.project_archive("proj-1").unwrap_err();
+    assert_eq!(refusal.code(), "conflict");
+    assert!(refusal
+        .message()
+        .contains("wait for workspace Not yet visible creation to finish"));
+    assert!(app.project("proj-1").unwrap().archived_at.is_none());
+}

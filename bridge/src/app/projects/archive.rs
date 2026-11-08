@@ -20,12 +20,11 @@ impl AppState {
                     .map_err(|error| ApiError::unavailable(error.to_string()))?,
             );
         }
-        if self.refuse_pending_creation(id).is_err() {
-            blockers.push("wait for workspace creation to finish".into());
-        }
+        blockers.extend(self.archive_creation_blockers(&key)?);
         if self.active_deferred_filesystem_jobs > 0 || self.deferred_work.is_some() {
             blockers.push("wait for filesystem operations to finish".into());
         }
+        blockers.sort();
         if !blockers.is_empty() {
             return Err(ApiError::conflict(
                 format!("Cannot archive {name}: {}", blockers.join("; ")),
@@ -48,6 +47,26 @@ impl AppState {
             .map_err(ApiError::classify)?;
         self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
         Ok(json!({"project":project}))
+    }
+
+    fn archive_creation_blockers(&self, key: &str) -> Result<Vec<String>, ApiError> {
+        let Some(store) = &self.store else {
+            return Ok(Vec::new());
+        };
+        let pending = store
+            .writer()
+            .pending_creations()
+            .map_err(|error| ApiError::unavailable(error.to_string()))?;
+        Ok(pending
+            .iter()
+            .filter(|record| record.execution["project_key"].as_str() == Some(key))
+            .map(|record| {
+                let name = record.execution["workspace"]["name"]
+                    .as_str()
+                    .unwrap_or(&record.operation_id);
+                format!("wait for workspace {name} creation to finish")
+            })
+            .collect())
     }
 
     fn archive_workspace_blockers(&self, project: &str) -> Vec<String> {

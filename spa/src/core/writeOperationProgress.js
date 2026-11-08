@@ -1,5 +1,10 @@
-// Creation progress is display evidence. It has no authority over an outcome.
-const creationMethods = new Set(["environment.create", "environment.create_project", "workspace.create"]);
+// Creation requirements and progress evidence; only terminal records establish outcomes.
+// Cached offers and live admission use the same per-method requirement.
+const creationMethods = new Map([
+  ["environment.create", {kind:"new-environment", flag:"create", capability:"environments.create"}],
+  ["environment.create_project", {kind:"environment", flag:"createProject", capability:"environments"}],
+  ["workspace.create", {kind:"project", flag:"createProject", capability:"environments"}],
+]);
 const progressStates = new Set(["running", "done", "failed"]);
 
 export const isCreationWrite = method => creationMethods.has(method);
@@ -12,8 +17,29 @@ export function creationSendEvidenceMatches(retained, sent) {
     && (retained.creationEvidence || 0) === (sent.creationEvidence || 0);
 }
 export function creationWritesSupported(greeting, method) {
-  if (!isCreationWrite(method)) return true;
-  return greeting?.capabilities?.includes(method === "environment.create" ? "environments.create" : "environments") === true;
+  const requirement = creationMethods.get(method);
+  return !requirement || greeting?.capabilities?.includes(requirement.capability) === true;
+}
+
+export function creationSupportForMethod(support, method) {
+  const requirement = creationMethods.get(method);
+  return Boolean(requirement && support?.[requirement.flag] === true);
+}
+export const environmentWizardSupported = support => creationSupportForMethod(support,"environment.create_project") || creationSupportForMethod(support,"environment.create");
+export function creationMethodForTarget(target) {
+  for (const [method, requirement] of creationMethods) {
+    if (requirement.kind === target.kind) return method;
+  }
+  return null;
+}
+// Admission diagnostics are retained as a bounded routing hint, never arbitrary
+// bridge detail payloads. Terminal resource evidence keeps its existing path.
+export function creationRefusalDetails(details) {
+  const creation = details?.creation || {};
+  const retained = {};
+  if (["sources","environment","project","workspace"].includes(creation.step)) retained.step = creation.step;
+  if (["environment","project"].includes(creation.source_scope)) retained.source_scope = creation.source_scope;
+  return Object.keys(retained).length ? {creation:retained} : undefined;
 }
 
 export const creationNeverSent = row => row.transportAttempted === false && row.state === "queued"

@@ -670,7 +670,7 @@ function hideBlock(projectKey) {
 }
 
 function offersNewWorkspace() {
-  const support = environmentNavigation.support || {};
+  const support = environmentNavigation.creationSupport || environmentNavigation.support || {};
   return App.deviceFilter ? support[App.deviceFilter] === true : Object.values(support).some(Boolean);
 }
 

@@ -91,7 +91,7 @@ describe("create workspace target model", () => {
 });
 
 it("offers new environments only from cached create support and presets environment shortcuts", () => {
-  const options = { ...base, features: { d1: { create: true, addedSources: true } } };
+  const options = { ...base, features: { d1: { create: true, createProject: true, addedSources: true } } };
   expect(createWorkspaceWizardModel(options).newEnvironmentDevices).toEqual([device]);
   expect(createWorkspaceWizardModel({ ...options, environmentId: "e1", deviceId: "d1" })).toMatchObject({ page: 3, target: { id: "e1", kind: "environment" } });
   expect(createWorkspaceWizardModel({ ...options, newEnvironment: true, deviceId: "d1" }).page).toBe(2);

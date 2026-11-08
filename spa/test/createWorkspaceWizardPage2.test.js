@@ -12,7 +12,7 @@ const {wipeUiRecords,readUiRecord}=await import('../src/core/localUiStore.js');
 const {wipeCache}=await import('../src/core/localCache.js');
 const {uiAddress}=await import('../src/core/localUiState.js');
 let screen;
-const snapshot=()=>({devices:[{id:'d1',name:'Laptop'}],projects:[],environments:[],workspaces:[],support:{d1:true},features:{d1:{create:true,addedSources:true}}});
+const snapshot=()=>({devices:[{id:'d1',name:'Laptop'}],projects:[],environments:[],workspaces:[],support:{d1:true},features:{d1:{create:true,createProject:true,addedSources:true}}});
 const query=s=>document.querySelector(s);
 const click=s=>query(s).click();
 const input=(s,value)=>{query(s).value=value;query(s).dispatchEvent(new Event('input'));};

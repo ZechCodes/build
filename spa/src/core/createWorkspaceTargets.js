@@ -10,8 +10,8 @@ import { deviceCall } from './inboxDevices.js';
 import { stampProject, stampWorkspace } from './feedMerge.js';
 import { upsertSessionRow } from './sessionListCache.js';
 import { workspaceRoute } from './projectModel.js';
-import { isCreationWrite } from './writeOperationProgress.js';
-import { readEnvironmentSupport, environmentWizardSupported } from './environmentSupport.js';
+import { isCreationWrite, creationSupportForMethod, creationMethodForTarget } from './writeOperationProgress.js';
+import { readEnvironmentSupport } from './environmentSupport.js';
 import { readCachedEnvironments } from './environmentCache.js';
 import { taskCountText } from './taskCountText.js';
 
@@ -25,7 +25,7 @@ async function readDeviceTargets(device) {
   ]);
   return { projects:projects.map(row=>stampProject(row,device.id)),
     environments:environments.map(row=>({...row,id:row.environment_id || row.id,deviceId:device.id})),
-    workspaces:workspaces.map(row=>stampWorkspace(row,device.id)), environmentsSupported:environmentWizardSupported(support),features:support,attempts:attempts.filter(recoverableCreation) };
+    workspaces:workspaces.map(row=>stampWorkspace(row,device.id)), environmentsSupported:creationSupportForMethod(support,"environment.create_project"),features:support,attempts:attempts.filter(recoverableCreation) };
 }
 // A result is still recoverable until the user explicitly consumes it. Closing
 // the screen is not consumption: the operation may have finished off-screen.
@@ -53,14 +53,16 @@ export function workspaceCreateParams({target,name='',isolation='',continues}) {
   return {project_id:target.id,name,...(isolation ? {isolation}:{}),...(continues ? {continues}:{})};
 }
 function creationRequest(input) {
-  if(input.target.kind === 'project') return {method:'workspace.create',params:workspaceCreateParams(input)};
+  const method=creationMethodForTarget(input.target);
+  if(!method)throw new Error('Unknown creation target');
+  if(input.target.kind === 'project') return {method,params:workspaceCreateParams(input)};
   const {target,name,isolation,continues}=input;
   const added = input.addedSources?.length ? {added_sources:input.addedSources.map(sourceDraftParams)} : {};
   const project = {name,workspace:{name,...(isolation ? {isolation}:{})},...added};
   const continuation = continues ? {continues} : {};
-  if(target.kind !== 'new-environment') return {method:'environment.create_project',params:{environment_id:target.id,...project,...continuation}};
+  if(target.kind !== 'new-environment') return {method,params:{environment_id:target.id,...project,...continuation}};
   const environment = input.environmentDraft;
-  return {method:'environment.create',params:{name:environment.name.trim(),sources:environment.sources.map(sourceDraftParams),
+  return {method,params:{name:environment.name.trim(),sources:environment.sources.map(sourceDraftParams),
     ...(environment.isolation ? {isolation:environment.isolation}:{}),project,...continuation}};
 }
 export function submitCreateWorkspace(input) {

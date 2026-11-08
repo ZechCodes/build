@@ -1,6 +1,7 @@
 import { folderDraftsHtml, folderDraftError, wireFolderDrafts } from './createWorkspaceFolders.js';
 import { environmentDraftHtml, initialEnvironmentDraft, draftEnvironmentTarget, environmentDraftError, wireEnvironmentDraft, refusalDraftPage } from './createWorkspaceEnvironmentDraft.js';
 import { kindGlyphHtml } from './environmentIdentity.js';
+import { creationSupportForMethod, creationMethodForTarget } from './writeOperationProgress.js';
 import { environmentWizardSupported } from './environmentSupport.js';
 import { go } from '../app.js';
 import { esc, messageOf } from './text.js';
@@ -103,6 +104,10 @@ function validName(input,target,name) {
 function deviceSupportsWizard(snapshot,deviceId) {
   const features=snapshot.features?.[deviceId];
   return features ? environmentWizardSupported(features):snapshot.support?.[deviceId] === true;
+}
+function targetSupportsDurableCreation(snapshot,target) {
+  const flags=snapshot.features?.[target.deviceId] || {createProject:snapshot.support?.[target.deviceId] === true};
+  return creationSupportForMethod(flags,creationMethodForTarget(target));
 }
 function supportsWorkspaceWizard(snapshot,options) {
   if(options.deviceId)return deviceSupportsWizard(snapshot,options.deviceId);
@@ -241,7 +246,11 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     state.addedSources.forEach(source=>{if(source.kind==='path')source.path='';});
   }
   function selectTarget(target) {
-    if(!deviceSupportsWizard(snapshot,target.deviceId)){void handoffLegacy(target);return;}
+    if(!targetSupportsDurableCreation(snapshot,target)){
+      if(target.kind==='project')void handoffLegacy(target);
+      else {state.error='This device needs an update to create a project in this environment.';paint();}
+      return;
+    }
     changeAddedDevice(target.deviceId);state.target=target;state.page=3;state.error='';updateAdvanced();save();paint();focusPage();
   }
   async function handoffLegacy(target) {
@@ -304,7 +313,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     submitting=true;state.busy=true;state.error='';paint();
     try {
       await draft.write(draftOf(state));
-      if(!deviceSupportsWizard(snapshot,state.target.deviceId)) await submitLegacy();
+      if(!targetSupportsDurableCreation(snapshot,state.target)) await submitLegacy();
       else await submitDurable();
     }catch(error){if(!detached){state.busy=false;state.error=messageOf(error);refusalPage(error);save();paint();}}
     finally{submitting=false;}

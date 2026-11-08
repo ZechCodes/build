@@ -1,6 +1,7 @@
 // Wizard targets are a projection of cached rows and local navigation visits.
 // Device identity is part of every key, including activity inherited from a
 // workspace. Nothing in this model knows a transport or connection state.
+import { creationSupportForMethod, environmentWizardSupported } from "./writeOperationProgress.js";
 import { deviceKey } from "./deviceKey.js";
 import { fuzzyRank } from "./fuzzy.js";
 import { RECENT_AFTER_MS } from "./inboxOrdering.js";
@@ -96,7 +97,7 @@ function environmentTarget(environment, context, projectTargets) {
 function presetTarget(options, context, targets) {
   if (options.environmentId) return targets.find(row => row.kind === "environment" && row.id === options.environmentId && row.deviceId === options.deviceId) || null;
   if (!options.projectId || !options.deviceId) return null;
-  if (!options.fixedProject && context.support[options.deviceId]) return null;
+  if (!options.fixedProject && wizardEntrySupported(context,options.deviceId)) return null;
   const key = deviceKey(options.deviceId, options.projectId);
   const held = targets.find((row) => row.key === key);
   return held || projectTarget({ id: options.projectId, deviceId: options.deviceId, name: options.projectName || options.projectId }, context);
@@ -124,22 +125,30 @@ function modelContext(options) {
   return {
     projects: (options.projects || []).filter((row) => row.archived_at == null),
     environments: options.environments || [], workspaces: options.workspaces || [],
-    devices: options.devices || [], visits: options.visits || [], support: options.support || {},
+    devices: options.devices || [], visits: options.visits || [], support: options.support || {}, features:options.features || {},
   };
 }
 
+function wizardEntrySupported(context,deviceId) {
+  const support=context.features[deviceId];
+  return support ? environmentWizardSupported(support):context.support[deviceId] === true;
+}
+function existingEnvironmentSupported(context, deviceId) {
+  const support = context.features[deviceId];
+  return support ? creationSupportForMethod(support,"environment.create_project") : context.support[deviceId] === true;
+}
 export function createWorkspaceWizardModel(options = {}) {
   const context = modelContext(options);
   const projects = context.projects.map((row) => projectTarget(row, context)).sort(byRecency);
-  const environments = context.environments.filter((row) => context.support[deviceOf(row)])
+  const environments = context.environments.filter((row) => existingEnvironmentSupported(context,deviceOf(row)))
     .map((row) => environmentTarget(row, context, projects)).sort((left, right) => left.name.localeCompare(right.name));
   const sections = targetSections(projects, environments, options.query || "", options.now ?? Date.now());
   const target = presetTarget(options, context, [...projects, ...environments]);
-  const legacy = context.devices.some((row) => !context.support[row.id]);
+  const legacy = context.devices.some((row) => !wizardEntrySupported(context,row.id));
   return {
-    sections, target, page: options.newEnvironment && options.features?.[options.deviceId]?.create ? 2 : target ? 3 : 1,
-    newEnvironmentDevices: context.devices.filter(row => options.features?.[row.id]?.create),
-    emptyText: emptyText(sections, options.query, context.devices.some(row => options.features?.[row.id]?.create)),
+    sections, target, page: options.newEnvironment && creationSupportForMethod(options.features?.[options.deviceId],"environment.create") ? 2 : target ? 3 : 1,
+    newEnvironmentDevices: context.devices.filter(row => creationSupportForMethod(options.features?.[row.id],"environment.create")),
+    emptyText: emptyText(sections, options.query, context.devices.some(row => creationSupportForMethod(options.features?.[row.id],"environment.create"))),
     legacyNote: legacy ? "This device needs an update to create environments here" : "",
   };
 }

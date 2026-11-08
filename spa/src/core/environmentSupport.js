@@ -1,4 +1,5 @@
 // Rendering remembers the latest greeting; dispatch requires the live capability.
+export { environmentWizardSupported } from "./writeOperationProgress.js";
 import { mergeCachedAtomically, readCached } from "./localCache.js";
 
 const FLAGS = ["list", "createProject", "create", "addedSources", "archive", "rename", "secrets"];
@@ -18,6 +19,3 @@ export async function readEnvironmentSupport(deviceId) {
   return supportOf(held);
 }
 
-// Either creation feature needs the workspace wizard. New-environment controls
-// still require create; M1 project/workspace creation remains usable on its own.
-export const environmentWizardSupported = support => support?.createProject === true || support?.create === true;

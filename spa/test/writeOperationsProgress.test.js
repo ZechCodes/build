@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
+import statusFixture from "../../fixtures/api/v1/writes.status.json";
+import { createWorkspaceProgressModel } from "../src/core/createWorkspaceProgress.js";
+
 const identity = { accountId: "account", deviceId: "device", principalId: "principal" };
 const greeting = { bridge_epoch: "epoch", journal_incarnation: "journal", capabilities: ["bridge.epoch", "environments"],
   ack_confirm_methods: ["environment.create_project", "workspace.create"] };
@@ -28,6 +31,20 @@ async function bind({ currentGreeting = greeting, active = () => true, status = 
 }
 
 describe("creation write progress", () => {
+  it.each(["unknown", "reconciling"])("retains nested %s status across observational progress and reload", async state => {
+    const example = statusFixture.examples.find(example => example.result.operations[0].creation?.state === state);
+    const summary = { ...example.result.operations[0], operation_id: "attempt" };
+    await cache.put(intent());
+    await bind({ status: [summary] });
+    expect(await cache.get("attempt")).toMatchObject({ state: "executing", creation: { state }, checking: true });
+    await service.handleFrame(frame({ progress: [{ step: "workspace", state: "done" }] }));
+    const row = await cache.get("attempt");
+    expect(row).not.toHaveProperty("confirmation");
+    expect(createWorkspaceProgressModel(row).status).toBe("Checking…");
+    expect(createWorkspaceProgressModel(await factory(identity).get("attempt")).status).toBe("Checking…");
+    await service.handleFrame({ type: "writes.confirmed", bridge_epoch: "epoch", operation_id: "attempt", state: "succeeded", revision: 3, result: { workspace: { id: "W" } } });
+    expect(createWorkspaceProgressModel(await cache.get("attempt")).status).toBe("Done");
+  });
   it("records Checking after the sending opening disconnects before its reply rejects", async () => {
     let active = true, rejectSend;
     await bind({ active: () => active, raw: () => new Promise((_resolve, reject) => { rejectSend = reject; }) });

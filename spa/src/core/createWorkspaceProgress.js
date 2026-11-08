@@ -49,7 +49,7 @@ function inferredStepState(step, phase, project, firstStep) {
 function outcomePhase(record) {
   if (record?.state === "failed") return knownFailure(record) ? "failed" : "checking";
   if (record?.state === "succeeded") return "done";
-  if (!record || record.checking || record.unresolved || UNKNOWN_STATES.has(record.state)) return "checking";
+  if (!record || record.checking || record.unresolved || UNKNOWN_STATES.has(record.state) || ["unknown", "reconciling"].includes(record.creation?.state)) return "checking";
   return "creating";
 }
 

@@ -13,6 +13,9 @@ impl AppState {
         let name = project.name.clone();
         let mut blockers = self.archive_workspace_blockers(id);
         blockers.extend(self.archive_session_blockers(id));
+        if self.session_registry.pending_shell_for_project(id) {
+            blockers.push("wait for terminal creation to finish".into());
+        }
         if let Some(store) = &self.store {
             blockers.extend(
                 store

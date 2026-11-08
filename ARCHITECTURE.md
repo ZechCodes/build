@@ -3438,6 +3438,9 @@ reservation exists. A configuration failure publishes no archive state.
 routed/session RPCs, MCP mutations and final agent spawn reservation. Framed
 routing checks archive admission inside its existing routed/session mutation
 guards; clock-only snapshots and global presence gain no app-mutex acquisition.
+Shell reservation and final registration recheck archive under their existing
+guards; a pending shell reservation blocks archive until it settles. Agent
+start checks its addressed owner before resolving or changing the roster.
 RPC write classification comes from the effect registry, with project scope
 resolved from project, workspace, task or conversation identities; upload calls resolve their
 retained scope after owner validation. Reads and screen-attachment bookkeeping

@@ -1342,8 +1342,13 @@ principals and other semantic method enablement belong to Step 6b.
 `app/creation.rs` owns the creation service independently of client lifetimes.
 A single background worker resumes admitted attempts and reconciles startup
 records. Admission saves the opaque project key, or a fixed-project workspace
-reservation, before acknowledgment. The project config step checkpoints its
-numeric ID before the atomic config write and reuses its opaque key on recovery.
+reservation, before acknowledgment. Concurrent same-ID admission compares client
+intent with the winning command's server reservations and returns its saved ack.
+The project config step checkpoints a provisional numeric ID before the atomic
+config write. If its opaque key has not landed, it allocates at the registry's
+current numeric floor under the app lock, so intervening legacy registration
+cannot steal its identity. Recovery finds a landed project by its opaque key,
+even if a crash prevented checkpointing the final numeric ID.
 The workspace step checkpoints its immutable reservation and completed sources,
 then uses `WorkspaceCreateWork` unpublished with ownership-checked recovery.
 Existing Ready manifests are reused, including plain copies and later edits.

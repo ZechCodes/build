@@ -218,7 +218,7 @@ pub(super) fn project_step(
     }
     #[cfg(test)]
     tests::at_boundary(tests::Boundary::ProjectCheckpointed);
-    state.lock().unwrap().create_environment_project(
+    let project_id = state.lock().unwrap().create_environment_project(
         record.params["environment_id"]
             .as_str()
             .ok_or("environment missing")?,
@@ -228,6 +228,7 @@ pub(super) fn project_step(
     )?;
     #[cfg(test)]
     tests::at_boundary(tests::Boundary::ProjectPersisted);
+    evidence["project_id"] = json!(project_id);
     set_step(&mut evidence, "project", "done", None);
     writer
         .checkpoint_creation(PRINCIPAL, &record.operation_id, evidence.clone())

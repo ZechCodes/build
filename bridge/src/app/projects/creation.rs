@@ -8,14 +8,14 @@ impl AppState {
         environment_id: &str,
         name: &str,
         key: &str,
-        expected_id: &str,
+        provisional_id: &str,
     ) -> Result<String, String> {
         if let Some(project) = self
             .projects
             .iter()
             .find(|project| project.project_key == key)
         {
-            if project.id != expected_id || project.environment_id != environment_id {
+            if project.environment_id != environment_id {
                 return Err("saved creation identity no longer matches the project".into());
             }
             return Ok(project.id.clone());
@@ -26,10 +26,13 @@ impl AppState {
             .iter()
             .find(|p| p["project_key"] == key)
         {
-            if project["id"] != expected_id || project["environment_id"] != environment_id {
+            if project["environment_id"] != environment_id {
                 return Err("saved creation identity no longer matches the parked project".into());
             }
-            return Ok(expected_id.into());
+            return project["id"]
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "saved creation project id missing".into());
         }
         let home = self
             .projects
@@ -37,10 +40,14 @@ impl AppState {
             .and_then(|e| e.sources.first())
             .ok_or("environment has no home source")?
             .clone();
-        let number = expected_id
+        // The key proves no project landed. A legacy allocator may have passed
+        // the checkpoint's numeric ID, including while the bridge was stopped.
+        // Choose and publish against its current floor under the same app lock.
+        let number = provisional_id
             .strip_prefix("proj-")
-            .and_then(|n| n.parse().ok())
-            .ok_or("invalid reserved project id")?;
+            .and_then(|n| n.parse::<u64>().ok())
+            .ok_or("invalid reserved project id")?
+            .max(self.projects.next_id());
         let candidate = self.project_candidate_with_sources_at(
             home.path,
             home.base_branch,

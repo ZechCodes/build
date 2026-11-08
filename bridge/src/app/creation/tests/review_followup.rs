@@ -279,3 +279,31 @@ fn fresh_git_preparation_failure_proves_net_zero_effects() {
         "main"
     );
 }
+
+#[test]
+fn replay_never_promotes_checkout_head_into_branch_ownership() {
+    let (f, repo, project) = git_fixture(false);
+    let id = operation(195);
+    workspace_attempt(&f, &id, &project);
+    stop_at(&f, &id, Boundary::BeforeDirectoryCheckpoint);
+    let workspace: Workspace =
+        serde_json::from_value(f.record(&id).execution["workspace"].clone()).unwrap();
+    assert!(workspace.directories[0].branch.is_none());
+    let branches = git(&repo, &["branch", "--format=%(refname:short)"]);
+    let f = f.reopen();
+    f.store.writer().recover_mutations().unwrap();
+    f.run(&id);
+    let record = f.record(&id);
+    assert!(
+        matches!(record.state.as_str(), "unknown" | "reconciling"),
+        "{record:?}"
+    );
+    assert!(record.execution["workspace"]["directories"][0]["branch"].is_null());
+    assert!(record.outcome.is_none());
+    assert_eq!(record.execution["effect_state"], "started");
+    assert_eq!(
+        git(&repo, &["branch", "--format=%(refname:short)"]),
+        branches
+    );
+    assert!(f.state.lock().unwrap().workspace_reserved(&workspace.id));
+}

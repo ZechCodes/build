@@ -7,14 +7,23 @@ const supportOf = (capabilities) => Object.fromEntries(FLAGS.map((flag) => [flag
 
 export const environmentSupportAddress = (deviceId) => ({ deviceId, entityId: "", kind: "environment-support" });
 
-export function rememberEnvironmentSupport(deviceId, capabilities, current = () => true) {
+// Missing flags are not negative evidence: only a complete cached greeting
+// without any environment capability identifies a pre-environment device.
+export const predatesEnvironments = (support) => FLAGS.every(flag => support?.[flag] === false);
+
+export async function readEnvironmentSupportRecord(deviceId = "") {
+  return (await readCached(environmentSupportAddress(deviceId)))?.value ?? null;
+}
+
+export function rememberEnvironmentSupport(deviceId, capabilities, current = () => true, bridgeEpoch = null) {
   if (!deviceId) return Promise.resolve(false);
-  const support = supportOf(capabilities?.environments);
-  return mergeCachedAtomically(environmentSupportAddress(deviceId), (held) =>
-    current() && FLAGS.some((flag) => held?.[flag] !== support[flag]) ? support : null);
+  const support = { ...supportOf(capabilities?.environments), bridge_epoch: bridgeEpoch };
+  // Every accepted greeting announces its evidence, including a new opening
+  // in the same bridge epoch. No wall-clock freshness or separate epoch exists.
+  return mergeCachedAtomically(environmentSupportAddress(deviceId), () => current() ? support : null);
 }
 
 export async function readEnvironmentSupport(deviceId) {
-  const held = deviceId ? (await readCached(environmentSupportAddress(deviceId)))?.value : null;
+  const held = deviceId ? await readEnvironmentSupportRecord(deviceId) : null;
   return supportOf(held);
 }

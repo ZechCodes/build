@@ -2,21 +2,30 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 let capabilities;
 vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: () => capabilities }));
-vi.mock("../src/core/deviceContexts.js", () => ({ whenGreeted: (context, dispatch) => context.whenGreeted(dispatch) }));
+vi.mock("../src/core/deviceContexts.js", () => ({
+  whenGreeted: (context, dispatch) => context.whenGreeted(dispatch), contextFor: () => null,
+  captureDeviceGreeting: () => ({ epoch: "changes-epoch", current: () => true }),
+}));
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 const { projectChangesDirectories, projectSourceContext } = await import("../src/core/projectChangesModel.js");
 const { projectChangesRpc } = await import("../src/core/projectChangesRpc.js");
 const { readProjectChangesSupport, rememberProjectChangesSupport } = await import("../src/core/projectChangesSupport.js");
 const { directoryCacheId } = await import("../src/core/directoryScope.js");
-const { wipeCache } = await import("../src/core/localCache.js");
+const { wipeCache, writeCached } = await import("../src/core/localCache.js");
+const { environmentSupportAddress } = await import("../src/core/environmentSupport.js");
 const project = { id: "p", sources: [
   { id: "code", name: "Code", path: "/code", is_git: true, base_branch: "main", sync_base: true },
   { id: "docs", name: "Docs", path: "/docs", is_git: true, base_branch: "stable", sync_base: false },
   { id: "assets", name: "Assets", path: "/assets", is_git: false },
 ] };
 const context = () => ({ deviceId: "d", rpc: vi.fn(async () => ({ ok: true })), whenGreeted: async (dispatch) => ({ sent: dispatch() }) });
-beforeEach(async () => { capabilities = { git: { projectSources: true }, projects: { syncBase: true, syncBasePath: true } }; await wipeCache(); });
+beforeEach(async () => {
+  capabilities = { git: { projectSources: true }, projects: { syncBase: true, syncBasePath: true } }; await wipeCache();
+  await writeCached(environmentSupportAddress("d"), {
+    list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false, bridge_epoch: "changes-epoch",
+  });
+});
 it("models every registered source with captured location, including plain folders", () => {
   const dirs = projectChangesDirectories(project, "p", true);
   expect(dirs.map((d) => d.sourceId)).toEqual(["code", "docs", "assets"]);
@@ -73,6 +82,37 @@ it("dispatches full source scope for history and Sync base", async () => {
   expect(machine.rpc).toHaveBeenCalledWith("git.log", { project_id: "p", source_id: "docs", source_path: "/docs" });
   await rpc("project.sync_source", { project_id: "p", source_id: "docs" });
   expect(machine.rpc).toHaveBeenLastCalledWith("project.sync_source", { project_id: "p", source_id: "docs", source_path: "/docs" });
+});
+
+it.each(["inherited", "unknown", "added", "legacy"])("protects %s source ownership at Sync base dispatch", async kind => {
+  const machine = context();
+  const source = project.sources[0];
+  const current = { ...project };
+  if (kind === "inherited") { current.environment_id = "env"; current.added_sources = []; }
+  if (kind === "added") current.added_sources = [source];
+  if (kind === "unknown") await writeCached(environmentSupportAddress("d"), {
+    list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false, bridge_epoch: "pre-upgrade-epoch",
+  });
+  const rpc = projectChangesRpc(machine, source, { projectId: "p", currentProject: () => current });
+  if (["inherited", "unknown"].includes(kind)) {
+    await expect(rpc("project.sync_source", {})).rejects.toThrow(/read-only|ownership/i);
+    expect(machine.rpc).not.toHaveBeenCalled();
+  } else {
+    await rpc("project.sync_source", {});
+    expect(machine.rpc).toHaveBeenCalledWith("project.sync_source", { project_id: "p", source_id: source.id, source_path: source.path });
+  }
+});
+
+it("rechecks ownership after a queued Sync base greeting", async () => {
+  const machine = context();
+  let dispatch;
+  machine.whenGreeted = vi.fn(async fn => { dispatch = fn; return { sent: Promise.resolve() }; });
+  let current = { ...project, added_sources: [project.sources[0]] };
+  const rpc = projectChangesRpc(machine, project.sources[0], { projectId: "p", currentProject: () => current });
+  await rpc("project.sync_source", {});
+  current = { ...project, added_sources: [], environment_id: "env" };
+  await expect(Promise.resolve().then(() => dispatch())).rejects.toThrow(/read-only|ownership/i);
+  expect(machine.rpc).not.toHaveBeenCalled();
 });
 it("never sends new selectors to a legacy bridge, refusing secondary and moved primary", async () => {
   capabilities = { git: { projectSources: false }, projects: {} };

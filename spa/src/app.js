@@ -23,6 +23,7 @@ import { resetUiWriters } from "./core/localUiState.js";
 import { resetNavigationVisits } from "./core/navigationVisits.js";
 import { routeChanged } from "./core/cacheSync.js";
 import { canAnswer, contextFor, deviceContextIdentity, onDeviceStateChanged, resetDeviceContexts } from "./core/deviceContexts.js";
+import { notifyNavigationCommitted } from "./core/navigationLifetime.js";
 import { App, SELECTED_DEVICE_KEY } from "./appState.js";
 export { App } from "./appState.js";
 import { forgetHomeFollow, forgetRendezvousSockets, forgetSecurityStops } from "./connection.js";
@@ -150,6 +151,7 @@ function standOn(route) {
 
 function applyRoute(route, { newEntry = false } = {}) {
   App.routeLeaveGuard = null;
+  notifyNavigationCommitted();
   const hash = standOn(route);
   if (location.hash !== hash) {
     // Ordinary app moves keep their replacement contract. A destination picker
@@ -252,6 +254,7 @@ export function initRouter() {
       history.replaceState(null, "", hashFromRoute(App.route));
       return;
     }
+    notifyNavigationCommitted();
     App.viewingContext.clear();
     App.route = readRoute();
     if (!App.gated) render();

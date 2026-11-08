@@ -6,6 +6,8 @@ import { projectChangesRpc } from "../core/projectChangesRpc.js";
 import { PROJECT_CHANGES_SUPPORT_KIND, readProjectChangesSupport } from "../core/projectChangesSupport.js";
 import { subscribeCache } from "../core/localCache.js";
 import { mountProjectChangesDrafts } from "../core/projectChangesDrafts.js";
+import { environmentSupportAddress } from "../core/environmentSupport.js";
+import { projectSourceWritable, readSourceOwnershipEvidence, SOURCE_READ_ONLY } from "../core/sourceOwnership.js";
 
 export function mountProjectChanges(host, { project, route, context, viewingContext, agentSelection, onSourceSelection, onCommitSelection, onOpenFile }) {
   host.innerHTML = '<div class="project-changes-context"><p>Original sources · shared checkout</p><p data-project-source-context></p><button type="button" class="btn mini" data-project-sync-base hidden>Sync base</button><span class="warn" data-project-sync-error role="status"></span><div class="warn" data-project-missing-source role="status" hidden><span data-project-link-status></span> <button type="button" class="btn mini" data-project-use-source hidden></button></div></div><div class="project-changes-drafts" data-project-changes-drafts hidden></div><div data-project-changes-body></div>';
@@ -18,6 +20,7 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
   const linkStatus = host.querySelector("[data-project-link-status]");
   const useSource = host.querySelector("[data-project-use-source]");
   let support = { projectSources: false, syncBase: false, syncBasePath: false };
+  let ownershipEvidence = null;
   let standing = route.sourceId;
   let pane = null;
   let disposed = false;
@@ -53,7 +56,7 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
   const paintContext = () => {
     const source = sourceOf(standing);
     note.textContent = source ? projectSourceContext(source) : "No project sources configured.";
-    sync.hidden = !source || source.is_git === false || !support.syncBase;
+    sync.hidden = !source || source.is_git === false || !support.syncBase || !projectSourceWritable(project, source.id, ownershipEvidence);
     sync.disabled = pending;
     paintRequestedSource(source);
   };
@@ -112,6 +115,7 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
   useSource.onclick = () => selectSource(standing);
   sync.onclick = async () => {
     if (pending || !sourceOf(standing)) return;
+    if (!projectSourceWritable(project, standing, ownershipEvidence)) { error.textContent = SOURCE_READ_ONLY; return; }
     pending = true;
     error.textContent = "";
     const rpc = rpcFor(standing);
@@ -123,14 +127,15 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
   let revision = 0;
   const readSupport = async () => {
     const read = ++revision;
-    const next = await readProjectChangesSupport(context.deviceId);
+    const [next, evidence] = await Promise.all([readProjectChangesSupport(context.deviceId), readSourceOwnershipEvidence(context.deviceId)]);
     if (disposed || read !== revision) return;
     support = next;
+    ownershipEvidence = evidence;
     supportLoaded = true;
     reconcile();
   };
   const unwatch = subscribeCache({ deviceId: context.deviceId }, (address) => {
-    if (address.kind === PROJECT_CHANGES_SUPPORT_KIND) void readSupport();
+    if ([PROJECT_CHANGES_SUPPORT_KIND, environmentSupportAddress(context.deviceId).kind].includes(address.kind)) void readSupport();
   });
   void readSupport();
   return {

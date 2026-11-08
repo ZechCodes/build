@@ -40,10 +40,19 @@ for (const { label, width, height } of [
         sheet: "src/sheets/projectSettings.js",
         cache: "src/core/localCache.js",
         support: "src/core/sourceEditSupport.js",
+        environments: "src/core/environmentSupport.js",
+        devices: "src/core/deviceContexts.js",
+        epochs: "src/core/bridgeEpoch.js",
       }, basePath);
       await page.evaluate(async (project) => {
-        const { sheet, cache, support } = window.__layoutModules;
+        const { sheet, cache, support, environments, devices, epochs } = window.__layoutModules;
+        const bridgeEpoch = epochs.createBridgeEpoch();
+        bridgeEpoch.acceptGreeting({ capabilities: ["bridge.epoch"], bridge_epoch: "layout-epoch", journal_incarnation: "layout-journal" });
+        const context = devices.adoptDeviceSession({ deviceId: "laptop", call: async () => ({}), bridgeEpoch });
+        const authority = devices.greetingInFlight(context);
+        devices.adoptBridgeSelection(context, {}, { capabilities: {} }, authority);
         await cache.writeCached(support.sourceEditSupportAddress("laptop"), { editsSources: true });
+        await environments.rememberEnvironmentSupport("laptop", { environments: {} }, () => true, "layout-epoch");
         sheet.openProjectSettings(project.project_id, {
           deviceId: "laptop",
           callRpc: async (method) => (method === "project.list" ? { projects: [project] } : project),

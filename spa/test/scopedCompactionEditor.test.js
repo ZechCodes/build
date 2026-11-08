@@ -85,6 +85,14 @@ it("sends null for inherit, without translating it to zero", async () => {
   expect(row().querySelector("[data-compaction-inherit]").textContent).toBe("Inherit — 200k tokens from device");
 });
 
+it("preserves cached project identity when a compaction reply omits it", async () => {
+  const identity = { environment_id: "environment", environment_name: "Shared environment", project_key: "project:owner" };
+  await mount({ value: { ...settings(), ...identity }, callRpc: vi.fn(async () => settings(175000)) });
+  draft("180000"); save();
+  await vi.waitFor(() => expect(input().value).toBe("175000"));
+  expect((await readCached(addresses.project())).value).toMatchObject(identity);
+});
+
 it.each(["0", "-1", "1.5", "9007199254740992", "1e5", ""])("rejects unsafe token text %j before dispatch", async (value) => {
   const call = await mount(); draft(value); save();
   expect(status().textContent).toContain("positive whole number");

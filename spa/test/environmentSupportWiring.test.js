@@ -23,7 +23,7 @@ afterEach(() => resetChangeEvents());
 it("writes environment-support from a named greeting, independently per device", async () => {
   await greet(["environments"]);
   await vi.waitFor(async () => expect(await readEnvironmentSupport("dev-1")).toEqual(m1));
-  expect((await readCached(environmentSupportAddress("dev-1"))).value).toEqual(m1);
+  expect((await readCached(environmentSupportAddress("dev-1"))).value).toEqual({ ...m1, bridge_epoch: greetingFixture.result.bridge_epoch });
   expect(environmentSupportAddress("dev-1")).toEqual({ deviceId: "dev-1", entityId: "", kind: "environment-support" });
   expect(await readEnvironmentSupport("dev-2")).toEqual(unsupported);
   resetChangeEvents();

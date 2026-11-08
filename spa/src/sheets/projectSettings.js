@@ -8,14 +8,19 @@ import { isolationFieldHtml, mountIsolation, projectIsolationTarget } from "../c
 import { settingsSheetHtml } from "./settingsSheet.js";
 import { openBrowser } from "./browser.js";
 import { deviceSettingsAddress, projectSettingsAddress, removeProjectSetting, watchSettingsRecord, writeProjectSetting } from "../core/settingsRecords.js";
-import { deleteCached, readCached, subscribeCache } from "../core/localCache.js";
+import { deleteCached, mergeCachedAtomically, readCached, subscribeCache } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
 import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
 import { readSourceSupport, SOURCE_EDIT_SUPPORT_KIND } from "../core/sourceEditSupport.js";
+import { environmentSupportAddress } from "../core/environmentSupport.js";
+import { guardProjectSourceRpc, readSourceOwnershipEvidence } from "../core/sourceOwnership.js";
+import { environmentsAddress, readCachedEnvironments } from "../core/environmentCache.js";
 import { mountSourceCards, readSourceEdits, restoreSourceEdits, sourceEditing, sourcesSectionHtml } from "./projectSources.js";
 import { withNewerSyncs } from "../core/sourceSyncModel.js";
+import { onNavigationCommitted } from "../core/navigationLifetime.js";
+import { watchSheetLifetime } from "../core/sheetLifetime.js";
 
 /** The project's own name. It is the first source's folder's, and is not a
  *  source's label: a source is renamed on its card. */
@@ -26,6 +31,9 @@ const generalHtml = (project) => `<section class="ps-section" aria-labelledby="p
 
 const isolationHtml = () => `<section class="ps-section" aria-labelledby="ps-isolation-h"><h4 id="ps-isolation-h">Isolation</h4>
     ${isolationFieldHtml()}</section>`;
+
+const environmentNameOf = (project, environments) =>
+  environments.find(row => (row.environment_id || row.id) === project.environment_id)?.name;
 
 const dangerHtml = () => `<section class="ps-section ps-danger" aria-labelledby="ps-danger-h"><h4 id="ps-danger-h">Danger zone</h4>
     <p class="sub">Delete this project and all of its workspaces from Build. Files and unsaved changes in Build-managed workspaces will be permanently removed. Original project folders and external checkouts are kept.</p>
@@ -110,18 +118,25 @@ function restoreDraft(sheet, project, draft) {
  *  sheet has already resolved that, so nothing here asks which device it is. */
 export function openProjectSettings(projectId, { callRpc, deviceId = "", onDeleted }) {
   const sheet = $("#sheet");
+  const scrim = $("#scrim");
   disposeRepoPickers(sheet);
   sheet.innerHTML = settingsSheetHtml({ title: "Project settings", bodyHtml: '<div class="sub">Loading…</div>' });
   $("#scrim").classList.add("show");
+  let disposed = false;
   let frame = sheet.firstElementChild;
   let view = "settings";
   let painted = null;
   let compactionEditor = null;
   let editsSources = false;
   let syncsBase = false;
-  // Sources whose Sync now was pressed, by the last attempt their row showed
+  let environmentSupport = null;
+  let environments = [];
+  let supportReady = false;
+  // Sources whose Sync now was accepted, by the last attempt their row showed
   // then: "Syncing…" until the row says a newer one.
   const syncing = new Map();
+  // Requests outlive the card nodes replaced by cache-driven repaints.
+  const syncInFlight = new Set();
   const notices = {};
   let cachedDraft = null;
   let displayedDraft = {};
@@ -131,13 +146,21 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     if (debounced) draftRecord?.schedule(snapshot);
     else void draftRecord?.write(snapshot);
   };
-  const current = () => sheet.isConnected && sheet.firstElementChild === frame && $("#scrim").classList.contains("show");
+  const refresh = () => pullProjectSettings(projectId, { callRpc, deviceId, record });
+  const sourceRpc = guardProjectSourceRpc(deviceId, callRpc, async () => (await readCached(projectSettingsAddress(deviceId, projectId)))?.value);
+  const current = () => !disposed && sheet.isConnected && sheet.firstElementChild === frame && scrim.classList.contains("show");
   // Asked again when the machine greets while THIS opening is on screen.
   const repoAsk = refreshGithubRepos(deviceId, callRpc, { wanted: current });
   // Whether this machine edits sources in place is a fact a greeting writes
   // to the cache; the cards repaint when it lands.
   const readSupport = async () => {
-    ({ editsSources, syncsBase } = await readSourceSupport(deviceId));
+    const [sources, support, rows] = await Promise.all([
+      readSourceSupport(deviceId), readSourceOwnershipEvidence(deviceId), readCachedEnvironments(deviceId),
+    ]);
+    ({ editsSources, syncsBase } = sources);
+    environmentSupport = support;
+    environments = rows;
+    supportReady = true;
     if (painted) paint(painted);
   };
   // The bridge's source sync service writes each sync onto the project's
@@ -146,22 +169,30 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   const adoptListedSyncs = async () => {
     const listed = (await readCached({ deviceId, entityId: "", kind: "projects" }))?.value;
     const row = Array.isArray(listed) ? listed.find((project) => project.project_id === projectId) : null;
-    const synced = painted && withNewerSyncs(painted, row);
-    if (synced) await record.write(synced);
+    await mergeCachedAtomically(projectSettingsAddress(deviceId, projectId), latest =>
+      current() && latest ? withNewerSyncs(latest, row) : null);
   };
   const unsubscribeSupport = subscribeCache({ deviceId }, (address) => {
-    if (address?.kind === SOURCE_EDIT_SUPPORT_KIND) void readSupport();
+    if ([SOURCE_EDIT_SUPPORT_KIND, environmentSupportAddress(deviceId).kind, environmentsAddress(deviceId).kind].includes(address?.kind)) void readSupport();
     if (address?.kind === "projects" && !address.entityId) void adoptListedSyncs();
   });
-  const close = () => {
+  let unsubscribeNavigation = () => {};
+  const dispose = watchSheetLifetime(current, () => {
+    disposed = true;
+    unsubscribeNavigation();
     repoAsk.stop();
     unsubscribeSupport();
-    disposeRepoPickers(sheet);
+    disposeRepoPickers(frame);
     compactionEditor?.dispose();
     record.dispose();
     draftRecord?.dispose();
-    $("#scrim").classList.remove("show");
+  });
+  const close = () => {
+    const ownsSheet = current();
+    dispose();
+    if (ownsSheet) scrim.classList.remove("show");
   };
+  unsubscribeNavigation = onNavigationCommitted(close);
 
   const paintMissing = (message) => {
     if (!current() || view !== "settings") return;
@@ -177,15 +208,17 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
 
   const paint = (project) => {
     if (!current() || view !== "settings") return;
+    if (!supportReady) { painted = project; return; }
     const live = captureDraft(sheet, painted);
     const draft = combineDraft(live, cachedDraft, displayedDraft);
-    const editing = sourceEditing(editsSources);
+    const editing = sourceEditing(project, editsSources, environmentSupport);
+    const environmentName = environmentNameOf(project, environments);
     const compactionSection = sheet.querySelector('[data-compaction-editor="project-compaction"]');
     disposeRepoPickers(sheet);
     sheet.innerHTML = settingsSheetHtml({
       title: "Project settings",
       bodyHtml: `${generalHtml(project)}
-      ${sourcesSectionHtml(project, { editing, editsSources, notices, sync: { syncsBase, syncing } })}
+      ${sourcesSectionHtml(project, { editing, editsSources, environmentSupport, environmentName, notices, sync: { syncsBase, syncing, inFlight: syncInFlight } })}
       ${isolationHtml()}
       ${scopedCompactionEditorHtml({ scope: "project", prefix: "project-compaction" })}
       ${dangerHtml()}
@@ -201,12 +234,13 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
       });
     }
     painted = project;
-    mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), deviceId, fromProjectRecord: true });
+    mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), deviceId, fromProjectRecord: true, current });
     mountSources(project, {
-      callRpc, record, deviceId, editing,
+      callRpc: sourceRpc, record, deviceId, editing, refresh, syncInFlight,
       saveDraft,
       onSaved: (sourceId, notice) => { notices[sourceId] = notice; },
-      onSyncAsked: (source) => { syncing.set(source.id, source.sync?.last_attempt_ms ?? null); },
+      onSyncAccepted: (source) => { syncing.set(source.id, source.sync?.last_attempt_ms ?? null); },
+      onSyncSettled: () => { void record.read(); },
       onFrameChange: () => { frame = sheet.firstElementChild; view = "browser"; },
       onReturn: () => { view = "settings"; void record.read(); },
     });
@@ -228,23 +262,27 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     displayedDraft = { edits: saved.edits ?? {}, source: saved.source };
   }, { debounceMs: 180 });
   void readSupport();
-  void pullDeviceProjection(deviceId, record, async () => {
-    const listed = await callRpc("project.list");
-    const project = (listed.projects || []).find((candidate) => candidate.project_id === projectId);
-    if (!project) throw new Error("This project is no longer registered on this device.");
-    return project;
-  }).catch((error) => {
+  void refresh().catch((error) => {
     // The refusal is the sentence: the sheet's title already says what it is.
     if (!$("#psproject")) paintMissing(error.message);
   });
   return { whenCachePainted: record.whenPainted };
 }
 
+function pullProjectSettings(projectId, { callRpc, deviceId, record }) {
+  return pullDeviceProjection(deviceId, record, async () => {
+    const listed = await callRpc("project.list");
+    const project = (listed.projects || []).find(candidate => candidate.project_id === projectId);
+    if (!project) throw new Error("This project is no longer registered on this device.");
+    return project;
+  });
+}
+
 /** The source controls: the cards, and the two ways a source is added.
  *
  *  Every write answers the project row itself, so the sheet repaints from what
  *  the bridge said rather than from what it hoped. */
-function mountSources(project, { callRpc, record, deviceId, editing, saveDraft, onSaved, onSyncAsked, onFrameChange, onReturn }) {
+function mountSources(project, { callRpc, record, deviceId, editing, refresh, syncInFlight, saveDraft, onSaved, onSyncAccepted, onSyncSettled, onFrameChange, onReturn }) {
   const write = async (send, button, error, onDone) => {
     if (error) error.textContent = "";
     button.disabled = true;
@@ -262,9 +300,23 @@ function mountSources(project, { callRpc, record, deviceId, editing, saveDraft, 
       return null;
     }
   };
-  mountSourceCards($("#sheet"), project, { editing, callRpc, deviceId, write, saveDraft, onSaved, onSyncAsked });
+  mountSourceCards($("#sheet"), project, { editing, callRpc, deviceId, write, syncInFlight, saveDraft, onSaved, onSyncAccepted, onSyncSettled });
+  const refreshButton = $("#psrefreshsources");
+  if (refreshButton) refreshButton.onclick = () => void refreshSources(refreshButton, $("#pssrcerr"), refresh);
   $("#psaddremote").onclick = () => openAddRemote(project, { write, callRpc, saveDraft, deviceId });
   $("#psaddfolder").onclick = () => void browseForSource(project, { callRpc, deviceId, onFrameChange, onReturn });
+}
+
+async function refreshSources(button, error, refresh) {
+  error.textContent = "";
+  button.disabled = true;
+  try {
+    await refresh();
+  } catch (thrown) {
+    error.textContent = thrown.message;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 /** Say where to clone the remote from, and what to call it. */
@@ -303,12 +355,15 @@ async function browseForSource(project, { callRpc, deviceId, onFrameChange, onRe
     bodyHtml: '<div id="psbrowser"></div><div class="row"><button class="btn" id="psbrowseback" type="button">Back</button></div><div class="adderr" id="psbrowseerr" role="alert"></div>',
   });
   onFrameChange();
+  const browser = $("#psbrowser");
+  const scrim = $("#scrim");
+  const current = () => browser.isConnected && scrim.classList.contains("show");
   $("#psbrowseback").onclick = onReturn;
   const chosen = async (path) => {
     try {
       const changed = await callRpc("project.add_source", { project_id: project.project_id, path });
       await writeProjectSetting(deviceId, changed);
-      onReturn();
+      if (current()) onReturn();
     } catch (thrown) {
       const error = $("#psbrowseerr");
       if (error) error.textContent = thrown.message;
@@ -322,17 +377,19 @@ async function browseForSource(project, { callRpc, deviceId, onFrameChange, onRe
     const settingsRecord = watchSettingsRecord(address, (settings) => {
       if (settings?.projects_dir) ready();
     });
+    const dispose = watchSheetLifetime(current, settingsRecord.dispose);
     await settingsRecord.read();
+    if (!current()) return;
     const pull = settingsRecord.pull(() => callRpc("settings.get"));
     const result = await Promise.race([
       cached.then(() => ({ ready: true })),
       pull.then(() => ({ ready: true }), (error) => ({ error })),
     ]);
-    if (result.error) settingsRecord.dispose();
-    else void pull.catch(() => {}).finally(settingsRecord.dispose);
+    if (result.error) dispose();
+    else void pull.catch(() => {}).finally(dispose);
     if (result.error) throw result.error;
     const startPath = (await readCached(address))?.value?.projects_dir;
-    if (!$("#psbrowser")) return;
+    if (!current()) return;
     await openBrowser({
       title: "Add folder",
       gitOnly: false,
@@ -340,7 +397,7 @@ async function browseForSource(project, { callRpc, deviceId, onFrameChange, onRe
       startPath,
       callRpc,
       deviceId,
-      container: $("#psbrowser"),
+      container: browser,
       onCancel: onReturn,
       onChoose: (path) => void chosen(path),
     });

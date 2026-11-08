@@ -2,6 +2,23 @@
 use super::execution::{require, terminal};
 use super::*;
 
+/// Schema 26: an older row has no write-ahead effect proof. Never infer that
+/// its empty step list means fresh, even when it was merely accepted at exit.
+pub(super) fn migrate_effect_evidence(tx: &Transaction<'_>) -> Result<(), StoreError> {
+    tx.execute_batch(
+        "UPDATE mutation_commands
+        SET state='unknown', record=json_set(record,
+            '$.state','unknown', '$.execution.effect_state','started',
+            '$.revision',coalesce(json_extract(record,'$.revision'),0)+1)
+        WHERE state IN ('accepted','executing','unknown','reconciling','committed')
+          AND CASE WHEN json_valid(record) THEN
+            json_extract(record,'$.method') IN ('environment.create_project','workspace.create')
+            AND coalesce(json_type(record,'$.execution.effect_state'),'null')='null'
+          ELSE 0 END;",
+    )?;
+    Ok(())
+}
+
 pub(super) fn is_creation(method: &str) -> bool {
     matches!(method, "environment.create_project" | "workspace.create")
 }

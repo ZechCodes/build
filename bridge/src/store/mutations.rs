@@ -112,9 +112,15 @@ CREATE TABLE IF NOT EXISTS mutation_outbox (
 CREATE INDEX IF NOT EXISTS mutation_outbox_principal_cursor ON mutation_outbox(principal, cursor);
 ";
 
-pub(super) fn initialize(connection: &Connection) -> Result<String, StoreError> {
+pub(super) fn initialize(
+    connection: &Connection,
+    previous_schema: i64,
+) -> Result<String, StoreError> {
     let transaction = connection.unchecked_transaction()?;
     transaction.execute_batch(JOURNAL_SCHEMA)?;
+    if previous_schema < 26 {
+        creation::migrate_effect_evidence(&transaction)?;
+    }
     transaction.execute(
         "INSERT OR IGNORE INTO meta(key,value) VALUES('journal_incarnation',?1)",
         [uuid::Uuid::new_v4().to_string()],

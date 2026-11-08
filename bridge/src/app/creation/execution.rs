@@ -414,6 +414,14 @@ fn retain_failure(
     if evidence["effect_state"] == "settled" {
         return false;
     }
+    if prior.execution["effect_state"].as_str().is_none()
+        || !matches!(
+            evidence["effect_state"].as_str(),
+            Some("not_started" | "started")
+        )
+    {
+        return true;
+    }
     if !matches!(prior.state.as_str(), "accepted" | "executing")
         || !matches!(current.state.as_str(), "accepted" | "executing")
     {

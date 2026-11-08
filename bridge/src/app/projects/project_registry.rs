@@ -228,18 +228,14 @@ impl ProjectRegistry {
     /// An inherited edit changes every dependent project's effective sources.
     /// Each dependent's additions, including parked projects, must stay unique.
     /// A project-owned edit only needs its own effective source membership.
-    pub(in crate::app) fn source_repoint_duplicates(
+    pub(in crate::app) fn source_repoint_duplicate_project(
         &self,
         project_id: &str,
         source_id: &str,
         candidate: &Path,
-    ) -> bool {
-        let Some(project) = self.get(project_id) else {
-            return false;
-        };
-        let Ok(canonical) = super::canonical_source_path(candidate) else {
-            return false;
-        };
+    ) -> Option<String> {
+        let project = self.get(project_id)?;
+        let canonical = super::canonical_source_path(candidate).ok()?;
         let inherited_environment = self.inherited_source_environment(project_id, source_id);
         self.source_references()
             .into_iter()
@@ -252,9 +248,9 @@ impl ProjectRegistry {
             .filter(|reference| {
                 !reference.belongs_to_source(project_id, source_id, inherited_environment)
             })
-            .any(|reference| {
-                super::canonical_source_path(&reference.source.path)
-                    .is_ok_and(|path| path == canonical)
+            .find_map(|reference| {
+                let path = super::canonical_source_path(&reference.source.path).ok()?;
+                (path == canonical).then(|| reference.project_id.unwrap_or(project_id).to_owned())
             })
     }
 
@@ -274,6 +270,7 @@ impl ProjectRegistry {
 
     /// Directory equality identifies references, never project identity or a
     /// repository's common Git directory. Return each environment just once.
+    #[cfg(test)]
     pub(in crate::app) fn environments_referencing(&self, dir: &Path) -> Vec<&Environment> {
         let Ok(canonical) = super::canonical_source_path(dir) else {
             return Vec::new();

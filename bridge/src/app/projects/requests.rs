@@ -299,19 +299,15 @@ impl AppState {
         candidate: &std::path::Path,
         source_id: &str,
     ) -> Result<(), String> {
-        let project = self.project_for(project_id)?;
-        let included_environment = self
+        self.project_for(project_id)?;
+        // Use the same effective-membership check for project-owned and
+        // inherited edits. Environment edits also affect every sibling line.
+        if let Some(affected_project) = self
             .projects
-            .environments_referencing(candidate)
-            .iter()
-            .any(|environment| environment.id == project.environment_id);
-        let duplicate = included_environment
-            && self
-                .projects
-                .source_repoint_duplicates(project_id, source_id, candidate);
-        if duplicate {
+            .source_repoint_duplicate_project(project_id, source_id, candidate)
+        {
             return Err(format!(
-                "source is already included in this project: {}",
+                "source is already included in this project: {} (affected project {affected_project})",
                 candidate.display()
             ));
         }

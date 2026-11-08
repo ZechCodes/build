@@ -22,8 +22,7 @@ struct ConfigurationProbe {
     repositories: Vec<PathBuf>,
     roots: Vec<PathBuf>,
     cloned_paths: Vec<PathBuf>,
-    #[cfg(test)]
-    clone_gate: Option<crate::app::OffLockGate>,
+    clock: crate::app::read_view::ReadViewSlot,
     #[cfg(test)]
     gate: Option<crate::app::OffLockGate>,
 }
@@ -42,10 +41,6 @@ impl WorktreeMutation for ConfigurationProbe {
         let held = if self.cloned_paths.is_empty() {
             vec![]
         } else {
-            #[cfg(test)]
-            if let Some(gate) = &self.clone_gate {
-                gate.arrive();
-            }
             crate::source_sync::SyncLock::acquire_many(
                 &self.refresh.source_claim_paths(),
                 crate::source_sync::SERVICE_FETCH_DEADLINE,
@@ -53,7 +48,7 @@ impl WorktreeMutation for ConfigurationProbe {
         };
         self.refresh
             .select_environment_edit(&self.environment, &self.repositories);
-        let refresh = self.refresh.render();
+        let refresh = self.refresh.observe(&self.clock);
         refresh.validate_source_claim_observations()?;
         if let Some(isolation) = self.isolation {
             refresh.validate_environment_isolation(&self.environment, isolation)?;
@@ -239,8 +234,7 @@ impl AppState {
             repositories,
             roots,
             cloned_paths: checks.cloned_paths,
-            #[cfg(test)]
-            clone_gate: self.off_lock_environment_source_clone_gate.clone(),
+            clock: self.read_view.clone(),
             #[cfg(test)]
             gate: self.off_lock_environment_probe_gate.clone(),
         };

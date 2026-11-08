@@ -60,6 +60,16 @@ pub(in crate::app) struct RenderedProjectSnapshotRefresh {
 }
 
 impl ProjectSnapshotRefresh {
+    /// Stamp the read, after any repository-lock wait, rather than the input
+    /// capture. Settlement can still prefer facts observed after this point.
+    pub(in crate::app) fn observe(
+        mut self,
+        clock: &super::read_view::ReadViewSlot,
+    ) -> RenderedProjectSnapshotRefresh {
+        self.version = clock.next_version();
+        self.render()
+    }
+
     pub(in crate::app) fn render(self) -> RenderedProjectSnapshotRefresh {
         RenderedProjectSnapshotRefresh {
             version: self.version,

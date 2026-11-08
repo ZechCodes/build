@@ -22,17 +22,12 @@ impl SourceAddScope {
 
 struct AdmissionProbe {
     refresh: ProjectSnapshotRefresh,
-    #[cfg(test)]
-    gate: Option<crate::app::OffLockGate>,
+    clock: crate::app::read_view::ReadViewSlot,
 }
 impl WorktreeMutation for AdmissionProbe {
     type Output = RenderedProjectSnapshotRefresh;
     fn perform(self) -> Result<Performed<Self::Output>, String> {
-        #[cfg(test)]
-        if let Some(gate) = &self.gate {
-            gate.arrive();
-        }
-        let observed = self.refresh.render();
+        let observed = self.refresh.observe(&self.clock);
         observed.validate_source_claim_observations()?;
         Ok(Performed {
             change: WorktreeChange::nothing(),
@@ -69,8 +64,7 @@ impl AppState {
             refresh: self
                 .capture_project_snapshot_refresh()
                 .for_source_claims(self.projects.registered_sources()),
-            #[cfg(test)]
-            gate: self.off_lock_environment_source_admission_gate.clone(),
+            clock: self.read_view.clone(),
         };
         let params = params.clone();
         self.defer_project(

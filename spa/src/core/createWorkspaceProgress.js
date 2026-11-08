@@ -158,6 +158,12 @@ function progressBodyHtml(model, targetSummary, actionError, target) {
       <button class="btn" type="button" data-progress-action="close">Close</button></div>`;
 }
 
+function watchProgressInteraction(onInteraction) {
+  const events = ["focusin", "focusout", "pointerdown", "keydown", "click"];
+  events.forEach(type => document.addEventListener(type, onInteraction, true));
+  return () => events.forEach(type => document.removeEventListener(type, onInteraction, true));
+}
+
 /** Closing only detaches this view. The durable service continues reconciling
  * the retained operation, and opening the same ID recovers its cached state. */
 export function openCreateWorkspaceProgress(options) {
@@ -168,7 +174,7 @@ export function openCreateWorkspaceProgress(options) {
   let support = options.environmentSupport || null;
   let record = service?.readOperations().find(row => row.operationId === operationId);
   let model = createWorkspaceProgressModel(record,support);
-  let previousPhase = null;
+  let previousPhase = null, userTookOver = false, painting = false;
   const modal = openModal({
     dialogHtml: modalDialogHtml(progressBodyHtml(model, targetSummary, actionError, options.target), { className: "modal-create create-workspace-sheet create-workspace-progress" }),
     scrimId: "create-workspace-progress-scrim", onClose: detachedView, initialFocus: ":not(*)",
@@ -177,6 +183,9 @@ export function openCreateWorkspaceProgress(options) {
   modal.body.onkeydown = event => trapProgressTab(event, modal.body);
   const unsubscribe = service?.subscribe(sync) || NOOP;
   const stopSupport = options.environmentSupport ? NOOP : subscribeCache(environmentSupportAddress(deviceId),()=>{void refreshSupport();});
+  const stopInteraction = watchProgressInteraction(() => {
+    if (support === null && !painting) userTookOver = true;
+  });
   paint();
   const ready = Promise.all([Promise.resolve(service?.get(operationId)),refreshSupport()]).then(([row]) => {
     if (detached) return;
@@ -189,7 +198,7 @@ export function openCreateWorkspaceProgress(options) {
     if (detached) return;
     detached = true;
     clearTimeout(timer);
-    unsubscribe();stopSupport();
+    unsubscribe();stopSupport();stopInteraction();
     if (!document.activeElement?.closest('[role="dialog"]') || modal.body.contains(document.activeElement)) opener?.focus();
     options.onClose?.();
   }
@@ -211,6 +220,7 @@ export function openCreateWorkspaceProgress(options) {
   }
   function paint() {
     if (detached) return;
+    painting = true;
     model = createWorkspaceProgressModel(record,support);
     const terminalChange = model.phase !== previousPhase && ["done", "failed"].includes(model.phase);
     const focusedAction = modal.body.contains(document.activeElement) ? document.activeElement.dataset.progressAction : null;
@@ -222,16 +232,17 @@ export function openCreateWorkspaceProgress(options) {
     restoreFocus(terminalChange, focusedAction);
     if (support !== null && model.phase === "done" && previousPhase !== "done") scheduleOpen();
     previousPhase = support === null ? null : model.phase;
+    painting = false;
   }
   function restoreFocus(terminalChange, focusedAction) {
-    if (previousPhase === null || (terminalChange && mayFocusOutcome())) modal.body.querySelector("[data-progress-action]")?.focus();
+    if (!userTookOver && (previousPhase === null || (terminalChange && mayFocusOutcome()))) modal.body.querySelector("[data-progress-action]")?.focus();
     else if (focusedAction) modal.body.querySelector(`[data-progress-action="${focusedAction}"]`)?.focus();
   }
   function mayFocusOutcome() {
     return previousPhase === null || document.activeElement === document.body || modal.body.contains(document.activeElement);
   }
   function scheduleOpen() {
-    if (!autoOpenDelay || !model.workspace) return;
+    if (!autoOpenDelay || !model.workspace || userTookOver) return;
     timer = setTimeout(() => {
       const focused = document.activeElement;
       if (!detached && modal.body.contains(focused) && focused.dataset.progressAction === "open") void act("open");

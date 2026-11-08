@@ -241,3 +241,23 @@ it("focuses and auto-opens Done only after delayed cached support is read",async
  expect(document.activeElement).toBe(document.querySelector('[data-progress-action="open"]'));
  await vi.advanceTimersByTimeAsync(900);expect(onOpenWorkspace).toHaveBeenCalledTimes(1);
 });
+
+it.each(['close','outside','back-to-close','interaction-only'])("preserves user takeover during delayed support: %s",async destination=>{
+ vi.useFakeTimers();let release;
+ vi.spyOn(supportCache,"readEnvironmentSupport").mockReturnValue(new Promise(resolve=>{release=resolve;}));
+ const onOpenWorkspace=vi.fn();const screen=open(completed(),{environmentSupport:null,onOpenWorkspace,autoOpenDelay:900});
+ const outside=document.createElement('button');document.body.append(outside);
+ const close=()=>document.querySelector('[data-progress-action="close"]');
+ if(destination==='outside'||destination==='back-to-close')outside.focus();
+ if(destination==='close')close().dispatchEvent(new Event('pointerdown',{bubbles:true}));
+ if(destination==='back-to-close')close().focus();
+ if(destination==='interaction-only')document.querySelector('[role="dialog"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Shift',bubbles:true}));
+ const expected=()=>destination==='outside'?outside:close();
+ expect(document.activeElement).toBe(expected());
+ release({createProject:true});await screen.ready;
+ expect(document.querySelector('[data-progress-action="open"]')).not.toBeNull();
+ expect(document.activeElement).toBe(expected());
+ await vi.advanceTimersByTimeAsync(1800);
+ expect(onOpenWorkspace).not.toHaveBeenCalled();
+ expect(document.activeElement).toBe(expected());
+});

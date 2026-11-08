@@ -31,8 +31,8 @@ try {
       }, { theme, phase });
       assert.equal(await page.getByRole("heading", { name: "New workspace in Build" }).count(), 1);
       if (phase === "before") assert.equal(await page.locator(".create-hint").textContent(), "Copies every source in this project into one durable workspace.");
-      assert.equal(await page.getByLabel(phase === "before" ? "Workspace label" : "Name").inputValue(), "Release");
-      assert.equal(await page.getByRole("button", { name: phase === "before" ? "Create workspace" : "Create", exact: true }).count(), 1);
+      assert.equal(await page.getByLabel(phase === "before" ? "Workspace label" : "Name (optional)").inputValue(), "Release");
+      assert.equal(await page.getByRole("button", { name: "Create workspace", exact: true }).count(), 1);
       await page.screenshot({ path: join(output, `${phase}-${width}-${theme}.png`) });
     }, { width, height: width === 390 ? 844 : 800 });
   }

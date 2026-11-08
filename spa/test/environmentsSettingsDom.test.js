@@ -1,30 +1,37 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-const state = vi.hoisted(() => ({ devices: [{ id: "laptop", name: "Laptop" }, { id: "desktop", name: "Desktop" }], support: new Map(), calls: new Map(), changes: new Set() }));
+const state = vi.hoisted(() => ({ devices: [{ id: "laptop", name: "Laptop" }, { id: "desktop", name: "Desktop" }], support: new Map(), calls: new Map(), changes: new Set(), greetings: new Set(), deviceOwned: false }));
 vi.mock("../src/app.js", () => ({ App: { get devices() { return state.devices; } } }));
 vi.mock("../src/devices.js", () => ({ readCachedDevices: async () => state.devices, onDevicesChanged: fn => { state.changes.add(fn); return () => state.changes.delete(fn); } }));
 vi.mock("../src/core/inboxDevices.js", () => ({ deviceCall: id => (...args) => state.calls.get(id)(...args) }));
 vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: vi.fn() }));
-vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: id => ({ environments: { list: state.support.get(id) } }) }));
+vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: id => ({ environments: { list: state.support.get(id) } }),
+  onBridgeGreeted: fn => { state.greetings.add(fn); return () => state.greetings.delete(fn); } }));
+vi.mock("../src/core/scopedSyncRuntime.js", () => ({ deviceScopedSyncOwns: () => state.deviceOwned, wakeScopedSync: vi.fn(async () => []) }));
 import { renderEnvironmentsSettings } from "../src/views/environmentsSettings.js";
 import { openProjectSettings } from "../src/sheets/projectSettings.js";
-import { writeCached, wipeCache } from "../src/core/localCache.js";
+import { readCached, writeCached, wipeCache } from "../src/core/localCache.js";
 import { routeFromHash, hashFromRoute } from "../src/core/router.js";
 const address = (deviceId, kind) => ({ deviceId, entityId: "", kind });
 const environment = (name = "Sources") => ({ environment_id: "env-1", name, home_path: "/work/source", is_git: true, sources: [{ id: "home" }, { id: "extra" }], project_ids: ["proj-1"] });
 const project = { project_id: "proj-1", environment_id: "env-1", name: "Release", is_git: false, added_sources: [{ id: "added" }], workspaces: 2, open_tasks: 3, total_tasks: 5 };
+import { createScopedDeviceSyncCache } from "../src/core/scopedDeviceSyncCache.js";
+import { deviceRecords } from "./fixtures/deviceSync.js";
+import { kindGlyphHtml } from "../src/core/environmentIdentity.js";
 let dispose;
-async function seed(id, environments = [environment()], projects = [project], supported = true) {
+async function seed(id, environments = [environment()], projects = [project], supported = true, settingsCached = true) {
   state.support.set(id, supported);
   await writeCached(address(id, "environment-support"), { list: supported });
   await writeCached(address(id, "environments"), environments);
   await writeCached(address(id, "projects"), projects);
+  if (settingsCached) await writeCached(address(id, "environment-settings-projects"), projects);
 }
 const mount = () => renderEnvironmentsSettings({ root: document.body, registerDispose: fn => { dispose = fn; } });
 beforeEach(async () => {
   globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange;
   await wipeCache();
+  state.deviceOwned = false;
   document.body.innerHTML = ""; vi.clearAllMocks();
   for (const device of state.devices) state.calls.set(device.id, vi.fn(() => new Promise(() => {})));
 });
@@ -96,4 +103,108 @@ it("updates device labels and removes deactivated devices from cached cards", as
     expect(document.body.textContent).toContain("Travel laptop");
     expect(document.body.textContent).not.toContain("Desktop");
   } finally { state.devices = original; }
+});
+
+async function publishJournalProjects(revision = "1") {
+  // project_rows clones config, replaces its chosen name with the path leaf,
+  // and publishes sources separately; counts are not part of that journal row.
+  const configProject = { id: "proj-1", project_id: "proj-1", project_key: "project:opaque", environment_id: "env-1",
+    name: "Release", path: "/work/source", base_branch: "main", next_source: 2 };
+  const records = deviceRecords().map(record => record.kind === "project"
+    ? { ...record, revision, row: { ...configProject, name: "source" } } : { ...record, revision });
+  const writer = createScopedDeviceSyncCache({ deviceId: "laptop", scope: { kind: "device" }, bridgeIdentity: "laptop" });
+  const cursor = await writer.readCursor();
+  await writer.publish({ records, capture: await writer.capture(), snapshot: true, expectedCursor: cursor?.cursor,
+    response: { status: "ok", scope: { kind: "device" }, incarnation: "journal", cursor: "cursor-" + revision,
+      watermark: revision, head: revision, bridge_epoch: "epoch", consistency: "leased" } });
+  return (await readCached(address("laptop", "projects"))).value;
+}
+
+it("reads chosen names and counts separately from a real device-scoped snapshot without inventing zeroes", async () => {
+  state.deviceOwned = true;
+  await seed("laptop", [environment()], [], true, false); await seed("desktop", [], []);
+  const journal = await publishJournalProjects();
+  expect(journal[0].name).toBe("source");
+  expect(journal[0]).not.toHaveProperty("workspaces");
+  let finish;
+  state.calls.set("laptop", vi.fn(method => method === "project.list"
+    ? new Promise(resolve => { finish = resolve; }) : new Promise(() => {})));
+  await mount();
+  const host = document.querySelector('[data-environments-device="laptop"]');
+  expect(host.querySelector(".pname").textContent).toContain("source");
+  expect(host.textContent).not.toMatch(/0 workspaces|0 tasks/);
+  await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+  finish({ projects: [project] });
+  await vi.waitFor(() => expect(host.textContent).toContain("2 workspaces · 3 open tasks"));
+  expect(host.querySelector(".pname").textContent).toContain("Release");
+  expect((await readCached(address("laptop", "projects"))).value).toEqual(journal);
+  expect((await readCached(address("laptop", "environment-settings-projects"))).value).toEqual([project]);
+});
+
+it("refreshes settings-owned names and counts on reconnect and journal wake while keeping prior paint", async () => {
+  state.deviceOwned = true;
+  await seed("laptop"); await seed("desktop", [], []);
+  await writeCached(address("laptop", "environment-settings-projects"), [project]);
+  await publishJournalProjects();
+  const answers = [];
+  state.calls.set("laptop", vi.fn(method => method === "project.list"
+    ? new Promise(resolve => answers.push(resolve)) : new Promise(() => {})));
+  await mount();
+  await vi.waitFor(() => expect(answers).toHaveLength(1));
+  answers.shift()({ projects: [project] });
+  await vi.waitFor(() => expect(document.body.textContent).toContain("3 open tasks"));
+  state.greetings.forEach(listener => listener("laptop"));
+  await vi.waitFor(() => expect(answers).toHaveLength(1));
+  expect(document.body.textContent).toContain("3 open tasks");
+  answers.shift()({ projects: [{ ...project, name: "Chosen name", workspaces: 4, open_tasks: 7 }] });
+  await vi.waitFor(() => expect(document.body.textContent).toContain("4 workspaces · 7 open tasks"));
+  await publishJournalProjects("2");
+  await vi.waitFor(() => expect(answers).toHaveLength(1));
+  expect(document.body.textContent).toContain("Chosen name");
+  answers.shift()({ projects: [{ ...project, workspaces: 5, open_tasks: 8 }] });
+  await vi.waitFor(() => expect(document.body.textContent).toContain("5 workspaces · 8 open tasks"));
+  const calls = state.calls.get("laptop").mock.calls.length;
+  dispose(); dispose = null;
+  state.greetings.forEach(listener => listener("laptop"));
+  await publishJournalProjects("3");
+  expect(state.calls.get("laptop").mock.calls.length).toBe(calls);
+});
+
+it("omits unavailable counts and totals only known workspace counts", async () => {
+  await seed("laptop", [environment()], [project, { project_id: "proj-2", environment_id: "env-1", name: "Unknown counts" }]);
+  await seed("desktop", [], []); await mount();
+  const card = document.querySelector('[data-environment="env-1"]');
+  expect(card.textContent).toContain("2 projects · 2 workspaces");
+  const unknown = [...card.querySelectorAll(".projrow")].find(row => row.textContent.includes("Unknown counts"));
+  expect(unknown.textContent).not.toMatch(/workspaces|tasks/);
+});
+
+it("uses shared device tags on every environment and project row, including old bridges and Offline", async () => {
+  const original = state.devices;
+  try {
+    state.devices = [{ id: "laptop", name: "Laptop", status: "online" }, { id: "desktop", name: "Desktop", status: "offline" }];
+    await seed("laptop"); await seed("desktop", [], [project], false); await mount();
+    expect(document.querySelector('[data-environment] .inbox-device').textContent).toBe("Laptop");
+    expect(document.querySelector('[data-environments-device="laptop"] .projrow .inbox-device').textContent).toBe("Laptop");
+    expect(document.querySelector('[data-environments-device="desktop"] .projrow .inbox-device').textContent).toBe("Offline");
+  } finally { state.devices = original; }
+});
+
+it("omits device tags on a single online device", async () => {
+  const original = state.devices;
+  try {
+    state.devices = [{ id: "laptop", name: "Laptop", status: "online" }]; await seed("laptop"); await mount();
+    expect(document.querySelector('[data-environment] h3').textContent).not.toContain("Laptop");
+    expect(document.querySelectorAll(".inbox-device")).toHaveLength(0);
+  } finally { state.devices = original; }
+});
+
+it("renders both kinds with the shared environment identity glyphs", async () => {
+  await seed("laptop"); await seed("desktop", [], []); await mount();
+  const card = document.querySelector('[data-environment]');
+  for (const kind of ["environment", "project"]) {
+    const svg = card.querySelector('svg[data-kind="' + kind + '"]');
+    const expected = document.createElement("template"); expected.innerHTML = kindGlyphHtml(kind);
+    expect(svg?.outerHTML).toBe(expected.content.firstChild.outerHTML);
+  }
 });

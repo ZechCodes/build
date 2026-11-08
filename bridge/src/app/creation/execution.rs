@@ -477,6 +477,10 @@ fn finish_failure(
         project_landed,
         environment_landed,
     );
+    details["creation"] = evidence
+        .get("source_refusal")
+        .cloned()
+        .unwrap_or_else(|| json!({"step":step}));
     set_step(&mut evidence, step, "failed", Some(error));
     // The failed step and its terminal intent must survive the same checkpoint.
     // Restart completes this failure; it must never provision this attempt again.

@@ -234,6 +234,12 @@ fn admission_error(error: crate::store::StoreError) -> ApiError {
         error => ApiError::unavailable(error.to_string()),
     }
 }
+fn validation_refusal(message: impl Into<String>, step: &str) -> ApiError {
+    ApiError::InvalidParams {
+        message: message.into(),
+        details: Some(json!({"creation":{"step":step}})),
+    }
+}
 fn validate_creation(method: &str, params: &Value) -> Result<(), ApiError> {
     if !matches!(
         method,
@@ -247,40 +253,55 @@ fn validate_creation(method: &str, params: &Value) -> Result<(), ApiError> {
         params
     };
     let workspace = if method != "workspace.create" {
-        let name = project["name"].as_str().unwrap_or("");
-        if name.trim().is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
-            return Err(ApiError::invalid_params(
-                "project name must be one line between 1 and 256 bytes",
-            ));
-        }
+        validate_project_name(project)?;
         &project["workspace"]
     } else {
         params
     };
     if method == "environment.create" {
-        if params["sources"].as_array().is_none_or(Vec::is_empty) {
-            return Err(ApiError::invalid_params(
-                "an environment must have at least one source",
-            ));
-        }
-        if let Some(name) = params["name"].as_str() {
-            if name.trim().is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
-                return Err(ApiError::invalid_params(
-                    "environment name must be one line between 1 and 256 bytes",
-                ));
-            }
-        }
-        if let Some(isolation) = params["isolation"].as_str() {
-            if crate::isolation::Isolation::from_wire(isolation).is_none() {
-                return Err(ApiError::invalid_params("unknown environment isolation"));
-            }
-        }
+        validate_environment(params)?;
     }
     if let Some(isolation) = workspace.get("isolation").and_then(Value::as_str) {
         if crate::isolation::Isolation::from_wire(isolation).is_none() {
-            return Err(ApiError::invalid_params(format!(
-                "unknown isolation: {isolation}"
-            )));
+            return Err(validation_refusal(
+                format!("unknown isolation: {isolation}"),
+                "workspace",
+            ));
+        }
+    }
+    Ok(())
+}
+fn validate_project_name(project: &Value) -> Result<(), ApiError> {
+    let name = project["name"].as_str().unwrap_or("");
+    if name.trim().is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
+        return Err(validation_refusal(
+            "project name must be one line between 1 and 256 bytes",
+            "project",
+        ));
+    }
+    Ok(())
+}
+fn validate_environment(params: &Value) -> Result<(), ApiError> {
+    if params["sources"].as_array().is_none_or(Vec::is_empty) {
+        return Err(validation_refusal(
+            "an environment must have at least one source",
+            "environment",
+        ));
+    }
+    if let Some(name) = params["name"].as_str() {
+        if name.trim().is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
+            return Err(validation_refusal(
+                "environment name must be one line between 1 and 256 bytes",
+                "environment",
+            ));
+        }
+    }
+    if let Some(isolation) = params["isolation"].as_str() {
+        if crate::isolation::Isolation::from_wire(isolation).is_none() {
+            return Err(validation_refusal(
+                "unknown environment isolation",
+                "environment",
+            ));
         }
     }
     Ok(())

@@ -266,6 +266,21 @@ fn repoint_reference_leaves_sibling_reference() {
     let sibling = f.app.sources_for("proj-2").unwrap()[1].clone();
     assert_ne!(sibling.name, "mine");
     assert_eq!(sibling.base_branch, "main");
+    f.call("project.list", json!({}));
+    let answer = f.call("project.update_source", json!({"project_id":"proj-1","source_id":"source-2","remote":"https://example.invalid/shared.git"}));
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(f.app.sources_for("proj-2").unwrap()[1], sibling);
+    let listed = f.call("project.list", json!({}));
+    let other = listed["result"]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|project| project["project_id"] == "proj-2")
+        .unwrap();
+    assert_eq!(
+        other["sources"][1]["remote"],
+        "https://example.invalid/shared.git"
+    );
     let answer = f.call(
         "project.update_source",
         json!({"project_id":"proj-1","source_id":"source-2","path":f.b}),

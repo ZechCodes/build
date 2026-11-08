@@ -102,7 +102,7 @@ function openCreationSurface(options,snapshot,savedDraft) {
   if(supportsWorkspaceWizard(snapshot,options))return mountCreateWorkspaceWizard(options,snapshot);
   const attempt=retainedCreationAttempt(snapshot,options);
   if(attempt)return mountCreateWorkspaceWizard(options,snapshot,attempt);
-  return options.fromShortcut ? null : openLegacySurface(options,savedDraft);
+  return options.fromShortcut ? null : openLegacySurface(options,savedDraft?.continues ? savedDraft:undefined);
 }
 export function openCreateWorkspaceWizard(options = {}) {
   let screen=null,closed=false;

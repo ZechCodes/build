@@ -15,7 +15,7 @@ vi.mock("../src/core/motion.js", () => ({
   reveal: async el => { el.hidden = false; }, hide: async el => { el.hidden = true; }, settleHidden: el => { el.hidden = true; },
 }));
 const { openCreateWorkspaceWizard, createWorkspaceWizardHtml } = await import("../src/core/createWorkspaceWizard.js");
-const { readUiRecord, wipeUiRecords } = await import("../src/core/localUiStore.js");
+const { readUiRecord, writeUiRecord, wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { uiAddress } = await import("../src/core/localUiState.js");
 const snapshot = () => ({
   projects: [{ id:"p1", name:"Payments", deviceId:"d1", environment_id:"e1", sources:[{name:"api",path:"/code/api"}], open_tasks:2,total_tasks:9 }],
@@ -237,6 +237,19 @@ describe('workspace wizard pages',()=>{
     expect(mocks.consume).toHaveBeenCalledWith('d1','downgraded-back');
     dialog().querySelector('[data-create-cancel]').click();await vi.waitFor(()=>expect(dialog()).toBeNull());
     await vi.waitFor(async()=>expect(await readUiRecord(address)).toBeUndefined());
+  });
+
+  it('does not adopt an unsubmitted wizard draft for an unpreset old-bridge entry',async()=>{
+    const address=uiAddress({view:'create-workspace',kind:'draft'});
+    await writeUiRecord(address,{target:{id:'p1',deviceId:'d1',kind:'project',name:'Payments'},name:'Unsubmitted work',isolation:'rift',page:3});
+    mocks.read.mockResolvedValue({...snapshot(),support:{}});
+    await open({fixedProject:false});
+    expect(dialog().querySelector('h3').textContent).toBe('New workspace in project');
+    expect(dialog().querySelector('#create-work-input').value).toBe('');
+    expect(dialog().querySelector('#create-work-isolation').value).toBe('');
+    dialog().querySelector('[data-create-go]').click();
+    expect(dialog().querySelector('.create-error').textContent).toBe('No connected project to create in.');
+    expect(mocks.legacy).not.toHaveBeenCalled();expect(mocks.submit).not.toHaveBeenCalled();
   });
 
 });

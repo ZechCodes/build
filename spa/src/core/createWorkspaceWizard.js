@@ -94,7 +94,7 @@ export function openCreateWorkspaceWizard(options = {}) {
   const modal=openModal({dialogHtml:createWorkspaceWizardHtml(state),scrimId:'create-scrim',canDismiss:()=>!state.busy,onClose:cancelled,initialFocus:':not(*)'});
   modal.body.setAttribute('aria-labelledby','create-workspace-title');
   modal.body.dataset.createPage=String(state.page);
-  draft=watchUiState(address,restoreDraft,{debounceMs:120,active:()=>!detached});
+  draft=watchUiState(address,restoreDraft,{active:()=>!detached});
   stop=followCreateWorkspaceTargets(()=>{void refresh();});
   wire();
   const ready=Promise.all([draft.ready,refresh()]).then(async()=>{await recoverAttempt();if(!detached)focusPage(options.fromShortcut);});
@@ -115,7 +115,7 @@ export function openCreateWorkspaceWizard(options = {}) {
     if(!value || detached || JSON.stringify(value) === JSON.stringify(draftOf(state))) return;
     Object.assign(state,value);updateModel();paint();
   }
-  function save() {draft.schedule(draftOf(state));}
+  function save() {void draft.write(draftOf(state));}
   function dispose() {if(detached)return;detached=true;stop();draft.dispose();}
   async function detach() {await draft.flush();dispose();await modal.close();}
   async function cancelled() {

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { setImmediate as nextTask } from "node:timers/promises";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 const mocks = vi.hoisted(() => ({ read: vi.fn(), submit: vi.fn(), legacy: vi.fn(), progress: vi.fn(), navigate: vi.fn(), consume:vi.fn(), cache:vi.fn(), route:vi.fn() }));
 vi.mock("../src/app.js", () => ({ go: mocks.navigate }));
@@ -141,6 +142,20 @@ describe('workspace wizard pages',()=>{
     if(state==='failed')await progress.onKeepProject({operationId:'finished',record});
     else await progress.onOpenWorkspace({operationId:'finished',record:{...record,confirmation:{result:{workspace:{id:'w1',project_id:'p1'}}}},workspace:{id:'w1',project_id:'p1'}});
     expect(mocks.consume).toHaveBeenCalledWith('d1','finished');
+  });
+
+  it('persists every name, isolation and target action without advancing timers',async()=>{
+    await open({fixedProject:false});vi.useFakeTimers({toFake:['setTimeout','clearTimeout']});
+    try {
+      clickTarget('environment');
+      const address=uiAddress({view:'create-workspace',kind:'draft'});
+      const persisted=async predicate=>{for(let i=0;i<30;i++){await nextTask();const value=(await readUiRecord(address))?.value;if(predicate(value))return value;}return (await readUiRecord(address))?.value;};
+      expect((await persisted(value=>value?.target?.id==='e1'))?.target.id).toBe('e1');
+      name('First edit');expect((await persisted(value=>value?.name==='First edit'))?.name).toBe('First edit');
+      name('Second edit');expect((await persisted(value=>value?.name==='Second edit'))?.name).toBe('Second edit');
+      const isolation=dialog().querySelector('#create-work-isolation');isolation.value='rift';isolation.dispatchEvent(new Event('change'));
+      expect((await persisted(value=>value?.isolation==='rift'))?.isolation).toBe('rift');
+    } finally {vi.useRealTimers();}
   });
 
 });

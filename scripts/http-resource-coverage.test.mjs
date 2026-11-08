@@ -464,7 +464,7 @@ const sourceFingerprintParts = {
   "core/directoryWatcher.js": ["3016199e", "f2ebe782", "5731fa24", "665dba3a", "6fd96a9e", "f5a4ee11", "c6841b70", "db07db4f"],
   "core/taskTimelinePages.js": ["da2840fb", "5992d7ce", "038bbc4d", "9c01a8ab", "c320a6f3", "7592e5be", "d5cbf08c", "4fcf8220"],
 
-  "core/createWorkspaceProgress.js": ["ab7a0502", "6d6b5e22", "05afb9ec", "33b53994", "825d5bf9", "29439264", "00a4e31e", "c0b975fe"],
+  "core/createWorkspaceProgress.js": ["79e191d9", "00c9cd8c", "2526aeea", "bf6f1e6b", "686cfe21", "4d21c564", "7a6238f8", "114b60c8"],
   "core/createWorkspaceTargets.js": ["347b66ec", "6048a73a", "7fed190e", "94941cc7", "d0f0b8e6", "40a24973", "d73d1813", "321a5a8c"],
   "core/writeOperationProgress.js": ["612c1fc7", "78d4b658", "fb001a3b", "01eb5aba", "a6a82b1a", "0389924d", "06c8355f", "bdae5355"],
   "core/createWorkspaceWizardModel.js": ["de971c24", "0b170e41", "219c3c43", "cb7db24a", "d2bb3c52", "d007f42a", "01ffa437", "9b1527a4"],

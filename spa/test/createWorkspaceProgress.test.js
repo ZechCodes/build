@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as supportCache from "../src/core/environmentSupport.js";
 import { createWorkspaceProgressModel as progressModel, openCreateWorkspaceProgress } from "../src/core/createWorkspaceProgress.js";
 vi.mock("../src/core/motion.js", () => ({ reveal: async e => { e.hidden = false; }, hide: async e => { e.hidden = true; }, settleHidden: () => {} }));
 const createWorkspaceProgressModel=record=>progressModel(record,{create:true,createProject:true});
@@ -22,7 +23,7 @@ function open(row, extra = {}) {
   dialogs.push(dialog); return { ...dialog, writeOperations };
 }
 beforeEach(() => { document.body.innerHTML = ""; dialogs = []; });
-afterEach(async () => { await Promise.all(dialogs.map(dialog => dialog.close())); vi.useRealTimers(); });
+afterEach(async () => { await Promise.all(dialogs.map(dialog => dialog.close())); vi.useRealTimers(); vi.restoreAllMocks(); });
 describe("workspace creation progress", () => {
   it("paints cached Done with the target summary and opens the workspace", async () => {
     const onOpenWorkspace = vi.fn(); open(completed(), { onOpenWorkspace });
@@ -210,4 +211,33 @@ it.each(['project','environment','new-environment'])('uses the shared identity S
  open(operation(),{target:{kind,name:'Target'}});
  const template=document.createElement('template');template.innerHTML=kindGlyphHtml(kind==='project'?'project':'environment');
  expect(document.querySelector('.create-target-summary .identity-kind')?.outerHTML).toBe(template.content.firstChild.outerHTML);
+});
+
+it.each([true,false])("holds failed actions neutral until cached support resolves (supported: %s)",async supported=>{
+ let release;
+ const read=vi.spyOn(supportCache,"readEnvironmentSupport").mockReturnValue(new Promise(resolve=>{release=resolve;}));
+ const screen=open(failed(),{environmentSupport:null});
+ await flush();
+ expect(read).toHaveBeenCalledWith("laptop");
+ const actions=()=>[...document.querySelectorAll("[data-progress-action]")].map(button=>button.dataset.progressAction);
+ expect(document.body.textContent).toContain("checkout refused");
+ expect(document.body.textContent).not.toContain("Update Build");
+ expect(actions()).toEqual(["close"]);
+ screen.writeOperations.update(failed());
+ expect(document.body.textContent).not.toContain("Update Build");
+ expect(actions()).toEqual(["close"]);
+ release({createProject:supported});await screen.ready;
+ expect(actions()).toEqual(supported?["retry","keep","discard","close"]:["keep","close"]);
+ expect(document.body.textContent.includes("Update Build")).toBe(!supported);
+});
+
+it("focuses and auto-opens Done only after delayed cached support is read",async()=>{
+ vi.useFakeTimers();let release;
+ vi.spyOn(supportCache,"readEnvironmentSupport").mockReturnValue(new Promise(resolve=>{release=resolve;}));
+ const onOpenWorkspace=vi.fn();const screen=open(completed(),{environmentSupport:null,onOpenWorkspace,autoOpenDelay:900});
+ expect(document.querySelector('[data-progress-action="open"]')).toBeNull();
+ await vi.advanceTimersByTimeAsync(1000);expect(onOpenWorkspace).not.toHaveBeenCalled();
+ release({createProject:true});await screen.ready;
+ expect(document.activeElement).toBe(document.querySelector('[data-progress-action="open"]'));
+ await vi.advanceTimersByTimeAsync(900);expect(onOpenWorkspace).toHaveBeenCalledTimes(1);
 });

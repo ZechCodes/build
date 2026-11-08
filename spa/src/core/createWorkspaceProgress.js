@@ -91,6 +91,8 @@ export function createWorkspaceProgressModel(record, support = {}) {
 }
 
 function recoveryActions(record, candidates, support) {
+  // A pending cache read is not an unsupported device. Keep the action area neutral.
+  if (support === null) return {actions:[],unavailable:""};
   const actions=candidates.filter(([action])=>{
     const method=creationMethodForRecovery(action,record?.request?.method);
     return !method || creationSupportForMethod(support,method);
@@ -163,7 +165,7 @@ export function openCreateWorkspaceProgress(options) {
   const service = options.writeOperations || deviceWriteOperations(deviceId);
   const opener = document.activeElement;
   let detached = false, timer = null, actionError = "", acting = false, supportGeneration = 0;
-  let support = options.environmentSupport || {};
+  let support = options.environmentSupport || null;
   let record = service?.readOperations().find(row => row.operationId === operationId);
   let model = createWorkspaceProgressModel(record,support);
   let previousPhase = null;
@@ -218,8 +220,8 @@ export function openCreateWorkspaceProgress(options) {
       button.onclick = () => { void act(button.dataset.progressAction); };
     });
     restoreFocus(terminalChange, focusedAction);
-    if (model.phase === "done" && previousPhase !== "done") scheduleOpen();
-    previousPhase = model.phase;
+    if (support !== null && model.phase === "done" && previousPhase !== "done") scheduleOpen();
+    previousPhase = support === null ? null : model.phase;
   }
   function restoreFocus(terminalChange, focusedAction) {
     if (previousPhase === null || (terminalChange && mayFocusOutcome())) modal.body.querySelector("[data-progress-action]")?.focus();

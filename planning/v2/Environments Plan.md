@@ -617,6 +617,13 @@ The change bus (`bridge/src/changes.rs`) gains `Scope::Environment` and
 stamp. A creation attempt publishes project and workspace through the
 existing board pushes as each step lands, so an old SPA tab sees them.
 
+M1.2 implementation note: current `sync.device` bridges bypass the legacy
+`readSyncLists` / `writePushedBoard` ownership path. Environments remain an
+independent per-device cached list: both paths read `environment.list` only
+with the current `environments` capability and apply carried board pushes
+with the same list fence. Device journal projections do not own environments.
+`environmentCache.js` exports `readCachedEnvironments(deviceId)` for consumers.
+
 **Step progress is an additive wire change.** `writes.confirmed` is built
 from a **terminal** outcome only (`confirmation`, `mutations.rs:328-345`) and
 the SPA treats it as confirmation (`writeOperations.js`); intermediate steps

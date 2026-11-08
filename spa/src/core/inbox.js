@@ -35,6 +35,7 @@
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
+import { projectIdentityHtml } from "./environmentIdentity.js";
 import { taskActivityGroup, taskHasReadiness, taskIsBlocked, taskIsHeld, taskWaitingText, unresolvedTaskBlockers } from "./trackerTaskReadiness.js";
 import { taskInboxFactsHtml } from "./trackerTaskReadinessRender.js";
 import { esc } from "./text.js";
@@ -963,7 +964,9 @@ export function clashingNames(rows, nameOf) {
  *  already been told which project it is in, and says nothing. */
 function projectTagHtml(entry, ui) {
   if (ui.showProject === false) return "";
-  return `<div class="inbox-line inbox-project-line"><span class="inbox-tag">${esc(entry.project || "unknown project")}${dimDeviceHtml(entry.deviceName)}</span></div>`;
+  const identity = entry.environmentIdentity;
+  const name = identity ? projectIdentityHtml(identity) : esc(entry.project || "unknown project");
+  return `<div class="inbox-line inbox-project-line"><span class="inbox-tag">${name}${dimDeviceHtml(identity ? identity.deviceLabel : entry.deviceName)}</span></div>`;
 }
 
 /** The project a row's title names, with the machine after it where two

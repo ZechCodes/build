@@ -1279,6 +1279,7 @@ describe("cached environment inbox", () => {
     const { writeCached } = await import("../src/core/localCache.js");
     const projects = [project("project-1", "Payments", "dev-1", { environment_id: "env" }), project("project-2", "Website", "dev-1", { environment_id: "env" })];
     feed([workspace()], projects);
+    document.querySelector("#inbox-new-project").innerHTML = "<span>New project</span>";
     mountInboxList();
     setInboxView("projects");
     await writeCached({ deviceId: "dev-1", entityId: "", kind: "environments" }, [{ environment_id: "env", name: "Shared", project_ids: ["project-1", "project-2"] }]);

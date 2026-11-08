@@ -161,6 +161,14 @@ async fn clone_cleanup_claim_blocks_admission_and_prepared_settlement_during_del
             admission.is_err(),
             "admitted a source inside an active deletion"
         );
+        let settlement = app.apply_deferred("project.add_source", &local, pending);
+        assert!(
+            settlement.is_err(),
+            "settled a source inside an active deletion"
+        );
+        // Settle the old job first so the generic filesystem-job guard does
+        // not hide whether workspace admission observes the deletion claim.
+        assert_eq!(app.active_deferred_filesystem_jobs, 0);
         let directory = app.handle(req(
             "workspace.add_directory",
             json!({"workspace_id":workspace_id,"path":child}),
@@ -172,11 +180,6 @@ async fn clone_cleanup_claim_blocks_admission_and_prepared_settlement_during_del
         assert_eq!(
             app.workspaces.get(&workspace_id).unwrap().directories.len(),
             1
-        );
-        let settlement = app.apply_deferred("project.add_source", &local, pending);
-        assert!(
-            settlement.is_err(),
-            "settled a source inside an active deletion"
         );
         assert_eq!(app.sources_for(&other).unwrap().len(), 1);
     }

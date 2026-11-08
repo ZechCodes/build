@@ -8,7 +8,7 @@ import { readEnvironmentSupport } from "./environmentSupport.js";
 import { esc } from "./text.js";
 
 const mutationSelectors = [
-  ".dcmt", ".pcx", ".cscancel", "[data-project-sync-base]", ".gittoolbar button", ".gtstash button", ".csbox button", ".gitdiscard", "[data-ref]", ".fcmt", "textarea", "input:not([type=search])", "[contenteditable=true]", "[data-project-create]", "[data-workspace-reclaim]",
+  "#tb-verb button", "#init-git", "[data-init-git]", "[data-workspace-action]", ".dcmt", ".pcx", ".cscancel", "[data-project-sync-base]", ".gittoolbar button", ".gtstash button", ".csbox button", ".gitdiscard", "[data-ref]", ".fcmt", "textarea", "input:not([type=search])", "[contenteditable=true]", "[data-project-create]", "[data-workspace-reclaim]",
   ".fupload-action", "[data-bubble=add]", ".rail-newagent select", "[data-clear-start]", ".composer-chip-remove", ".composer-send", ".rail-remove", ".rail-harness-choice", ".rail-watch", ".file-save", "[data-upload-action]", ".fupload-new button", "[data-task-state]", "[data-task-assign]", "#task-status", "#task-priority", "#task-labels", "[data-task-index]",
   "[data-review-comment]", "[data-review-verdict]", "[data-review-comment-batch]", "[data-review-reply]", "[data-review-reviewer]", "[data-review-refresh]",
   "[data-review-request-legacy]", "[data-review-close-legacy]", "[data-review-reopen]", "[data-review-repair]", "[data-review-reclaim]",

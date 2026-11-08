@@ -280,7 +280,7 @@ const sourceFingerprintParts = {
   // #1073: archive observation forwards the caller unchanged; restore, rename,
   // and environment edits require a fresh capable greeting and publish cache
   // projections. Source cards translate only the three SOURCE_METHODS keys.
-  "core/archivedProjectView.js": ["1ad53c26", "f90c5d0f", "ce7ffdf2", "d4fa2e34", "dfec2269", "599d37d5", "d37b7752", "d9e83e68"],
+  "core/archivedProjectView.js": ["a2004a3e", "c4442470", "1a8276a8", "aecbc55a", "3d0397df", "1ad2013b", "f2cc8fd6", "240b1d52"],
   "core/environmentWrites.js": ["035dbf26", "683d9297", "9306e4cc", "51f549d6", "c0cad335", "51198b2c", "3981d520", "129d2b31"],
   "sheets/environmentSettings.js": ["46b8c3c8", "c4c507ab", "4e081f06", "84ba399f", "32479c6d", "4110a01f", "e3233fe3", "f1acab81"],
   "sheets/projectGeneral.js": ["fc98cc90", "55895a93", "1ca3f5e6", "daa62883", "bcf775e9", "fa459fa0", "cd1b1240", "35ac3f25"],
@@ -463,7 +463,7 @@ const sourceFingerprintParts = {
   "terminal/manager.js": ["4027a8b0", "af931af9", "3d71d687", "c930e06b", "bd55b938", "ad0db4da", "e20dc150", "60ed795b"],
   "terminal/session.js": ["ce4e3036", "ac5b84b3", "ae7583e9", "2b940e62", "4dfe75b7", "d77a06e7", "dfda65ca", "8c8ede4e"],
   "views/archive.js": ["6f4a7962", "88f34292", "73eafead", "5dc6229b", "5b040b7a", "09baf137", "8cbbce83", "6c83d400"],
-  "views/branchView.js": ["bd60fcf4", "7c212e82", "4972bdd1", "5b4a3563", "54913179", "782e8a54", "ea8d0a73", "30816a7d"],
+  "views/branchView.js": ["5bea4685", "b85a7cb2", "9a9b09df", "b37aaf56", "0609dff8", "b3e8ea97", "25d68b9b", "00e3e7f2"],
   // #997 deviceProjects.js:82: the existing project.list loader delegates to owned device recovery.
   "views/deviceProjects.js": ["1a1e6df3", "03d87e50", "3c8c3e09", "d3d2ecc9", "2b9c040f", "df2d7629", "c493f430", "adcc7c93"],
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
@@ -473,8 +473,8 @@ const sourceFingerprintParts = {
   "views/projectChanges.js": ["a026e8d5", "a98c8426", "fcbe395b", "700f1af4", "87ac760b", "0241758c", "11c8e263", "641fb899"],
   "views/projectView.js": ["24538ac1", "a6a75ad3", "665099d8", "839998b0", "79a97193", "5e755b82", "4be8f527", "d1b8c73d"],
   "views/taskReview.js": ["7d540d05", "70beae35", "200434ea", "decae581", "f1b126d6", "9a38fe38", "642a621a", "2e34a257"],
-  "views/taskView.js": ["483fdb16", "52a51dd3", "ea9f60d0", "c21f16a9", "090b27a4", "4839602c", "4653bfcc", "38959753"],
-  "views/workspaceView.js": ["a8297151", "b9889eea", "1ef6492b", "4242340b", "21deba98", "2afe3f42", "4f4be235", "4268410b"],
+  "views/taskView.js": ["4b923ba1", "b951cd49", "cf886160", "2afd333d", "dd7b61bc", "40dbcdfb", "19494b00", "6f15dd58"],
+  "views/workspaceView.js": ["c1cf7fce", "0e9f3802", "34bbe01a", "29bbe444", "805119ba", "9e283f28", "d464e471", "df16148b"],
   "views/worktreeReview.js": ["85ee8f63", "e33ae091", "1057ec2b", "8bd416bd", "d4b709ba", "71953ecd", "05807b6d", "ee80f4db"],
   "core/directoryPages.js": ["1114bcb9", "d7703490", "4542e5ef", "d06e4f25", "b52d6e2e", "4c206d81", "9586fd6a", "92ccc080"],
   "core/directoryWatcher.js": ["3016199e", "f2ebe782", "5731fa24", "665dba3a", "6fd96a9e", "f5a4ee11", "c6841b70", "db07db4f"],
@@ -786,6 +786,9 @@ const dynamicSites = {
   "views/projectView.js": [
     "projectFilesRpc ( state . context )"
   ],
+  // #1073: legacy plan calls transparently pass through the mounted archive
+  // boundary once their cached project is known; argument lists are unchanged.
+  "views/taskView.js": ["archiveView . callRpc ( ... args )", "context . rpc ( ... args )"],
   "views/workspaceView.js": [
     "context . rpc ( method )",
     "context . rpc ( method )",

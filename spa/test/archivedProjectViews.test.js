@@ -23,7 +23,8 @@ vi.mock("../src/core/changeEvents.js", async original => ({ ...await original(),
   bridgeCapabilities: () => runtime.capabilities, onBridgeGreeted: () => () => {},
   watchChanges: () => ({ dispose() {} }),
 }));
-vi.mock("../src/core/deviceContexts.js", async original => ({ ...await original(), contextFor: () => runtime.context,
+vi.mock("../src/core/deviceContexts.js", async original => ({ ...await original(), contextFor: () => runtime.context, routeContext: () => runtime.context,
+  deviceFeedHeld: snapshot => Boolean(snapshot), deviceFeedView: snapshot => snapshot,
   captureDeviceGreeting: () => ({ epoch: "test-epoch", current: () => true }),
   whenGreeted: async (_context, send) => ({ sent: send() }),
 }));
@@ -35,13 +36,17 @@ vi.mock("../src/core/deviceNotice.js", () => ({ mountDeviceStrip: () => () => {}
 vi.mock("../src/core/toolbar.js", async original => ({ ...await original(),
   setToolbarVerb: paint => paint(document.querySelector("#tb-verb")), clearToolbarVerb() {},
 }));
-vi.mock("../src/core/shell.js", async original => ({ ...await original(), shellSelection: () => createAgentSelection(), collapseChatOverPage() {} }));
+vi.mock("../src/core/shell.js", async original => ({ ...await original(), shellSelection: () => createAgentSelection(), collapseChatOverPage() {}, refineShell() {}, dropShell() {} }));
 
 import { App } from "../src/app.js";
 import { mountChanges } from "../src/views/workspaceChanges.js";
 import { mountArchivedProjectView } from "../src/core/archivedProjectView.js";
 import { hideCommentPop } from "../src/commentPop.js";
 import { renderProject } from "../src/views/projectView.js";
+import { taskAddress } from "../src/core/taskCache.js";
+import { renderTask } from "../src/views/taskView.js";
+import { renderBranch } from "../src/views/branchView.js";
+import { renderWorkspace } from "../src/views/workspaceView.js";
 import { renderTrackerTask } from "../src/views/trackerTaskView.js";
 
 const deviceId = "archive-device", projectId = "archive-project", taskId = "task-archive";
@@ -158,30 +163,48 @@ it("project_archived refusal is shown verbatim", async () => {
 
 // Bare project sources have no conversation. The shared Changes view also
 // reads historical run/workspace checkouts, whose real comment layer does.
-async function mountCommentingChanges(archived = true) {
+async function mountCommentingChanges(archived = true, route = null) {
   await cacheProject({ ...project, archived_at: archived ? 12 : null });
-  const entityId = "historical-run";
+  const entityId = route === "workspace" ? directoryCacheId({ workspace_id: "ws-history", source_id: source.id }) : "historical-run";
   const draftAddress = { deviceId, entityId, kind: "ui-draft", sub: "changes:inline-comments" };
   const comments = [{ id: 1, file: "a.js", lnA: 2, lnB: 2, snippet: "changed", comment: "Keep this note", side: "new" }];
   await writeUiRecord(draftAddress, { comments });
   const tree = worktreeOf({ "a.js": "changed" });
   await writeCached({ deviceId, entityId, kind: "status" }, tree.status());
   await writeCached({ deviceId, entityId, kind: "log" }, { commits: [], more: false });
-  const root = document.querySelector("#root"), body = document.createElement("section"); root.append(body);
-  extraViews.push(mountArchivedProjectView(root, { deviceId, projectId, callRpc }));
-  const view = mountChanges(body, { scope: { run_id: entityId }, cacheScope: runtime.context.cacheScope,
-    callRpc: (method, params) => method === "git.diff" ? Promise.resolve(tree.diff(params)) : callRpc(method, params),
-    viewingContext: App.viewingContext,
-  });
-  extraViews.push(view);
+  let body, view;
+  if (route) {
+    runtime.context.rpc = (method, params) => method === "git.diff" ? Promise.resolve(tree.diff(params)) : callRpc(method, params);
+    if (route === "branch") {
+      runtime.feed.items = [{ kind: "branch", deviceId, project_id: projectId, run_id: entityId, branch: "history" }];
+      runtime.feed.runs = [{ deviceId, project_id: projectId, run_id: entityId, branch: "history", state: "done", goal: "Historical work" }];
+      App.route = { name: "branch", deviceId, projectId, branch: "history", tab: "changes" };
+      await renderBranch();
+    } else {
+      runtime.feed.workspaces = [{ id: "ws-history", project_id: projectId, status: "finished", directories: [{ ...source, source_id: source.id }] }];
+      App.route = { name: "workspace", deviceId, projectId, workspaceId: "ws-history", sourceId: source.id, tab: "changes" };
+      await renderWorkspace();
+    }
+    body = document.querySelector("#tabbody");
+    await vi.waitFor(() => expect(body.querySelector('[data-sel="uncommitted"]')).not.toBeNull());
+    body.querySelector('[data-sel="uncommitted"]').click();
+  } else {
+    const root = document.querySelector("#root"); body = document.createElement("section"); root.append(body);
+    extraViews.push(mountArchivedProjectView(root, { deviceId, projectId, callRpc }));
+    view = mountChanges(body, { scope: { run_id: entityId }, cacheScope: runtime.context.cacheScope,
+      callRpc: (method, params) => method === "git.diff" ? Promise.resolve(tree.diff(params)) : callRpc(method, params),
+      viewingContext: App.viewingContext,
+    });
+    extraViews.push(view);
+  }
   await vi.waitFor(() => expect(body.querySelector("tr[data-ln]:not(.hunk) .code")).not.toBeNull());
   await vi.waitFor(() => expect(body.querySelector(".pcx")).not.toBeNull());
   body.querySelector(".diff-expand")?.click();
   await vi.waitFor(() => expect(body.querySelector(".file.capped")).toBeNull());
   return { body, draftAddress, comments, view };
 }
-it("archived real Changes locks gutter and selection notes and preserves saved drafts", async () => {
-  const { body, draftAddress, comments } = await mountCommentingChanges();
+it.each(["branch", "workspace"])("archived %s route locks real Changes gutter and selection notes and preserves saved drafts", async route => {
+  const { body, draftAddress, comments } = await mountCommentingChanges(true, route);
   const code = body.querySelector("tr[data-ln]:not(.hunk) .code");
   code.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
   await vi.waitFor(() => expect(body.querySelector(".dcmt")?.disabled).toBe(true));
@@ -215,4 +238,20 @@ it.each([false, true])("a cached archive closes a real Changes popup without sav
   await vi.waitFor(() => expect(document.querySelector(".comment-pop")).toBeNull());
   save();
   expect((await readUiRecord(draftAddress)).value.comments).toEqual(comments);
+});
+
+it.each([true, false])("legacy plan route mounts the archive boundary (project in URL=%s)", async named => {
+  const planId = "legacy-plan";
+  await writeCached(taskAddress(deviceId, planId, "get"), {
+    task_id: planId, plan_id: planId, project_id: projectId, project: project.name,
+    state: "plan_review", docs_available: false, stages: [{ id: "s1", state: "planned" }],
+  });
+  await writeCached(taskAddress(deviceId, planId, "stages"), { stages: [{ id: "s1", title: "Historical stage", state: "planned", comments: [] }] });
+  App.route = { name: "task", deviceId, id: planId, ...(named ? { projectId } : {}) };
+  await renderTask();
+  await vi.waitFor(() => expect(document.querySelector(".ivsplit")?.textContent).toContain("Historical stage"));
+  await vi.waitFor(() => expect(document.querySelector("[data-project-archived]")?.textContent).toContain("Old line is archived"));
+  expect(document.querySelector("#root").dataset.projectArchiveState).toBe("archived");
+  App.viewDispose(); App.viewDispose = null;
+  expect(document.querySelector("#root").hasAttribute("data-project-archive-state")).toBe(false);
 });

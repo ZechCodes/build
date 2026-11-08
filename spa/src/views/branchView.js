@@ -1,3 +1,4 @@
+import { mountArchivedProjectView } from "../core/archivedProjectView.js";
 // The branch work item's surface: two tabs, Changes and Files, and nothing
 // else — the conversation is the agent rail and the terminals are the console.
 //
@@ -167,7 +168,9 @@ export async function renderBranch() {
   // surface goes on asking the machine rather than the socket it was built
   // over. An operation already awaiting a reply still finishes on the session
   // that accepted it.
-  const callRpc = context.rpc;
+  const archiveView = mountArchivedProjectView(root, { deviceId, projectId, callRpc: context.rpc,
+    archiveMutationHosts: [$("#agent-rail"), $("#tb-verb")] });
+  const callRpc = archiveView.callRpc;
   // The frozen treatment every pane shows while its machine is unreachable: one
   // device going offline says nothing about the others.
   const isOffline = () => context.offline;
@@ -502,6 +505,7 @@ export async function renderBranch() {
     if (pane) pane.dispose();
     pane = null;
     deviceStrip();
+    archiveView.dispose();
   };
   // The cache already carries this branch's row — ids, scope, agents, and the
   // run's own body — and the feed replays its snapshot synchronously at

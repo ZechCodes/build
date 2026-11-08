@@ -18,4 +18,3 @@ export async function readEnvironmentSupport(deviceId) {
   const held = deviceId ? (await readCached(environmentSupportAddress(deviceId)))?.value : null;
   return supportOf(held);
 }
-

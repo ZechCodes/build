@@ -618,17 +618,49 @@ fn legacy_update_source_routes_to_environment_without_added_sources() {
 #[test]
 fn legacy_sync_source_routes_to_environment_without_added_sources() {
     let f = Fixture::new();
-    {
+    let (home, sibling) = {
         let mut app = f.state.lock().unwrap();
         assert!(app.projects.get("proj-1").unwrap().added_sources.is_empty());
         app.dispatch("project.init_git", &json!({"project_id":"proj-1"}))
             .unwrap();
-        let environment = app.projects.environment("env-1").unwrap();
-        assert!(environment.sources[0].is_git);
-        assert_eq!(
-            environment.sources[0].path,
-            app.projects.get("proj-1").unwrap().home_path
-        );
+        let sibling = app.add_environment_sibling_for_test("proj-1");
+        (
+            app.projects.environment("env-1").unwrap().sources[0]
+                .path
+                .clone(),
+            sibling,
+        )
+    };
+    let upstream =
+        git2::Repository::clone(home.to_str().unwrap(), f._root.path().join("upstream")).unwrap();
+    std::fs::write(
+        upstream.workdir().unwrap().join("news"),
+        b"shared environment update",
+    )
+    .unwrap();
+    let mut index = upstream.index().unwrap();
+    index.add_path(std::path::Path::new("news")).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = upstream.find_tree(tree_id).unwrap();
+    let parent = upstream.head().unwrap().peel_to_commit().unwrap();
+    let signature = git2::Signature::now("Fixture", "fixture@example.test").unwrap();
+    let expected = upstream
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "shared update",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+    git2::Repository::open(&home)
+        .unwrap()
+        .remote("origin", upstream.workdir().unwrap().to_str().unwrap())
+        .unwrap();
+    {
+        let mut app = f.state.lock().unwrap();
         assert_eq!(
             app.dispatch(
                 "project.sync_source",
@@ -639,15 +671,41 @@ fn legacy_sync_source_routes_to_environment_without_added_sources() {
         );
     }
     AppState::sync_sources(&f.state, crate::app::SyncPass::Requested, 1000);
-    let app = f.state.lock().unwrap();
-    let source = &app.projects.get("proj-1").unwrap().sources[0];
+    let mut app = f.state.lock().unwrap();
     assert_eq!(
-        source.sync_status.as_ref().unwrap().state,
-        crate::app::projects::base_sync::SyncState::NoRemote
+        app.projects.get("proj-1").unwrap().sources[0]
+            .sync_status
+            .as_ref()
+            .unwrap()
+            .state,
+        crate::app::projects::base_sync::SyncState::Synced
+    );
+    // This checks the shared Git effect through another project's RPC scope,
+    // rather than merely observing the requester's per-reference sync status.
+    let observed = app
+        .dispatch(
+            "git.log",
+            &json!({"project_id":sibling,"source_id":"source-1","source_path":home,"limit":1}),
+        )
+        .unwrap();
+    assert_eq!(observed["commits"][0]["hash"], expected.to_string());
+    let environment = &app.projects.environment("env-1").unwrap().sources[0];
+    assert_eq!(
+        git2::Repository::open(&environment.path)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target(),
+        Some(expected)
     );
     assert_eq!(
-        source.path,
-        app.projects.environment("env-1").unwrap().sources[0].path
+        std::fs::read(
+            app.projects.get(&sibling).unwrap().sources[0]
+                .path
+                .join("news")
+        )
+        .unwrap(),
+        b"shared environment update"
     );
     assert!(app.projects.get("proj-1").unwrap().added_sources.is_empty());
 }

@@ -156,3 +156,16 @@ fn project_fixture(id: ProjectId, path: &Path, base: &str) -> Project {
         isolation: None,
     }
 }
+
+#[test]
+fn configured_source_keeps_a_filesystem_root_reference() {
+    let source = super::configured_source(
+        0,
+        &serde_json::json!({
+            "id":"source-1", "path":"/", "name":"root", "mount":"root"
+        }),
+    )
+    .expect("a root directory remains a source reference");
+    assert_eq!(source.path, PathBuf::from("/"));
+    assert_eq!(source.name, "root");
+}

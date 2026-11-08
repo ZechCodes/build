@@ -196,3 +196,26 @@ fn parked_source_reclassifies_git_metadata_when_folder_returns() {
     assert!(!app.project_for("proj-1").unwrap().sources[0].is_git);
     assert!(!app.projects.environment("env-1").unwrap().sources[0].is_git);
 }
+
+#[test]
+fn source_configuration_does_not_invalidate_unrelated_environment() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    let other = root.path().join("other");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    let mut app = state(root.path());
+    let id = app.add_project(home, "main".into());
+    let unrelated = app.add_project(other, "main".into());
+    let before = app.projects.observation_project_changes().snapshot();
+    app.commit_project_configuration(&id, |projects| {
+        projects.source_mut(&id, "source-1").unwrap().sync_base = Some(false);
+        Ok(())
+    })
+    .unwrap();
+    let after = app.projects.observation_project_changes().snapshot();
+    assert_eq!(
+        before.iter().find(|(id, _)| id == &unrelated),
+        after.iter().find(|(id, _)| id == &unrelated)
+    );
+}

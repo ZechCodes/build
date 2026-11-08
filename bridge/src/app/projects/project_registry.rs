@@ -12,11 +12,16 @@ pub(super) struct ProjectConfiguration {
 }
 
 impl ProjectConfiguration {
-    pub(super) fn capture(projects: &ProjectRegistry) -> Self {
+    pub(super) fn capture(projects: &ProjectRegistry, project_id: &str) -> Self {
+        let environment_id = &projects
+            .get(project_id)
+            .expect("resolved project")
+            .environment_id;
         Self {
             records: projects
                 .projects
                 .iter()
+                .filter(|project| &project.environment_id == environment_id)
                 .map(|p| (p.id.clone(), ProjectConfigurationRecord::capture(p)))
                 .collect(),
             environments: projects.environments.clone(),
@@ -573,7 +578,7 @@ impl ProjectRegistry {
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(1)
                 .max(next_source_number(&sources));
-            self.environments.push(Environment {
+            let environment = Environment {
                 id: id.to_string(),
                 name: entry
                     .get("name")
@@ -583,7 +588,16 @@ impl ProjectRegistry {
                 sources,
                 next_source,
                 isolation: crate::app::config::configured_isolation(entry, "environment isolation"),
-            });
+            };
+            if let Some(existing) = self
+                .environments
+                .iter_mut()
+                .find(|e| e.id == environment.id)
+            {
+                *existing = environment;
+            } else {
+                self.environments.push(environment);
+            }
         }
     }
 
@@ -676,6 +690,37 @@ impl ProjectRegistry {
         else {
             return;
         };
+        let added_sources = super::configured_sources(
+            entry
+                .get("added_sources")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+        );
+        if let Some(environment) = self
+            .environments
+            .iter_mut()
+            .find(|e| e.id == environment_id)
+        {
+            environment.next_source = environment
+                .next_source
+                .max(next_source_number(&added_sources))
+                .max(
+                    entry
+                        .get("next_source")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(1),
+                );
+            // A parked source may have returned since the environment was loaded.
+            // Retain absent references, but observe newly available checkouts.
+            for source in &mut environment.sources {
+                if source.path.is_dir() {
+                    source.path =
+                        std::fs::canonicalize(&source.path).unwrap_or_else(|_| source.path.clone());
+                    source.is_git = source.path.join(".git").exists();
+                }
+            }
+        }
         let generated = self
             .get(id)
             .expect("registered project")
@@ -707,13 +752,7 @@ impl ProjectRegistry {
         }
         project.archived_at = entry.get("archived_at").and_then(serde_json::Value::as_u64);
         project.isolation = crate::app::config::configured_isolation(entry, "project isolation");
-        project.added_sources = super::configured_sources(
-            entry
-                .get("added_sources")
-                .and_then(serde_json::Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or_default(),
-        );
+        project.added_sources = added_sources;
         self.refresh_environment_projects(environment_id);
     }
 }

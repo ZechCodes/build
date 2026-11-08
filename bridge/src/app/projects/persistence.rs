@@ -14,7 +14,7 @@ impl AppState {
         self.projects
             .get(id)
             .ok_or_else(|| format!("unknown project: {id}"))?;
-        let mut configuration = ProjectConfiguration::capture(&self.projects);
+        let mut configuration = ProjectConfiguration::capture(&self.projects, id);
         let previous = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
         let mut observation = None;
         self.swap_project_snapshot_observation(id, &mut observation);

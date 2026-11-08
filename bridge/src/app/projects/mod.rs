@@ -270,7 +270,7 @@ fn configured_project_number(project: &Value) -> Option<u64> {
         .filter(|number| *number > 0 && *number < u64::MAX)
 }
 
-/// A configured project's sources that can be opened now, each as written.
+/// Configured references, retaining unavailable folders for later revival.
 fn configured_sources(entries: &[Value]) -> Vec<ProjectSource> {
     entries
         .iter()
@@ -280,10 +280,16 @@ fn configured_sources(entries: &[Value]) -> Vec<ProjectSource> {
 }
 
 fn configured_source(index: usize, source: &Value) -> Option<ProjectSource> {
-    let path = source.get("path")?.as_str()?;
+    let path = source
+        .get("path")?
+        .as_str()
+        .filter(|path| !path.is_empty())?;
     let expanded = expand_tilde(path);
     let path = std::fs::canonicalize(&expanded).unwrap_or(expanded);
-    let fallback_name = path.file_name()?.to_string_lossy().into_owned();
+    let fallback_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "source".to_string());
     let name = source
         .get("name")
         .and_then(Value::as_str)
@@ -415,8 +421,8 @@ impl AppState {
                 return Some(existing.id.clone());
             }
         }
-        if self.projects.get(&format!("proj-{number}")).is_some() {
-            return None;
+        if let Some(existing) = self.projects.get(&format!("proj-{number}")) {
+            return (existing.repo_path == repo).then(|| existing.id.clone());
         }
         let mut candidate =
             self.project_candidate_at(repo.clone(), base, repo.join(".git").exists(), Some(number));

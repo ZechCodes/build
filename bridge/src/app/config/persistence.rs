@@ -1,10 +1,7 @@
-#[cfg(test)]
-use crate::app::ConfigPersistStep;
 use crate::app::{AppState, Project};
 use crate::isolation::Isolation;
 use crate::models::AgentProvider;
 use serde_json::{json, Value};
-use std::io::Write as _;
 
 /// What a volume that could not make the clone the settings asked for is said
 /// with, spelled once so an operator reading the log and a human reading the
@@ -91,68 +88,7 @@ impl AppState {
         let Some(path) = &self.config_path else {
             return Ok(());
         };
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("write config {}: {error}", path.display()))?;
-        }
-        let bytes = serde_json::to_vec_pretty(config)
-            .map_err(|error| format!("serialize config {}: {error}", path.display()))?;
-        let temporary = path.with_extension("tmp");
-        match std::fs::remove_file(&temporary) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!(
-                    "prepare config {}: cannot remove {}: {error}",
-                    path.display(),
-                    temporary.display()
-                ))
-            }
-        }
-        let write_result = (|| -> Result<(), String> {
-            #[cfg(test)]
-            if self.config_persist_failure == Some(ConfigPersistStep::Write) {
-                return Err(format!(
-                    "write config {}: injected write failure",
-                    path.display()
-                ));
-            }
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-                .map_err(|error| format!("write config {}: {error}", path.display()))?;
-            file.write_all(&bytes)
-                .and_then(|()| file.sync_all())
-                .map_err(|error| format!("write config {}: {error}", path.display()))?;
-            #[cfg(test)]
-            if self.config_persist_failure == Some(ConfigPersistStep::Rename) {
-                return Err(format!(
-                    "write config {}: injected rename failure",
-                    path.display()
-                ));
-            }
-            std::fs::rename(&temporary, path)
-                .map_err(|error| format!("write config {}: {error}", path.display()))
-        })();
-        if let Err(write_error) = write_result {
-            match std::fs::remove_file(&temporary) {
-                Ok(()) => return Err(write_error),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(write_error)
-                }
-                Err(cleanup_error) => {
-                    return Err(format!(
-                        "{write_error}; cannot remove temporary config {}: {cleanup_error}",
-                        temporary.display()
-                    ))
-                }
-            }
-        }
-        Ok(())
+        self.write_config_file(path, config)
     }
 }
 

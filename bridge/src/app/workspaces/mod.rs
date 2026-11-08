@@ -834,7 +834,7 @@ impl AppState {
             .transpose()?
             .unwrap_or_else(|| {
                 self.project(&project_id)
-                    .and_then(|project| project.isolation)
+                    .map(|project| self.project_isolation(project))
                     .unwrap_or(self.isolation)
             });
         let mut workspace = self.workspaces.prepare_with_isolation(

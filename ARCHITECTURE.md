@@ -1171,6 +1171,24 @@ and its controls are
   (`MANIFEST_FILE` in `bridge/src/workspace.rs`), and update status and job files
   (`bridge/src/update/`).
 
+Environment records are private bridge config state (`app/environments/`).
+Config load migrates each legacy project, parked entries included, into its own
+environment before serving. A stable `project_key` initially equals its old
+canonical home path; identity consumers remain path-based until M0.2. The
+registry keeps environment-owned source references and their monotonic counter,
+plus project-owned added sources, and projects retain an effective-source read
+projection for existing call sites. Source configuration transactions stage
+environments and project projections together while keeping orchestrators live.
+In M0.1 the project and environment isolation copies are updated together.
+
+The first migration saves the exact original bytes once beside the config in
+`config.json.pre-environments`. Atomic config replacement also retains one
+generation in `config.json.previous`. A failed migration leaves the current
+config untouched. Legacy project fields remain written for older bridges;
+the frozen loader test and `docs/using.md` record that an old loader collapses
+siblings sharing one home into the first project and ignores their opaque keys.
+No environment RPC or capability is advertised by this migration.
+
 Delivered operation receipts retain their request hash, owner/agent identity and
 message sequence span, but discard their delivery prompt in the status update.
 Ordinary receipts clear `delivery` to NULL; historical Task-to-implementation

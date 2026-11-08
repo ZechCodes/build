@@ -339,6 +339,11 @@ pub(crate) fn announce_isolation_downgrade(reason: &str) -> String {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    #[error("migrate environments config {}: {reason}", path.display())]
+    Migration {
+        path: std::path::PathBuf,
+        reason: String,
+    },
     #[error("parse retention config {}: {reason}", path.display())]
     Retention {
         path: std::path::PathBuf,
@@ -413,8 +418,9 @@ pub(in crate::app) fn default_state_root() -> std::path::PathBuf {
 }
 
 impl AppState {
-    /// Enable persistence at `path`: load any saved projects + projects-dir from it
-    /// (skipping repos that no longer exist), and remember it for future writes.
+    /// Enable persistence at `path`, migrating legacy projects before serving.
+    /// Unavailable projects stay parked; a migration error leaves the current
+    /// file untouched and prevents startup.
     pub fn with_config(mut self, path: impl Into<std::path::PathBuf>) -> Result<Self, ConfigError> {
         let path = path.into();
         if let Some(config) = read_config(&path)? {
@@ -432,10 +438,31 @@ impl AppState {
                         reason,
                     }
                 })?;
+            let config = self.migrate_environment_config(&path, config)?;
             self.apply_config(&config);
         }
         self.config_path = Some(path);
         Ok(self)
+    }
+
+    fn migrate_environment_config(
+        &self,
+        path: &std::path::Path,
+        config: Value,
+    ) -> Result<Value, ConfigError> {
+        let migration_error = |reason| ConfigError::Migration {
+            path: path.to_path_buf(),
+            reason,
+        };
+        let Some(migrated) = crate::app::environments::migration::migrate_config(&config)
+            .map_err(migration_error)?
+        else {
+            return Ok(config);
+        };
+        files::backup_before_environments(path).map_err(migration_error)?;
+        self.write_config_file(path, &migrated)
+            .map_err(migration_error)?;
+        Ok(migrated)
     }
 
     fn apply_config(&mut self, config: &Value) {
@@ -579,12 +606,22 @@ impl AppState {
         project: &Project,
         available: &IsolationAvailability,
     ) -> ResolvedIsolation {
-        let requested = project.isolation
-            .or_else(|| self.projects.environment(&project.environment_id).and_then(|environment| environment.isolation))
-            .unwrap_or(self.isolation);
+        let requested = self.project_isolation(project);
         match available.lock_reason(requested) {
             None => ResolvedIsolation::honoured(requested),
             Some(reason) => ResolvedIsolation::downgraded(reason),
         }
+    }
+
+    /// Default isolation for a new workspace, before any workspace override.
+    pub(in crate::app) fn project_isolation(&self, project: &Project) -> Isolation {
+        project
+            .isolation
+            .or_else(|| {
+                self.projects
+                    .environment(&project.environment_id)
+                    .and_then(|environment| environment.isolation)
+            })
+            .unwrap_or(self.isolation)
     }
 }

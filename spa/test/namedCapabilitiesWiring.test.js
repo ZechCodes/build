@@ -140,7 +140,7 @@ describe("environment list capability wiring", () => {
     await greet(["environments"]);
     const { ask, landList } = await readLists();
     expect(ask.mock.calls.map(([, method]) => method)).toContain("environment.list");
-    expect(landList).toHaveBeenCalledWith("environments", [], expect.any(Object));
+    expect(landList).toHaveBeenCalledWith("environments", [], expect.any(Object), expect.any(String));
   });
 
   it("stops asking environment.list after a greeting removes support", async () => {
@@ -155,14 +155,17 @@ describe("environment list capability wiring", () => {
     let release;
     const admission = new Promise((resolve) => { release = resolve; });
     const sent = [];
+    const entered = vi.fn();
     const landList = vi.fn();
     const ask = async (context, method) => {
+      entered();
       await admission;
       if (!context.active()) return null;
       sent.push(method);
       return { environments: [] };
     };
     const reading = readSyncEnvironments({ deviceId: "dev-1", active: () => true }, { ask, landList });
+    await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
     await greet([]);
     release();
     await reading;

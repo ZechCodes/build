@@ -620,8 +620,19 @@ existing board pushes as each step lands, so an old SPA tab sees them.
 M1.2 implementation note: current `sync.device` bridges bypass the legacy
 `readSyncLists` / `writePushedBoard` ownership path. Environments remain an
 independent per-device cached list: both paths read `environment.list` only
-with the current `environments` capability and apply carried board pushes
-with the same list fence. Device journal projections do not own environments.
+with the current `environments` capability and apply carried board pushes.
+Each read reserves a per-device `environment-list-order` admission token
+before RPC admission; each carried environments array reserves one before
+the body queue. Reservation is atomic across tabs and does not repaint the
+list. Publication checks the latest token, current capability and lifetime
+in the same transaction as replacing the list. No older admission can
+overwrite a newer one, including queued pushes and overlapping reads.
+This is admission order, not a server revision: a push admitted after a read
+retires that read even if its eventual reply has slightly newer content.
+The list may briefly be stale until the next admitted push/read publishes.
+A failed newest read retains the last good list and never restores an older
+admission's authority. Device journal projections do not own environments;
+the existing projects/workspaces ordering is unchanged (follow-up #1037).
 `environmentCache.js` exports `readCachedEnvironments(deviceId)` for consumers.
 
 **Step progress is an additive wire change.** `writes.confirmed` is built

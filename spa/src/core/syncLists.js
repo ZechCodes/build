@@ -2,13 +2,16 @@
 // is interpreted as an authoritative empty collection in the interim.
 import { liveFeedSnapshot } from "./feedMerge.js";
 import { bridgeCapabilities } from "./changeEvents.js";
+import { admitEnvironmentListWrite } from "./environmentCache.js";
 
 /** Environments have their own list even when device journals own other lists. */
 export async function readSyncEnvironments(context, { ask, landList, priority = "foreground" }, before = {}) {
   const reading = { ...context, active: () => context.active() && bridgeCapabilities(context.deviceId).environments?.list === true };
   if (!reading.active()) return;
+  const admission = await admitEnvironmentListWrite(context.deviceId, reading.active);
+  if (!admission || !reading.active()) return;
   const answer = await ask(reading, "environment.list", {}, priority);
-  if (Array.isArray(answer?.environments) && reading.active()) await landList("environments", answer.environments, before);
+  if (Array.isArray(answer?.environments) && reading.active()) await landList("environments", answer.environments, before, admission);
 }
 
 export async function readSyncLists(context, { ask, landBoard, landList }) {

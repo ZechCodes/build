@@ -975,6 +975,23 @@ describe.each([false, true])("environment lists (device sync owns lists: %s)", (
   const cachedRows = (rows) => rows.map((row) => ({ ...row, deviceId: "dev-1" }));
   const readEnvironments = async (deviceId = "dev-1") =>
     (await import("../src/core/environmentCache.js")).readCachedEnvironments(deviceId);
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((done) => { resolve = done; });
+    return { promise, resolve };
+  };
+  const holdUsageLimits = (limits) => {
+    const blocked = deferred(), started = vi.fn();
+    const write = cache.writeCached;
+    const spy = vi.spyOn(cache, "writeCached").mockImplementation(async (address, value, ...options) => {
+      if (address.kind === "usage-limits" && value === limits) {
+        started();
+        await blocked.promise;
+      }
+      return write(address, value, ...options);
+    });
+    return { started, release: blocked.resolve, restore: () => spy.mockRestore() };
+  };
 
   beforeEach(() => {
     deviceOwned = owned;
@@ -1062,6 +1079,87 @@ describe.each([false, true])("environment lists (device sync owns lists: %s)", (
     } finally {
       release({ environments: [] });
       await refreshing;
+    }
+  });
+
+  it("older_queued_push_does_not_overwrite_newer_read", async () => {
+    script["environment.list"] = () => ({ environments: [environment("Initial environment")] });
+    await boot([]);
+    const limits = [{ provider: "synthetic", message: "Hold the preceding board item" }];
+    const blocked = holdUsageLimits(limits);
+    const watcher = subscription("s-inbox");
+    const first = watcher.onChanges([{ entity_id: "board", state: { usage_limits: limits } }]);
+    let queued = Promise.resolve();
+    try {
+      await vi.waitFor(() => expect(blocked.started).toHaveBeenCalledOnce());
+      queued = watcher.onChanges([{ entity_id: "board", state: { environments: [environment("Older queued environment")] } }]);
+      await vi.waitFor(() => expect(sync.pushWorkInFlight("dev-1").pending).toBe(1));
+      const rows = [environment("Newer pulled environment")];
+      script["environment.list"] = () => ({ environments: rows });
+      await sync.syncDevice("dev-1");
+      expect(await readEnvironments()).toEqual(cachedRows(rows));
+      const newer = await read("", "environments");
+      blocked.release();
+      await Promise.all([first, queued]);
+      expect(await read("", "environments")).toEqual(newer);
+    } finally {
+      blocked.release();
+      await Promise.all([first, queued]);
+      blocked.restore();
+    }
+  });
+
+  it.runIf(!owned)("older_in_processing_push_does_not_overwrite_newer_read", async () => {
+    script["environment.list"] = () => ({ environments: [environment("Initial environment")] });
+    await boot([]);
+    const limits = [{ provider: "synthetic", message: "Hold this board's third list" }];
+    const blocked = holdUsageLimits(limits);
+    const pushed = subscription("s-inbox").onChanges([{ entity_id: "board", state: {
+      usage_limits: limits, environments: [environment("Older in-processing environment")],
+    } }]);
+    try {
+      await vi.waitFor(() => expect(blocked.started).toHaveBeenCalledOnce());
+      const rows = [environment("Newer pulled environment")];
+      script["environment.list"] = () => ({ environments: rows });
+      await sync.syncDevice("dev-1");
+      expect(await readEnvironments()).toEqual(cachedRows(rows));
+      const newer = await read("", "environments");
+      blocked.release();
+      await pushed;
+      expect(await read("", "environments")).toEqual(newer);
+    } finally {
+      blocked.release();
+      await pushed;
+      blocked.restore();
+    }
+  });
+
+  it.runIf(owned)("older_overlapping_read_completing_last_is_dropped", async () => {
+    script["environment.list"] = () => ({ environments: [environment("Initial environment")] });
+    await boot([]);
+    const older = deferred(), started = vi.fn();
+    const rows = [environment("Newer deferred-runtime environment")];
+    let reads = 0;
+    script["environment.list"] = () => {
+      reads += 1;
+      started();
+      return reads === 1 ? older.promise : { environments: rows };
+    };
+    const refreshing = sync.syncDevice("dev-1");
+    let pushed = Promise.resolve();
+    try {
+      await vi.waitFor(() => expect(started).toHaveBeenCalledOnce());
+      pushed = subscription("s-inbox").onChanges([{ entity_id: "board", state: { revision: 2 } }]);
+      await vi.waitFor(() => expect(started).toHaveBeenCalledTimes(2));
+      await pushed;
+      expect(await readEnvironments()).toEqual(cachedRows(rows));
+      const newer = await read("", "environments");
+      older.resolve({ environments: [environment("Older pass environment")] });
+      await refreshing;
+      expect(await read("", "environments")).toEqual(newer);
+    } finally {
+      older.resolve({ environments: [] });
+      await Promise.all([refreshing, pushed]);
     }
   });
 

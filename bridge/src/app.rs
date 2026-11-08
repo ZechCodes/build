@@ -28,6 +28,7 @@ mod model_catalog;
 mod mutations;
 mod observation_reads;
 mod projects;
+mod environments;
 mod push_keys;
 mod read_context;
 mod read_view;

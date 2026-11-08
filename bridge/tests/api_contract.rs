@@ -78,23 +78,7 @@ fn environments_read_wire_is_additive_and_withheld() {
     let environment = read_json(&fixtures_root().join("v1/environment.list.json"));
     let rows = &environment["result"]["environments"];
     let row = &rows[0];
-    for field in [
-        "environment_id",
-        "name",
-        "home_path",
-        "is_git",
-        "base_branch",
-        "sources",
-        "isolation",
-        "isolation_effective",
-        "project_ids",
-        "device",
-    ] {
-        assert!(row.get(field).is_some(), "environment row lacks {field}");
-    }
-    assert_eq!(row["project_ids"], serde_json::json!(["proj-1"]));
-    assert!(row["sources"].is_array());
-    assert!(row["device"].is_string());
+    assert_environment_fixture_row(row);
     assert_fixture_result_round_trips("environment.list", &environment["result"]);
 
     let board = read_json(&fixtures_root().join("v1/board.list.json"));
@@ -103,30 +87,61 @@ fn environments_read_wire_is_additive_and_withheld() {
 
     let project = read_json(&fixtures_root().join("v1/project.list.json"));
     let project_row = &project["result"]["projects"][0];
-    for field in [
-        "environment_id",
-        "environment_name",
-        "project_key",
-        "diverged",
-        "device",
-        "open_tasks",
-        "total_tasks",
-        "workspaces",
-        "sources",
-    ] {
-        assert!(
-            project_row.get(field).is_some(),
-            "project row lacks {field}"
-        );
-    }
-    assert_eq!(project_row["environment_id"], row["environment_id"]);
-    assert_eq!(project_row["environment_name"], row["name"]);
-    assert_eq!(project_row["path"], row["home_path"]);
-    assert_eq!(project_row["diverged"], false);
+    assert_project_environment_fixture_row(project_row, row);
     assert_fixture_result_round_trips("project.list", &project["result"]);
 
     assert_workspace_environment_fixture("workspace.list", "/workspaces/0", row);
     assert_workspace_environment_fixture("workspace.get", "", row);
+}
+
+fn assert_environment_fixture_row(row: &Value) {
+    assert_required_fixture_row_fields(
+        row,
+        "environment",
+        &[
+            "environment_id",
+            "name",
+            "home_path",
+            "is_git",
+            "base_branch",
+            "sources",
+            "isolation",
+            "isolation_effective",
+            "project_ids",
+            "device",
+        ],
+    );
+    assert_eq!(row["project_ids"], serde_json::json!(["proj-1"]));
+    assert!(row["sources"].is_array());
+    assert!(row["device"].is_string());
+}
+
+fn assert_project_environment_fixture_row(project: &Value, environment: &Value) {
+    assert_required_fixture_row_fields(
+        project,
+        "project",
+        &[
+            "environment_id",
+            "environment_name",
+            "project_key",
+            "diverged",
+            "device",
+            "open_tasks",
+            "total_tasks",
+            "workspaces",
+            "sources",
+        ],
+    );
+    assert_eq!(project["environment_id"], environment["environment_id"]);
+    assert_eq!(project["environment_name"], environment["name"]);
+    assert_eq!(project["path"], environment["home_path"]);
+    assert_eq!(project["diverged"], false);
+}
+
+fn assert_required_fixture_row_fields(row: &Value, kind: &str, fields: &[&str]) {
+    for field in fields {
+        assert!(row.get(*field).is_some(), "{kind} row lacks {field}");
+    }
 }
 
 fn assert_fixture_result_round_trips(method: &str, result: &Value) {

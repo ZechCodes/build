@@ -101,12 +101,14 @@ fn reserve_attempt(
     let creation = if method == "environment.create_project" {
         json!({"project_key":format!("project:{}",uuid::Uuid::new_v4()),"steps":[]})
     } else {
-        let workspace = state
-            .lock()
-            .unwrap()
+        let app = state.lock().unwrap();
+        let project = app
+            .project_for(params["project_id"].as_str().unwrap())
+            .map_err(ApiError::from)?;
+        let workspace = app
             .reserve_creation_workspace(params["project_id"].as_str().unwrap(), params)
             .map_err(ApiError::from)?;
-        json!({"project_id":params["project_id"],"workspace":workspace,"steps":[]})
+        json!({"project_id":params["project_id"],"project_key":project.project_key,"workspace":workspace,"steps":[]})
     };
     let (kind, id) = if method == "environment.create_project" {
         ("project", creation["project_key"].as_str())
@@ -200,6 +202,9 @@ fn validate_continuation(
 }
 impl AppState {
     pub(in crate::app) fn refuse_pending_creation(&self, project_id: &str) -> Result<(), String> {
+        let Some(project) = self.projects.get(project_id) else {
+            return Ok(());
+        };
         let Some(store) = &self.store else {
             return Ok(());
         };
@@ -207,10 +212,9 @@ impl AppState {
             .writer()
             .pending_creations()
             .map_err(|e| e.to_string())?;
-        if pending
-            .iter()
-            .any(|record| record.execution["project_id"].as_str() == Some(project_id))
-        {
+        if pending.iter().any(|record| {
+            record.execution["project_key"].as_str() == Some(project.project_key.as_str())
+        }) {
             return Err(crate::reclaim::BUSY.into());
         }
         Ok(())

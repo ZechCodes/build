@@ -110,3 +110,41 @@ fn config_and_terminal_write_failures_do_not_fence_reused_project_id() {
     );
     reopen_reuse_and_reconcile(f, &id);
 }
+
+#[test]
+fn failed_workspace_attempt_does_not_report_preexisting_project_as_landed() {
+    let f = Fixture::new();
+    let id = operation(133);
+    admit(
+        &f.state,
+        "workspace.create",
+        json!({"project_id":"proj-1","name":"failed"}),
+        WriteMetadata {
+            operation_id: id.clone(),
+            after: None,
+        },
+    )
+    .unwrap();
+    let home = f
+        .state
+        .lock()
+        .unwrap()
+        .projects
+        .get("proj-1")
+        .unwrap()
+        .home_path
+        .clone();
+    std::fs::remove_dir_all(home).unwrap();
+    f.run(&id);
+    let record = f.record(&id);
+    assert_eq!(record.state, "failed");
+    assert!(record.execution["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|step| step["step"] != "project"));
+    assert_eq!(record.outcome.as_ref().unwrap()["effect"], "unapplied");
+    assert!(record.outcome.unwrap()["error"]["details"]
+        .get("project")
+        .is_none());
+}

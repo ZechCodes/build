@@ -359,7 +359,12 @@ fn finish_failure(
             .map_err(string)?;
         return Ok(());
     }
-    let (landed, details) = failure_resources(state, &evidence);
+    // A workspace command captures its existing project's key for authority;
+    // only environment.create_project can have landed a new project step.
+    let created_key = evidence["project_key"]
+        .as_str()
+        .filter(|_| record.method == "environment.create_project");
+    let (landed, details) = failure_resources(state, created_key);
     if landed {
         let project_id = details["project"]["project_id"]
             .as_str()
@@ -395,9 +400,8 @@ fn ambiguous_workspace(evidence: &Value, error: &str) -> bool {
             .as_str()
             .is_some_and(|root| std::fs::symlink_metadata(root).is_ok())
 }
-fn failure_resources(state: &Arc<Mutex<AppState>>, evidence: &Value) -> (bool, Value) {
+fn failure_resources(state: &Arc<Mutex<AppState>>, key: Option<&str>) -> (bool, Value) {
     let app = state.lock().unwrap();
-    let key = evidence["project_key"].as_str();
     let project = app
         .projects
         .iter()

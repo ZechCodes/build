@@ -552,3 +552,141 @@ fn a_new_identical_rejection_restores_a_report_cleared_by_another_agent() {
         "the new rejection is shown even with identical wording"
     );
 }
+
+struct ArchiveUsageFixture {
+    _repo: tempfile::TempDir,
+    _root: tempfile::TempDir,
+    state: AppState,
+    project: String,
+    owner: String,
+    agent: String,
+    other_owner: String,
+    other_agent: String,
+}
+
+impl ArchiveUsageFixture {
+    fn new() -> Self {
+        let (repo_home, repo) = super::project_coordinator::a_repo();
+        let (root_home, root) = super::project_coordinator::a_state_root();
+        let mut state = super::project_coordinator::booted(&root);
+        let project = super::project_agent::added_project(&mut state, &repo);
+        let sibling = crate::app::projects::test_support::register_sibling(&mut state, &project);
+        let (owner, agent) = super::project_agent::project_agent(&mut state, &project);
+        let (other_owner, other_agent) = super::project_agent::project_agent(&mut state, &sibling);
+        assert_eq!(provider_of(&state, &owner, &agent), provider_of(&state, &other_owner, &other_agent));
+        Self { _repo: repo_home, _root: root_home, state, project, owner, agent, other_owner, other_agent }
+    }
+
+    fn stop_both(&mut self, reset: OffsetDateTime) {
+        for (owner, agent) in [(&self.owner, &self.agent), (&self.other_owner, &self.other_agent)] {
+            self.state.record_usage_limit(owner, agent, &limited(Some(reset)), &mut Default::default());
+        }
+    }
+
+    fn archive(&mut self) {
+        let answer = self.state.handle(req("project.archive", json!({"project_id":self.project})));
+        assert_eq!(answer["ok"], true, "a future reset with no session/turn admits archive: {answer}");
+    }
+}
+
+fn assert_usage_retry_counts(state: &mut AppState, owner: &str, agent: &str, expected: usize) {
+    assert_eq!(build_notices(state, owner, agent, "Retrying").len(), expected);
+    assert_eq!(state.delivery_queue.queued().filter(|turn| turn.owner == owner && turn.agent_id == agent).count(), expected);
+}
+
+#[test]
+fn archive_usage_reset_retains_held_agent_and_does_not_starve_active_agent() {
+    let mut fixture = ArchiveUsageFixture::new();
+    let reset = an_hour_from_now();
+    fixture.stop_both(reset);
+    fixture.archive();
+    fixture.state.release_usage_limits_due_at(reset);
+    assert_usage_retry_counts(&mut fixture.state, &fixture.other_owner, &fixture.other_agent, 1);
+    assert_usage_retry_counts(&mut fixture.state, &fixture.owner, &fixture.agent, 0);
+    let answer = fixture.state.handle(req("project.restore", json!({"project_id":fixture.project})));
+    assert_eq!(answer["ok"], true, "{answer}");
+    fixture.state.release_usage_limits_due_at(reset);
+    fixture.state.release_usage_limits_due_at(reset);
+    assert_usage_retry_counts(&mut fixture.state, &fixture.owner, &fixture.agent, 1);
+    assert_usage_retry_counts(&mut fixture.state, &fixture.other_owner, &fixture.other_agent, 1);
+}
+
+#[test]
+fn archive_usage_shared_harness_success_retains_archived_retry_until_restore() {
+    let mut fixture = ArchiveUsageFixture::new();
+    fixture.stop_both(an_hour_from_now());
+    fixture.archive();
+    let added = fixture.state.handle(req("agent.add", json!({"entity_id":fixture.other_owner})));
+    assert_eq!(added["ok"], true, "{added}");
+    let successful_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    fixture.state.record_usage_limit(&fixture.other_owner, &successful_agent, &successful(), &mut Default::default());
+    assert_usage_retry_counts(&mut fixture.state, &fixture.other_owner, &fixture.other_agent, 1);
+    assert_usage_retry_counts(&mut fixture.state, &fixture.owner, &fixture.agent, 0);
+    assert_eq!(fixture.state.usage_limits_json(), json!([]));
+    let answer = fixture.state.handle(req("project.restore", json!({"project_id":fixture.project})));
+    assert_eq!(answer["ok"], true, "{answer}");
+    fixture.state.release_due_usage_limits();
+    fixture.state.release_due_usage_limits();
+    assert_usage_retry_counts(&mut fixture.state, &fixture.owner, &fixture.agent, 1);
+    assert_usage_retry_counts(&mut fixture.state, &fixture.other_owner, &fixture.other_agent, 1);
+}
+
+async fn ready_usage_retry_roundtrip(success: bool) {
+    let mut fixture = ArchiveUsageFixture::new();
+    let reset = an_hour_from_now();
+    fixture.stop_both(reset);
+    fixture.archive();
+    // Inject the reservation boundary independently of boot's in-memory usage reset.
+    fixture.state.restored_recovery.deferred.insert(fixture.owner.clone());
+    let added = fixture.state.handle(req("agent.add", json!({"entity_id":fixture.other_owner})));
+    let successful_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    let (gate, handle) = crate::app::OffLockGate::new();
+    fixture.state.off_lock_gate = Some(gate);
+    let shared = fixture.state.shared();
+    let answer = shared.lock().unwrap().handle(req("project.restore", json!({"project_id":fixture.project})));
+    assert_eq!(answer["ok"], true, "{answer}");
+    let handle = tokio::task::spawn_blocking(move || {handle.wait_for_arrival(); handle}).await.unwrap();
+    {
+        let mut state = shared.lock().unwrap();
+        if success {
+            state.record_usage_limit(&fixture.other_owner, &successful_agent, &successful(), &mut Default::default());
+        } else {
+            state.release_usage_limits_due_at(reset);
+        }
+        assert_usage_retry_counts(&mut state, &fixture.owner, &fixture.agent, 0);
+        assert_usage_retry_counts(&mut state, &fixture.other_owner, &fixture.other_agent, 1);
+        // Consume only the eligible sibling's turn; never launch a real CLI.
+        let mut turns = state.take_pending_turns();
+        while let Some((turn, mark)) = turns.next_turn() {
+            assert_eq!(turn.owner, fixture.other_owner);
+            mark.settle(&mut state);
+        }
+        state.off_lock_gate = None;
+    }
+    handle.release();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let mut state = shared.lock().unwrap();
+            if !state.run_recovery_reserved(&fixture.owner) {
+                state.release_usage_limits_due_at(reset);
+                break;
+            }
+            drop(state);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    let mut state = shared.lock().unwrap();
+    state.release_usage_limits_due_at(reset);
+    assert_usage_retry_counts(&mut state, &fixture.owner, &fixture.agent, 1);
+    assert_eq!(build_notices(&mut state, &fixture.other_owner, &fixture.other_agent, "Retrying").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn archive_usage_ready_reset_retains_retry_until_recovery_settles() {
+    ready_usage_retry_roundtrip(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn archive_usage_ready_harness_success_retains_retry_until_recovery_settles() {
+    ready_usage_retry_roundtrip(true).await;
+}

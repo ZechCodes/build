@@ -161,6 +161,27 @@ fn parked_capture_stops_at_the_first_matching_path_even_without_an_id() {
 }
 
 #[cfg(unix)]
+fn assert_native_scratch_routes(app: &AppState, project: &str, scratch: &Path) {
+    let key = &app.project(project).unwrap().project_key;
+    assert!(app.is_project_conversation_owner("owner"));
+    assert!(app.is_project_scratch(key, scratch));
+    assert_eq!(
+        app.project_snapshot_scratch_path("owner"),
+        Some(scratch.to_path_buf())
+    );
+    assert!(app.project_snapshot_scratch_paths().contains(&scratch));
+    assert_eq!(
+        app.project_conversation_run(project).as_deref(),
+        Some("owner")
+    );
+    assert_eq!(
+        app.project_snapshot_conversation_run(project).as_deref(),
+        Some("owner")
+    );
+    assert_eq!(app.conversation_owner_ref("owner").unwrap().id, project);
+}
+
+#[cfg(unix)]
 #[test]
 fn captured_project_owner_keeps_non_utf8_project_path_bytes() {
     use std::os::unix::ffi::OsStringExt;
@@ -188,22 +209,7 @@ fn captured_project_owner_keeps_non_utf8_project_path_bytes() {
     let key = app.project(&project).unwrap().project_key.clone();
     assert!(app.is_project_snapshot_conversation_owner("owner"));
     assert!(app.capture_snapshot_ownership().is_project_owner("owner"));
-    assert!(app.is_project_conversation_owner("owner"));
-    assert!(app.is_project_scratch(&key, &scratch));
-    assert_eq!(
-        app.project_snapshot_scratch_path("owner"),
-        Some(scratch.clone())
-    );
-    assert!(app.project_snapshot_scratch_paths().contains(&scratch));
-    assert_eq!(
-        app.project_conversation_run(&project).as_deref(),
-        Some("owner")
-    );
-    assert_eq!(
-        app.project_snapshot_conversation_run(&project).as_deref(),
-        Some("owner")
-    );
-    assert_eq!(app.conversation_owner_ref("owner").unwrap().id, project);
+    assert_native_scratch_routes(&app, &project, &scratch);
     let conversation = app
         .project_ensure_conversation(&serde_json::json!({"project_id":project}))
         .unwrap();

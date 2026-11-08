@@ -50,3 +50,32 @@ impl ProjectRegistry {
         })
     }
 }
+
+impl ProjectConfiguration {
+    /// A deferred configuration never replaces conclusions a sync made meanwhile.
+    pub(in crate::app) fn restore_runtime_into(&self, projects: &mut ProjectRegistry) {
+        for (id, record) in &self.records {
+            if let Some(project) = projects.projects.iter_mut().find(|p| p.id == *id) {
+                copy_statuses(&record.sources, &mut project.sources);
+                copy_statuses(&record.sources, &mut project.added_sources);
+            }
+        }
+        for environment in &self.environments {
+            if let Some(current) = projects.environment_mut(&environment.id) {
+                copy_statuses(&environment.sources, &mut current.sources);
+            }
+        }
+    }
+}
+fn copy_statuses(previous: &[ProjectSource], current: &mut [ProjectSource]) {
+    for source in current {
+        source.sync_status = previous
+            .iter()
+            .find(|old| {
+                old.id == source.id
+                    && old.path == source.path
+                    && old.base_branch == source.base_branch
+            })
+            .and_then(|old| old.sync_status.clone());
+    }
+}

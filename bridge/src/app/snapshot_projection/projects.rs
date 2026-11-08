@@ -74,7 +74,7 @@ impl AppState {
                 current.project_id == row.project_id
                     && current.repo_path == row.repo_path
                     && current.worktrees_root == row.worktrees_root
-                    && current.sources == row.sources
+                    && super::source_observation_inputs_match(&current.sources, &row.sources)
             });
             let newer = observations
                 .get(&row.project_id)

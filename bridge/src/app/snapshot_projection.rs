@@ -1,6 +1,7 @@
 //! Producer-owned observations and immutable wire projections. Expensive probes
 //! are captured by lifecycle work; publication consumes only owned observations.
 
+mod configuration;
 use super::read_view::{ReadView, SnapshotDelta};
 use super::workspaces::ProjectionOwnership;
 use super::{AppState, ProjectListRow};
@@ -30,6 +31,7 @@ pub(in crate::app) struct SnapshotObservations {
     workspace_reviews: BTreeMap<String, WorkspaceReviewObservation>,
 }
 
+#[derive(Clone)]
 pub(in crate::app) struct ProjectObservation {
     version: u64,
     value: Value,
@@ -456,3 +458,14 @@ pub(in crate::app) mod work_counts;
 
 #[cfg(test)]
 pub(in crate::app) mod summary_counts;
+
+fn source_observation_inputs_match(
+    first: &[crate::app::projects::ProjectSource],
+    second: &[crate::app::projects::ProjectSource],
+) -> bool {
+    first.len() == second.len()
+        && first
+            .iter()
+            .zip(second)
+            .all(|(a, b)| a.id == b.id && a.path == b.path && a.is_git == b.is_git)
+}

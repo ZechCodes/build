@@ -5,11 +5,19 @@ use crate::app::projects::ProjectSource;
 use crate::isolation::{Isolation, IsolationAvailability};
 
 /// Immutable inputs captured by the maintenance producer before filesystem work.
-#[derive(PartialEq, Eq)]
+#[derive(Eq)]
 pub(super) struct EnvironmentSnapshotRow {
-    id: String,
-    sources: Vec<ProjectSource>,
+    pub(super) id: String,
+    pub(super) sources: Vec<ProjectSource>,
     worktrees_root: PathBuf,
+}
+
+impl PartialEq for EnvironmentSnapshotRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.worktrees_root == other.worktrees_root
+            && super::source_observation_inputs_match(&self.sources, &other.sources)
+    }
 }
 
 impl EnvironmentSnapshotRow {
@@ -248,66 +256,3 @@ fn retained_environment_value(
 
 #[cfg(test)]
 mod env_observation_tests;
-
-impl AppState {
-    /// Mutation producer, never a list read: stage fresh repository evidence with config.
-    pub(in crate::app) fn prepare_environment_edit_observation(
-        &self,
-        id: &str,
-    ) -> Option<ProjectObservation> {
-        let environment = self.projects.environment(id)?;
-        let row = EnvironmentSnapshotRow {
-            id: id.to_owned(),
-            sources: environment.sources.clone(),
-            worktrees_root: self.worktrees_root.clone(),
-        };
-        Some(ProjectObservation {
-            version: self.read_view.next_version(),
-            value: row.render(),
-        })
-    }
-    pub(in crate::app) fn swap_environment_snapshot_observation(
-        &self,
-        id: &str,
-        candidate: &mut Option<ProjectObservation>,
-    ) {
-        let mut observations = self.snapshot_observations.environments.lock().unwrap();
-        let previous = observations.remove(id);
-        if let Some(candidate) = candidate.take() {
-            observations.insert(id.to_owned(), candidate);
-        }
-        *candidate = previous;
-    }
-    pub(in crate::app) fn refresh_environment_source_remote_observations(&self, roots: &[PathBuf]) {
-        for environment in self
-            .projects
-            .environments()
-            .filter(|e| e.sources.iter().any(|s| roots.contains(&s.path)))
-        {
-            let previous = self
-                .snapshot_observations
-                .environments
-                .lock()
-                .unwrap()
-                .get(&environment.id)
-                .map(|o| o.value.clone());
-            let mut value = previous.unwrap_or_else(|| {
-                self.prepare_environment_edit_observation(&environment.id)
-                    .expect("referencing environment remains registered")
-                    .value
-            });
-            super::projects::refresh_source_remotes(&mut value, &environment.sources, roots);
-            self.snapshot_observations
-                .environments
-                .lock()
-                .unwrap()
-                .insert(
-                    environment.id.clone(),
-                    ProjectObservation {
-                        version: self.read_view.next_version(),
-                        value,
-                    },
-                );
-        }
-    }
-}

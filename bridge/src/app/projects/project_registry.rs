@@ -70,7 +70,7 @@ impl SourceReservations {
 }
 
 /// Only configuration-owned project fields; runtime orchestrators stay installed.
-pub(super) struct ProjectConfiguration {
+pub(in crate::app) struct ProjectConfiguration {
     records: Vec<(String, ProjectConfigurationRecord)>,
     environments: Vec<Environment>,
 }
@@ -84,7 +84,10 @@ impl ProjectConfiguration {
         Self::capture_environment(projects, environment_id)
     }
 
-    pub(super) fn capture_environment(projects: &ProjectRegistry, environment_id: &str) -> Self {
+    pub(in crate::app) fn capture_environment(
+        projects: &ProjectRegistry,
+        environment_id: &str,
+    ) -> Self {
         Self {
             records: projects
                 .projects
@@ -92,12 +95,22 @@ impl ProjectConfiguration {
                 .filter(|project| project.environment_id == environment_id)
                 .map(|p| (p.id.clone(), ProjectConfigurationRecord::capture(p)))
                 .collect(),
-            environments: projects.environments.clone(),
+            environments: projects
+                .environments
+                .iter()
+                .filter(|e| e.id == environment_id)
+                .cloned()
+                .collect(),
         }
     }
 
-    pub(super) fn swap(&mut self, projects: &mut ProjectRegistry, _id: &str) {
-        std::mem::swap(&mut self.environments, &mut projects.environments);
+    pub(in crate::app) fn swap(&mut self, projects: &mut ProjectRegistry, _id: &str) {
+        for environment in &mut self.environments {
+            let current = projects
+                .environment_mut(&environment.id)
+                .expect("staged environment remains registered");
+            std::mem::swap(environment, current);
+        }
         for (id, record) in &mut self.records {
             record.swap(projects, id);
         }

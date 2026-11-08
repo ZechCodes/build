@@ -42,6 +42,8 @@ impl AppState {
                     checkouts_updated: 0,
                     checkouts_failed: vec![],
                 },
+                vec![],
+                vec![],
             );
         }
         let moves = edit.path.as_ref().is_some_and(|path| *path != source.path);
@@ -81,15 +83,12 @@ impl AppState {
             title,
             PendingState::Updating,
             mutation,
-            move |app: &mut AppState, result: Result<LockedSourceUpdate, String>| {
-                for project in &held {
-                    app.source_moves.end(project);
+            move |app: &mut AppState, result: Result<LockedSourceUpdate, String>| match result {
+                Ok(updated) => {
+                    let (updated, locks) = updated.into_parts();
+                    app.settle_environment_source_edit(address, updated, locks, held)
                 }
-                for path in &address.repositories {
-                    app.invalidate_shared_repository_views(path);
-                }
-                let updated = result?;
-                app.settle_environment_source_edit(address, updated.updated)
+                Err(error) => app.observe_failed_environment_edit(address, error, held),
             },
         )?;
         for project in projects {
@@ -145,39 +144,85 @@ impl AppState {
         &mut self,
         address: SourceAddress,
         updated: SourceUpdated,
+        locks: Vec<crate::source_sync::SyncLock>,
+        held: Vec<String>,
     ) -> Result<Value, String> {
-        let id = &address.environment;
-        self.validate_environment_source_path(id, Some(&address.source.id), &updated.path)?;
-        let current = self.environment_source(id, &address.source.id)?;
-        if current.path != address.source.path {
-            return Err("source changed while it was being edited".into());
+        let validation = (|| {
+            self.validate_environment_source_path(
+                &address.environment,
+                Some(&address.source.id),
+                &updated.path,
+            )?;
+            let current = self.environment_source(&address.environment, &address.source.id)?;
+            if current.path != address.source.path {
+                return Err("source changed while it was being edited".into());
+            }
+            Ok::<_, String>(())
+        })();
+        if let Err(error) = validation {
+            return self.observe_failed_environment_edit(address, error, held);
         }
+        let id = address.environment.clone();
+        let source_id = address.source.id.clone();
+        let sync_base = address.edit.sync_base;
+        let checkouts_updated = updated.checkouts_updated;
         let failed = updated.checkouts_failed.iter().map(|f| json!({"workspace_id":f.workspace_id,"path":f.path.display().to_string(),"reason":f.reason})).collect::<Vec<_>>();
-        let mut row = self.commit_environment_configuration(id, |projects| {
-            let source = projects
-                .environment_mut(id)
-                .ok_or("unknown environment")?
-                .sources
-                .iter_mut()
-                .find(|s| s.id == address.source.id)
-                .ok_or("source changed while it was being edited")?;
-            source.path = updated.path;
-            source.is_git = updated.is_git;
-            source.base_branch = updated.base_branch;
-            if let Some(name) = address.edit.name {
-                source.name = name;
-            }
-            if let Some(sync) = address.edit.sync_base {
-                source.sync_base = Some(sync);
-            }
-            Ok(())
-        })?;
-        if address.edit.sync_base == Some(true) {
-            self.request_environment_source_sync(id, &address.source.id);
-        }
-        row["checkouts_updated"] = updated.checkouts_updated.into();
-        row["checkouts_failed"] = json!(failed);
-        Ok(row)
+        self.commit_environment_configuration_with(
+            &address.environment,
+            |projects| {
+                let source = projects
+                    .environment_mut(&address.environment)
+                    .ok_or("unknown environment")?
+                    .sources
+                    .iter_mut()
+                    .find(|s| s.id == address.source.id)
+                    .ok_or("source changed while it was being edited")?;
+                source.path = updated.path;
+                source.is_git = updated.is_git;
+                source.base_branch = updated.base_branch;
+                if let Some(name) = address.edit.name {
+                    source.name = name;
+                }
+                if let Some(sync) = sync_base {
+                    source.sync_base = Some(sync);
+                }
+                Ok(())
+            },
+            None,
+            address.repositories,
+            move |app, result| {
+                for project in held {
+                    app.source_moves.end(&project);
+                }
+                let mut row = result?;
+                if sync_base == Some(true) {
+                    app.request_environment_source_sync(&id, &source_id);
+                }
+                row["checkouts_updated"] = checkouts_updated.into();
+                row["checkouts_failed"] = json!(failed);
+                drop(locks);
+                Ok(row)
+            },
+        )
+    }
+    fn observe_failed_environment_edit(
+        &mut self,
+        address: SourceAddress,
+        error: String,
+        held: Vec<String>,
+    ) -> Result<Value, String> {
+        self.commit_environment_configuration_with(
+            &address.environment,
+            |_| Ok(()),
+            None,
+            address.repositories,
+            move |app, _| {
+                for project in held {
+                    app.source_moves.end(&project);
+                }
+                Err(error)
+            },
+        )
     }
     pub(crate) fn environment_sync_source(&mut self, params: &Value) -> Result<Value, String> {
         let id = require_str(params, "environment_id")?;

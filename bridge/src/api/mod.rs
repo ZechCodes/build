@@ -500,7 +500,7 @@ impl ApiError {
         if sentence.starts_with("unknown ") && !sentence.starts_with("unknown method") {
             return ApiError::not_found(message);
         }
-        if sentence.starts_with(crate::github::REFUSAL) {
+        if unavailable_refusal(sentence) {
             return ApiError::unavailable(message);
         }
         // A refusal a deferred verb decided under the lock after its work ran
@@ -743,4 +743,9 @@ mod tests {
             "internal"
         );
     }
+}
+
+fn unavailable_refusal(sentence: &str) -> bool {
+    sentence.starts_with(crate::github::REFUSAL)
+        || sentence.starts_with("Rift isolation is unavailable")
 }

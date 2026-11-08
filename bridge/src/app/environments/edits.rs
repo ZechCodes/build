@@ -24,10 +24,18 @@ impl AppState {
     pub(crate) fn project_rename(&mut self, params: &Value) -> Result<Value, String> {
         let id = require_str(params, "project_id")?;
         let name = display_name(&require_str(params, "name")?)?;
-        let row =
-            self.commit_project_configuration(&id, |projects| projects.rename_project(&id, name))?;
-        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
-        Ok(row)
+        let environment = self.project_for(&id)?.environment_id.clone();
+        let result_id = id.clone();
+        self.commit_environment_configuration_with(
+            &environment,
+            |projects| projects.rename_project(&id, name),
+            None,
+            vec![],
+            move |app, result| {
+                result?;
+                app.project_json_observed(&result_id)
+            },
+        )
     }
     pub(crate) fn environment_rename(&mut self, params: &Value) -> Result<Value, String> {
         let id = require_str(params, "environment_id")?;
@@ -152,40 +160,56 @@ impl AppState {
             PendingState::Updating,
             mutation,
             move |state: &mut AppState, prepared: Result<PreparedSources, String>| {
-                let prepared = prepared?;
-                let row =
-                    state.append_environment_sources(&id, prepared.sources, &prepared.cloned_paths);
-                if row.is_err() {
-                    state.cleanup_unregistered_sources(prepared.created_checkouts);
-                }
-                row
+                state.append_environment_sources(&id, prepared?)
             },
         )
     }
     fn append_environment_sources(
         &mut self,
         id: &str,
-        mut sources: Vec<ProjectSource>,
-        cloned: &[std::path::PathBuf],
+        mut prepared: PreparedSources,
     ) -> Result<Value, String> {
-        self.projects.environment(id).ok_or("unknown environment")?;
-        self.validate_prepared_sources(None, &mut sources, cloned)?;
-        for source in &sources {
-            self.validate_environment_source_path(id, None, &source.path)?;
-        }
-        self.commit_environment_configuration(id, |projects| {
-            let ids = projects.allocate_environment_source_ids(id, sources.len())?;
-            for (source, id) in sources.iter_mut().zip(ids) {
-                source.id = id;
+        let mut sources = std::mem::take(&mut prepared.sources);
+        let validation = (|| {
+            self.projects.environment(id).ok_or("unknown environment")?;
+            self.validate_prepared_sources(None, &mut sources, &prepared.cloned_paths)?;
+            for source in &sources {
+                self.validate_environment_source_path(id, None, &source.path)?;
             }
-            let environment = projects.environment_mut(id).ok_or("unknown environment")?;
-            environment.next_source = environment
-                .next_source
-                .max(crate::app::projects::next_source_number(&sources));
-            environment.sources.extend(sources);
-            Ok(())
-        })
+            Ok::<_, String>(())
+        })();
+        if let Err(error) = validation {
+            self.cleanup_unregistered_sources(prepared.created_checkouts);
+            return Err(error);
+        }
+        self.commit_environment_configuration_with(
+            id,
+            |projects| {
+                let ids = projects.allocate_environment_source_ids(id, sources.len())?;
+                for (source, id) in sources.iter_mut().zip(ids) {
+                    source.id = id;
+                }
+                let environment = projects.environment_mut(id).ok_or("unknown environment")?;
+                environment.next_source = environment
+                    .next_source
+                    .max(crate::app::projects::next_source_number(&sources));
+                environment.sources.extend(sources);
+                Ok(())
+            },
+            None,
+            vec![],
+            move |app, result| {
+                if result.is_err() {
+                    app.cleanup_unregistered_sources(std::mem::take(
+                        &mut prepared.created_checkouts,
+                    ));
+                }
+                drop(prepared);
+                result
+            },
+        )
     }
+
     pub(crate) fn environment_remove_source(&mut self, params: &Value) -> Result<Value, String> {
         let id = require_str(params, "environment_id")?;
         let source_id = require_str(params, "source_id")?;
@@ -205,28 +229,32 @@ impl AppState {
     }
     pub(crate) fn environment_set_isolation(&mut self, params: &Value) -> Result<Value, String> {
         let id = require_str(params, "environment_id")?;
-        let home = self
-            .projects
+        self.projects
             .environment(&id)
-            .ok_or_else(|| format!("unknown environment: {id}"))?
-            .sources
-            .first()
-            .ok_or("environment has no home source")?;
-        let available =
-            crate::isolation::IsolationAvailability::of(&home.path, &self.worktrees_root);
+            .ok_or_else(|| format!("unknown environment: {id}"))?;
         let isolation = match params.get("isolation") {
             Some(Value::Null) => None,
-            _ => Some(crate::app::config::accept_isolation(
-                &require_str(params, "isolation")?,
-                &available,
-            )?),
+            _ => {
+                let named = require_str(params, "isolation")?;
+                Some(
+                    crate::isolation::Isolation::from_wire(&named).ok_or_else(|| {
+                        format!("unknown isolation {named:?} (expected \"worktree\" or \"rift\")")
+                    })?,
+                )
+            }
         };
-        self.commit_environment_configuration(&id, |projects| {
-            projects
-                .environment_mut(&id)
-                .ok_or("unknown environment")?
-                .isolation = isolation;
-            Ok(())
-        })
+        self.commit_environment_configuration_with(
+            &id,
+            |projects| {
+                projects
+                    .environment_mut(&id)
+                    .ok_or("unknown environment")?
+                    .isolation = isolation;
+                Ok(())
+            },
+            isolation,
+            vec![],
+            |_, result| result,
+        )
     }
 }

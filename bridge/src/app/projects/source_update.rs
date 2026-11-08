@@ -439,3 +439,9 @@ impl SourceUpdateScope {
         Ok(())
     }
 }
+
+impl LockedSourceUpdate {
+    pub(in crate::app) fn into_parts(self) -> (SourceUpdated, Vec<crate::source_sync::SyncLock>) {
+        (self.updated, self._held)
+    }
+}

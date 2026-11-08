@@ -135,7 +135,7 @@ pub(in crate::app) struct SourceRecord {
 }
 
 use project_registry::ProjectCandidate;
-pub(in crate::app) use project_registry::ProjectRegistry;
+pub(in crate::app) use project_registry::{ProjectConfiguration, ProjectRegistry};
 
 /// One registered project: a git repo, its base branch, and the orchestrator that
 /// drives tasks on it. Each project gets its own worktrees subdir and orchestrator

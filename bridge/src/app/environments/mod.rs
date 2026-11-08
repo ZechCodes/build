@@ -44,3 +44,5 @@ mod source_edits;
 
 #[cfg(test)]
 mod review_tests;
+
+mod configuration;

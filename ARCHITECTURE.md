@@ -1818,6 +1818,14 @@ retain their cuts. Project and environment isolation overrides are independent,
 resolved project → environment → device. Manual environment sync uses the existing
 background service and common-Git-directory lock; its status has an environment
 and source key, while project statuses retain their project and source keys.
+Configuration edits stage prospective references under the app lock, capture
+immutable observation inputs, then restore the visible configuration while the
+existing deferred lifecycle probes repositories and isolation availability off
+lock. Settlement revalidates the durable configuration, retains current per-owner
+sync conclusions, and persists before publishing the configuration and owned
+observations together. Conflicting configuration edits require a retry. Cached
+source remotes match both source ID and path. Due sync passes include environment
+references, including environments with no live projects.
 These seven verbs have explicit HTTP resources and fixtures at wire 3.37.0 but
 remain in `UNADVERTISED_CAPABILITIES` until M3.3 supplies their product surface.
 

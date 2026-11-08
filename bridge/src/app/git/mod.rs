@@ -822,7 +822,7 @@ impl AppState {
             self.note_git_at(path);
         }
         self.refresh_project_source_remote_observations(&roots);
-        self.refresh_environment_source_remote_observations(&roots);
+        self.invalidate_environment_remote_observations(&roots);
         self.note_board_lists_changed(crate::changes::BoardLists {
             projects: true,
             workspaces: true,

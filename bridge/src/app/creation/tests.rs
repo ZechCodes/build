@@ -3,9 +3,9 @@ use crate::harness::HarnessContext;
 use tempfile::TempDir;
 
 mod admission_recovery;
-mod environment_create;
 mod continuation_identity;
 mod discard_identity;
+mod environment_create;
 mod failure_finalization;
 mod project_identity;
 mod recorded_admission;
@@ -83,6 +83,8 @@ impl Fixture {
         .unwrap()
         .with_config(root.path().join("config.json"))
         .unwrap();
+        app.projects_dir = root.path().join("projects");
+        std::fs::create_dir(&app.projects_dir).unwrap();
         app.add_project(home, "main".into());
         app.persist();
         let store = app.store.clone().unwrap();

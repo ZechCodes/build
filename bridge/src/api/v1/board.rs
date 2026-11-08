@@ -583,6 +583,10 @@ pub struct ProjectConversation {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_sources: Option<Vec<ProjectSourceRow>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diverged: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_thresholds: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<serde_json::Value>,
@@ -674,7 +678,6 @@ pub struct ListedProjectRow {
     pub environment_id: String,
     pub environment_name: String,
     pub project_key: String,
-    pub diverged: bool,
     pub device: String,
     pub open_tasks: u64,
     pub total_tasks: u64,

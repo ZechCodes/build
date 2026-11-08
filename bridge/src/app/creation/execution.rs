@@ -106,8 +106,8 @@ fn provision(
         .as_str()
         .ok_or("missing saved project identity")?
         .to_string();
-    let workspace_params = if record.method == "environment.create_project" {
-        &record.params["workspace"]
+    let workspace_params = if record.method != "workspace.create" {
+        &project_params(record)["workspace"]
     } else {
         &record.params
     };
@@ -191,7 +191,17 @@ fn creation_result(
 ) -> Result<Value, String> {
     let app = state.lock().unwrap();
     let project = app.project_for(id)?;
-    let result = if record.method == "environment.create_project" {
+    let result = if record.method == "environment.create" {
+        let environments = app.environment_list();
+        let environment = environments["environments"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|e| e["environment_id"] == project.environment_id)
+            })
+            .ok_or("created environment missing")?;
+        json!({"environment":environment,"project":app.project_json(project),"workspace":result})
+    } else if record.method == "environment.create_project" {
         json!({"project":app.project_json(project),"workspace":result})
     } else {
         result
@@ -212,10 +222,12 @@ pub(super) fn project_step(
         .ok_or("creation store missing")?
         .writer();
     let mut evidence = record.execution.clone();
-    if record.method != "environment.create_project" {
+    if record.method == "workspace.create" {
         validate_saved_project(state, &evidence)?;
         return Ok(evidence);
     }
+    super::sources::prepare(state, &writer, record, &mut evidence)?;
+    super::environment::step(state, &writer, record, &mut evidence)?;
     progress(
         state,
         &record.operation_id,
@@ -241,26 +253,44 @@ pub(super) fn project_step(
         .as_str()
         .ok_or("id missing")?
         .to_owned();
-    let result = state.lock().unwrap().create_environment_project(
-        record.params["environment_id"]
-            .as_str()
-            .ok_or("environment missing")?,
-        record.params["name"].as_str().ok_or("name missing")?,
-        &key,
-        &provisional_id,
-        |project_id| {
-            evidence["project_id"] = json!(project_id);
-            if evidence["effect_step"] == "project" {
-                evidence["effect_state"] = json!("started");
-            }
-            writer
-                .checkpoint_creation(PRINCIPAL, &record.operation_id, evidence.clone())
-                .map_err(string)?;
-            #[cfg(test)]
-            tests::at_boundary(tests::Boundary::ProjectIdentityCheckpointed);
-            Ok(())
-        },
-    );
+    let mut added = super::sources::prepared(&evidence)?;
+    let count = evidence["environment_source_count"].as_u64().unwrap_or(0) as usize;
+    added.drain(..count);
+    let environment_id = evidence["environment_id"]
+        .as_str()
+        .or_else(|| record.params["environment_id"].as_str())
+        .ok_or("environment missing")?
+        .to_owned();
+    let result = {
+        let mut app = state.lock().unwrap();
+        app.publish_creation_sources(&evidence);
+        app.validate_creation_additions(
+            &environment_id,
+            &mut added,
+            &super::environment::cloned_paths(&evidence),
+        )?;
+        app.create_environment_project(
+            &environment_id,
+            project_params(record)["name"]
+                .as_str()
+                .ok_or("name missing")?,
+            &key,
+            &provisional_id,
+            added,
+            |project_id| {
+                evidence["project_id"] = json!(project_id);
+                if evidence["effect_step"] == "project" {
+                    evidence["effect_state"] = json!("started");
+                }
+                writer
+                    .checkpoint_creation(PRINCIPAL, &record.operation_id, evidence.clone())
+                    .map_err(string)?;
+                #[cfg(test)]
+                tests::at_boundary(tests::Boundary::ProjectIdentityCheckpointed);
+                Ok(())
+            },
+        )
+    };
     if let Err(error) = result {
         // Config replacement reports errors only before its atomic rename.
         // With no project by this key and no workspace, its effects are settled.
@@ -395,7 +425,7 @@ fn finish_failure(
     error: &str,
 ) -> Result<(), String> {
     let id = &prior.operation_id;
-    let record = writer
+    let mut record = writer
         .creation_record(PRINCIPAL, id)
         .map_err(string)?
         .ok_or("creation disappeared")?;
@@ -408,15 +438,45 @@ fn finish_failure(
     // only environment.create_project can have landed a new project step.
     let created_key = record.execution["project_key"]
         .as_str()
-        .filter(|_| record.method == "environment.create_project");
-    let (landed, details) = failure_resources(state, created_key);
+        .filter(|_| record.method != "workspace.create");
+    let (project_landed, mut details) = failure_resources(state, created_key);
+    let environment = created_environment(state, &record);
+    let environment_landed = environment.is_some();
+    if let Some(environment) = environment {
+        details["environment"] = environment;
+    }
+    let landed = project_landed || environment_landed;
+    if !landed && !error.contains("outcome unknown")
+        && source_rollback_is_proven_safe(&record.execution)
+        && record.execution["source_plan"]
+            .as_array()
+            .is_some_and(|p| !p.is_empty())
+        && record.execution["effect_state"] != "settled"
+    {
+        let mut evidence = record.execution.clone();
+        if let Err(cleanup) = super::sources::rollback(state, writer, &record, &mut evidence, error)
+        {
+            return retain_nonterminal(state, writer, &record, &cleanup);
+        }
+        record = writer
+            .creation_record(PRINCIPAL, id)
+            .map_err(string)?
+            .ok_or("creation disappeared")?;
+    }
     // This is the sole failure-finalization gate. Neither an error's spelling
     // nor a checkpoint resetting state to executing proves that effects vanished.
-    if retain_failure(prior, &record, landed, error) {
+    if retain_failure(prior, &record, project_landed, environment_landed, error) {
         return retain_nonterminal(state, writer, &record, error);
     }
     let mut evidence = record.execution;
-    if landed {
+    if environment_landed {
+        set_step(&mut evidence, "environment", "done", None);
+        if evidence["effect_step"] == "environment" {
+            evidence["effect_step"] = json!("project");
+            evidence["effect_state"] = json!("not_started");
+        }
+    }
+    if project_landed {
         let project_id = details["project"]["project_id"]
             .as_str()
             .ok_or("landed project identity missing")?;
@@ -427,8 +487,14 @@ fn finish_failure(
             evidence["effect_state"] = json!("not_started");
         }
     }
-    let step = if record.method == "workspace.create" || landed {
+    let step = if record.method == "workspace.create" || project_landed {
         "workspace"
+    } else if record.method == "environment.create" && !environment_landed {
+        if evidence["effect_step"] == "sources" {
+            "sources"
+        } else {
+            "environment"
+        }
     } else {
         "project"
     };
@@ -450,6 +516,7 @@ fn retain_failure(
     prior: &MutationRecord,
     current: &MutationRecord,
     landed: bool,
+    environment_landed: bool,
     error: &str,
 ) -> bool {
     let evidence = &current.execution;
@@ -479,6 +546,8 @@ fn retain_failure(
         return true;
     }
     match evidence["effect_step"].as_str() {
+        Some("environment") => evidence["effect_state"] != "not_started" && !environment_landed,
+        Some("sources") => evidence["effect_state"] != "not_started",
         Some("project") => {
             !(evidence["effect_state"] == "not_started"
                 || (landed && evidence.get("workspace").is_none()))
@@ -513,7 +582,7 @@ fn retain_nonterminal(
         .map_err(string)?;
     Ok(())
 }
-fn checkpoint_effect(
+pub(super) fn checkpoint_effect(
     writer: &StoreWriter,
     id: &str,
     evidence: &mut Value,
@@ -637,7 +706,7 @@ fn cleanup(
     checkpoint_settlement(writer, &record.operation_id, &mut evidence, error)?;
     Err(error.into())
 }
-fn set_step(evidence: &mut Value, step: &str, status: &str, detail: Option<&str>) {
+pub(super) fn set_step(evidence: &mut Value, step: &str, status: &str, detail: Option<&str>) {
     if !evidence["steps"].is_array() {
         evidence["steps"] = json!([]);
     }
@@ -649,12 +718,14 @@ fn set_step(evidence: &mut Value, step: &str, status: &str, detail: Option<&str>
         steps.push(value);
     }
     steps.sort_by_key(|item| match item["step"].as_str() {
-        Some("project") => 0,
-        Some("workspace") => 1,
-        _ => 2,
+        Some("sources") => 0,
+        Some("environment") => 1,
+        Some("project") => 2,
+        Some("workspace") => 3,
+        _ => 4,
     });
 }
-fn progress(
+pub(super) fn progress(
     state: &Arc<Mutex<AppState>>,
     id: &str,
     evidence: &Value,
@@ -680,4 +751,28 @@ fn progress(
 }
 fn string(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+fn project_params(record: &MutationRecord) -> &Value {
+    if record.method == "environment.create" {
+        &record.params["project"]
+    } else {
+        &record.params
+    }
+}
+fn created_environment(state: &Arc<Mutex<AppState>>, record: &MutationRecord) -> Option<Value> {
+    if record.method != "environment.create" {
+        return None;
+    }
+    let app = state.lock().unwrap();
+    app.environment_list()["environments"]
+        .as_array()?
+        .iter()
+        .find(|e| e["environment_id"] == record.execution["environment_id"])
+        .cloned()
+}
+
+fn source_rollback_is_proven_safe(evidence:&Value)->bool {
+    evidence.get("workspace").is_none() && (evidence["effect_step"]=="sources" ||
+        (evidence["effect_state"]=="not_started" && matches!(evidence["effect_step"].as_str(),Some("environment"|"project"))))
 }

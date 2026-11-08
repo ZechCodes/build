@@ -9,8 +9,10 @@ use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
 pub(in crate::app) const PRINCIPAL: &str = "device_user";
+mod environment;
 mod execution;
 mod service;
+mod sources;
 pub(in crate::app) use execution::execute;
 #[cfg(test)]
 use execution::project_step;
@@ -46,7 +48,13 @@ pub(in crate::app) fn admit(
         project_key,
     } = capture_scope(&state.lock().unwrap(), method, &params)?;
     validate_continuation(&writer, &params, &scope, project_key.as_deref())?;
-    let (acceptance, reservations) = reserve_attempt(state, method, &params, &owner)?;
+    let retained = writer
+        .creation_record(PRINCIPAL, &metadata.operation_id)
+        .map_err(admission_error)?;
+    let (acceptance, reservations) = match retained {
+        Some(record) => (record.acceptance, record.reservations),
+        None => reserve_attempt(state, method, &params, &owner, &metadata.operation_id)?,
+    };
     #[cfg(test)]
     tests::at_boundary(tests::Boundary::AdmissionPrepared);
     writer
@@ -116,7 +124,14 @@ fn capture_scope(app: &AppState, method: &str, params: &Value) -> Result<Creatio
         .store
         .as_ref()
         .ok_or_else(|| ApiError::unavailable("creation needs a durable store"))?;
-    let (kind, id, project_key) = if method == "environment.create_project" {
+    if method != "workspace.create" && app.config_path.is_none() {
+        return Err(ApiError::unavailable(
+            "creation needs durable project configuration",
+        ));
+    }
+    let (kind, id, project_key) = if method == "environment.create" {
+        ("device", "local", None)
+    } else if method == "environment.create_project" {
         let id = params["environment_id"].as_str().unwrap();
         app.projects
             .environment(id)
@@ -148,9 +163,10 @@ fn reserve_attempt(
     method: &str,
     params: &Value,
     owner: &MutationOwner,
+    operation_id: &str,
 ) -> Result<(Value, Vec<MutationResource>), ApiError> {
-    let creation = if method == "environment.create_project" {
-        json!({"project_key":format!("project:{}",uuid::Uuid::new_v4()),"steps":[]})
+    let creation = if method != "workspace.create" {
+        sources::reserve(state, method, params, operation_id)?
     } else {
         let app = state.lock().unwrap();
         let project = app
@@ -161,7 +177,7 @@ fn reserve_attempt(
             .map_err(ApiError::from)?;
         json!({"project_id":params["project_id"],"project_key":project.project_key,"workspace":workspace,"steps":[]})
     };
-    let (kind, id) = if method == "environment.create_project" {
+    let (kind, id) = if method != "workspace.create" {
         ("project", creation["project_key"].as_str())
     } else {
         ("workspace", creation["workspace"]["id"].as_str())
@@ -174,8 +190,15 @@ fn reserve_attempt(
     };
     let mut creation = creation;
     creation["effect_state"] = json!("not_started");
-    creation["effect_step"] = json!(if method == "environment.create_project" {
-        "project"
+    creation["effect_step"] = json!(if method != "workspace.create" {
+        if creation["source_plan"]
+            .as_array()
+            .is_some_and(|p| !p.is_empty())
+        {
+            "sources"
+        } else {
+            "project"
+        }
     } else {
         "workspace"
     });
@@ -195,20 +218,47 @@ fn admission_error(error: crate::store::StoreError) -> ApiError {
     }
 }
 fn validate_creation(method: &str, params: &Value) -> Result<(), ApiError> {
-    if !matches!(method, "environment.create_project" | "workspace.create") {
+    if !matches!(
+        method,
+        "environment.create" | "environment.create_project" | "workspace.create"
+    ) {
         return Err(ApiError::unavailable("method is not a journaled creation"));
     }
-    let workspace = if method == "environment.create_project" {
-        let name = params["name"].as_str().unwrap_or("");
-        if name.trim().is_empty() || name.len() > 256 {
-            return Err(ApiError::invalid_params(
-                "project name must be between 1 and 256 bytes",
-            ));
-        }
-        &params["workspace"]
+    let project = if method == "environment.create" {
+        &params["project"]
     } else {
         params
     };
+    let workspace = if method != "workspace.create" {
+        let name = project["name"].as_str().unwrap_or("");
+        if name.trim().is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
+            return Err(ApiError::invalid_params(
+                "project name must be one line between 1 and 256 bytes",
+            ));
+        }
+        &project["workspace"]
+    } else {
+        params
+    };
+    if method == "environment.create" {
+        if params["sources"].as_array().is_none_or(Vec::is_empty) {
+            return Err(ApiError::invalid_params(
+                "an environment must have at least one source",
+            ));
+        }
+        if let Some(name) = params["name"].as_str() {
+            if name.trim().is_empty() || name.len() > 256 || name.chars().any(char::is_control) {
+                return Err(ApiError::invalid_params(
+                    "environment name must be one line between 1 and 256 bytes",
+                ));
+            }
+        }
+        if let Some(isolation) = params["isolation"].as_str() {
+            if crate::isolation::Isolation::from_wire(isolation).is_none() {
+                return Err(ApiError::invalid_params("unknown environment isolation"));
+            }
+        }
+    }
     if let Some(isolation) = workspace.get("isolation").and_then(Value::as_str) {
         if crate::isolation::Isolation::from_wire(isolation).is_none() {
             return Err(ApiError::invalid_params(format!(
@@ -233,7 +283,7 @@ fn validate_continuation(
         .ok_or_else(|| ApiError::invalid_params("continued attempt not found"))?;
     if !matches!(
         record.method.as_str(),
-        "environment.create_project" | "workspace.create"
+        "environment.create" | "environment.create_project" | "workspace.create"
     ) {
         return Err(ApiError::invalid_params(
             "continued operation is not a creation attempt",
@@ -253,7 +303,12 @@ fn validate_continuation(
     // Environment chaining remains bound to its existing environment scope.
     let same_scope = match project_key {
         Some(key) => record.execution["project_key"].as_str() == Some(key),
-        None => record.scope == *scope,
+        None => {
+            record.scope == *scope
+                || (record.method == "environment.create"
+                    && record.execution["environment_id"] == scope["environment_id"]
+                    && scope["environment_id"].is_string())
+        }
     };
     if !same_scope {
         return Err(ApiError::invalid_params(
@@ -290,6 +345,9 @@ impl AppState {
         }
     }
     pub(in crate::app) fn release_creation_workspace(&mut self, evidence: &Value) {
+        if let Some(owner) = evidence["source_owner"].as_str() {
+            self.creation_source_claims.remove(owner);
+        }
         if let Some(id) = evidence["workspace"]["id"].as_str() {
             self.creation_roots.remove(id);
         }

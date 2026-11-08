@@ -443,6 +443,7 @@ pub struct AppState {
     /// read loop need this mutex while they run.
     deferred_work: Option<DeferredWork>,
     mutation_service: Option<mutations::MutationService>,
+    creation_source_claims: std::collections::HashMap<String, Vec<projects::SourceDirectoryLease>>,
     creation_wakeup: Option<std::sync::mpsc::SyncSender<()>>,
     creation_roots: std::collections::HashMap<String, std::path::PathBuf>,
     /// The result type `api/v1` declares for the verb that filled
@@ -782,6 +783,7 @@ impl AppState {
             rpc_post_attention_owners: None,
             deferred_work: None,
             mutation_service: None,
+            creation_source_claims: Default::default(),
             creation_wakeup: None,
             creation_roots: Default::default(),
             deferred_result_check: None,

@@ -693,6 +693,7 @@ impl AppState {
         self.mark_device_lifecycle_dirty()?;
         let project_id = require_str(params, "project_id")?;
         let source_id = require_str(params, "source_id")?;
+        self.check_project_source_edit(&project_id, &source_id, false)?;
         let project = self.project_for(&project_id)?;
         if !project.sources.iter().any(|source| source.id == source_id) {
             return Err(format!(
@@ -782,5 +783,44 @@ impl AppState {
         })?;
         self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
         Ok(value)
+    }
+}
+
+impl AppState {
+    pub(in crate::app) fn plan_creation_sources(
+        &self,
+        entries: &[Value],
+        inherited: &[ProjectSource],
+        managed_root: &std::path::Path,
+    ) -> Result<Value, String> {
+        let mut taken = TakenSourceNames::over(inherited);
+        let first = super::next_source_number(inherited);
+        let mut requests = Vec::new();
+        for (index, entry) in entries.iter().enumerate() {
+            requests.push(self.source_request(
+                entry,
+                format!("source-{}", first + index as u64),
+                &mut taken,
+            )?);
+        }
+        taken.refuse_managed_destinations(
+            &requests,
+            managed_root,
+            &self.projects.registered_sources(),
+        )?;
+        for request in requests.iter().filter(|r| r.remote.is_some()) {
+            let destination = managed_root.join(&request.mount);
+            self.validate_secret_source(&destination)?;
+            if self.source_directory_has_owner(&destination) {
+                return Err(
+                    "managed source destination overlaps a project or workspace location".into(),
+                );
+            }
+        }
+        let planned = requests.into_iter().map(|request| {
+            let path = request.path.unwrap_or_else(|| managed_root.join(&request.mount));
+            serde_json::json!({"source":ProjectSource::added(request.id,request.name,request.mount,path,false,request.base_branch.clone().unwrap_or_else(||"main".into())),"remote":request.remote,"base_branch":request.base_branch})
+        }).collect::<Vec<_>>();
+        Ok(serde_json::json!(planned))
     }
 }

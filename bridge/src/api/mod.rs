@@ -200,7 +200,10 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
 
 /// Known methods or features deliberately held out of greetings while a later
 /// slice finishes their end-to-end product surface.
-pub const UNADVERTISED_CAPABILITIES: &[&str] = &[];
+pub const UNADVERTISED_CAPABILITIES: &[&str] = &[
+    "environment.create",
+    "environment.discard_unused",
+];
 
 /// Everything this bridge can serve on a session, as exact method names and
 /// explicit feature names. Sorting and deduplication make the greeting stable.

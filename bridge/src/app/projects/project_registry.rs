@@ -169,6 +169,11 @@ impl ProjectCandidate {
     pub(super) fn set_environment(&mut self, id: &str) {
         self.project.environment_id = id.to_string();
     }
+    pub(super) fn add_creation_sources(&mut self, added: Vec<ProjectSource>) {
+        self.project.next_source = self.project.next_source.max(next_source_number(&added));
+        self.project.added_sources = added.clone();
+        self.project.sources.extend(added);
+    }
     pub(super) fn project(&self) -> &Project {
         &self.project
     }
@@ -1303,5 +1308,24 @@ impl ProjectRegistry {
                 .map(|source| source.id.as_str()),
         );
         reservations
+    }
+}
+
+impl ProjectRegistry {
+    pub(in crate::app) fn publish_creation_environment(&mut self, environment: Environment) {
+        assert!(self.environment(&environment.id).is_none());
+        self.environments.push(environment);
+    }
+    pub(in crate::app) fn remove_unused_environment(&mut self, id: &str) {
+        self.environments.retain(|e| e.id != id);
+    }
+    pub(super) fn allocate_environment_source_ids(
+        &self,
+        id: &str,
+        count: usize,
+    ) -> Result<Vec<String>, String> {
+        let environment = self.environment(id).ok_or("unknown environment")?;
+        let mut reservations = self.source_reservations(environment, &[], None);
+        Ok((0..count).map(|_| reservations.allocate_id()).collect())
     }
 }

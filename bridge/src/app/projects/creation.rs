@@ -9,6 +9,7 @@ impl AppState {
         name: &str,
         key: &str,
         provisional_id: &str,
+        added: Vec<ProjectSource>,
         checkpoint_identity: impl FnOnce(&str) -> Result<(), String>,
     ) -> Result<String, String> {
         if let Some(project) = self
@@ -59,9 +60,21 @@ impl AppState {
             Vec::new(),
             Some(number),
         );
-        let candidate =
+        let mut candidate =
             self.projects
                 .add_project_to_environment(environment_id, name, key, candidate)?;
+        let ids = self
+            .projects
+            .allocate_environment_source_ids(environment_id, added.len())?;
+        let added = added
+            .into_iter()
+            .zip(ids)
+            .map(|(mut source, id)| {
+                source.id = id;
+                source
+            })
+            .collect();
+        candidate.add_creation_sources(added);
         let config = self.config_value_with_project(
             &self.projects_dir,
             self.default_harness,
@@ -86,8 +99,10 @@ impl AppState {
             .map_err(|e| e.to_string())?
             .ok_or("creation attempt not found")?;
         let project = self.project_for(&id)?;
-        if record.method != "environment.create_project"
-            || record.execution["project_id"] != id
+        if !matches!(
+            record.method.as_str(),
+            "environment.create" | "environment.create_project"
+        ) || record.execution["project_id"] != id
             || record.execution["project_key"] != project.project_key
         {
             return Err("project was not created by this attempt".into());
@@ -168,6 +183,75 @@ impl AppState {
                 .any(|r| r.project_path == key || r.project_path == routed)
         {
             return Err("project has a retained agent session".into());
+        }
+        Ok(())
+    }
+}
+
+impl AppState {
+    pub(in crate::app) fn validate_creation_environment_sources(
+        &self,
+        sources: &mut [ProjectSource],
+        cloned: &[std::path::PathBuf],
+    ) -> Result<(), String> {
+        self.validate_prepared_sources(None, sources, cloned)
+    }
+    pub(in crate::app) fn persist_creation_environment(
+        &mut self,
+        environment: crate::app::environments::Environment,
+    ) -> Result<(), String> {
+        let mut config =
+            self.config_value(&self.projects_dir, self.default_harness, self.isolation);
+        config["environments"].as_array_mut().unwrap().push(serde_json::json!({
+            "id":environment.id,"name":environment.name,"next_source":environment.next_source,
+            "isolation":environment.isolation,"sources":environment.sources.iter().map(ProjectSource::wire).collect::<Vec<_>>()
+        }));
+        self.persist_config(&config)?;
+        self.projects.publish_creation_environment(environment);
+        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
+        Ok(())
+    }
+    pub(in crate::app) fn validate_creation_additions(
+        &self,
+        environment_id: &str,
+        added: &mut [ProjectSource],
+        cloned: &[std::path::PathBuf],
+    ) -> Result<(), String> {
+        let inherited = self
+            .projects
+            .environment(environment_id)
+            .ok_or("unknown environment")?
+            .sources
+            .clone();
+        for source in added.iter() {
+            let path=crate::worktree::canonical_planned_path(&source.path);
+            if inherited.iter().any(|s|crate::worktree::canonical_planned_path(&s.path)==path) {
+                return Err(format!("source is already included in this project: {}",path.display()));
+            }
+        }
+        // Existing environment references can be temporarily unavailable. New
+        // additions are checked without changing M0.4's landed-project behavior.
+        self.validate_prepared_sources(None, added, cloned)
+    }
+}
+
+impl AppState {
+    pub(in crate::app) fn check_project_source_edit(
+        &self,
+        project_id: &str,
+        source_id: &str,
+        legacy: bool,
+    ) -> Result<(), String> {
+        let project = self.project_for(project_id)?;
+        let inherited = self
+            .projects
+            .environment(&project.environment_id)
+            .is_some_and(|e| e.sources.iter().any(|s| s.id == source_id));
+        if inherited && !(legacy && project.added_sources.is_empty()) {
+            return Err(format!(
+                "{source_id} belongs to environment {}; edit it there",
+                project.environment_id
+            ));
         }
         Ok(())
     }

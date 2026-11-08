@@ -580,8 +580,8 @@ fn a_missed_scan_is_caught_up_once() {
 /// returned path is removed to let it through again.
 fn block_project_agent(state: &Arc<Mutex<AppState>>, project_id: &str) -> PathBuf {
     let app = state.lock().unwrap();
-    let repo = app.projects.get(project_id).unwrap().repo_path.clone();
-    let scratch = crate::app::projects::scratch_dir(&app.state_root, repo.to_str().unwrap());
+    let project = app.projects.get(project_id).unwrap();
+    let scratch = crate::app::projects::scratch_dir(&app.state_root, &project.project_key);
     std::fs::create_dir_all(scratch.parent().unwrap()).unwrap();
     std::fs::write(&scratch, "not a directory").unwrap();
     scratch

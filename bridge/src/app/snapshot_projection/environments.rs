@@ -291,9 +291,11 @@ impl AppState {
                 .unwrap()
                 .get(&environment.id)
                 .map(|o| o.value.clone());
-            let Some(mut value) = previous else {
-                continue;
-            };
+            let mut value = previous.unwrap_or_else(|| {
+                self.prepare_environment_edit_observation(&environment.id)
+                    .expect("referencing environment remains registered")
+                    .value
+            });
             super::projects::refresh_source_remotes(&mut value, &environment.sources, roots);
             self.snapshot_observations
                 .environments

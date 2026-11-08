@@ -34,6 +34,7 @@ impl AppState {
             version: self.read_view.next_version(),
             rows: self.project_list_rows(),
             environments: self.capture_environment_snapshot_rows(),
+            claims: vec![],
         }
     }
     pub(in crate::app) fn install_project_snapshot_refresh(

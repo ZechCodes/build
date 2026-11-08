@@ -40,6 +40,7 @@ pub(in crate::app) struct Environment {
 mod edit_tests;
 
 mod edits;
+mod source_add;
 mod source_edits;
 
 #[cfg(test)]
@@ -49,3 +50,6 @@ mod configuration;
 
 #[cfg(test)]
 mod publication_review_tests;
+
+#[cfg(test)]
+mod source_add_review_tests;

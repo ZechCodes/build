@@ -2,6 +2,7 @@
 //! are captured by lifecycle work; publication consumes only owned observations.
 
 mod configuration;
+mod source_claims;
 mod source_publication;
 use source_publication::publish_source_observation;
 mod repository_refresh;
@@ -47,6 +48,7 @@ pub(in crate::app) struct ProjectSnapshotRefresh {
     version: u64,
     rows: Vec<ProjectListRow>,
     environments: Vec<environments::EnvironmentSnapshotRow>,
+    claims: Vec<crate::app::projects::ProjectSource>,
 }
 
 #[derive(Clone)]
@@ -54,12 +56,21 @@ pub(in crate::app) struct RenderedProjectSnapshotRefresh {
     version: u64,
     rows: Vec<(ProjectListRow, Value)>,
     environments: Vec<(environments::EnvironmentSnapshotRow, Value)>,
+    claims: Vec<(crate::app::projects::ProjectSource, Value)>,
 }
 
 impl ProjectSnapshotRefresh {
     pub(in crate::app) fn render(self) -> RenderedProjectSnapshotRefresh {
         RenderedProjectSnapshotRefresh {
             version: self.version,
+            claims: self
+                .claims
+                .into_iter()
+                .map(|source| {
+                    let value = source.wire();
+                    (source, value)
+                })
+                .collect(),
             environments: self
                 .environments
                 .into_iter()

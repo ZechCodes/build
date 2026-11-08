@@ -38,12 +38,20 @@ impl TakenSourceNames {
     /// Seed the claim with what a project already holds, for a source being
     /// appended to it rather than opened with it.
     pub(in crate::app) fn over(sources: &[ProjectSource]) -> Self {
+        Self::with_origins(sources, sources.iter().filter_map(ProjectSource::origin))
+    }
+
+    /// Origins are owned probe results for callers that must keep IO off-lock.
+    pub(in crate::app) fn with_origins(
+        sources: &[ProjectSource],
+        origins: impl IntoIterator<Item = String>,
+    ) -> Self {
         TakenSourceNames {
             paths: sources
                 .iter()
                 .map(|source| crate::worktree::canonical_planned_path(&source.path))
                 .collect(),
-            remotes: sources.iter().filter_map(ProjectSource::origin).collect(),
+            remotes: origins.into_iter().collect(),
             mounts: sources.iter().map(|source| source.mount.clone()).collect(),
         }
     }
@@ -347,6 +355,15 @@ impl AppState {
             Some(id) => TakenSourceNames::over(&self.project_reference_sources(id)?),
             None => TakenSourceNames::default(),
         };
+        self.validate_prepared_source_paths(sources, &mut taken)?;
+        self.refuse_duplicate_clone_remotes(sources, cloned_paths)
+    }
+
+    pub(in crate::app) fn validate_prepared_source_paths(
+        &self,
+        sources: &mut [ProjectSource],
+        taken: &mut TakenSourceNames,
+    ) -> Result<(), String> {
         for source in sources.iter_mut() {
             source.path = canonical_source_path(&source.path)?;
             self.validate_secret_source(&source.path)?;
@@ -354,7 +371,7 @@ impl AppState {
             taken.claim_path(&source.path)?;
             self.refuse_source_containment(&source.path, None)?;
         }
-        self.refuse_duplicate_clone_remotes(sources, cloned_paths)
+        Ok(())
     }
 
     fn refuse_duplicate_clone_remotes(
@@ -504,6 +521,22 @@ impl AppState {
         id: String,
         taken: &mut TakenSourceNames,
     ) -> Result<SourceRequest, String> {
+        self.source_request_with_origin_check(entry, id, taken, |remote| {
+            self.projects
+                .registered_sources()
+                .iter()
+                .filter_map(ProjectSource::origin)
+                .any(|origin| crate::worktree::remotes_match(&origin, remote))
+        })
+    }
+
+    pub(in crate::app) fn source_request_with_origin_check(
+        &self,
+        entry: &Value,
+        id: String,
+        taken: &mut TakenSourceNames,
+        remote_in_use: impl FnOnce(&str) -> bool,
+    ) -> Result<SourceRequest, String> {
         let path_text = entry
             .get("path")
             .and_then(Value::as_str)
@@ -528,13 +561,7 @@ impl AppState {
             self.refuse_source_containment(candidate, None)?;
         }
         if let Some(remote) = remote {
-            if self
-                .projects
-                .registered_sources()
-                .iter()
-                .filter_map(ProjectSource::origin)
-                .any(|origin| crate::worktree::remotes_match(&origin, remote))
-            {
+            if remote_in_use(remote) {
                 return Err(format!("source remote is already registered: {remote}"));
             }
             taken.claim_remote(remote)?;

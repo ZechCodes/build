@@ -1,8 +1,6 @@
 //! Display names and forward-looking source membership on an environment.
-use crate::app::projects::requests::{PreparedSources, TakenSourceNames};
 use crate::app::projects::{canonical_source_path, ProjectSource};
 use crate::app::{require_str, AppState};
-use crate::lifecycle::PendingState;
 use serde_json::Value;
 use std::path::Path;
 
@@ -126,90 +124,6 @@ impl AppState {
         }
         Ok(())
     }
-    pub(crate) fn environment_add_source(&mut self, params: &Value) -> Result<Value, String> {
-        self.mark_device_lifecycle_dirty()?;
-        let id = require_str(params, "environment_id")?;
-        self.refuse_pending_environment_creation(&id)?;
-        let environment = self
-            .projects
-            .environment(&id)
-            .ok_or_else(|| format!("unknown environment: {id}"))?;
-        let title = environment.name.clone();
-        let source_id = self
-            .projects
-            .allocate_environment_source_ids(&id, 1)?
-            .remove(0);
-        let mut taken =
-            TakenSourceNames::over(&self.projects.environment_reference_sources(&id, None));
-        let request = self.source_request(params, source_id, &mut taken)?;
-        // Stable identity, independent of the environment's display name.
-        let managed = self.projects_dir.join(format!("{id}-sources"));
-        taken.refuse_managed_destinations(
-            std::slice::from_ref(&request),
-            &managed,
-            &self.projects.registered_sources(),
-        )?;
-        let dest = request
-            .path
-            .clone()
-            .unwrap_or_else(|| managed.join(&request.mount));
-        let mutation = self.reserve_source_opening(vec![request], managed)?;
-        self.defer_project(
-            dest,
-            title,
-            PendingState::Updating,
-            mutation,
-            move |state: &mut AppState, prepared: Result<PreparedSources, String>| {
-                state.append_environment_sources(&id, prepared?)
-            },
-        )
-    }
-    fn append_environment_sources(
-        &mut self,
-        id: &str,
-        mut prepared: PreparedSources,
-    ) -> Result<Value, String> {
-        let mut sources = std::mem::take(&mut prepared.sources);
-        let validation = (|| {
-            self.projects.environment(id).ok_or("unknown environment")?;
-            self.validate_prepared_sources(None, &mut sources, &prepared.cloned_paths)?;
-            for source in &sources {
-                self.validate_environment_source_path(id, None, &source.path)?;
-            }
-            Ok::<_, String>(())
-        })();
-        if let Err(error) = validation {
-            self.cleanup_unregistered_sources(prepared.created_checkouts);
-            return Err(error);
-        }
-        self.commit_environment_configuration_with(
-            id,
-            |projects| {
-                let ids = projects.allocate_environment_source_ids(id, sources.len())?;
-                for (source, id) in sources.iter_mut().zip(ids) {
-                    source.id = id;
-                }
-                let environment = projects.environment_mut(id).ok_or("unknown environment")?;
-                environment.next_source = environment
-                    .next_source
-                    .max(crate::app::projects::next_source_number(&sources));
-                environment.sources.extend(sources);
-                Ok(())
-            },
-            None,
-            vec![],
-            move |app, result| {
-                if result.is_err() {
-                    app.cleanup_unregistered_sources(std::mem::take(
-                        &mut prepared.created_checkouts,
-                    ));
-                }
-                drop(prepared);
-                result
-            },
-        )
-    }
-
     pub(crate) fn environment_remove_source(&mut self, params: &Value) -> Result<Value, String> {
         let id = require_str(params, "environment_id")?;
         let source_id = require_str(params, "source_id")?;

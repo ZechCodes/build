@@ -9,19 +9,28 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 type Finish = Box<dyn FnOnce(&mut AppState, Result<Value, String>) -> Result<Value, String> + Send>;
-type Validate = Box<dyn FnOnce(&AppState) -> Result<(), String> + Send>;
+type Validate =
+    Box<dyn FnOnce(&AppState, &RenderedProjectSnapshotRefresh) -> Result<(), String> + Send>;
+struct ConfigurationChecks {
+    validate: Validate,
+    cloned_paths: Vec<PathBuf>,
+}
 struct ConfigurationProbe {
     refresh: ProjectSnapshotRefresh,
     environment: String,
     isolation: Option<Isolation>,
     repositories: Vec<PathBuf>,
     roots: Vec<PathBuf>,
+    cloned_paths: Vec<PathBuf>,
+    #[cfg(test)]
+    clone_gate: Option<crate::app::OffLockGate>,
     #[cfg(test)]
     gate: Option<crate::app::OffLockGate>,
 }
 struct ConfigurationObserved {
     refresh: RenderedProjectSnapshotRefresh,
     changed_roots: Vec<PathBuf>,
+    _held: Vec<crate::source_sync::SyncLock>,
 }
 impl WorktreeMutation for ConfigurationProbe {
     type Output = ConfigurationObserved;
@@ -30,6 +39,18 @@ impl WorktreeMutation for ConfigurationProbe {
         if let Some(gate) = &self.gate {
             gate.arrive();
         }
+        let held = if self.cloned_paths.is_empty() {
+            vec![]
+        } else {
+            #[cfg(test)]
+            if let Some(gate) = &self.clone_gate {
+                gate.arrive();
+            }
+            crate::source_sync::SyncLock::acquire_many(
+                &self.refresh.source_claim_paths(),
+                crate::source_sync::SERVICE_FETCH_DEADLINE,
+            )?
+        };
         self.refresh
             .select_environment_edit(&self.environment, &self.repositories);
         let refresh = self.refresh.render();
@@ -45,6 +66,7 @@ impl WorktreeMutation for ConfigurationProbe {
             output: ConfigurationObserved {
                 refresh,
                 changed_roots,
+                _held: held,
             },
         })
     }
@@ -85,7 +107,7 @@ impl ConfigurationSettlement {
         }
         self.validate
             .take()
-            .expect("configuration validation runs once")(app)?;
+            .expect("configuration validation runs once")(app, &observed.refresh)?;
         self.prospective.swap(&mut app.projects, &self.environment);
         let mut observations = app.capture_configuration_observations();
         app.install_project_snapshot_refresh(observed.refresh);
@@ -147,8 +169,57 @@ impl AppState {
             + 'static,
         validate: impl FnOnce(&AppState) -> Result<(), String> + Send + 'static,
     ) -> Result<Value, String> {
+        self.defer_environment_configuration(
+            id,
+            change,
+            isolation,
+            repositories,
+            finish,
+            ConfigurationChecks {
+                validate: Box::new(move |app, _| validate(app)),
+                cloned_paths: vec![],
+            },
+        )
+    }
+
+    pub(super) fn commit_environment_source_add(
+        &mut self,
+        id: &str,
+        change: impl FnOnce(&mut ProjectRegistry) -> Result<(), String>,
+        cloned_paths: Vec<PathBuf>,
+        finish: impl FnOnce(&mut AppState, Result<Value, String>) -> Result<Value, String>
+            + Send
+            + 'static,
+        validate: impl FnOnce(&AppState, &RenderedProjectSnapshotRefresh) -> Result<(), String>
+            + Send
+            + 'static,
+    ) -> Result<Value, String> {
+        self.defer_environment_configuration(
+            id,
+            change,
+            None,
+            vec![],
+            finish,
+            ConfigurationChecks {
+                validate: Box::new(validate),
+                cloned_paths,
+            },
+        )
+    }
+
+    fn defer_environment_configuration(
+        &mut self,
+        id: &str,
+        change: impl FnOnce(&mut ProjectRegistry) -> Result<(), String>,
+        isolation: Option<Isolation>,
+        repositories: Vec<PathBuf>,
+        finish: impl FnOnce(&mut AppState, Result<Value, String>) -> Result<Value, String>
+            + Send
+            + 'static,
+        checks: ConfigurationChecks,
+    ) -> Result<Value, String> {
         let prepared = self.prepare_environment_configuration(id, change);
-        let (previous, prospective, refresh, row) = match prepared {
+        let (previous, prospective, mut refresh, row) = match prepared {
             Ok(prepared) => prepared,
             Err(error) => return finish(self, Err(error)),
         };
@@ -156,6 +227,9 @@ impl AppState {
             Ok(row) => AppReservation::row_only(row),
             Err(error) => return finish(self, Err(error)),
         };
+        if !checks.cloned_paths.is_empty() {
+            refresh = refresh.include_source_claims(self.projects.registered_sources());
+        }
         let roots = self.capture_repository_roots();
         let probe = ConfigurationProbe {
             refresh,
@@ -163,6 +237,9 @@ impl AppState {
             isolation,
             repositories,
             roots,
+            cloned_paths: checks.cloned_paths,
+            #[cfg(test)]
+            clone_gate: self.off_lock_environment_source_clone_gate.clone(),
             #[cfg(test)]
             gate: self.off_lock_environment_probe_gate.clone(),
         };
@@ -172,7 +249,7 @@ impl AppState {
             live_projects: self.environment_project_ids(id),
             prospective,
             finish: Box::new(finish),
-            validate: Some(Box::new(validate)),
+            validate: Some(checks.validate),
         };
         let job = self.lifecycle_job(reservation, probe, move |app: &mut AppState, result| {
             settlement.settle(app, result)

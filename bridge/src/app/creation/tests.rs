@@ -12,6 +12,7 @@ mod settlement;
 mod stale_replay;
 mod unlanded_identity;
 mod unwind_proof;
+mod used_projects;
 pub(super) use admission_recovery::SimulatedCrash;
 
 #[derive(Clone, Copy, PartialEq, Eq)]

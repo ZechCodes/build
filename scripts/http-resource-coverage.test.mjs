@@ -448,10 +448,10 @@ const sourceFingerprintParts = {
   "views/archive.js": ["6f4a7962", "88f34292", "73eafead", "5dc6229b", "5b040b7a", "09baf137", "8cbbce83", "6c83d400"],
   "views/branchView.js": ["bd60fcf4", "7c212e82", "4972bdd1", "5b4a3563", "54913179", "782e8a54", "ea8d0a73", "30816a7d"],
   // #997 deviceProjects.js:82: the existing project.list loader delegates to owned device recovery.
-  "views/deviceProjects.js": ["4257defb", "fb7f67ef", "3d2210d6", "e161c7ce", "51a0b534", "5a1ae958", "faa56fb5", "c1f45a4d"],
+  "views/deviceProjects.js": ["1a1e6df3", "03d87e50", "3c8c3e09", "d3d2ecc9", "2b9c040f", "df2d7629", "c493f430", "adcc7c93"],
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
   // #1052 retry review: settings-owned results alone authorize totals/empty states; pending pulls hide earlier errors. RPC edges stay unchanged.
-  "views/environmentsSettings.js": ["51ea91dd", "d5d58b35", "e7be60fe", "5c87925d", "bdcb47f5", "0e4a947a", "38e05bc8", "711f8244"],
+  "views/environmentsSettings.js": ["9f430e5d", "e73de874", "7d6b3d62", "095d5489", "d547f7b2", "ae99f7a8", "dd332417", "8884a276"],
   "views/files.js": ["bc4913c5", "865b9dd0", "e28f655f", "242c9011", "456a4139", "b2cfd372", "6498e15b", "f3116261"],
   "views/projectChanges.js": ["e195b594", "3a7689fe", "14bfc899", "18ada18d", "ab36cd52", "ad96ba97", "a877c4da", "c9c3b78f"],
   "views/projectView.js": ["76123138", "7ded30d0", "0893b5ef", "5d880782", "137464b9", "5b123e76", "48f1a9d5", "28144478"],
@@ -463,8 +463,8 @@ const sourceFingerprintParts = {
   "core/directoryWatcher.js": ["3016199e", "f2ebe782", "5731fa24", "665dba3a", "6fd96a9e", "f5a4ee11", "c6841b70", "db07db4f"],
   "core/taskTimelinePages.js": ["da2840fb", "5992d7ce", "038bbc4d", "9c01a8ab", "c320a6f3", "7592e5be", "d5cbf08c", "4fcf8220"],
 
-  "core/createWorkspaceProgress.js": ["085b76b2", "2f0901e7", "0afb6d37", "c07529dd", "8db67e4d", "92c3d88f", "1506edf2", "99260dbb"],
-  "core/createWorkspaceTargets.js": ["6eeb4744", "1f87f69d", "caca6fc3", "eef793a2", "db8a23cc", "76e4d381", "a9ef089a", "4a67593f"],
+  "core/createWorkspaceProgress.js": ["ad463c80", "42fac43e", "4c0bd20f", "e4ac893c", "c773ec61", "c34ed98a", "4c3cdfc6", "a102a9bf"],
+  "core/createWorkspaceTargets.js": ["6c5a6a0c", "0179a302", "d89818b7", "4ea6cc7d", "1d0ea45e", "196876a9", "97d2c59d", "c0d38204"],
   "core/writeOperationProgress.js": ["ac050549", "7335cecf", "6135e1e7", "b2c49caa", "3067cebd", "dbda8162", "eaab247e", "e703d6c1"],
 };
 const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintParts)

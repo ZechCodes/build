@@ -1,4 +1,4 @@
-# M1.1 adds the environment read resource without a wire-version bump; 158 explicit operations.
+# Environment reads and creation; 160 explicit operations.
 # Explicit HTTP resource catalogue. method<TAB>verb<TAB>path. No wildcard methods.
 agent.add	POST	/v1/entities/{entity_id}/agents
 agent.choose	PATCH	/v1/entities/{entity_id}/agents/{agent_id}/model
@@ -29,6 +29,7 @@ entity.dismiss	POST	/v1/entities/{entity_id}/dismissals
 entity.mute	PUT	/v1/entities/{entity_id}/mute
 entity.seen	PUT	/v1/entities/{entity_id}/read-cursor
 environment.list	GET	/v1/environments
+environment.create_project	POST	/v1/environments/{environment_id}/projects
 fs.createDirectory	POST	/v1/files/directories
 fs.createFile	POST	/v1/files/empty-files
 fs.list	POST	/v1/filesystem/directory-queries
@@ -65,6 +66,7 @@ ping	GET	/v1/health
 project.add_source	POST	/v1/projects/{project_id}/sources
 project.create	POST	/v1/projects
 project.delete	DELETE	/v1/projects/{project_id}
+project.discard_unused	POST	/v1/projects/{project_id}/unused-discards
 project.ensure_conversation	POST	/v1/projects/{project_id}/conversation
 project.init_git	POST	/v1/projects/{project_id}/git-initializations
 project.list	GET	/v1/projects

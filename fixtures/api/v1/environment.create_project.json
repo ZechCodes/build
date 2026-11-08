@@ -1,0 +1,195 @@
+{
+  "method": "environment.create_project",
+  "since": "3.36.0",
+  "params": {
+    "environment_id": "env-1",
+    "name": "Wire project",
+    "workspace": {
+      "name": "wire facade",
+      "isolation": "worktree"
+    },
+    "continues": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a"
+  },
+  "result": {
+    "project": {
+      "project_id": "proj-2",
+      "name": "Wire project",
+      "path": "/home/ada/code/relay",
+      "base_branch": "main",
+      "is_git": true,
+      "remote": "git@github.com:ada/relay.git",
+      "isolation": null,
+      "isolation_default": "worktree",
+      "isolation_effective": "worktree",
+      "isolation_available": {
+        "rift": false,
+        "reason": "rift is not installed on this device"
+      },
+      "compaction_thresholds": {},
+      "compaction": {
+        "inherited": {
+          "claude": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "claude_adk": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex_app_server": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "pi": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          }
+        },
+        "effective": {
+          "claude": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "claude_adk": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex_app_server": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "pi": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          }
+        }
+      }
+    },
+    "workspace": {
+      "id": "ws-3f2a91c4",
+      "workspace_id": "ws-3f2a91c4",
+      "project_id": "proj-2",
+      "name": "wire-facade",
+      "root": "/home/ada/.build/workspaces/proj-2/wire-facade",
+      "status": "ready",
+      "created_by_agent": false,
+      "locked": false,
+      "directories": [
+        {
+          "id": "ws-3f2a91c4:source-1",
+          "source_id": "source-1",
+          "name": "bridge",
+          "path": "/home/ada/.build/workspaces/proj-2/wire-facade/bridge",
+          "is_git": true,
+          "branch": "build/wire-facade",
+          "isolation": "worktree",
+          "status": "ready",
+          "error": null
+        }
+      ],
+      "compaction_thresholds": {},
+      "compaction": {
+        "inherited": {
+          "claude": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "claude_adk": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex_app_server": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "pi": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          }
+        },
+        "effective": {
+          "claude": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "claude_adk": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex_app_server": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "pi": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          }
+        }
+      }
+    }
+  },
+  "errors": [
+    "invalid_params",
+    "not_found",
+    "conflict",
+    "busy",
+    "unavailable",
+    "internal"
+  ]
+}

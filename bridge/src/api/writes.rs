@@ -1,6 +1,6 @@
 //! Durable write envelopes shared by RPC admission, status and confirmations.
 //!
-//! No semantic method is admitted yet. Request metadata carries identity and
+//! Creation method enablement is explicit. Request metadata carries identity and
 //! dependencies, never a caller-selected protocol mode or authenticated scope.
 
 use serde::{de::Error, Deserialize, Deserializer, Serialize};

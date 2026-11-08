@@ -1025,6 +1025,15 @@ two projects in tests. Wire unchanged; capability not advertised.
 | M0.3 | **Bridge: shared directories** (reference identity = canonical path; containment refusal replaces overlap refusal; equal path allowed across owners, refused within one project's effective sources; unlink never deletes; reference edits local, repository mutations invalidate every referencing project; sync status keyed per reference) | two projects reference one folder; containment, vault and duplicate-remote cases still refused; a duplicate within one project's effective sources refused; removing one reference leaves the folder and the other reference, including the last managed reference; repointing one reference leaves the sibling's untouched; a fetch on the shared checkout invalidates both projects' views; two projects on one checkout with different base branches keep separate sync status; two worktrees of one repo remain two sources | `same_directory_shared_by_two_projects`; `source_overlap_refused_across_environments` (containment cases); `added_source_duplicate_within_project_refused`; `unlink_keeps_folder_and_other_reference`; `unlink_last_managed_reference_keeps_clone`; `repoint_reference_leaves_sibling_reference`; `shared_repository_mutation_invalidates_every_referencing_project`; `shared_directory_different_bases_keep_separate_sync_status`; `linked_worktrees_stay_distinct_sources` |
 | M0.4 | **Bridge: journal executor for creation** (`environment.create_project`, `workspace.create` admitted by `write.operation_id`; in-memory step progress, `writes.status.progress`, `writes.progress` push; `continues` chaining; unknown retained; terminal outcome; `recover_existing` reconciliation on restart; `project.discard_unused` guards) | a retried operation id returns the recorded outcome; a crash between project write and workspace cut reconciles to a terminal outcome on restart without a second project; unknown blocks a conflicting intent; progress never marks an outcome; a continued attempt links to its predecessor in status | `create_project_idempotent_by_operation_id`; `crash_between_steps_reconciles_without_duplicate`; `unknown_outcome_blocks_conflicting_retry`; `workspace_step_failure_reports_landed_project`; `writes_progress_never_marks_outcome`; `continued_attempt_links_prior_operation`; `discard_unused_refused_when_project_used` |
 
+M0.4 implementation note (#1042): additive creation verbs and progress fixtures
+use the current 3.36.0 wire contract; the `environments` feature and version
+boundary remain with M1.4. The existing recovery envelope has only accepted and
+executing non-terminal states, so unknown/reconciling creation records project as
+executing with their precise durable state in `creation.state`. This preserves
+the existing client's finite summary contract. Until M0.2 identity routing is
+integrated, discard checks both the opaque project key and the current routing
+key, conservatively refusing ambiguous legacy task/session ownership.
+
 ### Stage 1, M1: first try (dogfood: separate work on the same environment)
 
 **Try:** on the Build device, open the wizard from the inbox, pick the

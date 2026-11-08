@@ -43,6 +43,7 @@
       "entity_dismiss",
       "entity_mute",
       "entity_seen",
+      "environment_create_project",
       "environment_list",
       "fs_createDirectory",
       "fs_createFile",
@@ -80,6 +81,7 @@
       "project_add_source",
       "project_create",
       "project_delete",
+      "project_discard_unused",
       "project_ensure_conversation",
       "project_init_git",
       "project_list",
@@ -718,6 +720,26 @@
         "source": "bridge/src/api/v1/lifecycle.rs",
         "params": "EntitySeenParams",
         "result": "Acknowledged"
+      }
+    },
+    {
+      "method": "environment.create_project",
+      "operationId": "environment_create_project",
+      "verb": "POST",
+      "path": "/v1/environments/{environment_id}/projects",
+      "pathParams": [
+        "environment_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/environment.rs",
+        "params": "CreateProjectParams",
+        "result": "CreateProjectResult"
       }
     },
     {
@@ -1394,6 +1416,26 @@
         "source": "bridge/src/api/v1/board.rs",
         "params": "ProjectDeleteParams",
         "result": "ProjectDeleteResult"
+      }
+    },
+    {
+      "method": "project.discard_unused",
+      "operationId": "project_discard_unused",
+      "verb": "POST",
+      "path": "/v1/projects/{project_id}/unused-discards",
+      "pathParams": [
+        "project_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/board.rs",
+        "params": "ProjectDiscardUnusedParams",
+        "result": "EmptyResult"
       }
     },
     {

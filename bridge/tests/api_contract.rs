@@ -33,7 +33,10 @@ fn method_fixtures() -> Vec<(String, Value)> {
         .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
         .map(|entry| entry.expect("readable entry").path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
-        .filter(|path| path.file_stem().is_some_and(|stem| stem != "events" && stem != "writes.progress"))
+        .filter(|path| {
+            path.file_stem()
+                .is_some_and(|stem| stem != "events" && stem != "writes.progress")
+        })
         .map(|path| {
             let fixture = read_json(&path);
             let method = fixture["method"]
@@ -1537,7 +1540,8 @@ fn every_event_example_is_what_the_bridge_serialises() {
             "rtc.ice" => check_untyped_push(event, &["candidate"]),
             "bridge.restarting" => assert_eq!(event.as_object().unwrap().len(), 1),
             "writes.progress" => {
-                let progress: build_bridge::api::writes::WriteProgressEvent = typed(envelope, "write progress");
+                let progress: build_bridge::api::writes::WriteProgressEvent =
+                    typed(envelope, "write progress");
                 assert_eq!(serde_json::to_value(progress).unwrap(), *envelope);
             }
             "writes.confirmed" => {
@@ -2603,10 +2607,10 @@ fn creation_attempt_contracts_are_additive_and_strict() {
 
 #[test]
 fn creation_progress_fixture_is_typed_and_nonterminal() {
-    let fixture=read_json(&fixtures_root().join("v1/writes.progress.json"));
+    let fixture = read_json(&fixtures_root().join("v1/writes.progress.json"));
     for event in fixture["events"].as_array().unwrap() {
-        let value: build_bridge::api::writes::WriteProgressEvent = typed(event,"write progress");
-        assert_eq!(serde_json::to_value(value).unwrap(),*event);
+        let value: build_bridge::api::writes::WriteProgressEvent = typed(event, "write progress");
+        assert_eq!(serde_json::to_value(value).unwrap(), *event);
         assert!(event.get("outcome").is_none());
     }
 }

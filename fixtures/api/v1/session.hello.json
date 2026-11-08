@@ -4,7 +4,10 @@
   "params": {},
   "result": {
     "api_version": "3.36.0",
-    "ack_confirm_methods": [],
+    "ack_confirm_methods": [
+      "environment.create_project",
+      "workspace.create"
+    ],
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -51,6 +54,7 @@
       "entity.dismiss",
       "entity.mute",
       "entity.seen",
+      "environment.create_project",
       "errors.codes",
       "fs.createDirectory",
       "fs.createFile",
@@ -99,6 +103,7 @@
       "project.add_source",
       "project.create",
       "project.delete",
+      "project.discard_unused",
       "project.ensure_conversation",
       "project.init_git",
       "project.list",
@@ -274,7 +279,8 @@
       "models.changed",
       "rtc.diagnostics",
       "secrets.changed",
-      "writes.confirmed"
+      "writes.confirmed",
+      "writes.progress"
     ],
     "coalesce_window_ms": 250,
     "changes": {

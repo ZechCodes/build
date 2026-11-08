@@ -43,6 +43,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             ProjectDeleteParams,
             ProjectDeleteResult
         ),
+        v1_method!(
+            "project.discard_unused",
+            project_discard_unused,
+            ProjectDiscardUnusedParams,
+            EmptyResult
+        ),
         v1_method!("project.list", project_list, NoParams, ProjectListResult),
         v1_method!(
             "project.create",
@@ -1576,4 +1582,18 @@ mod tests {
             assert_eq!(named.message(), message, "a code never rewrites the wire");
         }
     }
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectDiscardUnusedParams {
+    pub project_id: String,
+    pub creation_operation_id: String,
+}
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EmptyResult {}
+fn project_discard_unused(
+    app: &mut AppState,
+    params: ProjectDiscardUnusedParams,
+) -> Result<Answer<EmptyResult>, ApiError> {
+    answer(app.project_discard_unused(&params.wire()))
 }

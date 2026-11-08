@@ -3981,6 +3981,304 @@
         }
       }
     },
+    "/v1/environments/{environment_id}/projects": {
+      "post": {
+        "operationId": "environment_create_project",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "environment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Existing opaque selector; encoded as exactly one path segment."
+          },
+          {
+            "$ref": "#/components/parameters/session"
+          },
+          {
+            "$ref": "#/components/parameters/subscription"
+          },
+          {
+            "$ref": "#/components/parameters/requestId"
+          },
+          {
+            "$ref": "#/components/parameters/priority"
+          },
+          {
+            "$ref": "#/components/parameters/operationId"
+          },
+          {
+            "$ref": "#/components/parameters/after"
+          }
+        ],
+        "description": "Maps only to environment.create_project. Remaining JSON fields retain their existing semantics. Registered v1 parameters, including unknown fields, are validated by the existing typed registry. Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method!, v1_context_method! and v1_optional_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
+        "x-build-method": "environment.create_project",
+        "x-build-contract": {
+          "source": "bridge/src/api/v1/environment.rs",
+          "params": "CreateProjectParams",
+          "result": "CreateProjectResult",
+          "fixture": "fixtures/api/v1/environment.create_project.json"
+        },
+        "x-build-request-max-bytes": 1048576,
+        "x-build-response-max-bytes": 8388608,
+        "x-build-requires-events": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "x-build-schema-complete": false
+              },
+              "example": {
+                "name": "Wire project",
+                "workspace": {
+                  "name": "wire facade",
+                  "isolation": "worktree"
+                },
+                "continues": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Final existing wire reply, including typed success/error outcome. No blanket durable acknowledgement or retry promise.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reply"
+                },
+                "examples": {
+                  "wire": {
+                    "value": {
+                      "id": "example",
+                      "ok": true,
+                      "result": {
+                        "project": {
+                          "project_id": "proj-2",
+                          "name": "Wire project",
+                          "path": "/home/ada/code/relay",
+                          "base_branch": "main",
+                          "is_git": true,
+                          "remote": "git@github.com:ada/relay.git",
+                          "isolation": null,
+                          "isolation_default": "worktree",
+                          "isolation_effective": "worktree",
+                          "isolation_available": {
+                            "rift": false,
+                            "reason": "rift is not installed on this device"
+                          },
+                          "compaction_thresholds": {},
+                          "compaction": {
+                            "inherited": {
+                              "claude": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "claude_adk": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "codex": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "codex_app_server": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "pi": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              }
+                            },
+                            "effective": {
+                              "claude": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "claude_adk": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "codex": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "codex_app_server": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "pi": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              }
+                            }
+                          }
+                        },
+                        "workspace": {
+                          "id": "ws-3f2a91c4",
+                          "workspace_id": "ws-3f2a91c4",
+                          "project_id": "proj-2",
+                          "name": "wire-facade",
+                          "root": "/home/ada/.build/workspaces/proj-2/wire-facade",
+                          "status": "ready",
+                          "created_by_agent": false,
+                          "locked": false,
+                          "directories": [
+                            {
+                              "id": "ws-3f2a91c4:source-1",
+                              "source_id": "source-1",
+                              "name": "bridge",
+                              "path": "/home/ada/.build/workspaces/proj-2/wire-facade/bridge",
+                              "is_git": true,
+                              "branch": "build/wire-facade",
+                              "isolation": "worktree",
+                              "status": "ready",
+                              "error": null
+                            }
+                          ],
+                          "compaction_thresholds": {},
+                          "compaction": {
+                            "inherited": {
+                              "claude": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "claude_adk": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "codex": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "codex_app_server": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "pi": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              }
+                            },
+                            "effective": {
+                              "claude": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "claude_adk": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "codex": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "codex_app_server": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              },
+                              "pi": {
+                                "tokens": 200000,
+                                "source": {
+                                  "kind": "device"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Http400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Http405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Http426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          }
+        }
+      }
+    },
     "/v1/environments": {
       "get": {
         "operationId": "environment_list",
@@ -9277,6 +9575,126 @@
         }
       }
     },
+    "/v1/projects/{project_id}/unused-discards": {
+      "post": {
+        "operationId": "project_discard_unused",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Existing opaque selector; encoded as exactly one path segment."
+          },
+          {
+            "$ref": "#/components/parameters/session"
+          },
+          {
+            "$ref": "#/components/parameters/subscription"
+          },
+          {
+            "$ref": "#/components/parameters/requestId"
+          },
+          {
+            "$ref": "#/components/parameters/priority"
+          },
+          {
+            "$ref": "#/components/parameters/operationId"
+          },
+          {
+            "$ref": "#/components/parameters/after"
+          }
+        ],
+        "description": "Maps only to project.discard_unused. Remaining JSON fields retain their existing semantics. Registered v1 parameters, including unknown fields, are validated by the existing typed registry. Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method!, v1_context_method! and v1_optional_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
+        "x-build-method": "project.discard_unused",
+        "x-build-contract": {
+          "source": "bridge/src/api/v1/board.rs",
+          "params": "ProjectDiscardUnusedParams",
+          "result": "EmptyResult",
+          "fixture": "fixtures/api/v1/project.discard_unused.json"
+        },
+        "x-build-request-max-bytes": 1048576,
+        "x-build-response-max-bytes": 8388608,
+        "x-build-requires-events": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "x-build-schema-complete": false
+              },
+              "example": {
+                "creation_operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Final existing wire reply, including typed success/error outcome. No blanket durable acknowledgement or retry promise.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reply"
+                },
+                "examples": {
+                  "wire": {
+                    "value": {
+                      "id": "example",
+                      "ok": true,
+                      "result": {}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Http400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Http405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Http426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/conversation": {
       "post": {
         "operationId": "project_ensure_conversation",
@@ -12932,7 +13350,10 @@
                       "ok": true,
                       "result": {
                         "api_version": "3.36.0",
-                        "ack_confirm_methods": [],
+                        "ack_confirm_methods": [
+                          "environment.create_project",
+                          "workspace.create"
+                        ],
                         "capabilities": [
                           "agent.add",
                           "agent.attach",
@@ -12979,6 +13400,7 @@
                           "entity.dismiss",
                           "entity.mute",
                           "entity.seen",
+                          "environment.create_project",
                           "errors.codes",
                           "fs.createDirectory",
                           "fs.createFile",
@@ -13027,6 +13449,7 @@
                           "project.add_source",
                           "project.create",
                           "project.delete",
+                          "project.discard_unused",
                           "project.ensure_conversation",
                           "project.init_git",
                           "project.list",
@@ -13202,7 +13625,8 @@
                           "models.changed",
                           "rtc.diagnostics",
                           "secrets.changed",
-                          "writes.confirmed"
+                          "writes.confirmed",
+                          "writes.progress"
                         ],
                         "coalesce_window_ms": 250,
                         "changes": {
@@ -23750,7 +24174,8 @@
               "example": {
                 "project_id": "proj-1",
                 "name": "wire facade",
-                "isolation": "worktree"
+                "isolation": "worktree",
+                "continues": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a"
               }
             }
           }
@@ -26822,7 +27247,17 @@
                                   "body": "Reproduced: the drop handler writes before the column read settles."
                                 }
                               ]
-                            }
+                            },
+                            "progress": [
+                              {
+                                "step": "project",
+                                "state": "done"
+                              },
+                              {
+                                "step": "workspace",
+                                "state": "running"
+                              }
+                            ]
                           },
                           {
                             "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301c",

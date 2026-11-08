@@ -1317,8 +1317,10 @@ terminal confirmation follow. Reopening the intact store retains its journal
 incarnation and outbox. SQL-only claimed work can return to accepted, while
 ambiguous external claims retain an unknown outcome and block conflicting
 execution until reconciliation. Committed work is returned for the enabled
-verb’s publication recovery and is never applied twice. No verb executor is
-enabled by this slice. The journal exposes 30-day terminal-result compaction for the future enabled
+verb’s publication recovery and is never applied twice. The original foundation
+enabled no verb executor. Creation now enables exactly `environment.create_project`
+and requests for `workspace.create` carrying frame `write.operation_id`; legacy
+workspace requests retain their existing synchronous reply. The journal exposes 30-day terminal-result compaction for the future enabled
 command service; identity/outcome tombstones remain, and unresolved partial/unknown
 evidence is retained until reconciliation. Active owner fences and the
 principal/cursor outbox index keep settled lifetime history out of claim and
@@ -1335,7 +1337,36 @@ never take the app guard or writer connection. Current RPC authorization is the
 paired device account, represented by a server-owned database-local principal;
 client hints and session IDs do not grant identity. Reads additionally validate
 the original owner scope against current published authority. MCP agent
-principals and semantic method enablement belong to Step 6b.
+principals and other semantic method enablement belong to Step 6b.
+
+`app/creation.rs` owns the creation service independently of client lifetimes.
+A single background worker resumes admitted attempts and reconciles startup
+records. Admission saves the opaque project key, or a fixed-project workspace
+reservation, before acknowledgment. The project config step checkpoints its
+numeric ID before the atomic config write and reuses its opaque key on recovery.
+The workspace step checkpoints its immutable reservation and completed sources,
+then uses `WorkspaceCreateWork` unpublished with ownership-checked recovery.
+Existing Ready manifests are reused, including plain copies and later edits.
+Pending creation roots share the existing retry, reclaim, lock and writer fences;
+startup restores those reservations before serving requests. Cleanup uses its own
+reserved identity while ordinary writers remain excluded.
+Known partial failures retain the project and name it in `error.details.project`.
+`project.discard_unused` requires that attempt's identity and refuses workspaces,
+tasks, and live or retained agent sessions.
+
+Creation stores completed sub-outcomes and residual-resource evidence in its
+schema-18 record. `unknown` and `reconciling` remain non-terminal and retain owner
+fences; an equivalent new intent cannot execute beside them. Cleanup requires
+the saved reservation's ownership proof and runs off the app mutex. A failed
+cleanup remains recoverable until its residue is cleared. Only a proven terminal
+outcome enters the confirmation outbox. `continues` and `continued_by` in status
+link attempts without making a failed predecessor a success dependency.
+
+`app/mutations.rs` shares an in-memory progress map with this service. Pending
+status may include `progress`; subscribed openings receive `writes.progress` on
+step changes. These observations never enter the journal or confirm an outcome.
+The additive verbs and event do not change API_VERSION or advertise the
+`environments` feature; that release boundary remains with M1.4.
 
 #### Conversation retention (#836)
 

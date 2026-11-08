@@ -1307,4 +1307,23 @@ describe("M3 settings", () => {
     expect(callRpc.mock.calls.some(([method]) => method === "project.archive")).toBe(false);
   });
 
+  it.each(["tracker-task", "tracker-tasks", "task-review", "project-settings"])("unchanged %s writes keep blocker refusals disabled", async kind => {
+    const address = { deviceId: "dev-1", entityId: "proj-1", kind, sub: kind === "tracker-task" || kind === "task-review" ? "task-1" : "" };
+    const held = kind === "project-settings" ? row : { state: "waiting", task: { id: "task-1", status: "in_review" } };
+    await writeCached(address, held);
+    const callRpc = vi.fn(async method => {
+      if (method === "project.archive") throw Object.assign(new Error("answer #12"), { code: "conflict", details: { blockers: ["answer #12"] } });
+      return new Promise(() => {});
+    });
+    await mountM3(callRpc); document.querySelector("#psarchive").click();
+    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toBe("answer #12"));
+    // Same value, new cache write/order stamps; key order does not change data.
+    await writeCached(address, Object.fromEntries(Object.entries(held).reverse()));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(document.querySelector("#psarchive").disabled).toBe(true);
+    expect(document.querySelector("#psarchiveerr").textContent).toBe("answer #12");
+    await writeCached(address, { ...held, resolved: true });
+    await vi.waitFor(() => expect(document.querySelector("#psarchive").disabled).toBe(false));
+  });
+
 });

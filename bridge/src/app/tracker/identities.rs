@@ -242,7 +242,7 @@ impl AppState {
                         && self.workspace_conversation_owner(workspace).as_deref()
                             == Some(&entity_id)
                         && self.projects.get(project_id).is_some_and(|project| {
-                            !crate::app::workspaces::same_path(&workspace.root, &project.repo_path)
+                            !crate::app::workspaces::same_path(&workspace.root, &project.home_path)
                         })
                 })
         };

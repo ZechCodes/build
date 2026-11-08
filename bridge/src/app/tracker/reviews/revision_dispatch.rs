@@ -93,8 +93,7 @@ impl AppState {
             return Ok(());
         };
         let Some(project) = self
-            .projects
-            .find_by_canonical_path(std::path::Path::new(&task.project_path))
+            .project_by_key(&task.project_path)
             .map(|project| project.id.clone())
         else {
             return Ok(());

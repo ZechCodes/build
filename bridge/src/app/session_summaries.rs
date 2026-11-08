@@ -93,7 +93,7 @@ impl AppState {
         Ok(())
     }
     fn apply_device_session_summaries(&mut self, pools: Vec<(String, String, SessionSummary)>) {
-        // Until an old store resolves registry IDs to stable paths, its live
+        // Until an old store resolves registry IDs to stable keys, its live
         // and retained pools may be separate. The exact timestamp replay above
         // remains authoritative until mapping reconciliation joins them.
         let unresolved = pools
@@ -109,9 +109,7 @@ impl AppState {
             } else if let Some(id) = key.strip_prefix("@registry:") {
                 Some(id.to_owned())
             } else {
-                self.projects
-                    .find_by_canonical_path(std::path::Path::new(&key))
-                    .map(|project| project.id.clone())
+                self.project_by_key(&key).map(|project| project.id.clone())
             };
             if let Some(id) = id {
                 if kind == "project" && unresolved.contains(&id) {

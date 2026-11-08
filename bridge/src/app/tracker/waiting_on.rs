@@ -104,10 +104,7 @@ impl AppState {
             return Ok(Some(agent.to_string()));
         }
         if intent.target["kind"] == "project_agent" {
-            let project = self
-                .projects
-                .iter()
-                .find(|project| project.repo_path.to_str() == Some(task.project_path.as_str()));
+            let project = self.project_by_key(&task.project_path);
             return Ok(project
                 .and_then(|project| self.project_conversation_run(&project.id))
                 .and_then(|entity| self.project_pin(&entity))
@@ -161,11 +158,7 @@ fn reconcile_page(weak: &Weak<Mutex<AppState>>) -> Option<Result<bool, String>> 
             .take_waiting_on_changes(100)
             .map_err(|e| e.to_string())?;
         for (path, task_id) in &changes {
-            if let Some(project) = app
-                .projects
-                .iter()
-                .find(|p| p.repo_path.to_str() == Some(path))
-            {
+            if let Some(project) = app.project_by_key(path) {
                 app.note_tasks_changed(&project.id, task_id);
             }
         }

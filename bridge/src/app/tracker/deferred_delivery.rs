@@ -535,11 +535,7 @@ impl AppState {
         self.tracker_store()?
             .fail_delivery_intent(&intent.id, intent.generation, error)
             .stored()?;
-        if let Some(project) = self
-            .projects
-            .iter()
-            .find(|p| p.repo_path.to_str() == Some(&intent.project_path))
-        {
+        if let Some(project) = self.project_by_key(&intent.project_path) {
             self.note_tasks_changed(&project.id, &intent.task_id);
         }
         Ok(())

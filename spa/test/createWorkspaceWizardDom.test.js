@@ -45,6 +45,7 @@ describe('workspace wizard pages',()=>{
   });
   it('advances, preserves the name on Back, previews the branch and lists sources',async()=>{
     await open({fixedProject:false});clickTarget('environment');
+    expect(dialog().querySelector('.create-workspace-page-enter')).not.toBeNull();
     expect(dialog().textContent).toContain('New workspace in Platform'); expect(dialog().querySelector('#create-work-input').required).toBe(true);
     name('Ship payments');expect(dialog().querySelector('[data-branch-preview]').textContent).toContain('build/ship-payments');
     expect(dialog().textContent).toContain('/code/api');dialog().querySelector('[data-create-back]').click();clickTarget('project');

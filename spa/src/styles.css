@@ -1903,11 +1903,14 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .create-workspace-sheet .create-progress-steps { list-style:none; padding:0; margin:18px 0; }
 .create-workspace-sheet .create-progress-steps > li { display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; padding:10px 0; border-bottom:1px solid var(--line); }
 .create-workspace-sheet .create-progress-detail { flex-basis:100%; overflow-wrap:anywhere; white-space:pre-wrap; }
+@keyframes create-workspace-page-enter { from { opacity:0; transform:translateX(14px); } to { opacity:1; transform:translateX(0); } }
 @media (max-width:760px) {
+  .create-workspace-page-enter { animation:create-workspace-page-enter 140ms ease-out; }
   .modal-scrim:has(> .create-workspace-sheet) { padding:0; align-items:stretch; }
   .modal.create-workspace-sheet { width:100%; max-width:none; height:100dvh; max-height:100dvh; border:0; border-radius:0;
     padding:calc(20px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom)); }
 }
+@media (prefers-reduced-motion:reduce) { .create-workspace-page-enter { animation:none; } }
 .modal.modal-surface { max-width:640px; max-height:78vh; display:flex; flex-direction:column; padding:14px 16px; }
 .modal-surface h3 { margin:0 0 8px; font-size:15px; }
 .modal-surface .surface-overlay-body { flex:1 1 auto; min-height:0; overflow-y:auto; }

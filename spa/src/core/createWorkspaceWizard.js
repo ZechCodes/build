@@ -53,7 +53,7 @@ function wizardActionsHtml(state) {
 export function createWorkspaceWizardBodyHtml(state) {
   const page=state.page === 3 && state.target ? nameHtml(state):pickerHtml(state);
   const progress=state.operationId ? `<p role="status">Still creating ‹${esc(state.name || 'workspace')}›… <button class="btn" type="button" data-create-resume>View progress</button></p>`:'';
-  return `${page}${progress}<div class="warn create-error" role="alert"${state.error ? '':' hidden'}>${esc(state.error || '')}</div>${wizardActionsHtml(state)}`;
+  return `<div class="create-workspace-page${state.pageTransition ? ' create-workspace-page-enter':''}">${page}</div>${progress}<div class="warn create-error" role="alert"${state.error ? '':' hidden'}>${esc(state.error || '')}</div>${wizardActionsHtml(state)}`;
 }
 export function createWorkspaceWizardHtml(state) {
   return modalDialogHtml(createWorkspaceWizardBodyHtml(state),{className:'modal-create create-workspace-sheet'});
@@ -93,6 +93,7 @@ export function openCreateWorkspaceWizard(options = {}) {
   let draft,stop=()=>{};
   const modal=openModal({dialogHtml:createWorkspaceWizardHtml(state),scrimId:'create-scrim',canDismiss:()=>!state.busy,onClose:cancelled,initialFocus:':not(*)'});
   modal.body.setAttribute('aria-labelledby','create-workspace-title');
+  modal.body.dataset.createPage=String(state.page);
   draft=watchUiState(address,restoreDraft,{debounceMs:120,active:()=>!detached});
   stop=followCreateWorkspaceTargets(()=>{void refresh();});
   wire();
@@ -139,6 +140,8 @@ export function openCreateWorkspaceWizard(options = {}) {
     const focused=document.activeElement;
     const id=modal.body.contains(focused) ? focused.id:null;
     const selection=focused?.selectionStart;
+    state.pageTransition=modal.body.dataset.createPage !== String(state.page);
+    modal.body.dataset.createPage=String(state.page);
     modal.body.innerHTML=createWorkspaceWizardBodyHtml(state);wire();
     const restored=id ? modal.body.querySelector(`#${id}`):null;
     restored?.focus();if(restored?.type==='text' && selection!==null) restored.setSelectionRange(selection,selection);

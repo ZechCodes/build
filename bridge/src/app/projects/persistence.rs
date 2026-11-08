@@ -11,7 +11,9 @@ impl AppState {
         id: &str,
         change: impl FnOnce(&mut ProjectRegistry) -> Result<(), String>,
     ) -> Result<Value, String> {
-        self.commit_project_configuration_with_observation(id, change, None)
+        self.commit_project_configuration_using(id, change, None, |app, id| {
+            Ok(app.project_json(app.projects.get(id).expect("staged project")))
+        })
     }
 
     pub(in crate::app) fn capture_prospective_project_refresh(
@@ -31,6 +33,21 @@ impl AppState {
         change: impl FnOnce(&mut ProjectRegistry) -> Result<(), String>,
         observed: Option<RenderedProjectSnapshotRefresh>,
     ) -> Result<Value, String> {
+        self.commit_project_configuration_using(
+            id,
+            change,
+            observed,
+            AppState::project_json_observed,
+        )
+    }
+
+    fn commit_project_configuration_using(
+        &mut self,
+        id: &str,
+        change: impl FnOnce(&mut ProjectRegistry) -> Result<(), String>,
+        observed: Option<RenderedProjectSnapshotRefresh>,
+        render: fn(&AppState, &str) -> Result<Value, String>,
+    ) -> Result<Value, String> {
         self.mark_device_lifecycle_dirty()?;
         self.projects
             .get(id)
@@ -47,11 +64,16 @@ impl AppState {
             return Err(error);
         }
         self.projects.reconcile_project_sources(id);
-        let row = if let Some(observed) = &observed {
+        if let Some(observed) = &observed {
             self.install_project_snapshot_refresh(observed.clone());
-            self.project_json_observed(id)?
-        } else {
-            self.project_json(self.projects.get(id).expect("staged project"))
+        }
+        let row = match render(self, id) {
+            Ok(row) => row,
+            Err(error) => {
+                configuration.swap(&mut self.projects, id);
+                self.swap_configuration_observations(&mut observation);
+                return Err(error);
+            }
         };
         let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
         let projection = self.prepare_all_snapshot_projection();

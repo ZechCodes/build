@@ -300,13 +300,17 @@ impl AppState {
         source_id: &str,
         sync_base: Option<bool>,
     ) -> Result<Value, String> {
-        let mut row = self.commit_project_configuration(project_id, |projects| {
-            let source = projects
-                .source_mut(project_id, source_id)
-                .ok_or_else(|| format!("unknown source_id {source_id} in project {project_id}"))?;
-            source.sync_base = sync_base;
-            Ok(())
-        })?;
+        let mut row = self.commit_project_configuration_with_observation(
+            project_id,
+            |projects| {
+                let source = projects.source_mut(project_id, source_id).ok_or_else(|| {
+                    format!("unknown source_id {source_id} in project {project_id}")
+                })?;
+                source.sync_base = sync_base;
+                Ok(())
+            },
+            None,
+        )?;
         if sync_base == Some(true) {
             self.request_source_sync(project_id.to_string(), source_id.to_string());
         }

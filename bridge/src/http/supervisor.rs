@@ -535,31 +535,50 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn listener_can_restart_while_closed_connections_are_in_time_wait() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        const MAX_ATTEMPTS: usize = 5;
+        let addr_in_use = format!(
+            "cannot bind HTTP listener: {}",
+            std::io::Error::from_raw_os_error(libc::EADDRINUSE)
+        );
 
         for bind in ["127.0.0.1:0", "[::1]:0"] {
-            let listener = prepare_listener(bind.parse().unwrap(), |_| async { Ok(()) })
-                .await
-                .unwrap();
-            let address = listener.local_addr().unwrap();
-            let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
-            let (mut server, _) = listener.accept().await.unwrap();
-            // The server actively closes first, so its port retains TIME_WAIT
-            // after both halves finish their FIN exchange.
-            server.shutdown().await.unwrap();
-            let mut byte = [0];
-            assert_eq!(client.read(&mut byte).await.unwrap(), 0);
-            client.shutdown().await.unwrap();
-            assert_eq!(server.read(&mut byte).await.unwrap(), 0);
-            drop(server);
-            drop(client);
-            drop(listener);
-
-            let restarted = prepare_listener(address, |_| async { Ok(()) })
-                .await
-                .expect("HTTP must be able to rebind immediately after a roll");
-            assert_eq!(restarted.local_addr().unwrap(), address);
+            for attempt in 1..=MAX_ATTEMPTS {
+                match restart_listener_after_time_wait(bind.parse().unwrap()).await {
+                    Ok(()) => break,
+                    // Another parallel test can claim the port after we drop
+                    // the listener. Retry the entire FIN exchange on a fresh
+                    // ephemeral port; broken SO_REUSEADDR fails every attempt.
+                    Err(error) if error == addr_in_use && attempt < MAX_ATTEMPTS => continue,
+                    Err(error) => panic!(
+                        "HTTP must rebind over TIME_WAIT for {bind} (attempt {attempt}/{MAX_ATTEMPTS}): {error}"
+                    ),
+                }
+            }
         }
+    }
+
+    #[cfg(unix)]
+    async fn restart_listener_after_time_wait(bind: std::net::SocketAddr) -> Result<(), String> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = prepare_listener(bind, |_| async { Ok(()) }).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        let (mut server, _) = listener.accept().await.unwrap();
+        // The server actively closes first, so its port retains TIME_WAIT
+        // after both halves finish their FIN exchange.
+        server.shutdown().await.unwrap();
+        let mut byte = [0];
+        assert_eq!(client.read(&mut byte).await.unwrap(), 0);
+        client.shutdown().await.unwrap();
+        assert_eq!(server.read(&mut byte).await.unwrap(), 0);
+        drop(server);
+        drop(client);
+        drop(listener);
+
+        let restarted = prepare_listener(address, |_| async { Ok(()) }).await?;
+        assert_eq!(restarted.local_addr().unwrap(), address);
+        Ok(())
     }
 
     #[test]

@@ -28,7 +28,11 @@ fn write_envelopes_roundtrip_without_reinterpreting_transport_receipts() {
     );
     assert_eq!(
         ACK_CONFIRM_METHODS,
-        &["environment.create_project", "workspace.create"]
+        &[
+            "environment.create",
+            "environment.create_project",
+            "workspace.create"
+        ]
     );
 }
 

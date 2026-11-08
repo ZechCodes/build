@@ -43,7 +43,9 @@
       "entity_dismiss",
       "entity_mute",
       "entity_seen",
+      "environment_create",
       "environment_create_project",
+      "environment_discard_unused",
       "environment_list",
       "fs_createDirectory",
       "fs_createFile",
@@ -723,6 +725,24 @@
       }
     },
     {
+      "method": "environment.create",
+      "operationId": "environment_create",
+      "verb": "POST",
+      "path": "/v1/environments",
+      "pathParams": [],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/environment.rs",
+        "params": "CreateParams",
+        "result": "CreateResult"
+      }
+    },
+    {
       "method": "environment.create_project",
       "operationId": "environment_create_project",
       "verb": "POST",
@@ -740,6 +760,26 @@
         "source": "bridge/src/api/v1/environment.rs",
         "params": "CreateProjectParams",
         "result": "CreateProjectResult"
+      }
+    },
+    {
+      "method": "environment.discard_unused",
+      "operationId": "environment_discard_unused",
+      "verb": "POST",
+      "path": "/v1/environments/{environment_id}/unused-discards",
+      "pathParams": [
+        "environment_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/environment.rs",
+        "params": "DiscardUnusedParams",
+        "result": "super::board::EmptyResult"
       }
     },
     {

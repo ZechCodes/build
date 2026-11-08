@@ -101,13 +101,18 @@ fn retired_legacy_writes_keep_http_routes_for_structured_refusals() {
             "missing compatibility route {method}"
         );
     }
-    assert_eq!(manifest["operations"].as_array().unwrap().len(), 160);
+    assert_eq!(manifest["operations"].as_array().unwrap().len(), 162);
 }
 
 #[test]
 fn creation_attempts_have_explicit_http_resources() {
     let manifest = json(root().join("fixtures/api/http/resource-manifest.json"));
     for (method, path) in [
+        ("environment.create", "/v1/environments"),
+        (
+            "environment.discard_unused",
+            "/v1/environments/{environment_id}/unused-discards",
+        ),
         (
             "environment.create_project",
             "/v1/environments/{environment_id}/projects",

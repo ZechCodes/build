@@ -114,7 +114,8 @@
             "sync_base": false,
             "sync": null
           }
-        ]
+        ],
+        "added_sources": []
       }
     ]
   },

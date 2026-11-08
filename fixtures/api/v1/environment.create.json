@@ -1,0 +1,262 @@
+{
+  "method": "environment.create",
+  "since": "3.36.0",
+  "params": {
+    "name": "Build",
+    "sources": [
+      {
+        "path": "/home/ada/code/build"
+      }
+    ],
+    "isolation": "worktree",
+    "parent": "/home/ada/code",
+    "project": {
+      "name": "Wire project",
+      "workspace": {
+        "name": "first",
+        "isolation": "worktree"
+      },
+      "added_sources": [
+        {
+          "path": "/home/ada/code/shared",
+          "name": "Shared"
+        }
+      ]
+    },
+    "continues": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a"
+  },
+  "result": {
+    "environment": {
+      "environment_id": "env-1",
+      "name": "build",
+      "home_path": "/home/ada/code/build",
+      "is_git": true,
+      "base_branch": "main",
+      "sources": [
+        {
+          "id": "source-1",
+          "name": "build",
+          "mount": "build",
+          "path": "/home/ada/code/build",
+          "is_git": true,
+          "base_branch": "main",
+          "remote": "git@github.com:ada/build.git",
+          "sync_base": false,
+          "sync": null
+        }
+      ],
+      "isolation": null,
+      "isolation_effective": "worktree",
+      "project_ids": [
+        "proj-2"
+      ],
+      "device": "Ada’s workstation"
+    },
+    "project": {
+      "project_id": "proj-2",
+      "name": "Wire project",
+      "path": "/home/ada/code/build",
+      "base_branch": "main",
+      "is_git": true,
+      "remote": "git@github.com:ada/relay.git",
+      "isolation": null,
+      "isolation_default": "worktree",
+      "isolation_effective": "worktree",
+      "isolation_available": {
+        "rift": false,
+        "reason": "rift is not installed on this device"
+      },
+      "compaction_thresholds": {},
+      "compaction": {
+        "inherited": {
+          "claude": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "claude_adk": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex_app_server": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "pi": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          }
+        },
+        "effective": {
+          "claude": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "claude_adk": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex_app_server": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "pi": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          }
+        }
+      },
+      "added_sources": [
+        {
+          "id": "source-2",
+          "name": "Shared",
+          "mount": "Shared",
+          "path": "/home/ada/code/shared",
+          "is_git": false,
+          "base_branch": "main",
+          "remote": null,
+          "sync_base": false,
+          "sync": null
+        }
+      ],
+      "diverged": true
+    },
+    "workspace": {
+      "id": "ws-3f2a91c4",
+      "workspace_id": "ws-3f2a91c4",
+      "project_id": "proj-2",
+      "name": "wire-facade",
+      "root": "/home/ada/.build/workspaces/proj-2/wire-facade",
+      "status": "ready",
+      "created_by_agent": false,
+      "locked": false,
+      "directories": [
+        {
+          "id": "ws-3f2a91c4:source-1",
+          "source_id": "source-1",
+          "name": "build",
+          "path": "/home/ada/.build/workspaces/proj-2/wire-facade/build",
+          "is_git": true,
+          "branch": "build/wire-facade",
+          "isolation": "worktree",
+          "status": "ready",
+          "error": null
+        },
+        {
+          "id": "ws-3f2a91c4:source-2",
+          "source_id": "source-2",
+          "name": "Shared",
+          "path": "/home/ada/.build/workspaces/proj-2/wire-facade/Shared",
+          "is_git": false,
+          "branch": null,
+          "isolation": "worktree",
+          "status": "ready",
+          "error": null
+        }
+      ],
+      "compaction_thresholds": {},
+      "compaction": {
+        "inherited": {
+          "claude": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "claude_adk": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex_app_server": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "pi": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          }
+        },
+        "effective": {
+          "claude": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "claude_adk": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "codex_app_server": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "pi": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          }
+        }
+      }
+    }
+  },
+  "errors": [
+    "invalid_params",
+    "not_found",
+    "conflict",
+    "busy",
+    "unavailable",
+    "internal"
+  ],
+  "note": "M2.1 bridge contract; environments.create and projects.addedSources remain withheld until the M2.2 consumer."
+}

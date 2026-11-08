@@ -1167,13 +1167,13 @@ test("secrets metadata routes are explicit and sealed uploads are bounded", asyn
 
 test("the generator inventories ordinary, required-context and optional-context methods", () => {
   const output = execFileSync(process.execPath, [fileURLToPath(new URL("scripts/http-resource-manifest.mjs", root)), "--check"], { encoding: "utf8" });
-  assert.match(output, /160 explicit resource routes; generated artifacts current/);
+  assert.match(output, /162 explicit resource routes; generated artifacts current/);
 });
 
 
 test("creation attempts use explicit resources without staged exclusions", async () => {
   const manifest = JSON.parse(await readFile(new URL("fixtures/api/http/resource-manifest.json", root), "utf8"));
-  for (const method of ["environment.create_project", "project.discard_unused"]) {
+  for (const method of ["environment.create", "environment.discard_unused", "environment.create_project", "project.discard_unused"]) {
     assert.ok(manifest.operations.some((operation) => operation.method === method), `Missing creation resource ${method}`);
     for (const exclusions of Object.values(stagedConsumerExclusions)) {
       assert.ok(!exclusions.some(({ use }) => use[0] === method));

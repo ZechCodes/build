@@ -7,11 +7,11 @@ import { createHttpRoutes } from "../src/core/httpRoutes.js";
 describe("reviewed REST manifest consumption", () => {
   it("pins the coordinator-released bytes and exact operation IDs", () => {
     const bytes = readFileSync(new URL("../../fixtures/api/http/resource-manifest.json", import.meta.url));
-    expect(createHash("sha256").update(bytes).digest("hex")).toBe("05819d239f2e2cdd98c0a8350a9b67d907a06e41692d8876f68680022afe12fe");
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe("67c168d44c474f66edf2ba5aba3f029e0febd9eb29b483423568025a156f3fac");
     expect(createHttpRoutes(manifest).operationIds()).toEqual(manifest.transport.operation_ids);
     expect(createHttpRoutes(manifest).operationIds()).toContain("tasks_review_retryDelivery");
     // M1.1 adds the environment list route before capability activation.
-    expect(manifest.operations).toHaveLength(160);
+    expect(manifest.operations).toHaveLength(162);
     for (const operation of ["environment_list", "tasks_review_snapshot", "tasks_review_act", "tasks_review_complete", "sync_head", "sync_snapshot", "sync_changes", "secrets_create", "secrets_list", "secrets_revoke", "secrets_audit"]) {
       expect(createHttpRoutes(manifest).operationIds()).toContain(operation);
     }

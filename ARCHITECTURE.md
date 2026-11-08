@@ -1322,7 +1322,7 @@ incarnation and outbox. SQL-only claimed work can return to accepted, while
 ambiguous external claims retain an unknown outcome and block conflicting
 execution until reconciliation. Committed work is returned for the enabled
 verb’s publication recovery and is never applied twice. The original foundation
-enabled no verb executor. Creation now enables exactly `environment.create_project`
+enabled no verb executor. Creation now enables `environment.create`, `environment.create_project`
 and requests for `workspace.create` carrying frame `write.operation_id`; legacy
 workspace requests retain their existing synchronous reply. The journal exposes 30-day terminal-result compaction for the future enabled
 command service; identity/outcome tombstones remain, and unresolved partial/unknown
@@ -1365,6 +1365,28 @@ Existing Ready manifests are reused, including plain copies and later edits.
 Pending creation roots share the existing retry, reclaim, lock and writer fences;
 startup restores those reservations before serving requests. Cleanup uses its own
 reserved identity while ordinary writers remain excluded.
+`environment.create` reserves a fresh opaque environment ID and prepares its
+sources inside the same journaled attempt before environment config is published.
+Environment IDs use `env-<operation_id>`, so concurrent same-ID admission
+reserves the same owner before config exists; the saved winning project key and
+acknowledgment are still reused. Paired-user write-status reads authorize that
+reserved intent even before publication or after an unused environment is removed.
+Clones use an attempt-owned root with ownership and per-source completion markers;
+source claims are restored before client admission. Interrupted clones without
+completion proof take the cleanup path. Known failure intent is saved before
+unwind so cleanup cannot restart provisioning. Source failure performs a full checked rollback;
+missing ownership or incomplete removal retains Started and the attempt fence.
+The environment config lands before project config and is recovered by its
+reserved ID. A later project failure retains an empty environment, named in
+`error.details.environment`; `environment.create_project` can resume into it with
+`continues`. `environment.discard_unused` requires the creating terminal attempt
+and refuses live or parked projects and pending creation. Unlinking it keeps source
+files. Added sources are validated against the whole effective source set, receive
+fresh IDs at config commit, and are returned with `diverged` on project rows.
+Project source removal refuses inherited IDs; update and sync retain the legacy
+routing only while the project has no added sources. Device-scoped project sync
+rows keep the configured non-empty project name; legacy rows without one keep
+the home path's basename. Config projection and reload preserve sibling names.
 Known partial failures retain the project and name it in `error.details.project`.
 `project.discard_unused` requires that attempt's identity and refuses workspaces,
 tasks, and live or retained agent sessions.
@@ -1384,6 +1406,8 @@ status may include `progress`; subscribed openings receive `writes.progress` on
 step changes. These observations never enter the journal or confirm an outcome.
 The additive verbs and event do not change API_VERSION or advertise the
 `environments` feature; that release boundary remains with M1.4.
+M2.1 also withholds `environment.create`, `environment.discard_unused`,
+`environments.create` and `projects.addedSources` until the M2.2 consumer.
 
 #### Conversation retention (#836)
 

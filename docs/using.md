@@ -280,9 +280,10 @@ settings under its environment's collapsed **Archived** group. Direct links
 to the project, its old tasks and reviews still open read-only. Their banner
 says **P is archived. Restore it to make changes.** and offers **Restore**.
 
-Changes to an archived project are refused from the UI, MCP and agents; its
-agents are not started. The bridge refusal is **P is archived; restore it
-first**, with error code `project_archived`. Reading its history still works.
+The bridge allows Restore and its existing `project.delete` on an archived
+project; other changes from the UI, MCP and agents are refused, and its agents
+are not started. The bridge refusal is **P is archived; restore it first**,
+with error code `project_archived`. Reading its history still works.
 Environment source maintenance can still update the inherited source list;
 it does not change the archived project's finished workspace directories.
 
@@ -305,8 +306,9 @@ available again and retained background work becomes eligible to resume.
 
 ### Delete a project
 
-**Delete project** remains available in **Project settings** for any project,
-including one under an environment. It requires confirmation and is refused
+**Delete project** is available in **Project settings** for active projects,
+including ones under an environment. Restore an archived project before
+deleting it from this sheet. It requires confirmation and is refused
 while creation is pending, another filesystem operation is running, or a
 workspace is locked or provisioning. Pending shell launches and in-flight
 agent messages in the project's source or checkout folders also block deletion.

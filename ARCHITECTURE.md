@@ -1222,7 +1222,9 @@ registry keeps environment-owned source references and their monotonic counter,
 plus project-owned added sources, and projects retain an effective-source read
 projection for existing call sites. Source configuration transactions stage
 environments and project projections together while keeping orchestrators live.
-In M0.1 the project and environment isolation copies are updated together.
+`set_isolation` writes only the project override; `initialize_legacy_isolation`
+handles legacy config load. Effective isolation resolves the project override,
+then the environment setting, then the device default.
 Unavailable legacy homes retain their absolute spelling on any resolution error
 and stay parked. When a home returns, a key equal to its stored path follows the
 canonical home; an opaque sibling key stays unchanged. Legacy path lookup prefers

@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { openLayoutSession, mountLayout, loadBrowserModules } from './layoutHarness.mjs';
 import { navigationAppShim } from './navigationBreadcrumbSeed.mjs';
-const scratch='/home/zech/Projects/.agent-scratch/env-wizard-polish';
 let session;
 beforeAll(async()=>{session=await openLayoutSession({plugins:[navigationAppShim]});},30000);
 afterAll(async()=>{await session?.close();});
@@ -68,11 +67,9 @@ for(const [width,height] of [[390,844],[440,956],[320,568],[1280,800]]){
    expect(Math.min(...rows)).toBeGreaterThanOrEqual(44);
    const scroll=page.locator('[data-create-scroll]');
    expect(await scroll.evaluate(el=>el.scrollHeight>el.clientHeight)).toBe(true);
-   if(width===440)await page.screenshot({path:`${scratch}/page-1-440.png`});
    await scroll.evaluate(el=>{el.scrollTop=el.scrollHeight;});await pinned(page,pageOne);
    await page.locator('[data-create-advanced] summary').click();await pinned(page,pageOne);
    await advancedReachable(page);
-   if(width===440){await page.locator('#create-advanced-body').evaluate(el=>{el.scrollTop=0;});await page.screenshot({path:`${scratch}/page-1-advanced-440.png`});}
 
   },{width,height});
  },30000);
@@ -82,7 +79,6 @@ for(const [width,height] of [[390,844],[440,956],[320,568],[1280,800]]){
    const controls=['[data-create-back]','[data-create-cancel]','[data-create-next]'];await pinned(page,controls);
    expect(await page.locator('[data-create-next]').textContent()).toBe('Use environment');
    const scroll=page.locator('[data-create-scroll]');expect(await scroll.evaluate(el=>el.scrollHeight>el.clientHeight)).toBe(true);
-   if(width===440)await page.screenshot({path:`${scratch}/page-2-440.png`});
    await scroll.evaluate(el=>{el.scrollTop=el.scrollHeight;});await pinned(page,controls);
   },{width,height});
  },30000);
@@ -182,7 +178,6 @@ for(const [width,height] of [[390,844],[320,568]])for(const status of ['error','
    await page.locator('[data-create-advanced] summary').click();await pinned(page,controls);
    expect(await page.locator('[role="dialog"]').evaluate(el=>el.scrollHeight<=el.clientHeight)).toBe(true);
    await summaryFactsVisible(page);await singleLineSummaries(page);await advancedReachable(page,controls);
-   if(width===320 && status==='error-progress')await page.screenshot({path:`${scratch}/project-worst-320.png`});
   },{width,height});
  },30000);
  if(status!=='error-progress')continue;
@@ -202,7 +197,6 @@ for(const [width,height] of [[390,844],[320,568]])for(const status of ['error','
     const progress=page.locator('.create-resume');
     expect(await progress.evaluate(el=>el.scrollHeight>el.clientHeight&&el.clientHeight<=3*parseFloat(getComputedStyle(el).lineHeight)+1)).toBe(true);
     await progress.evaluate(el=>{el.scrollTop=el.scrollHeight;});await pinned(page,[...pageOne,'[data-create-resume]']);
-    if(width===320)await page.screenshot({path:`${scratch}/project-lengthy-worst-320.png`});
    }
   },{width,height});
  },30000);

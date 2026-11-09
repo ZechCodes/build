@@ -120,7 +120,7 @@ it('keeps a selectable draft row through Back, selection, filtering and editing 
 });
 it('creates with a blank workspace name on a new-environment draft',async()=>{
  await open({newEnvironment:true,deviceId:'d1'});click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');click('[data-create-next]');click('[data-create-go]');
- await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));expect(mocks.submit.mock.calls[0][0]).toMatchObject({name:'api',target:{kind:'new-environment'}});
+ await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));expect(mocks.submit.mock.calls[0][0]).toMatchObject({name:'',projectName:'api',target:{kind:'new-environment'}});
 });
 it('restores the editable draft row after reloading on page one',async()=>{
  await open();click('[data-create-new-environment]');click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');click('[data-create-next]');

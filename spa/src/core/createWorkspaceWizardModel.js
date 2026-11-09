@@ -172,7 +172,7 @@ export function addedFolderLabel(source, deviceId, snapshot) {
 
 const countText = (count,noun) => `${count} ${noun}${count===1 ? '':'s'}`;
 
-export function optionalWorkspaceName({target,name=''},snapshot) {
+export function optionalProjectName({target,name=''},snapshot) {
   if(name.trim() || target.kind==='project')return name;
   const base=target.name;
   const siblings=target.kind==='new-environment' ? []:(snapshot.projects || []).filter(project=>

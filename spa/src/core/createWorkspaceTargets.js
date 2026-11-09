@@ -59,7 +59,7 @@ function creationRequest(input) {
   if(input.target.kind === 'project') return {method,params:workspaceCreateParams(input)};
   const {target,name,isolation,continues}=input;
   const added = input.addedSources?.length ? {added_sources:input.addedSources.map(sourceDraftParams)} : {};
-  const project = {name,workspace:{name,...(isolation ? {isolation}:{})},...added};
+  const project = {name:input.projectName ?? name,workspace:{...(name?.trim() ? {name}:{}),...(isolation ? {isolation}:{})},...added};
   const continuation = continues ? {continues} : {};
   if(target.kind !== 'new-environment') return {method,params:{environment_id:target.id,...project,...continuation}};
   const environment = input.environmentDraft;

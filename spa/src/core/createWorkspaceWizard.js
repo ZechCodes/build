@@ -10,7 +10,7 @@ import { uiAddress, watchUiState, updateUiState } from './localUiState.js';
 import { readUiRecord, deleteUiDraftsIfUnwritten } from './localUiStore.js';
 import { createWorkspaceWizardBodyHtml, createWorkspaceWizardHtml, wireWizardAdvanced, workspaceSourcesHtml, targetText, wizardTargets, sameTarget } from './createWorkspaceWizardRender.js';
 export { createWorkspaceWizardBodyHtml, createWorkspaceWizardHtml, createWorkspaceTargetSummaryHtml, wireWizardAdvanced } from './createWorkspaceWizardRender.js';
-import { optionalWorkspaceName, createWorkspaceWizardModel } from './createWorkspaceWizardModel.js';
+import { optionalProjectName, createWorkspaceWizardModel } from './createWorkspaceWizardModel.js';
 import { openCreateWorkspaceProgress } from './createWorkspaceProgress.js';
 import { openCreateWorkspaceLegacy } from './createWorkspaceLegacy.js';
 import { readCreateWorkspaceTargets, followCreateWorkspaceTargets, submitCreateWorkspace,
@@ -303,7 +303,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     await deleteDraft(address);dispose();await modal.close();(options.navigate || go)(route);
   }
   async function submitDurable(continues=state.continues) {
-    const attempt=submitCreateWorkspace({...draftOf(state),name:optionalWorkspaceName(state,snapshot),continues,draft:draftOf(state)});
+    const attempt=submitCreateWorkspace({...draftOf(state),projectName:optionalProjectName(state,snapshot),continues,draft:draftOf(state)});
     await attempt.ready;
     state.operationId=attempt.operationId;state.busy=false;
     await draft.write(draftOf(state));
@@ -335,7 +335,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
   }
   async function submitContinuation(operationId) {
     const nextDraft={...draftOf(state),operationId:null,continues:operationId};
-    const attempt=submitCreateWorkspace({...nextDraft,name:optionalWorkspaceName(state,snapshot),operationId:crypto.randomUUID(),draft:nextDraft});
+    const attempt=submitCreateWorkspace({...nextDraft,projectName:optionalProjectName(state,snapshot),operationId:crypto.randomUUID(),draft:nextDraft});
     await attempt.ready;
     state.operationId=attempt.operationId;state.continues=operationId;
     await updateUiState(address,()=>draftOf(state));

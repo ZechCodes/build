@@ -91,7 +91,7 @@ describe('workspace wizard pages',()=>{
     expect(document.activeElement.id).toBe('create-workspace-search');
     document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',shiftKey:true,bubbles:true}));expect(document.activeElement).toBe(create);
     clickTarget('environment');dialog().querySelector('[data-create-go]').click();await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));
-    expect(mocks.submit.mock.calls[0][0].name).toBe('Platform');
+    expect(mocks.submit.mock.calls[0][0].projectName).toBe('Platform');expect(mocks.submit.mock.calls[0][0].name).toBe('');
     await opened.close();await open({projectId:'p1',deviceId:'d1'});
     expect(document.activeElement.id).toBe('create-work-input');
     expect(dialog().querySelector('#create-workspace-search,[data-create-target],[data-create-new-environment],[data-create-back]')).toBeNull();
@@ -167,7 +167,7 @@ describe('workspace wizard pages',()=>{
   });
   it('derives an environment name for whitespace-only input',async()=>{
     await open({fixedProject:false});clickTarget('environment');name('   ');dialog().querySelector('[data-create-go]').click();
-    await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));expect(mocks.submit.mock.calls[0][0].name).toBe('Platform');
+    await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));expect(mocks.submit.mock.calls[0][0].projectName).toBe('Platform');expect(mocks.submit.mock.calls[0][0].name).toBe('   ');
   });
 
   it('finds a durable attempt even when no modal draft survived the reload',async()=>{
@@ -328,7 +328,7 @@ it('keeps environment update refusals on the main page at selection time',async(
 it('uses the lowest free derived name across cached siblings when creating a project',async()=>{
  const held=snapshot();held.projects.push({id:'collision',deviceId:'d1',environment_id:'e1',name:'Platform'},{id:'third',deviceId:'d1',environment_id:'e1',name:'Platform 3'});mocks.read.mockResolvedValue(held);
  await open({fixedProject:false});clickTarget('environment');dialog().querySelector('[data-create-go]').click();
- await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));expect(mocks.submit.mock.calls[0][0].name).toBe('Platform 2');
+ await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));expect(mocks.submit.mock.calls[0][0].projectName).toBe('Platform 2');expect(mocks.submit.mock.calls[0][0].name).toBe('');
 });
 
 it.each(['insert','remove','reorder'])('restores focused row identity on cache %s rather than reusing its index',async change=>{

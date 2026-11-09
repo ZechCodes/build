@@ -68,3 +68,17 @@ it('uses a derived environment label when its optional configuration name is bla
  submitCreateWorkspace({target:{kind:'new-environment',deviceId:'d1',name:'api'},environmentDraft:{name:'  ',sources:[source],isolation:''},name:'api',operationId:'blank'});
  expect(mocked.service.submit.mock.calls[0][0]).toMatchObject({params:{name:'api',project:{name:'api',workspace:{name:'api'}}}});
 });
+
+it('a blank name on an environment target still derives the project name',()=>{
+ submitCreateWorkspace({target:{kind:'environment',id:'e1',deviceId:'d1',name:'Platform'},name:'',projectName:'Platform 2'});
+ expect(mocked.service.submit.mock.calls[0][0].params.name).toBe('Platform 2');
+});
+it('a blank name on an environment target sends no workspace name',()=>{
+ for(const kind of ['environment','new-environment']){
+  const source={kind:'path',path:'/source',name:'Source',base_branch:''};
+  submitCreateWorkspace({target:{kind,id:'e1',deviceId:'d1',name:'Platform'},name:'',projectName:'Platform 2',environmentDraft:{name:'Platform',sources:[source]}});
+  const request=mocked.service.submit.mock.calls.at(-1)[0];
+  const project=kind==='environment' ? request.params:request.params.project;
+  expect(project.workspace.name).toBeUndefined();
+ }
+});

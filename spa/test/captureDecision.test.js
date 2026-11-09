@@ -209,6 +209,16 @@ describe("cancelling a capture", () => {
 });
 
 describe("the decision page's markup", () => {
+  it("keeps an archived routed project's name for display but omits it as a destination", () => {
+    const retained = [{ ...projects[0], archived_at: 1 }, projects[1]];
+    const page = captureDecisionModel(capture({ state: "routed", routing: { project_id: "p1", kind: "branch" } }), { projects: retained });
+    const html = captureDecisionHtml(page, { projects: retained, projectId: "p2" });
+    expect(page.routedTo.project).toBe("relaydb");
+    expect(html).toContain("→ relaydb as branch");
+    expect(html).not.toContain('<option value="p1"');
+    expect(html).toContain('<option value="p2"');
+  });
+
   const model = () =>
     captureDecisionModel(
       capture({ question: question({ options: [option(), option({ id: "option-2", label: "New branch", kind: "branch" })] }) }),

@@ -249,7 +249,7 @@ export function setInboxView(next) {
  *  attention. The projects face groups these same rows by project. */
 function railRows() {
   const rows = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
-  return visibleProjectRows([...captureEntries(rows), ...watchedTaskRows(), ...workRows(rows)], projects).sort(byAnchor);
+  return visibleProjectRows([...captureEntries(rows, projects), ...watchedTaskRows(), ...workRows(rows)], projects).sort(byAnchor);
 }
 
 function draw() {

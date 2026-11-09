@@ -735,13 +735,16 @@ impl AppState {
     }
 
     /// The default project id when the client doesn't choose one (the first
-    /// registered project).
+    /// registered project that is not archived).
     pub(in crate::app) fn default_project(&self) -> Result<String, String> {
+        if self.projects.iter().next().is_none() {
+            return Err("no projects configured".to_string());
+        }
         self.projects
             .iter()
-            .next()
+            .find(|project| project.archived_at.is_none())
             .map(|p| p.id.clone())
-            .ok_or_else(|| "no projects configured".to_string())
+            .ok_or_else(|| "Every project is archived; restore a project first.".to_string())
     }
 
     pub(in crate::app) fn project_name_of(&self, entity_id: &str) -> String {

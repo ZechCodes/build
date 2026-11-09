@@ -13,6 +13,7 @@
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
+import { projectIsArchived } from "./archivedProjectModel.js";
 import { canAnswer, creationDevice, deviceFeedView, homeContext } from "./deviceContexts.js";
 import { deviceCall, deviceCatalog } from "./inboxDevices.js";
 import { deviceNameOf } from "./devicePolicy.js";
@@ -57,6 +58,7 @@ const listeners = new Set(); // who repaints when the held captures change
 // device creation goes to, so the destinations this box offers and the project
 // names it prints are that device's. Every device mints a `proj-1`.
 let feed = { items: [], projects: [] };
+let projectChoicesKey = "";
 let box = null; // the open box's state, or null while it is shut
 let mounted = false;
 const boxSnapshot = () => ({
@@ -272,7 +274,7 @@ function paintPrompt() {
  *  harness picks it up. Rendered only while its disclosure is open. */
 function advancedHtml() {
   const branches = branchOptions(feed.items, box.projectId, feed.runs);
-  const projectOptions = feed.projects
+  const projectOptions = activeProjects()
     .map(
       (project) =>
         `<option value="${esc(project.id)}"${project.id === box.projectId ? " selected" : ""}>${esc(project.name || project.id)}</option>`,
@@ -298,7 +300,8 @@ function advancedHtml() {
 function paintBox({ focus = true } = {}) {
   const host = $("#compose");
   if (!host || !box) return;
-  const caret = focus ? null : selectionOf(host);
+  box.projectId = availableProjectId(box.projectId);
+  const selection = focus ? null : selectionOf(host);
   const deviceName = creationDeviceName();
   host.innerHTML = composeBoxHtml({
     value: box.value,
@@ -316,8 +319,8 @@ function paintBox({ focus = true } = {}) {
   if (focus) {
     text.focus();
     text.setSelectionRange(box.value.length, box.value.length);
-  } else if (caret !== null) {
-    text.setSelectionRange(caret, caret);
+  } else {
+    restoreSelection(host, selection);
   }
 }
 
@@ -327,9 +330,25 @@ function paintGitOffer(host) {
 }
 
 const selectionOf = (host) => {
-  const text = host.querySelector("#compose-text");
-  return text && document.activeElement === text ? text.selectionStart : null;
+  const field = document.activeElement;
+  if (!field?.id || !host.contains(field)) return null;
+  return {
+    id: field.id,
+    selectionStart: field.selectionStart,
+    selectionEnd: field.selectionEnd,
+    selectionDirection: field.selectionDirection,
+  };
 };
+
+function restoreSelection(host, selection) {
+  if (!selection) return;
+  const field = document.getElementById(selection.id);
+  if (!field || !host.contains(field)) return;
+  field.focus();
+  if (typeof selection.selectionStart === "number") {
+    field.setSelectionRange(selection.selectionStart, selection.selectionEnd, selection.selectionDirection);
+  }
+}
 
 function wireBox(host) {
   const text = host.querySelector("#compose-text");
@@ -451,6 +470,23 @@ function loadCatalogForPanel() {
 
 // ---- opening, closing, sending ------------------------------------------------
 
+function activeProjects() {
+  return feed.projects.filter(project => !projectIsArchived(project));
+}
+
+function availableProjectId(preferred = "") {
+  const projects = activeProjects();
+  return projects.find(project => project.id === preferred)?.id || projects[0]?.id || "";
+}
+
+function refreshProjectChoices() {
+  const next = JSON.stringify(activeProjects().map(project => [project.id, project.name]));
+  if (next === projectChoicesKey) return;
+  projectChoicesKey = next;
+  if (!box) return;
+  paintBox({ focus: false });
+}
+
 const savedBoxFields = (saved, current) => ({
   value: saved.value,
   branch: saved.branch || "",
@@ -474,10 +510,8 @@ function restoreComposeBox(saved, opened) {
   // readback drops the live control between a keystroke and the next click.
   if (JSON.stringify(restored) === JSON.stringify(box.renderedSnapshot)) return;
   const wasAdvanced = box.renderedAdvancedOpen;
-  const focusedId = document.activeElement?.id;
   Object.assign(box, restored);
   paintBox({ focus: false });
-  if (focusedId) $("#compose")?.querySelector(`#${focusedId}`)?.focus();
   syncAdvancedCatalog(wasAdvanced);
 }
 
@@ -505,7 +539,7 @@ export function openCompose() {
     choice: loadAgentDefaults(),
     kind: "branch",
     branch: "",
-    projectId: (feed.projects[0] || {}).id || "",
+    projectId: availableProjectId(),
     // The Initialize Git offer a plain folder's refusal became, or null.
     gitOffer: null,
   };
@@ -565,6 +599,7 @@ async function submitCapture() {
 
 async function submitManual() {
   if (!box || box.busy) return;
+  box.projectId = availableProjectId(box.projectId);
   box.value = $("#compose-text")?.value ?? box.value;
   const text = box.value.trim();
   if (!text) {
@@ -649,6 +684,7 @@ export function initCompose() {
   subscribeFeed((next) => {
     feed = deviceFeedView(next);
     syncTracked();
+    refreshProjectChoices();
   });
   if (!$("#compose")) return;
   paintPrompt();

@@ -87,6 +87,22 @@ impl AppState {
     pub(crate) fn defer_project_list(&mut self) -> Value {
         self.revive_parked_projects();
         let projects = self.project_list_rows();
+        self.defer_project_rows(projects)
+    }
+
+    /// A router can only dispatch into active projects. Ordinary project lists
+    /// retain archived rows for settings and read-only navigation.
+    pub(in crate::app) fn defer_router_project_list(&mut self) -> Value {
+        self.revive_parked_projects();
+        let projects = self
+            .project_list_rows()
+            .into_iter()
+            .filter(|project| project.archived_at.is_none())
+            .collect();
+        self.defer_project_rows(projects)
+    }
+
+    fn defer_project_rows(&mut self, projects: Vec<ProjectListRow>) -> Value {
         self.deferred_work = Some(DeferredWork::Read(Box::new(DeferredRead {
             subject: ReadSubject::ProjectList { projects },
             task_id: None,

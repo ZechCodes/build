@@ -11,6 +11,7 @@
 // No DOM, no app imports — core/captureDecisionView.js wires these.
 
 import { esc } from "./text.js";
+import { projectIsArchived } from "./archivedProjectModel.js";
 import { captureStatusText } from "./inbox.js";
 import { fieldTraits } from "./fieldTraits.js";
 
@@ -152,6 +153,7 @@ function askHtml(model, ui) {
 function manualHtml(model, ui) {
   const busy = ui.busy ? " disabled" : "";
   const projectOptions = (ui.projects || [])
+    .filter(project => !projectIsArchived(project))
     .map(
       (project) =>
         `<option value="${esc(project.id)}"${project.id === ui.projectId ? " selected" : ""}>${esc(

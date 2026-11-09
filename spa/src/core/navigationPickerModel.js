@@ -1,6 +1,7 @@
 import { switcherModel } from "./environmentSwitcherModel.js";
 import { navigationPickerModel } from "./navigationModel.js";
 import { lastVisitedDestinations } from "./navigationVisitModel.js";
+import { projectIsArchived } from "./archivedProjectModel.js";
 export { destinationIdentity, byVisitTime } from "./navigationVisitModel.js";
 
 /** Shortcuts resolve against today's catalog, so renames keep their identity
@@ -8,8 +9,9 @@ export { destinationIdentity, byVisitTime } from "./navigationVisitModel.js";
 export function globalNavigationPicker(catalog, options = {}) {
   if (Object.values(options.support || {}).some(Boolean)) return switcherModel(catalog, options);
   const { query = "" } = options;
-  const picker = navigationPickerModel(catalog, { query });
-  return { ...picker, lastVisited: lastVisitedDestinations(catalog, options) };
+  const visible = query.trim() ? catalog : { ...catalog, projects: catalog.projects.filter(group => !projectIsArchived(group.destination.project)) };
+  const picker = navigationPickerModel(visible, { query });
+  return { ...picker, lastVisited: lastVisitedDestinations(visible, options, row => visible.projects.some(group => group.key === row.projectKey)) };
 }
 
 /** Keep occurrence ordering for this query/scope. Payloads remain live; new

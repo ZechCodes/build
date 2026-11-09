@@ -485,9 +485,11 @@ const sourceFingerprintParts = {
   "core/directoryWatcher.js": ["3016199e", "f2ebe782", "5731fa24", "665dba3a", "6fd96a9e", "f5a4ee11", "c6841b70", "db07db4f"],
   "core/taskTimelinePages.js": ["da2840fb", "5992d7ce", "038bbc4d", "9c01a8ab", "c320a6f3", "7592e5be", "d5cbf08c", "4fcf8220"],
 
-  "core/createWorkspaceProgress.js": ["a1043060", "ec8923a1", "4ee1bd97", "a1af57f7", "03cee83a", "20d21308", "519bc541", "533aa650"],
-  // #1085: optional name derivation/count labels only; existing RPC methods and dispatch edges are unchanged.
-  "core/createWorkspaceTargets.js": ["123a7b11", "3c2ede0f", "6843ee3b", "34792458", "dea9ef66", "24666993", "eab74147", "da017427"],
+  // #1087: progress reads retained landing evidence; no RPC or producer changes.
+  "core/createWorkspaceProgress.js": ["68ae6185", "1d6bb1a3", "364b6cdb", "bc015a2b", "bffc9b97", "a787107a", "bc149796", "05d1fba0"],
+  // #1087: discard keeps its existing method and project selector, using the original
+  // creation operation ID retained in the retry draft. No new method or resource.
+  "core/createWorkspaceTargets.js": ["297d0462", "5d325e66", "c5a004b3", "9e2d419c", "ffbfe8fa", "31bd3676", "dbf5cace", "b368853a"],
   "core/writeOperationProgress.js": ["612c1fc7", "78d4b658", "fb001a3b", "01eb5aba", "a6a82b1a", "0389924d", "06c8355f", "bdae5355"],
   // #1085: optional name derivation/count labels only; existing RPC methods and dispatch edges are unchanged.
   "core/createWorkspaceWizardModel.js": ["6ab484d3", "d6995eee", "e6cbd8cb", "c0c56afc", "87962289", "d59cd8e8", "1c69e35a", "c75d28e5"],

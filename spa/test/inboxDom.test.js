@@ -964,6 +964,18 @@ const failedCapture = (over = {}) =>
   capture({ state: "failed", unread: true, unread_count: 1, unread_reason: "routing_failed", ...over });
 
 describe("captures on the rail", () => {
+  it("shows the archived-project recovery instruction from cache and clears it on restore", () => {
+    const projects = [
+      { ...project("project-1", "Archived"), archived_at: 1 },
+      { ...project("project-2", "Active elsewhere", "dev-2"), archived_at: null },
+    ];
+    const item = failedCapture();
+    feed([], projects, [item]);
+    expect(captureRowFor("cap-1").querySelector(".capture-status").textContent).toBe("Every project is archived; restore a project first.");
+    feed([], [{ ...projects[0], archived_at: null }, projects[1]], [item]);
+    expect(captureRowFor("cap-1").querySelector(".capture-status").textContent).toBe("Routing failed");
+  });
+
   it("restores and redraws the destination picker from real cache records", async () => {
     const { writeUiRecord } = await import("../src/core/localUiStore.js");
     const { uiAddress } = await import("../src/core/localUiState.js");

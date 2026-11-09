@@ -18,6 +18,8 @@ import {
   recentIsOpen,
   recentToggleHtml,
   cacheableEntityIds,
+  captureEntries,
+  captureStatusText,
   unreadReasonText,
 } from "../src/core/inbox.js";
 
@@ -919,6 +921,40 @@ const captureItem = (over = {}) => ({
 
 describe("capture rows", () => {
   const entryOf = (item) => listed([item])[0];
+
+  const archived = (deviceId, id) => ({ deviceId, id, projectKey: `${deviceId}/${id}`, archived_at: 1 });
+  const recovery = "Every project is archived; restore a project first.";
+  it.each([
+    ["all this device's projects archived", [archived("dev-1", "p1"), archived("dev-1", "p2")], recovery],
+    ["one active project", [archived("dev-1", "p1"), { ...archived("dev-1", "p2"), archived_at: null }], "Routing failed"],
+    ["empty projects", [], "Routing failed"],
+    ["another device has active projects", [archived("dev-1", "p1"), { ...archived("dev-2", "p1"), archived_at: null }], recovery],
+    ["only another device has archived projects", [archived("dev-2", "p1")], "Routing failed"],
+  ])("derives failed capture status and reason from cached projects: %s", (_scenario, projects, expected) => {
+    const item = captureItem({ state: "failed", unread: true, unread_reason: "routing_failed" });
+    const entries = [listed([item], { projects })[0], captureEntries([item], projects)[0]];
+    for (const entry of entries) {
+      expect(captureStatusText(entry)).toBe(expected);
+      expect(entry.reason).toBe(expected);
+    }
+  });
+
+  it("derives the failure reason using the stamped project key when deviceId is absent", () => {
+    const item = captureItem({ state: "failed", deviceId: undefined, projectKey: "dev-1/p1" });
+    const entry = captureEntries([item], [archived("dev-1", "p1"), { ...archived("dev-2", "p1"), archived_at: null }])[0];
+    expect(captureStatusText(entry)).toBe(recovery);
+    expect(entry.reason).toBe(recovery);
+  });
+
+  it("drops the recovery reason when a cached project is restored without changing the capture", () => {
+    const item = captureItem({ state: "failed", unread_reason: "routing_failed" });
+    const projects = [archived("dev-1", "p1")];
+    expect(captureEntries([item], projects)[0].reason).toBe(recovery);
+    const restored = captureEntries([item], [{ ...projects[0], archived_at: null }])[0];
+    expect(restored.reason).toBe("Routing failed");
+    expect(captureStatusText(restored)).toBe("Routing failed");
+    expect(item).not.toHaveProperty("reason");
+  });
 
   it("sort by the same anchor as everything else", () => {
     const entries = listed([branch({ anchor: ago(2) }), captureItem({ anchor: ago(40), last_activity: ago(1) })]);

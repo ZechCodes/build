@@ -468,21 +468,42 @@ describe("the advanced panel", () => {
     await vi.waitFor(() => expect(bridge.call).toHaveBeenCalledWith("branch.dispatch", expect.objectContaining({ project_id: "p2" })));
   });
 
-  it("updates project choices when the open panel's cached project becomes archived", async () => {
+  it.each(["archive", "rename"])("keeps the draft's full selection through a cached project %s", async change => {
     await openAdvanced();
     const text = type("#compose-text", "keep this draft while projects change");
     text.focus();
-    text.setSelectionRange(4, 4);
-    feedProjects[0] = { ...feedProjects[0], archived_at: 1 };
+    text.setSelectionRange(4, 9, "backward");
+    feedProjects[0] = { ...feedProjects[0], ...(change === "archive" ? { archived_at: 1 } : { name: "Renamed project" }) };
     subscriber(feedSnapshot());
-    expect([...document.querySelectorAll("#compose-project option")].map(option => option.value)).toEqual(["p2"]);
-    expect($("#compose-project").value).toBe("p2");
+    expect([...document.querySelectorAll("#compose-project option")].map(option => option.value)).toEqual(change === "archive" ? ["p2"] : ["p1", "p2"]);
+    expect($("#compose-project").value).toBe(change === "archive" ? "p2" : "p1");
     expect($("#compose-text").value).toBe("keep this draft while projects change");
     expect(document.activeElement).toBe($("#compose-text"));
     expect($("#compose-text").selectionStart).toBe(4);
+    expect($("#compose-text").selectionEnd).toBe(9);
+    expect($("#compose-text").selectionDirection).toBe("backward");
     const { readUiRecord } = await import("../src/core/localUiStore.js");
     const { uiAddress } = await import("../src/core/localUiState.js");
     await vi.waitFor(async () => expect((await readUiRecord(uiAddress({ deviceId: "dev-1", view: "compose", kind: "draft" })))?.value.value).toBe("keep this draft while projects change"));
+    $("#compose-cancel").click();
+  });
+
+  it.each(["archive", "rename"])("keeps the branch field's caret through a cached project %s", async change => {
+    await openAdvanced();
+    type("#compose-text", "keep this branch draft");
+    const branch = type("#compose-branch", "build/saved-branch");
+    branch.focus();
+    branch.setSelectionRange(6, 6, "forward");
+    feedProjects[0] = { ...feedProjects[0], ...(change === "archive" ? { archived_at: 1 } : { name: "Renamed project" }) };
+    subscriber(feedSnapshot());
+    expect(document.activeElement).toBe($("#compose-branch"));
+    expect($("#compose-branch").value).toBe("build/saved-branch");
+    expect($("#compose-branch").selectionStart).toBe(6);
+    expect($("#compose-branch").selectionEnd).toBe(6);
+    expect($("#compose-branch").selectionDirection).toBe("forward");
+    const { readUiRecord } = await import("../src/core/localUiStore.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    await vi.waitFor(async () => expect((await readUiRecord(uiAddress({ deviceId: "dev-1", view: "compose", kind: "draft" })))?.value.branch).toBe("build/saved-branch"));
     $("#compose-cancel").click();
   });
 

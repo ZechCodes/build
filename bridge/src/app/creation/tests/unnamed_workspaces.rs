@@ -149,8 +149,7 @@ fn git_source_fixture() -> Fixture {
         drop(repo);
     }
     // Reload the project now that its configured source has Git metadata.
-    let f = f.reopen();
-    f
+    f.reopen()
 }
 
 #[test]

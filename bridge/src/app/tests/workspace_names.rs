@@ -471,7 +471,10 @@ fn a_failure_before_the_send_keeps_the_workspace_name_ask() {
     };
     let connection = rusqlite::Connection::open(database).unwrap();
     connection.execute_batch("CREATE TRIGGER refuse_workspace_delivery BEFORE UPDATE ON thread_items WHEN json_extract(NEW.item, '$.data.delivery_status') = 'submitted' BEGIN SELECT RAISE(ABORT, 'injected pre-send failure'); END;").unwrap();
-    assert!(crate::app::deliver(&f.state, &turn, &timer).is_err());
+    let error = crate::app::deliver(&f.state, &turn, &timer)
+        .err()
+        .expect("the injected pre-send bookkeeping failure is returned");
+    assert!(error.contains("injected pre-send failure"), "{error}");
     assert!(f.log.turns().is_empty());
     assert_eq!(f.record()["waiting_for_name"], true);
     connection
@@ -547,5 +550,46 @@ fn a_workspace_name_claim_uses_memory_without_filesystem_probes() {
     assert_eq!(
         std::fs::read(f.root.join(crate::workspace::MANIFEST_FILE)).unwrap(),
         manifest
+    );
+}
+
+#[test]
+fn the_naming_tool_names_the_workspace_that_was_asked() {
+    let f = NamingWorkspace::new("");
+    let named = {
+        let mut app = f.state.lock().unwrap();
+        let named = app.workspaces.adopt_root(
+            &f.project,
+            "named-adopted-row".into(),
+            "A named adopted row".into(),
+            f.root.clone(),
+            "shared-root".into(),
+            false,
+        );
+        assert_eq!(
+            app.workspaces.list(Some(&f.project))[0].id,
+            named.id,
+            "the named row sorts first"
+        );
+        assert_eq!(
+            app.workspace_of_conversation(&f.owner),
+            Some(named.id.clone())
+        );
+        assert_eq!(
+            app.claim_workspace_name_request(&f.owner, &f.agent),
+            Some(f.workspace.clone()),
+            "the unnamed managed row is asked"
+        );
+        named
+    };
+    f.name("The actual workspace").unwrap();
+    let app = f.state.lock().unwrap();
+    let renamed = app.workspaces.get(&f.workspace).unwrap();
+    assert_eq!(renamed.name, "The actual workspace");
+    assert!(!renamed.waiting_for_name);
+    assert_eq!(
+        app.workspaces.get(&named.id).unwrap(),
+        &named,
+        "the earlier named row is unchanged"
     );
 }

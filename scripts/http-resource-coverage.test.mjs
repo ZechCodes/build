@@ -486,11 +486,11 @@ const sourceFingerprintParts = {
   "core/taskTimelinePages.js": ["da2840fb", "5992d7ce", "038bbc4d", "9c01a8ab", "c320a6f3", "7592e5be", "d5cbf08c", "4fcf8220"],
 
   "core/createWorkspaceProgress.js": ["a1043060", "ec8923a1", "4ee1bd97", "a1af57f7", "03cee83a", "20d21308", "519bc541", "533aa650"],
-  // #1085: optional name derivation/count labels only; existing RPC methods and dispatch edges are unchanged.
-  "core/createWorkspaceTargets.js": ["123a7b11", "3c2ede0f", "6843ee3b", "34792458", "dea9ef66", "24666993", "eab74147", "da017427"],
+  // #1088: project/workspace names are separate and blank workspace names are omitted; RPC methods and target dispatch edges remain unchanged.
+  "core/createWorkspaceTargets.js": ["9c6eaaf1", "4cfbc0b0", "dcd6e1af", "949b9771", "3bca6daa", "3cf486e0", "a4a57b71", "1c69eedc"],
   "core/writeOperationProgress.js": ["612c1fc7", "78d4b658", "fb001a3b", "01eb5aba", "a6a82b1a", "0389924d", "06c8355f", "bdae5355"],
-  // #1085: optional name derivation/count labels only; existing RPC methods and dispatch edges are unchanged.
-  "core/createWorkspaceWizardModel.js": ["6ab484d3", "d6995eee", "e6cbd8cb", "c0c56afc", "87962289", "d59cd8e8", "1c69e35a", "c75d28e5"],
+  // #1088: optionalProjectName derives the project label while the workspace draft name stays independent; RPC dispatch is unchanged.
+  "core/createWorkspaceWizardModel.js": ["a6bae4bf", "19b319c0", "cea9955e", "a048bad4", "6311bfc4", "5c457eca", "e507fe7e", "ac704d74"],
 };
 const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintParts)
   .map(([file, parts]) => [file, parts.join("")]));

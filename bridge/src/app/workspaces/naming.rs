@@ -69,7 +69,8 @@ impl AppState {
     ) -> Result<Value, String> {
         let name = crate::mcp::normalized_workspace_name(name)?;
         let workspace = self
-            .workspace_for_conversation(owner, None)
+            .workspace_for_name_request(owner)
+            .or_else(|| self.workspace_for_conversation(owner, None))
             .ok_or("set_workspace_name: you are not in a workspace")?;
         if !workspace.waiting_for_name {
             return Err(

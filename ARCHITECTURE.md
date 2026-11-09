@@ -3214,10 +3214,10 @@ the workspace's optional name and omits a blank workspace name on every path.
 The first delivered coding turn claims the workspace naming request once
 across its agents in memory. Claim and release perform no disk I/O. No turn
 waits because a workspace is unnamed. A still-unnamed workspace is asked again
-after a bridge restart, recovering a crash between claim and send. Fallible
-pre-send delivery bookkeeping finishes before the claim; a rejected provider
-write releases it. A successful rename clears both the persisted wait and the
-memory claim. `messages/workspace_name.md` asks for 2–4 words and carries
+after a bridge restart, recovering a crash between claim and send. A pre-send
+delivery bookkeeping error or rejected provider write releases the claim.
+Textless turns with no naming request leave unread legacy messages waiting.
+A successful rename clears both the persisted wait and the memory claim. `messages/workspace_name.md` asks for 2–4 words and carries
 `BuildTool::SetWorkspaceName` so on-demand harnesses load the tool. It composes
 with the agent-name note. Provider commands remain bare and project
 coordinators are exempt.
@@ -3323,7 +3323,9 @@ settings are retained, and the empty conversation opens in the same place.
 Coding agents have `set_workspace_name`, taking only `name`, for their own
 workspace when its creator left the name blank. It collapses whitespace and
 refuses empty labels, labels over 80 bytes, callers outside a workspace, and
-workspaces already named. It uses the ordinary `workspace.rename` path, with
+workspaces already named. It prefers the unnamed row selected for the naming
+request when several workspace rows share a root, then falls back to ordinary
+conversation ownership. It uses the ordinary `workspace.rename` path, with
 its busy checks and board-list notification, changing only the label and
 clearing the wait. A client rename clears that wait too, so an agent cannot
 overwrite the person's choice. This is an ordinary mutating control turn,

@@ -428,19 +428,22 @@ pub(in crate::app) fn deliver(
             legacy_payload.as_ref().map(|frozen| &frozen.payload),
             model_choice.provider,
         );
+        // Claim before the textless-turn guard, then release if pre-send
+        // bookkeeping fails. Workspace claims perform no disk I/O.
+        let names = NameRequests::claim(&mut s, owner, agent_id, kind);
+        if say.is_none() && names.is_empty() {
+            return Ok(DeliveryOutcome::Delivered(Some((wire_id, spawned))));
+        }
         if let Some(payload) = legacy_payload.as_ref() {
-            s.record_legacy_delivery_status(
+            if let Err(error) = s.record_legacy_delivery_status(
                 owner,
                 agent_id,
                 payload,
                 crate::thread::MessageDeliveryStatus::Submitted,
-            )?;
-        }
-        // Claim only after the last fallible pre-send bookkeeping. Workspace
-        // claims are memory-only, so restart recovers a crash before the send.
-        let names = NameRequests::claim(&mut s, owner, agent_id, kind);
-        if say.is_none() && names.is_empty() {
-            return Ok(DeliveryOutcome::Delivered(Some((wire_id, spawned))));
+            ) {
+                names.release(&mut s, owner, agent_id);
+                return Err(error);
+            }
         }
         (
             Arc::clone(&tab.session),

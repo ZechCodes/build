@@ -2625,6 +2625,37 @@ fn creation_progress_fixture_is_typed_and_nonterminal() {
 }
 
 #[test]
+fn environment_edit_contracts_stay_staged_and_strict() {
+    assert_eq!(API_VERSION, "3.38.0");
+    for method in [
+        "project.rename",
+        "environment.rename",
+        "environment.add_source",
+        "environment.remove_source",
+        "environment.update_source",
+        "environment.sync_source",
+        "environment.set_isolation",
+    ] {
+        let (_, handler) = v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap_or_else(|| panic!("missing staged method {method}"));
+        assert!(UNADVERTISED_CAPABILITIES.contains(&method));
+        assert!(!capabilities(false).contains(&method));
+        let fixture = read_json(&fixtures_root().join(format!("v1/{method}.json")));
+        assert_eq!(fixture["since"], "3.38.0");
+        handler.parse_params(&fixture["params"]).unwrap();
+        assert_eq!(
+            handler.round_trip_result(&fixture["result"]).unwrap(),
+            fixture["result"]
+        );
+        let mut invalid = fixture["params"].clone();
+        invalid["unknown_edit_param"] = serde_json::json!(true);
+        assert!(handler.parse_params(&invalid).is_err());
+    }
+}
+
+#[test]
 fn project_archive_wire_is_strict_additive_and_withheld() {
     assert_eq!(API_VERSION, "3.38.0");
     assert!(!capabilities(false).contains(&"projects.archive"));

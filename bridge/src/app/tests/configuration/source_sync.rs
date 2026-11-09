@@ -295,6 +295,19 @@ fn a_source_that_needed_you_waits_for_sync_now() {
         .unwrap(),
     );
 
+    // Environment sources now have their own timer/status keys. Mark both
+    // references as needing help so no other owner syncs the shared checkout.
+    let project = fixture.state.projects.get(&fixture.project_id).unwrap();
+    let environment = project.environment_id.clone();
+    let status = project.sources[0].sync_status.clone();
+    fixture
+        .state
+        .projects
+        .environment_mut(&environment)
+        .unwrap()
+        .sources[0]
+        .sync_status = status;
+
     let mut fixture = fixture.pass(SyncPass::Due);
     assert_eq!(head(&fixture.code, "main"), before);
     assert_eq!(fixture.row_source("source-1")["sync"]["needs_you"], true);

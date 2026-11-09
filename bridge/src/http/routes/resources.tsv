@@ -164,3 +164,10 @@ writes.status	POST	/v1/operation-status-queries
 writes.subscribe	POST	/v1/operation-subscriptions
 environment.create	POST	/v1/environments
 environment.discard_unused	POST	/v1/environments/{environment_id}/unused-discards
+project.rename	PATCH	/v1/projects/{project_id}
+environment.rename	PATCH	/v1/environments/{environment_id}
+environment.add_source	POST	/v1/environments/{environment_id}/sources
+environment.remove_source	DELETE	/v1/environments/{environment_id}/sources/{source_id}
+environment.update_source	PATCH	/v1/environments/{environment_id}/sources/{source_id}
+environment.sync_source	POST	/v1/environments/{environment_id}/sources/{source_id}/syncs
+environment.set_isolation	PUT	/v1/environments/{environment_id}/isolation

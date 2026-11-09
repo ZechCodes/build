@@ -53,7 +53,7 @@ impl AppState {
     pub(crate) fn apply_lifecycle(&mut self, outcome: LifecycleOutcome) -> Result<Value, String> {
         outcome.apply(self)
     }
-    fn lifecycle_job<T, S>(
+    pub(in crate::app) fn lifecycle_job<T, S>(
         &self,
         mut reservation: AppReservation,
         task: T,

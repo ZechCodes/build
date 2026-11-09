@@ -78,16 +78,17 @@ impl Fixture {
                 subject,
                 report,
                 start: None,
+                environments: None,
             }],
             now_ms,
         );
     }
 
     fn timer_takes_it(&mut self, now_ms: i64) -> bool {
-        !self
-            .state
+        self.state
             .source_sync_subjects(SyncPass::Due, now_ms)
-            .is_empty()
+            .iter()
+            .any(|subject| subject.project_id == self.project_id)
     }
 }
 
@@ -373,6 +374,7 @@ fn cut_settlement_does_not_request_sync_for_a_moved_source() {
                 fetched: true,
             },
             start: None,
+            environments: None,
         }],
         START_MS,
     );

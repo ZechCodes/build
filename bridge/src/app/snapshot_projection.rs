@@ -1,9 +1,16 @@
 //! Producer-owned observations and immutable wire projections. Expensive probes
 //! are captured by lifecycle work; publication consumes only owned observations.
 
+mod configuration;
+mod source_claims;
+mod source_publication;
+use source_publication::publish_source_observation;
+mod repository_refresh;
 use super::read_view::{ReadView, SnapshotDelta};
 use super::workspaces::ProjectionOwnership;
 use super::{AppState, ProjectListRow};
+pub(in crate::app) use repository_refresh::affected_repository_roots;
+pub(in crate::app) use repository_refresh::RepositoryRefresh;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -30,27 +37,61 @@ pub(in crate::app) struct SnapshotObservations {
     workspace_reviews: BTreeMap<String, WorkspaceReviewObservation>,
 }
 
+#[derive(Clone, Default)]
 pub(in crate::app) struct ProjectObservation {
     version: u64,
     value: Value,
+    source_versions: BTreeMap<(String, String, bool), u64>,
 }
 
 pub(in crate::app) struct ProjectSnapshotRefresh {
     version: u64,
     rows: Vec<ProjectListRow>,
     environments: Vec<environments::EnvironmentSnapshotRow>,
+    claims: Vec<crate::app::projects::ProjectSource>,
 }
 
+#[derive(Clone)]
 pub(in crate::app) struct RenderedProjectSnapshotRefresh {
     version: u64,
     rows: Vec<(ProjectListRow, Value)>,
     environments: Vec<(environments::EnvironmentSnapshotRow, Value)>,
+    claims: Vec<(crate::app::projects::ProjectSource, Result<Value, String>)>,
 }
 
 impl ProjectSnapshotRefresh {
+    /// Stamp the read, after any repository-lock wait, rather than the input
+    /// capture. Settlement can still prefer facts observed after this point.
+    pub(in crate::app) fn observe(
+        mut self,
+        clock: &super::read_view::ReadViewSlot,
+    ) -> RenderedProjectSnapshotRefresh {
+        self.version = clock.next_version();
+        self.render()
+    }
+
     pub(in crate::app) fn render(self) -> RenderedProjectSnapshotRefresh {
         RenderedProjectSnapshotRefresh {
             version: self.version,
+            claims: self
+                .claims
+                .into_iter()
+                .map(|source| {
+                    let value = if source.is_git {
+                        crate::worktree::git_origin_url_observed(&source.path)
+                            .map(|remote| source.wire_observed(json!(remote)))
+                            .map_err(|error| {
+                                format!(
+                                    "cannot observe source origin at {}: {error}",
+                                    source.path.display()
+                                )
+                            })
+                    } else {
+                        Ok(source.wire_observed(Value::Null))
+                    };
+                    (source, value)
+                })
+                .collect(),
             environments: self
                 .environments
                 .into_iter()
@@ -456,3 +497,14 @@ pub(in crate::app) mod work_counts;
 
 #[cfg(test)]
 pub(in crate::app) mod summary_counts;
+
+fn source_observation_inputs_match(
+    first: &[crate::app::projects::ProjectSource],
+    second: &[crate::app::projects::ProjectSource],
+) -> bool {
+    first.len() == second.len()
+        && first
+            .iter()
+            .zip(second)
+            .all(|(a, b)| a.id == b.id && a.path == b.path && a.is_git == b.is_git)
+}

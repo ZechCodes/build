@@ -2,44 +2,6 @@
 use super::*;
 
 impl AppState {
-    /// A repository mutation changes the origin shared by its references.
-    /// Refresh only those cached remotes; volume observations remain owned by
-    /// their off-lock producer. Recording the row also fences older refreshes.
-    pub(in crate::app) fn refresh_project_source_remote_observations(&self, roots: &[PathBuf]) {
-        for project in self.projects.iter().filter(|project| {
-            project
-                .sources
-                .iter()
-                .any(|source| roots.contains(&source.path))
-        }) {
-            let Some(mut value) = self
-                .snapshot_observations
-                .projects
-                .lock()
-                .unwrap()
-                .get(&project.id)
-                .map(|observation| observation.value.clone())
-            else {
-                continue;
-            };
-            refresh_source_remotes(&mut value, &project.sources, roots);
-            self.record_project_snapshot_observation(&project.id, &value);
-        }
-    }
-
-    pub(in crate::app) fn swap_project_snapshot_observation(
-        &self,
-        id: &str,
-        candidate: &mut Option<ProjectObservation>,
-    ) {
-        let mut observations = self.snapshot_observations.projects.lock().unwrap();
-        let previous = observations.remove(id);
-        if let Some(candidate) = candidate.take() {
-            observations.insert(id.to_owned(), candidate);
-        }
-        *candidate = previous;
-    }
-
     pub(in crate::app) fn capture_project_snapshot_observations(&self) -> Vec<ProjectListRow> {
         self.project_list_rows()
     }
@@ -50,16 +12,29 @@ impl AppState {
         rows: Vec<(String, Value)>,
     ) {
         let version = self.read_view.next_version();
-        *self.snapshot_observations.projects.lock().unwrap() = rows
-            .into_iter()
-            .map(|(id, value)| (id, ProjectObservation { version, value }))
-            .collect();
+        let current = self.project_list_rows();
+        let mut observations = self.snapshot_observations.projects.lock().unwrap();
+        for (id, value) in rows {
+            if let Some(row) = current.iter().find(|row| row.project_id == id) {
+                publish_source_observation(
+                    &mut observations,
+                    &id,
+                    ProjectObservation::new(version, value),
+                    &row.sources,
+                    &row.repo_path,
+                    true,
+                );
+            }
+        }
+        observations.retain(|id, _| current.iter().any(|row| row.project_id == *id));
     }
+
     pub(in crate::app) fn capture_project_snapshot_refresh(&self) -> ProjectSnapshotRefresh {
         ProjectSnapshotRefresh {
             version: self.read_view.next_version(),
             rows: self.project_list_rows(),
             environments: self.capture_environment_snapshot_rows(),
+            claims: vec![],
         }
     }
     pub(in crate::app) fn install_project_snapshot_refresh(
@@ -70,22 +45,17 @@ impl AppState {
         let current = self.project_list_rows();
         let mut observations = self.snapshot_observations.projects.lock().unwrap();
         for (row, value) in refresh.rows {
-            let unchanged = current.iter().any(|current| {
-                current.project_id == row.project_id
-                    && current.repo_path == row.repo_path
-                    && current.worktrees_root == row.worktrees_root
-                    && current.sources == row.sources
-            });
-            let newer = observations
-                .get(&row.project_id)
-                .is_none_or(|old| old.version < refresh.version);
-            if unchanged && newer {
-                observations.insert(
-                    row.project_id,
-                    ProjectObservation {
-                        version: refresh.version,
-                        value,
-                    },
+            if let Some(current) = current
+                .iter()
+                .find(|current| current.project_id == row.project_id)
+            {
+                publish_source_observation(
+                    &mut observations,
+                    &row.project_id,
+                    ProjectObservation::new(refresh.version, value),
+                    &current.sources,
+                    &current.repo_path,
+                    current.worktrees_root == row.worktrees_root,
                 );
             }
         }
@@ -112,15 +82,25 @@ impl AppState {
                 })
             })
     }
-    pub(in crate::app) fn record_project_snapshot_observation(&self, project: &str, value: &Value) {
-        self.snapshot_observations.projects.lock().unwrap().insert(
-            project.to_owned(),
-            ProjectObservation {
-                version: self.read_view.next_version(),
-                value: value.clone(),
-            },
+    pub(in crate::app) fn record_project_snapshot_observation(
+        &self,
+        project: &crate::app::projects::Project,
+        value: &Value,
+    ) {
+        // Registration renders its candidate before inserting it. Preserve those
+        // owned facts so publishing the candidate never needs a second probe.
+        // Existing owners still fence the evidence against their current inputs.
+        let current = self.projects.get(&project.id).unwrap_or(project);
+        publish_source_observation(
+            &mut self.snapshot_observations.projects.lock().unwrap(),
+            &project.id,
+            ProjectObservation::new(self.read_view.next_version(), value.clone()),
+            &current.sources,
+            &current.home_path,
+            true,
         );
     }
+
     pub(super) fn snapshot_account_availability(&self) -> Value {
         self.projects
             .iter()
@@ -156,21 +136,4 @@ impl AppState {
             .collect::<Vec<_>>();
         json!({"projects": projects})
     }
-}
-
-fn refresh_source_remotes(
-    value: &mut Value,
-    sources: &[crate::app::projects::ProjectSource],
-    roots: &[PathBuf],
-) {
-    let Some(rows) = value.get_mut("sources").and_then(Value::as_array_mut) else {
-        return;
-    };
-    for source in sources.iter().filter(|source| roots.contains(&source.path)) {
-        if let Some(row) = rows.iter_mut().find(|row| row["id"] == source.id) {
-            row["remote"] = json!(source.origin());
-        }
-    }
-    let remote = crate::app::projects::primary_remote(rows);
-    value["remote"] = remote;
 }

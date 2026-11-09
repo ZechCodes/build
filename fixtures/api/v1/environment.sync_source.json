@@ -1,0 +1,19 @@
+{
+  "method": "environment.sync_source",
+  "since": "3.38.0",
+  "params": {
+    "environment_id": "env-1",
+    "source_id": "source-1",
+    "source_path": "/home/ada/code/build"
+  },
+  "result": {
+    "pending": true
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "internal"
+  ],
+  "note": "Staged M3.2 contract; withheld from greetings until M3.3 ships the consumer."
+}

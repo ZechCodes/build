@@ -203,7 +203,17 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
 
 /// Known methods or features deliberately held out of greetings while a later
 /// slice finishes their end-to-end product surface.
-pub const UNADVERTISED_CAPABILITIES: &[&str] = &["project.archive", "project.restore"];
+pub const UNADVERTISED_CAPABILITIES: &[&str] = &[
+    "project.rename",
+    "environment.rename",
+    "environment.add_source",
+    "environment.remove_source",
+    "environment.update_source",
+    "environment.sync_source",
+    "environment.set_isolation",
+    "project.archive",
+    "project.restore",
+];
 
 /// Everything this bridge can serve on a session, as exact method names and
 /// explicit feature names. Sorting and deduplication make the greeting stable.
@@ -501,7 +511,7 @@ impl ApiError {
         if sentence.starts_with("unknown ") && !sentence.starts_with("unknown method") {
             return ApiError::not_found(message);
         }
-        if sentence.starts_with(crate::github::REFUSAL) {
+        if unavailable_refusal(sentence) {
             return ApiError::unavailable(message);
         }
         // A refusal a deferred verb decided under the lock after its work ran
@@ -611,6 +621,11 @@ pub fn reply(id: Value, result: Result<Value, ApiError>) -> Value {
         Ok(result) => json!({ "id": id, "ok": true, "result": result }),
         Err(error) => error.into_reply(id),
     }
+}
+
+fn unavailable_refusal(sentence: &str) -> bool {
+    sentence.starts_with(crate::github::REFUSAL)
+        || sentence.starts_with("Rift isolation is unavailable")
 }
 
 #[cfg(test)]

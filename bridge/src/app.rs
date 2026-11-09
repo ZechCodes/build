@@ -420,6 +420,10 @@ pub struct AppState {
     /// prove the mutex is free.
     #[cfg(test)]
     off_lock_project_list_gate: Option<OffLockGate>,
+    #[cfg(test)]
+    off_lock_environment_probe_gate: Option<OffLockGate>,
+    #[cfg(test)]
+    off_lock_repository_publication_gate: Option<OffLockGate>,
     /// Pause a terminal create after RPC admission, before its spawn guard.
     #[cfg(test)]
     terminal_create_admission_gate: Option<OffLockGate>,
@@ -776,6 +780,10 @@ impl AppState {
             inline_deferred: false,
             #[cfg(test)]
             off_lock_project_list_gate: None,
+            #[cfg(test)]
+            off_lock_environment_probe_gate: None,
+            #[cfg(test)]
+            off_lock_repository_publication_gate: None,
             #[cfg(test)]
             terminal_create_admission_gate: None,
             #[cfg(test)]

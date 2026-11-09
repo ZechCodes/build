@@ -537,7 +537,12 @@ impl ProjectListRow {
             .map(|source| {
                 let remote = observed
                     .and_then(|row| row["sources"].as_array())
-                    .and_then(|sources| sources.iter().find(|row| row["id"] == source.id))
+                    .and_then(|sources| {
+                        sources.iter().find(|row| {
+                            row["id"] == source.id
+                                && row["path"] == source.path.display().to_string()
+                        })
+                    })
                     .map(|row| row["remote"].clone());
                 source.wire_observed(remote.unwrap_or(Value::Null))
             })

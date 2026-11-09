@@ -138,6 +138,17 @@ fn cleared_project_override_inherits_environment_default_after_reload() {
             .isolation,
         Isolation::Rift
     );
+    assert_eq!(
+        reloaded
+            .decide_isolation(
+                reloaded.project_for("proj-1").unwrap(),
+                &crate::isolation::IsolationAvailability::unavailable(
+                    "unavailable in this fixture"
+                ),
+            )
+            .isolation,
+        Isolation::Worktree
+    );
 }
 
 #[test]
@@ -182,7 +193,11 @@ fn cleared_project_override_inherits_device_default_without_environment_override
     );
 }
 
-fn rpc(app: &mut AppState, method: &str, params: serde_json::Value) -> serde_json::Value {
+pub(super) fn rpc(
+    app: &mut AppState,
+    method: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
     app.handle(crate::app::Frame {
         session_id: "test".into(),
         message_id: "test".into(),
@@ -193,7 +208,7 @@ fn rpc(app: &mut AppState, method: &str, params: serde_json::Value) -> serde_jso
     })
 }
 
-fn state(root: &std::path::Path) -> AppState {
+pub(super) fn state(root: &std::path::Path) -> AppState {
     let context =
         crate::harness::HarnessContext::resolved(root.join("mcp.sock"), root.join("state"))
             .unwrap();

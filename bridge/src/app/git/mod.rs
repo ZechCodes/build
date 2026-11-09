@@ -629,12 +629,15 @@ impl AppState {
         invalidates: bool,
     ) -> Value {
         let registry_change = invalidates && scope.changes_device_registry();
+        let scope_has_repository = scope.mutation_path().is_some();
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(ScopedGitCall {
                 scope,
                 work,
                 serialized: invalidates,
                 state: self.source_validation_handle(),
+                environments: (invalidates && scope_has_repository)
+                    .then(|| self.capture_repository_refresh()),
             }),
             params: params.clone(),
             invalidates,
@@ -782,45 +785,6 @@ impl AppState {
             let project_id = worktree.project_id.clone();
             self.rescan_external_worktrees(&project_id);
         }
-    }
-
-    /// Git mutations are repository facts shared by every reference to a
-    /// checkout, including linked workspace directories. Source reference
-    /// identity remains the canonical directory; only Git's effects fan out
-    /// through the common Git directory, just as its serialization does.
-    pub(in crate::app) fn invalidate_shared_repository_views(&self, root: &std::path::Path) {
-        let repository = crate::source_sync::sync_lock_identity(root);
-        let mut roots: Vec<_> = self
-            .worktree_roots()
-            .into_values()
-            .chain(
-                self.workspaces
-                    .list(None)
-                    .into_iter()
-                    .flat_map(|workspace| {
-                        workspace
-                            .directories
-                            .iter()
-                            .map(|directory| directory.path.clone())
-                    }),
-            )
-            .filter(|path| crate::source_sync::sync_lock_identity(path) == repository)
-            .collect();
-        // The owner can have gone away while Git was running. Its old root
-        // still fences any observation already in flight against that checkout.
-        roots.push(root.to_path_buf());
-        roots.sort();
-        roots.dedup();
-        for path in &roots {
-            self.invalidate_snapshot_checkout_observations(path);
-            self.note_git_at(path);
-        }
-        self.refresh_project_source_remote_observations(&roots);
-        self.note_board_lists_changed(crate::changes::BoardLists {
-            projects: true,
-            workspaces: true,
-            ..Default::default()
-        });
     }
 
     /// `git.fetch` — `git fetch --prune`, then the fresh status payload.

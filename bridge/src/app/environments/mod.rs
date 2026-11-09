@@ -7,10 +7,9 @@
 //! that project; opaque sibling keys are ignored. Roll forward after that point.
 //! `frozen_legacy_loader` pins this behavior without depending on today's loader.
 //!
-//! Migration keeps the project isolation copy for legacy/downgrade compatibility
-//! and copies it into the environment for future environment consumers. M0.1
-//! mirrors setting/clearing both copies while environments are one-to-one, so
-//! clearing still restores the device default. Parked projects migrate at once;
+//! Migration retains the project isolation copy for downgrade compatibility.
+//! Project and environment overrides are independent; clearing a project choice
+//! inherits the environment, then the device. Parked projects migrate at once;
 //! their raw source references are retained even while their folders are away.
 //! Unavailable references stay stored, but live project projections and workspace
 //! cuts include only the directories the legacy loader could open. Refreshing
@@ -36,3 +35,24 @@ pub(in crate::app) struct Environment {
     pub(in crate::app) next_source: u64,
     pub(in crate::app) isolation: Option<Isolation>,
 }
+
+#[cfg(test)]
+mod edit_tests;
+
+mod edits;
+mod source_add;
+mod source_edits;
+
+#[cfg(test)]
+mod review_tests;
+
+mod configuration;
+
+#[cfg(test)]
+mod publication_review_tests;
+
+#[cfg(test)]
+mod source_add_review_tests;
+
+#[cfg(test)]
+mod archive_edit_tests;

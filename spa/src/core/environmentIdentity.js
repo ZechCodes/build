@@ -40,8 +40,11 @@ function badgeHue(key) {
 }
 
 function badgeLetters(name) {
-  const letters = String(name || "").toUpperCase().match(/\p{L}/gu) || [];
-  return letters.slice(0, 2).join("") || "?";
+  const letters = String(name || "").match(/\p{L}/gu) || [];
+  return letters.slice(0, 2).map(letter => {
+    const uppercase = letter.toUpperCase();
+    return Array.from(uppercase).length === 1 ? uppercase : letter;
+  }).join("") || "?";
 }
 
 /** One existing sixteen-pixel SVG slot; cached identity alone determines paint.

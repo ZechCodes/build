@@ -35,7 +35,7 @@ describe("identityBadgeHtml", () => {
       .toBe(identityBadgeHtml({ key: "laptop/proj-1", name: "Legacy" }));
   });
 
-  it.each([["alpha beta", "AL"], [" a ", "A"], ["123", "?"], ["🛠", "?"], ["", "?"], ["123 café", "CA"], ["文档", "文档"], ["ßa", "SS"]])("uses the first two uppercase letters of %j", (name, expected) => {
+  it.each([["alpha beta", "AL"], [" a ", "A"], ["123", "?"], ["🛠", "?"], ["", "?"], ["123 café", "CA"], ["文档", "文档"], ["ßa", "ßA"], ["ß", "ß"]])("selects two source letters before uppercasing each without expansion: %j", (name, expected) => {
     expect(badge(name).textContent).toBe(expected);
   });
 

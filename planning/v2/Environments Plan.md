@@ -1069,8 +1069,10 @@ Two layers, kept apart:
   `deviceKey(device, environmentId)` modulo 12 over tokens `--badge-1…12`.
   `core/theme.js` installs both themes' tokens and `--badge-ink`, and owns all
   badge colour values. The glyph is the first two Unicode letters of the row's
-  name, uppercased (one letter stays one; no letters gives `?`). Siblings share
-  hue and differ by glyph. Replaces the kind glyph in its existing 16px SVG
+  name, each uppercased only if its uppercase form is one code point; expanding
+  letters keep their original form (`ßa` → `ßA`, `ß` → `ß`). One letter stays
+  one; no letters gives `?`. Siblings share hue and differ by glyph.
+  Replaces the kind glyph in its existing 16px SVG
   slot, so no layout moves. A draft or legacy row without an environment id
   uses its device-qualified row id; progress adopts the persisted environment
   id as soon as it appears in the cached operation outcome.

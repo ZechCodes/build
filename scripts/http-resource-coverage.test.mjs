@@ -306,7 +306,8 @@ const sourceFingerprintParts = {
   // #997 runtime-board captureDecisionView.js:142: branch choices join cached runtime run bodies; existing RPC and mutation dispatch unchanged.
   "core/captureDecisionView.js": ["15299f0a", "f1762e74", "8af22269", "0f16e798", "ccf8e367", "d2d759e2", "554ce8fc", "002692f1"],
   // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
-  "core/changeEvents.js": ["ef9ffe44", "100e1bbc", "b3dcc3e6", "611a2970", "86fcb186", "fb259289", "722d1e9a", "405fa418"],
+  // #1065: concrete hello gates cached capability evidence; greeting refusal still disarms. RPC edges are unchanged.
+  "core/changeEvents.js": ["7a5a12c1", "08e2b234", "12c12ff8", "ebbe2a0a", "035a3080", "d087fd5d", "51c1bd0e", "33636419"],
   "core/changesComments.js": ["7a5e0b06", "c47bf122", "ac5370b8", "debd8dc8", "388227b8", "f9ea1623", "d413134a", "635a2a7d"],
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],

@@ -117,10 +117,11 @@ export async function createLegacyWorkspace(input) {
   await cacheCreatedWorkspace(input.target.deviceId,answer);
   return route;
 }
-export async function discardCreatedProject({target,project,operationId}) {
+export async function discardCreatedProject({target,project,operationId,record}) {
   const projectId=project.project_id || project.id;
   const method=requireRecoveryMethod(target.deviceId,'discard');
-  await deviceCall(target.deviceId,'discard this project')(method,{project_id:projectId,creation_operation_id:operationId});
+  const creationOperationId=record?.draft?.landed?.creationOperationId || operationId;
+  await deviceCall(target.deviceId,'discard this project')(method,{project_id:projectId,creation_operation_id:creationOperationId});
   await mergeCachedAtomically(listAddress(target.deviceId,'projects'),held=>(held || []).filter(row=>(row.project_id || row.id)!==projectId));
 }
 

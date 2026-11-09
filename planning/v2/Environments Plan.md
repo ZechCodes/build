@@ -574,7 +574,7 @@ same command so `writes.status` for the one id reports where it stands:
   outcome lists exactly what exists, and the offered actions depend on the
   **last successful step**:
   - *nothing landed* (the environment or project config step itself was
-    refused): "Nothing was created." Back to the wizard with the **draft
+    refused): "Nothing was created: <refusal>". Back to the wizard with the **draft
     intact**; Create submits a fresh attempt.
   - *environment landed, project did not* (M2): the environment exists with
     **no projects** and is shown as such in settings and page 1 ("no
@@ -596,6 +596,11 @@ same command so `writes.status` for the one id reports where it stands:
     `project.delete {confirm: true}` for any project, with the confirmation,
     refusals and destructive scope described at M1. The new deletion flow
     with explicit task handling remains planned for Stage 2.
+    Workspace retries retain the landed project and any environment created
+    in this run in their durable SPA operation drafts, along with the original
+    project-creation operation id for Discard. Every failed retry, including
+    after reload, names those resources and shows the latest attempt's error
+    with the same three actions.
   - *workspace candidate left behind* (rollback itself failed): the attempt
     is **not terminal yet**. It enters a non-terminal **reconciliation**
     state whose journal row persists the residual-resource evidence (the
@@ -963,7 +968,7 @@ survives reload and appears in any tab that reads the same record.
 - *Failed*: the refusal text verbatim under the failed step; what landed is
   listed; actions per 2.3 (Try the workspace again / Keep it / Discard this
   project when allowed). Config-step failure before anything landed: "Nothing
-  was created." with Back to the wizard (drafts intact).
+  was created: <refusal>" with Back to the wizard (drafts intact).
 - *Checking…*: "Build lost the reply; checking what happened" with no retry
   button; resolves on `writes.status`. Reconnect banner is the ordinary one.
 - *Close* detaches (2.3). Keyboard: Esc = Close; focus lands on the first

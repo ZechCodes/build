@@ -70,7 +70,7 @@ describe("workspace creation progress", () => {
   });
   it("failure before any step landed restores the wizard draft", async () => {
     const onBack = vi.fn(); open(operation({ state: "failed", confirmation: { error: "permission refused", effect: "unapplied" } }), { onBack });
-    expect(document.body.textContent).toContain("Nothing was created."); document.querySelector('[data-progress-action="back"]').click(); await flush();
+    expect(document.body.textContent).toContain("Nothing was created: permission refused"); document.querySelector('[data-progress-action="back"]').click(); await flush();
     expect(onBack).toHaveBeenCalledWith(expect.objectContaining({ operationId: "attempt-1" }));
   });
   it("uses a single workspace step for an existing project", () => {

@@ -21,7 +21,9 @@ function operationError(record) {
 function resourcesOf(record) {
   const result = operationResult(record);
   const details = operationError(record)?.details || {};
-  return { environment: result.environment || details.environment || null, project: result.project || details.project || null,
+  const landed = record?.draft?.landed || {};
+  const resource = name => result[name] || details[name] || landed[name] || null;
+  return { environment: resource("environment"), project: resource("project"),
     workspace: result.workspace || bareWorkspace(result) };
 }
 
@@ -104,7 +106,7 @@ function outcomeMessage(phase, {environment, project}, error) {
   if (phase === "checking") return "Build lost the reply; checking what happened";
   if (phase !== "failed") return "";
   if (!project && environment) return `Environment ${environment.name || environment.environment_id} was created with no projects yet: ${error}`;
-  if (!project) return "Nothing was created.";
+  if (!project) return `Nothing was created: ${error}`;
   const prefix = environment ? `Environment ${environment.name || environment.environment_id} was created. ` : "";
   return `${prefix}Project ${project.name || project.id} was created. Its workspace was not: ${error}`;
 }

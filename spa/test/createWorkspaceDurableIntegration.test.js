@@ -197,14 +197,15 @@ it('a repeated failure after environment.create names the environment and the pr
  expect(query('[role="status"]').textContent).toBe(`Environment API was created. ${projectFailure('second checkout refused')}`);
 });
 it('a reopened repeated failure still names what landed',async()=>{
- await failedCreation(fullSupport,'project');
+ const original=await failedCreation(fullSupport,'project');
  const id=await failWorkspaceRetry('latest recovered error');
  await screen.close();screen=null;await mocks.service.close();await startService();
+ expect((await cache.get(id)).draft.landed).toMatchObject({project:{project_id:'landed-project',name:'Ship'},environment:{environment_id:'landed-env',name:'API'},creationOperationId:original});
  await open({deviceId:'d1'});await progressScreens.at(-1).ready;
  expect(mocks.progress.mock.calls.at(-1)[0].operationId).toBe(id);
  expect(query('[role="status"]').textContent).toBe(`Environment API was created. ${projectFailure('latest recovered error')}`);
  click('[data-progress-action="discard"]');
- await vi.waitFor(()=>expect(mocks.legacy).toHaveBeenCalledWith('project.discard_unused',expect.objectContaining({project_id:'landed-project'})));
+ await vi.waitFor(()=>expect(mocks.legacy).toHaveBeenCalledWith('project.discard_unused',{project_id:'landed-project',creation_operation_id:original}));
 });
 it('a repeated failure keeps retry keep and discard on the landed project',async()=>{
  const original=await failedCreation(fullSupport,'project','environment.create_project');

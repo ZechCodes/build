@@ -69,3 +69,10 @@ it("keeps cached ownership capability evidence when a greeting is refused", asyn
   await expect(greetBridge(async () => { throw new Error("unknown method: session.hello"); }, { deviceId: "dev-1", strict: true })).resolves.toBe(false);
   expect((await readCached(environmentSupportAddress("dev-1"))).value).toEqual(before);
 });
+
+it("enables archive and both rename actions from the released greeting fixture", async () => {
+  await greet(greetingFixture.result.capabilities);
+  await vi.waitFor(async () => expect(await readEnvironmentSupport("dev-1")).toMatchObject({
+    archive: true, projectRename: true, environmentRename: true,
+  }));
+});

@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.38.0",
+    "api_version": "3.39.0",
     "ack_confirm_methods": [
       "environment.create",
       "environment.create_project",
@@ -55,12 +55,19 @@
       "entity.dismiss",
       "entity.mute",
       "entity.seen",
+      "environment.add_source",
       "environment.create",
       "environment.create_project",
       "environment.discard_unused",
       "environment.list",
+      "environment.remove_source",
+      "environment.rename",
+      "environment.set_isolation",
+      "environment.sync_source",
+      "environment.update_source",
       "environments",
       "environments.create",
+      "environments.rename",
       "errors.codes",
       "fs.createDirectory",
       "fs.createFile",
@@ -107,6 +114,7 @@
       "params.strict",
       "ping",
       "project.add_source",
+      "project.archive",
       "project.create",
       "project.delete",
       "project.discard_unused",
@@ -114,12 +122,16 @@
       "project.init_git",
       "project.list",
       "project.remove_source",
+      "project.rename",
+      "project.restore",
       "project.set_compaction",
       "project.set_isolation",
       "project.set_remote",
       "project.sync_source",
       "project.update_source",
       "projects.addedSources",
+      "projects.archive",
+      "projects.rename",
       "push.registerKey",
       "push.revokeKey",
       "requests.priority",
@@ -377,6 +389,14 @@
       "tasks.review.since",
       "git.showPaths",
       "tasks.review.anchorCommit"
+    ]
+  },
+  "environment_settings": {
+    "since": "3.39.0",
+    "capabilities": [
+      "projects.archive",
+      "projects.rename",
+      "environments.rename"
     ]
   }
 }

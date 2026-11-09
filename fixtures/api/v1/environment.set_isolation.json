@@ -1,6 +1,6 @@
 {
   "method": "environment.set_isolation",
-  "since": "3.38.0",
+  "since": "3.39.0",
   "params": {
     "environment_id": "env-1",
     "isolation": null
@@ -37,5 +37,5 @@
     "unavailable",
     "internal"
   ],
-  "note": "Staged M3.2 contract; withheld from greetings until M3.3 ships the consumer."
+  "note": "Released in 3.39.0 with the environment settings consumer."
 }

@@ -2,11 +2,11 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { setImmediate as nextTask } from "node:timers/promises";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-const mocks = vi.hoisted(() => ({ read: vi.fn(), submit: vi.fn(), legacy: vi.fn(), progress: vi.fn(), navigate: vi.fn(), consume:vi.fn(), cache:vi.fn(), route:vi.fn(), service:null }));
+const mocks = vi.hoisted(() => ({ read: vi.fn(), submit: vi.fn(), legacy: vi.fn(), progress: vi.fn(), navigate: vi.fn(), consume:vi.fn(), cache:vi.fn(), route:vi.fn(), follow:null, service:null }));
 vi.mock("../src/core/writeOperationRuntime.js",async original=>({...await original(),deviceWriteOperations:()=>mocks.service}));
 vi.mock("../src/app.js", () => ({ go: mocks.navigate }));
 vi.mock("../src/core/createWorkspaceTargets.js", () => ({
-  readCreateWorkspaceTargets: mocks.read, followCreateWorkspaceTargets: () => () => {},
+  readCreateWorkspaceTargets: mocks.read, followCreateWorkspaceTargets: listener => {mocks.follow=listener;return () => {};},
   submitCreateWorkspace: mocks.submit, createLegacyWorkspace: mocks.legacy,
   taskCountText: (open, total) => open > 0 ? `${open} open tasks` : `${total || 0} tasks`,
   cacheCreatedWorkspace: vi.fn(), cacheCreatedResources:mocks.cache, createdWorkspaceRoute:mocks.route, discardCreatedProject: vi.fn(), consumeCreateWorkspaceAttempt:mocks.consume,
@@ -329,4 +329,23 @@ it('uses the lowest free derived name across cached siblings when creating a pro
  const held=snapshot();held.projects.push({id:'collision',deviceId:'d1',environment_id:'e1',name:'Platform'},{id:'third',deviceId:'d1',environment_id:'e1',name:'Platform 3'});mocks.read.mockResolvedValue(held);
  await open({fixedProject:false});clickTarget('environment');dialog().querySelector('[data-create-go]').click();
  await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));expect(mocks.submit.mock.calls[0][0].name).toBe('Platform 2');
+});
+
+it.each(['insert','remove','reorder'])('restores focused row identity on cache %s rather than reusing its index',async change=>{
+ const held=snapshot();held.projects.push({id:'p2',deviceId:'d1',name:'Second',sources:[]});mocks.read.mockResolvedValue(held);
+ await open({fixedProject:false});
+ const focused=dialog().querySelector('[data-create-target]');focused.focus();
+ if(change==='insert')held.projects.unshift({id:'p0',deviceId:'d1',name:'Inserted',sources:[]});
+ if(change==='remove')held.projects.shift();
+ if(change==='reorder')held.projects.reverse();
+ mocks.follow();
+ await vi.waitFor(()=>expect(focused.isConnected).toBe(false));
+ await vi.waitFor(()=>{
+  if(change==='remove')expect(document.activeElement.id).toBe('create-workspace-search');
+  else expect(document.activeElement.textContent).toContain('Payments');
+ });
+ if(change!=='remove'){
+  document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+  expect(dialog().querySelector('.create-target-summary').textContent).toContain('Payments');
+ }
 });

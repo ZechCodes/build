@@ -141,7 +141,7 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
       name: "Ship wizard", isolation: "", showAdvanced: true, advancedExpanded: true, addedSources: wizardFolders,
       folderReferences: { environments: [{ deviceId: device.id, name: "Tools", sources: [{ path: "/code/shared" }] }] },
     });
-    m.create.placeWizardAdvanced(root);
+    m.create.wireWizardAdvanced(root);
   }
   if (name === "task controls") {
     const task = { id: "task-1", state: "open", status: "backlog", priority: "medium", labels: [] };

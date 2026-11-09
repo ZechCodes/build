@@ -1821,10 +1821,11 @@ uses the same executor without the project step (see
 
 The SPA wizard (`createWorkspaceWizard.js`, with page rendering in
 `createWorkspaceWizardRender.js`) combines selection and optional workspace
-naming on page 1. Search and footer actions stay pinned while targets and
-expanded Advanced controls share the middle scroll region. The native details
-summary controls an explicitly labelled region moved into that scroller at
-mount; it stays available in the footer. Page 2 edits a local new-environment
+naming on page 1. Search and footer actions stay pinned while targets scroll
+in the middle region. Advanced is one native details
+element in the footer: its body stays directly below its summary, has a capped
+height and scrolls independently. The list shrinks to keep pinned controls
+visible when Advanced opens. Page 2 edits a local new-environment
 draft, and Use environment selects it back on page 1. Existing page-3 drafts
 migrate to page 1 on restore. For environment targets the SPA supplies a blank
 name from the target name with the lowest free cached sibling suffix; the

@@ -20,7 +20,7 @@ export function wizardTargets(state) {
 }
 function targetHtml(target,index,state) {
   const selected=sameTarget(target,state.target);
-  return `<div class="create-target-row"><button type="button" class="create-target" data-create-target="${index}" data-kind="${target.kind}" aria-pressed="${selected}"${state.busy ? ' disabled':''}>
+  return `<div class="create-target-row"><button type="button" class="create-target" data-create-target="${index}" data-kind="${target.kind}" data-create-key="${esc(target.key || `${target.deviceId}/${target.id}`)}" aria-pressed="${selected}"${state.busy ? ' disabled':''}>
     ${glyph(target.kind)}<span class="create-target-copy"><span>${esc(target.label || target.name)}</span><span class="sub">${esc(target.description || 'Creates a new task board')}${target.empty ? ' · Resume…' : ''}</span></span>${deviceHtml(target)}<span class="create-selected" aria-hidden="true">${selected ? '✓':''}</span></button>
     ${target.kind==='new-environment' ? `<button type="button" class="btn" data-create-edit${state.busy ? ' disabled':''} aria-label="Edit new environment">Edit</button>`:''}</div>`;
 }
@@ -85,25 +85,13 @@ export function createWorkspaceWizardBodyHtml(state) {
 export function createWorkspaceWizardHtml(state) {
   return modalDialogHtml(createWorkspaceWizardBodyHtml(state),{className:'modal-create create-workspace-sheet create-workspace-wizard'});
 }
-// The disclosure stays in the pinned footer; its controlled region shares the
-// list's scroll container so expanding it never pushes the actions off screen.
-export function placeWizardAdvanced(body,onToggle=()=>{},busy=false) {
+export function wireWizardAdvanced(body,onToggle=()=>{},busy=false) {
   const details=body.querySelector('[data-create-advanced]');
   if(!details)return;
-  const content=body.querySelector('#create-advanced-body');
-  const scroll=body.querySelector('[data-create-scroll]');
-  scroll.appendChild(content);
   let wasOpen=details.open;
-  content.hidden=!wasOpen;
-  const sync=()=>{
-    content.hidden=!details.open;
+  details.querySelector('summary').onclick=event=>{if(busy)event.preventDefault();};
+  details.ontoggle=()=>{
     if(wasOpen===details.open)return;
     wasOpen=details.open;onToggle(wasOpen);
-    if(wasOpen)scroll.scrollTop+=content.getBoundingClientRect().top-scroll.getBoundingClientRect().top;
   };
-  details.querySelector('summary').onclick=event=>{
-    event.preventDefault();if(busy)return;
-    details.open=!details.open;sync();
-  };
-  details.ontoggle=sync;
 }

@@ -21,7 +21,6 @@ export function draftEnvironmentTarget(draft, devices) {
   const name = draft.name.trim() || draft.sources[0]?.name || 'New environment';
   return {kind:'new-environment',id:'draft',key:`${draft.deviceId}/draft`,deviceId:draft.deviceId,
     name,label:`${name} (new)`,summaryLabel:`${name} (new environment)`,sources:draft.sources,
-    offline:devices.find(row => row.id===draft.deviceId)?.status==='offline',
     deviceLabel:devices.length > 1 ? devices.find(row => row.id === draft.deviceId)?.name || draft.deviceId : ''};
 }
 export function environmentDraftError(draft) {
@@ -41,9 +40,10 @@ export function wireEnvironmentDraft(host, state, {save,paint,fail}) {
   host.querySelector('#create-environment-isolation').onchange = event => {draft.isolation=event.target.value;save();};
   const device = host.querySelector('#create-environment-device');
   if (device) device.onchange = () => {
+    if(draft.deviceId===device.value)return;
     draft.deviceId=device.value;
     draft.sources.forEach(source => {if(source.kind==='path')source.path='';});
-    state.addedSources=[];changed();paint();
+    changed();paint();
   };
 }
 

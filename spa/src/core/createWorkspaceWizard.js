@@ -8,8 +8,8 @@ import { openModal } from './modal.js';
 import { branchNamePreview } from './toolbarModel.js';
 import { uiAddress, watchUiState, updateUiState } from './localUiState.js';
 import { readUiRecord, deleteUiDraftsIfUnwritten } from './localUiStore.js';
-import { createWorkspaceWizardBodyHtml, createWorkspaceWizardHtml, placeWizardAdvanced, workspaceSourcesHtml, targetText, wizardTargets, sameTarget } from './createWorkspaceWizardRender.js';
-export { createWorkspaceWizardBodyHtml, createWorkspaceWizardHtml, createWorkspaceTargetSummaryHtml, placeWizardAdvanced } from './createWorkspaceWizardRender.js';
+import { createWorkspaceWizardBodyHtml, createWorkspaceWizardHtml, wireWizardAdvanced, workspaceSourcesHtml, targetText, wizardTargets, sameTarget } from './createWorkspaceWizardRender.js';
+export { createWorkspaceWizardBodyHtml, createWorkspaceWizardHtml, createWorkspaceTargetSummaryHtml, wireWizardAdvanced } from './createWorkspaceWizardRender.js';
 import { optionalWorkspaceName, createWorkspaceWizardModel } from './createWorkspaceWizardModel.js';
 import { openCreateWorkspaceProgress } from './createWorkspaceProgress.js';
 import { openCreateWorkspaceLegacy } from './createWorkspaceLegacy.js';
@@ -42,11 +42,12 @@ function initialFocusSelector(state,name=false) {
 function rememberWizardFocus(body) {
   const focused=document.activeElement;
   if(!body.contains(focused))return {};
-  return {id:focused.id,row:focused.dataset.createTarget,selection:focused.selectionStart};
+  return {id:focused.id,kind:focused.dataset.kind,key:focused.dataset.createKey,selection:focused.selectionStart};
 }
-function restoreWizardFocus(body,{id,row,selection}) {
-  const selector=id ? `#${id}`:row !== undefined ? `[data-create-target="${row}"]`:null;
-  const restored=selector && body.querySelector(selector);
+function restoreWizardFocus(body,{id,kind,key,selection}) {
+  let restored=id && body.querySelector(`#${id}`);
+  if(key)restored=[...body.querySelectorAll('[data-create-target]')].find(row=>row.dataset.kind===kind && row.dataset.createKey===key)
+    || body.querySelector('#create-workspace-search');
   if(!restored)return;
   restored.focus({preventScroll:true});
   if(restored.type==='text' && selection!=null)restored.setSelectionRange(selection,selection);
@@ -147,7 +148,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     if(!value || detached || JSON.stringify(value) === JSON.stringify(draftOf(state))) return;
     Object.assign(state,value);if(state.page===3)state.page=1;updateModel();paint();
   }
-  function save() {void draft.write(draftOf(state));}
+  function save() {syncEnvironmentTarget();void draft.write(draftOf(state));}
   function dispose() {if(detached)return;detached=true;stop();draft.dispose();}
   async function detach() {await draft.flush();dispose();await modal.close();}
   async function cancelled() {
@@ -169,11 +170,17 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     state.sections=model.sections;state.emptyText=model.emptyText;state.legacyNote=model.legacyNote;state.newEnvironmentDevices=model.newEnvironmentDevices;state.folderReferences=snapshot;
     if(!state.target && model.target){state.target=model.target;state.page=1;}
     if(state.target) refreshTarget(model);
-    if(state.environmentDraft?.sources.length)state.draftTarget=draftEnvironmentTarget(state.environmentDraft,snapshot.devices);
     updateAdvanced();
   }
+  function syncEnvironmentTarget() {
+    state.draftTarget=draftEnvironmentTarget(state.environmentDraft,snapshot.devices);
+    if(state.target?.kind==='new-environment'){
+      changeAddedDevice(state.draftTarget.deviceId);state.target=state.draftTarget;
+    }
+    if(!state.environmentDraft.sources.length && state.target?.kind!=='new-environment')state.draftTarget=null;
+  }
   function updateAdvanced() {
-    if(state.environmentDraft?.sources.length)state.draftTarget=draftEnvironmentTarget(state.environmentDraft,snapshot.devices);
+    syncEnvironmentTarget();
     state.showAdvanced=state.target?.kind !== 'project' && snapshot.features?.[state.target?.deviceId]?.addedSources === true;
   }
   function refreshTarget(model) {
@@ -210,6 +217,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     state.addedSources.forEach(source=>{if(source.kind==='path')source.path='';});
   }
   function selectTarget(target) {
+    if(target.kind==='new-environment' && !validEnvironmentDraft())return;
     if(!targetSupportsDurableCreation(snapshot,target)){
       if(target.kind==='project')void handoffLegacy(target);
       else {state.error='This device needs an update to create a project in this environment.';paint();}
@@ -243,20 +251,19 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     if(state.page===2) {wireEnvironmentDraft(modal.body,state,{save,paint,fail});return;}
     const advanced=modal.body.querySelector('[data-create-advanced]');
     if(!advanced)return;
-    placeWizardAdvanced(modal.body,expanded=>{state.advancedExpanded=expanded;save();},state.busy);
+    wireWizardAdvanced(modal.body,expanded=>{state.advancedExpanded=expanded;save();},state.busy);
     if(!state.target || !state.showAdvanced)return;
     wireFolderDrafts(modal.body,{sources:state.addedSources,deviceId:state.target.deviceId,changed:()=>{save();modal.body.querySelector('.create-sources').innerHTML=workspaceSourcesHtml(state);},repaint:paint,fail});
   }
   function nextPage() {
-    state.error=environmentDraftError(state.environmentDraft);
-    if(state.error){paint();return;}
-    state.target=draftEnvironmentTarget(state.environmentDraft,snapshot.devices);state.draftTarget=state.target;state.page=1;updateAdvanced();save();paint();focusPage(true);
+    if(!validEnvironmentDraft())return;
+    changeAddedDevice(state.environmentDraft.deviceId);state.target=draftEnvironmentTarget(state.environmentDraft,snapshot.devices);state.draftTarget=state.target;state.page=1;updateAdvanced();save();paint();focusPage(true);
   }
   function wirePicker() {
     const targets=wizardTargets(state).flatMap(section=>section.targets);
     modal.body.querySelectorAll('[data-create-target]').forEach(button=>{button.onclick=()=>selectTarget(targets[Number(button.dataset.createTarget)]);});
     const fresh=modal.body.querySelector('[data-create-new-environment]');
-    if(fresh)fresh.onclick=()=>{changeAddedDevice(state.environmentDraft.deviceId);state.page=2;state.error='';save();paint();focusPage();};
+    if(fresh)fresh.onclick=()=>{state.page=2;state.error='';save();paint();focusPage();};
     const edit=modal.body.querySelector('[data-create-edit]');if(edit)edit.onclick=()=>fresh?.click();
     const search=modal.body.querySelector('#create-workspace-search');
     if(search)search.oninput=()=>{state.query=search.value;updateModel();paint();};
@@ -266,7 +273,14 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     if(input)input.oninput=()=>{state.name=input.value;modal.body.querySelector('[data-branch-preview]').textContent=branchNamePreview(state.name);save();};
     const isolation=modal.body.querySelector('#create-work-isolation');if(isolation)isolation.onchange=()=>{state.isolation=isolation.value;save();};
   }
+  function validEnvironmentDraft() {
+    state.error=environmentDraftError(state.environmentDraft);
+    if(!state.error)return true;
+    state.page=2;save();paint();focusPage();return false;
+  }
   function validSubmission() {
+    syncEnvironmentTarget();
+    if(state.target.kind==='new-environment' && !validEnvironmentDraft())return false;
     const error=state.showAdvanced ? folderDraftError(state.addedSources):'';
     if(!error)return true;
     state.error=error;state.advancedExpanded=true;paint();return false;

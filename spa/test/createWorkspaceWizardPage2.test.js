@@ -128,3 +128,52 @@ it('restores the editable draft row after reloading on page one',async()=>{
  expect(query('[data-create-target][data-kind="new-environment"]')?.getAttribute('aria-pressed')).toBe('true');
  click('[data-create-edit]');expect(query('[data-folder-value]').value).toContain('api.git');
 });
+const changeDevice=value=>{query('#create-environment-device').value=value;query('#create-environment-device').dispatchEvent(new Event('change'));};
+const twoDevices=()=>{
+ const held=snapshot();held.devices.push({id:'d2',name:'Desktop'});held.features.d2={...held.features.d1};held.support.d2=true;return held;
+};
+it('keeps the selected draft target current on edits and Back and submits to the new device',async()=>{
+ mocks.read.mockResolvedValue(twoDevices());await open();click('[data-create-new-environment]');changeDevice('d1');
+ click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');click('[data-create-next]');click('[data-create-edit]');
+ changeDevice('d2');input('#create-environment-label','Revised');input('[data-folder-value]','https://github.com/org/new.git');
+ await screen.flushDraft();
+ const saved=(await readUiRecord(uiAddress({view:'create-workspace',kind:'draft'}))).value;
+ expect(saved.target).toMatchObject({deviceId:'d2',key:'d2/draft',name:'Revised',sources:[{remote:'https://github.com/org/new.git'}]});
+ click('[data-create-back]');expect(query('.create-target-summary').textContent).toContain('Revised');expect(query('.create-target-summary').textContent).toContain('Desktop');
+ click('[data-create-go]');await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));
+ expect(mocks.submit.mock.calls[0][0]).toMatchObject({target:{deviceId:'d2',name:'Revised'},environmentDraft:{deviceId:'d2',name:'Revised'}});
+});
+it('validates an invalid Git draft row at selection without sending anything',async()=>{
+ await open();click('[data-create-new-environment]');click('[data-folder-add="remote"]');input('[data-folder-value]','not a url');click('[data-create-back]');
+ click('[data-create-target][data-kind="new-environment"]');
+ expect(query('[role="dialog"]').dataset.createPage).toBe('2');expect(query('.create-error').textContent).toContain('valid Git remote URL');expect(mocks.submit).not.toHaveBeenCalled();
+});
+it('validates a selected draft again on Create after invalid edits and Back',async()=>{
+ await open();click('[data-create-new-environment]');click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');click('[data-create-next]');
+ click('[data-create-edit]');input('[data-folder-value]','not a url');click('[data-create-back]');click('[data-create-go]');
+ expect(query('[role="dialog"]').dataset.createPage).toBe('2');expect(query('.create-error').textContent).toContain('valid Git remote URL');expect(mocks.submit).not.toHaveBeenCalled();
+});
+it('keeps selected-environment added folders while editing an unselected draft on another device',async()=>{
+ const held=twoDevices();held.environments=[{id:'e1',deviceId:'d1',name:'Existing',sources:[]}];mocks.read.mockResolvedValue(held);
+ await open();click('[data-create-target][data-kind="environment"]');click('[data-create-advanced] summary');
+ click('[data-folder-add="path"]');await vi.waitFor(()=>expect(query('.use')).not.toBeNull());click('.use');
+ click('[data-create-new-environment]');changeDevice('d2');click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');click('[data-create-back]');
+ expect(document.body.textContent).toContain('/code/api');
+ click('[data-create-edit]');changeDevice('d1');click('[data-create-back]');
+ click('[data-create-go]');await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));
+ expect(mocks.submit.mock.calls[0][0]).toMatchObject({target:{kind:'environment',deviceId:'d1'},addedSources:[{path:'/code/api'}]});
+});
+it('clears only local added-folder paths when selecting a target on a different device',async()=>{
+ const held=twoDevices();held.environments=[{id:'e1',deviceId:'d1',name:'Existing',sources:[]}];mocks.read.mockResolvedValue(held);
+ await open();click('[data-create-target][data-kind="environment"]');click('[data-create-advanced] summary');
+ click('[data-folder-add="path"]');await vi.waitFor(()=>expect(query('.use')).not.toBeNull());click('.use');
+ click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/extra.git');
+ click('[data-create-new-environment]');changeDevice('d2');click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');click('[data-create-next]');
+ await screen.flushDraft();const saved=(await readUiRecord(uiAddress({view:'create-workspace',kind:'draft'}))).value;
+ expect(saved.addedSources).toMatchObject([{path:''},{remote:'https://github.com/org/extra.git'}]);
+});
+it('does not inspect device status when projecting a new-environment draft',async()=>{
+ const {draftEnvironmentTarget}=await import('../src/core/createWorkspaceEnvironmentDraft.js');
+ const device={id:'d1',name:'Laptop',get status(){throw new Error('connection state read');}};
+ expect(draftEnvironmentTarget({deviceId:'d1',name:'API',sources:[]},[device])).toMatchObject({deviceId:'d1',name:'API'});
+});

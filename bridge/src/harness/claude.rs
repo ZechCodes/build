@@ -49,11 +49,24 @@ impl Harness for ClaudeHarness {
 
     /// Every row carries `min_cli`: the Claude Code version whose changelog
     /// says "Added Claude <model>" (anthropics/claude-code CHANGELOG.md), cited
-    /// beside it. An older CLI is refused by the API or runs the model at a
-    /// 200k window it does not know better than (#203), so the picker hides
-    /// it. A new model's row is not complete without one.
+    /// beside it, or, when the changelog is silent, the earliest version
+    /// observed offering the model, with the observation date. Older CLIs risk
+    /// API refusal or a fallback to a 200k window (#203), so the picker hides
+    /// the model below `min_cli`. For observed versions this gate is
+    /// conservative: earlier versions' behavior is unverified. A new model's
+    /// row is not complete without `min_cli`.
     fn models(&self) -> Vec<ModelOption> {
         vec![
+            ModelOption {
+                id: "claude-fable-5-2",
+                label: "Claude Fable 5.2",
+                supports_effort: true,
+                efforts: &EFFORT_LEVELS,
+                context_window: Some(1_000_000),
+                // The changelog names no version; the picker was observed offering
+                // Fable 5.2 in Claude Code 2.1.319 on 2026-11-09.
+                min_cli: Some("2.1.319"),
+            },
             ModelOption {
                 id: "claude-fable-5-1",
                 label: "Claude Fable 5.1",
@@ -507,6 +520,42 @@ pub(crate) fn record_workspace_trust(config: &Path, cwd: &Path) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fable_5_2_catalogue_requires_claude_code_2_1_319() {
+        for provider in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
+            let harness = crate::harness::harness_for(provider);
+            let catalog = harness.models();
+            let model = catalog
+                .iter()
+                .find(|model| model.id == "claude-fable-5-2")
+                .expect("Fable 5.2 is in both Claude catalogues");
+            assert_eq!(model.label, "Claude Fable 5.2");
+            assert!(model.supports_effort);
+            assert_eq!(model.efforts, &EFFORT_LEVELS);
+            assert_eq!(model.context_window, Some(1_000_000));
+            assert_eq!(model.min_cli, Some("2.1.319"));
+
+            let reading = |version: &str| installed::CliReading {
+                version: Some(version.parse().unwrap()),
+                ..Default::default()
+            };
+            let older = harness.offer(Some(&reading("2.1.318")));
+            assert!(!older
+                .models
+                .iter()
+                .any(|model| model.id == "claude-fable-5-2"));
+            assert!(older.unavailable.iter().any(|model| {
+                model.id == "claude-fable-5-2" && model.requires_cli == "2.1.319"
+            }));
+            let supported = harness.offer(Some(&reading("2.1.319")));
+            assert_eq!(supported.models[0].id, "claude-fable-5-2");
+            assert!(!supported
+                .unavailable
+                .iter()
+                .any(|model| model.id == "claude-fable-5-2"));
+        }
+    }
 
     /// Claude keeps workspace trust in a shared registry that also holds every
     /// other project's state, so the grant must be additive and idempotent.

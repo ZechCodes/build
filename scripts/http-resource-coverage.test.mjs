@@ -311,7 +311,7 @@ const sourceFingerprintParts = {
   // #997 runtime-board cacheSync.js:754,783,1978: existing board.list also refreshes only runtime collections; durable scope/tip writers stay gated, no new method.
   "core/cacheSync.js": ["b6bcb9e8", "4426cefb", "d1cfb123", "ff4b180d", "5a937f61", "4274f74a", "5db90bd4", "46bb4681"],
   // #997 runtime-board captureDecisionView.js:142: branch choices join cached runtime run bodies; existing RPC and mutation dispatch unchanged.
-  "core/captureDecisionView.js": ["15299f0a", "f1762e74", "8af22269", "0f16e798", "ccf8e367", "d2d759e2", "554ce8fc", "002692f1"],
+  "core/captureDecisionView.js": ["66de7f78", "fbbd155f", "c29e58b8", "da80c68a", "2069fabf", "03333d95", "69b155a6", "382df322"],
   // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
   // #1065: concrete hello gates cached capability evidence; greeting refusal still disarms. RPC edges are unchanged.
   "core/changeEvents.js": ["e60915c6", "3f465a36", "2f04b726", "353cd899", "b5751557", "33b82f6a", "729747b4", "37c1188c"],
@@ -325,7 +325,7 @@ const sourceFingerprintParts = {
   // #997 runtime-board compose.js:236: branch options join scoped cached runs; producer method maps and RPC arguments unchanged.
   "core/compose.js": ["04ba4233", "c03d8a65", "2fb7e1a0", "33dd7876", "b9eebdbe", "8f295ce8", "d3407278", "65247a74"],
   // #997 runtime-board composeView.js:274: branch choices use cached runtime runs; RPC and mutation dispatch unchanged.
-  "core/composeView.js": ["c23f86ee", "e1c3714c", "7d01aa7b", "6178100a", "291f1c3e", "44eed077", "6f4dedc9", "a52c7553"],
+  "core/composeView.js": ["d57126dd", "70a6a604", "421771e5", "791dbfe9", "38e304d1", "6b152c62", "8bc6e928", "69eb6d11"],
   "core/consoleModel.js": ["4feba529", "663ba471", "6fe6e2a1", "3eb66e5c", "815545f8", "f70a5b48", "a6248d75", "94d9ed20"],
   "core/conversationCompaction.js": ["4e076445", "2fd7fb1d", "1ca9681e", "b39ea814", "01d5b9f9", "26f91118", "a52788ca", "54220e9e"],
   "core/conversationDetail.js": ["a54ac9f8", "f54c61d4", "cea363a5", "b098964f", "16ecc016", "490b853d", "76d94602", "ad5a773a"],
@@ -353,7 +353,7 @@ const sourceFingerprintParts = {
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
   // #997 runtime-board inboxView.js:193,206,320: scoped pending display and cached branch choices; existing RPC and mutation dispatch unchanged.
   // #1051: cached environment identity and wizard entry points; existing RPC methods, producers and assignment edges are unchanged.
-  "core/inboxView.js": ["4850de22", "dc0db415", "146c673d", "84107bac", "a14d24cb", "1fbaf931", "65cfb1cb", "b553396a"],
+  "core/inboxView.js": ["4e509fa0", "b5b4c3a9", "1da784d7", "0e8b2f5e", "4cba39af", "822a2341", "4b3ec0a2", "fa437d50"],
   // #1065: isolation readers follow the settings opening lifetime; RPC methods and parameter producers are unchanged.
   "core/isolation.js": ["3ccd3f81", "a4eb1eaa", "73e246dd", "8d2d19d8", "a3386e0b", "2e7bae06", "0cff87d2", "655ef105"],
   "core/markdownFences.js": ["10057396", "68214f4d", "d193015e", "2552698e", "c48313df", "6df2e223", "7e3bc837", "2805a4bb"],

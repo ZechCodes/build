@@ -32,6 +32,7 @@ fn fixture() -> ScopeReadContext {
                 isolation: Default::default(),
                 managed: true,
                 created_by_agent: false,
+                waiting_for_name: false,
                 locked: false,
             })),
         );

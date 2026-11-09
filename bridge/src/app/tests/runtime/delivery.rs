@@ -1561,3 +1561,47 @@ async fn a_close_frame_detaches_the_sessions_terminal_sender() {
         "…and from the agent tab too"
     );
 }
+
+#[test]
+fn a_turn_that_says_nothing_leaves_unread_messages_waiting() {
+    let fixture = super::compaction::CompactingAgent::without_background_services();
+    let mut turn = fixture.turn(false);
+    turn.say = None;
+    turn.wants_catch_up = true;
+    let (before, timer) = {
+        let mut app = fixture.state.lock().unwrap();
+        app.edit_agent_conversation(&turn.owner, &turn.agent_id, |thread, _| {
+            thread.post_user(
+                "leave this legacy message waiting",
+                None,
+                "2026-11-09T12:00:00Z",
+            );
+            Ok(())
+        })
+        .unwrap();
+        let before = app
+            .legacy_delivery_payload(&turn.owner, &turn.agent_id)
+            .unwrap()
+            .unwrap()
+            .messages;
+        assert_eq!(before.len(), 1);
+        (before, Arc::clone(&app.frame_clock).frame("test"))
+    };
+    assert!(matches!(
+        crate::app::deliver(&fixture.state, &turn, &timer).unwrap(),
+        DeliveryOutcome::Delivered(_)
+    ));
+    assert!(
+        fixture.log.turns().is_empty(),
+        "a textless turn sends nothing"
+    );
+    let app = fixture.state.lock().unwrap();
+    let waiting = app
+        .legacy_delivery_payload(&turn.owner, &turn.agent_id)
+        .unwrap()
+        .expect("the unread legacy message must still be waiting");
+    assert_eq!(
+        waiting.messages, before,
+        "no Submitted mark without a provider write"
+    );
+}

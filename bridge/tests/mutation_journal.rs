@@ -424,3 +424,61 @@ fn schema_seventeen_gains_empty_journal_without_changing_existing_domain_records
         "preserved"
     );
 }
+
+fn workspace_intent(id: &str, name: Option<&str>) -> MutationAdmission {
+    let mut admission = intent(id);
+    admission.method = "workspace.create".into();
+    admission.params = json!({"project_id":"p"});
+    if let Some(name) = name {
+        admission.params["name"] = json!(name);
+    }
+    admission
+}
+
+#[test]
+fn two_blank_named_workspace_creates_do_not_conflict() {
+    for name in [None, Some(""), Some("  ")] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let first = store
+            .writer()
+            .admit_mutation(&workspace_intent(A, name))
+            .unwrap();
+        let second = store
+            .writer()
+            .admit_mutation(&workspace_intent(B, name))
+            .unwrap();
+        assert_ne!(first.command_id, second.command_id);
+    }
+}
+
+#[test]
+fn a_blank_named_retry_under_one_operation_stays_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let admission = workspace_intent(A, Some(""));
+    let first = store.writer().admit_mutation(&admission).unwrap();
+    assert_eq!(first, store.writer().admit_mutation(&admission).unwrap());
+    let mut changed = admission;
+    changed.params["name"] = json!("named");
+    assert!(matches!(
+        store.writer().admit_mutation(&changed),
+        Err(StoreError::OperationConflict { .. })
+    ));
+}
+
+#[test]
+fn a_named_workspace_create_still_conflicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    store
+        .writer()
+        .admit_mutation(&workspace_intent(A, Some("Release")))
+        .unwrap();
+    assert!(matches!(
+        store
+            .writer()
+            .admit_mutation(&workspace_intent(B, Some("Release"))),
+        Err(StoreError::OperationConflict { .. })
+    ));
+}

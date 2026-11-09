@@ -606,3 +606,5 @@ fn archive_admission_hold_releases_poisoned_mutex() {
         0
     );
 }
+
+mod unnamed_workspaces;

@@ -17,11 +17,11 @@ it('sends one environment command with a frame operation id, and same-id retries
 });
 it('terminal workspace retry stays bound to landed project and names the predecessor',()=>{
  submitCreateWorkspace({target:{kind:'project',id:'p1',deviceId:'d1'},name:'',continues:'prior',operationId:'next'});
- expect(mocked.service.submit).toHaveBeenCalledWith(expect.objectContaining({operationId:'next',method:'workspace.create',params:{project_id:'p1',name:'',continues:'prior'}}));
+ expect(mocked.service.submit).toHaveBeenCalledWith(expect.objectContaining({operationId:'next',method:'workspace.create',params:{project_id:'p1',continues:'prior'}}));
 });
-it.each(['  ','../feature: *?🦊','a'.repeat(500)])('preserves exact legacy names %j',async name=>{
+it.each(['  ','../feature: *?🦊','a'.repeat(500)])('preserves nonblank legacy names and omits blank ones %j',async name=>{
  mocked.call.mockResolvedValue({id:'w1',project_id:'p1',status:'ready'});
- await createLegacyWorkspace({target:{id:'p1',deviceId:'d1'},name,isolation:''});expect(mocked.call).toHaveBeenCalledWith('workspace.create',{project_id:'p1',name});
+ await createLegacyWorkspace({target:{id:'p1',deviceId:'d1'},name,isolation:''});expect(mocked.call).toHaveBeenCalledWith('workspace.create',{project_id:'p1',...(name.trim() ? {name}:{})});
  expect((await readCached({deviceId:'d1',entityId:'',kind:'workspaces'})).value[0].id).toBe('w1');
 });
 it('refuses a failed workspace result with its directory error',async()=>{
@@ -67,4 +67,23 @@ it('uses a derived environment label when its optional configuration name is bla
  const source={kind:'remote',remote:'https://github.com/org/api.git',name:'api',base_branch:''};
  submitCreateWorkspace({target:{kind:'new-environment',deviceId:'d1',name:'api'},environmentDraft:{name:'  ',sources:[source],isolation:''},name:'api',operationId:'blank'});
  expect(mocked.service.submit.mock.calls[0][0]).toMatchObject({params:{name:'api',project:{name:'api',workspace:{name:'api'}}}});
+});
+
+it('passes the separately derived project name through environment creation',()=>{
+ submitCreateWorkspace({target:{kind:'environment',id:'e1',deviceId:'d1',name:'Platform'},name:'',projectName:'Platform 2'});
+ expect(mocked.service.submit.mock.calls[0][0].params.name).toBe('Platform 2');
+});
+it('a blank name on an environment target sends no workspace name',()=>{
+ for(const kind of ['environment','new-environment']){
+  const source={kind:'path',path:'/source',name:'Source',base_branch:''};
+  submitCreateWorkspace({target:{kind,id:'e1',deviceId:'d1',name:'Platform'},name:'',projectName:'Platform 2',environmentDraft:{name:'Platform',sources:[source]}});
+  const request=mocked.service.submit.mock.calls.at(-1)[0];
+  const project=kind==='environment' ? request.params:request.params.project;
+  expect(project.workspace.name).toBeUndefined();
+ }
+});
+
+it.each(['','  '])('omits a blank existing-project workspace name %j',name=>{
+ submitCreateWorkspace({target:{kind:'project',id:'p1',deviceId:'d1'},name,isolation:'worktree'});
+ expect(mocked.service.submit.mock.calls[0][0].params).toEqual({project_id:'p1',isolation:'worktree'});
 });

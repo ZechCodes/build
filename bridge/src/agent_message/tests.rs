@@ -110,6 +110,7 @@ fn every_attachment_is_a_sentence_or_two() {
             BuildTool::PostThreadMessage,
             BuildTool::GetTask,
             BuildTool::SetName,
+            BuildTool::SetWorkspaceName,
         ]),
     ];
     for provider in PROVIDERS {

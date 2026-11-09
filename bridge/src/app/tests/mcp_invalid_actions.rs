@@ -64,6 +64,8 @@ async fn assert_invalid_actions(surface: Surface) {
         json!({ "request": { "action": PRIVATE_INPUT } }),
         json!({ "request": { "action": "set_topic", "topic": { "private": PRIVATE_INPUT } } }),
         json!({ "request": { "action": "set_topic" } }),
+        json!({ "request": { "action": "set_workspace_name" } }),
+        json!({ "request": { "action": "set_workspace_name", "name": { "private": PRIVATE_INPUT } } }),
         json!({ "request": PRIVATE_INPUT }),
         json!({ "request": null }),
         json!({}),

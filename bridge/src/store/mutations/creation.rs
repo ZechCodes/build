@@ -43,7 +43,14 @@ pub(super) fn check_conflicting_intent(
     tx: &Transaction<'_>,
     admission: &MutationAdmission,
 ) -> Result<(), StoreError> {
-    if !is_creation(&admission.method) {
+    if !is_creation(&admission.method)
+        || (admission.method == "workspace.create"
+            && admission.params["name"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .is_empty())
+    {
         return Ok(());
     }
     let mut statement = tx.prepare("SELECT record FROM mutation_commands WHERE principal=?1 AND state IN ('accepted','executing','unknown','reconciling') AND json_extract(record,'$.method')=?2")?;

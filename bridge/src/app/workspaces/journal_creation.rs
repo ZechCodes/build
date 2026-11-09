@@ -68,11 +68,12 @@ impl AppState {
             });
         let mut workspace = self.workspaces.reserve_delivery_workspace(
             project_id,
-            params["name"].as_str().unwrap_or("workspace"),
+            params["name"].as_str().unwrap_or_default(),
             &sources,
             isolation,
         )?;
         workspace.created_by_agent = params["made_by_agent"].as_bool().unwrap_or(false);
+        workspace.remember_creation_name(params["name"].as_str().unwrap_or_default());
         Ok(workspace)
     }
     pub(in crate::app) fn prepare_creation_workspace(

@@ -490,10 +490,11 @@ const sourceFingerprintParts = {
   // #1087: project and environment discards keep their existing methods/selectors,
   // each using its own creation operation ID retained across Resume and retries.
   // No new method or resource.
-  "core/createWorkspaceTargets.js": ["9a675a72", "6b0cb0fa", "96454dd6", "bb45586d", "65fc13a1", "eed31742", "ed8496ca", "c057ab04"],
+  // #1088: project/workspace names are separate and blank workspace names are omitted; RPC methods and target dispatch edges remain unchanged.
+  "core/createWorkspaceTargets.js": ["b3f1afc3", "5242252b", "63c7e80a", "580fa9d1", "7c7f9f57", "1d93c67c", "09a66f24", "b4b1fe68"],
   "core/writeOperationProgress.js": ["612c1fc7", "78d4b658", "fb001a3b", "01eb5aba", "a6a82b1a", "0389924d", "06c8355f", "bdae5355"],
-  // #1085: optional name derivation/count labels only; existing RPC methods and dispatch edges are unchanged.
-  "core/createWorkspaceWizardModel.js": ["6ab484d3", "d6995eee", "e6cbd8cb", "c0c56afc", "87962289", "d59cd8e8", "1c69e35a", "c75d28e5"],
+  // #1088: optionalProjectName derives the project label while the workspace draft name stays independent; RPC dispatch is unchanged.
+  "core/createWorkspaceWizardModel.js": ["a6bae4bf", "19b319c0", "cea9955e", "a048bad4", "6311bfc4", "5c457eca", "e507fe7e", "ac704d74"],
 };
 const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintParts)
   .map(([file, parts]) => [file, parts.join("")]));

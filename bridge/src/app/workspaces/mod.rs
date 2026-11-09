@@ -18,6 +18,7 @@ mod directories;
 pub(in crate::app) mod git_initialization;
 pub(in crate::app) mod journal_creation;
 mod lock;
+mod naming;
 mod ownership;
 mod projection_rendering;
 mod reclaim;
@@ -973,7 +974,7 @@ impl AppState {
         let requested_name = params
             .get("name")
             .and_then(Value::as_str)
-            .unwrap_or("workspace");
+            .unwrap_or_default();
         let sources = self
             .sources_for(&project_id)?
             .into_iter()
@@ -1013,6 +1014,7 @@ impl AppState {
             .get("made_by_agent")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        workspace.remember_creation_name(requested_name);
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(WorkspaceCreateWork {
                 registry_root: self.workspaces.root().to_path_buf(),
@@ -1224,11 +1226,7 @@ impl AppState {
         self.mark_device_lifecycle_dirty()?;
         let workspace_id = require_str(params, "workspace_id")?;
         let name = require_str(params, "name")?;
-        if self.deferred_work.is_some()
-            || self.active_deferred_filesystem_jobs > 0
-            || self.workspace_reserved(&workspace_id)
-            || self.workspace_has_pending_shell(&workspace_id)
-        {
+        if self.workspace_metadata_busy(&workspace_id) {
             return Err(crate::reclaim::BUSY.to_string());
         }
         if self.workspaces.get(&workspace_id).is_none() {

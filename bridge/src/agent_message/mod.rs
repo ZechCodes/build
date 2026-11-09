@@ -87,6 +87,7 @@ pub enum BuildTool {
     MoveTask,
     MentionUser,
     SetName,
+    SetWorkspaceName,
 }
 
 impl BuildTool {
@@ -101,6 +102,7 @@ impl BuildTool {
             BuildTool::MoveTask => "move_task",
             BuildTool::MentionUser => "mention_user",
             BuildTool::SetName => "set_name",
+            BuildTool::SetWorkspaceName => "set_workspace_name",
         }
     }
 

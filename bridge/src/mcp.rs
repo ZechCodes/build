@@ -170,6 +170,10 @@ pub enum BridgeAction {
     SetName {
         name: String,
     },
+    /// Supply the missing label of the calling coding agent's workspace.
+    SetWorkspaceName {
+        name: String,
+    },
     /// Compact this agent's own session once its current turn ends, keeping
     /// what `instructions` names. Every agent with a session.
     CompactSelf {
@@ -546,6 +550,7 @@ impl BridgeAction {
             BridgeAction::SearchConversation { .. } => "search_conversation",
             BridgeAction::SetTopic { .. } => "set_topic",
             BridgeAction::SetName { .. } => "set_name",
+            BridgeAction::SetWorkspaceName { .. } => "set_workspace_name",
             BridgeAction::CompactSelf { .. } => "compact_self",
             BridgeAction::CompactAgent { .. } => "compact_agent",
             BridgeAction::ListHarnesses => "list_harnesses",
@@ -611,6 +616,7 @@ impl BridgeAction {
     /// surface is what [`surface_name`](Self::surface_name) names.
     pub fn surfaces(&self) -> &'static [McpSurface] {
         match self {
+            BridgeAction::SetWorkspaceName { .. } => &[McpSurface::Coding],
             BridgeAction::PostThreadMessage { .. }
             | BridgeAction::SearchConversation { .. }
             | BridgeAction::SetTopic { .. }
@@ -916,6 +922,16 @@ impl DoneServer {
                 "name": "set_name",
                 "description": SET_NAME_DESCRIPTION,
                 "inputSchema": Self::set_name_input_schema()
+            }),
+            json!({
+                "name": "set_workspace_name",
+                "description": "Name your workspace when its creator left the name blank. Choose 2-4 words for what the work is, then carry on. This changes its label only; the branch stays the same. A workspace already named by a person cannot be renamed with this tool. Busy calls can be retried.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string", "description": "The workspace label, at most 80 bytes. Whitespace is collapsed."}},
+                    "required": ["name"],
+                    "additionalProperties": false
+                }
             }),
         ];
         tools.extend(Self::workspace_tools());
@@ -1883,6 +1899,9 @@ impl DoneServer {
         if name == "set_name" {
             return name_action(id, params);
         }
+        if name == "set_workspace_name" {
+            return workspace_name_action(id, params);
+        }
         if name == "compact_self" {
             return compaction::compact_self_action(id, params);
         }
@@ -2620,6 +2639,37 @@ fn name_action(id: Value, params: Option<&Value>) -> Handled {
     }
 }
 
+fn workspace_name_action(id: Value, params: Option<&Value>) -> Handled {
+    let arguments = params.and_then(|p| p.get("arguments"));
+    if arguments
+        .and_then(Value::as_object)
+        .is_some_and(|args| args.keys().any(|key| key != "name"))
+    {
+        return refused(id, "set_workspace_name accepts only name");
+    }
+    let raw = arguments
+        .and_then(|args| args.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match normalized_workspace_name(raw) {
+        Ok(name) => acted(id, BridgeAction::SetWorkspaceName { name }),
+        Err(message) => refused(id, message),
+    }
+}
+
+pub(crate) fn normalized_workspace_name(raw: &str) -> Result<String, String> {
+    let name = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() {
+        return Err("set_workspace_name: name cannot be empty".into());
+    }
+    if name.len() > MAX_TOPIC_BYTES {
+        return Err(format!(
+            "set_workspace_name: name must be at most {MAX_TOPIC_BYTES} bytes"
+        ));
+    }
+    Ok(name)
+}
+
 /// A project agent's message: a status and a sentence, and no phase to report.
 /// Complete and Blocked end the turn the way they do everywhere else; they end
 /// no phase, because a project agent runs none.
@@ -2820,7 +2870,7 @@ mod tests {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 6 + WORKSPACE_TOOLS.len() + TASK_TOOLS.len());
+        assert_eq!(tools.len(), 7 + WORKSPACE_TOOLS.len() + TASK_TOOLS.len());
         assert_eq!(tools[0]["name"], "post_thread_message");
         assert_eq!(tools[1]["name"], "message_agent");
         assert_eq!(tools[2]["name"], "search_conversation");
@@ -3767,7 +3817,7 @@ mod tests {
                 &conversation[..],
                 // A coding agent names ITSELF; the project's agent is named by
                 // its project and is offered no such tool.
-                &["set_name"][..],
+                &["set_name", "set_workspace_name"][..],
                 &WORKSPACE_TOOLS[..],
                 &TASK_TOOLS[..]
             ]
@@ -4554,6 +4604,37 @@ mod tests {
 
     /// A workspace agent names itself from the coding surface, and the name
     /// is shaped there the way it is on the project surface.
+    #[test]
+    fn set_workspace_name_is_scoped_to_coding_and_normalizes_its_only_argument() {
+        let call = |server: DoneServer, args: Value| {
+            server.handle_message(
+                &json!({
+                    "jsonrpc":"2.0", "id":80, "method":"tools/call",
+                    "params":{"name":"set_workspace_name","arguments":args}
+                })
+                .to_string(),
+            )
+        };
+        let named = call(server(), json!({"name":"  Fix   workspace names "}));
+        assert_eq!(
+            serde_json::to_value(named.action.unwrap()).unwrap(),
+            json!({"action":"set_workspace_name","name":"Fix workspace names"})
+        );
+        for args in [
+            json!({"name":""}),
+            json!({"name":"  "}),
+            json!({"name":"é".repeat(41)}),
+            json!({"name":"Label","workspace_id":"other"}),
+        ] {
+            assert!(call(server(), args).action.is_none());
+        }
+        for surface in [project(), router()] {
+            assert!(call(surface, json!({"name":"Own workspace"}))
+                .action
+                .is_none());
+        }
+    }
+
     #[test]
     fn set_name_on_the_coding_surface_is_a_rename() {
         let named = server().handle_message(

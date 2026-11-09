@@ -3200,6 +3200,28 @@ armed (`spa/src/core/harnessInventoryEvents.js`). Controls and evidence:
 
 ### Messages to agents
 
+A workspace created with a missing or whitespace-only name gets a placeholder
+label using the first eight characters of its id and retains a defaulted
+`waiting_for_name` flag in its manifest (schema remains 26). Named,
+agent-created and adopted workspaces do not wait. Blank workspace creation
+intents under distinct operation IDs do not conflict; retries under the same
+ID retain the journal's existing identity checks. Private creation writes the
+ordinary pending-workspace marker before materialization, so each Git source
+registration uses its workspace-qualified name before the manifest exists.
+The wizard keeps the derived environment-target project name separate from
+the workspace's optional name and omits a blank workspace name on every path.
+
+The first delivered coding turn claims the workspace naming request once
+across its agents in memory. Claim and release perform no disk I/O. No turn
+waits because a workspace is unnamed. A still-unnamed workspace is asked again
+after a bridge restart, recovering a crash between claim and send. A pre-send
+delivery bookkeeping error or rejected provider write releases the claim.
+Textless turns with no naming request leave unread legacy messages waiting.
+A successful rename clears both the persisted wait and the memory claim. `messages/workspace_name.md` asks for 2–4 words and carries
+`BuildTool::SetWorkspaceName` so on-demand harnesses load the tool. It composes
+with the agent-name note. Provider commands remain bare and project
+coordinators are exempt.
+
 Everything Build says into an agent's conversation goes through
 `bridge/src/agent_message/`. A message is a `MessageKind` (a delivery, a
 thread nudge, a task notice, a restart, a usage-limit resume, a compaction, a
@@ -3297,6 +3319,18 @@ one reset; cancelling the chooser keeps the conversation. Detail and compact
 settings are retained, and the empty conversation opens in the same place.
 
 ### MCP tools
+
+Coding agents have `set_workspace_name`, taking only `name`, for their own
+workspace when its creator left the name blank. It collapses whitespace and
+refuses empty labels, labels over 80 bytes, callers outside a workspace, and
+workspaces already named. It prefers the unnamed row selected for the naming
+request when several workspace rows share a root, then falls back to ordinary
+conversation ownership. It uses the ordinary `workspace.rename` path, with
+its busy checks and board-list notification, changing only the label and
+clearing the wait. A client rename clears that wait too, so an agent cannot
+overwrite the person's choice. This is an ordinary mutating control turn,
+like `set_name`; no provider or external work runs under a new lock scope.
+
 
 Review tools expose one workspace flow: `open_review`, `push_review`,
 `update_review_base`, `merge_review`, `close_review`, `reopen_review`,

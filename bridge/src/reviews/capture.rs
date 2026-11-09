@@ -389,6 +389,7 @@ mod tests {
             isolation: Default::default(),
             managed: false,
             created_by_agent: false,
+            waiting_for_name: false,
             locked: false,
         }
     }

@@ -23,7 +23,7 @@ const context = () => ({ deviceId: "d", rpc: vi.fn(async () => ({ ok: true })), 
 beforeEach(async () => {
   capabilities = { git: { projectSources: true }, projects: { syncBase: true, syncBasePath: true } }; await wipeCache();
   await writeCached(environmentSupportAddress("d"), {
-    list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false, bridge_epoch: "changes-epoch",
+    list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false, bridge_epoch: "changes-epoch",
   });
 });
 it("models every registered source with captured location, including plain folders", () => {
@@ -91,7 +91,7 @@ it.each(["inherited", "unknown", "added", "legacy"])("protects %s source ownersh
   if (kind === "inherited") { current.environment_id = "env"; current.added_sources = []; }
   if (kind === "added") current.added_sources = [source];
   if (kind === "unknown") await writeCached(environmentSupportAddress("d"), {
-    list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false, bridge_epoch: "pre-upgrade-epoch",
+    list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false, bridge_epoch: "pre-upgrade-epoch",
   });
   const rpc = projectChangesRpc(machine, source, { projectId: "p", currentProject: () => current });
   if (["inherited", "unknown"].includes(kind)) {

@@ -56,7 +56,7 @@ afterEach(() => { handle?.dispose(); document.body.replaceChildren(); });
 it.each(["inherited", "unknown", "added", "legacy"])("protects the Sync base affordance and handler for %s sources", async kind => {
   await rememberProjectChangesSupport("d", { git: { projectSources: true }, projects: { syncBase: true } });
   await writeCached(environmentSupportAddress("d"), {
-    list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false,
+    list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false,
     bridge_epoch: kind === "unknown" ? "pre-upgrade-epoch" : "changes-epoch",
   });
   const current = { ...project };
@@ -79,7 +79,7 @@ it.each(["inherited", "unknown", "added", "legacy"])("protects the Sync base aff
 
 it.each(["stale cache", "greeting rejected"])("clears Project Changes pending state after %s and dispatches one retry", async refusal => {
   await rememberProjectChangesSupport("d", { git: { projectSources: true }, projects: { syncBase: true } });
-  const support = { list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false,
+  const support = { list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false,
     bridge_epoch: refusal === "stale cache" ? "old-epoch" : "changes-epoch" };
   await writeCached(environmentSupportAddress("d"), support);
   if (refusal === "greeting rejected") greetingFailure.message = "Greeting refused before dispatch";
@@ -105,7 +105,7 @@ it.each(["stale cache", "greeting rejected"])("clears Project Changes pending st
 
 it("keeps Project Changes Sync busy through a repaint while its response is held", async () => {
   await rememberProjectChangesSupport("d", { git: { projectSources: true }, projects: { syncBase: true } });
-  await writeCached(environmentSupportAddress("d"), { list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false, bridge_epoch: "changes-epoch" });
+  await writeCached(environmentSupportAddress("d"), { list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false, bridge_epoch: "changes-epoch" });
   let finish;
   changesRpc.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
   mount();

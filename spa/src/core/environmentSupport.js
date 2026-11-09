@@ -9,13 +9,7 @@ export const environmentSupportAddress = (deviceId) => ({ deviceId, entityId: ""
 
 // Missing flags are not negative evidence: only a complete cached greeting
 // without any environment capability identifies a pre-environment device.
-const establishedFlags = FLAGS.filter(flag => !["projectRename", "environmentRename"].includes(flag));
-export const predatesEnvironments = support => establishedFlags.every(flag => support?.[flag] === false)
-  && renameUnsupported(support);
-// Pre-split all-false greetings retain legacy source ownership evidence.
-// Their positive rename flag grants neither of the new rename actions.
-const renameUnsupported = support => support?.projectRename === false && support?.environmentRename === false
-  || support?.rename === false && support?.projectRename !== true && support?.environmentRename !== true;
+export const predatesEnvironments = support => FLAGS.every(flag => support?.[flag] === false);
 
 export async function readEnvironmentSupportRecord(deviceId = "") {
   return (await readCached(environmentSupportAddress(deviceId)))?.value ?? null;

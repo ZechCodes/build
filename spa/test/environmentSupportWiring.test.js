@@ -7,7 +7,7 @@ import { capabilitiesOf } from "../src/core/bridgeApi/v1/index.js";
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 const { bridgeCapabilities, greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
-const { environmentSupportAddress, readEnvironmentSupport, rememberEnvironmentSupport } = await import("../src/core/environmentSupport.js");
+const { environmentSupportAddress, readEnvironmentSupport, rememberEnvironmentSupport, predatesEnvironments } = await import("../src/core/environmentSupport.js");
 const { readCached } = await import("../src/core/localCache.js");
 const unsupported = { list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false };
 const m1 = { ...unsupported, list: true, createProject: true };
@@ -75,4 +75,12 @@ it("enables archive and both rename actions from the released greeting fixture",
   await vi.waitFor(async () => expect(await readEnvironmentSupport("dev-1")).toMatchObject({
     archive: true, projectRename: true, environmentRename: true,
   }));
+});
+
+it("does not treat the old shared rename flag as complete legacy ownership evidence", () => {
+  const { projectRename: _projectRename, environmentRename: _environmentRename, ...old } = unsupported;
+  for (const rename of [false, true]) {
+    expect(predatesEnvironments({ ...old, rename })).toBe(false);
+  }
+  expect(predatesEnvironments(unsupported)).toBe(true);
 });

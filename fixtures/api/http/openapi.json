@@ -4944,6 +4944,267 @@
         }
       }
     },
+    "/v1/environments/{environment_id}": {
+      "delete": {
+        "operationId": "environment_delete",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "environment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Existing opaque selector; encoded as exactly one path segment."
+          },
+          {
+            "$ref": "#/components/parameters/session"
+          },
+          {
+            "$ref": "#/components/parameters/subscription"
+          },
+          {
+            "$ref": "#/components/parameters/requestId"
+          },
+          {
+            "$ref": "#/components/parameters/priority"
+          },
+          {
+            "$ref": "#/components/parameters/operationId"
+          },
+          {
+            "$ref": "#/components/parameters/after"
+          }
+        ],
+        "description": "Maps only to environment.delete. Remaining JSON fields retain their existing semantics. Registered v1 parameters, including unknown fields, are validated by the existing typed registry. Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method!, v1_context_method! and v1_optional_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
+        "x-build-method": "environment.delete",
+        "x-build-contract": {
+          "source": "bridge/src/api/v1/environment.rs",
+          "params": "DeleteParams",
+          "result": "super::board::EmptyResult",
+          "fixture": "fixtures/api/v1/environment.delete.json"
+        },
+        "x-build-request-max-bytes": 1048576,
+        "x-build-response-max-bytes": 8388608,
+        "x-build-requires-events": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "x-build-schema-complete": false
+              },
+              "example": {}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Final existing wire reply, including typed success/error outcome. No blanket durable acknowledgement or retry promise.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reply"
+                },
+                "examples": {
+                  "wire": {
+                    "value": {
+                      "id": "example",
+                      "ok": true,
+                      "result": {}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Http400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Http405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Http426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "environment_rename",
+        "security": [
+          {
+            "deviceBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "environment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Existing opaque selector; encoded as exactly one path segment."
+          },
+          {
+            "$ref": "#/components/parameters/session"
+          },
+          {
+            "$ref": "#/components/parameters/subscription"
+          },
+          {
+            "$ref": "#/components/parameters/requestId"
+          },
+          {
+            "$ref": "#/components/parameters/priority"
+          },
+          {
+            "$ref": "#/components/parameters/operationId"
+          },
+          {
+            "$ref": "#/components/parameters/after"
+          }
+        ],
+        "description": "Maps only to environment.rename. Remaining JSON fields retain their existing semantics. Registered v1 parameters, including unknown fields, are validated by the existing typed registry. Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method!, v1_context_method! and v1_optional_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
+        "x-build-method": "environment.rename",
+        "x-build-contract": {
+          "source": "bridge/src/api/v1/environment.rs",
+          "params": "RenameParams",
+          "result": "EnvironmentRow",
+          "fixture": "fixtures/api/v1/environment.rename.json"
+        },
+        "x-build-request-max-bytes": 1048576,
+        "x-build-response-max-bytes": 8388608,
+        "x-build-requires-events": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "x-build-schema-complete": false
+              },
+              "example": {
+                "name": "Renamed environment"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Final existing wire reply, including typed success/error outcome. No blanket durable acknowledgement or retry promise.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reply"
+                },
+                "examples": {
+                  "wire": {
+                    "value": {
+                      "id": "example",
+                      "ok": true,
+                      "result": {
+                        "environment_id": "env-1",
+                        "name": "Renamed environment",
+                        "home_path": "/home/ada/code/build",
+                        "is_git": true,
+                        "base_branch": "main",
+                        "sources": [
+                          {
+                            "id": "source-1",
+                            "name": "build",
+                            "mount": "build",
+                            "path": "/home/ada/code/build",
+                            "is_git": true,
+                            "base_branch": "main",
+                            "remote": "git@github.com:ada/build.git",
+                            "sync_base": false,
+                            "sync": null
+                          }
+                        ],
+                        "isolation": null,
+                        "isolation_effective": "worktree",
+                        "project_ids": [
+                          "proj-1"
+                        ],
+                        "device": "Ada’s workstation"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Http400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Http401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Http403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Http404"
+          },
+          "405": {
+            "$ref": "#/components/responses/Http405"
+          },
+          "409": {
+            "$ref": "#/components/responses/Http409"
+          },
+          "413": {
+            "$ref": "#/components/responses/Http413"
+          },
+          "426": {
+            "$ref": "#/components/responses/Http426"
+          },
+          "429": {
+            "$ref": "#/components/responses/Http429"
+          },
+          "500": {
+            "$ref": "#/components/responses/Http500"
+          },
+          "503": {
+            "$ref": "#/components/responses/Http503"
+          }
+        }
+      }
+    },
     "/v1/environments/{environment_id}/unused-discards": {
       "post": {
         "operationId": "environment_discard_unused",
@@ -5330,151 +5591,6 @@
                         "device": "Ada’s workstation",
                         "checkouts_updated": 0,
                         "checkouts_failed": []
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/Http400"
-          },
-          "401": {
-            "$ref": "#/components/responses/Http401"
-          },
-          "403": {
-            "$ref": "#/components/responses/Http403"
-          },
-          "404": {
-            "$ref": "#/components/responses/Http404"
-          },
-          "405": {
-            "$ref": "#/components/responses/Http405"
-          },
-          "409": {
-            "$ref": "#/components/responses/Http409"
-          },
-          "413": {
-            "$ref": "#/components/responses/Http413"
-          },
-          "426": {
-            "$ref": "#/components/responses/Http426"
-          },
-          "429": {
-            "$ref": "#/components/responses/Http429"
-          },
-          "500": {
-            "$ref": "#/components/responses/Http500"
-          },
-          "503": {
-            "$ref": "#/components/responses/Http503"
-          }
-        }
-      }
-    },
-    "/v1/environments/{environment_id}": {
-      "patch": {
-        "operationId": "environment_rename",
-        "security": [
-          {
-            "deviceBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "environment_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1
-            },
-            "description": "Existing opaque selector; encoded as exactly one path segment."
-          },
-          {
-            "$ref": "#/components/parameters/session"
-          },
-          {
-            "$ref": "#/components/parameters/subscription"
-          },
-          {
-            "$ref": "#/components/parameters/requestId"
-          },
-          {
-            "$ref": "#/components/parameters/priority"
-          },
-          {
-            "$ref": "#/components/parameters/operationId"
-          },
-          {
-            "$ref": "#/components/parameters/after"
-          }
-        ],
-        "description": "Maps only to environment.rename. Remaining JSON fields retain their existing semantics. Registered v1 parameters, including unknown fields, are validated by the existing typed registry. Domain parameter/result JSON Schemas are incomplete: the typed registry has no schema reflection. Rust declaration links are lexically inventoried from v1_method!, v1_context_method! and v1_optional_context_method!, not derived by Rust semantic analysis; verified wire fixtures and the cargo registry witness remain authoritative. Registered v1 methods use existing strict typed normalization. Six legacy methods preserve unknown/default optional fields and retain object-shape plus existing domain checks; their shared execution extraction is owned by #908. No blanket strict legacy parameter validation is claimed.",
-        "x-build-method": "environment.rename",
-        "x-build-contract": {
-          "source": "bridge/src/api/v1/environment.rs",
-          "params": "RenameParams",
-          "result": "EnvironmentRow",
-          "fixture": "fixtures/api/v1/environment.rename.json"
-        },
-        "x-build-request-max-bytes": 1048576,
-        "x-build-response-max-bytes": 8388608,
-        "x-build-requires-events": false,
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "x-build-schema-complete": false
-              },
-              "example": {
-                "name": "Renamed environment"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Final existing wire reply, including typed success/error outcome. No blanket durable acknowledgement or retry promise.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Reply"
-                },
-                "examples": {
-                  "wire": {
-                    "value": {
-                      "id": "example",
-                      "ok": true,
-                      "result": {
-                        "environment_id": "env-1",
-                        "name": "Renamed environment",
-                        "home_path": "/home/ada/code/build",
-                        "is_git": true,
-                        "base_branch": "main",
-                        "sources": [
-                          {
-                            "id": "source-1",
-                            "name": "build",
-                            "mount": "build",
-                            "path": "/home/ada/code/build",
-                            "is_git": true,
-                            "base_branch": "main",
-                            "remote": "git@github.com:ada/build.git",
-                            "sync_base": false,
-                            "sync": null
-                          }
-                        ],
-                        "isolation": null,
-                        "isolation_effective": "worktree",
-                        "project_ids": [
-                          "proj-1"
-                        ],
-                        "device": "Ada’s workstation"
                       }
                     }
                   }

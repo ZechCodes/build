@@ -108,6 +108,7 @@ pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
     "project.add_source",
     "project.create",
     "project.delete",
+    "environment.delete",
     "project.init_git",
     "project.remove_source",
     "project.set_isolation",

@@ -180,6 +180,14 @@ pub struct ProjectDeleteParams {
     pub project_id: String,
     #[serde(default)]
     pub confirm: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<ProjectDeleteTasks>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectDeleteTasks {
+    Delete,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1168,7 +1176,7 @@ pub struct ModelsListResult {
 /// codes, so the phrases are matched here rather than the sentences rewritten:
 /// a message is the wire's, and changing one to win a code would be a change
 /// to what every existing client shows its user.
-const CONFLICTS: [&str; 17] = [
+const CONFLICTS: [&str; 19] = [
     "a project must have at least one source",
     "an environment must have at least one source",
     " belongs to environment ",
@@ -1182,6 +1190,8 @@ const CONFLICTS: [&str; 17] = [
     "has already been answered",
     "the router has not asked anything",
     "Wait for workspace provisioning",
+    "Finish its workspaces before deleting tasks",
+    "Delete its ",
     "Stop running agents before deleting",
     "while its workers are working in them",
     "Cannot delete a workspace containing",

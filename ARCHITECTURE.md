@@ -3081,7 +3081,9 @@ catalog seen through what its installed CLI said, and that is what
 
 - Claude Code (`claude`, `claude_adk`) is asked `claude --version`, and every
   catalog row carries `min_cli`, the version whose changelog says "Added
-  Claude <model>", cited beside it. An older CLI gets a 400 from the API on
+  Claude <model>", or, when the changelog is silent, the earliest version
+  observed offering the model. The source or dated observation is cited
+  beside it. An older CLI gets a 400 from the API on
   every turn, or runs the model at a 200k window it does not know better than,
   so the model is hidden and listed under `unavailable`.
 - Codex (`codex`, `codex_app_server`) is asked its own list over a short-lived

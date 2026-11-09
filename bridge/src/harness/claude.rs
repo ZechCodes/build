@@ -49,11 +49,23 @@ impl Harness for ClaudeHarness {
 
     /// Every row carries `min_cli`: the Claude Code version whose changelog
     /// says "Added Claude <model>" (anthropics/claude-code CHANGELOG.md), cited
-    /// beside it. An older CLI is refused by the API or runs the model at a
+    /// beside it, or, when the changelog is silent, the earliest version
+    /// observed offering the model, with the observation date. An older CLI
+    /// is refused by the API or runs the model at a
     /// 200k window it does not know better than (#203), so the picker hides
     /// it. A new model's row is not complete without one.
     fn models(&self) -> Vec<ModelOption> {
         vec![
+            ModelOption {
+                id: "claude-fable-5-2",
+                label: "Claude Fable 5.2",
+                supports_effort: true,
+                efforts: &EFFORT_LEVELS,
+                context_window: Some(1_000_000),
+                // The changelog names no version; the picker was observed offering
+                // Fable 5.2 in Claude Code 2.1.319 on 2026-11-09.
+                min_cli: Some("2.1.319"),
+            },
             ModelOption {
                 id: "claude-fable-5-1",
                 label: "Claude Fable 5.1",
@@ -528,13 +540,19 @@ mod tests {
                 ..Default::default()
             };
             let older = harness.offer(Some(&reading("2.1.318")));
-            assert!(!older.models.iter().any(|model| model.id == "claude-fable-5-2"));
+            assert!(!older
+                .models
+                .iter()
+                .any(|model| model.id == "claude-fable-5-2"));
             assert!(older.unavailable.iter().any(|model| {
                 model.id == "claude-fable-5-2" && model.requires_cli == "2.1.319"
             }));
             let supported = harness.offer(Some(&reading("2.1.319")));
             assert_eq!(supported.models[0].id, "claude-fable-5-2");
-            assert!(!supported.unavailable.iter().any(|model| model.id == "claude-fable-5-2"));
+            assert!(!supported
+                .unavailable
+                .iter()
+                .any(|model| model.id == "claude-fable-5-2"));
         }
     }
 

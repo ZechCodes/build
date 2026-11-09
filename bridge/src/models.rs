@@ -836,7 +836,7 @@ mod tests {
                 .map(|model| model.id.clone())
                 .collect();
             assert_eq!(
-                &ids[..3],
+                &ids[1..4],
                 &["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5"]
             );
         }
@@ -918,10 +918,10 @@ mod tests {
     }
 
     #[test]
-    fn fable_5_1_leads_both_claude_providers_catalogs_and_retires_fable_5() {
+    fn fable_5_1_follows_5_2_in_both_claude_providers_catalogs_and_retires_fable_5() {
         claude_providers_offer("claude-fable-5-1", "Claude Fable 5.1");
         for provider in CLAUDE_PROVIDERS {
-            assert_eq!(catalog_of(provider).models[0].id, "claude-fable-5-1");
+            assert_eq!(catalog_of(provider).models[1].id, "claude-fable-5-1");
         }
         for catalog in provider_catalogs() {
             assert!(

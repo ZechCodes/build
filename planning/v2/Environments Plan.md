@@ -1,9 +1,8 @@
 # Environments: a layer above projects
 
-Planning for **#1028**, 2026-11-07. **Planning only; nothing here is
-implemented.** Code inspected at `f1376d41` (`origin/dev`). Wire today is
-`3.36.0` (`bridge/src/api/mod.rs:78`); store schema today is 25
-(`bridge/src/store.rs:296`).
+Original planning baseline for **#1028**, 2026-11-07, before implementation:
+code inspected at `f1376d41` (`origin/dev`), wire `3.36.0`, store schema 25.
+The merged status below and checkpoint amendments record subsequent delivery.
 
 Companions: `Project Workspace Spec.md` (#522), `Navigation Spec.md` (#523,
 #618, #631), `Project Workspace Terminology Audit.md` (#537), `workspaces.md`,
@@ -13,14 +12,13 @@ Companions: `Project Workspace Spec.md` (#522), `Navigation Spec.md` (#523,
 
 ## The model in three lines
 
-**Merged status at `f4258eddea0ced8702e87d6340a1629e3e7a5173`:** M0 and
-M1 through M1.4 are merged. Wire 3.37.0 advertises `environments`: existing
-environment → new project + first workspace, existing project → new workspace,
-and read-only environment listings. M2 and later passages below remain plans:
-the wizard has no new-environment page or extra-folder selection, and archive,
-rename and environment secrets are unavailable. Fresh setup still uses the
-legacy Add project sheet. Legacy Project settings, including its Delete project
-action, remains available; see the M1 checkpoint for its actual limits.
+**Merged status at `750e70576648b05c73e5cff3ae162e82468a2518`:** M0–M3.3
+are on dev. Wire 3.39.0 advertises `projects.archive`, `projects.rename` and
+`environments.rename`, alongside the M1/M2 capabilities. The wizard supports
+new environments and project-only extra folders; settings supports archive,
+restore, rename and environment source/isolation edits. Stage 2 features remain
+unavailable as listed under M3. The seven Stage 1 manual dev journeys remain
+pending; implementation completion does not claim their acceptance.
 
 - **Environment** = the source directories and the secrets. It is where the
   code lives. It has no tasks, no agents and no workspaces of its own.
@@ -452,8 +450,9 @@ comment and finished workspace under the same key. While archived:
 
 Each checkpoint bumps `API_VERSION` to the **next available minor at the
 time it lands** (wire minors never skip); the numbers below are examples
-assuming nothing else lands first. A capability is advertised **only when its
-verbs and their consumer ship together**; nothing from a later checkpoint is
+assuming nothing else lands first. M1–M3 landed at the minors shown in the
+table (through 3.39.0); Stage 2 rows remain planned. A capability is advertised
+**only when its verbs and their consumer ship together**; nothing from a later checkpoint is
 advertised early. Each bump updates `fixtures/api/versions.json`,
 `fixtures/api/v1/session.hello.json`, `scripts/api-verbs-manifest.mjs`; each
 new verb needs `fixtures/api/v1/<verb>.json` (`bridge/tests/api_contract.rs:332`),
@@ -478,8 +477,8 @@ SPA side: a persisted per-device support record `environment-support`
 written at greeting (pattern `spa/src/core/sourceEditSupport.js:15-34`, called
 from `publishGreeting`, `changeEvents.js:1017-1050`); `capabilitiesOf()`
 (`bridgeApi/v1/index.js:157`) gains `environments: {list, createProject,
-create, addedSources, archive, rename, secrets}`; `NO_CAPABILITIES`
-(`changeEvents.js:123`) the same shape, all false. Views read the record from
+create, addedSources, archive, projectRename, environmentRename, secrets}`;
+`NO_CAPABILITIES` (`changeEvents.js:125`) the same shape, all false. Views read the record from
 cache, never the greeting. Each control appears only when its flag is true:
 the "New environment…" row (M2), the Advanced folders section (M2), archive
 and rename (M3), secrets (Stage 2).
@@ -1181,9 +1180,9 @@ M2; the limitations are listed separately so later slices can remove them.
 
 **MVP implementation complete through M3.4 (#1080).** M3.1 archive/restore
 and M3.2 rename/environment source verbs are on dev. The M3.3 settings
-consumer is approved at `ea6637ab0804bcf6bb8b2186b84a5d1ecd870237` on
-`task/env-m3.3-settings`, awaiting integration and its final `API_VERSION` /
-capability advertisement. This records implementation and documentation
+consumer merged on dev at `750e70576648b05c73e5cff3ae162e82468a2518`.
+`API_VERSION` is 3.39.0 and advertises `projects.archive`, `projects.rename`
+and `environments.rename`. This records implementation and documentation
 completion, not acceptance on dev: the seven Stage 1 journeys below remain
 **pending manual execution on dev** against a migrated device.
 
@@ -1194,8 +1193,8 @@ project-only folders. The M2 archive/rename/environment-folder limitations
 are removed; the Stage 2 limitations below remain. The Terminology Audit
 records the settled M3 labels; §1.9 and §3.3 follow the implemented guard and
 single-flight Archive behavior. `ARCHITECTURE.md` describes wire publication
-in terms of `API_VERSION` and consumer capabilities, without fixing a minor
-before the consumer lands.
+in terms of `API_VERSION` and consumer capabilities, now released at 3.39.0
+with the merged M3.3 consumer.
 
 **Try:** live on it for a week: archive finished lines of work and see them
 leave the inbox and wizard, restore one from settings, rename a project and
@@ -1213,7 +1212,7 @@ everything. **Gate:** M2 exposed; `projects.archive`, `projects.rename`,
 | M3.1 | **Bridge: archive/restore** (`archived_at`, guards of 1.9, `project_archived` refusals across task/review/comment/source/workspace verbs and MCP, agents not started, rows kept on the wire with `archived_at`) | guards enumerate blockers; every mutation path refuses; reads work; restore clears; migration leaves none archived | `archive_refused_names_each_blocker` (workspace, worker, coordinator turn, pending intent, needs-you task, pending verdict); `archived_project_refuses_mutations_on_every_path` (one assertion per verb family + MCP); `archived_project_agent_not_started`; `restore_restores_everything` |
 | M3.2 | **Bridge: rename + environment source verbs** (`project.rename`, `environment.rename`, `environment.*_source`, `environment.set_isolation`; one-line bounded names) | display-only renames; shared-directory rules apply to environment sources | `environment_rename_keeps_ids_and_paths`; `rename_is_one_bounded_line`; `isolation_resolution_order` |
 | M3.3 | **SPA: settings page full** (environment sheet General/Sources/Isolation, project sheet rename/archive, Archived group with Restore, search tags, read-only banner on archived project/task/review views, hidden from wizard/switcher/inbox/selector) | every list hides archived rows except search and settings; banner + Restore; refusals verbatim; Archive pressable after refusal and disabled only during its single in-flight request | `environmentsSettingsDom.test.js`, `projectSettings.test.js`, `archivedProjectViews.test.js`, `createWorkspaceWizardModel.test.js` (archived hidden), `toolbarModel.test.js` (search tag) |
-| M3.4 | **Docs complete (#1080)**: MVP implementation complete; archive/restore, rename, environment settings and remaining limits in `docs/using.md`; Terminology Audit and architecture amended | labels/refusals checked against M3.1/M3.2 on dev and approved M3.3 consumer; §1.9/§3.3 match the implementation; Stage 1 manual dev acceptance still pending | n/a (docs only) |
+| M3.4 | **Docs complete (#1080)**: MVP implementation complete; archive/restore, rename, environment settings and remaining limits in `docs/using.md`; Terminology Audit and architecture amended | labels/refusals checked against M3.1–M3.3 merged on dev at wire 3.39.0; §1.9/§3.3 match the implementation; Stage 1 manual dev acceptance still pending | n/a (docs only) |
 
 **Stage 1 done when** each of these journeys runs on dev, by hand, against
 a migrated device:

@@ -865,15 +865,17 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
 
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.37.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.39.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   3.37.0 advertises `environments` for the M1 list, journaled project/first
   workspace creation, recovery and read-only environment settings. Creating
   environments or selecting extra folders in the creation wizard, archive,
   rename and environment secrets are not enabled by this capability. Legacy
   Project settings still offers Add folder through `project.add_source`.
-  M2.1 serves journaled environment creation and discard-unused in the bridge,
-  but holds those verbs and the `environments.create` / `projects.addedSources`
-  feature capabilities out of greetings until the M2.2 consumer.
+  3.38.0 releases journaled environment creation and discard-unused with
+  `environments.create` / `projects.addedSources` and the M2.2 consumer.
+  3.39.0 releases archive/restore, project rename and environment settings
+  with `projects.archive`, `projects.rename` and `environments.rename`,
+  respectively, and the M3.3 consumer. Environment secrets remain unavailable.
   3.31.0 retires snapshot-mode creation and actions, removes legacy agent
   mutation tools and adds the compact `legacy_review` summary marker,
   independently announced by `tasks.review.snapshotRetired` (#974).
@@ -1867,10 +1869,10 @@ dependent project projections; other references to the directory keep their
 settings. Git mutations invalidate views for every referencing project and
 affected checkout, while sync status remains keyed by project and source.
 The shared common-Git-directory lock continues to serialize repository work.
-The staged M3.2 `project.rename` and `environment.rename` change display names
+The M3.2 `project.rename` and `environment.rename` change display names
 only: a nonempty trimmed line of at most 200 UTF-8 bytes, with control characters
 and Unicode line/paragraph separators refused. IDs, source mounts and paths stay
-fixed. The staged `environment.add_source`, `remove_source`, `update_source`,
+fixed. The `environment.add_source`, `remove_source`, `update_source`,
 `sync_source` and `set_isolation` operate on environment-owned references even
 without a live project. Source membership is validated against every dependent
 project's additions, including parked records; existing workspace directories
@@ -1886,8 +1888,10 @@ sync conclusions, and persists before publishing the configuration and owned
 observations together. Conflicting configuration edits require a retry. Cached
 source remotes match both source ID and path. Due sync passes include environment
 references, including environments with no live projects.
-These seven verbs have explicit HTTP resources and fixtures at wire 3.37.0 but
-remain in `UNADVERTISED_CAPABILITIES` until M3.3 supplies their product surface.
+These seven verbs have explicit HTTP resources and fixtures and are advertised
+at wire 3.39.0 with the merged M3.3 product surface. Project rename uses
+`projects.rename`; environment rename/source/isolation edits use
+`environments.rename`.
 
 A configured project whose home folder is missing at boot is parked, not
 dropped (`bridge/src/app/projects/parked.rs`): its configuration is kept
@@ -3524,13 +3528,12 @@ or retry backoff changes; restore makes them eligible on the normal service tick
 The workspace admission hold spans both retained retries and new reservation
 through durable admission. Terminal environment-creation results remain readable.
 Configured conversation-item retention applies independently of project archive.
-The active wire contract is `API_VERSION` in `bridge/src/api/mod.rs`, advanced
-to the next available minor when the consumer checkpoint lands. Archive/restore
-are gated by `projects.archive`; display-name edits by `projects.rename` and
+The active wire contract is `API_VERSION` in `bridge/src/api/mod.rs`, now
+3.39.0 with the merged M3.3 consumer. Archive/restore are gated by
+`projects.archive`; display-name edits by `projects.rename` and
 `environments.rename` (the latter also gates environment source/isolation
-editing). Those capabilities and method advertisements are released with the
-M3.3 consumer, rather than by the staged bridge slices alone; clients use the
-advertised capabilities to enable each action.
+editing). Those capabilities and method advertisements shipped with the
+M3.3 consumer; clients use the advertised capabilities to enable each action.
 
 **Waiting-on tools.** `create_task` accepts `waiting_on`; `link_task` adds
 those edges atomically with its ordinary links. `unlink_task` removes only

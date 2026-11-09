@@ -43,6 +43,10 @@ docs-only amendment checks M3.1/M3.2 at dev
 `9796b07270cea28fb2d86c1b87524e84851a5e14` and the approved M3.3 consumer at
 `ea6637ab0804bcf6bb8b2186b84a5d1ecd870237` (`task/env-m3.3-settings`). It
 records settled display terms without renaming wire, route or stored identities.
+Rechecked after M3.3 merged on dev at `750e70576648b05c73e5cff3ae162e82468a2518`:
+the labels below are unchanged. Wire 3.39.0 advertises `projects.archive`,
+`projects.rename` and `environments.rename`, with separate SPA `projectRename`
+and `environmentRename` flags.
 
 | Surface | Settled M3 copy and meaning | Source checked |
 | --- | --- | --- |

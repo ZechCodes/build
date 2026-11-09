@@ -16,7 +16,7 @@ import { openCreateWorkspaceLegacy } from './createWorkspaceLegacy.js';
 import { readCreateWorkspaceTargets, followCreateWorkspaceTargets, submitCreateWorkspace,
   createLegacyWorkspace, cacheCreatedResources, createdWorkspaceRoute, discardCreatedProject, discardCreatedEnvironment, consumeCreateWorkspaceAttempt } from './createWorkspaceTargets.js';
 export { createWorkspaceWizardModel } from './createWorkspaceWizardModel.js';
-const draftOf = state => ({target:state.target,page:state.page,name:state.name,isolation:state.isolation,operationId:state.operationId,continues:state.continues,environmentDraft:state.environmentDraft,addedSources:state.addedSources,advancedExpanded:state.advancedExpanded});
+const draftOf = state => ({target:state.target,page:state.page,name:state.name,isolation:state.isolation,operationId:state.operationId,continues:state.continues,landed:state.landed,environmentDraft:state.environmentDraft,addedSources:state.addedSources,advancedExpanded:state.advancedExpanded});
 async function deleteDraft(address) {
   const record=await readUiRecord(address);
   if(record) await deleteUiDraftsIfUnwritten([{address,record}],()=>true);
@@ -329,7 +329,9 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     const projects=[...(snapshot.projects || []).filter(row=>row.deviceId !== deviceId || row.id !== id),{...project,id,deviceId}];
     return createWorkspaceWizardModel({...snapshot,projects,projectId:id,deviceId,fixedProject:true}).target;
   }
-  async function retryWorkspace({project,operationId}) {
+  async function retryWorkspace({project,environment,operationId,record}) {
+    // Retain the original landing in the next operation, including its discard authority.
+    state.landed={...record?.draft?.landed,project,environment,creationOperationId:record?.draft?.landed?.creationOperationId || operationId};
     state.target=landedProjectTarget(project);
     await submitContinuation(operationId);
   }
@@ -346,7 +348,9 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
       await screen.close();await returnToWizard(error,operationId);
     });
   }
-  async function resumeEnvironment({environment,operationId}) {
+  async function resumeEnvironment({environment,operationId,record}) {
+    // Resume creates the project later; keep its authority separate from the environment's.
+    state.landed={...record?.draft?.landed,environment,environmentCreationOperationId:record?.draft?.landed?.environmentCreationOperationId || operationId};
     const id=environment.environment_id || environment.id;
     state.target={...environment,id,key:`${state.target.deviceId}/${id}`,deviceId:state.target.deviceId,kind:'environment',summaryLabel:environment.name};
     state.operationId=null;state.continues=operationId;

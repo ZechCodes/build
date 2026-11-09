@@ -485,9 +485,13 @@ const sourceFingerprintParts = {
   "core/directoryWatcher.js": ["3016199e", "f2ebe782", "5731fa24", "665dba3a", "6fd96a9e", "f5a4ee11", "c6841b70", "db07db4f"],
   "core/taskTimelinePages.js": ["da2840fb", "5992d7ce", "038bbc4d", "9c01a8ab", "c320a6f3", "7592e5be", "d5cbf08c", "4fcf8220"],
 
-  "core/createWorkspaceProgress.js": ["a1043060", "ec8923a1", "4ee1bd97", "a1af57f7", "03cee83a", "20d21308", "519bc541", "533aa650"],
+  // #1087: progress reads retained landing evidence; no RPC or producer changes.
+  "core/createWorkspaceProgress.js": ["68ae6185", "1d6bb1a3", "364b6cdb", "bc015a2b", "bffc9b97", "a787107a", "bc149796", "05d1fba0"],
+  // #1087: project and environment discards keep their existing methods/selectors,
+  // each using its own creation operation ID retained across Resume and retries.
+  // No new method or resource.
   // #1088: project/workspace names are separate and blank workspace names are omitted; RPC methods and target dispatch edges remain unchanged.
-  "core/createWorkspaceTargets.js": ["9c6eaaf1", "4cfbc0b0", "dcd6e1af", "949b9771", "3bca6daa", "3cf486e0", "a4a57b71", "1c69eedc"],
+  "core/createWorkspaceTargets.js": ["b3f1afc3", "5242252b", "63c7e80a", "580fa9d1", "7c7f9f57", "1d93c67c", "09a66f24", "b4b1fe68"],
   "core/writeOperationProgress.js": ["612c1fc7", "78d4b658", "fb001a3b", "01eb5aba", "a6a82b1a", "0389924d", "06c8355f", "bdae5355"],
   // #1088: optionalProjectName derives the project label while the workspace draft name stays independent; RPC dispatch is unchanged.
   "core/createWorkspaceWizardModel.js": ["a6bae4bf", "19b319c0", "cea9955e", "a048bad4", "6311bfc4", "5c457eca", "e507fe7e", "ac704d74"],

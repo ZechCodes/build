@@ -50,16 +50,22 @@ export function followCreateWorkspaceTargets(listener) {
   const stopVisits = subscribeUiRecords(visitsAddress,listener);
   return ()=>{stop();stopVisits();};
 }
-export function workspaceCreateParams({target,name='',isolation='',continues}) {
-  return {project_id:target.id,name,...(isolation ? {isolation}:{}),...(continues ? {continues}:{})};
+function workspaceOptions({name='',isolation=''}) {
+  return {...(name.trim() ? {name}:{}),...(isolation ? {isolation}:{})};
+}
+export function workspaceCreateParams(input) {
+  return {project_id:input.target.id,...workspaceOptions(input),...(input.continues ? {continues:input.continues}:{})};
+}
+function environmentProjectParams(input) {
+  const added = input.addedSources?.length ? {added_sources:input.addedSources.map(sourceDraftParams)} : {};
+  return {name:input.projectName ?? input.name,workspace:workspaceOptions(input),...added};
 }
 function creationRequest(input) {
   const method=creationMethodForTarget(input.target);
   if(!method)throw new Error('Unknown creation target');
   if(input.target.kind === 'project') return {method,params:workspaceCreateParams(input)};
-  const {target,name,isolation,continues}=input;
-  const added = input.addedSources?.length ? {added_sources:input.addedSources.map(sourceDraftParams)} : {};
-  const project = {name:input.projectName ?? name,workspace:{...(name?.trim() ? {name}:{}),...(isolation ? {isolation}:{})},...added};
+  const {target,continues}=input;
+  const project = environmentProjectParams(input);
   const continuation = continues ? {continues} : {};
   if(target.kind !== 'new-environment') return {method,params:{environment_id:target.id,...project,...continuation}};
   const environment = input.environmentDraft;

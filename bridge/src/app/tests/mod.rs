@@ -229,6 +229,7 @@ mod environments_project_identity;
 mod environments_recovery_identity;
 mod environments_stage_identity;
 mod environments_tracker_identity;
+mod project_archive;
 
 mod agent_creators;
 mod agent_message_attachments;

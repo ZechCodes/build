@@ -89,6 +89,9 @@ impl ProjectSource {
 
 mod agent_tools;
 mod agent_writes;
+mod archive;
+mod archive_guard;
+pub(in crate::app) use archive_guard::{archive_error_string, archive_guard_required};
 pub(in crate::app) mod base_sync;
 pub(in crate::app) use agent_writes::{
     AgentChoiceArgs, ProjectSourceArgs, WorkspaceAgentAddress, WorkspaceDirectoryArgs,
@@ -111,7 +114,7 @@ mod parked;
 mod project_registry;
 #[cfg(test)]
 mod project_registry_tests;
-mod requests;
+pub(in crate::app) mod requests;
 mod source_directory_claims;
 pub(in crate::app) use source_directory_claims::SourceDirectoryClaims;
 pub(in crate::app) use source_directory_claims::SourceDirectoryLease;
@@ -122,7 +125,7 @@ pub(in crate::app) use source_holds::SourceMoves;
 mod source_scope;
 pub(in crate::app) use source_scope::ResolvedProjectSource;
 pub(crate) use source_scope::{MOVED_GIT_SOURCE, NOT_GIT_SOURCE};
-mod source_update;
+pub(in crate::app) mod source_update;
 
 /// What an edit leaves a source's record as. `None` keeps its label.
 pub(in crate::app) struct SourceRecord {
@@ -135,7 +138,7 @@ pub(in crate::app) struct SourceRecord {
 }
 
 use project_registry::ProjectCandidate;
-pub(in crate::app) use project_registry::ProjectRegistry;
+pub(in crate::app) use project_registry::{ProjectConfiguration, ProjectRegistry};
 
 /// One registered project: a git repo, its base branch, and the orchestrator that
 /// drives tasks on it. Each project gets its own worktrees subdir and orchestrator
@@ -220,8 +223,18 @@ pub(in crate::app) fn safe_mount_name(name: &str) -> String {
 pub(in crate::app) fn canonical_source_path(
     path: &std::path::Path,
 ) -> Result<std::path::PathBuf, String> {
-    let canonical = std::fs::canonicalize(path)
-        .map_err(|error| format!("cannot open source {}: {error}", path.display()))?;
+    let canonical = std::fs::canonicalize(path).map_err(|error| {
+        let message = format!("cannot open source {}: {error}", path.display());
+        if error.kind() == std::io::ErrorKind::NotFound {
+            crate::api::v1::reviews::errors::encode(
+                "not_found",
+                message,
+                serde_json::json!({"path":path.display().to_string()}),
+            )
+        } else {
+            message
+        }
+    })?;
     if !canonical.is_dir() {
         return Err(format!(
             "source is not a directory: {}",

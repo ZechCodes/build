@@ -44,6 +44,7 @@ impl AppState {
                         .read_value(),
                     compaction: self.scope_compaction_observation(&scope),
                     project_id: project.id.clone(),
+                    archived_at: project.archived_at,
                     environment_id: project.environment_id.clone(),
                     environment_name: self
                         .projects
@@ -119,6 +120,7 @@ impl AppState {
             "project_id": p.id,
             "environment_id": p.environment_id,
             "environment_name": self.projects.environment(&p.environment_id).map(|environment| &environment.name),
+            "archived_at": p.archived_at,
             "compaction_thresholds": self.compaction_thresholds(&crate::compaction::CompactionScope::Project(p.id.clone())).unwrap_or_default().read_value(),
             "compaction": self.scope_compaction_observation(&crate::compaction::CompactionScope::Project(p.id.clone())),
             "name": p.name,
@@ -136,7 +138,7 @@ impl AppState {
             "session_started_ms": self.session_summary(&p.id).session_started_ms,
             "last_activity_ms": self.session_summary(&p.id).last_activity_ms,
         });
-        self.record_project_snapshot_observation(&p.id, &value);
+        self.record_project_snapshot_observation(p, &value);
         value
     }
 }

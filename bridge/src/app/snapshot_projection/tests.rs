@@ -78,7 +78,7 @@ fn delayed_project_probe_cannot_replace_a_newer_observation() {
     let delayed = app.capture_project_snapshot_refresh().render();
     let mut newer = app.read_view.load().get("project.list", "").unwrap()["projects"][0].clone();
     newer["sources"][0]["remote"] = json!("newly-observed-origin");
-    app.record_project_snapshot_observation(&project, &newer);
+    app.record_project_snapshot_observation(app.project_for(&project).unwrap(), &newer);
     app.install_project_snapshot_refresh(delayed);
     app.publish_snapshot_projection();
     assert_eq!(

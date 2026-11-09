@@ -132,6 +132,9 @@ pub(in crate::app) fn preflight_delivery(
     let key = turn.tab_key();
     let (plan, interrupt_session) = {
         let s = timer.lock(state);
+        if s.delivery_owner_held(&turn.owner) {
+            return DeliveryPreflight::Deferred;
+        }
         if !s.queued_agent_target_exists(turn) {
             return DeliveryPreflight::Declined;
         }
@@ -308,6 +311,7 @@ pub(in crate::app) fn deliver(
     );
     let Some((wire_id, spawned)) = (match opened {
         Ok(opened) => opened,
+        Err(StartFailure::Deferred(_)) => return Ok(DeliveryOutcome::Deferred),
         Err(StartFailure::Refused(why)) => return Ok(DeliveryOutcome::Refused(why)),
         Err(StartFailure::Failed(error)) => return Err(error),
     }) else {

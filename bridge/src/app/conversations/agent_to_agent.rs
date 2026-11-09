@@ -76,6 +76,8 @@ impl AppState {
         body: &str,
         attachments: &[Value],
     ) -> Result<Value, String> {
+        self.refuse_run_recovery(sender.entity_id)?;
+        self.refuse_run_recovery(target_entity_id)?;
         super::inputs::validate_agent_message_body(body)?;
         let requester = self.agent_requester(sender)?;
         self.refuse_self_send(&requester, target_entity_id, target_agent_id)?;

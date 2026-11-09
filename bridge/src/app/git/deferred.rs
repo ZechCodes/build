@@ -53,7 +53,6 @@ impl GitCallScope for GitScope {
     fn invalidate(&self, app: &mut AppState) {
         // The completed write belongs to this checkout even if its original
         // owner moved, or a workspace selected it without a legacy owner.
-        app.invalidate_shared_repository_views(&self.repo_path);
         if app.git_scope_is_current(self) {
             app.invalidate_git_scope_caches(self);
         }
@@ -82,10 +81,20 @@ impl<S: GitCallScope> DeferredGitWork for ScopedGitCall<S> {
         if let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) {
             self.scope.validate(&state.lock().unwrap())?;
         }
-        (self.work)(&self.scope, params)
+        let result = (self.work)(&self.scope, params);
+        if let (Some(refresh), Some(path)) = (&self.environments, self.scope.mutation_path()) {
+            if let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) {
+                refresh.recapture(&state.lock().unwrap());
+            }
+            refresh.observe(&[path.to_path_buf()]);
+        }
+        result
     }
 
     fn invalidate(&self, app: &mut AppState) {
+        if let Some(refresh) = &self.environments {
+            refresh.install(app);
+        }
         self.scope.invalidate(app);
     }
 
@@ -147,5 +156,6 @@ pub(in crate::app) struct ScopedGitCall<S: GitCallScope> {
     pub(in crate::app) scope: S,
     pub(in crate::app) work: fn(&S, &Value) -> Result<Value, String>,
     pub(in crate::app) serialized: bool,
+    pub(in crate::app) environments: Option<crate::app::snapshot_projection::RepositoryRefresh>,
     pub(in crate::app) state: Option<std::sync::Weak<std::sync::Mutex<AppState>>>,
 }

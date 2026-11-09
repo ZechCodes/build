@@ -15,7 +15,7 @@ function folderHtml(source, index, label) {
     ? `<label for="create-folder-value-${index}">Git remote URL</label><input id="create-folder-value-${index}" data-folder-value="${index}" ${fieldTraits('identifier','next')} value="${esc(source.remote)}">`
     : `<p>${esc(source.path || 'No folder selected')}</p><button class="btn" type="button" data-folder-choose="${index}">Choose folder…</button>`;
   return `<fieldset class="field"><legend>Folder ${index + 1}${label ? ` · ${esc(label)}` : ''}</legend>${field}
-    <label for="create-folder-name-${index}">Folder label</label><input id="create-folder-name-${index}" data-folder-name="${index}" ${fieldTraits('identifier','next')} value="${esc(source.name)}">
+    <label for="create-folder-label-${index}">Folder label</label><input id="create-folder-label-${index}" data-folder-name="${index}" ${fieldTraits('identifier','next')} value="${esc(source.name)}">
     <label for="create-folder-branch-${index}">Base branch (optional)</label><input id="create-folder-branch-${index}" data-folder-branch="${index}" ${fieldTraits('identifier')} value="${esc(source.base_branch)}">
     <button class="btn" type="button" data-folder-remove="${index}">Remove folder ${index + 1}</button></fieldset>`;
 }

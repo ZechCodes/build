@@ -163,6 +163,8 @@ const FIXTURE_PROBE_REACHES_OUTSIDE: &[&str] = &[
     "fs.mkdir",
     // Its fixture names a folder under `~` to open as a source.
     "project.add_source",
+    // This fixture also registers a real folder outside the test state.
+    "environment.add_source",
     "project.create",
     // Its confirmed fixture would remove the project used by later probes.
     "project.delete",
@@ -361,4 +363,23 @@ fn every_refusal_carries_the_string_error_beside_its_code() {
             .is_err(),
         "the refusal walked above is the one the write-back half carries"
     );
+}
+
+#[test]
+fn environment_add_source_names_a_missing_directory_not_found() {
+    let (directory, repository) = init_repo();
+    let mut state = qa_state(&repository, directory.path());
+    let project = project_id_of(&mut state);
+    let environment = state.project_for(&project).unwrap().environment_id.clone();
+    let missing = directory.path().join("missing-environment-source");
+    let error = state
+        .dispatch_api(
+            "environment.add_source",
+            &json!({
+                "environment_id":environment,"path":missing
+            }),
+        )
+        .unwrap_err();
+    assert_eq!(error.code(), "not_found", "{}", error.message());
+    assert!(error.message().contains("cannot open source"));
 }

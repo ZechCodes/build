@@ -10,7 +10,7 @@ pub use compat::{
     ProjectRemoteSet, RestoredCheckout, RunAdopted, RunAdoptionSettled, WorktreeCreated,
 };
 pub use continuations::{ImplementationCaller, PlanSessionOpening};
-pub(in crate::app) use runner::WorktreeLifecycleJob;
+pub(in crate::app) use runner::{AppReservation, WorktreeLifecycleJob};
 pub(in crate::app) use runner::{LifecycleOutcome, LifecycleSettlement};
 pub(in crate::app) use settlements::{
     AbandonSettlement, AdoptImplementationSettlement, AdoptionSettlement, CreateWorktreeSettlement,

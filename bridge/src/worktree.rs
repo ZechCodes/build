@@ -15,7 +15,7 @@ pub use crate::isolation::{
 };
 pub(crate) use command::{
     bounded_git_fetch, configured_remote_for_branch, git_default_branch, git_in, git_origin_url,
-    git_remote_origin, git_stdout, remotes_match, unix_now,
+    git_origin_url_observed, git_remote_origin, git_stdout, remotes_match, unix_now,
 };
 pub(crate) use comparison::branch_comparison;
 pub use discovery::{

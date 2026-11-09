@@ -11,14 +11,14 @@ use crate::lifecycle::{
 use crate::remote_url::usable_remote_url;
 use serde_json::Value;
 
-struct SourceRequest {
+pub(in crate::app) struct SourceRequest {
     /// Preparation-local identity. Appended references receive final IDs under
     /// the app lock when their membership transaction publishes.
     id: String,
-    path: Option<std::path::PathBuf>,
+    pub(in crate::app) path: Option<std::path::PathBuf>,
     remote: Option<String>,
     name: String,
-    mount: String,
+    pub(in crate::app) mount: String,
     base_branch: Option<String>,
     destination: Option<std::path::PathBuf>,
 }
@@ -28,7 +28,7 @@ struct SourceRequest {
 /// to this as well as to every registered project, so two sources opened
 /// together cannot collide any more than two opened apart.
 #[derive(Default)]
-struct TakenSourceNames {
+pub(in crate::app) struct TakenSourceNames {
     paths: Vec<std::path::PathBuf>,
     remotes: std::collections::HashSet<String>,
     mounts: std::collections::HashSet<String>,
@@ -37,13 +37,21 @@ struct TakenSourceNames {
 impl TakenSourceNames {
     /// Seed the claim with what a project already holds, for a source being
     /// appended to it rather than opened with it.
-    fn over(sources: &[ProjectSource]) -> Self {
+    pub(in crate::app) fn over(sources: &[ProjectSource]) -> Self {
+        Self::with_origins(sources, sources.iter().filter_map(ProjectSource::origin))
+    }
+
+    /// Origins are owned probe results for callers that must keep IO off-lock.
+    pub(in crate::app) fn with_origins(
+        sources: &[ProjectSource],
+        origins: impl IntoIterator<Item = String>,
+    ) -> Self {
         TakenSourceNames {
             paths: sources
                 .iter()
                 .map(|source| crate::worktree::canonical_planned_path(&source.path))
                 .collect(),
-            remotes: sources.iter().filter_map(ProjectSource::origin).collect(),
+            remotes: origins.into_iter().collect(),
             mounts: sources.iter().map(|source| source.mount.clone()).collect(),
         }
     }
@@ -76,7 +84,7 @@ impl TakenSourceNames {
 
     /// Where each remote source will be cloned, held to the directories the
     /// local sources stand over: a clone must not land inside one of them.
-    fn refuse_managed_destinations(
+    pub(in crate::app) fn refuse_managed_destinations(
         &self,
         requests: &[SourceRequest],
         managed_root: &std::path::Path,
@@ -114,15 +122,15 @@ impl TakenSourceNames {
     }
 }
 
-struct PreparedSources {
+pub(in crate::app) struct PreparedSources {
     opened: crate::lifecycle::OpenedRepository,
-    sources: Vec<ProjectSource>,
-    created_checkouts: Vec<std::path::PathBuf>,
-    cloned_paths: Vec<std::path::PathBuf>,
+    pub(in crate::app) sources: Vec<ProjectSource>,
+    pub(in crate::app) created_checkouts: Vec<std::path::PathBuf>,
+    pub(in crate::app) cloned_paths: Vec<std::path::PathBuf>,
     _destination_claims: Vec<SourceDirectoryLease>,
 }
 
-struct OpenProjectSources {
+pub(in crate::app) struct OpenProjectSources {
     requests: Vec<SourceRequest>,
     managed_root: std::path::PathBuf,
     destination_claims: Vec<SourceDirectoryLease>,
@@ -252,7 +260,7 @@ impl AppState {
         self.source_directory_claims.reserve_destinations(paths)
     }
 
-    fn reserve_source_opening(
+    pub(in crate::app) fn reserve_source_opening(
         &self,
         mut requests: Vec<SourceRequest>,
         managed_root: std::path::PathBuf,
@@ -314,7 +322,7 @@ impl AppState {
         Ok(())
     }
 
-    pub(super) fn refuse_source_containment(
+    pub(in crate::app) fn refuse_source_containment(
         &self,
         candidate: &std::path::Path,
         replacing: Option<(&str, &str)>,
@@ -337,7 +345,7 @@ impl AppState {
         Ok(())
     }
 
-    pub(super) fn validate_prepared_sources(
+    pub(in crate::app) fn validate_prepared_sources(
         &self,
         project_id: Option<&str>,
         sources: &mut [ProjectSource],
@@ -347,6 +355,15 @@ impl AppState {
             Some(id) => TakenSourceNames::over(&self.project_reference_sources(id)?),
             None => TakenSourceNames::default(),
         };
+        self.validate_prepared_source_paths(sources, &mut taken)?;
+        self.refuse_duplicate_clone_remotes(sources, cloned_paths)
+    }
+
+    pub(in crate::app) fn validate_prepared_source_paths(
+        &self,
+        sources: &mut [ProjectSource],
+        taken: &mut TakenSourceNames,
+    ) -> Result<(), String> {
         for source in sources.iter_mut() {
             source.path = canonical_source_path(&source.path)?;
             self.validate_secret_source(&source.path)?;
@@ -354,7 +371,7 @@ impl AppState {
             taken.claim_path(&source.path)?;
             self.refuse_source_containment(&source.path, None)?;
         }
-        self.refuse_duplicate_clone_remotes(sources, cloned_paths)
+        Ok(())
     }
 
     fn refuse_duplicate_clone_remotes(
@@ -413,7 +430,7 @@ impl AppState {
     /// its git to the drain. The directory is the row's identity: there is no
     /// project id until the git lands, and what two project verbs collide over
     /// is the folder, not a name.
-    pub(super) fn defer_project<T, S>(
+    pub(in crate::app) fn defer_project<T, S>(
         &mut self,
         dest: std::path::PathBuf,
         title: String,
@@ -498,11 +515,27 @@ impl AppState {
     /// already registered and every source being opened beside it. The checks
     /// are the same whether the source is one a project is opened over or one
     /// appended to a project that already exists.
-    fn source_request(
+    pub(in crate::app) fn source_request(
         &self,
         entry: &Value,
         id: String,
         taken: &mut TakenSourceNames,
+    ) -> Result<SourceRequest, String> {
+        self.source_request_with_origin_check(entry, id, taken, |remote| {
+            self.projects
+                .registered_sources()
+                .iter()
+                .filter_map(ProjectSource::origin)
+                .any(|origin| crate::worktree::remotes_match(&origin, remote))
+        })
+    }
+
+    pub(in crate::app) fn source_request_with_origin_check(
+        &self,
+        entry: &Value,
+        id: String,
+        taken: &mut TakenSourceNames,
+        remote_in_use: impl FnOnce(&str) -> bool,
     ) -> Result<SourceRequest, String> {
         let path_text = entry
             .get("path")
@@ -528,13 +561,7 @@ impl AppState {
             self.refuse_source_containment(candidate, None)?;
         }
         if let Some(remote) = remote {
-            if self
-                .projects
-                .registered_sources()
-                .iter()
-                .filter_map(ProjectSource::origin)
-                .any(|origin| crate::worktree::remotes_match(&origin, remote))
-            {
+            if remote_in_use(remote) {
                 return Err(format!("source remote is already registered: {remote}"));
             }
             taken.claim_remote(remote)?;

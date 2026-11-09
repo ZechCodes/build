@@ -397,6 +397,7 @@ pub struct AppState {
     /// deciding right now. Single-flight, for the same reason a diff refresh
     /// is: the board polls faster than a fetch per stage returns.
     vanished_run_sweep_in_flight: bool,
+    restored_recovery: runtime::restored_recovery::RestoredRecovery,
     /// Test seam: see [`OffLockGate`]. `None` in production.
     #[cfg(test)]
     off_lock_gate: Option<OffLockGate>,
@@ -419,6 +420,10 @@ pub struct AppState {
     /// prove the mutex is free.
     #[cfg(test)]
     off_lock_project_list_gate: Option<OffLockGate>,
+    #[cfg(test)]
+    off_lock_environment_probe_gate: Option<OffLockGate>,
+    #[cfg(test)]
+    off_lock_repository_publication_gate: Option<OffLockGate>,
     /// Pause a terminal create after RPC admission, before its spawn guard.
     #[cfg(test)]
     terminal_create_admission_gate: Option<OffLockGate>,
@@ -759,6 +764,7 @@ impl AppState {
             router_choice: None,
             board: BoardIndex::new(HashMap::new(), HashMap::new()),
             vanished_run_sweep_in_flight: false,
+            restored_recovery: Default::default(),
             diff_compute_observer: None,
             #[cfg(test)]
             off_lock_gate: None,
@@ -774,6 +780,10 @@ impl AppState {
             inline_deferred: false,
             #[cfg(test)]
             off_lock_project_list_gate: None,
+            #[cfg(test)]
+            off_lock_environment_probe_gate: None,
+            #[cfg(test)]
+            off_lock_repository_publication_gate: None,
             #[cfg(test)]
             terminal_create_admission_gate: None,
             #[cfg(test)]
@@ -1010,6 +1020,7 @@ impl AppState {
         // runs off this mutex.
         ChangeBus::spawn_flusher_on(Arc::clone(&changes), push_runtime);
         WorktreeWatchers::spawn_reconciler(watchers, changes);
+        Self::spawn_restored_recovery_service(&state);
         Self::spawn_waiting_on_service(&state);
         Self::spawn_task_delivery_service(&state);
         state

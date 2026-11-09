@@ -1,6 +1,7 @@
 use super::*;
 
 mod activity_publication;
+mod archive_session_admission;
 
 pub(in crate::app::tests) mod agent_tabs;
 mod claude_tui_compaction;

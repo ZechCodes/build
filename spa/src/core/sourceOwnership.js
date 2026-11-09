@@ -33,16 +33,18 @@ function sourceDispatchAllowed(project, sourceId, evidence, authority) {
 
 /** Re-read after the existing greeting wait, immediately before dispatch. A
  * retained control or queued action cannot carry old legacy evidence forward. */
-export async function withWritableProjectSource(deviceId, context, readProject, sourceId, send) {
+export async function withWritableProjectSource(deviceId, context, readProject, sourceId, send, preflight = () => {}) {
+  preflight();
   const request = await whenGreeted(context, async (stands = () => true) => {
     const evidence = await readSourceOwnershipEvidence(deviceId);
     const project = await readProject();
     const id = sourceId || project?.sources?.[0]?.id;
+    preflight();
     const authority = captureDeviceGreeting(context, { allowLegacy: true });
     if (!stands() || !project || !sourceDispatchAllowed(project, id, evidence, authority)) throw new Error(SOURCE_READ_ONLY);
     return send();
   });
-  if (!request) throw new Error(SOURCE_READ_ONLY);
+  if (!request) { preflight(); throw new Error(SOURCE_READ_ONLY); }
   return request.sent;
 }
 
@@ -50,6 +52,6 @@ const sourceWrites = new Set(["project.update_source", "project.remove_source", 
 
 export function guardProjectSourceRpc(deviceId, callRpc, readProject) {
   return (method, params, ...options) => sourceWrites.has(method)
-    ? withWritableProjectSource(deviceId, contextFor(deviceId), readProject, params?.source_id, () => callRpc(method, params, ...options))
+    ? withWritableProjectSource(deviceId, contextFor(deviceId), readProject, params?.source_id, () => callRpc(method, params, ...options), () => callRpc.preflight?.(method, params, ...options))
     : callRpc(method, params, ...options);
 }

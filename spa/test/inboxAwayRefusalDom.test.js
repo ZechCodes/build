@@ -232,6 +232,13 @@ describe("a press on a machine that is away", () => {
     await vi.waitFor(() => expect(firstCardError().textContent).not.toBe(""), WAIT);
     expect(firstCardError().textContent).toBe("Build cannot save this folder's remote because this machine is away.");
     expect(sentVerbs()).toEqual([]);
+    const refusedCard = firstCard();
+    const { environmentSupportAddress } = await import("../src/core/environmentSupport.js");
+    const { readCached, writeCached } = await import("../src/core/localCache.js");
+    const support = environmentSupportAddress(DEVICE);
+    await writeCached(support, (await readCached(support)).value);
+    await vi.waitFor(() => expect(firstCard()).not.toBe(refusedCard), WAIT);
+    expect(firstCardError().textContent).toBe("Build cannot save this folder's remote because this machine is away.");
   });
 
   it("says the machine went, when it goes while the press is in flight", async () => {

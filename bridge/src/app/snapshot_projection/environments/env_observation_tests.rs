@@ -46,6 +46,7 @@ fn environment_source_remote_uses_newest_observation() {
     app.snapshot_observations.projects.lock().unwrap().insert(
         project,
         ProjectObservation {
+            source_versions: Default::default(),
             version: 5,
             value: json!({"sources":[
                 wrong_id.wire_observed(json!("wrong-id")),
@@ -65,6 +66,7 @@ fn environment_source_remote_uses_newest_observation() {
 
 fn source_observation(source: &ProjectSource, version: u64, remote: Value) -> ProjectObservation {
     ProjectObservation {
+        source_versions: Default::default(),
         version,
         value: json!({"sources":[source.wire_observed(remote)]}),
     }
@@ -207,17 +209,23 @@ fn environment_availability_uses_its_current_home_and_newest_matching_probe() {
     let project = "proj-1".to_owned();
     let secondary = app.sources_for(&project).unwrap().pop().unwrap();
     assert!(app.projects.set_sources(&project, vec![secondary]));
-    assert!(app.projects.set_isolation(&project, Some(Isolation::Rift)));
     assert_eq!(app.project_for(&project).unwrap().home_path, original_home);
     let environment_id = app.project_for(&project).unwrap().environment_id.clone();
+    // This preference belongs to the environment and must survive its last project.
+    let mut configured = app.config_value(&app.projects_dir, app.default_harness, app.isolation);
+    configured["environments"][0]["isolation"] = json!("rift");
+    app.projects.restore_environments(&configured);
+    assert_eq!(app.project_for(&project).unwrap().isolation, None);
     app.snapshot_observations.projects.lock().unwrap().insert(
         project.clone(),
         ProjectObservation {
+            source_versions: Default::default(),
             version: 2,
             value: json!({"path":original_home,"sources":[],"isolation_available":{"rift":true}}),
         },
     );
     app.snapshot_observations.environments.lock().unwrap().insert(environment_id.clone(), ProjectObservation {
+        source_versions: Default::default(),
         version:3, value:json!({"path":environment_home,"sources":[],"isolation_available":{"rift":false}}),
     });
     let row = &app.environment_list()["environments"][0];
@@ -246,6 +254,7 @@ fn environment_availability_uses_its_current_home_and_newest_matching_probe() {
     let latest_remote = "https://example.invalid/latest-secondary.git";
     let source = app.project_for(&project).unwrap().sources[0].wire_observed(json!(latest_remote));
     app.snapshot_observations.projects.lock().unwrap().insert(project.clone(), ProjectObservation {
+        source_versions: Default::default(),
         version:4, value:json!({"path":original_home,"sources":[source],"isolation_available":{"rift":false}}),
     });
     app.dispatch(

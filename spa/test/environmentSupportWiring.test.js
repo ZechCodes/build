@@ -61,3 +61,11 @@ it.each([
   expect(bridgeCapabilities("dev-1").environments).toMatchObject(expected);
   await vi.waitFor(async () => expect(await readEnvironmentSupport("dev-1")).toMatchObject(expected));
 });
+
+it("keeps cached ownership capability evidence when a greeting is refused", async () => {
+  await greet(["environments", "projects.addedSources"]);
+  await vi.waitFor(async () => expect((await readEnvironmentSupport("dev-1")).addedSources).toBe(true));
+  const before = (await readCached(environmentSupportAddress("dev-1"))).value;
+  await expect(greetBridge(async () => { throw new Error("unknown method: session.hello"); }, { deviceId: "dev-1", strict: true })).resolves.toBe(false);
+  expect((await readCached(environmentSupportAddress("dev-1"))).value).toEqual(before);
+});

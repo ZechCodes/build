@@ -286,7 +286,8 @@ const sourceFingerprintParts = {
   "sheets/environmentSettings.js": ["46b8c3c8", "c4c507ab", "4e081f06", "84ba399f", "32479c6d", "4110a01f", "e3233fe3", "f1acab81"],
   "sheets/projectGeneral.js": ["a89586e4", "f50590d4", "7dfb57a5", "46b4313c", "b7cf7255", "76085087", "8abea538", "ec72d05c"],
   // #1065: cached eligibility is separate from current-greeting dispatch; epoch and genuine no-epoch legacy paths wrap existing source calls.
-  "core/sourceOwnership.js": ["5bb01dc9", "cd302bf9", "b640e0f4", "b396ab65", "8c8d6b7e", "9183fa6a", "22b5fb05", "0d37ee27"],
+  // Action-specific device preflight can refuse before ownership admission; it sends no RPC.
+  "core/sourceOwnership.js": ["4dc6b96f", "5e384a49", "1765f57d", "c78540f8", "5cb6e253", "d7e82c0f", "80b93292", "b28dfe55"],
   // #1065: accepted navigation notifies only opted-in project settings; RPC edges are unchanged.
   "app.js": ["8e043a81", "cc1d5abd", "0e312435", "52018876", "d56a6883", "8c9587f5", "e34aa31b", "25b32265"],
   "appState.js": ["d24d9edc", "6e4988f0", "8a5289ee", "6c449b3f", "91bdbe42", "7cd43ada", "7a9df6a4", "acd39971"],
@@ -302,7 +303,7 @@ const sourceFingerprintParts = {
   "core/agentRolesPanel.js": ["c05b7c96", "5849ec7f", "0d258bc2", "96a7795e", "2a4663f4", "57e78316", "de145b90", "699b4a91"],
   "core/agentSurfacesModel.js": ["546cf5aa", "3a478c63", "4a0f02f5", "4eafcae5", "53a5ffd3", "3ad4f563", "c075aa93", "dcbbef9d"],
   "core/bridgeApi/v1/compactionParams.js": ["506db6e2", "f8148bc4", "925e889b", "61c6fe15", "d8cf74e2", "ef7e468f", "b610115f", "7132ce5b"],
-  "core/bridgeApi/v1/index.js": ["7b9b9299", "b9f510a0", "3a497756", "54acaeea", "caf66b80", "e0baf7f3", "58aad1ec", "75e60cbd"],
+  "core/bridgeApi/v1/index.js": ["18364f82", "ddfbd7ab", "bf278a68", "b2f1b380", "ce22a44f", "718a8381", "7e93dcfe", "6679262e"],
   "core/bridgeApi/v1/writeMethods.js": ["c78ae754", "d23774c3", "664a2901", "97e2fcce", "bf94d04d", "13e8fc66", "96313eb2", "3ea76832"],
   "core/bridgeEpoch.js": ["e04a0a11", "6535b020", "abcac20c", "972a554f", "8d51fbb9", "6ef07fd8", "16062ed0", "9cd4d213"],
   "core/bridgeUpdatePanel.js": ["f9b19cc7", "4abdfc5a", "d159194d", "49ee91ed", "d39ab2e7", "15a6a80f", "0cb51530", "623ca8e5"],
@@ -312,7 +313,8 @@ const sourceFingerprintParts = {
   // #997 runtime-board captureDecisionView.js:142: branch choices join cached runtime run bodies; existing RPC and mutation dispatch unchanged.
   "core/captureDecisionView.js": ["15299f0a", "f1762e74", "8af22269", "0f16e798", "ccf8e367", "d2d759e2", "554ce8fc", "002692f1"],
   // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
-  "core/changeEvents.js": ["64c7b70b", "3ed73b95", "b11eef57", "3d802986", "27035cff", "ec51a6f3", "164078a9", "4aee38d7"],
+  // #1065: concrete hello gates cached capability evidence; greeting refusal still disarms. RPC edges are unchanged.
+  "core/changeEvents.js": ["e60915c6", "3f465a36", "2f04b726", "353cd899", "b5751557", "33b82f6a", "729747b4", "37c1188c"],
   "core/changesComments.js": ["a4d03b10", "31dbf6e1", "6e12294d", "e69ceb46", "2958a35c", "7f2f07c9", "4088008f", "f1d7394d"],
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],
@@ -347,7 +349,7 @@ const sourceFingerprintParts = {
   "core/gitPane.js": ["3b9c66d1", "186e1669", "3ecc46b0", "0afe28d8", "10e87dd3", "55dfbb00", "44fa79f8", "88d71409"],
   "core/httpSession.js": ["0b7b82e7", "b8028927", "c780566d", "761fc9fc", "12ca2faa", "7e626b1a", "c51ecf85", "3e85059a"],
   "core/inboxCaptures.js": ["48a7f5fb", "b2132a83", "5901fb31", "4fb0c5ae", "97005297", "2d0b9db6", "be2c3e6d", "1271b663"],
-  "core/inboxDevices.js": ["f9a293e4", "dff4b2b4", "f5fc7940", "f5c1f48d", "a66a5718", "238826a6", "e3dc6b9f", "4060a79e"],
+  "core/inboxDevices.js": ["cd1cfdd5", "9a9734e7", "ac73df50", "cac3383d", "9b6b0229", "b72936f1", "4b2d5657", "a8586421"],
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
   // #997 runtime-board inboxView.js:193,206,320: scoped pending display and cached branch choices; existing RPC and mutation dispatch unchanged.
   // #1051: cached environment identity and wizard entry points; existing RPC methods, producers and assignment edges are unchanged.
@@ -404,7 +406,7 @@ const sourceFingerprintParts = {
   "core/taskComposer.js": ["44233e6a", "d60f8251", "f724f7bc", "af16b319", "2c205f31", "5a10e50b", "b233a25f", "ed90f8ad"],
   "core/taskCountReaderRuntime.js": ["dc823412", "765c408d", "09a4bd9d", "959b3450", "116e39aa", "fb67622c", "6afd9df6", "ce9e3eff"],
   "core/taskFilterChoices.js": ["6e7fca24", "b96c853f", "5baa71d1", "9e8c17fc", "9a8ad6ff", "14e53667", "9d583cd0", "032ce3ee"],
-  "core/taskMutationFence.js": ["1f7ac815", "7e25b93b", "78989130", "90e22a43", "b6c956a5", "2cb5f2a0", "e424fb92", "d8c7cd29"],
+  "core/taskMutationFence.js": ["0d352485", "54a207f5", "8caf3698", "07516276", "d853a678", "ecccfc9a", "77ee9c4b", "9aa02945"],
   "core/taskPaneSummaryReads.js": ["38940784", "0edcdfa7", "9b24a843", "58a0edf6", "142d6012", "742d2793", "d3f0c487", "d74a2d8e"],
   "core/taskReferenceLookups.js": ["d96512cb", "87a770a1", "4a0ecbe7", "c26db1f1", "e7ad9481", "284534db", "db18cad9", "3cc292af"],
   "core/taskReviewBatch.js": ["fc2f7cbe", "2ead7274", "41b47492", "2284e88a", "57cfa35f", "c5247a57", "2d78ccd0", "49e11c3e"],
@@ -448,15 +450,17 @@ const sourceFingerprintParts = {
   // #1052: nested creation execution evidence changes display state; transport method edges stay unchanged.
   "core/writeOperations.js": ["eb7e34fc", "2e61c22a", "e6a302e2", "fc74cb2c", "99a7d032", "0ea012eb", "9c4adb8f", "ebd06bfc"],
   "push.js": ["c7a3eb27", "240e0a4d", "3e314aee", "369bea39", "25bf83e0", "f105e41a", "0e4ed716", "4e53028b"],
-  // #1065: browser teardown retires cached listing readers; filesystem RPC edges are unchanged.
-  "sheets/browser.js": ["72c9010b", "782cd718", "dfc8095d", "106eb9a7", "75d335b0", "f7179c9b", "4dca7e99", "b198a2c1"],
+  // #1065: browser teardown follows its containing overlay or page host; filesystem RPC edges are unchanged.
+  "sheets/browser.js": ["26b0a0d1", "9c17f7c3", "0d7f7b63", "f387fc4e", "2067502a", "c2f7b754", "e996da65", "07b55e58"],
   "sheets/newRepo.js": ["2aa62eb9", "1256b93f", "6d69e55c", "9aadf051", "0ca4505a", "35eb191a", "7c08d8f9", "f4a68f66"],
+  // #997 projectSettings.js:232: the existing project.list loader delegates to owned device recovery.
   // #1065: positive ownership evidence gates both card rendering and editing.save.
   // Source replies use the shared identity-preserving writer; project-scoped methods/selectors and project.list refresh are unchanged.
   // Opening teardown and atomic Sync adoption retain current project metadata; no RPC edge changes.
+  // Source refusal notices survive cache repaints; existing RPC verbs and parameter producers are unchanged.
   // Retired-frame picker cleanup and committed navigation release only the project settings opening.
-  "sheets/projectSettings.js": ["4bc2a192", "cca0df99", "310d0353", "b8b61c8f", "fd4566f8", "424f7544", "b97b9252", "e2cc1a20"],
-  "sheets/projectSources.js": ["17ec839a", "a3661e22", "07af1ed0", "5a245332", "c4f9c5f4", "0723dd01", "7b85eb65", "ec71d3d5"],
+  "sheets/projectSettings.js": ["fb08b4f7", "3d6eaed7", "d87843f3", "dd40d072", "2ee15a02", "e30488af", "1fab1251", "8010a94b"],
+  "sheets/projectSources.js": ["906116e8", "a4b91550", "79689d9c", "9b7d85f9", "727c70c7", "619b7e07", "8c9381e5", "cb04da48"],
   // #1065: sheet-owned in-flight state blocks duplicate Sync requests; the accepted callback, RPC method and selectors are unchanged.
   "sheets/sourceSyncControls.js": ["49045a5b", "1fd03d03", "c9e574df", "020f32ea", "5d64bdd0", "3ab970b7", "1c98dee9", "cb20c875"],
   // #997 workspaceSettings.js:292: the existing project.list catalog loader delegates to owned device recovery.
@@ -1201,7 +1205,7 @@ test("secrets metadata routes are explicit and sealed uploads are bounded", asyn
 
 test("the generator inventories ordinary, required-context and optional-context methods", () => {
   const output = execFileSync(process.execPath, [fileURLToPath(new URL("scripts/http-resource-manifest.mjs", root)), "--check"], { encoding: "utf8" });
-  assert.match(output, /162 explicit resource routes; generated artifacts current/);
+  assert.match(output, /171 explicit resource routes; generated artifacts current/);
 });
 
 
@@ -1212,5 +1216,12 @@ test("creation attempts use explicit resources without staged exclusions", async
     for (const exclusions of Object.values(stagedConsumerExclusions)) {
       assert.ok(!exclusions.some(({ use }) => use[0] === method));
     }
+  }
+});
+
+test("staged environment edits have explicit resource routes", async () => {
+  const manifest = JSON.parse(await readFile(new URL("fixtures/api/http/resource-manifest.json", root), "utf8"));
+  for (const method of ["project.rename", "environment.rename", "environment.add_source", "environment.remove_source", "environment.update_source", "environment.sync_source", "environment.set_isolation"]) {
+    assert.ok(manifest.operations.some((operation) => operation.method === method), `Missing staged resource ${method}`);
   }
 });

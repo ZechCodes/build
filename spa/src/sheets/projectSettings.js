@@ -17,7 +17,7 @@ import { readSourceSupport, SOURCE_EDIT_SUPPORT_KIND } from "../core/sourceEditS
 import { environmentSupportAddress, readEnvironmentSupport } from "../core/environmentSupport.js";
 import { guardProjectSourceRpc, readSourceOwnershipEvidence } from "../core/sourceOwnership.js";
 import { environmentsAddress, readCachedEnvironments } from "../core/environmentCache.js";
-import { mountSourceCards, readSourceEdits, restoreSourceEdits, sourceEditing, sourcesSectionHtml } from "./projectSources.js";
+import { mountSourceCards, readSourceEdits, restoreSourceEdits, sourceEditing, sourcesSectionHtml, showSourceWriteError } from "./projectSources.js";
 import { withNewerSyncs } from "../core/sourceSyncModel.js";
 import { onNavigationCommitted } from "../core/navigationLifetime.js";
 import { watchSheetLifetime } from "../core/sheetLifetime.js";
@@ -240,6 +240,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     mountSources(project, {
       callRpc: sourceRpc, record, deviceId, editing, refresh, syncInFlight,
       saveDraft,
+      showError: (error, sentence) => current() && showSourceWriteError(sheet, notices, error, sentence),
       onSaved: (sourceId, notice) => { notices[sourceId] = notice; },
       onSyncAccepted: (source) => { syncing.set(source.id, source.sync?.last_attempt_ms ?? null); },
       onSyncSettled: () => { void record.read(); },
@@ -290,9 +291,9 @@ function pullProjectSettings(projectId, { callRpc, deviceId, record }) {
  *
  *  Every write answers the project row itself, so the sheet repaints from what
  *  the bridge said rather than from what it hoped. */
-function mountSources(project, { callRpc, record, deviceId, editing, refresh, syncInFlight, saveDraft, onSaved, onSyncAccepted, onSyncSettled, onFrameChange, onReturn }) {
+function mountSources(project, { callRpc, record, deviceId, editing, refresh, syncInFlight, saveDraft, showError, onSaved, onSyncAccepted, onSyncSettled, onFrameChange, onReturn }) {
   const write = async (send, button, error, onDone) => {
-    if (error) error.textContent = "";
+    showError(error, "");
     button.disabled = true;
     try {
       const changed = await send();
@@ -303,8 +304,7 @@ function mountSources(project, { callRpc, record, deviceId, editing, refresh, sy
       return changed;
     } catch (thrown) {
       button.disabled = false;
-      if (error?.isConnected) error.textContent = thrown.message;
-      else notifyError("The project's folders were not changed", thrown.message);
+      if (!showError(error, thrown.message)) notifyError("The project's folders were not changed", thrown.message);
       return null;
     }
   };

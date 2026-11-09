@@ -407,3 +407,50 @@ fn episode_path(root: &Path, agent: &str, id: &str) -> Result<PathBuf, String> {
     }
     Ok(episode_directory(root, agent).join(format!("{id}.json")))
 }
+
+/// Restore drains must not let one unreadable checkpoint strand its siblings.
+/// Keep each file error in the batch so the caller retains a retry obligation.
+pub(crate) fn independent_episodes(
+    root: &Path,
+) -> Result<Vec<Result<RecoveryEpisode, String>>, String> {
+    let entries = match std::fs::read_dir(root.join("provider-recovery")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut records = Vec::new();
+    for entry in entries {
+        match entry
+            .map_err(|error| error.to_string())
+            .and_then(|entry| independent_directory(&entry.path()))
+        {
+            Ok(mut batch) => records.append(&mut batch),
+            Err(error) => records.push(Err(error)),
+        }
+    }
+    Ok(records)
+}
+
+fn independent_directory(directory: &Path) -> Result<Vec<Result<RecoveryEpisode, String>>, String> {
+    let mut paths = std::fs::read_dir(directory)
+        .map_err(|error| error.to_string())?
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    Ok(paths
+        .into_iter()
+        .filter_map(|path| match path {
+            Ok(path)
+                if path.extension().and_then(|extension| extension.to_str()) == Some("json") =>
+            {
+                Some(read_path(&path))
+            }
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect())
+}

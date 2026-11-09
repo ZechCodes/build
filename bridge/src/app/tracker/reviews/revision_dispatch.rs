@@ -16,8 +16,9 @@ impl AppState {
         let Some(store) = self.store.clone() else {
             return Ok(());
         };
+        let excluded = self.archived_project_keys();
         for delivery in store
-            .pending_review_revision_dispatches_at(now_ms)
+            .pending_review_revision_dispatches_at(now_ms, &excluded)
             .map_err(|error| error.to_string())?
         {
             let result = self.deliver_review_revision(&delivery);
@@ -43,7 +44,7 @@ impl AppState {
                 .map_err(|error| error.to_string())?;
         }
         for notice in store
-            .failed_review_revision_notices()
+            .failed_review_revision_notices_excluding_projects(&excluded)
             .map_err(|error| error.to_string())?
         {
             let result = self.post_revision_failure_notice(&notice).and_then(|()| {

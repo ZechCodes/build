@@ -30,6 +30,12 @@ use std::collections::BTreeMap;
 pub fn methods() -> &'static [(&'static str, Handler)] {
     v1_methods![
         v1_method!(
+            "project.rename",
+            project_rename,
+            ProjectRenameParams,
+            ProjectRow
+        ),
+        v1_method!(
             "project.set_compaction",
             set_compaction,
             SetCompactionParams,
@@ -48,6 +54,18 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             project_discard_unused,
             ProjectDiscardUnusedParams,
             EmptyResult
+        ),
+        v1_method!(
+            "project.archive",
+            project_archive,
+            ProjectParams,
+            ProjectArchiveResult
+        ),
+        v1_method!(
+            "project.restore",
+            project_restore,
+            ProjectParams,
+            ProjectArchiveResult
         ),
         v1_method!("project.list", project_list, NoParams, ProjectListResult),
         v1_method!(
@@ -323,7 +341,7 @@ pub struct ProjectSetIsolationParams {
 /// A field that must be there and may be `null`. Serde reads a missing
 /// `Option` field as `None`, which would turn "you forgot to say" into "clear
 /// it"; a `deserialize_with` field is required, so the two stay distinct.
-fn required_nullable<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+pub(super) fn required_nullable<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -584,6 +602,12 @@ pub struct ProjectConversation {
 /// isolation picture a control paints from.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectRow {
+    #[serde(
+        default,
+        deserialize_with = "named",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub archived_at: Named<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added_sources: Option<Vec<ProjectSourceRow>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1144,8 +1168,9 @@ pub struct ModelsListResult {
 /// codes, so the phrases are matched here rather than the sentences rewritten:
 /// a message is the wire's, and changing one to win a code would be a change
 /// to what every existing client shows its user.
-const CONFLICTS: [&str; 16] = [
+const CONFLICTS: [&str; 17] = [
     "a project must have at least one source",
+    "an environment must have at least one source",
     " belongs to environment ",
     "environment has a pending creation",
     "already included in this project",
@@ -1196,7 +1221,7 @@ fn says(message: &str, phrases: &[&str]) -> bool {
 /// Name the refusal this family raised, where the sentence says what
 /// [`ApiError::classify`](crate::api::ApiError::classify) cannot read from
 /// its general rules. Anything unmatched keeps the code classify gave it.
-fn refine(error: ApiError) -> ApiError {
+pub(super) fn refine(error: ApiError) -> ApiError {
     let message = error.message();
     if says(message, &UNAVAILABLE) {
         return ApiError::unavailable(message);
@@ -1627,4 +1652,35 @@ pub(super) fn discard_unused_error(message: String) -> ApiError {
         return ApiError::conflict(message, None);
     }
     ApiError::classify(message)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectRenameParams {
+    pub project_id: String,
+    pub name: String,
+}
+fn project_rename(
+    app: &mut AppState,
+    params: ProjectRenameParams,
+) -> Result<Answer<ProjectRow>, ApiError> {
+    answer(app.project_rename(&params.wire())).map_err(refine)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectArchiveResult {
+    pub project: ProjectRow,
+}
+
+fn project_archive(
+    app: &mut AppState,
+    params: ProjectParams,
+) -> Result<Answer<ProjectArchiveResult>, ApiError> {
+    answer(Ok(app.project_archive(&params.project_id)?))
+}
+
+fn project_restore(
+    app: &mut AppState,
+    params: ProjectParams,
+) -> Result<Answer<ProjectArchiveResult>, ApiError> {
+    answer(Ok(app.project_restore(&params.project_id)?))
 }

@@ -41,6 +41,7 @@ export const ERROR_CODES = Object.freeze([
   "not_found",
   "already_exists",
   "locked",
+  "project_archived",
   "conflict",
   "stale_version",
   "stale_body",

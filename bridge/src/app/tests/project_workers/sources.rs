@@ -693,3 +693,76 @@ fn terminal_ok(handler: &crate::carrier::FrameHandler, method: &str, params: Val
     assert_eq!(reply["ok"], true, "{method}: {reply}");
     reply["result"].clone()
 }
+
+#[test]
+fn environment_move_releases_worker_hold_after_concurrent_rename_or_removal() {
+    use crate::app::runtime::deferred::DeferredNext;
+    for remove in [false, true] {
+        let mut f = TwoSources::new();
+        assert_eq!(f.remove_docs()["ok"], true);
+        let environment = f
+            .state
+            .projects
+            .get(&f.project_id)
+            .unwrap()
+            .environment_id
+            .clone();
+        let added = f.state.handle(req(
+            "environment.add_source",
+            json!({
+                "environment_id":environment,"path":f.root.join("docs")
+            }),
+        ));
+        assert_eq!(added["ok"], true, "{added}");
+        let source = added["result"]["sources"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["id"]
+            .clone();
+        let target = init_repo_named(&f.root, "environment-moved");
+        let params = json!({"environment_id":environment,"source_id":source,"path":target});
+        f.state.environment_update_source(&params).unwrap();
+        let filesystem = f.state.take_deferred().unwrap().run();
+        let probe =
+            match f
+                .state
+                .apply_deferred_stage("environment.update_source", &params, filesystem)
+            {
+                DeferredNext::Again(probe) => probe,
+                _ => panic!("source move must retain its holds through the observation stage"),
+            };
+        f.assert_worker_starts_blocked();
+        assert!(SyncLock::acquire(&target, Duration::ZERO).is_none());
+        // Admission normally fences both edits. Inject the concurrent registry
+        // change to exercise settlement's independent stale-input defense, as
+        // the configuration revalidation tests do. Refused retries own no hold.
+        let refused = if remove {
+            f.state.environment_remove_source(
+                &json!({"environment_id":environment,"source_id":source}),
+            )
+        } else {
+            f.state
+                .environment_rename(&json!({"environment_id":environment,"name":"Concurrent"}))
+        };
+        assert!(refused.is_err(), "admission must fence the competing edit");
+        f.assert_worker_starts_blocked();
+        let current = f.state.projects.environment_mut(&environment).unwrap();
+        if remove {
+            current.sources.retain(|s| json!(s.id) != source);
+        } else {
+            current.name = "Concurrent".into();
+        }
+        f.state.projects.refresh_environment_projects(&environment);
+        let result = f
+            .state
+            .apply_deferred("environment.update_source", &params, probe.run());
+        let error = result.expect_err("a concurrent durable edit must refuse the stale move");
+        assert!(error.contains("configuration changed"), "{error}");
+        f.assert_worker_starts_allowed();
+        assert!(SyncLock::acquire(&target, Duration::ZERO).is_some());
+        let sources = &f.state.projects.environment(&environment).unwrap().sources;
+        assert!(!sources.iter().any(|s| s.path == target));
+        assert_eq!(sources.iter().any(|s| json!(s.id) == source), !remove);
+    }
+}

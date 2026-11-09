@@ -242,9 +242,23 @@ full. Typed parameter normalization and result validation still apply to v1
 verbs; the two stream reads retain their legacy shapes and QA-only gate.
 
 `environment.list` and the board's carried `environments` list share the same
-producer-owned source observations. The staged read and the `environments`
-feature remain unadvertised until the M1 closing slice. Environment recovery
-uses a fresh list pull; no durable whole-board row is added to device sync.
+producer-owned source observations. `environment.list` returns environment
+identity, home and source metadata, isolation, project IDs and the device name.
+`environment.create_project` takes an existing environment, a project name,
+first-workspace options and optional `added_sources`; it requires frame
+`write.operation_id` and returns the project and workspace through the creation
+journal described below.
+`project.list` rows carry `environment_id`, `environment_name`, `project_key`,
+`diverged`, `device`, `open_tasks`, `total_tasks` and `workspaces` counts, and
+`added_sources`; their `path` remains the project home and `sources` lists
+effective sources.
+Workspace rows carry `environment_id` resolved from their project.
+`board.list` carries `environments` beside its projects and feed data.
+Board-scope change pushes carry `environments` as a third ownership list beside
+`projects` and `workspaces` when those lists change; project-list changes also
+refresh environment membership. Environment recovery
+uses a capability-gated fresh list pull; no durable whole-board row is added
+to device sync.
 Project list task counts are captured with task publication, so list intake
 continues to avoid SQL and the app lock.
 
@@ -851,7 +865,15 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
 
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.36.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.37.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  3.37.0 advertises `environments` for the M1 list, journaled project/first
+  workspace creation, recovery and read-only environment settings. Creating
+  environments or selecting extra folders in the creation wizard, archive,
+  rename and environment secrets are not enabled by this capability. Legacy
+  Project settings still offers Add folder through `project.add_source`.
+  M2.1 serves journaled environment creation and discard-unused in the bridge,
+  but holds those verbs and the `environments.create` / `projects.addedSources`
+  feature capabilities out of greetings until the M2.2 consumer.
   3.31.0 retires snapshot-mode creation and actions, removes legacy agent
   mutation tools and adds the compact `legacy_review` summary marker,
   independently announced by `tasks.review.snapshotRetired` (#974).
@@ -1167,7 +1189,12 @@ and its controls are
   (`add_hoisted_column`) and the tests' old-version fixtures. The substantive steps live beside
   their tables: `migrate_agents_to_v6` in `bridge/src/store/entities.rs` and
   `ensure_operation_receipt_columns` in `bridge/src/store/operations.rs`. The
-  store refuses to open a newer schema. Task-summary initialization and its
+  store refuses to open a newer schema before applying pragmas or DDL. The
+  current schema is 26: creation's write-ahead effect-evidence migration marks
+  older pending creation records without proof as unknown. Binaries supporting
+  a schema below 26 cannot open this store; startup fails rather than serving
+  without it. Restoring only an older config does not cross that boundary.
+  Task-summary initialization and its
   completion marker run during Store startup before the writer and read pool are
   published. Concurrent normal daemon opens of the same store are unsupported;
   there is no single-instance lock here that makes them impossible. Backup is a
@@ -1195,7 +1222,9 @@ registry keeps environment-owned source references and their monotonic counter,
 plus project-owned added sources, and projects retain an effective-source read
 projection for existing call sites. Source configuration transactions stage
 environments and project projections together while keeping orchestrators live.
-In M0.1 the project and environment isolation copies are updated together.
+`set_isolation` writes only the project override; `initialize_legacy_isolation`
+handles legacy config load. Effective isolation resolves the project override,
+then the environment setting, then the device default.
 Unavailable legacy homes retain their absolute spelling on any resolution error
 and stay parked. When a home returns, a key equal to its stored path follows the
 canonical home; an opaque sibling key stays unchanged. Legacy path lookup prefers
@@ -1207,7 +1236,9 @@ generation in `config.json.previous`. A failed migration leaves the current
 config untouched. Legacy project fields remain written for older bridges;
 the frozen loader test and `docs/using.md` record that an old loader collapses
 siblings sharing one home into the first project and ignores their opaque keys.
-No environment RPC or capability is advertised by this migration.
+The migration itself is private; M1 now exposes environments through wire
+3.37.0 and the `environments` capability. The frozen config-loader result does
+not imply a supported binary downgrade across store schema 26.
 
 Delivered operation receipts retain their request hash, owner/agent identity and
 message sequence span, but discard their delivery prompt in the status update.
@@ -1343,7 +1374,8 @@ client hints and session IDs do not grant identity. Reads additionally validate
 the original owner scope against current published authority. MCP agent
 principals and other semantic method enablement belong to Step 6b.
 
-`app/creation.rs` owns the creation service independently of client lifetimes.
+`app/creation.rs` and `app/creation/` own the creation service independently
+of client lifetimes.
 A single background worker resumes admitted attempts and reconciles startup
 records. Unknown records back off individually from 30 seconds to a 30-minute
 cap, doubling after each unresolved execution. The schedule is worker-local and
@@ -1391,8 +1423,10 @@ Known partial failures retain the project and name it in `error.details.project`
 `project.discard_unused` requires that attempt's identity and refuses workspaces,
 tasks, and live or retained agent sessions.
 
-Creation stores completed sub-outcomes and residual-resource evidence in its
-schema-18 record. `unknown` and `reconciling` remain non-terminal and retain owner
+Creation stores completed sub-outcomes, write-ahead effect proof and
+residual-resource evidence in the mutation journal introduced in schema 18,
+with the effect-evidence migration in schema 26.
+`unknown` and `reconciling` remain non-terminal and retain owner
 fences; an equivalent new intent cannot execute beside them. A project-scoped
 workspace claim also waits behind an environment-owned unknown attempt for that
 project. Legacy creation and project removal check pending creation ownership. Cleanup requires
@@ -1404,10 +1438,14 @@ link attempts without making a failed predecessor a success dependency.
 `app/mutations.rs` shares an in-memory progress map with this service. Pending
 status may include `progress`; subscribed openings receive `writes.progress` on
 step changes. These observations never enter the journal or confirm an outcome.
-The additive verbs and event do not change API_VERSION or advertise the
-`environments` feature; that release boundary remains with M1.4.
-M2.1 also withholds `environment.create`, `environment.discard_unused`,
-`environments.create` and `projects.addedSources` until the M2.2 consumer.
+Wire 3.37.0 advertises the M1 operations with `environments`. Status keeps its
+existing `accepted`/`executing` summary states and carries the precise durable
+state in `creation.state`. The SPA paints `unknown` and `reconciling` as
+**Checking…**, offers no retry while the outcome is unresolved, and treats
+progress as display evidence rather than completion.
+M2.1 leaves API_VERSION unchanged and withholds `environment.create`,
+`environment.discard_unused`, `environments.create` and `projects.addedSources`
+until the M2.2 consumer.
 
 #### Conversation retention (#836)
 
@@ -1756,8 +1794,30 @@ under worktree isolation. Under Rift isolation it makes a Rift snapshot, and it
 falls back to a plain copy, recorded as a downgrade, when Rift is unavailable
 or fails before writing anything.
 
-**Projects and sources.** A project is one or more sources
-(`ProjectSource`, `bridge/src/app/projects/mod.rs`), each a folder with a
+**Environments, projects and sources.** An environment owns source references
+and their monotonic source-ID counter. A project is a line of work under one
+environment, with its own task board, agents and workspaces. Its effective
+sources are the environment's sources followed by its project-added sources.
+The M1 wizard creates sibling projects without additions; the M2.1 bridge also
+accepts `added_sources` on `environment.create_project`. With `environment_id`,
+`project.create` treats its `sources` as project additions; without it, the
+legacy call makes an implicit environment from those sources. Projects sharing
+a home route stored identity by `project_key`, resolved through
+`AppState::project_by_key`, rather than by directory equality. Migrated keys
+retain the old home path; newly created sibling keys are `project:<uuid>`.
+Filesystem work uses the resolved `home_path` or source path.
+
+Creating a project in an existing environment and its first workspace is one
+journaled attempt in `app/creation/`: it saves the project identity before
+preparing added sources and writing config, then materializes the workspace
+unpublished and records the terminal outcome. Reusing the operation ID recovers
+that attempt. M2.1's staged `environment.create` includes source preparation and
+environment config in the same attempt before the project and workspace steps.
+Creating another workspace in an existing project with frame `write.operation_id`
+uses the same executor without the project step (see
+[Durable write foundation](#durable-write-foundation-739)).
+
+Each source (`ProjectSource`, `bridge/src/app/projects/mod.rs`) is a folder with a
 label (`name`), the folder name it mounts under in workspaces (`mount`,
 fixed once a source exists), a base branch, and whether it is a Git
 repository. A project has no remote of its own. A source's remote is its
@@ -1765,7 +1825,7 @@ checkout's `origin`, read from the checkout for every row
 (`ProjectSource::origin`, via git2 in process). `config.json` keeps no copy of
 it, and ignores the copy older bridges wrote. The project row's `remote` is its
 first source's. Its `path`, `base_branch` and Git classification belong to its
-recorded home (orchestrator, registry identity), initially its first source.
+recorded home (the orchestrator's location), initially its first source.
 Unlinking that source does not retarget the home, its Git metadata or the
 orchestrator to the next source. Stored references can retain unavailable
 folders, while live source projections and workspace cuts skip missing or
@@ -1807,6 +1867,28 @@ dependent project projections; other references to the directory keep their
 settings. Git mutations invalidate views for every referencing project and
 affected checkout, while sync status remains keyed by project and source.
 The shared common-Git-directory lock continues to serialize repository work.
+The staged M3.2 `project.rename` and `environment.rename` change display names
+only: a nonempty trimmed line of at most 200 UTF-8 bytes, with control characters
+and Unicode line/paragraph separators refused. IDs, source mounts and paths stay
+fixed. The staged `environment.add_source`, `remove_source`, `update_source`,
+`sync_source` and `set_isolation` operate on environment-owned references even
+without a live project. Source membership is validated against every dependent
+project's additions, including parked records; existing workspace directories
+retain their cuts. Project and environment isolation overrides are independent,
+resolved project → environment → device. Manual environment sync uses the existing
+background service and common-Git-directory lock; its status has an environment
+and source key, while project statuses retain their project and source keys.
+Configuration edits stage prospective references under the app lock, capture
+immutable observation inputs, then restore the visible configuration while the
+existing deferred lifecycle probes repositories and isolation availability off
+lock. Settlement revalidates the durable configuration, retains current per-owner
+sync conclusions, and persists before publishing the configuration and owned
+observations together. Conflicting configuration edits require a retry. Cached
+source remotes match both source ID and path. Due sync passes include environment
+references, including environments with no live projects.
+These seven verbs have explicit HTTP resources and fixtures at wire 3.37.0 but
+remain in `UNADVERTISED_CAPABILITIES` until M3.3 supplies their product surface.
+
 A configured project whose home folder is missing at boot is parked, not
 dropped (`bridge/src/app/projects/parked.rs`): its configuration is kept
 verbatim and written back on every save, its `proj-N` stays reserved, and
@@ -3366,6 +3448,84 @@ workspace never retires a project worker, even one its agents made.
 `project.delete` retires the pin and every worker, revokes their tokens and
 queued turns, and removes the project's scratch; its sources stay.
 
+**Project archive (staged M3.1, #1059).** `project.archive` and
+`project.restore` retain the project's identity and all history, persisting
+`archived_at` in `config.json`. Project-list publication carries the timestamp,
+including archived rows. Archive reports every unfinished/provisioning workspace,
+held worker/coordinator session, pending assignment or waiting-on dependency,
+Needs-you task and review awaiting a verdict. Nothing is stopped implicitly.
+The existing global filesystem-job fence also keeps archive out while deferred
+work is active; journaled workspace admission holds that fence until its durable
+reservation exists. A configuration failure publishes no archive state.
+
+`app/projects/archive_guard.rs` shares one archived-project refusal across
+routed/session RPCs, MCP mutations and final agent spawn reservation. Framed
+routing checks archive admission inside its existing routed/session mutation
+guards; clock-only snapshots and global presence gain no app-mutex acquisition.
+Shell reservation and final registration recheck archive under their existing
+guards; pending shell reservations and registered live shells block archive.
+The registry retains the reservation's project attribution at registration;
+exited shell rows do not block while awaiting cleanup. Removal and replacement
+retain project-attributed shell and agent retirement receipts until reaping
+completes, separate from the tab list. Archive polls and prunes these receipts
+without waiting under the app guard, retaining the existing conflict response.
+Agent start checks its addressed owner before resolving or changing the roster.
+RPC write classification comes from the effect registry, with project scope
+resolved from project, workspace, task or conversation identities; upload calls resolve their
+retained scope after owner validation. Reads and screen-attachment bookkeeping
+remain available. Restore and project deletion remain allowed. Environment
+reference maintenance can still update archived projects' effective sources.
+Pending verdict/revision handoffs and unposted failure/dependency notices also
+block archive. The background delivery service excludes archived project keys
+before each bounded page, including receipt polling and revision failure notices.
+Rows, operation identities and retry budgets stay unchanged while suspended;
+other projects continue draining. Restore makes the saved rows eligible on the
+normal service tick, using the ordinary delivery/supersession/failure policy.
+The workspace-admission hold releases its count even if unwinding poisons the
+app mutex; its destructor preserves the poison flag and never panics.
+Pending dependency-reconciliation markers also block archive; their worker excludes
+archived keys before paging and leaves markers/cursors intact until restore.
+Review autosync acquires a filesystem admission lease through persistence and
+publication; denied tasks retain their queued work and retry deadlines. Reclaim
+excludes archived projects during selection, final prune/settle checks and digest
+admission, retaining owed work for the first normal sweep after restore.
+Idle detection and vanished-run sweeps skip archived owners, including late
+sweep settlement. Boot recovery hydrates archived plan/run records without
+persisting lifecycle or missing-disk changes. It retains skipped run-recovery
+obligations: restore runs the same captured publication/worktree decision off
+lock, with per-run mutation/spawn admission and a committed-revision check at
+apply. Every ready run is reserved until settlement, including runs waiting for
+the eight-job concurrency limit. Branch joins, adoption and agent minting check
+the same reservation at their shared mutation boundary. Vanished-run sweeps
+defer those runs until recovery settles. A restart
+reconstructs obligations from archived records or performs ordinary boot recovery.
+Stale restart rosters cannot queue archived agents. Durable provider-failure
+notices replay independently on restore; failed checkpoints remain pending and
+retry on the restored-recovery service tick, without requiring another restart.
+Boot reconstructs notice retry obligations from durable owed checkpoints on
+active projects, including after an unsuccessful startup replay. A delivered
+terminal notice ends that retry obligation without changing its active flag or
+rewriting/waking it on later retry ticks. Restore separately requeues already-written
+terminal notices once when their durable native acknowledgement is still unseen;
+this pass neither rewrites checkpoints nor enrolls them in notice retries.
+Archived boot defers coordinator roster repair until the owner's restore recovery
+settles. Archive admission counts settling wakes alongside queued/in-flight work.
+Ready owners retain their existing turns until recovery settles, including a hold
+at final spawn admission; settlement releases delivery off the app lock.
+Usage-limit resets and shared-harness success retain each stopped agent's owed
+retry before consuming it when its owner is archived or ready; eligible agents
+continue, and the held agent resumes once after admission reopens.
+Snapshot refresh preserves archived finished-workspace records until restore.
+Journaled environment/project replay resolves archive admission from the saved
+project key, while fresh sibling creation remains allowed. Recorded pending
+attempts are refused on user retry and excluded by recovery before claim/effects
+or retry backoff changes; restore makes them eligible on the normal service tick.
+The workspace admission hold spans both retained retries and new reservation
+through durable admission. Terminal environment-creation results remain readable.
+Configured conversation-item retention applies independently of project archive.
+The two method names are explicitly withheld from greetings, `projects.archive`
+is not advertised, and the wire stays at 3.36.0 until the consumer checkpoint.
+
 **Waiting-on tools.** `create_task` accepts `waiting_on`; `link_task` adds
 those edges atomically with its ordinary links. `unlink_task` removes only
 waiting-on edges, and `list_task_dependents` pages same-project reverse digests
@@ -4268,6 +4428,16 @@ In practice:
   redraw.
 - No view waits on the wire to show what is already known.
 - No view branches on whether a device is connected, connecting or away.
+
+Environment lists live in per-device `environments` records, independently of
+device-journal projections. `environmentCache.js` reserves an
+`environment-list-order` token before each pull or carried board push; only
+the newest admission may replace the list. A failed or missing list preserves
+the last good rows; an explicit empty array clears them. Both sync paths pull
+`environment.list` only with the current capability. Wizard targets and
+navigation paint cached lists and `environment-support`; wizard drafts live in
+`build-ui`, while progress paints the retained write-operation record. Closing
+progress detaches the view and does not cancel or consume the attempt.
 
 Review pages follow this rule for both legacy and pull-request storage modes.
 Metadata is held in `task-review`; `taskReviewReads.js` adds
@@ -5183,6 +5353,15 @@ refuses when that device cannot answer.
   which `thread.post` deduplicates. Project and exact agent-generation metadata
   scopes are tracked for every rail, including task/branch rails that learn
   their project from the cached work item after mounting.
+- Wire 3.37.0's `environments` enables list and project creation support.
+  `environmentSupport.js` remembers the latest greeting in per-device
+  `environment-support` for rendering; dispatch still requires the current
+  greeting. Without the capability the SPA omits environment pulls and target
+  rows, uses the legacy workspace form for existing-project targets, and keeps
+  the legacy Add project sheet for fresh setup. Read-only environment settings
+  explain that the device needs an update. A retained creation attempt can
+  still reopen its progress screen after a downgrade; a queued creation known
+  never to have been sent fails as unapplied if the greeting lacks support.
 - Conversation requests preserve their captured generation and exact agent,
   conversation and thread selectors. App dispatch waits for the current
   greeting and adapter; there is no pre-greeting legacy-shape conversion.
@@ -5536,6 +5715,7 @@ whose ratchet count is pinned by `spa/test/complexityRatchet.test.js`.
 | Add a push event | emit through `ChangeBus` (`bridge/src/changes.rs`); on the SPA side add it to `EVENT_TYPES` (`spa/src/core/bridgeApi/v1/index.js`) and its dispatcher in `spa/src/core/changeEvents.js`; example in `fixtures/api/v1/events.json` |
 | Bump the wire version | `API_VERSION` in `bridge/src/api/mod.rs`, `"current"` in `fixtures/api/versions.json`, `fixtures/api/v1/session.hello.json`, and the new fixtures' `since`. A named feature goes in `FEATURE_CAPABILITIES` (same file). Then `node scripts/api-verbs-manifest.mjs` writes `fixtures/api/verbs-<previous minor>.json` (delete the old one; for a new major, pass the commit the previous release shipped from, and for a later patch of that major's first minor, the commit its `.0` shipped from): the contract tests hold every verb and capability absent from it to the new `since`, and only a new major's `.0.0` may drop one |
 | Add a view | a route in `spa/src/core/router.js`; `spa/src/views/<name>.js`; register it in `VIEWS` in `spa/src/app.js`; rail or console via `spa/src/core/shell.js`; styles in `spa/src/styles/`; tests in `spa/test/` |
+| Change environments or workspace creation | model/migration in `bridge/src/app/environments/`, identity and source membership in `bridge/src/app/projects/`, journal admission/executor in `bridge/src/app/creation.rs` + `creation/`, wire in `bridge/src/api/v1/environment.rs`; SPA cache/support in `spa/src/core/environmentCache.js` and `environmentSupport.js`, wizard/progress in `createWorkspaceWizard.js`, `createWorkspaceProgress.js` and `createWorkspaceTargets.js` |
 | Change the Files explorer | `spa/src/views/files.js` shares previews, edits and file tabs; `spa/src/core/filesRoots.js` provides project/workspace roots; `fileRoots.js` and `fileTree.js` mount their trees; `directoryScope.js` separates directory records from layout state |
 | Add an MCP tool | a `BridgeAction` variant with its `tool_name()` and `surfaces()` arms and a schema in the right `*_tools()` list in `bridge/src/mcp.rs`; handle it in `bridge/src/app/mcp.rs` (or `bridge/src/app/conversations/` for thread actions) |
 | Add a harness | a `Harness` impl in `bridge/src/harness/`, an `AgentProvider` variant in `bridge/src/models.rs`, and its arm in `harness_for()` |

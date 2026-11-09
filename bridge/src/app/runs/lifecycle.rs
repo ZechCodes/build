@@ -32,6 +32,8 @@ impl AppState {
         &mut self,
         adopted: &crate::lifecycle::AdoptionPrepared,
     ) -> Result<ActiveRun, String> {
+        self.refuse_run_recovery(&adopted.run_id)?;
+        self.refuse_recovering_checkout(&adopted.project_id, &adopted.checkout.path)?;
         let active = self
             .orch_for(&adopted.project_id)?
             .adopt_run(
@@ -70,6 +72,7 @@ impl AppState {
         opened: crate::lifecycle::ImplementationPrepared,
         model_choice: ModelChoice,
     ) -> Result<(), String> {
+        self.refuse_run_recovery(&run_id)?;
         let crate::lifecycle::ImplementationPrepared {
             prepared,
             downgrade,
@@ -138,6 +141,7 @@ impl AppState {
         opened: crate::lifecycle::AdoptedImplementation,
         model_choice: ModelChoice,
     ) -> Result<(), String> {
+        self.refuse_run_recovery(&run_id)?;
         let crate::lifecycle::AdoptedImplementation { base_sha, adopted } = opened;
         let opened = (|| -> Result<(), String> {
             // The run this is written onto: the one the branch already had, or
@@ -261,6 +265,7 @@ impl AppState {
     /// resumes a parked one.
     pub(crate) fn run_message(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
+        self.refuse_run_recovery(&run_id)?;
         let message = require_str(params, "message")?;
         let viewing_context = parse_viewing_context(params.get("viewing_context"))?;
         let project_id = self.project_of(&run_id)?;

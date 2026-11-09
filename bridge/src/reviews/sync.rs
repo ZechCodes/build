@@ -23,15 +23,27 @@ impl Drop for ReviewSyncHandle {
     }
 }
 
+pub(crate) type SyncAdmission = Arc<dyn Fn(&str) -> Option<Box<dyn Send>> + Send + Sync>;
+
+#[cfg(test)]
 pub(crate) fn spawn(
     store: Store,
     alive: Arc<dyn Fn() -> bool + Send + Sync>,
     invalidate: Arc<dyn Fn(SyncResult) + Send + Sync>,
 ) -> ReviewSyncHandle {
+    spawn_admitted(store, alive, invalidate, Arc::new(|_| Some(Box::new(()))))
+}
+
+pub(crate) fn spawn_admitted(
+    store: Store,
+    alive: Arc<dyn Fn() -> bool + Send + Sync>,
+    invalidate: Arc<dyn Fn(SyncResult) + Send + Sync>,
+    admission: SyncAdmission,
+) -> ReviewSyncHandle {
     let stopped = Arc::new(AtomicBool::new(false));
     let stop = stopped.clone();
     tokio::spawn(async move {
-        let mut worker = worker::Worker::new(store, invalidate);
+        let mut worker = worker::Worker::new_admitted(store, invalidate, admission);
         let mut interval = tokio::time::interval(Duration::from_millis(100));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {

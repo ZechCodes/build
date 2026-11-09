@@ -1,3 +1,5 @@
+mod environment_edits;
+
 use super::{next_source_number, Project, ProjectSource};
 use crate::app::environments::Environment;
 #[cfg(test)]
@@ -68,7 +70,7 @@ impl SourceReservations {
 }
 
 /// Only configuration-owned project fields; runtime orchestrators stay installed.
-pub(super) struct ProjectConfiguration {
+pub(in crate::app) struct ProjectConfiguration {
     records: Vec<(String, ProjectConfigurationRecord)>,
     environments: Vec<Environment>,
 }
@@ -79,19 +81,36 @@ impl ProjectConfiguration {
             .get(project_id)
             .expect("resolved project")
             .environment_id;
+        Self::capture_environment(projects, environment_id)
+    }
+
+    pub(in crate::app) fn capture_environment(
+        projects: &ProjectRegistry,
+        environment_id: &str,
+    ) -> Self {
         Self {
             records: projects
                 .projects
                 .iter()
-                .filter(|project| &project.environment_id == environment_id)
+                .filter(|project| project.environment_id == environment_id)
                 .map(|p| (p.id.clone(), ProjectConfigurationRecord::capture(p)))
                 .collect(),
-            environments: projects.environments.clone(),
+            environments: projects
+                .environments
+                .iter()
+                .filter(|e| e.id == environment_id)
+                .cloned()
+                .collect(),
         }
     }
 
-    pub(super) fn swap(&mut self, projects: &mut ProjectRegistry, _id: &str) {
-        std::mem::swap(&mut self.environments, &mut projects.environments);
+    pub(in crate::app) fn swap(&mut self, projects: &mut ProjectRegistry, _id: &str) {
+        for environment in &mut self.environments {
+            let current = projects
+                .environment_mut(&environment.id)
+                .expect("staged environment remains registered");
+            std::mem::swap(environment, current);
+        }
         for (id, record) in &mut self.records {
             record.swap(projects, id);
         }
@@ -99,6 +118,8 @@ impl ProjectConfiguration {
 }
 
 struct ProjectConfigurationRecord {
+    name: String,
+    archived_at: Option<u64>,
     base_branch: String,
     is_git: bool,
     sources: Vec<ProjectSource>,
@@ -110,6 +131,8 @@ struct ProjectConfigurationRecord {
 impl ProjectConfigurationRecord {
     fn capture(project: &Project) -> Self {
         Self {
+            name: project.name.clone(),
+            archived_at: project.archived_at,
             base_branch: project.base_branch.clone(),
             is_git: project.is_git,
             sources: project.sources.clone(),
@@ -126,6 +149,8 @@ impl ProjectConfigurationRecord {
             .iter_mut()
             .find(|project| project.id == id)
             .expect("staged project remains registered under the app lock");
+        std::mem::swap(&mut self.name, &mut project.name);
+        std::mem::swap(&mut self.archived_at, &mut project.archived_at);
         std::mem::swap(&mut self.base_branch, &mut project.base_branch);
         std::mem::swap(&mut self.is_git, &mut project.is_git);
         std::mem::swap(&mut self.sources, &mut project.sources);
@@ -484,6 +509,16 @@ impl ProjectRegistry {
     }
 
     /// Update only the registered project's configuration-owned isolation.
+    pub(super) fn set_archived_at(&mut self, id: &str, archived_at: Option<u64>) {
+        self.observation_projects.mark(id);
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|p| p.id == id)
+            .expect("resolved project");
+        project.archived_at = archived_at;
+    }
+
     pub(in crate::app) fn set_isolation(
         &mut self,
         project_id: &str,
@@ -1000,7 +1035,10 @@ impl ProjectRegistry {
                 .iter_mut()
                 .find(|stored| stored.id == source.id)
             {
+                // Runtime conclusions belong to the reference's actual owner.
+                let status = inherited.sync_status.clone();
                 *inherited = source.clone();
+                inherited.sync_status = status;
             } else {
                 Self::upsert_added_source(&mut added, source);
             }
@@ -1025,7 +1063,7 @@ impl ProjectRegistry {
         }
     }
 
-    fn refresh_environment_projects(&mut self, environment_id: &str) {
+    pub(in crate::app) fn refresh_environment_projects(&mut self, environment_id: &str) {
         let Some(environment) = self.environment(environment_id).cloned() else {
             return;
         };
@@ -1329,7 +1367,7 @@ impl ProjectRegistry {
     pub(in crate::app) fn remove_unused_environment(&mut self, id: &str) {
         self.environments.retain(|e| e.id != id);
     }
-    pub(super) fn allocate_environment_source_ids(
+    pub(in crate::app) fn allocate_environment_source_ids(
         &self,
         id: &str,
         count: usize,

@@ -126,6 +126,12 @@ impl SettlingTurns {
         }
     }
 
+    pub(super) fn holds_owner(&self, owner: &str) -> bool {
+        self.waiting
+            .iter()
+            .any(|waiting| waiting.turn.owner == owner)
+    }
+
     pub(super) fn len(&self) -> usize {
         self.waiting.len()
     }

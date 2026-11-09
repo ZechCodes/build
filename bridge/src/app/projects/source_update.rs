@@ -22,18 +22,18 @@ const MAX_LABEL_LEN: usize = 200;
 mod settlement_tests;
 
 /// The parts of a source an edit names, each checked.
-struct SourceEdit {
-    name: Option<String>,
-    path: Option<PathBuf>,
-    base_branch: Option<String>,
-    remote: Option<String>,
+pub(in crate::app) struct SourceEdit {
+    pub(in crate::app) name: Option<String>,
+    pub(in crate::app) path: Option<PathBuf>,
+    pub(in crate::app) base_branch: Option<String>,
+    pub(in crate::app) remote: Option<String>,
     /// Whether the base is kept in step with its remote (#267). Needs no git,
     /// so an edit naming only this is written at once.
-    sync_base: Option<bool>,
+    pub(in crate::app) sync_base: Option<bool>,
 }
 
 impl SourceEdit {
-    fn needs_git(&self) -> bool {
+    pub(in crate::app) fn needs_git(&self) -> bool {
         self.path.is_some() || self.base_branch.is_some() || self.remote.is_some()
     }
 
@@ -49,7 +49,6 @@ struct SourceAddress {
     path: PathBuf,
     name: Option<String>,
     sync_base: Option<bool>,
-    repository_paths: Vec<PathBuf>,
 }
 
 impl AppState {
@@ -97,7 +96,6 @@ impl AppState {
             path: source.path.clone(),
             name: edit.name,
             sync_base: edit.sync_base,
-            repository_paths: remote_mutation_paths(&mutation),
         };
         let captured = self.resolve_project_source(
             &address.project_id,
@@ -105,10 +103,34 @@ impl AppState {
             None,
             super::MOVED_GIT_SOURCE,
         )?;
+        let prospective =
+            self.capture_prospective_project_refresh(&address.project_id, |projects| {
+                projects.update_source(
+                    &address.project_id,
+                    &address.source_id,
+                    &address.path,
+                    super::SourceRecord {
+                        name: address.name.clone(),
+                        path: mutation
+                            .new_path
+                            .clone()
+                            .unwrap_or_else(|| source.path.clone()),
+                        is_git: source.is_git,
+                        base_branch: mutation
+                            .new_base_branch
+                            .clone()
+                            .unwrap_or_else(|| source.base_branch.clone()),
+                        sync_base: address.sync_base,
+                    },
+                )
+            })?;
+        let environments = self.capture_repository_refresh();
         let mutation = SerializedSourceUpdate {
             mutation,
-            captured,
+            captured: SourceUpdateScope::Project(captured),
             state: self.source_validation_handle(),
+            environments: Some(environments.clone()),
+            configuration_probe: Some((prospective, self.read_view.clone())),
         };
         let project_id = address.project_id.clone();
         let deferred = self.defer_project(
@@ -117,16 +139,16 @@ impl AppState {
             PendingState::Updating,
             mutation,
             move |state: &mut AppState, result: Result<LockedSourceUpdate, String>| {
+                environments.install(state);
                 if moves {
                     state.source_moves.end(&address.project_id);
                 }
-                // Git may have landed even if validation or config settlement
-                // fails. Every owner must discard its old repository views.
-                for path in &address.repository_paths {
-                    state.invalidate_shared_repository_views(path);
-                }
-                let LockedSourceUpdate { updated, _held } = result?;
-                state.settle_source_update(address, updated)
+                let LockedSourceUpdate {
+                    updated,
+                    _held,
+                    configuration_observed,
+                } = result?;
+                state.settle_source_update(address, updated, configuration_observed)
             },
         )?;
         // Admission and this hold are acquired under the same app mutex.
@@ -144,32 +166,10 @@ impl AppState {
         source: &ProjectSource,
         index: usize,
     ) -> Result<SourceEdit, String> {
-        let edit = SourceEdit {
-            name: optional_text(params, "name")
-                .map(usable_label)
-                .transpose()?,
-            path: optional_text(params, "path")
-                .map(|path| self.usable_source_move(project_id, source, index, path))
-                .transpose()?,
-            base_branch: optional_text(params, "base_branch")
-                .map(|branch| branch.trim().to_string()),
-            remote: optional_text(params, "remote")
-                .map(usable_remote_or_clear)
-                .transpose()?,
-            sync_base: params.get("sync_base").and_then(Value::as_bool),
-        };
-        if edit.is_empty() {
-            return Err(
-                "Name a label, path, base branch, remote or sync setting to change.".to_string(),
-            );
-        }
-        if edit.sync_base.is_some() && !source.is_git {
-            return Err(
-                "A folder that is not a Git repository has no base branch to keep up to date."
-                    .to_string(),
-            );
-        }
-        Ok(edit)
+        let path = optional_text(params, "path")
+            .map(|path| self.usable_source_move(project_id, source, index, path))
+            .transpose()?;
+        checked_source_edit(params, source, path)
     }
 
     /// The folder a later source moves to, held to what adding a source is
@@ -229,6 +229,7 @@ impl AppState {
         &mut self,
         address: SourceAddress,
         updated: SourceUpdated,
+        observed: Option<crate::app::snapshot_projection::RenderedProjectSnapshotRefresh>,
     ) -> Result<Value, String> {
         self.validate_settled_source_update(&address, &updated)?;
         let checkouts_updated = updated.checkouts_updated;
@@ -243,20 +244,24 @@ impl AppState {
                 })
             })
             .collect();
-        let mut row = self.commit_project_configuration(&address.project_id, |projects| {
-            projects.update_source(
-                &address.project_id,
-                &address.source_id,
-                &address.path,
-                super::SourceRecord {
-                    name: address.name,
-                    path: updated.path,
-                    is_git: updated.is_git,
-                    base_branch: updated.base_branch,
-                    sync_base: address.sync_base,
-                },
-            )
-        })?;
+        let mut row = self.commit_project_configuration_with_observation(
+            &address.project_id,
+            |projects| {
+                projects.update_source(
+                    &address.project_id,
+                    &address.source_id,
+                    &address.path,
+                    super::SourceRecord {
+                        name: address.name,
+                        path: updated.path,
+                        is_git: updated.is_git,
+                        base_branch: updated.base_branch,
+                        sync_base: address.sync_base,
+                    },
+                )
+            },
+            observed,
+        )?;
         if address.sync_base == Some(true) {
             self.request_source_sync(address.project_id.clone(), address.source_id.clone());
         }
@@ -295,13 +300,17 @@ impl AppState {
         source_id: &str,
         sync_base: Option<bool>,
     ) -> Result<Value, String> {
-        let mut row = self.commit_project_configuration(project_id, |projects| {
-            let source = projects
-                .source_mut(project_id, source_id)
-                .ok_or_else(|| format!("unknown source_id {source_id} in project {project_id}"))?;
-            source.sync_base = sync_base;
-            Ok(())
-        })?;
+        let mut row = self.commit_project_configuration_with_observation(
+            project_id,
+            |projects| {
+                let source = projects.source_mut(project_id, source_id).ok_or_else(|| {
+                    format!("unknown source_id {source_id} in project {project_id}")
+                })?;
+                source.sync_base = sync_base;
+                Ok(())
+            },
+            None,
+        )?;
         if sync_base == Some(true) {
             self.request_source_sync(project_id.to_string(), source_id.to_string());
         }
@@ -318,7 +327,7 @@ fn optional_text<'a>(params: &'a Value, key: &str) -> Option<&'a str> {
 
 /// Remote edits mutate the checkout and independent copies that follow it.
 /// Other reference edits change only configuration.
-fn remote_mutation_paths(mutation: &UpdateSource) -> Vec<PathBuf> {
+pub(in crate::app) fn remote_mutation_paths(mutation: &UpdateSource) -> Vec<PathBuf> {
     if mutation.new_remote.is_none() {
         return Vec::new();
     }
@@ -354,15 +363,21 @@ fn usable_remote_or_clear(remote: &str) -> Result<String, String> {
 
 /// Source settings and their Git writes take one turn together. Keep the old,
 /// new and independent workspace repository locks through config settlement.
-struct SerializedSourceUpdate {
-    mutation: UpdateSource,
-    captured: ResolvedProjectSource,
-    state: Option<std::sync::Weak<std::sync::Mutex<AppState>>>,
+pub(in crate::app) struct SerializedSourceUpdate {
+    pub(in crate::app) mutation: UpdateSource,
+    pub(in crate::app) captured: SourceUpdateScope,
+    pub(in crate::app) state: Option<std::sync::Weak<std::sync::Mutex<AppState>>>,
+    pub(in crate::app) environments: Option<crate::app::snapshot_projection::RepositoryRefresh>,
+    pub(in crate::app) configuration_probe: Option<(
+        crate::app::snapshot_projection::ProjectSnapshotRefresh,
+        crate::app::read_view::ReadViewSlot,
+    )>,
 }
 
-struct LockedSourceUpdate {
-    updated: SourceUpdated,
+pub(in crate::app) struct LockedSourceUpdate {
+    pub(in crate::app) updated: SourceUpdated,
     _held: Vec<crate::source_sync::SyncLock>,
+    configuration_observed: Option<crate::app::snapshot_projection::RenderedProjectSnapshotRefresh>,
 }
 
 impl crate::lifecycle::WorktreeMutation for SerializedSourceUpdate {
@@ -381,27 +396,113 @@ impl crate::lifecycle::WorktreeMutation for SerializedSourceUpdate {
         let held = SyncLock::acquire_many(&paths, SERVICE_FETCH_DEADLINE)?;
         if let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) {
             let app = state.lock().unwrap();
-            app.validate_source_location(&self.captured)?;
-            if let Some(candidate) = &self.mutation.new_path {
-                app.refuse_source_directory_claim(candidate)?;
-                app.refuse_source_duplicate(
-                    &self.captured.project_id,
-                    candidate,
-                    &self.captured.source_id,
-                )?;
-                app.refuse_source_containment(
-                    candidate,
-                    Some((&self.captured.project_id, &self.captured.source_id)),
-                )?;
-            }
+            self.captured
+                .validate(&app, self.mutation.new_path.as_deref())?;
         }
-        let performed = self.mutation.perform()?;
+        let project_source = match &self.captured {
+            SourceUpdateScope::Project(source) => {
+                Some((source.project_id.clone(), source.source_id.clone()))
+            }
+            SourceUpdateScope::Environment { .. } => None,
+        };
+        let performed = self.mutation.perform();
+        if let Some(refresh) = &self.environments {
+            if let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) {
+                refresh.recapture(&state.lock().unwrap());
+            }
+            refresh.observe(&paths);
+        }
+        let performed = performed?;
+        let configuration_observed = self.configuration_probe.zip(project_source).map(
+            |((refresh, clock), (project, source))| {
+                refresh.render_updated_source(
+                    &project,
+                    &source,
+                    &performed.output,
+                    clock.next_version(),
+                )
+            },
+        );
         Ok(crate::lifecycle::Performed {
             change: performed.change,
             output: LockedSourceUpdate {
                 updated: performed.output,
                 _held: held,
+                configuration_observed,
             },
         })
+    }
+}
+
+pub(in crate::app) fn checked_source_edit(
+    params: &Value,
+    source: &ProjectSource,
+    path: Option<PathBuf>,
+) -> Result<SourceEdit, String> {
+    let edit = SourceEdit {
+        name: optional_text(params, "name")
+            .map(usable_label)
+            .transpose()?,
+        path,
+        base_branch: optional_text(params, "base_branch").map(|branch| branch.trim().to_string()),
+        remote: optional_text(params, "remote")
+            .map(usable_remote_or_clear)
+            .transpose()?,
+        sync_base: params.get("sync_base").and_then(Value::as_bool),
+    };
+    if edit.is_empty() {
+        return Err(
+            "Name a label, path, base branch, remote or sync setting to change.".to_string(),
+        );
+    }
+    if edit.sync_base.is_some() && !source.is_git {
+        return Err(
+            "A folder that is not a Git repository has no base branch to keep up to date."
+                .to_string(),
+        );
+    }
+    Ok(edit)
+}
+
+/// Revalidation names the actual reference owner; an environment needs no project proxy.
+pub(in crate::app) enum SourceUpdateScope {
+    Project(ResolvedProjectSource),
+    Environment { id: String, source: ProjectSource },
+}
+impl SourceUpdateScope {
+    fn validate(&self, app: &AppState, candidate: Option<&std::path::Path>) -> Result<(), String> {
+        match self {
+            Self::Project(captured) => {
+                app.validate_source_location(captured)?;
+                if let Some(candidate) = candidate {
+                    app.refuse_source_directory_claim(candidate)?;
+                    app.refuse_source_duplicate(
+                        &captured.project_id,
+                        candidate,
+                        &captured.source_id,
+                    )?;
+                    app.refuse_source_containment(
+                        candidate,
+                        Some((&captured.project_id, &captured.source_id)),
+                    )?;
+                }
+            }
+            Self::Environment { id, source } => {
+                let current = app.environment_source(id, &source.id)?;
+                if current.path != source.path || current.is_git != source.is_git {
+                    return Err(super::MOVED_GIT_SOURCE.into());
+                }
+                if let Some(candidate) = candidate {
+                    app.validate_environment_source_path(id, Some(&source.id), candidate)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl LockedSourceUpdate {
+    pub(in crate::app) fn into_parts(self) -> (SourceUpdated, Vec<crate::source_sync::SyncLock>) {
+        (self.updated, self._held)
     }
 }

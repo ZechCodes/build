@@ -75,7 +75,7 @@ fn next_source_continuity() {
 }
 
 #[test]
-fn clearing_project_override_restores_device_default() {
+fn cleared_project_override_inherits_environment_default_after_reload() {
     use crate::isolation::Isolation;
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");
@@ -107,6 +107,13 @@ fn clearing_project_override_restores_device_default() {
         json!({"project_id":"proj-1","isolation":null}),
     );
     assert_eq!(cleared["ok"], true, "{cleared}");
+    assert_eq!(app.project_for("proj-1").unwrap().isolation, None);
+    assert_eq!(
+        app.projects.environment(&environment_id).unwrap().isolation,
+        Some(Isolation::Rift)
+    );
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(saved["projects"][0]["isolation"].is_null(), "{saved}");
     let reloaded = state(root.path()).with_config(&path).unwrap();
     assert_eq!(reloaded.project_for("proj-1").unwrap().isolation, None);
     assert_eq!(
@@ -115,15 +122,82 @@ fn clearing_project_override_restores_device_default() {
             .environment(&environment_id)
             .unwrap()
             .isolation,
-        None
+        Some(Isolation::Rift)
     );
     assert_eq!(
-        reloaded.resolved_isolation("proj-1").isolation,
+        reloaded.project_isolation(reloaded.project_for("proj-1").unwrap()),
+        Isolation::Rift
+    );
+    // Isolate inheritance from whether this test host can run the Rift CLI.
+    assert_eq!(
+        reloaded
+            .decide_isolation(
+                reloaded.project_for("proj-1").unwrap(),
+                &crate::isolation::IsolationAvailability { rift: Ok(()) }
+            )
+            .isolation,
+        Isolation::Rift
+    );
+    assert_eq!(
+        reloaded
+            .decide_isolation(
+                reloaded.project_for("proj-1").unwrap(),
+                &crate::isolation::IsolationAvailability::unavailable(
+                    "unavailable in this fixture"
+                ),
+            )
+            .isolation,
         Isolation::Worktree
     );
 }
 
-fn rpc(app: &mut AppState, method: &str, params: serde_json::Value) -> serde_json::Value {
+#[test]
+fn cleared_project_override_inherits_device_default_without_environment_override() {
+    use crate::isolation::{Isolation, IsolationAvailability};
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let path = root.path().join("config.json");
+    std::fs::write(
+        &path,
+        json!({"isolation":"rift","projects":[{"id":"proj-1","path":home}]}).to_string(),
+    )
+    .unwrap();
+    let mut app = state(root.path()).with_config(&path).unwrap();
+    let environment_id = app.project_for("proj-1").unwrap().environment_id.clone();
+    for isolation in [json!("worktree"), serde_json::Value::Null] {
+        let result = rpc(
+            &mut app,
+            "project.set_isolation",
+            json!({"project_id":"proj-1","isolation":isolation}),
+        );
+        assert_eq!(result["ok"], true, "{result}");
+    }
+    let reloaded = state(root.path()).with_config(&path).unwrap();
+    let project = reloaded.project_for("proj-1").unwrap();
+    assert_eq!(project.isolation, None);
+    assert_eq!(
+        reloaded
+            .projects
+            .environment(&environment_id)
+            .unwrap()
+            .isolation,
+        None
+    );
+    assert_eq!(reloaded.project_isolation(project), Isolation::Rift);
+    assert_eq!(
+        reloaded
+            .decide_isolation(project, &IsolationAvailability { rift: Ok(()) })
+            .isolation,
+        Isolation::Rift
+    );
+}
+
+pub(super) fn rpc(
+    app: &mut AppState,
+    method: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
     app.handle(crate::app::Frame {
         session_id: "test".into(),
         message_id: "test".into(),
@@ -134,7 +208,7 @@ fn rpc(app: &mut AppState, method: &str, params: serde_json::Value) -> serde_jso
     })
 }
 
-fn state(root: &std::path::Path) -> AppState {
+pub(super) fn state(root: &std::path::Path) -> AppState {
     let context =
         crate::harness::HarnessContext::resolved(root.join("mcp.sock"), root.join("state"))
             .unwrap();

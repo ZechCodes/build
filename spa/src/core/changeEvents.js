@@ -964,14 +964,30 @@ export async function greetBridge(
   } = {},
 ) {
   const { greeting, current } = await negotiate(call, isCurrent, strict);
-  rememberGreetingHistory(deviceId, greeting, isCurrent, isHistoryCurrent);
-  if (!acceptCurrentGreeting(current, isCurrent, acceptGreeting, greeting)) return changeEventsArmed(deviceId);
-  const adapter = install(selectAdapter(greeting));
+  const accepted = acceptCurrentGreeting(current, isCurrent, acceptGreeting, greeting);
+  const adapter = installAcceptedGreeting(accepted, install, greeting);
+  rememberGreetingEvidence(deviceId, greeting, adapter, isCurrent, isHistoryCurrent);
   // Installing announces device state; a listener may issue another greeting
   // synchronously. That newer greeting now owns the shared bridge state too.
+  if (!accepted) return changeEventsArmed(deviceId);
   if (!isCurrent()) return changeEventsArmed(deviceId);
-  rememberGreetedReviews(deviceId, adapter, isCurrent);
   return publishGreeting(call, deviceId, greeting, adapter, onGreeting, isCurrent, beforeRefresh);
+}
+
+function installAcceptedGreeting(accepted, install, greeting) {
+  return accepted ? install(selectAdapter(greeting)) : null;
+}
+
+/** A missing hello is no capability evidence. Keep this rule shared by the
+ * historical and live writers; a real legacy hello still records false. */
+function rememberGreetingEvidence(deviceId, greeting, adapter, isCurrent, isHistoryCurrent) {
+  if (!greeting) return;
+  rememberGreetingHistory(deviceId, greeting, isCurrent, isHistoryCurrent);
+  if (!adapter || !isCurrent()) return;
+  rememberGreetedReviews(deviceId, adapter, isCurrent);
+  const current = () => isCurrent() && bridgeFor(deviceId)?.adapter === adapter;
+  void rememberEnvironmentSupport(deviceId, adapter.capabilities, current, greeting.bridge_epoch ?? null);
+  void rememberCompactionSupport(deviceId, adapter.capabilities, current);
 }
 
 function acceptCurrentGreeting(current, isCurrent, acceptGreeting, greeting) {
@@ -1022,8 +1038,6 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting, isCurren
   state.apiVersion = greetingVersion(greeting);
   state.adapter = adapter || null;
   state.current = isCurrent;
-  void rememberEnvironmentSupport(deviceId, adapter?.capabilities, () => isCurrent() && bridgeFor(deviceId)?.adapter === (adapter || null), greeting.bridge_epoch);
-  void rememberCompactionSupport(deviceId, adapter?.capabilities, () => isCurrent() && bridgeFor(deviceId)?.adapter === (adapter || null));
   announceGreeted(state.deviceId);
   if (!state.adapter) return abandonBridge(state);
   // Into the cache, where the views that draw Needs you read it (#144).

@@ -50,10 +50,11 @@ impl Harness for ClaudeHarness {
     /// Every row carries `min_cli`: the Claude Code version whose changelog
     /// says "Added Claude <model>" (anthropics/claude-code CHANGELOG.md), cited
     /// beside it, or, when the changelog is silent, the earliest version
-    /// observed offering the model, with the observation date. An older CLI
-    /// is refused by the API or runs the model at a
-    /// 200k window it does not know better than (#203), so the picker hides
-    /// it. A new model's row is not complete without one.
+    /// observed offering the model, with the observation date. Older CLIs risk
+    /// API refusal or a fallback to a 200k window (#203), so the picker hides
+    /// the model below `min_cli`. For observed versions this gate is
+    /// conservative: earlier versions' behavior is unverified. A new model's
+    /// row is not complete without `min_cli`.
     fn models(&self) -> Vec<ModelOption> {
         vec![
             ModelOption {

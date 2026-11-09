@@ -3083,9 +3083,10 @@ catalog seen through what its installed CLI said, and that is what
   catalog row carries `min_cli`, the version whose changelog says "Added
   Claude <model>", or, when the changelog is silent, the earliest version
   observed offering the model. The source or dated observation is cited
-  beside it. An older CLI gets a 400 from the API on
-  every turn, or runs the model at a 200k window it does not know better than,
-  so the model is hidden and listed under `unavailable`.
+  beside it. Older CLIs risk API refusal or a fallback to a 200k window, so
+  the model is hidden below `min_cli` and listed under `unavailable`. For
+  observed versions this gate is conservative: earlier versions' behavior
+  is unverified.
 - Codex (`codex`, `codex_app_server`) is asked its own list over a short-lived
   `codex app-server` (`initialize`, then `model/list` with hidden models),
   because only the CLI knows the account's list. The picker gets the unhidden

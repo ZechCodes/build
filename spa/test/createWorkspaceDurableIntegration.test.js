@@ -202,9 +202,8 @@ it('a repeated failure after environment.create names the environment and the pr
 it('a reopened repeated failure still names what landed',async()=>{
  const original=await failedCreation(fullSupport,'project');
  const id=await failWorkspaceRetry('latest recovered error');
- await screen.close();screen=null;await mocks.service.close();await startService();
+ await reloadFailure();
  expect((await cache.get(id)).draft.landed).toMatchObject({project:{project_id:'landed-project',name:'Ship'},environment:{environment_id:'landed-env',name:'API'},creationOperationId:original});
- await open({deviceId:'d1'});await progressScreens.at(-1).ready;
  expect(mocks.progress.mock.calls.at(-1)[0].operationId).toBe(id);
  expect(query('[role="status"]').textContent).toBe(`Environment API was created. ${projectFailure('latest recovered error')}`);
  click('[data-progress-action="discard"]');

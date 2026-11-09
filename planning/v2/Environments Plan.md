@@ -585,6 +585,10 @@ same command so `writes.status` for the one id reports where it stands:
     `environment.discard_unused {environment_id, creation_operation_id}`
     refused unless the environment came from that attempt and has no
     projects.
+    Resume retains the landed environment and its creation operation id in
+    the durable draft, including across reloads and further failures. A
+    project created by Resume has its own creation operation id; each
+    resource's discard action uses the operation that created that resource.
   - *project landed, workspace did not*: "Project P was created. Its
     workspace was not: <refusal>". Actions: **Try the workspace again**,
     a new attempt bound to the existing project (fixed-project

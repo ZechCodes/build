@@ -487,9 +487,10 @@ const sourceFingerprintParts = {
 
   // #1087: progress reads retained landing evidence; no RPC or producer changes.
   "core/createWorkspaceProgress.js": ["68ae6185", "1d6bb1a3", "364b6cdb", "bc015a2b", "bffc9b97", "a787107a", "bc149796", "05d1fba0"],
-  // #1087: discard keeps its existing method and project selector, using the original
-  // creation operation ID retained in the retry draft. No new method or resource.
-  "core/createWorkspaceTargets.js": ["297d0462", "5d325e66", "c5a004b3", "9e2d419c", "ffbfe8fa", "31bd3676", "dbf5cace", "b368853a"],
+  // #1087: project and environment discards keep their existing methods/selectors,
+  // each using its own creation operation ID retained across Resume and retries.
+  // No new method or resource.
+  "core/createWorkspaceTargets.js": ["9a675a72", "6b0cb0fa", "96454dd6", "bb45586d", "65fc13a1", "eed31742", "ed8496ca", "c057ab04"],
   "core/writeOperationProgress.js": ["612c1fc7", "78d4b658", "fb001a3b", "01eb5aba", "a6a82b1a", "0389924d", "06c8355f", "bdae5355"],
   // #1085: optional name derivation/count labels only; existing RPC methods and dispatch edges are unchanged.
   "core/createWorkspaceWizardModel.js": ["6ab484d3", "d6995eee", "e6cbd8cb", "c0c56afc", "87962289", "d59cd8e8", "1c69e35a", "c75d28e5"],

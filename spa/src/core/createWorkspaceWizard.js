@@ -331,7 +331,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
   }
   async function retryWorkspace({project,environment,operationId,record}) {
     // Retain the original landing in the next operation, including its discard authority.
-    state.landed={project,environment,creationOperationId:record?.draft?.landed?.creationOperationId || operationId};
+    state.landed={...record?.draft?.landed,project,environment,creationOperationId:record?.draft?.landed?.creationOperationId || operationId};
     state.target=landedProjectTarget(project);
     await submitContinuation(operationId);
   }
@@ -348,7 +348,9 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
       await screen.close();await returnToWizard(error,operationId);
     });
   }
-  async function resumeEnvironment({environment,operationId}) {
+  async function resumeEnvironment({environment,operationId,record}) {
+    // Resume creates the project later; keep its authority separate from the environment's.
+    state.landed={...record?.draft?.landed,environment,environmentCreationOperationId:record?.draft?.landed?.environmentCreationOperationId || operationId};
     const id=environment.environment_id || environment.id;
     state.target={...environment,id,key:`${state.target.deviceId}/${id}`,deviceId:state.target.deviceId,kind:'environment',summaryLabel:environment.name};
     state.operationId=null;state.continues=operationId;

@@ -72,6 +72,7 @@ export function switcherModel(catalog, options = {}) {
   const recent = projects.filter((row) => row.at > 0 && now - row.at <= 24 * 3600_000).sort(byRecency).slice(0, 5);
   return { ...picker, groups: environmentGroups(picker, catalog, options),
     lastVisited: String(options.query || "").trim() ? [] : recent,
-    legacyLastVisited: lastVisitedDestinations(visible, options, row => !environmentNavigationSupported(options, row.deviceId)),
+    legacyLastVisited: lastVisitedDestinations(visible, options, row => !environmentNavigationSupported(options, row.deviceId)
+      && visible.projects.some(group => group.key === row.projectKey)),
     environmentGrouped: true };
 }

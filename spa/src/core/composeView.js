@@ -13,6 +13,7 @@
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
+import { projectIsArchived } from "./archivedProjectModel.js";
 import { canAnswer, creationDevice, deviceFeedView, homeContext } from "./deviceContexts.js";
 import { deviceCall, deviceCatalog } from "./inboxDevices.js";
 import { deviceNameOf } from "./devicePolicy.js";
@@ -272,7 +273,7 @@ function paintPrompt() {
  *  harness picks it up. Rendered only while its disclosure is open. */
 function advancedHtml() {
   const branches = branchOptions(feed.items, box.projectId, feed.runs);
-  const projectOptions = feed.projects
+  const projectOptions = feed.projects.filter(project => !projectIsArchived(project))
     .map(
       (project) =>
         `<option value="${esc(project.id)}"${project.id === box.projectId ? " selected" : ""}>${esc(project.name || project.id)}</option>`,
@@ -298,6 +299,7 @@ function advancedHtml() {
 function paintBox({ focus = true } = {}) {
   const host = $("#compose");
   if (!host || !box) return;
+  box.projectId = availableProjectId(box.projectId);
   const caret = focus ? null : selectionOf(host);
   const deviceName = creationDeviceName();
   host.innerHTML = composeBoxHtml({
@@ -451,6 +453,11 @@ function loadCatalogForPanel() {
 
 // ---- opening, closing, sending ------------------------------------------------
 
+function availableProjectId(preferred = "") {
+  const projects = feed.projects.filter(project => !projectIsArchived(project));
+  return projects.find(project => project.id === preferred)?.id || projects[0]?.id || "";
+}
+
 const savedBoxFields = (saved, current) => ({
   value: saved.value,
   branch: saved.branch || "",
@@ -505,7 +512,7 @@ export function openCompose() {
     choice: loadAgentDefaults(),
     kind: "branch",
     branch: "",
-    projectId: (feed.projects[0] || {}).id || "",
+    projectId: availableProjectId(),
     // The Initialize Git offer a plain folder's refusal became, or null.
     gitOffer: null,
   };
@@ -565,6 +572,7 @@ async function submitCapture() {
 
 async function submitManual() {
   if (!box || box.busy) return;
+  box.projectId = availableProjectId(box.projectId);
   box.value = $("#compose-text")?.value ?? box.value;
   const text = box.value.trim();
   if (!text) {

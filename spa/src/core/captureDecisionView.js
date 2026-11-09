@@ -13,6 +13,7 @@
 
 import { App, go } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
+import { projectIsArchived } from "./archivedProjectModel.js";
 import { creationDevice, deviceFeedView } from "./deviceContexts.js";
 import { confirmAction, isConfirmOpen } from "./confirm.js";
 import { notifyError } from "./notify.js";
@@ -91,12 +92,10 @@ export function mountCaptureDecision(host, captureId) {
    *  named, else the one it was routed to, else the first this device has. A
    *  project the feed has never heard of is no default at all — the selector
    *  could not show it. */
-  // eslint-disable-next-line complexity -- ratchet: ensureProject is at 12, cap 10 — reduce it, then drop this line
   function ensureProject() {
-    if (draft.projectId) return;
-    const known = (projectId) => projectId && feed.projects.some((project) => project.id === projectId);
-    const offered = (record?.question?.options || []).map((option) => option.project_id).find(known);
-    draft.projectId = offered || (known(record?.routing?.project_id) ? record.routing.project_id : "") || (feed.projects[0] || {}).id || "";
+    const projects = feed.projects.filter(project => !projectIsArchived(project));
+    const preferred = [draft.projectId, ...(record?.question?.options || []).map(option => option.project_id), record?.routing?.project_id, projects[0]?.id];
+    draft.projectId = preferred.find(id => projects.some(project => project.id === id)) || "";
   }
 
   /** The live fields, back into the draft. The DOM is the truth about what has

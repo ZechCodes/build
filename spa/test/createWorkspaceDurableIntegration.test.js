@@ -110,7 +110,7 @@ async function failedCreation(flags, landed, initialMethod='environment.create')
  const oldId=mocks.progress.mock.calls.at(-1)[0].operationId;
  const environment={environment_id:'landed-env',name:'API',sources:[{path:'/code/api'}],project_ids:[]};
  const project={project_id:'landed-project',name:'Ship',environment_id:'landed-env',environment_name:'API',sources:[{path:'/code/api'}]};
- const details=landed==='environment'?{environment}:landed==='project'?{environment,project}:{};
+ const details=landed==='environment'?{environment}:landed==='project'?{project,...(initialMethod==='environment.create'?{environment}:{})}:{};
  await mocks.service.handleFrame({type:'writes.confirmed',bridge_epoch:'epoch',operation_id:oldId,revision:2,state:'failed',effect:landed==='none'?'unapplied':'partial',error:{code:'creation_failed',message:'recorded creation failure',details}});
  await screen.close();screen=null;await mocks.service.close();await bind(flags);
  const {openCreateWorkspaceProgress}=await vi.importActual('../src/core/createWorkspaceProgress.js');
@@ -165,4 +165,68 @@ it.each(backCases)('offers Back and resubmission only when its original method i
   expect(back).toBeNull();expect(query('[data-progress-action="close"]')).not.toBeNull();
   expect((await cache.get(oldId)).dismissed).not.toBe(true);expect(document.body.textContent).toContain('recorded creation failure');
  }
+});
+
+async function failWorkspaceRetry(message) {
+ const prior=mocks.progress.mock.calls.at(-1)[0].operationId;
+ click('[data-progress-action="retry"]');
+ await vi.waitFor(()=>expect(mocks.progress.mock.calls.at(-1)[0].operationId).not.toBe(prior));
+ const id=mocks.progress.mock.calls.at(-1)[0].operationId;
+ await progressScreens.at(-1).ready;
+ await mocks.service.handleFrame({type:'writes.confirmed',bridge_epoch:'epoch',operation_id:id,revision:2,state:'failed',effect:'unapplied',error:{code:'creation_failed',message,details:{workspace:null}}});
+ await vi.waitFor(()=>expect(query('h3').textContent).toBe('Failed'));
+ return id;
+}
+const projectFailure=error=>`Project Ship was created. Its workspace was not: ${error}`;
+const fullSupport={create:true,createProject:true};
+it('a second workspace failure still names the project that landed',async()=>{
+ await failedCreation(fullSupport,'project','environment.create_project');
+ await failWorkspaceRetry('second checkout refused');
+ expect(query('[role="status"]').textContent).toBe(projectFailure('second checkout refused'));
+});
+it('a third workspace failure shows the latest error',async()=>{
+ await failedCreation(fullSupport,'project','environment.create_project');
+ await failWorkspaceRetry('second checkout refused');
+ await failWorkspaceRetry('third source missing <api>');
+ expect(query('[role="status"]').textContent).toBe(projectFailure('third source missing <api>'));
+ expect(query('api')).toBeNull();
+});
+it('a repeated failure after environment.create names the environment and the project',async()=>{
+ await failedCreation(fullSupport,'project');
+ await failWorkspaceRetry('second checkout refused');
+ expect(query('[role="status"]').textContent).toBe(`Environment API was created. ${projectFailure('second checkout refused')}`);
+});
+it('a reopened repeated failure still names what landed',async()=>{
+ await failedCreation(fullSupport,'project');
+ const id=await failWorkspaceRetry('latest recovered error');
+ await screen.close();screen=null;await mocks.service.close();await startService();
+ await open({deviceId:'d1'});await progressScreens.at(-1).ready;
+ expect(mocks.progress.mock.calls.at(-1)[0].operationId).toBe(id);
+ expect(query('[role="status"]').textContent).toBe(`Environment API was created. ${projectFailure('latest recovered error')}`);
+ click('[data-progress-action="discard"]');
+ await vi.waitFor(()=>expect(mocks.legacy).toHaveBeenCalledWith('project.discard_unused',expect.objectContaining({project_id:'landed-project'})));
+});
+it('a repeated failure keeps retry keep and discard on the landed project',async()=>{
+ const original=await failedCreation(fullSupport,'project','environment.create_project');
+ await failWorkspaceRetry('second checkout refused');
+ const id=await failWorkspaceRetry('third checkout refused');
+ expect([...document.querySelectorAll('[data-progress-action]')].slice(0,-1).map(button=>button.textContent)).toEqual(['Try the workspace again','Keep it','Discard this project']);
+ const row=await cache.get(id);expect(row.request.params.project_id).toBe('landed-project');
+ click('[data-progress-action="discard"]');
+ await vi.waitFor(()=>expect(mocks.legacy).toHaveBeenCalledWith('project.discard_unused',{project_id:'landed-project',creation_operation_id:original}));
+ await vi.waitFor(()=>expect(query('[role="dialog"]')).toBeNull());
+ expect((await cache.get(id)).dismissed).toBe(true);
+});
+it('Keep it consumes a repeated failure without discarding its landed project',async()=>{
+ await failedCreation(fullSupport,'project','environment.create_project');
+ const id=await failWorkspaceRetry('second checkout refused');
+ click('[data-progress-action="keep"]');
+ await vi.waitFor(()=>expect(query('[role="dialog"]')).toBeNull());
+ expect((await cache.get(id)).dismissed).toBe(true);expect(mocks.legacy).not.toHaveBeenCalled();
+ expect((await readCreateWorkspaceTargets()).attempts).toEqual([]);
+});
+it('a failure that landed nothing shows the real error',async()=>{
+ await failedCreation(fullSupport,'none','workspace.create');
+ expect(query('[role="status"]').textContent).toBe('Nothing was created: recorded creation failure');
+ expect([...document.querySelectorAll('[data-progress-action]')].map(button=>button.dataset.progressAction)).toEqual(['back','close']);
 });

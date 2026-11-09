@@ -1,10 +1,7 @@
 /** @vitest-environment jsdom */
-// #228, with nothing mocked between the greeting and the sheet: the bridge's
-// greeting (fixtures/api/v1/session.hello.json, which bridge/tests pins to the
-// real reply) names `project.update_source`; the real greeting path writes it
-// to the real cache; Project settings reads it there and offers each source's
-// label, folder, base branch and remote for editing. A greeting without the
-// name leaves a sheet whose one edit is the first source's remote.
+// Real greeting-to-cache-to-sheet wiring. Current project rows identify the
+// inherited home and the added docs folder; pre-environment bridges keep the
+// old row shape and its legacy edit controls.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -17,9 +14,15 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { readSourceEditSupport } = await import("../src/core/sourceEditSupport.js");
 const { openProjectSettings } = await import("../src/sheets/projectSettings.js");
+const { wipeCache } = await import("../src/core/localCache.js");
+const { wipeUiRecords } = await import("../src/core/localUiStore.js");
 
 const greeting = JSON.parse(readFileSync(resolve(process.cwd(), "../fixtures/api/v1/session.hello.json"), "utf8")).result;
-const olderGreeting = { ...greeting, capabilities: greeting.capabilities.filter((name) => name !== "project.update_source") };
+// Earlier bridges really lack the environment capability family. Removing
+// only update_source from today's hello does not describe a legacy bridge.
+const legacyGreeting = { ...greeting, api_version: "3.35.0", capabilities: greeting.capabilities.filter(name =>
+  !name.startsWith("environment") && !name.startsWith("projects.") && name !== "secrets.environmentScope") };
+const olderGreeting = { ...legacyGreeting, capabilities: legacyGreeting.capabilities.filter(name => name !== "project.update_source") };
 
 const PROJECT = {
   project_id: "proj-1",
@@ -30,10 +33,14 @@ const PROJECT = {
   ],
 };
 
-beforeEach(() => {
+// Current project.list rows identify inherited and added sources explicitly.
+const CURRENT_PROJECT = { ...PROJECT, environment_id: "env-1", environment_name: "Build", added_sources: [PROJECT.sources[1]] };
+
+beforeEach(async () => {
   resetChangeEvents();
-  globalThis.indexedDB = new IDBFactory();
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
+  await wipeCache();
+  await wipeUiRecords();
 });
 
 afterEach(() => resetChangeEvents());
@@ -41,12 +48,13 @@ afterEach(() => resetChangeEvents());
 const greet = (hello) => greetBridge(async (method) => (method === "session.hello" ? hello : {}), { deviceId: "dev-1", strict: true });
 const docsLabel = () => document.querySelector('#sheet .ps-source[data-source-id="source-2"] input[data-field="name"]');
 
-it("offers every source's edits once the bridge's real greeting names project.update_source", async () => {
+it("offers added-source edits once the bridge's real greeting names project.update_source", async () => {
   expect(greeting.capabilities).toContain("project.update_source");
   await greet(greeting);
   await vi.waitFor(async () => expect(await readSourceEditSupport("dev-1")).toBe(true));
-  openProjectSettings("proj-1", { callRpc: vi.fn(async () => ({ projects: [PROJECT] })), deviceId: "dev-1" });
+  openProjectSettings("proj-1", { callRpc: vi.fn(async () => ({ projects: [CURRENT_PROJECT] })), deviceId: "dev-1" });
   await vi.waitFor(() => expect(docsLabel()?.readOnly).toBe(false));
+  expect(document.querySelector('#sheet .ps-source[data-source-id="source-1"] input[data-field="name"]').readOnly).toBe(true);
 });
 
 it("keeps them read-only for a bridge whose greeting does not name it", async () => {
@@ -62,15 +70,23 @@ it("offers keeping each source's base up to date once the real greeting names so
   expect(greeting.capabilities).toContain("sources.syncBase");
   await greet(greeting);
   await vi.waitFor(async () => expect(await readSourceSyncSupport("dev-1")).toBe(true));
-  openProjectSettings("proj-1", { callRpc: vi.fn(async () => ({ projects: [PROJECT] })), deviceId: "dev-1" });
+  openProjectSettings("proj-1", { callRpc: vi.fn(async () => ({ projects: [CURRENT_PROJECT] })), deviceId: "dev-1" });
   await vi.waitFor(() => expect(document.querySelector('#sheet .ps-source[data-source-id="source-2"] [data-sync-base]')).toBeTruthy());
 });
 
 it("offers no sync controls to a bridge whose greeting does not name sources.syncBase", async () => {
   const { readSourceSyncSupport } = await import("../src/core/sourceEditSupport.js");
   await greet({ ...greeting, capabilities: greeting.capabilities.filter((name) => name !== "sources.syncBase") });
-  openProjectSettings("proj-1", { callRpc: vi.fn(async () => ({ projects: [PROJECT] })), deviceId: "dev-1" });
+  openProjectSettings("proj-1", { callRpc: vi.fn(async () => ({ projects: [CURRENT_PROJECT] })), deviceId: "dev-1" });
   await vi.waitFor(() => expect(docsLabel()).toBeTruthy());
   expect(await readSourceSyncSupport("dev-1")).toBe(false);
   expect(document.querySelector("#sheet [data-sync-base]")).toBeNull();
+});
+
+
+it("keeps all legacy source edits and Sync without an ownership array on a pre-environment bridge", async () => {
+  await greet(legacyGreeting);
+  openProjectSettings("proj-1", { callRpc: vi.fn(async () => ({ projects: [PROJECT] })), deviceId: "dev-1" });
+  await vi.waitFor(() => expect(docsLabel()?.readOnly).toBe(false));
+  expect(document.querySelector('#sheet .ps-source[data-source-id="source-2"] [data-sync-base]')).toBeTruthy();
 });

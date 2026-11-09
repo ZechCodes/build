@@ -4,6 +4,7 @@
 // gitOnly → only git repos are "Choose"-able and the footer adds the current
 // repo; otherwise every folder is selectable (used to pick the projects dir).
 
+import { watchSheetLifetime } from "../core/sheetLifetime.js";
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { settingsSheetHtml } from "./settingsSheet.js";
@@ -77,6 +78,8 @@ export async function openBrowser(opts) {
   const sheet = $("#sheet");
   const container = opts.container || sheet;
   const embedded = container !== sheet;
+  // Page-embedded browsers belong to their host, not the global overlay.
+  const scrim = embedded ? container.closest("#scrim") : $("#scrim");
   const present = (bodyHtml) => embedded ? bodyHtml : settingsSheetHtml({ title: opts.title, bodyHtml });
   const cancelHtml = embedded ? "" : '<button class="btn" id="bcancel" style="margin-left:auto">Cancel</button>';
   let request = 0;
@@ -85,11 +88,14 @@ export async function openBrowser(opts) {
   let unwatch = null;
   let renderedRoot = null;
   let cancelled = false;
-  const current = () => !cancelled && container.isConnected && container.firstElementChild === renderedRoot;
-  const cancel = () => {
+  const current = () => !cancelled && container.isConnected && container.firstElementChild === renderedRoot && (!scrim || scrim.classList.contains("show"));
+  const dispose = watchSheetLifetime(current, () => {
     request += 1;
     cancelled = true;
     unwatch?.();
+  });
+  const cancel = () => {
+    dispose();
     if (opts.onCancel) opts.onCancel();
     else $("#scrim").classList.remove("show");
   };

@@ -96,15 +96,23 @@ function refusalOf(context, doing, method, params) {
  * machine drops mid-flight, because it went, is refused in that sentence too.
  */
 export function deviceCall(deviceId, doing = null) {
-  // Passed through as asked, so an argument the caller left out stays left out.
-  return (...asked) => {
+  // The same synchronous admission can run before an asynchronous source
+  // ownership check, preserving this caller's action-specific refusal.
+  const preflight = (...asked) => {
     const context = contextOf(deviceId);
-    const refused = () => new Error(refusalOf(contextOf(deviceId), doing, ...asked));
-    if (!canAnswer(context)) return Promise.reject(refused());
-    return context.rpc(...asked).catch((error) => {
-      throw canAnswer(contextOf(deviceId)) ? error : refused();
-    });
+    if (!canAnswer(context)) throw new Error(refusalOf(context, doing, ...asked));
+    return context;
   };
+  const call = async (...asked) => {
+    const context = preflight(...asked);
+    try {
+      return await context.rpc(...asked);
+    } catch (error) {
+      const current = contextOf(deviceId);
+      throw canAnswer(current) ? error : new Error(refusalOf(current, doing, ...asked));
+    }
+  };
+  return Object.assign(call, { preflight });
 }
 
 /** The call a row's verbs make: the row says which machine answered for it, so

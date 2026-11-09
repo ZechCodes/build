@@ -6,12 +6,26 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const mountWorkspaceChanges = vi.fn((host, options) => ({
   workspaceMoved: vi.fn(), selectDirectory: vi.fn((id) => options.onSelectDirectory(id)), setVisible() {}, dispose() {},
 }));
+const greetingFailure = vi.hoisted(() => ({ message: null }));
 vi.mock("../src/views/workspaceChanges.js", () => ({ mountWorkspaceChanges: (...args) => mountWorkspaceChanges(...args) }));
+vi.mock("../src/core/deviceContexts.js", async importOriginal => ({
+  ...await importOriginal(),
+  captureDeviceGreeting: () => ({ epoch: "changes-epoch", current: () => true }),
+  whenGreeted: async (_context, dispatch) => {
+    if (greetingFailure.message) throw new Error(greetingFailure.message);
+    return { sent: dispatch() };
+  },
+}));
+vi.mock("../src/core/changeEvents.js", async importOriginal => ({
+  ...await importOriginal(), bridgeCapabilities: () => ({ projects: { syncBase: true }, git: { projectSources: true } }),
+}));
 const { mountProjectChanges } = await import("../src/views/projectChanges.js");
 const { rememberProjectChangesSupport } = await import("../src/core/projectChangesSupport.js");
 const { writeUiRecord, wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { App } = await import("../src/appState.js");
 const { directoryCacheId } = await import("../src/core/directoryScope.js");
+const { writeCached, wipeCache } = await import("../src/core/localCache.js");
+const { environmentSupportAddress } = await import("../src/core/environmentSupport.js");
 const project = { id: "p", sources: [{ id: "code", name: "Code", path: "/code", is_git: true }] };
 const draftAddress = (deviceId, projectId, sourceId, path) => {
   const entityId = directoryCacheId({ project_id: projectId, source_id: sourceId, source_path: path });
@@ -19,21 +33,93 @@ const draftAddress = (deviceId, projectId, sourceId, path) => {
 };
 let handle;
 let host;
+const changesRpc = vi.fn(async () => ({}));
 const mount = (initial = project, route = {}) => {
   host = document.createElement("div");
   document.body.append(host);
   const onSourceSelection = vi.fn();
   handle = mountProjectChanges(host, { project: initial, route: { projectId: "p", ...route },
-    context: { deviceId: "d", cacheScope: { deviceId: "d", address: (address) => ({ deviceId: "d", ...address }) } },
+    context: { deviceId: "d", rpc: changesRpc, cacheScope: { deviceId: "d", address: (address) => ({ deviceId: "d", ...address }) } },
     onSourceSelection, onCommitSelection() {} });
   return onSourceSelection;
 };
 beforeEach(async () => {
   mountWorkspaceChanges.mockClear();
+  changesRpc.mockClear();
+  greetingFailure.message = null;
+  await wipeCache();
   await wipeUiRecords();
   await rememberProjectChangesSupport("d", { git: { projectSources: true } });
 });
 afterEach(() => { handle?.dispose(); document.body.replaceChildren(); });
+
+it.each(["inherited", "unknown", "added", "legacy"])("protects the Sync base affordance and handler for %s sources", async kind => {
+  await rememberProjectChangesSupport("d", { git: { projectSources: true }, projects: { syncBase: true } });
+  await writeCached(environmentSupportAddress("d"), {
+    list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false,
+    bridge_epoch: kind === "unknown" ? "pre-upgrade-epoch" : "changes-epoch",
+  });
+  const current = { ...project };
+  if (kind === "inherited") { current.environment_id = "env"; current.added_sources = []; }
+  if (kind === "added") current.added_sources = project.sources;
+  mount(current);
+  await vi.waitFor(() => expect(mountWorkspaceChanges).toHaveBeenCalled());
+  const sync = host.querySelector("[data-project-sync-base]");
+  const allowed = ["added", "legacy"].includes(kind);
+  // The unchanged all-false cache can paint a legacy control; the newer
+  // accepted epoch still refuses its dispatch until support is refreshed.
+  expect(sync.hidden).toBe(kind === "inherited");
+  sync.click();
+  if (allowed) await vi.waitFor(() => expect(changesRpc).toHaveBeenCalledWith("project.sync_source", expect.objectContaining({ project_id: "p", source_id: "code" })));
+  else {
+    await vi.waitFor(() => expect(host.querySelector("[data-project-sync-error]").textContent).toMatch(/read-only|ownership/i));
+    expect(changesRpc).not.toHaveBeenCalled();
+  }
+});
+
+it.each(["stale cache", "greeting rejected"])("clears Project Changes pending state after %s and dispatches one retry", async refusal => {
+  await rememberProjectChangesSupport("d", { git: { projectSources: true }, projects: { syncBase: true } });
+  const support = { list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false,
+    bridge_epoch: refusal === "stale cache" ? "old-epoch" : "changes-epoch" };
+  await writeCached(environmentSupportAddress("d"), support);
+  if (refusal === "greeting rejected") greetingFailure.message = "Greeting refused before dispatch";
+  mount();
+  const sync = host.querySelector("[data-project-sync-base]");
+  await vi.waitFor(() => expect(sync.hidden).toBe(false));
+  sync.click();
+  await vi.waitFor(() => expect(host.querySelector("[data-project-sync-error]").textContent).toMatch(/read-only|Greeting refused/));
+  expect(sync.disabled).toBe(false);
+  expect(changesRpc).not.toHaveBeenCalled();
+  handle.update({ ...project, name: "Repaint after refusal" });
+  expect(sync.disabled).toBe(false);
+  greetingFailure.message = null;
+  const pane = mountWorkspaceChanges.mock.results[0].value;
+  const paints = pane.workspaceMoved.mock.calls.length;
+  await writeCached(environmentSupportAddress("d"), { ...support, bridge_epoch: "changes-epoch" });
+  await vi.waitFor(() => expect(pane.workspaceMoved.mock.calls.length).toBeGreaterThan(paints));
+  expect(sync.disabled).toBe(false);
+  sync.click();
+  await vi.waitFor(() => expect(changesRpc).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() => expect(sync.disabled).toBe(false));
+});
+
+it("keeps Project Changes Sync busy through a repaint while its response is held", async () => {
+  await rememberProjectChangesSupport("d", { git: { projectSources: true }, projects: { syncBase: true } });
+  await writeCached(environmentSupportAddress("d"), { list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false, bridge_epoch: "changes-epoch" });
+  let finish;
+  changesRpc.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+  mount();
+  const sync = host.querySelector("[data-project-sync-base]");
+  await vi.waitFor(() => expect(sync.hidden).toBe(false));
+  sync.click();
+  await vi.waitFor(() => expect(changesRpc).toHaveBeenCalledTimes(1));
+  handle.update({ ...project, name: "Repaint while awaiting Sync" });
+  expect(sync.disabled).toBe(true);
+  await sync.onclick();
+  expect(changesRpc).toHaveBeenCalledTimes(1);
+  finish({});
+  await vi.waitFor(() => expect(sync.disabled).toBe(false));
+});
 
 it("preserves a commit-only deep link until the default source resolves", async () => {
   const selected = mount({ id: "p", sources: [] }, { commit: "abc" });

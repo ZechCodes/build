@@ -11,6 +11,7 @@
 // panel and the project sheet both read it, so neither learns a variant name, a
 // label, an RPC shape or a locked look.
 
+import { watchSheetLifetime } from "./sheetLifetime.js";
 import { esc } from "./text.js";
 import { deviceSettingsAddress, projectSettingsAddress, watchSettingsRecord, writeProjectSetting } from "./settingsRecords.js";
 
@@ -124,13 +125,14 @@ const lockLine = (available) => {
  *  answer, so it shows what the bridge holds rather than what was merely asked
  *  for; a refusal is the bridge's own sentence, and the control goes back to the
  *  answer it last had. */
-export async function mountIsolation(host, { callRpc, target, settings, deviceId = "", fromProjectRecord = false }) {
+export async function mountIsolation(host, { callRpc, target, settings, deviceId = "", fromProjectRecord = false, current: ownerCurrent = () => true }) {
   const select = host.querySelector("[data-isolation=select]");
   if (!select) return;
   const lock = host.querySelector("[data-isolation=lock]");
   const saved = host.querySelector("[data-isolation=saved]");
   const error = host.querySelector("[data-isolation=error]");
 
+  const current = () => select.isConnected && ownerCurrent();
   let held;
   const paint = (state) => {
     held = state;
@@ -144,11 +146,12 @@ export async function mountIsolation(host, { callRpc, target, settings, deviceId
     ? projectSettingsAddress(deviceId, target.params.project_id)
     : deviceSettingsAddress(deviceId);
   const record = watchSettingsRecord(address, (state) => {
-    if (!select.isConnected) { record.dispose(); return; }
+    if (!current()) { dispose(); return; }
     if (!state) return;
     paint(state);
     select.disabled = false;
-  }, { owner: select });
+  });
+  const dispose = watchSheetLifetime(current, record.dispose);
   select.onchange = async () => {
     const chosen = select.value || null;
     select.disabled = true;
@@ -156,14 +159,14 @@ export async function mountIsolation(host, { callRpc, target, settings, deviceId
     saved.textContent = "Saving…";
     try {
       const changed = await callRpc(target.rpc, { ...target.params, isolation: chosen });
-      if (!select.isConnected) { record.dispose(); return; }
+      if (!current()) { dispose(); return; }
       if (target.inherits) {
         await writeProjectSetting(deviceId, changed);
         await record.read();
       } else await record.write(changed);
       saved.textContent = "Saved. New tasks use this isolation; existing checkouts and their caches stay as they are.";
     } catch (refusal) {
-      if (!select.isConnected) { record.dispose(); return; }
+      if (!current()) { dispose(); return; }
       error.textContent = refusal.message;
       saved.textContent = "";
       await record.read();

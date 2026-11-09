@@ -1,5 +1,6 @@
 import { whenGreeted } from "./deviceContexts.js";
 import { bridgeCapabilities } from "./changeEvents.js";
+import { withWritableProjectSource } from "./sourceOwnership.js";
 
 function sourceIn(project, source) {
   if (project?.sources) return project.sources.find((entry) => entry.id === source.id);
@@ -24,14 +25,17 @@ function gitParams(source, owner, capabilities, params, primary) {
 }
 export function projectChangesRpc(context, source, owner) {
   return async (method, params, ...options) => {
-    const request = await whenGreeted(context, () => {
+    const dispatch = () => {
       const { primary } = currentSource(source, owner);
       const capabilities = bridgeCapabilities(context.deviceId);
       const scoped = method === "project.sync_source"
         ? syncParams(source, owner, capabilities, params)
         : gitParams(source, owner, capabilities, params, primary);
       return context.rpc(method, scoped, ...options);
-    });
+    };
+    if (method === "project.sync_source") return withWritableProjectSource(context.deviceId, context,
+      () => owner.currentProject(), source.id, dispatch);
+    const request = await whenGreeted(context, dispatch);
     if (!request) throw new Error("This machine is unavailable.");
     return request.sent;
   };

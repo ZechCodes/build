@@ -13,6 +13,7 @@ import { workspaceDisplayName } from "../core/workspaceModel.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { attachRepoPicker } from "./repoPicker.js";
 import { mountSyncControls, syncControlsHtml } from "./sourceSyncControls.js";
+import { sourceOwnershipState } from "../core/sourceOwnership.js";
 
 /** The parts of a source a card shows, in the order it shows them. */
 const FIELDS = ["name", "path", "base_branch", "remote"];
@@ -47,7 +48,13 @@ const FIRST_REMOTE_ONLY = {
     callRpc("project.set_remote", { project_id: projectId, url: changes.remote }),
 };
 
-export const sourceEditing = (editsSources) => (editsSources ? IN_PLACE : FIRST_REMOTE_ONLY);
+export function sourceEditing(project, editsSources, environmentSupport) {
+  const ownership = sourceOwnershipState(project, environmentSupport);
+  if (ownership === "unknown") return READ_ONLY;
+  return ownership === "known" || editsSources ? IN_PLACE : FIRST_REMOTE_ONLY;
+}
+
+const READ_ONLY = { editable: () => false };
 
 const shownFields = (source) => FIELDS.filter((field) => source.is_git !== false || !GIT_FIELDS.has(field));
 
@@ -63,6 +70,8 @@ function fieldHtml(source, index, field, editing) {
         value="${esc(paintedValue(source, field))}"${editable ? "" : " readonly"}>${hint}</div>`;
 }
 
+const sourceErrorHtml = notice => `<div class="adderr" data-source-error role="alert">${esc(notice?.error || "")}</div>`;
+
 function cardHtml(source, index, { editing, removable, notice, sync }) {
   const kind = source.is_git === false ? "Folder" : "Git repository";
   const editable = shownFields(source).some((field) => editing.editable(field, index));
@@ -71,7 +80,7 @@ function cardHtml(source, index, { editing, removable, notice, sync }) {
       <span class="ps-source-tag">${kind}</span></header>
     ${shownFields(source).map((field) => fieldHtml(source, index, field, editing)).join("")}
     ${syncControlsHtml(source, index, sync)}
-    <div class="adderr" data-source-error role="alert"></div>
+    ${sourceErrorHtml(notice)}
     <div class="dim" data-source-status role="status">${esc(notice?.status || "")}</div>
     <div class="ps-source-warning" data-source-warning role="alert">${esc(notice?.warning || "")}</div>
     <footer class="row ps-source-foot">${[
@@ -81,24 +90,57 @@ function cardHtml(source, index, { editing, removable, notice, sync }) {
 }
 
 /** The section: a card per source, then the two ways one is added. */
-export function sourcesSectionHtml(project, { editing, editsSources, notices = {}, sync = {} }) {
-  const sources = project.sources || [];
-  const removable = sources.length > 1;
-  const older = editsSources
-    ? ""
-    : '<p class="dim">Update Build on this device to edit a folder\'s label, path and base branch here.</p>';
+export function sourcesSectionHtml(project, { editing, editsSources, environmentSupport, environmentName, notices = {}, sync = {} }) {
+  const ownership = sourceOwnershipState(project, environmentSupport);
   return `<section class="ps-section" aria-labelledby="ps-sources-h"><h4 id="ps-sources-h">Sources</h4>
     <p class="sub">New workspaces are cut from these folders. A workspace that already exists keeps its own directories.</p>
-    ${older}
-    ${sources.map((source, index) => cardHtml(source, index, { editing, removable, notice: notices[source.id], sync })).join("")}
+    ${sourceHelpHtml(ownership, editsSources)}
+    ${sourceGroupsHtml(project, { editing, ownership, environmentName, notices, sync })}
     <div class="row"><button class="btn" id="psaddfolder" type="button">Add folder…</button>
       <button class="btn" id="psaddremote" type="button">Add Git remote…</button></div>
     <div id="psaddsource"></div>
     <div class="adderr" id="pssrcerr" role="alert"></div></section>`;
 }
 
+function sourceHelpHtml(ownership, editsSources) {
+  if (ownership === "unknown") return `<p class="dim" data-source-ownership="unknown" role="status">Folder ownership is unavailable. Folders are read-only until this project's source information refreshes.</p>
+    <button class="btn" id="psrefreshsources" type="button">Refresh folders</button>`;
+  return ownership === "legacy" && !editsSources
+    ? '<p class="dim">Update Build on this device to edit a folder\'s label, path and base branch here.</p>' : "";
+}
+
+function sourceGroupsHtml(project, { editing, ownership, environmentName, notices, sync }) {
+  const sources = project.sources || [];
+  const addedIds = new Set((Array.isArray(project.added_sources) ? project.added_sources : []).map(source => source.id));
+  const cards = sources.map((source, index) => {
+    const inherited = ownership === "known" && !addedIds.has(source.id);
+    const readOnly = ownership === "unknown" || inherited;
+    return { inherited, html: cardHtml(source, index, {
+      editing: readOnly ? READ_ONLY : editing,
+      removable: !readOnly && sources.length > 1,
+      notice: notices[source.id], sync: readOnly ? {} : sync,
+    }) };
+  });
+  if (ownership === "legacy") return cards.map(card => card.html).join("");
+  if (ownership === "unknown") return `<div data-source-group="unknown">${cards.map(card => card.html).join("")}</div>`;
+  const inherited = cards.filter(card => card.inherited).map(card => card.html).join("");
+  const added = cards.filter(card => !card.inherited).map(card => card.html).join("");
+  return `<div data-source-group="environment"><h5>From ${esc(environmentName || project.environment_name || project.environment_id || "environment")}</h5>${inherited}</div>
+    <div data-source-group="added"><h5>Added to this project</h5>${added}</div>`;
+}
+
 const cardOf = (sheet, sourceId) =>
   [...sheet.querySelectorAll(".ps-source")].find((card) => card.dataset.sourceId === sourceId);
+
+/** A write can settle after its card was repainted. Keep its refusal with the
+ * opening's notices and show it on the current card, never a detached node. */
+export function showSourceWriteError(sheet, notices, previous, sentence) {
+  const sourceId = previous?.closest(".ps-source")?.dataset.sourceId;
+  if (sourceId) notices[sourceId] = { ...notices[sourceId], error: sentence };
+  const target = sourceId ? cardOf(sheet, sourceId)?.querySelector("[data-source-error]") : sheet.querySelector("#pssrcerr");
+  if (target) target.textContent = sentence;
+  return Boolean(target);
+}
 
 const sourceOf = (project, card) => (project.sources || [])[Number(card.dataset.sourceIndex)];
 
@@ -175,11 +217,11 @@ async function cachedWorkspaces(deviceId) {
  * onDone)` puts in the cache; the sheet repaints from there once `onDone`
  * has settled.
  */
-export function mountSourceCards(sheet, project, { editing, callRpc, deviceId, write, saveDraft, onSaved, onSyncAsked }) {
+export function mountSourceCards(sheet, project, { editing, callRpc, deviceId, write, syncInFlight, saveDraft, onSaved, onSyncAccepted, onSyncSettled }) {
   sheet.querySelectorAll(".ps-source").forEach((card) => {
     const source = sourceOf(project, card);
     if (!source) return;
-    mountSyncControls(card, source, { callRpc, projectId: project.project_id, write, onSyncAsked });
+    mountSyncControls(card, source, { callRpc, projectId: project.project_id, write, syncInFlight, onSyncAccepted, onSyncSettled });
     card.querySelectorAll("input[data-field]:not([readonly])").forEach((input) => {
       input.oninput = () => { markDirty(card, source); saveDraft(true); };
     });

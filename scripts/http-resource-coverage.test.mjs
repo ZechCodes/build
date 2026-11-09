@@ -278,7 +278,11 @@ const stagedConsumerExclusions = {
 // modules; neither delegating view has its own RPC/producer occurrence.
 // #894 finite metadata/call-edge audit: docs/task-query-cost/http-resource-coverage-audit.md
 const sourceFingerprintParts = {
-  "app.js": ["e9b93f5b", "01a713dd", "1c1f8ef7", "00229053", "d2bf2d3a", "b372d574", "81aaff15", "71dc3f58"],
+  // #1065: cached eligibility is separate from current-greeting dispatch; epoch and genuine no-epoch legacy paths wrap existing source calls.
+  // Action-specific device preflight can refuse before ownership admission; it sends no RPC.
+  "core/sourceOwnership.js": ["4dc6b96f", "5e384a49", "1765f57d", "c78540f8", "5cb6e253", "d7e82c0f", "80b93292", "b28dfe55"],
+  // #1065: accepted navigation notifies only opted-in project settings; RPC edges are unchanged.
+  "app.js": ["8e043a81", "cc1d5abd", "0e312435", "52018876", "d56a6883", "8c9587f5", "e34aa31b", "25b32265"],
   "appState.js": ["d24d9edc", "6e4988f0", "8a5289ee", "6c449b3f", "91bdbe42", "7cd43ada", "7a9df6a4", "acd39971"],
   "connection.js": ["009f7235", "cbcbf300", "43c93b7c", "bcfb2243", "e17e2797", "d809e8af", "5e60cb14", "d0fe86f7"],
   "core/activityRuns.js": ["2bd80d81", "ad2ddde9", "da2fc194", "95b7b7ba", "4d0a86f4", "29a52906", "009b6fc5", "5221d710"],
@@ -302,7 +306,8 @@ const sourceFingerprintParts = {
   // #997 runtime-board captureDecisionView.js:142: branch choices join cached runtime run bodies; existing RPC and mutation dispatch unchanged.
   "core/captureDecisionView.js": ["15299f0a", "f1762e74", "8af22269", "0f16e798", "ccf8e367", "d2d759e2", "554ce8fc", "002692f1"],
   // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
-  "core/changeEvents.js": ["1a9948ba", "17d25952", "ae16d89d", "fe6b09e5", "3f000048", "05d4e5b1", "7d6b1d36", "592084a5"],
+  // #1065: concrete hello gates cached capability evidence; greeting refusal still disarms. RPC edges are unchanged.
+  "core/changeEvents.js": ["7a5a12c1", "08e2b234", "12c12ff8", "ebbe2a0a", "035a3080", "d087fd5d", "51c1bd0e", "33636419"],
   "core/changesComments.js": ["7a5e0b06", "c47bf122", "ac5370b8", "debd8dc8", "388227b8", "f9ea1623", "d413134a", "635a2a7d"],
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],
@@ -321,7 +326,7 @@ const sourceFingerprintParts = {
   // #1006 held secret posts use the current session safely because thread.post
   // deduplicates the preserved operation_id; the dispatch methods are unchanged.
   // #1026 greeted epoch projection changes no RPC/producer aliases or assignment edges.
-  "core/deviceContexts.js": ["60eec962", "33ad7c40", "7757cb5b", "2947fb31", "25131dfc", "894c0f7c", "9f34926a", "62782eae"],
+  "core/deviceContexts.js": ["fdd83b7c", "ff47f7f7", "8fd4ebed", "ebf89dab", "257e322d", "934f3215", "b95d426d", "b042b271"],
   "core/diffSort.js": ["9ef743b8", "16f0a5ae", "1d9ec36a", "455f0e76", "c04a0902", "8deca6c7", "70acd150", "dbe96ac6"],
   "core/directoryRail.js": ["98080c38", "f2152285", "3e025868", "10652120", "d12c8ead", "cfa571c6", "6c3476c8", "b6b56ef2"],
   "core/fileDiffs.js": ["708cce52", "81bbdc00", "82791bce", "f9d05524", "b3b3b017", "d283e106", "e977da82", "b3b2707e"],
@@ -337,12 +342,13 @@ const sourceFingerprintParts = {
   "core/gitPane.js": ["3b9c66d1", "186e1669", "3ecc46b0", "0afe28d8", "10e87dd3", "55dfbb00", "44fa79f8", "88d71409"],
   "core/httpSession.js": ["0b7b82e7", "b8028927", "c780566d", "761fc9fc", "12ca2faa", "7e626b1a", "c51ecf85", "3e85059a"],
   "core/inboxCaptures.js": ["48a7f5fb", "b2132a83", "5901fb31", "4fb0c5ae", "97005297", "2d0b9db6", "be2c3e6d", "1271b663"],
-  "core/inboxDevices.js": ["f9a293e4", "dff4b2b4", "f5fc7940", "f5c1f48d", "a66a5718", "238826a6", "e3dc6b9f", "4060a79e"],
+  "core/inboxDevices.js": ["cd1cfdd5", "9a9734e7", "ac73df50", "cac3383d", "9b6b0229", "b72936f1", "4b2d5657", "a8586421"],
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
   // #997 runtime-board inboxView.js:193,206,320: scoped pending display and cached branch choices; existing RPC and mutation dispatch unchanged.
   // #1051: cached environment identity and wizard entry points; existing RPC methods, producers and assignment edges are unchanged.
   "core/inboxView.js": ["8b134c8c", "978e124c", "ffd889f9", "58a1971d", "bd9e16e7", "54a3195f", "b36dd9e0", "b141065c"],
-  "core/isolation.js": ["e0f94fdb", "5efa8bd1", "633758d8", "bf506b89", "9ee7b957", "40e0c0e8", "30be0ed3", "d178b6d9"],
+  // #1065: isolation readers follow the settings opening lifetime; RPC methods and parameter producers are unchanged.
+  "core/isolation.js": ["de9e859c", "306a93e1", "6f60081e", "137307a8", "e9ca5a1f", "f8e46258", "28408ab8", "dc1c3172"],
   "core/markdownFences.js": ["10057396", "68214f4d", "d193015e", "2552698e", "c48313df", "6df2e223", "7e3bc837", "2805a4bb"],
   "core/modelCatalog.js": ["c293ea11", "fff0969f", "7852c8cd", "0c252f82", "fe666159", "95919417", "25a661ec", "c93fd9b4"],
   "core/navigationVisits.js": ["f8d32f7a", "6bf64af6", "81866475", "02ebd8fc", "3a0be61c", "c9f0d9f3", "e1cc0c06", "dd4dc05a"],
@@ -353,7 +359,7 @@ const sourceFingerprintParts = {
   // #997 projectAgentsCache.js:57: load runtime authority only for Web Locks reads; live callbacks fence upgrades without import side effects.
   "core/projectAgentsCache.js": ["a7c5f4b5", "321ecafb", "b30fd292", "07302c6b", "1f62638a", "c16708ff", "94bfaa24", "4e46db17"],
   "core/projectAgentSetting.js": ["cf7d410a", "f3bc1eb4", "1b4e7833", "9dc4cf50", "23b01280", "01636e27", "72e8edb1", "e4a7e379"],
-  "core/projectChangesRpc.js": ["613fe381", "59f4a3a4", "08a518ed", "4e535261", "21ca4a58", "5e5011d9", "c0acd52e", "bb8e5014"],
+  "core/projectChangesRpc.js": ["13a94f21", "bc78b6c3", "1d91464b", "9d923c09", "70f08579", "7bdc0d09", "76d98ca0", "8f08b3ca"],
   "core/projectConsole.js": ["b44678cc", "4c2dbc2a", "188695a2", "307b4883", "4d4fb733", "091622af", "3c648066", "9d1e32bb"],
   "core/projectFilesRpc.js": ["e84ae7b7", "ceffb0cc", "7ff4c6cd", "cfc0c05f", "13a0d831", "079f3b3e", "5dae2e56", "ce4686ac"],
   "core/projectTerminalRpc.js": ["b391c6dc", "aa385e26", "aadfb8b8", "f6ef5cc9", "9a8e7a79", "d9d757bb", "cdd1356c", "867cadea"],
@@ -363,7 +369,8 @@ const sourceFingerprintParts = {
   "core/readStateRepair.js": ["c374e7a6", "23e8215a", "1c4a16b5", "337a4bf2", "32babbcc", "246bfc57", "68c3cdfc", "5e916be7"],
   "core/revisionBodies.js": ["60606411", "ec3a6f2c", "7c923581", "f22c39cd", "43dd8a04", "69ff5c40", "e4e490cb", "e3119193"],
   "core/rtcTerminalLink.js": ["9e8a6c70", "266666d9", "45b2f045", "4f29f5fc", "6293c562", "d2f0ed25", "15a05fd6", "a43dd438"],
-  "core/scopedCompactionEditor.js": ["b5d366f5", "90a2be6a", "b5c01379", "ccad5198", "7298a4cf", "bdcbdc88", "2e022cd4", "847d6330"],
+  // #1065: project replies share the atomic identity-preserving writer; dispatch and acceptance fences are unchanged.
+  "core/scopedCompactionEditor.js": ["bb63e1ad", "9edb5bfa", "e21c2b85", "4258ad49", "9409f3f9", "ae25c6ad", "a4798a0e", "017bd938"],
   "core/scopedProjectColumns.js": ["050be4f1", "7bc93888", "92cfb0a6", "eec46373", "f5b4c3f8", "22bbd079", "a8a0081b", "cf9db94a"],
   // #997 scopedSyncDiagnostics.js:4: device is a closed diagnostic label, never a resource selector.
   "core/scopedSyncDiagnostics.js": ["6cc8fdb6", "b09c4e34", "fe7d1304", "b21f55d1", "28d9740b", "71c566cd", "db179dcd", "ef3bd1bf"],
@@ -436,12 +443,19 @@ const sourceFingerprintParts = {
   // #1052: nested creation execution evidence changes display state; transport method edges stay unchanged.
   "core/writeOperations.js": ["eb7e34fc", "2e61c22a", "e6a302e2", "fc74cb2c", "99a7d032", "0ea012eb", "9c4adb8f", "ebd06bfc"],
   "push.js": ["c7a3eb27", "240e0a4d", "3e314aee", "369bea39", "25bf83e0", "f105e41a", "0e4ed716", "4e53028b"],
-  "sheets/browser.js": ["f29e68d9", "6231a5cd", "1b35fff6", "20bf39c0", "22040456", "1a9bea95", "2fdd2c81", "d3a23914"],
+  // #1065: browser teardown follows its containing overlay or page host; filesystem RPC edges are unchanged.
+  "sheets/browser.js": ["26b0a0d1", "9c17f7c3", "0d7f7b63", "f387fc4e", "2067502a", "c2f7b754", "e996da65", "07b55e58"],
   "sheets/newRepo.js": ["2aa62eb9", "1256b93f", "6d69e55c", "9aadf051", "0ca4505a", "35eb191a", "7c08d8f9", "f4a68f66"],
   // #997 projectSettings.js:232: the existing project.list loader delegates to owned device recovery.
-  "sheets/projectSettings.js": ["1e7423ec", "47cd628d", "c76970e7", "fca5da5f", "c623809c", "c51769ab", "1b172bb1", "906737ee"],
-  "sheets/projectSources.js": ["f9eb9e2b", "9c526294", "46090552", "02740c7a", "25e0f849", "8162d486", "fd90c590", "05524d9d"],
-  "sheets/sourceSyncControls.js": ["a0c9eb24", "846213e3", "1cc5b961", "8058d449", "6a46f577", "2b154112", "724dc4e5", "6041f096"],
+  // #1065: positive ownership evidence gates both card rendering and editing.save.
+  // Source replies use the shared identity-preserving writer; project-scoped methods/selectors and project.list refresh are unchanged.
+  // Opening teardown and atomic Sync adoption retain current project metadata; no RPC edge changes.
+  // Source refusal notices survive cache repaints; existing RPC verbs and parameter producers are unchanged.
+  // Retired-frame picker cleanup and committed navigation release only the project settings opening.
+  "sheets/projectSettings.js": ["42e05498", "8e486365", "3845c45c", "b7082348", "c94deb75", "f1558bb5", "a659dc9d", "e5e45095"],
+  "sheets/projectSources.js": ["668c3c8b", "c7f45b68", "814d6b0f", "29084876", "7d9d9f00", "cea0de62", "886e9c87", "f3c87009"],
+  // #1065: sheet-owned in-flight state blocks duplicate Sync requests; the accepted callback, RPC method and selectors are unchanged.
+  "sheets/sourceSyncControls.js": ["49045a5b", "1fd03d03", "c9e574df", "020f32ea", "5d64bdd0", "3ab970b7", "1c98dee9", "cb20c875"],
   // #997 workspaceSettings.js:292: the existing project.list catalog loader delegates to owned device recovery.
   "sheets/workspaceSettings.js": ["5cc470f0", "7f95fc28", "02c7bfb0", "478c4510", "e33b5183", "1e6be057", "6928f74b", "82185347"],
   "terminal/manager.js": ["4027a8b0", "af931af9", "3d71d687", "c930e06b", "bd55b938", "ad0db4da", "e20dc150", "60ed795b"],
@@ -454,7 +468,7 @@ const sourceFingerprintParts = {
   // #1052 retry review: settings-owned results alone authorize totals/empty states; pending pulls hide earlier errors. RPC edges stay unchanged.
   "views/environmentsSettings.js": ["9f430e5d", "e73de874", "7d6b3d62", "095d5489", "d547f7b2", "ae99f7a8", "dd332417", "8884a276"],
   "views/files.js": ["bc4913c5", "865b9dd0", "e28f655f", "242c9011", "456a4139", "b2cfd372", "6498e15b", "f3116261"],
-  "views/projectChanges.js": ["e195b594", "3a7689fe", "14bfc899", "18ada18d", "ab36cd52", "ad96ba97", "a877c4da", "c9c3b78f"],
+  "views/projectChanges.js": ["601d957b", "35e2b919", "ff4c83f8", "9946e6e7", "ff9a9b16", "8d93be43", "466971da", "d1d4dc94"],
   "views/projectView.js": ["76123138", "7ded30d0", "0893b5ef", "5d880782", "137464b9", "5b123e76", "48f1a9d5", "28144478"],
   "views/taskReview.js": ["7d540d05", "70beae35", "200434ea", "decae581", "f1b126d6", "9a38fe38", "642a621a", "2e34a257"],
   "views/taskView.js": ["483fdb16", "52a51dd3", "ea9f60d0", "c21f16a9", "090b27a4", "4839602c", "4653bfcc", "38959753"],
@@ -476,6 +490,9 @@ const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintPa
 // from literal collection. New/changed dynamic sites must be reviewed rather
 // than disappearing because their first argument is not a quoted string.
 const dynamicSites = {
+  // #1065: all existing source/read methods pass through; four source writes gain an ownership fence.
+  "core/sourceOwnership.js": ["callRpc ( method )", "callRpc ( method )"],
+  "sheets/projectSettings.js": ["guardProjectSourceRpc ( deviceId )"],
   "connection.js": [
     "context . rpc ( ... asked )",
     "session . call ( method )"

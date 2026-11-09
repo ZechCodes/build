@@ -41,6 +41,8 @@ it("uses the supplied device connection and initial folder", async () => {
 });
 it("can render inside a host without replacing its surrounding controls", async () => {
   document.querySelector("#sheet").innerHTML = '<div id="tabs">tabs</div><div id="browser-host"></div><button id="outside">Add project</button>';
+  // The parent sheet owns visibility for its embedded browser.
+  document.querySelector("#scrim").classList.add("show");
   const host = document.querySelector("#browser-host");
   const callRpc = vi.fn().mockResolvedValue(listing("/device-projects"));
   await openBrowser({ title: "Projects", callRpc, startPath: "/device-projects", container: host, onChoose: vi.fn() });
@@ -74,6 +76,8 @@ it("validates directory names before calling the device", async () => {
 });
 it("ignores a directory created after the embedded picker is replaced", async () => {
   document.querySelector("#sheet").innerHTML = '<div id="browser-host"></div>';
+  // The parent sheet owns visibility for its embedded browser.
+  document.querySelector("#scrim").classList.add("show");
   const host = document.querySelector("#browser-host");
   let finishCreate;
   const callRpc = vi.fn()
@@ -90,6 +94,8 @@ it("ignores a directory created after the embedded picker is replaced", async ()
 });
 it("does not overwrite newer embedded content when a listing completes late", async () => {
   document.querySelector("#sheet").innerHTML = '<div id="browser-host"></div>';
+  // The parent sheet owns visibility for its embedded browser.
+  document.querySelector("#scrim").classList.add("show");
   const host = document.querySelector("#browser-host");
   let resolve;
   const callRpc = vi.fn(() => new Promise((done) => { resolve = done; }));
@@ -151,6 +157,8 @@ it("surfaces a failed home fallback without retrying again", async () => {
 });
 it("does not paint a home fallback that completes after its embedded host is replaced", async () => {
   document.querySelector("#sheet").innerHTML = '<div id="browser-host"></div>';
+  // The parent sheet owns visibility for its embedded browser.
+  document.querySelector("#scrim").classList.add("show");
   const host = document.querySelector("#browser-host");
   let resolveHome;
   const callRpc = vi.fn()
@@ -189,4 +197,14 @@ it("provides native navigation controls for folders and the parent", async () =>
   expect(navigation.map((button) => button.dataset.path)).toEqual(["/", "/projects/nested"]);
   navigation[1].click();
   expect(callRpc).toHaveBeenLastCalledWith("fs.list", { path: "/projects/nested" });
+});
+
+it("keeps a page-embedded browser independent of the closed global scrim", async () => {
+  const host = document.createElement("main");
+  document.body.prepend(host);
+  const callRpc = vi.fn().mockResolvedValue(listing("/page-folders"));
+  await openBrowser({ title: "Folders", callRpc, container: host, onChoose: vi.fn() });
+  expect(host.querySelector("#choosecur")).not.toBeNull();
+  expect(host.textContent).toContain("/page-folders");
+  expect(document.querySelector("#scrim").classList.contains("show")).toBe(false);
 });

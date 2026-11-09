@@ -62,7 +62,7 @@ describe('workspace wizard pages',()=>{
     expect(dialog().querySelector('#create-work-input').value).toBe('Ship payments');
     search.value='';dialog().querySelector('#create-workspace-search').value='';dialog().querySelector('#create-workspace-search').dispatchEvent(new Event('input'));
     expect(dialog().querySelector('[data-kind="environment"]').getAttribute('aria-pressed')).toBe('true');
-    clickTarget('project');expect(dialog().textContent).toContain("Uses Payments's task board");
+    clickTarget('project');expect(dialog().textContent).toContain("Uses this project's task board");
     expect(mocks.submit).not.toHaveBeenCalled();
   });
   it('supports search focus, arrow navigation, Enter selection, slash search, Escape and opener focus restoration',async()=>{

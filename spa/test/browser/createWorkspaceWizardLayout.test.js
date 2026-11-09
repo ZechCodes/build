@@ -140,7 +140,7 @@ for(const [width,height] of [[390,844],[320,568]])for(const variant of ['error',
 }
 
 async function singleLineSummaries(page){
- const names=['.create-summary-name','.create-summary-device','.create-outcome'];
+ const names=['.create-summary-name','.create-summary-device-name'];
  for(const selector of names){
   expect(await page.locator(selector).count()).toBe(1);
   const details=await page.locator(selector).evaluate(el=>{
@@ -150,6 +150,23 @@ async function singleLineSummaries(page){
   expect(details.noWrap).toBe(true);expect(details.ellipsis).toBe(true);expect(details.fullText).toBe(true);
   expect(details.height).toBeLessThanOrEqual(details.lineHeight+1);
  }
+}
+async function summaryFactsVisible(page){
+ const facts=await page.evaluate(()=>{
+  const outcome=document.querySelector('.create-outcome');
+  const boxes=['.create-summary-offline','.create-outcome'].map(selector=>{
+   const el=document.querySelector(selector);
+   if(!el)return {selector,inside:false,unclipped:false};
+   const r=el.getBoundingClientRect(),box=el.closest('.create-target-summary,.create-name').getBoundingClientRect();
+   return {selector,inside:r.top>=box.top&&r.bottom<=box.bottom&&r.left>=box.left&&r.right<=box.right,
+    unclipped:el.scrollWidth<=el.clientWidth};
+  });
+  return {outcome:outcome.textContent,boxes};
+ });
+ expect(facts).toEqual({outcome:"Uses this project's task board",boxes:[
+  {selector:'.create-summary-offline',inside:true,unclipped:true},
+  {selector:'.create-outcome',inside:true,unclipped:true},
+ ]});
 }
 for(const [width,height] of [[390,844],[320,568]])for(const status of ['error','progress','error-progress']){
  it(`pins controls for a 170-character project with ${status} and Advanced at ${width}x${height}`,async()=>{
@@ -164,7 +181,7 @@ for(const [width,height] of [[390,844],[320,568]])for(const status of ['error','
    if(status.includes('progress'))controls.push('.create-resume','[data-create-resume]');
    await page.locator('[data-create-advanced] summary').click();await pinned(page,controls);
    expect(await page.locator('[role="dialog"]').evaluate(el=>el.scrollHeight<=el.clientHeight)).toBe(true);
-   await singleLineSummaries(page);await advancedReachable(page,controls);
+   await summaryFactsVisible(page);await singleLineSummaries(page);await advancedReachable(page,controls);
    if(width===320 && status==='error-progress')await page.screenshot({path:`${scratch}/project-worst-320.png`});
   },{width,height});
  },30000);

@@ -12,8 +12,9 @@ const targetLabel = target => target.summaryLabel || target.label || target.name
 export function createWorkspaceTargetSummaryHtml(target) {
   const label=targetLabel(target);
   const device=[target.deviceLabel,target.offline ? 'Offline':''].filter(Boolean).join(' · ');
+  const deviceName=target.deviceLabel ? `<span class="create-summary-device-name" title="${esc(target.deviceLabel)}">${esc(target.deviceLabel)}</span>`:'';
   return `<span class="create-summary-name" title="${esc(label)}">${glyph(target.kind)}${esc(label)}</span>
-    ${device ? `<span class="create-summary-device dim" title="${esc(device)}">${esc(device)}</span>`:''}`;
+    ${device ? `<span class="create-summary-device dim" title="${esc(device)}">${deviceName}${target.offline ? ' <span class="create-summary-offline">Offline</span>':''}</span>`:''}`;
 }
 export const targetText = target => [targetLabel(target),target.deviceLabel,target.offline ? 'Offline':''].filter(Boolean).join(' · ');
 export const sameTarget = (a,b) => !!a && !!b && a.kind===b.kind && a.deviceId===b.deviceId && a.id===b.id;
@@ -36,7 +37,7 @@ function pickerHtml(state) {
 }
 function nameHtml(state) {
   const target=state.target;
-  const outcome=target?.kind === 'project' ? `Uses ${target.name}'s task board · ${target.taskText || '0 tasks'}`:'Creates a new task board';
+  const outcome=target?.kind === 'project' ? "Uses this project's task board":'Creates a new task board';
   return `<div class="create-name"><div class="create-name-heading"><label class="create-label" for="create-work-input">Name (optional)</label>
     ${target ? `<p class="create-target-summary">${createWorkspaceTargetSummaryHtml(target)}</p>`:''}</div>
     ${target ? `<p class="sub create-outcome" title="${esc(outcome)}">${esc(outcome)}</p>`:''}

@@ -1901,12 +1901,14 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .create-name-heading .create-label { flex:none; }
 .create-workspace-sheet .create-name-heading .create-target-summary { flex:1; min-width:0; margin:0;
   display:block; font-size:12px; line-height:1.25; }
-.create-workspace-wizard .create-summary-name, .create-workspace-wizard .create-summary-device,
-.create-workspace-wizard .create-outcome { display:block; min-width:0; max-width:100%;
+.create-workspace-wizard .create-summary-name, .create-workspace-wizard .create-summary-device-name { display:block; min-width:0; max-width:100%;
   overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 .create-summary-name { line-height:20px; }
 .create-summary-name .create-kind { margin-right:5px; line-height:1; vertical-align:middle; }
-.create-summary-device { font-size:11px; }
+.create-workspace-wizard .create-summary-device { display:flex; gap:6px; min-width:0; max-width:100%; font-size:11px; white-space:nowrap; }
+.create-summary-device-name { flex:1 1 auto; min-width:0; }
+.create-summary-offline { flex:none; }
+.create-workspace-wizard .create-outcome { min-width:0; white-space:nowrap; }
 .create-workspace-wizard .create-error, .create-workspace-wizard .create-resume { max-height:3lh;
   overflow-y:auto; overflow-wrap:anywhere; min-width:0; line-height:1.4; }
 .create-workspace-wizard .create-error { white-space:pre-wrap; }

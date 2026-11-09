@@ -1825,9 +1825,11 @@ naming on page 1. Search and footer actions stay pinned while targets scroll
 in the middle region. Advanced is one native details
 element in the footer: its body stays directly below its summary, has a capped
 height and scrolls independently. The list shrinks to keep pinned controls
-visible when Advanced opens. Selected name, device/offline facts and outcome
-stay on single ellipsized lines with full-text titles; error and retained-progress
-regions scroll within three lines so their text cannot displace the actions.
+visible when Advanced opens. Selected names and device names
+use single-line ellipses with full-text titles; a separate Offline label stays
+visible and the outcome uses short task-board copy without repeating the name.
+Error and retained-progress regions scroll within three lines so their text
+cannot displace the actions.
 Page 2 edits a local new-environment
 draft, and Use environment selects it back on page 1. Existing page-3 drafts
 migrate to page 1 on restore. For environment targets the SPA supplies a blank

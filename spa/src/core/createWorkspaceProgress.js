@@ -125,12 +125,15 @@ function stepHtml({ step, label, state, detail }) {
     <span class="sub">${esc(state)}</span>${detail ? `<div class="sub create-progress-detail">${esc(detail)}</div>` : ""}</li>`;
 }
 
-function targetSummaryHtml(target, fallback, environment) {
-  if (!target) return esc(fallback);
+function targetBadgeHtml(target, environment) {
   const identity = target.kind === "new-environment" && environment
     ? { ...target, environment_id: environment.environment_id || environment.id } : target;
-  const glyph = rowIdentityBadgeHtml(identity, target.kind === "project" ? "project" : "environment");
-  return `<span class="create-kind" aria-hidden="true">${glyph}</span><span>${esc(target.summaryLabel || target.label || target.name || target.id)}</span>
+  return rowIdentityBadgeHtml(identity, target.kind === "project" ? "project" : "environment");
+}
+
+function targetSummaryHtml(target, fallback, environment) {
+  if (!target) return esc(fallback);
+  return `<span class="create-kind" aria-hidden="true">${targetBadgeHtml(target, environment)}</span><span>${esc(target.summaryLabel || target.label || target.name || target.id)}</span>
     ${target.deviceLabel ? `<span class="dim inbox-device">${esc(target.deviceLabel)}</span>` : ""}
     ${target.offline ? '<span class="dim inbox-away">Offline</span>' : ""}`;
 }

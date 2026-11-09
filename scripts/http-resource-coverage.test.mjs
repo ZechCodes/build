@@ -272,6 +272,9 @@ const stagedConsumerExclusions = {
 // modules; neither delegating view has its own RPC/producer occurrence.
 // #894 finite metadata/call-edge audit: docs/task-query-cost/http-resource-coverage-audit.md
 const sourceFingerprintParts = {
+  // #1098: reviewed badge-only edits in theme, settings rows, and creation
+  // progress. Cached identity/paint changed; RPC calls, methods, dynamic sites,
+  // metadata exemptions, and assignment edges to dispatch are unchanged.
   // #1073 round 2: cache-owned archive boundaries gate local comment
   // constructors and draft writes; RPC methods/selectors remain unchanged.
   // #1073 review: project/environment rename use separate named capabilities;
@@ -424,7 +427,7 @@ const sourceFingerprintParts = {
   "core/taskView.js": ["547b447a", "1b089702", "8da986a0", "97cbffed", "86cd8be0", "dfabf680", "23671d54", "6ac7ef11"],
   "core/taskWaitingOnActions.js": ["576156a7", "454cbd39", "333d8645", "9f62ff9e", "00e96c90", "55eb5f60", "441927a5", "f6cf4597"],
   "core/taskWaitingOnPage.js": ["b5a78897", "c7cfc8dc", "8a1ad2e0", "c77cad0a", "874280e0", "1b394697", "37da2547", "7a1c3636"],
-  "core/theme.js": ["5f821f5d", "933be0fa", "c04dd60c", "8ed91a2a", "4fd56dbb", "ab2c8e04", "e86ee7f5", "60d8e2a6"],
+  "core/theme.js": ["dcf76f3b", "8ab07b95", "96946c96", "79e73d55", "8deb90bc", "251b94d6", "5dd0aaaf", "d1e0a71f"],
   "core/threadAttachmentPages.js": ["df0b246c", "a850af5a", "c612aeac", "414feaa5", "03db6170", "9511cd9c", "372279a6", "9c417822"],
   "core/threadSync.js": ["bf280ad8", "20d158b6", "aaa4f7b9", "695d3816", "1d0200e6", "cf6756bd", "bc0e1372", "2e452737"],
   "core/trackerPages.js": ["2f749a25", "259d2e7b", "904e56ef", "15e91197", "da83450c", "c490c89c", "12b5ae68", "4b7a60e3"],
@@ -473,7 +476,7 @@ const sourceFingerprintParts = {
   "views/deviceProjects.js": ["1a1e6df3", "03d87e50", "3c8c3e09", "d3d2ecc9", "2b9c040f", "df2d7629", "c493f430", "adcc7c93"],
   "views/deviceSettings.js": ["ff192f53", "496b85f6", "50f01429", "9a797f58", "443cd757", "79b5ca5f", "9ba81fbd", "aa8d1847"],
   // #1052 retry review: settings-owned results alone authorize totals/empty states; pending pulls hide earlier errors. RPC edges stay unchanged.
-  "views/environmentsSettings.js": ["df56da6e", "b0b49a17", "f276915e", "6fcd0e9a", "6f86b786", "a43cba3b", "709fe37b", "522a2618"],
+  "views/environmentsSettings.js": ["07c1f878", "bce66ccf", "0dda0ac9", "06fbd53e", "068b7ebc", "6f8dc395", "748efa1b", "6da5ef2d"],
   "views/files.js": ["211db034", "020a43d8", "de3dddd8", "de31eb4f", "7f8b2079", "ebe23947", "db165614", "20007ec3"],
   "views/projectChanges.js": ["a026e8d5", "a98c8426", "fcbe395b", "700f1af4", "87ac760b", "0241758c", "11c8e263", "641fb899"],
   "views/projectView.js": ["24538ac1", "a6a75ad3", "665099d8", "839998b0", "79a97193", "5e755b82", "4be8f527", "d1b8c73d"],
@@ -486,7 +489,7 @@ const sourceFingerprintParts = {
   "core/taskTimelinePages.js": ["da2840fb", "5992d7ce", "038bbc4d", "9c01a8ab", "c320a6f3", "7592e5be", "d5cbf08c", "4fcf8220"],
 
   // #1087: progress reads retained landing evidence; no RPC or producer changes.
-  "core/createWorkspaceProgress.js": ["68ae6185", "1d6bb1a3", "364b6cdb", "bc015a2b", "bffc9b97", "a787107a", "bc149796", "05d1fba0"],
+  "core/createWorkspaceProgress.js": ["774ea6cd", "e84b3539", "c76a7764", "831e2b3c", "98f58220", "bf239489", "5ad0cc33", "4ed21c74"],
   // #1087: project and environment discards keep their existing methods/selectors,
   // each using its own creation operation ID retained across Resume and retries.
   // No new method or resource.

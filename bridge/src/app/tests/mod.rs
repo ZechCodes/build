@@ -327,3 +327,5 @@ mod tracker_query_choice_roundtrip;
 mod secret_session_authority;
 
 mod workspace_names;
+
+mod environment_deletion;

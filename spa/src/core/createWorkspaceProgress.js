@@ -1,7 +1,7 @@
 import { creationMethodForRecovery, creationSupportForMethod } from "./writeOperationProgress.js";
 import { environmentSupportAddress, readEnvironmentSupport } from "./environmentSupport.js";
 import { subscribeCache } from "./localCache.js";
-import { kindGlyphHtml } from "./environmentIdentity.js";
+import { rowIdentityBadgeHtml } from "./environmentIdentity.js";
 import { modalDialogHtml, openModal } from "./modal.js";
 import { esc, messageOf } from "./text.js";
 import { deviceWriteOperations } from "./writeOperationRuntime.js";
@@ -127,7 +127,7 @@ function stepHtml({ step, label, state, detail }) {
 
 function targetSummaryHtml(target, fallback) {
   if (!target) return esc(fallback);
-  const glyph = kindGlyphHtml(target.kind === "project" ? "project" : "environment");
+  const glyph = rowIdentityBadgeHtml(target, target.kind === "project" ? "project" : "environment");
   return `<span class="create-kind" aria-hidden="true">${glyph}</span><span>${esc(target.summaryLabel || target.label || target.name || target.id)}</span>
     ${target.deviceLabel ? `<span class="dim inbox-device">${esc(target.deviceLabel)}</span>` : ""}
     ${target.offline ? '<span class="dim inbox-away">Offline</span>' : ""}`;

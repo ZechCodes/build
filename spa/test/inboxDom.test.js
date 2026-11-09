@@ -1298,6 +1298,8 @@ describe("cached environment inbox", () => {
     await writeCached({ deviceId: "dev-1", entityId: "", kind: "environment-support" }, { list: true, createProject: true });
     await vi.waitFor(() => expect(blocks()[0].querySelector(".inbox-project-name").textContent).toContain("Shared › Payments"));
     expect(blocks()[0].querySelector(".inbox-project-device").textContent).toContain("workshop");
+    const headBadge = blocks()[0].querySelector('.inbox-project-name > .identity-badge');
+    expect(headBadge.textContent).toBe("PA");
     blocks()[0].querySelector("[data-project-create]").click();
     expect(createWorkspace).toHaveBeenCalledWith(expect.objectContaining({ projectId: "project-1", deviceId: "dev-1", fixedProject: true }));
     createWorkspace.mockClear();
@@ -1307,7 +1309,9 @@ describe("cached environment inbox", () => {
     expect(newRepoSheet).not.toHaveBeenCalled();
     setInboxView("workspaces");
     expect(rows()[0].querySelector(".inbox-project-line").textContent).toContain("Shared › Payments");
-    expect(rows()[0].querySelector('.inbox-project-line [data-kind="project"]')).not.toBeNull();
+    const flatBadge = rows()[0].querySelector('.inbox-project-line .inbox-tag > .identity-badge');
+    expect(flatBadge.textContent).toBe("PA");
+    expect(flatBadge.dataset.hue).toBe(headBadge.dataset.hue);
   });
 });
 it("excludes modern devices from the legacy sheet opened on an older sidebar device",async()=>{

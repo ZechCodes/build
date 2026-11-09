@@ -20,6 +20,24 @@ const THEME_LABEL = { light: "Light", dark: "Dark", system: "System" };
 // browser's own chrome (iOS status bar, Android toolbar) matches the page.
 const CHROME_COLOR = { light: "#f3f7f8", dark: "#07151b" };
 
+// Identity badge backgrounds and ink. All twelve tokens exist in both themes.
+const BADGE_THEMES = {
+  light: { ink: "#ffffff", hues: [
+    "#a62b3e", "#a63e18", "#805b00", "#626b00", "#287139", "#00705d",
+    "#006d80", "#265da3", "#554cb0", "#79449d", "#9b367b", "#94504e",
+  ] },
+  dark: { ink: "#07151b", hues: [
+    "#f6a3b1", "#f3ae8d", "#e5c166", "#c6cf77", "#8fd4a0", "#7ad5bf",
+    "#7fcddd", "#9bbdf5", "#b7aff3", "#d2a6eb", "#eba2d1", "#dcb0a6",
+  ] },
+};
+
+function applyBadgeTokens(theme, doc) {
+  const palette = BADGE_THEMES[theme];
+  doc.documentElement.style.setProperty("--badge-ink", palette.ink);
+  palette.hues.forEach((color, index) => doc.documentElement.style.setProperty(`--badge-${index + 1}`, color));
+}
+
 const normalize = (choice) => (THEME_CHOICES.includes(choice) ? choice : "system");
 
 /** The stored preference, or "system". Never throws: an unreadable or unknown
@@ -66,6 +84,7 @@ export function prefersDarkQuery() {
 export function applyTheme(theme, doc = document) {
   const resolved = theme === "dark" ? "dark" : "light";
   doc.documentElement.setAttribute("data-theme", resolved);
+  applyBadgeTokens(resolved, doc);
   doc.querySelectorAll('meta[name="theme-color"]').forEach((meta) =>
     meta.setAttribute("content", CHROME_COLOR[resolved]),
   );

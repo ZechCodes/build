@@ -10,7 +10,7 @@ import { environmentSupportAddress, environmentWizardSupported } from "../core/e
 import { admitEnvironmentListWrite, environmentsAddress, writeCachedEnvironments } from "../core/environmentCache.js";
 import { watchSettingsRecord } from "../core/settingsRecords.js";
 import { watchEnvironmentSettingsProjects } from "../core/environmentSettingsProjects.js";
-import { identityDeviceLabel, kindGlyphHtml } from "../core/environmentIdentity.js";
+import { identityDeviceLabel, rowIdentityBadgeHtml } from "../core/environmentIdentity.js";
 import { taskCountText } from "../core/taskCountText.js";
 import { esc } from "../core/text.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
@@ -41,7 +41,7 @@ function deviceTagHtml(device) {
 
 function projectHtml(project, device, countsKnown) {
   const folders = countsKnown && Array.isArray(project.added_sources) ? `+${project.added_sources.length} folders` : "";
-  return `<div class="projrow"><span class="pname">${kindGlyphHtml("project")} ${esc(project.name)} ${deviceTagHtml(device)}</span>
+  return `<div class="projrow"><span class="pname">${rowIdentityBadgeHtml({ ...project, deviceId: device.id }, "project")} ${esc(project.name)} ${deviceTagHtml(device)}</span>
     <span class="dim">${folders}</span>
     <span class="dim">${countsKnown ? esc(projectCountText(project)) : ""}</span>
     <button class="btn mini projsettings" data-environment-project="${esc(project.project_id)}">Settings…</button></div>`;
@@ -76,7 +76,7 @@ function environmentProjectsHtml(members, listing, device, error) {
 function environmentHtml(environment, listing, device, error, support) {
   const members = listing.rows?.filter(project => project.environment_id === environment.environment_id);
   return `<article class="panel" data-environment="${esc(environment.environment_id)}">
-    <h3>${kindGlyphHtml("environment")} ${esc(environment.name)} ${deviceTagHtml(device)}</h3>
+    <h3>${rowIdentityBadgeHtml({ ...environment, deviceId: device.id }, "environment")} ${esc(environment.name)} ${deviceTagHtml(device)}</h3>
     ${support?.environmentRename ? `<button class="btn mini" data-environment-settings="${esc(environment.environment_id)}">Settings…</button>` : ""}
     <p class="ppath">${esc(environment.home_path)}</p>
     <p class="dim">${environmentTotalsText(environment, members, listing.countsKnown)}</p>

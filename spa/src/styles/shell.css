@@ -1789,6 +1789,8 @@ select.console-source { width:100%; max-width:100%; }
 
 /* Identity glyphs occupy exactly their existing sixteen-pixel content slot. */
 .identity-kind { display:inline-block; flex:none; width:16px; height:16px; vertical-align:middle; }
+.identity-badge rect { fill:var(--identity-hue); }
+.identity-badge text { fill:var(--badge-ink); font-family:inherit; font-size:8px; font-weight:700; }
 .identity-line { display:flex; align-items:center; min-width:0; }
 .tbmenu .identity-line { gap:0; }
 .tb-environment-group > span:not(.inbox-device) { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

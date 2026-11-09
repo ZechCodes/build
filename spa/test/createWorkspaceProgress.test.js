@@ -206,11 +206,10 @@ it("lists both landed resources when the workspace fails after environment and p
  expect(model.message).toContain("Environment Sources was created");expect(model.message).toContain("Project Payments was created");
 });
 
-it.each(['project','environment','new-environment'])('uses the shared identity SVG in progress for %s',async kind=>{
- const {kindGlyphHtml}=await import('../src/core/environmentIdentity.js');
- open(operation(),{target:{kind,name:'Target'}});
- const template=document.createElement('template');template.innerHTML=kindGlyphHtml(kind==='project'?'project':'environment');
- expect(document.querySelector('.create-target-summary .identity-kind')?.outerHTML).toBe(template.content.firstChild.outerHTML);
+it.each(['project','environment','new-environment'])('keeps the badge in the progress %s target slot',async kind=>{
+ const {identityBadgeHtml}=await import('../src/core/environmentIdentity.js');
+ open(operation(),{target:{kind,id:'env',environment_id:'env',deviceId:'d1',name:'Target'}});
+ expect(document.querySelector('.create-target-summary > .create-kind')?.innerHTML).toBe(identityBadgeHtml({key:'d1/env',name:'Target'},kind==='project'?'project':'environment'));
 });
 
 it.each([true,false])("holds failed actions neutral until cached support resolves (supported: %s)",async supported=>{

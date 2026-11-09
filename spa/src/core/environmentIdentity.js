@@ -32,13 +32,29 @@ function environmentProjectIdentity(project, environment, siblings, context) {
 export const projectIdentityText = (identity) => identity.showEnvironment
   ? `${identity.environmentName} › ${identity.projectName}` : identity.projectName;
 
-const SHAPES = {
-  environment: '<rect x="3" y="3" width="10" height="10" rx="2" fill="none" stroke="currentColor"/>',
-  project: '<circle cx="8" cy="8" r="4" fill="currentColor"/>',
-  workspace: '<circle cx="8" cy="8" r="4" fill="none" stroke="currentColor"/>',
-};
+/** FNV-1a over the device-qualified environment key: stable across tabs/reloads. */
+function badgeHue(key) {
+  let hash = 2166136261;
+  for (const character of key) hash = Math.imul(hash ^ character.codePointAt(0), 16777619);
+  return (hash >>> 0) % 12 + 1;
+}
 
-/** One sixteen-pixel slot, with no padding, margin, theme or semantic role. */
-export const kindGlyphHtml = (kind) => `<svg class="identity-kind" data-kind="${kind}" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">${SHAPES[kind]}</svg>`;
+function badgeLetters(name) {
+  const letters = String(name || "").toUpperCase().match(/\p{L}/gu) || [];
+  return letters.slice(0, 2).join("") || "?";
+}
 
-export const projectIdentityHtml = (identity) => `${kindGlyphHtml("project")}${esc(projectIdentityText(identity))}`;
+/** One existing sixteen-pixel SVG slot; cached identity alone determines paint.
+ * key is deviceKey(deviceId, environmentId), never a project/workspace key. */
+export function identityBadgeHtml({ key, name }, kind = "project") {
+  const hue = badgeHue(key);
+  return `<svg class="identity-kind identity-badge" data-kind="${esc(kind)}" data-hue="${hue}" style="--identity-hue:var(--badge-${hue})" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect width="16" height="16" rx="3"></rect><text x="8" y="8" dy=".35em" text-anchor="middle">${esc(badgeLetters(name))}</text></svg>`;
+}
+
+/** Rows without an environment (legacy projects or unsubmitted drafts) use
+ * their device-qualified row id until a persisted environment exists. */
+export const rowIdentityBadgeHtml = (row, kind = row.kind) => identityBadgeHtml({
+  key: deviceKey(row.deviceId, row.environment_id || row.id || row.project_id), name: row.name,
+}, kind);
+
+export const projectIdentityHtml = (identity) => `${identityBadgeHtml({ key: identity.key, name: identity.projectName })}${esc(projectIdentityText(identity))}`;

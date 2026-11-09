@@ -55,7 +55,7 @@ import { readCached, subscribeCache } from "./localCache.js";
 import { NO_REVIEW_SUPPORT, readReviewSupport, reviewSupportAddress, reviewSupportFor } from "./taskReviewSupport.js";
 
 import { followEnvironmentNavigation } from "./environmentNavigation.js";
-import { environmentNavigationSupported, projectEnvironmentIdentity, kindGlyphHtml } from "./environmentIdentity.js";
+import { environmentNavigationSupported, projectEnvironmentIdentity, rowIdentityBadgeHtml } from "./environmentIdentity.js";
 
 const SCOPE_ADDRESS = uiAddress({ view: "toolbar", kind: "filter", sub: "project" });
 const MENU_ADDRESS = uiAddress({ view: "toolbar", kind: "menu", sub: "jump" });
@@ -947,7 +947,7 @@ function environmentWorkspaceEntry(workspace, destination, groupKey) {
   return { key: `workspace:${destination.key}`, groupKey,
     html: `<a class="mi${workspace.current ? " current" : ""}" data-workspace="${esc(destination.key)}"
       href="${esc(destination.hash)}"${workspace.current ? ' aria-current="page"' : ""}>
-      <span class="mi-line identity-line">${kindGlyphHtml("workspace")}<span class="mt">${esc(workspace.name)}</span></span>
+      <span class="mi-line identity-line">${rowIdentityBadgeHtml({ ...scopedProject(), name: workspace.name }, "workspace")}<span class="mt">${esc(workspace.name)}</span></span>
       <span class="md">${esc(workspace.current ? "Current" : destination.statusText)}</span></a>` };
 }
 

@@ -794,6 +794,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn fable_5_2_choices_and_running_windows_use_both_claude_catalogs() {
+        claude_providers_offer("claude-fable-5-2", "Claude Fable 5.2");
+        for provider in CLAUDE_PROVIDERS {
+            for id in ["claude-fable-5-2", "claude-fable-5-2[1m]"] {
+                assert_eq!(context_window_of(provider, id), Some(1_000_000));
+            }
+            let harness = harness_for(provider);
+            for effort in harness.effort_levels() {
+                let choice = ModelChoice {
+                    provider,
+                    model: Some("claude-fable-5-2".into()),
+                    effort: Some((*effort).into()),
+                };
+                assert!(choice.validate().is_ok());
+                assert_eq!(
+                    harness.model_args(&choice),
+                    vec!["--model", "claude-fable-5-2", "--effort", effort]
+                );
+            }
+        }
+    }
+
     /// Both claude providers run the same CLI, so a model released for one is
     /// available on the other by construction.
     #[test]

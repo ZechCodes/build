@@ -848,6 +848,8 @@ picker. Advanced is always available and contains isolation and effective
 directories, plus project-only added folders where supported; its expanded
 body stays directly below the summary in the pinned footer and scrolls within
 a capped height. The target list shrinks to keep the other controls visible.
+Selected names, device/offline facts and outcomes use single-line ellipses with
+full-text titles. Errors and retained progress scroll within three-line caps.
 New environment… opens configuration
 on page 2; Back preserves the draft and Use environment returns it as a
 selectable, editable row on page 1 without creating anything. Saved page-3

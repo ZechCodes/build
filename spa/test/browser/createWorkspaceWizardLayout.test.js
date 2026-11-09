@@ -15,8 +15,15 @@ async function mount(page,basePath,pageNumber=1,variant=''){
   const sources=Array.from({length:4},(_,i)=>({kind:'remote',remote:`https://github.com/org/api-${i}.git`,name:`api-${i}`,base_branch:'main'}));
   const state={page:pageNumber,target,sections,name:'Release',isolation:'',error:'',showAdvanced:true,addedSources:sources,newEnvironmentDevices:[{id:'d1',name:'Laptop'}],environmentDraft:{deviceId:'d1',name:'Platform',sources,isolation:''}};
   if(variant.includes('long'))Object.assign(state.target,{name:'An exceptionally long selected environment for cross-team release planning and deployment verification',summaryLabel:'An exceptionally long selected environment for cross-team release planning and deployment verification',deviceLabel:'A long device label for the development laptop'});
+  if(variant.includes('project')){
+   const name='A project for release coordination across multiple products with comprehensive deployment verification and staged migrations for every supported device and shared workspace'.slice(0,170);
+   Object.assign(state.target,{kind:'project',name,label:name,summaryLabel:name,taskText:'1 open task',sources:Array.from({length:16},(_,i)=>({path:`/code/project-${i}`}))});
+   state.showAdvanced=false;state.addedSources=[];state.sections=sections.filter(section=>section.kind==='projects');
+   projects.unshift({...state.target});
+  }
   if(variant.includes('error'))state.error='Choose a project or environment. Please check the draft and try again.';
   if(variant.includes('progress'))state.operationId='pending';
+  if(variant.includes('lengthy')){state.error='The environment refused this workspace because its configuration needs attention. '.repeat(40)+'END OF REFUSAL';state.name='A very long retained workspace name '.repeat(30)+'END OF RETAINED NAME';}
   document.querySelector('#creation').innerHTML=window.__layoutModules.wizard.createWorkspaceWizardHtml(state);
   window.__layoutModules.wizard.wireWizardAdvanced?.(document.querySelector('[role="dialog"]'));
  },{pageNumber,variant});
@@ -24,7 +31,7 @@ async function mount(page,basePath,pageNumber=1,variant=''){
 async function pinned(page,selectors){
  const dimensions=await page.evaluate(selectors=>{
   const dialog=document.querySelector('[role="dialog"]');
-  return {scrolls:dialog.scrollHeight>dialog.clientHeight+1,wide:document.documentElement.scrollWidth>innerWidth,controls:selectors.map(selector=>{
+  return {scrolls:dialog.scrollHeight>dialog.clientHeight,wide:document.documentElement.scrollWidth>innerWidth,controls:selectors.map(selector=>{
    const el=document.querySelector(selector);const r=el?.getBoundingClientRect();
    return {selector,inside:!!r&&r.width>0&&r.height>0&&r.top>=0&&r.left>=0&&r.bottom<=innerHeight&&r.right<=innerWidth};
   })};
@@ -128,6 +135,58 @@ for(const [width,height] of [[390,844],[320,568]])for(const variant of ['error',
    const controls=[...pageOne,...extras];await pinned(page,controls);
    await page.locator('[data-create-advanced] summary').click();await pinned(page,controls);
    await advancedReachable(page,controls);
+  },{width,height});
+ },30000);
+}
+
+async function singleLineSummaries(page){
+ const names=['.create-summary-name','.create-summary-device','.create-outcome'];
+ for(const selector of names){
+  expect(await page.locator(selector).count()).toBe(1);
+  const details=await page.locator(selector).evaluate(el=>{
+   const style=getComputedStyle(el);
+   return {noWrap:style.whiteSpace==='nowrap',ellipsis:style.textOverflow==='ellipsis',fullText:el.title===el.textContent.trim(),height:el.getBoundingClientRect().height,lineHeight:parseFloat(style.lineHeight)};
+  });
+  expect(details.noWrap).toBe(true);expect(details.ellipsis).toBe(true);expect(details.fullText).toBe(true);
+  expect(details.height).toBeLessThanOrEqual(details.lineHeight+1);
+ }
+}
+for(const [width,height] of [[390,844],[320,568]])for(const status of ['error','progress','error-progress']){
+ it(`pins controls for a 170-character project with ${status} and Advanced at ${width}x${height}`,async()=>{
+  await session.withPage(async({page,basePath})=>{
+   await mount(page,basePath,1,`long-project-${status}`);
+   const targetName=await page.locator('.create-target-summary').textContent();
+   expect(targetName).toContain('A project for release coordination');
+   expect(await page.locator('.create-summary-name').getAttribute('title')).toHaveLength(170);
+   expect(await page.locator('[data-create-target]').first().textContent()).toContain('staged migrations');
+   const controls=[...pageOne,'.create-target-summary','.create-outcome'];
+   if(status.includes('error'))controls.push('.create-error');
+   if(status.includes('progress'))controls.push('.create-resume','[data-create-resume]');
+   await page.locator('[data-create-advanced] summary').click();await pinned(page,controls);
+   expect(await page.locator('[role="dialog"]').evaluate(el=>el.scrollHeight<=el.clientHeight)).toBe(true);
+   await singleLineSummaries(page);await advancedReachable(page,controls);
+   if(width===320 && status==='error-progress')await page.screenshot({path:`${scratch}/project-worst-320.png`});
+  },{width,height});
+ },30000);
+ if(status!=='error-progress')continue;
+ it(`scrolls lengthy refusal and progress independently for a long project at ${width}x${height} with ${status}`,async()=>{
+  await session.withPage(async({page,basePath})=>{
+   await mount(page,basePath,1,`long-project-lengthy-${status}`);await page.locator('[data-create-advanced] summary').click();
+   await pinned(page,pageOne);
+   const error=page.locator('.create-error');
+   expect(await error.evaluate(el=>el.scrollHeight>el.clientHeight&&el.clientHeight<=3*parseFloat(getComputedStyle(el).lineHeight)+1)).toBe(true);
+   await error.evaluate(el=>{
+    const text=el.firstChild;const range=document.createRange();range.setStart(text,text.length-'END OF REFUSAL'.length);range.setEnd(text,text.length);
+    el.scrollTop=el.scrollHeight;const r=range.getBoundingClientRect(),b=el.getBoundingClientRect();
+    window.__errorEndInside=r.top>=b.top-1&&r.bottom<=b.bottom+1;
+   });
+   expect(await page.evaluate(()=>window.__errorEndInside)).toBe(true);await pinned(page,pageOne);
+   if(status.includes('progress')){
+    const progress=page.locator('.create-resume');
+    expect(await progress.evaluate(el=>el.scrollHeight>el.clientHeight&&el.clientHeight<=3*parseFloat(getComputedStyle(el).lineHeight)+1)).toBe(true);
+    await progress.evaluate(el=>{el.scrollTop=el.scrollHeight;});await pinned(page,[...pageOne,'[data-create-resume]']);
+    if(width===320)await page.screenshot({path:`${scratch}/project-lengthy-worst-320.png`});
+   }
   },{width,height});
  },30000);
 }

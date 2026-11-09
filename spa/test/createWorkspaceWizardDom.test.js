@@ -349,3 +349,9 @@ it.each(['insert','remove','reorder'])('restores focused row identity on cache %
   expect(dialog().querySelector('.create-target-summary').textContent).toContain('Payments');
  }
 });
+it('leaves arrow keys available to scroll a focused refusal',async()=>{
+ await open({fixedProject:false,error:'A refusal that is read inside its own scroll region.'});
+ const error=dialog().querySelector('.create-error');error.focus();
+ const down=new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true});error.dispatchEvent(down);
+ expect(down.defaultPrevented).toBe(false);expect(document.activeElement).toBe(error);
+});

@@ -30,7 +30,7 @@ function trapTab(event,body) {
 function pickerKey(event,body) {
   if(event.key === '/' && !event.target.closest('input,textarea,select,[contenteditable]')) {event.preventDefault();body.querySelector('#create-workspace-search')?.focus();return;}
   const direction={ArrowDown:1,ArrowUp:-1}[event.key];
-  if(!direction || event.target.closest('input,textarea,select,[contenteditable]')) return;
+  if(!direction || event.target.closest('input,textarea,select,[contenteditable],.create-error,.create-resume')) return;
   const rows=[...body.querySelectorAll('[data-create-target], [data-create-new-environment]')];
   if(!rows.length) return;
   event.preventDefault();const at=rows.indexOf(document.activeElement);rows[(at+direction+rows.length)%rows.length].focus();

@@ -10,7 +10,10 @@ const glyph = kind => `<span class="create-kind" aria-hidden="true">${kindGlyphH
 const deviceHtml = target => `${target.deviceLabel ? `<span class="dim inbox-device">${esc(target.deviceLabel)}</span>` : ''}${target.offline ? '<span class="dim inbox-away">Offline</span>' : ''}`;
 const targetLabel = target => target.summaryLabel || target.label || target.name || target.id;
 export function createWorkspaceTargetSummaryHtml(target) {
-  return `${glyph(target.kind)}<span>${esc(targetLabel(target))}</span>${deviceHtml(target)}`;
+  const label=targetLabel(target);
+  const device=[target.deviceLabel,target.offline ? 'Offline':''].filter(Boolean).join(' · ');
+  return `<span class="create-summary-name" title="${esc(label)}">${glyph(target.kind)}${esc(label)}</span>
+    ${device ? `<span class="create-summary-device dim" title="${esc(device)}">${esc(device)}</span>`:''}`;
 }
 export const targetText = target => [targetLabel(target),target.deviceLabel,target.offline ? 'Offline':''].filter(Boolean).join(' · ');
 export const sameTarget = (a,b) => !!a && !!b && a.kind===b.kind && a.deviceId===b.deviceId && a.id===b.id;
@@ -36,7 +39,7 @@ function nameHtml(state) {
   const outcome=target?.kind === 'project' ? `Uses ${target.name}'s task board · ${target.taskText || '0 tasks'}`:'Creates a new task board';
   return `<div class="create-name"><div class="create-name-heading"><label class="create-label" for="create-work-input">Name (optional)</label>
     ${target ? `<p class="create-target-summary">${createWorkspaceTargetSummaryHtml(target)}</p>`:''}</div>
-    ${target ? `<p class="sub create-outcome">${esc(outcome)}</p>`:''}
+    ${target ? `<p class="sub create-outcome" title="${esc(outcome)}">${esc(outcome)}</p>`:''}
     <input id="create-work-input" type="text" ${fieldTraits('identifier','go')} value="${esc(state.name || '')}"${state.busy ? ' disabled':''}>
     <p class="sub create-preview" data-branch-preview>${esc(branchNamePreview(state.name))}</p></div>`;
 }
@@ -71,7 +74,7 @@ function searchHtml(state) {
   return `<label class="create-label" for="create-workspace-search">Find a project or environment</label><input id="create-workspace-search" type="search" ${fieldTraits('search')} value="${esc(state.query || '')}"${state.busy ? ' disabled':''}>`;
 }
 function resumeHtml(state) {
-  return state.operationId ? `<p class="create-resume" role="status">Still creating ‹${esc(state.name || 'workspace')}›… <button class="btn" type="button" data-create-resume>View progress</button></p>`:'';
+  return state.operationId ? `<p class="create-resume" role="status" tabindex="0">Still creating ‹${esc(state.name || 'workspace')}›… <button class="btn" type="button" data-create-resume>View progress</button></p>`:'';
 }
 function pageContentHtml(state) {
   if(state.page===2)return environmentDraftHtml(state,state.folderReferences || {});
@@ -80,7 +83,7 @@ function pageContentHtml(state) {
 export function createWorkspaceWizardBodyHtml(state) {
   return `<div class="create-workspace-page${state.pageTransition ? ' create-workspace-page-enter':''}"><header class="create-workspace-top">${state.page===2 ? '':`<h3 id="create-workspace-title">New workspace</h3>`}${searchHtml(state)}</header>
     <div class="create-workspace-scroll" data-create-scroll>${pageContentHtml(state)}</div>
-    <div class="create-workspace-bottom">${state.page===2 ? '':nameHtml(state)+advancedHtml(state)}${resumeHtml(state)}<div class="warn create-error" role="alert"${state.error ? '':' hidden'}>${esc(state.error || '')}</div>${wizardActionsHtml(state)}</div></div>`;
+    <div class="create-workspace-bottom">${state.page===2 ? '':nameHtml(state)+advancedHtml(state)}${resumeHtml(state)}<div class="warn create-error" role="alert" tabindex="0"${state.error ? '':' hidden'}>${esc(state.error || '')}</div>${wizardActionsHtml(state)}</div></div>`;
 }
 export function createWorkspaceWizardHtml(state) {
   return modalDialogHtml(createWorkspaceWizardBodyHtml(state),{className:'modal-create create-workspace-sheet create-workspace-wizard'});

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { openLayoutSession, mountLayout, loadBrowserModules, captureLayout } from './layoutHarness.mjs';
+import { openLayoutSession, mountLayout, loadBrowserModules } from './layoutHarness.mjs';
 import { navigationAppShim } from './navigationBreadcrumbSeed.mjs';
+const scratch='/home/zech/Projects/.agent-scratch/env-wizard-polish';
 let session;
 beforeAll(async()=>{session=await openLayoutSession({plugins:[navigationAppShim]});},30000);
 afterAll(async()=>{await session?.close();});
@@ -8,44 +9,88 @@ async function mount(page,basePath,pageNumber=1){
  await mountLayout(page,'<div class="modal-scrim" id="creation"></div>',{basePath});
  await loadBrowserModules(page,{wizard:'src/core/createWorkspaceWizard.js'},basePath);
  await page.evaluate(pageNumber=>{
-  const target={kind:'project',id:'p1',deviceId:'d1',name:'Payments',label:'Payments',summaryLabel:'Platform › Payments',deviceLabel:'Laptop',sources:[{path:'/code/api'}],taskText:'12 open tasks',description:'2 workspaces · 12 open tasks'};
-  const sections=[{kind:'projects',title:'Projects',helper:'Uses the existing task board',targets:Array.from({length:16},(_,i)=>({...target,id:`p${i}`,label:`Payments ${i}`}))},{kind:'environments',title:'Environments',helper:'Creates a new task board',targets:[{...target,kind:'environment',name:'Platform',label:'Platform',description:'2 projects · 3 workspaces'}]}];
-  document.querySelector('#creation').innerHTML=window.__layoutModules.wizard.createWorkspaceWizardHtml({page:pageNumber,target,sections,name:'Release',isolation:'',error:''});
+  const target={kind:'environment',id:'e1',key:'d1/e1',deviceId:'d1',name:'Platform',label:'Platform',summaryLabel:'Platform',deviceLabel:'Laptop',offline:true,sources:Array.from({length:8},(_,i)=>({path:`/code/api-${i}`})),description:'1 project · 1 workspace'};
+  const projects=Array.from({length:16},(_,i)=>({...target,kind:'project',id:`p${i}`,key:`d1/p${i}`,label:`Payments ${i}`}));
+  const sections=[{kind:'projects',title:'Projects',helper:'Uses the existing task board',targets:projects},{kind:'environments',title:'Environments',helper:'Creates a new task board',targets:[target]}];
+  const sources=Array.from({length:4},(_,i)=>({kind:'remote',remote:`https://github.com/org/api-${i}.git`,name:`api-${i}`,base_branch:'main'}));
+  const state={page:pageNumber,target,sections,name:'Release',isolation:'',error:'',showAdvanced:true,addedSources:sources,newEnvironmentDevices:[{id:'d1',name:'Laptop'}],environmentDraft:{deviceId:'d1',name:'Platform',sources,isolation:''}};
+  document.querySelector('#creation').innerHTML=window.__layoutModules.wizard.createWorkspaceWizardHtml(state);
+  window.__layoutModules.wizard.placeWizardAdvanced?.(document.querySelector('[role="dialog"]'));
  },pageNumber);
 }
-for(const width of [390,760])it(`fills the mobile viewport and keeps 44px target rows at ${width}px`,async()=>{
+async function pinned(page,selectors){
+ const dimensions=await page.evaluate(selectors=>{
+  const dialog=document.querySelector('[role="dialog"]');
+  return {scrolls:dialog.scrollHeight>dialog.clientHeight+1,wide:document.documentElement.scrollWidth>innerWidth,controls:selectors.map(selector=>{
+   const el=document.querySelector(selector);const r=el?.getBoundingClientRect();
+   return {selector,inside:!!r&&r.width>0&&r.height>0&&r.top>=0&&r.left>=0&&r.bottom<=innerHeight&&r.right<=innerWidth};
+  })};
+ },selectors);
+ expect(dimensions).toEqual({scrolls:false,wide:false,controls:selectors.map(selector=>({selector,inside:true}))});
+}
+const pageOne=['#create-workspace-search','#create-work-input','[data-create-advanced] summary','[data-create-new-environment]','[data-create-cancel]','[data-create-go]'];
+for(const [width,height] of [[390,844],[440,956],[320,568],[1280,800]]){
+ it(`pins page one controls above and below a scrolling list at ${width}x${height}`,async()=>{
+  await session.withPage(async({page,basePath})=>{
+   await mount(page,basePath);await pinned(page,pageOne);
+   expect(await page.locator('[data-create-target]').count()).toBeGreaterThanOrEqual(16);
+   const rows=await page.locator('[data-create-target]').evaluateAll(rows=>rows.map(row=>row.getBoundingClientRect().height));
+   expect(Math.min(...rows)).toBeGreaterThanOrEqual(44);
+   const scroll=page.locator('[data-create-scroll]');
+   expect(await scroll.evaluate(el=>el.scrollHeight>el.clientHeight)).toBe(true);
+   await scroll.evaluate(el=>{el.scrollTop=el.scrollHeight;});await pinned(page,pageOne);
+   if(width===440)await page.screenshot({path:`${scratch}/page-1-440.png`});
+   await page.locator('[data-create-advanced] summary').click();await pinned(page,pageOne);
+   expect(await page.getByLabel('Isolation',{exact:true}).isVisible()).toBe(true);
+   await scroll.evaluate(el=>{el.scrollTop=el.scrollHeight;});await pinned(page,pageOne);
+   await page.locator('[data-folder-add="remote"]').scrollIntoViewIfNeeded();
+   await pinned(page,pageOne);
+   if(width===440)await page.screenshot({path:`${scratch}/page-1-advanced-440.png`});
+  },{width,height});
+ },30000);
+ it(`pins page two actions while its form scrolls at ${width}x${height}`,async()=>{
+  await session.withPage(async({page,basePath})=>{
+   await mount(page,basePath,2);
+   const controls=['[data-create-back]','[data-create-cancel]','[data-create-next]'];await pinned(page,controls);
+   expect(await page.locator('[data-create-next]').textContent()).toBe('Use environment');
+   const scroll=page.locator('[data-create-scroll]');expect(await scroll.evaluate(el=>el.scrollHeight>el.clientHeight)).toBe(true);
+   await scroll.evaluate(el=>{el.scrollTop=el.scrollHeight;});await pinned(page,controls);
+   if(width===440)await page.screenshot({path:`${scratch}/page-2-440.png`});
+  },{width,height});
+ },30000);
+}
+it('preserves real list scroll and row focus, search selection, disclosure focus and draft editing',async()=>{
  await session.withPage(async({page,basePath})=>{
-  await mount(page,basePath);const geometry=await page.evaluate(()=>{const el=document.querySelector('[role="dialog"]');const r=el.getBoundingClientRect();return {top:r.top,left:r.left,width:r.width,height:r.height,rows:[...el.querySelectorAll('[data-create-target]')].map(row=>row.getBoundingClientRect().height),scrolls:el.scrollHeight>el.clientHeight};});
-  expect(geometry.top).toBe(0);expect(geometry.left).toBe(0);expect(geometry.width).toBe(width);expect(geometry.height).toBe(844);expect(geometry.scrolls).toBe(true);expect(Math.min(...geometry.rows)).toBeGreaterThanOrEqual(44);
-  await captureLayout(page,`workspace-wizard-${width}.png`);
- },{width,height:844});
-},30000);
-it('keeps the name page and directory list within desktop and phone viewports',async()=>{
- for(const width of [390,1280])await session.withPage(async({page,basePath})=>{
-  await mount(page,basePath,3);expect(await page.getByLabel('Name (optional)').inputValue()).toBe('Release');
-  const geometry=await page.locator('[role="dialog"]').boundingBox();expect(geometry.x).toBeGreaterThanOrEqual(0);expect(geometry.x+geometry.width).toBeLessThanOrEqual(width);
-  expect(await page.getByRole('button',{name:'Create workspace'}).isVisible()).toBe(true);await captureLayout(page,`workspace-wizard-name-${width}.png`);
- },{width,height:844});
-},30000);
-
-for(const width of [390,1280])it(`keeps new-environment drafts and Advanced folders usable at ${width}px`,async()=>{
- await session.withPage(async({page,basePath})=>{
-  await mount(page,basePath);
-  await page.evaluate(()=>{
-   const source={kind:'remote',remote:'https://github.com/org/api.git',name:'api',base_branch:'main'};
-   const draft={deviceId:'d1',name:'Platform',sources:[source],isolation:''};
-   window.__m2Draft={page:2,environmentDraft:draft,newEnvironmentDevices:[{id:'d1',name:'Laptop'}]};
-   document.querySelector('#creation').innerHTML=window.__layoutModules.wizard.createWorkspaceWizardHtml(window.__m2Draft);
+  await mountLayout(page,'<button id="opener">New workspace</button>',{basePath});
+  await loadBrowserModules(page,{wizard:'src/core/createWorkspaceWizard.js',app:'src/appState.js',cache:'src/core/localCache.js',support:'src/core/environmentSupport.js'},basePath);
+  await page.evaluate(async()=>{
+   const {wizard,app,cache,support}=window.__layoutModules;
+   app.App.devices=[{id:'layout',name:'Laptop',status:'offline'}];
+   await support.rememberEnvironmentSupport('layout',{environments:{list:true,create:true,createProject:true,addedSources:true}});
+   await cache.writeCached({deviceId:'layout',entityId:'',kind:'projects'},Array.from({length:20},(_,i)=>({project_id:`p${i}`,name:`Project ${String(i).padStart(2,'0')}`,sources:[{path:'/code/api'}]})));
+   await cache.writeCached({deviceId:'layout',entityId:'',kind:'environments'},[{environment_id:'e',name:'Platform',sources:[{path:'/code/api'}]}]);
+   window.__wizardScreen=wizard.openCreateWorkspaceWizard({fixedProject:false});await window.__wizardScreen.ready;
   });
-  expect(await page.getByLabel('Git remote URL').inputValue()).toContain('api.git');
-  await captureLayout(page,`workspace-wizard-environment-${width}.png`);
-  await page.evaluate(()=>{
-   const target={kind:'new-environment',id:'draft',deviceId:'d1',name:'Platform',summaryLabel:'Platform (new environment)',sources:[{path:'/code/api'}]};
-   document.querySelector('#creation').innerHTML=window.__layoutModules.wizard.createWorkspaceWizardHtml({page:3,target,name:'Ship wizard',showAdvanced:true,advancedExpanded:true,addedSources:[{kind:'path',path:'/code/shared',name:'shared',base_branch:''}],folderReferences:{environments:[{deviceId:'d1',name:'Tools',sources:[{path:'/code/shared'}]}]}});
-  });
-  expect(await page.getByText('Folder 1 · shared with Tools').isVisible()).toBe(true);
-  const dimensions=await page.evaluate(()=>({width:document.documentElement.scrollWidth,viewport:innerWidth}));
-  expect(dimensions.width).toBe(dimensions.viewport);
-  await captureLayout(page,`workspace-wizard-advanced-${width}.png`);
- },{width,height:844});
+  await expect.poll(()=>page.evaluate(()=>document.activeElement.id)).toBe('create-workspace-search');
+  const row=page.locator('[data-create-target]').nth(15);await row.scrollIntoViewIfNeeded();await row.focus();
+  const before=await page.locator('[data-create-scroll]').evaluate(el=>el.scrollTop);
+  await page.keyboard.press('Enter');
+  expect(await page.locator('[data-create-scroll]').evaluate(el=>el.scrollTop)).toBe(before);
+  expect(await row.evaluate(el=>document.activeElement===el&&el.getAttribute('aria-pressed')==='true')).toBe(true);
+  await page.keyboard.press('/');await page.locator('#create-workspace-search').fill('no-match');
+  expect(await page.locator('[data-create-target]').count()).toBe(0);
+  expect(await page.locator('.create-target-summary').textContent()).toContain('Project 15');
+  await page.locator('[data-create-advanced] summary').click();await pinned(page,pageOne);
+  await page.getByLabel('Isolation',{exact:true}).focus();await page.keyboard.press('Tab');
+  expect(await page.evaluate(()=>document.activeElement.id)).toBe('create-work-input');
+  await page.locator('[data-create-advanced] summary').focus();await page.keyboard.press('Space');
+  expect(await page.locator('[data-create-advanced]').evaluate(el=>el.open)).toBe(false);
+  await page.locator('[data-create-new-environment]').click();await page.locator('[data-folder-add="remote"]').click();
+  await page.locator('[data-folder-value]').fill('https://github.com/org/api.git');await page.locator('[data-create-next]').click();
+  expect(await page.evaluate(()=>document.activeElement.id)).toBe('create-work-input');
+  await page.locator('#create-workspace-search').fill('');
+  await page.locator('[data-create-edit]').focus();await page.keyboard.press('Enter');
+  expect(await page.locator('[data-folder-value]').inputValue()).toContain('api.git');
+  await page.evaluate(()=>window.__wizardScreen.close());
+ },{width:390,height:844});
 },30000);

@@ -17,7 +17,7 @@ export const INPUT_SOURCES = {
   "core/composer.js": "new conversation / task composer",
   "core/createWorkspaceEnvironmentDraft.js": "new environment",
   "core/createWorkspaceFolders.js": "new environment / workspace advanced folders",
-  "core/createWorkspaceWizard.js": "task controls / new environment / workspace advanced folders",
+  "core/createWorkspaceWizardRender.js": "task controls / new environment / workspace advanced folders",
   "core/createWorkspaceLegacy.js": "task controls",
   "core/fileEditor.js": "file editor",
   "core/filesUploadActions.js": "New folder",

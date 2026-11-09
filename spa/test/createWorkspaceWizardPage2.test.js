@@ -28,8 +28,8 @@ it('browses with fs.list only, keeps Back drafts and submits once only on Create
  click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');
  click('[data-folder-add="path"]');await vi.waitFor(()=>expect(query('.use')).not.toBeNull());click('.use');
  expect(mocks.call.mock.calls.map(([method])=>method)).toEqual(['fs.list']);expect(mocks.submit).not.toHaveBeenCalled();
- click('[data-create-next]');expect(query('h3').textContent).toContain('api');expect(document.body.textContent).toContain('(new environment)');
- input('#create-work-input','Ship');click('[data-create-back]');expect(query('[data-folder-value]').value).toContain('github.com');
+ click('[data-create-next]');expect(query('h3').textContent).toBe('New workspace');expect(document.body.textContent).toContain('(new environment)');
+ input('#create-work-input','Ship');click('[data-create-edit]');expect(query('[data-folder-value]').value).toContain('github.com');
  click('[data-create-next]');click('[data-create-go]');click('[data-create-go]');await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));
  expect(mocks.submit.mock.calls[0][0]).toMatchObject({target:{kind:'new-environment',deviceId:'d1'},name:'Ship',environmentDraft:{sources:[{remote:'https://github.com/org/api.git'},{path:'/code/api'}]}});
 });
@@ -66,9 +66,9 @@ it('resumes only the landed environment with retained project drafts and a fresh
  expect(mocks.submit.mock.calls[1][0]).toMatchObject({target:{id:'landed',kind:'environment'},name:'Ship',continues:'one',addedSources:[{remote:'https://github.com/org/extra.git'}]});
  expect(mocks.progress.mock.calls[1][0].operationId).toBe('two');expect(mocks.consume).toHaveBeenCalledWith('d1','one');
 });
-it('hides Advanced in fixed-project mode',async()=>{
+it('shows Isolation and directories inside collapsed Advanced in fixed-project mode',async()=>{
  const held=snapshot();held.projects=[{id:'p1',deviceId:'d1',name:'Board',sources:[{path:'/existing'}]}];mocks.read.mockResolvedValue(held);
- await open({projectId:'p1',deviceId:'d1'});expect(query('[data-create-advanced]')).toBeNull();expect(document.body.textContent).toContain('/existing');
+ await open({projectId:'p1',deviceId:'d1'});expect(query('[data-create-advanced]').open).toBe(false);expect(document.body.textContent).toContain('/existing');
 });
 it('includes New environment in picker arrow navigation',async()=>{
  const held=snapshot();held.environments=[{id:'e1',deviceId:'d1',name:'Sources',sources:[]}];mocks.read.mockResolvedValue(held);
@@ -79,7 +79,7 @@ it('includes New environment in picker arrow navigation',async()=>{
 it.each([{create:true,createProject:false},{create:false,createProject:true}])('opens a usable wizard from partial cached support %j',async features=>{
  const held=snapshot();held.features.d1=features;held.support.d1=features.createProject;held.environments=[{id:'e1',deviceId:'d1',name:'Sources',sources:[]}];mocks.read.mockResolvedValue(held);
  await open({deviceId:'d1',...(features.create?{newEnvironment:true}:{environmentId:'e1',fixedProject:false})});
- expect(query('h3').textContent).toBe(features.create?'New environment':'New workspace in Sources');
+ expect(query('h3').textContent).toBe(features.create?'New environment':'New workspace');
 });
 it.each([
  'managed source destination overlaps a project or workspace location',
@@ -103,4 +103,22 @@ it('routes an environment-source refusal to page 2 even when its message mention
  mocks.submit.mockImplementation(()=>{throw Object.assign(new Error('managed source destination overlaps a project or workspace location'),{details:{creation:{step:'sources',source_scope:'environment'}}});});
  await open({newEnvironment:true,deviceId:'d1'});click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');click('[data-create-next]');input('#create-work-input','Ship');click('[data-create-go]');
  await vi.waitFor(()=>expect(query('h3').textContent).toBe('New environment'));expect(query('[data-folder-value]').value).toContain('api.git');
+});
+
+it('keeps a selectable draft row through Back, selection, filtering and editing without writes',async()=>{
+ const held=snapshot();held.environments=[{id:'e1',deviceId:'d1',name:'Existing',sources:[]}];mocks.read.mockResolvedValue(held);
+ await open();expect(document.activeElement.id).toBe('create-workspace-search');click('[data-create-new-environment]');
+ expect(query('[data-create-next]').textContent).toBe('Use environment');click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');
+ click('[data-create-back]');expect(query('[data-create-target][data-kind="new-environment"]')).not.toBeNull();
+ expect(query('[data-create-target][aria-pressed="true"]')).toBeNull();
+ click('[data-create-edit]');expect(query('[data-folder-value]').value).toContain('api.git');click('[data-create-next]');
+ expect(document.activeElement.id).toBe('create-work-input');expect(query('[data-create-target][data-kind="new-environment"]').getAttribute('aria-pressed')).toBe('true');
+ click('[data-create-target][data-kind="environment"]');expect(query('[data-kind="new-environment"]').getAttribute('aria-pressed')).toBe('false');
+ input('#create-workspace-search','zzzzzz');expect(query('[data-kind="new-environment"]')).not.toBeNull();
+ click('[data-create-target][data-kind="new-environment"]');click('[data-create-edit]');expect(query('[data-folder-value]').value).toContain('api.git');
+ expect(mocks.submit).not.toHaveBeenCalled();
+});
+it('creates with a blank workspace name on a new-environment draft',async()=>{
+ await open({newEnvironment:true,deviceId:'d1'});click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');click('[data-create-next]');click('[data-create-go]');
+ await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));expect(mocks.submit.mock.calls[0][0]).toMatchObject({name:'api',target:{kind:'new-environment'}});
 });

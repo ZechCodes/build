@@ -1819,6 +1819,19 @@ Creating another workspace in an existing project with frame `write.operation_id
 uses the same executor without the project step (see
 [Durable write foundation](#durable-write-foundation-739)).
 
+The SPA wizard (`createWorkspaceWizard.js`, with page rendering in
+`createWorkspaceWizardRender.js`) combines selection and optional workspace
+naming on page 1. Search and footer actions stay pinned while targets and
+expanded Advanced controls share the middle scroll region. The native details
+summary controls an explicitly labelled region moved into that scroller at
+mount; it stays available in the footer. Page 2 edits a local new-environment
+draft, and Use environment selects it back on page 1. Existing page-3 drafts
+migrate to page 1 on restore. For environment targets the SPA supplies a blank
+name from the target name with the lowest free cached sibling suffix; the
+bridge still requires a nonblank project name. Creation requests, immediate
+local draft writes and durable progress keep the existing boundaries.
+
+
 Each source (`ProjectSource`, `bridge/src/app/projects/mod.rs`) is a folder with a
 label (`name`), the folder name it mounts under in workspaces (`mount`,
 fixed once a source exists), a base branch, and whether it is a Git

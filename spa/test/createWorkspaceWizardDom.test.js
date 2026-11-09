@@ -45,48 +45,66 @@ describe('workspace wizard pages',()=>{
     const row=dialog().querySelector('[data-create-target]');expect(row.textContent).toContain('Laptop');expect(row.textContent).toContain('Offline');
     expect(row.querySelector('[aria-hidden="true"]')).not.toBeNull(); expect(mocks.submit).not.toHaveBeenCalled();
   });
-  it('advances, preserves the name on Back, previews the branch and lists sources',async()=>{
-    await open({fixedProject:false});clickTarget('environment');
-    expect(dialog().querySelector('.create-workspace-page-enter')).not.toBeNull();
-    expect(dialog().textContent).toContain('New workspace in Platform'); expect(dialog().querySelector('#create-work-input').required).toBe(true);
+  it('selects in place without replacing the focused row or resetting scroll and keeps the selection through search',async()=>{
+    await open({fixedProject:false});
+    const row=dialog().querySelector('[data-create-target][data-kind="environment"]');row.focus();
+    const scroll=dialog().querySelector('[data-create-scroll]');scroll.scrollTop=75;row.click();
+    expect(document.activeElement).toBe(row);expect(scroll.scrollTop).toBe(75);
+    expect(row.getAttribute('aria-pressed')).toBe('true');expect(row.textContent).toContain('✓');
+    expect(dialog().dataset.createPage).toBe('1');expect(dialog().querySelector('[data-create-back]')).toBeNull();
+    expect(dialog().querySelector('#create-work-input').required).toBe(false);
     name('Ship payments');expect(dialog().querySelector('[data-branch-preview]').textContent).toContain('build/ship-payments');
-    expect(dialog().textContent).toContain('/code/api');dialog().querySelector('[data-create-back]').click();clickTarget('project');
-    expect(dialog().querySelector('#create-work-input').value).toBe('Ship payments');expect(dialog().querySelector('#create-work-input').required).toBe(false);
-    expect(dialog().textContent).toContain("Uses Payments's task board"); expect(mocks.submit).not.toHaveBeenCalled();
+    const search=dialog().querySelector('#create-workspace-search');search.value='zzzzz';search.dispatchEvent(new Event('input'));
+    expect(dialog().querySelector('[data-create-target]')).toBeNull();
+    expect(dialog().querySelector('.create-target-summary').textContent).toContain('Platform');
+    expect(dialog().querySelector('.create-target-summary').textContent).toContain('Laptop');
+    expect(dialog().querySelector('.create-target-summary').textContent).toContain('Offline');
+    expect(dialog().querySelector('#create-work-input').value).toBe('Ship payments');
+    search.value='';dialog().querySelector('#create-workspace-search').value='';dialog().querySelector('#create-workspace-search').dispatchEvent(new Event('input'));
+    expect(dialog().querySelector('[data-kind="environment"]').getAttribute('aria-pressed')).toBe('true');
+    clickTarget('project');expect(dialog().textContent).toContain("Uses Payments's task board");
+    expect(mocks.submit).not.toHaveBeenCalled();
   });
-  it('supports arrow navigation, Enter selection, slash search, Escape and opener focus restoration',async()=>{
+  it('supports search focus, arrow navigation, Enter selection, slash search, Escape and opener focus restoration',async()=>{
     await open({fixedProject:false,fromShortcut:true});
-    expect(document.activeElement.hasAttribute('data-create-target')).toBe(true);
+    expect(document.activeElement.id).toBe('create-workspace-search');
+    dialog().querySelector('[data-create-target]').focus();
     document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));
     expect(document.activeElement.dataset.kind).toBe('environment');
     document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'/',bubbles:true}));
     expect(document.activeElement.id).toBe('create-workspace-search');
-    dialog().querySelector('[data-create-target]').focus();document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
-    expect(dialog().querySelector('#create-work-input')).not.toBeNull();
-    document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));await vi.waitFor(()=>expect(dialog()).toBeNull());
-    expect(document.activeElement.id).toBe('opener');
-  });
-  it('stores a draft in build-ui, restores it after detach and deletes it on Cancel',async()=>{
-    const options={projectId:'p1',deviceId:'d1',projectName:'Payments'};
-    await open(options);name('Draft name');await opened.flushDraft();await opened.detach();opened=null;
-    await open(options);expect(dialog().querySelector('#create-work-input').value).toBe('Draft name');
-    dialog().querySelector('[data-create-cancel]').click();await vi.waitFor(()=>expect(dialog()).toBeNull());
-    const address=uiAddress({deviceId:'d1',entityId:'p1',view:'create-workspace',kind:'draft'});
-    expect(await readUiRecord(address)).toBeUndefined();
-  });
-  it('submits once, opens cached progress and retains the operation for reopening',async()=>{
-    await open({fixedProject:false});clickTarget('environment');name('New board');
-    const create=dialog().querySelector('[data-create-go]');create.click();create.click();
+    document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));expect(mocks.submit).not.toHaveBeenCalled();
+    dialog().querySelector('[data-create-target][data-kind="environment"]').focus();document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+    expect(document.activeElement.getAttribute('aria-pressed')).toBe('true');
+    name('New board');dialog().querySelector('#create-work-input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
     await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));
     expect(mocks.submit.mock.calls[0][0]).toMatchObject({target:{kind:'environment',id:'e1'},name:'New board'});
     await vi.waitFor(()=>expect(mocks.progress).toHaveBeenCalledWith(expect.objectContaining({operationId:'op-one',deviceId:'d1'})));
   });
-  it('requires a name for new projects, permits blank fixed names and traps Tab within the sheet',async()=>{
-    await open({fixedProject:false});clickTarget('environment');dialog().querySelector('[data-create-go]').click();expect(mocks.submit).not.toHaveBeenCalled();
-    const cancel=dialog().querySelector('[data-create-cancel]');const create=dialog().querySelector('[data-create-go]');
-    create.focus();create.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true}));expect(dialog().contains(document.activeElement)).toBe(true);
-    cancel.click();await vi.waitFor(()=>expect(dialog()).toBeNull());
-    await open({projectId:'p1',deviceId:'d1'});dialog().querySelector('[data-create-go]').click();await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));
+  it('requires a selection, permits blank names for every target and traps Tab including Advanced',async()=>{
+    await open({fixedProject:false});dialog().querySelector('[data-create-go]').click();
+    expect(dialog().querySelector('.create-error').textContent).toBe('Choose a project or environment.');
+    expect(document.activeElement.id).toBe('create-workspace-search');expect(mocks.submit).not.toHaveBeenCalled();
+    const summary=dialog().querySelector('summary');expect(summary).not.toBeNull();
+    summary.focus();summary.dispatchEvent(new KeyboardEvent('keydown',{key:'/',bubbles:true}));expect(document.activeElement.id).toBe('create-workspace-search');
+    const create=dialog().querySelector('[data-create-go]');create.focus();create.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true}));
+    expect(document.activeElement.id).toBe('create-workspace-search');
+    document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',shiftKey:true,bubbles:true}));expect(document.activeElement).toBe(create);
+    clickTarget('environment');dialog().querySelector('[data-create-go]').click();await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));
+    expect(mocks.submit.mock.calls[0][0].name).toBe('Platform');
+    await opened.close();await open({projectId:'p1',deviceId:'d1'});
+    expect(document.activeElement.id).toBe('create-work-input');
+    expect(dialog().querySelector('#create-workspace-search,[data-create-target],[data-create-new-environment],[data-create-back]')).toBeNull();
+    dialog().querySelector('[data-create-go]').click();await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(2));
+    expect(mocks.submit.mock.calls[1][0].name).toBe('');
+  });
+  it('restores page-three drafts as page one with target, name, isolation and Advanced intact',async()=>{
+    const target={...snapshot().environments[0],kind:'environment',key:'d1/e1'};
+    await writeUiRecord(uiAddress({view:'create-workspace',kind:'draft'}),{page:3,target,name:'Retained',isolation:'rift',advancedExpanded:true});
+    await open({fixedProject:false});
+    expect(dialog().dataset.createPage).toBe('1');expect(dialog().querySelector('#create-work-input').value).toBe('Retained');
+    expect(dialog().querySelector('#create-work-isolation').value).toBe('rift');expect(dialog().querySelector('[data-create-advanced]').open).toBe(true);
+    expect(dialog().querySelector('[data-kind="environment"]').getAttribute('aria-pressed')).toBe('true');
   });
   it('keeps the old bridge flow current-project scoped and exposes transport refusal',async()=>{
     mocks.read.mockResolvedValue({...snapshot(),support:{}});mocks.legacy.mockRejectedValue(new Error('Device refused the checkout'));
@@ -147,9 +165,9 @@ describe('workspace wizard pages',()=>{
     expect(dialog().querySelector('[data-create-go]').disabled).toBe(false);
     dialog().querySelector('[data-create-cancel]').click();await vi.waitFor(()=>expect(dialog()).toBeNull());
   });
-  it('does not accept a whitespace-only name for a new task board',async()=>{
+  it('derives an environment name for whitespace-only input',async()=>{
     await open({fixedProject:false});clickTarget('environment');name('   ');dialog().querySelector('[data-create-go]').click();
-    await new Promise(resolve=>setTimeout(resolve,10));expect(mocks.submit).not.toHaveBeenCalled();
+    await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));expect(mocks.submit.mock.calls[0][0].name).toBe('Platform');
   });
 
   it('finds a durable attempt even when no modal draft survived the reload',async()=>{
@@ -284,4 +302,9 @@ it.each(['project','environment','new-environment'])('uses the shared identity S
  const {kindGlyphHtml}=await import('../src/core/environmentIdentity.js');
  const html=createWorkspaceWizardHtml({page:3,target:{kind,id:'x',name:'Target',sources:[]}});
  expect(html).toContain(kindGlyphHtml(kind==='project'?'project':'environment'));
+});
+
+it('Escape cancels the wizard and restores the opener',async()=>{
+ await open({fixedProject:false});document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+ await vi.waitFor(()=>expect(dialog()).toBeNull());expect(document.activeElement.id).toBe('opener');
 });

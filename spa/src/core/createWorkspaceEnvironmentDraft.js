@@ -21,6 +21,7 @@ export function draftEnvironmentTarget(draft, devices) {
   const name = draft.name.trim() || draft.sources[0]?.name || 'New environment';
   return {kind:'new-environment',id:'draft',key:`${draft.deviceId}/draft`,deviceId:draft.deviceId,
     name,label:`${name} (new)`,summaryLabel:`${name} (new environment)`,sources:draft.sources,
+    offline:devices.find(row => row.id===draft.deviceId)?.status==='offline',
     deviceLabel:devices.length > 1 ? devices.find(row => row.id === draft.deviceId)?.name || draft.deviceId : ''};
 }
 export function environmentDraftError(draft) {
@@ -47,9 +48,9 @@ export function wireEnvironmentDraft(host, state, {save,paint,fail}) {
 }
 
 export function refusalDraftPage(target, error) {
-  if (target?.kind !== 'new-environment') return 3;
+  if (target?.kind !== 'new-environment') return 1;
   const creation = error?.details?.creation || {};
-  const sourcePages = new Map([['project',3],['environment',2]]);
-  const stepPages = new Map([['project',3],['workspace',3],['environment',2]]);
+  const sourcePages = new Map([['project',1],['environment',2]]);
+  const stepPages = new Map([['project',1],['workspace',1],['environment',2]]);
   return sourcePages.get(creation.source_scope) || stepPages.get(creation.step) || 2;
 }

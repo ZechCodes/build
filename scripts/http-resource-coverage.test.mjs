@@ -486,9 +486,11 @@ const sourceFingerprintParts = {
   "core/taskTimelinePages.js": ["da2840fb", "5992d7ce", "038bbc4d", "9c01a8ab", "c320a6f3", "7592e5be", "d5cbf08c", "4fcf8220"],
 
   "core/createWorkspaceProgress.js": ["a1043060", "ec8923a1", "4ee1bd97", "a1af57f7", "03cee83a", "20d21308", "519bc541", "533aa650"],
-  "core/createWorkspaceTargets.js": ["347b66ec", "6048a73a", "7fed190e", "94941cc7", "d0f0b8e6", "40a24973", "d73d1813", "321a5a8c"],
+  // #1085: optional name derivation/count labels only; existing RPC methods and dispatch edges are unchanged.
+  "core/createWorkspaceTargets.js": ["123a7b11", "3c2ede0f", "6843ee3b", "34792458", "dea9ef66", "24666993", "eab74147", "da017427"],
   "core/writeOperationProgress.js": ["612c1fc7", "78d4b658", "fb001a3b", "01eb5aba", "a6a82b1a", "0389924d", "06c8355f", "bdae5355"],
-  "core/createWorkspaceWizardModel.js": ["cae57362", "049e30b3", "95d6b44d", "a45cffa5", "0ce4fccd", "72f82380", "4b8edb93", "3267389c"],
+  // #1085: optional name derivation/count labels only; existing RPC methods and dispatch edges are unchanged.
+  "core/createWorkspaceWizardModel.js": ["6ab484d3", "d6995eee", "e6cbd8cb", "c0c56afc", "87962289", "d59cd8e8", "1c69e35a", "c75d28e5"],
 };
 const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintParts)
   .map(([file, parts]) => [file, parts.join("")]));

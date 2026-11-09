@@ -1885,6 +1885,33 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .modal-create .branch-picker-note { padding:6px 10px; font-size:12px; }
 /* Create-workspace pages share the same sheet through creation progress. */
 .create-workspace-sheet { max-width:560px; max-height:calc(100dvh - 32px); overflow-y:auto; }
+/* Only the wizard's middle region scrolls. Progress keeps its own layout. */
+.modal.create-workspace-wizard { height:min(760px, calc(100dvh - 32px)); overflow:hidden; }
+.create-workspace-wizard .create-workspace-page { height:100%; min-height:0; display:flex; flex-direction:column; gap:10px; }
+.create-workspace-top, .create-workspace-bottom { flex:none; min-width:0; }
+.create-workspace-top h3 { margin:0 0 10px; }
+.create-workspace-scroll { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; }
+.create-workspace-bottom { border-top:1px solid var(--line); padding-top:10px; }
+.create-name-heading { display:flex; flex-wrap:wrap; align-items:baseline; column-gap:12px; }
+.create-name-heading .create-label { flex:none; }
+.create-workspace-sheet .create-name-heading .create-target-summary { flex:1; margin:0; font-size:12px; gap:5px; }
+.create-workspace-sheet .create-name-heading .create-kind { font-size:14px; }
+.create-workspace-sheet .create-outcome { margin:0 0 6px; font-size:11px; }
+.create-workspace-sheet .create-preview { margin:4px 0; }
+.create-workspace-sheet [data-create-advanced] summary { min-height:44px; display:list-item; align-content:center; cursor:pointer; font-size:13px; }
+.create-advanced-body { padding:12px 0; }
+.create-advanced-body fieldset { margin:0; padding:0; border:0; min-width:0; }
+.create-target-row { display:flex; align-items:center; gap:6px; }
+.create-target-row > .create-target { flex:1; min-width:0; }
+.create-workspace-sheet .create-target[aria-pressed="true"] { background:var(--accent-soft); outline:1px solid var(--accent); outline-offset:-1px; }
+.create-selected { flex:none; width:14px; color:var(--accent); }
+.create-workspace-sheet .create-row { margin-top:6px; gap:8px; }
+.create-workspace-sheet .create-fresh { margin-right:auto; }
+.create-workspace-sheet .create-resume { margin:4px 0; font-size:12px; }
+@media (max-width:440px) {
+  .create-workspace-sheet .create-fresh { flex-basis:100%; text-align:left; }
+  .create-workspace-sheet .create-row [data-create-cancel] { margin-left:auto; }
+}
 .create-workspace-sheet h4 { margin:18px 0 4px; font-size:13px; }
 .create-workspace-sheet select { width:100%; }
 .create-workspace-sheet .create-targets { min-height:0; }

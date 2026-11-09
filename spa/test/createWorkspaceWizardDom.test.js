@@ -325,7 +325,7 @@ it('keeps environment update refusals on the main page at selection time',async(
  expect(dialog().dataset.createPage).toBe('1');expect(dialog().querySelector('.create-error').textContent).toContain('needs an update');
  expect(dialog().querySelector('[data-create-target][aria-pressed="true"]')).toBeNull();expect(mocks.submit).not.toHaveBeenCalled();
 });
-it('uses the lowest free derived name across cached siblings when creating a project',async()=>{
+it('a blank name on an environment target still derives the project name',async()=>{
  const held=snapshot();held.projects.push({id:'collision',deviceId:'d1',environment_id:'e1',name:'Platform'},{id:'third',deviceId:'d1',environment_id:'e1',name:'Platform 3'});mocks.read.mockResolvedValue(held);
  await open({fixedProject:false});clickTarget('environment');dialog().querySelector('[data-create-go]').click();
  await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));expect(mocks.submit.mock.calls[0][0].projectName).toBe('Platform 2');expect(mocks.submit.mock.calls[0][0].name).toBe('');

@@ -69,7 +69,7 @@ it('uses a derived environment label when its optional configuration name is bla
  expect(mocked.service.submit.mock.calls[0][0]).toMatchObject({params:{name:'api',project:{name:'api',workspace:{name:'api'}}}});
 });
 
-it('a blank name on an environment target still derives the project name',()=>{
+it('passes the separately derived project name through environment creation',()=>{
  submitCreateWorkspace({target:{kind:'environment',id:'e1',deviceId:'d1',name:'Platform'},name:'',projectName:'Platform 2'});
  expect(mocked.service.submit.mock.calls[0][0].params.name).toBe('Platform 2');
 });

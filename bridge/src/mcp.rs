@@ -3792,6 +3792,38 @@ mod tests {
     }
 
     #[test]
+    fn mcp_project_surface_lists_environment_source_tools() {
+        for (name, arguments) in [
+            ("add_environment_source", json!({"path":"/assets", "remote":"https://example.com/repo", "name":"assets", "base_branch":"main"})),
+            ("remove_environment_source", json!({"source_id":"source-2"})),
+        ] {
+            assert!(tool_names(&project()).contains(&name.to_string()), "{name}");
+            assert!(!tool_names(&server()).contains(&name.to_string()), "{name}");
+            assert!(!tool_names(&router()).contains(&name.to_string()), "{name}");
+            let call = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":name,"arguments":arguments}}).to_string();
+            let handled = project().handle_message(&call);
+            let action = handled.action.expect("project tool parses an action");
+            assert_eq!(action.tool_name(), name);
+            assert!(action.allowed_on(McpSurface::Project));
+            assert!(!action.allowed_on(McpSurface::Coding));
+            assert!(!action.allowed_on(McpSurface::Router));
+            let mut expected = arguments;
+            expected["action"] = json!(name);
+            assert_eq!(serde_json::to_value(action).unwrap(), expected);
+            for surface in [server(), router()] {
+                let refused = surface.handle_message(&call);
+                assert!(refused.action.is_none());
+                assert_eq!(parse(&refused.reply.unwrap())["result"]["isError"], true);
+            }
+        }
+        let missing = project().handle_message(&json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"remove_environment_source","arguments":{}}}).to_string());
+        assert!(missing.action.is_none());
+        assert_eq!(parse(&missing.reply.unwrap())["result"]["isError"], true);
+    }
+
+    #[test]
     fn every_surface_advertises_its_exact_tool_inventory() {
         assert_eq!(
             tool_names(&router()),

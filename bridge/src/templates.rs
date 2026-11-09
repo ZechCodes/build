@@ -863,6 +863,8 @@ mod tests {
             "{project}"
         );
         for tool in [
+            "add_environment_source",
+            "remove_environment_source",
             "list_workspaces",
             "list_workspace_agents",
             "post_thread_message",
@@ -882,7 +884,8 @@ mod tests {
             "a project agent runs no phases: {project}"
         );
         assert!(
-            project.contains("You stand in the project's base"),
+            project.contains("This project belongs to an environment")
+                && project.contains("You stand in the project's base"),
             "{project}"
         );
     }

@@ -3200,23 +3200,27 @@ armed (`spa/src/core/harnessInventoryEvents.js`). Controls and evidence:
 
 ### Messages to agents
 
-A workspace created with a missing or whitespace-only name gets a distinct
-placeholder label and retains defaulted `waiting_for_name` and `name_asked`
-fields in its manifest (schema remains 26). Named, agent-created and adopted
-workspaces do not wait. Blank workspace creation intents under distinct
-operation IDs do not conflict; retries under the same ID retain the journal's
-existing identity checks. Private creation writes the ordinary pending-workspace
-marker before materialization, so each Git source registration uses its
-workspace-qualified name before the final manifest exists. The wizard keeps the derived environment-target
-project name separate from the workspace's optional name.
+A workspace created with a missing or whitespace-only name gets a placeholder
+label using the first eight characters of its id and retains a defaulted
+`waiting_for_name` flag in its manifest (schema remains 26). Named,
+agent-created and adopted workspaces do not wait. Blank workspace creation
+intents under distinct operation IDs do not conflict; retries under the same
+ID retain the journal's existing identity checks. Private creation writes the
+ordinary pending-workspace marker before materialization, so each Git source
+registration uses its workspace-qualified name before the manifest exists.
+The wizard keeps the derived environment-target project name separate from
+the workspace's optional name and omits a blank workspace name on every path.
 
 The first delivered coding turn claims the workspace naming request once
-across its agents, waiting for in-flight manifest writers before claiming.
-`messages/workspace_name.md` asks for 2–4 words and carries
-`BuildTool::SetWorkspaceName`, so on-demand harnesses load the tool. It composes
-with the agent-name note. Provider commands remain bare, project coordinators
-are exempt, and a rejected provider write releases the claim for another turn.
-
+across its agents in memory. Claim and release perform no disk I/O. No turn
+waits because a workspace is unnamed. A still-unnamed workspace is asked again
+after a bridge restart, recovering a crash between claim and send. Fallible
+pre-send delivery bookkeeping finishes before the claim; a rejected provider
+write releases it. A successful rename clears both the persisted wait and the
+memory claim. `messages/workspace_name.md` asks for 2–4 words and carries
+`BuildTool::SetWorkspaceName` so on-demand harnesses load the tool. It composes
+with the agent-name note. Provider commands remain bare and project
+coordinators are exempt.
 
 Everything Build says into an agent's conversation goes through
 `bridge/src/agent_message/`. A message is a `MessageKind` (a delivery, a

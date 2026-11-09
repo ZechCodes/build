@@ -56,6 +56,9 @@ impl WorkspaceRegistry {
     }
 
     pub(super) fn install_workspace(&mut self, workspace: Workspace) {
+        if !workspace.waiting_for_name {
+            self.name_requests.remove(&workspace.id);
+        }
         if self.workspaces.get(&workspace.id) != Some(&workspace) {
             self.observation_changes.mark(workspace.id.clone());
             self.workspaces.insert(workspace.id.clone(), workspace);
@@ -88,6 +91,11 @@ impl WorkspaceRegistry {
                 loaded.insert(id, workspace);
             }
         }
+        self.name_requests.retain(|id| {
+            loaded
+                .get(id)
+                .is_some_and(|workspace| workspace.waiting_for_name)
+        });
         self.workspaces = loaded;
     }
 }

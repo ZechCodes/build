@@ -243,7 +243,6 @@ fn workspace(binding: &ReviewBranchBinding) -> Workspace {
         managed: false,
         created_by_agent: false,
         waiting_for_name: false,
-        name_asked: false,
         locked: false,
     }
 }

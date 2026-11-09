@@ -52,7 +52,6 @@ impl WorkspaceRegistry {
             managed: true,
             created_by_agent: false,
             waiting_for_name: false,
-            name_asked: false,
             locked: false,
         })
     }

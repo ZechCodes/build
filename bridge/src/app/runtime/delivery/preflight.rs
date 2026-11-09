@@ -102,20 +102,15 @@ struct NameRequests {
     workspace: Option<String>,
 }
 impl NameRequests {
-    fn claim(
-        state: &mut AppState,
-        owner: &str,
-        agent: &str,
-        kind: MessageKind,
-    ) -> Result<Self, String> {
+    fn claim(state: &mut AppState, owner: &str, agent: &str, kind: MessageKind) -> Self {
         if kind == MessageKind::ProviderCommand {
-            return Ok(Self::default());
+            return Self::default();
         }
-        let workspace = state.claim_workspace_name_request(owner, agent)?;
-        Ok(Self {
+        let workspace = state.claim_workspace_name_request(owner, agent);
+        Self {
             agent: state.claim_agent_name_request(owner, agent),
             workspace,
-        })
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -127,9 +122,7 @@ impl NameRequests {
             state.release_agent_name_request(owner, agent);
         }
         if let Some(workspace) = &self.workspace {
-            if let Err(error) = state.workspaces.release_name_request(workspace) {
-                eprintln!("retry workspace naming request: {error}");
-            }
+            state.workspaces.release_name_request(workspace);
         }
     }
 
@@ -435,15 +428,6 @@ pub(in crate::app) fn deliver(
             legacy_payload.as_ref().map(|frozen| &frozen.payload),
             model_choice.provider,
         );
-        // A filesystem job writes its captured manifest back on settlement.
-        // Wait before claiming so that older snapshot cannot erase this ask.
-        if s.workspace_name_request_blocked(owner, kind) {
-            return Ok(DeliveryOutcome::Deferred);
-        }
-        let names = NameRequests::claim(&mut s, owner, agent_id, kind)?;
-        if say.is_none() && names.is_empty() {
-            return Ok(DeliveryOutcome::Delivered(Some((wire_id, spawned))));
-        }
         if let Some(payload) = legacy_payload.as_ref() {
             s.record_legacy_delivery_status(
                 owner,
@@ -451,6 +435,12 @@ pub(in crate::app) fn deliver(
                 payload,
                 crate::thread::MessageDeliveryStatus::Submitted,
             )?;
+        }
+        // Claim only after the last fallible pre-send bookkeeping. Workspace
+        // claims are memory-only, so restart recovers a crash before the send.
+        let names = NameRequests::claim(&mut s, owner, agent_id, kind);
+        if say.is_none() && names.is_empty() {
+            return Ok(DeliveryOutcome::Delivered(Some((wire_id, spawned))));
         }
         (
             Arc::clone(&tab.session),

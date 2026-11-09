@@ -7,7 +7,7 @@
 
 use crate::isolation::Isolation;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -89,9 +89,6 @@ pub struct Workspace {
     /// A client left the name blank. Older and adopted records are named.
     #[serde(default)]
     pub waiting_for_name: bool,
-    /// Reserved at provider delivery, once per workspace across its agents.
-    #[serde(default)]
-    pub name_asked: bool,
     pub root: PathBuf,
     pub status: WorkspaceStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -116,7 +113,7 @@ impl Workspace {
         let unnamed = requested.trim().is_empty();
         self.waiting_for_name = unnamed && !self.created_by_agent;
         if unnamed {
-            self.name = format!("Workspace {}", self.id);
+            self.name = format!("Workspace {}", &self.id[..8]);
         }
     }
 }
@@ -164,6 +161,9 @@ pub struct WorkspaceRegistry {
     root: PathBuf,
     storage_anchor: crate::reclaim::containment::StorageAnchor,
     workspaces: HashMap<String, Workspace>,
+    /// Once per process across the workspace's agents; restart asks again if
+    /// the creator's missing name has still not been supplied.
+    name_requests: HashSet<String>,
     observation_changes: crate::observation_changes::ChangeKeys,
 }
 
@@ -174,6 +174,7 @@ impl WorkspaceRegistry {
             storage_anchor: crate::reclaim::containment::StorageAnchor::new(&root),
             root,
             workspaces: HashMap::new(),
+            name_requests: HashSet::new(),
             observation_changes: Default::default(),
         };
         registry.reload()?;
@@ -194,6 +195,7 @@ impl WorkspaceRegistry {
             storage_anchor: crate::reclaim::containment::StorageAnchor::new(&root),
             root,
             workspaces: HashMap::new(),
+            name_requests: HashSet::new(),
             observation_changes: Default::default(),
         }
     }
@@ -367,7 +369,6 @@ impl WorkspaceRegistry {
         }
         workspace.name = name.to_string();
         workspace.waiting_for_name = false;
-        workspace.name_asked = false;
         persist(&workspace)?;
         self.install_workspace(workspace.clone());
         Ok(workspace)
@@ -402,6 +403,7 @@ impl WorkspaceRegistry {
     /// Drop a removed workspace or a stale adopted checkout from the index.
     /// Its private lock marker must go too, so re-adoption starts unlocked.
     pub(crate) fn forget(&mut self, id: &str) {
+        self.name_requests.remove(id);
         if self.workspaces.remove(id).is_some() {
             self.observation_changes.mark(id.to_string());
         }
@@ -678,7 +680,6 @@ impl WorkspaceRegistry {
             managed: true,
             created_by_agent: false,
             waiting_for_name: false,
-            name_asked: false,
             locked: false,
         };
         Ok(workspace)
@@ -1084,7 +1085,6 @@ impl WorkspaceRegistry {
             managed: false,
             created_by_agent: false,
             waiting_for_name: false,
-            name_asked: false,
             locked: registry_root.join(".locks").join(&id).is_file(),
         };
         if let Some(proof) = proof {

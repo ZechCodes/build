@@ -91,11 +91,11 @@ impl NamingWorkspace {
 fn the_first_turn_in_an_unnamed_workspace_asks_for_its_name_once() {
     let f = NamingWorkspace::new("");
     assert_eq!(f.record()["waiting_for_name"], true);
-    assert_eq!(
-        f.record()["name_asked"],
-        false,
-        "no agent was sent a turn at creation"
+    assert!(
+        f.record()["name_asked"].is_null(),
+        "the request claim is not persisted"
     );
+    let manifest = std::fs::read(f.root.join(crate::workspace::MANIFEST_FILE)).unwrap();
     f.say().unwrap();
     f.say().unwrap();
     let turns = f.log.turns();
@@ -105,12 +105,17 @@ fn the_first_turn_in_an_unnamed_workspace_asks_for_its_name_once() {
         "both naming notes compose: {turns:?}"
     );
     assert!(!turns[1].contains("set_workspace_name"), "{turns:?}");
-    assert_eq!(f.record()["name_asked"], true);
+    assert!(f.record()["name_asked"].is_null());
     let mut app = f.state.lock().unwrap();
     app.workspaces.reload().unwrap();
+    assert!(
+        !app.workspaces.claim_name_request(&f.workspace),
+        "a same-process reload keeps the memory claim"
+    );
     assert_eq!(
-        serde_json::to_value(app.workspaces.get(&f.workspace).unwrap()).unwrap()["name_asked"],
-        true
+        std::fs::read(f.root.join(crate::workspace::MANIFEST_FILE)).unwrap(),
+        manifest,
+        "asking never rewrites the manifest"
     );
 }
 
@@ -137,7 +142,7 @@ fn a_second_agent_is_not_asked_again() {
     }
     f.say().unwrap();
     assert!(!f.log.turns()[0].contains("set_workspace_name"));
-    assert_eq!(f.record()["name_asked"], true);
+    assert!(f.record()["name_asked"].is_null());
 }
 
 #[test]
@@ -172,7 +177,7 @@ fn the_project_coordinator_is_never_asked_to_name_a_workspace() {
     )
     .unwrap();
     assert!(!log.turns()[0].contains("set_workspace_name"));
-    assert_eq!(f.record()["name_asked"], false);
+    assert!(f.record()["name_asked"].is_null());
 }
 
 struct RejectedWrite;
@@ -211,7 +216,7 @@ fn a_rejected_write_keeps_the_workspace_name_ask() {
     );
     assert!(f.say().is_err());
     assert_eq!(f.record()["waiting_for_name"], true);
-    assert_eq!(f.record()["name_asked"], false);
+    assert!(f.record()["name_asked"].is_null());
     insert_agent_tab(
         &mut f.state.lock().unwrap(),
         &f.root,
@@ -327,7 +332,7 @@ fn a_provider_command_leaves_the_workspace_request_for_a_real_turn() {
     )
     .unwrap();
     assert_eq!(f.log.turns(), vec!["/compact"]);
-    assert_eq!(f.record()["name_asked"], false);
+    assert!(f.record()["name_asked"].is_null());
     f.say().unwrap();
     assert!(f.log.turns()[1].contains("set_workspace_name"));
 }
@@ -382,15 +387,58 @@ fn a_client_rename_during_a_rejected_write_does_not_restore_the_wait() {
     assert!(f.say().is_err());
     assert_eq!(f.record()["name"], "Person wins");
     assert_eq!(f.record()["waiting_for_name"], false);
-    assert_eq!(f.record()["name_asked"], false);
+    assert!(f.record()["name_asked"].is_null());
 }
 
 #[test]
-fn a_first_workspace_turn_waits_for_in_flight_manifest_writers() {
-    let f = NamingWorkspace::new("");
-    let (turn, timer) = {
+fn a_restart_asks_a_still_unnamed_workspace_again() {
+    let mut f = NamingWorkspace::new("");
+    let config = f._state_root.path().join("config.json");
+    {
         let mut app = f.state.lock().unwrap();
-        app.active_deferred_filesystem_jobs += 1;
+        app.config_path = Some(config.clone());
+        app.persist();
+    }
+    f.say().unwrap();
+    assert!(f.log.turns()[0].contains("set_workspace_name"));
+    let mut restarted = super::project_agent::rooted(f._state_root.path())
+        .with_config(&config)
+        .unwrap()
+        .with_task_store(f._state_root.path().join("store"))
+        .unwrap();
+    f.log = SessionLog::default();
+    insert_agent_tab(
+        &mut restarted,
+        &f.root,
+        &f.owner,
+        &f.agent,
+        DictatedSession::reporting(AgentStatus::Waiting)
+            .natively_accepting(ModelChoice::default())
+            .recording_into(&f.log),
+    );
+    f.state = Arc::new(Mutex::new(restarted));
+    assert_eq!(f.record()["waiting_for_name"], true);
+    f.say().unwrap();
+    f.say().unwrap();
+    let turns = f.log.turns();
+    assert!(turns[0].contains("set_workspace_name"), "{turns:?}");
+    assert!(!turns[1].contains("set_workspace_name"), "{turns:?}");
+}
+
+#[test]
+fn a_failure_before_the_send_keeps_the_workspace_name_ask() {
+    let f = NamingWorkspace::new("");
+    let (turn, timer, database) = {
+        let mut app = f.state.lock().unwrap();
+        app.edit_agent_conversation(&f.owner, &f.agent, |thread, _| {
+            thread.post_user(
+                "a legacy message before the send",
+                None,
+                "2026-11-09T12:00:00Z",
+            );
+            Ok(())
+        })
+        .unwrap();
         let agent = app
             .entity_agents(&f.owner)
             .unwrap()
@@ -408,25 +456,96 @@ fn a_first_workspace_turn_waits_for_in_flight_manifest_writers() {
             say: Some(TurnText {
                 attachments: Default::default(),
                 kind: None,
-                cold: "do the task".into(),
-                warm: "do the task".into(),
+                cold: "read the message".into(),
+                warm: "read the message".into(),
             }),
             phase: "build",
-            wants_catch_up: false,
+            wants_catch_up: true,
             survives_refusal: false,
         };
-        (turn, Arc::clone(&app.frame_clock).frame("test"))
+        (
+            turn,
+            Arc::clone(&app.frame_clock).frame("test"),
+            f._state_root.path().join("store/build.db"),
+        )
     };
-    assert!(matches!(
-        crate::app::deliver(&f.state, &turn, &timer).unwrap(),
-        DeliveryOutcome::Deferred
-    ));
+    let connection = rusqlite::Connection::open(database).unwrap();
+    connection.execute_batch("CREATE TRIGGER refuse_workspace_delivery BEFORE UPDATE ON thread_items WHEN json_extract(NEW.item, '$.data.delivery_status') = 'submitted' BEGIN SELECT RAISE(ABORT, 'injected pre-send failure'); END;").unwrap();
+    assert!(crate::app::deliver(&f.state, &turn, &timer).is_err());
     assert!(f.log.turns().is_empty());
-    assert_eq!(f.record()["name_asked"], false);
-    f.state.lock().unwrap().active_deferred_filesystem_jobs -= 1;
+    assert_eq!(f.record()["waiting_for_name"], true);
+    connection
+        .execute_batch("DROP TRIGGER refuse_workspace_delivery")
+        .unwrap();
     assert!(matches!(
         crate::app::deliver(&f.state, &turn, &timer).unwrap(),
         DeliveryOutcome::Delivered(_)
     ));
     assert!(f.log.turns()[0].contains("set_workspace_name"));
+}
+
+#[test]
+fn an_unnamed_workspace_turn_is_not_deferred_while_another_workspace_is_busy() {
+    let f = NamingWorkspace::new("");
+    {
+        let mut app = f.state.lock().unwrap();
+        app.with_inline_deferred(|app| {
+            app.workspace_create(
+                &json!({"project_id":f.project,"name":"Other work","isolation":"worktree"}),
+            )
+        })
+        .unwrap();
+        assert!(
+            app.deferred_work.is_some(),
+            "another workspace has a real pending filesystem job"
+        );
+    }
+    f.say().unwrap();
+    assert!(f.log.turns()[0].contains("set_workspace_name"));
+    // Completing the other job reloads manifests. It must retain this process's
+    // memory claim so a follow-up still does not ask again.
+    let mut work = f.state.lock().unwrap().take_deferred().unwrap();
+    loop {
+        let done = work.run();
+        match f
+            .state
+            .lock()
+            .unwrap()
+            .apply_deferred_stage("workspace.create", &Value::Null, done)
+        {
+            DeferredNext::Answered(answer) => {
+                answer.unwrap();
+                break;
+            }
+            DeferredNext::Again(next) => work = next,
+        }
+    }
+    f.say().unwrap();
+    assert!(!f.log.turns()[1].contains("set_workspace_name"));
+}
+
+#[test]
+fn an_unnamed_workspace_label_uses_eight_id_characters() {
+    let f = NamingWorkspace::new("");
+    assert_eq!(
+        f.record()["name"],
+        format!("Workspace {}", &f.workspace[..8])
+    );
+}
+
+#[test]
+fn a_workspace_name_claim_uses_memory_without_filesystem_probes() {
+    let f = NamingWorkspace::new("");
+    let manifest = std::fs::read(f.root.join(crate::workspace::MANIFEST_FILE)).unwrap();
+    let mut app = f.state.lock().unwrap();
+    let (claimed, probes) = crate::app::workspaces::count_path_canonicalizations(|| {
+        app.claim_workspace_name_request(&f.owner, &f.agent)
+    });
+    assert_eq!(claimed, Some(f.workspace.clone()));
+    assert_eq!(probes, 0, "claiming must use retained workspace roots");
+    app.workspaces.release_name_request(&f.workspace);
+    assert_eq!(
+        std::fs::read(f.root.join(crate::workspace::MANIFEST_FILE)).unwrap(),
+        manifest
+    );
 }

@@ -1,4 +1,4 @@
-import { visibleProjectRows } from "./archivedProjectModel.js";
+import { projectIsArchived, visibleProjectRows } from "./archivedProjectModel.js";
 // The inbox's pure model: which work items the rail lists, in what order, what
 // each row says, and what Done promises before it destroys anything.
 //
@@ -41,6 +41,7 @@ import { taskActivityGroup, taskHasReadiness, taskIsBlocked, taskIsHeld, taskWai
 import { taskInboxFactsHtml } from "./trackerTaskReadinessRender.js";
 import { esc } from "./text.js";
 import { entityIdOf } from "./entityId.js";
+import { splitDeviceKey } from "./deviceKey.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_EYE } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
 import { freshestRosters, runningAgentCount, watchedAgentsRunning, watchedUnreadCount, watchedDescendantsUnread } from "./inboxRoster.js";
@@ -495,16 +496,32 @@ export function captureStatusText(entry) {
   if (entry.captureState === "routed" && entry.routedTo) {
     return `→ ${entry.routedTo.project} as ${entry.routedTo.kind}`;
   }
+  if (entry.captureState === "failed") return entry.reason || CAPTURE_STATUS.failed;
   if (entry.question || entry.needsAnswer) return "Waiting for your answer";
   if (entry.progress) return entry.progress;
   return CAPTURE_STATUS[entry.captureState] || "";
+}
+
+const rowDeviceId = row => row.deviceId || splitDeviceKey(row.projectKey)?.deviceId;
+
+function failedCaptureReason(item, projects) {
+  const deviceId = rowDeviceId(item);
+  const ownProjects = (projects || []).filter(project => rowDeviceId(project) === deviceId);
+  return ownProjects.length > 0 && ownProjects.every(projectIsArchived)
+    ? "Every project is archived; restore a project first."
+    : CAPTURE_STATUS.failed;
+}
+
+function captureReason(item, question, projects) {
+  if (item.state === "failed") return failedCaptureReason(item, projects);
+  return question || (item.unread_reason === "routing_failed" ? CAPTURE_STATUS.failed : "");
 }
 
 /** One capture row, as the inbox reads it. A capture holds no conversation and
  *  no agents, so what it needs is read off the record: the router's unanswered
  *  question is the reason, and a route that gave up is a retry. */
 // eslint-disable-next-line complexity -- ratchet: toCaptureEntry is at 20, cap 10 — reduce it, then drop this line
-function toCaptureEntry(item) {
+function toCaptureEntry(item, projects) {
   const question = item.question && !item.question.answer ? item.question.text : "";
   const routing = item.routing || null;
   return {
@@ -528,7 +545,7 @@ function toCaptureEntry(item) {
     // The status word covers queued/unrouted captures too; only the feed's
     // working bit means an agent is actually active for recency purposes.
     working: !!item.working,
-    reason: question || (item.unread_reason === "routing_failed" ? "Routing failed" : ""),
+    reason: captureReason(item, question, projects),
     question,
     // Device summaries carry the wait fact; capture.get owns question text.
     needsAnswer: item.needs_answer === true,
@@ -650,9 +667,9 @@ const ENTRY_BUILDERS = {
 
 /** One board.list row, as the inbox reads it. */
 // eslint-disable-next-line complexity -- ratchet: toEntry is at 14, cap 10 — reduce it, then drop this line
-function toEntry(item) {
+function toEntry(item, projects) {
   const ownKind = ENTRY_BUILDERS[item.kind];
-  if (ownKind) return ownKind(item);
+  if (ownKind) return ownKind(item, projects);
   const state = entryState(item);
   const entityId = entityIdOf(item);
   // Line one is what the thing is CALLED: a branch by its branch name, a task
@@ -724,10 +741,10 @@ function isListed(item) {
  *  no project until it is routed — at which point it stops being a capture and
  *  becomes the work it was routed to. Captures interleave on the flat inbox
  *  face and sit outside the project blocks on the projects face. */
-export function captureEntries(items = []) {
+export function captureEntries(items = [], projects = []) {
   return items
     .filter((item) => item.kind === "capture" && isListed(item))
-    .map(toCaptureEntry)
+    .map(item => toCaptureEntry(item, projects))
     .sort(byAnchor);
 }
 
@@ -741,7 +758,7 @@ export function captureEntries(items = []) {
  * missing data is not evidence that a row is stale.
  */
 export function inboxEntries({ items = [], projects = [], nowMs = Date.now() } = {}) {
-  const rows = visibleProjectRows(items, projects).filter(isListed).map(toEntry).sort(byAnchor);
+  const rows = visibleProjectRows(items, projects).filter(isListed).map(item => toEntry(item, projects)).sort(byAnchor);
   const quiet = (entry) => workspaceIsRecent(entry, nowMs);
   const entries = rows.filter((entry) => !quiet(entry));
   const recent = rows.filter(quiet);
@@ -855,7 +872,7 @@ export function routedEntry(route, view = {}) {
   const standsOn = route && STANDS_ON[route.name];
   if (!standsOn) return null;
   const items = view.items || [];
-  const rows = [...items.filter(isListed).map(toEntry), ...workspaceEntries(view.workspaces, view.projects, items)];
+  const rows = [...items.filter(isListed).map(item => toEntry(item, view.projects)), ...workspaceEntries(view.workspaces, view.projects, items)];
   // Current-row marking follows the open task, while cache subscriptions and
   // conversation reads still follow the workspace owner underneath it.
   const standing = route.name === "workspace" ? { ...route, taskId: null } : route;

@@ -301,7 +301,7 @@ function paintBox({ focus = true } = {}) {
   const host = $("#compose");
   if (!host || !box) return;
   box.projectId = availableProjectId(box.projectId);
-  const caret = focus ? null : selectionOf(host);
+  const selection = focus ? null : selectionOf(host);
   const deviceName = creationDeviceName();
   host.innerHTML = composeBoxHtml({
     value: box.value,
@@ -319,8 +319,8 @@ function paintBox({ focus = true } = {}) {
   if (focus) {
     text.focus();
     text.setSelectionRange(box.value.length, box.value.length);
-  } else if (caret !== null) {
-    text.setSelectionRange(caret, caret);
+  } else {
+    restoreSelection(host, selection);
   }
 }
 
@@ -330,9 +330,25 @@ function paintGitOffer(host) {
 }
 
 const selectionOf = (host) => {
-  const text = host.querySelector("#compose-text");
-  return text && document.activeElement === text ? text.selectionStart : null;
+  const field = document.activeElement;
+  if (!field?.id || !host.contains(field)) return null;
+  return {
+    id: field.id,
+    selectionStart: field.selectionStart,
+    selectionEnd: field.selectionEnd,
+    selectionDirection: field.selectionDirection,
+  };
 };
+
+function restoreSelection(host, selection) {
+  if (!selection) return;
+  const field = document.getElementById(selection.id);
+  if (!field || !host.contains(field)) return;
+  field.focus();
+  if (typeof selection.selectionStart === "number") {
+    field.setSelectionRange(selection.selectionStart, selection.selectionEnd, selection.selectionDirection);
+  }
+}
 
 function wireBox(host) {
   const text = host.querySelector("#compose-text");
@@ -468,9 +484,7 @@ function refreshProjectChoices() {
   if (next === projectChoicesKey) return;
   projectChoicesKey = next;
   if (!box) return;
-  const focusedId = document.activeElement?.id;
   paintBox({ focus: false });
-  if (focusedId) document.getElementById(focusedId)?.focus();
 }
 
 const savedBoxFields = (saved, current) => ({
@@ -496,10 +510,8 @@ function restoreComposeBox(saved, opened) {
   // readback drops the live control between a keystroke and the next click.
   if (JSON.stringify(restored) === JSON.stringify(box.renderedSnapshot)) return;
   const wasAdvanced = box.renderedAdvancedOpen;
-  const focusedId = document.activeElement?.id;
   Object.assign(box, restored);
   paintBox({ focus: false });
-  if (focusedId) $("#compose")?.querySelector(`#${focusedId}`)?.focus();
   syncAdvancedCatalog(wasAdvanced);
 }
 

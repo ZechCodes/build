@@ -223,8 +223,18 @@ pub(in crate::app) fn safe_mount_name(name: &str) -> String {
 pub(in crate::app) fn canonical_source_path(
     path: &std::path::Path,
 ) -> Result<std::path::PathBuf, String> {
-    let canonical = std::fs::canonicalize(path)
-        .map_err(|error| format!("cannot open source {}: {error}", path.display()))?;
+    let canonical = std::fs::canonicalize(path).map_err(|error| {
+        let message = format!("cannot open source {}: {error}", path.display());
+        if error.kind() == std::io::ErrorKind::NotFound {
+            crate::api::v1::reviews::errors::encode(
+                "not_found",
+                message,
+                serde_json::json!({"path":path.display().to_string()}),
+            )
+        } else {
+            message
+        }
+    })?;
     if !canonical.is_dir() {
         return Err(format!(
             "source is not a directory: {}",

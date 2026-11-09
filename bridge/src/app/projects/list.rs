@@ -138,7 +138,7 @@ impl AppState {
             "session_started_ms": self.session_summary(&p.id).session_started_ms,
             "last_activity_ms": self.session_summary(&p.id).last_activity_ms,
         });
-        self.record_project_snapshot_observation(&p.id, &value);
+        self.record_project_snapshot_observation(p, &value);
         value
     }
 }

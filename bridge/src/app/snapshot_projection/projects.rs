@@ -82,17 +82,23 @@ impl AppState {
                 })
             })
     }
-    pub(in crate::app) fn record_project_snapshot_observation(&self, project: &str, value: &Value) {
-        if let Some(current) = self.projects.get(project) {
-            publish_source_observation(
-                &mut self.snapshot_observations.projects.lock().unwrap(),
-                project,
-                ProjectObservation::new(self.read_view.next_version(), value.clone()),
-                &current.sources,
-                &current.home_path,
-                true,
-            );
-        }
+    pub(in crate::app) fn record_project_snapshot_observation(
+        &self,
+        project: &crate::app::projects::Project,
+        value: &Value,
+    ) {
+        // Registration renders its candidate before inserting it. Preserve those
+        // owned facts so publishing the candidate never needs a second probe.
+        // Existing owners still fence the evidence against their current inputs.
+        let current = self.projects.get(&project.id).unwrap_or(project);
+        publish_source_observation(
+            &mut self.snapshot_observations.projects.lock().unwrap(),
+            &project.id,
+            ProjectObservation::new(self.read_view.next_version(), value.clone()),
+            &current.sources,
+            &current.home_path,
+            true,
+        );
     }
 
     pub(super) fn snapshot_account_availability(&self) -> Value {

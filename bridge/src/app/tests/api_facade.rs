@@ -163,6 +163,8 @@ const FIXTURE_PROBE_REACHES_OUTSIDE: &[&str] = &[
     "fs.mkdir",
     // Its fixture names a folder under `~` to open as a source.
     "project.add_source",
+    // This fixture also registers a real folder outside the test state.
+    "environment.add_source",
     "project.create",
     // Its confirmed fixture would remove the project used by later probes.
     "project.delete",

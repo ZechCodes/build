@@ -480,6 +480,10 @@ describe("the advanced panel", () => {
     expect($("#compose-text").value).toBe("keep this draft while projects change");
     expect(document.activeElement).toBe($("#compose-text"));
     expect($("#compose-text").selectionStart).toBe(4);
+    const { readUiRecord } = await import("../src/core/localUiStore.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    await vi.waitFor(async () => expect((await readUiRecord(uiAddress({ deviceId: "dev-1", view: "compose", kind: "draft" })))?.value.value).toBe("keep this draft while projects change"));
+    $("#compose-cancel").click();
   });
 
   it("has no manual destination when every project is archived", async () => {

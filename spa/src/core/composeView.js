@@ -58,6 +58,7 @@ const listeners = new Set(); // who repaints when the held captures change
 // device creation goes to, so the destinations this box offers and the project
 // names it prints are that device's. Every device mints a `proj-1`.
 let feed = { items: [], projects: [] };
+let projectChoicesKey = "";
 let box = null; // the open box's state, or null while it is shut
 let mounted = false;
 const boxSnapshot = () => ({
@@ -273,7 +274,7 @@ function paintPrompt() {
  *  harness picks it up. Rendered only while its disclosure is open. */
 function advancedHtml() {
   const branches = branchOptions(feed.items, box.projectId, feed.runs);
-  const projectOptions = feed.projects.filter(project => !projectIsArchived(project))
+  const projectOptions = activeProjects()
     .map(
       (project) =>
         `<option value="${esc(project.id)}"${project.id === box.projectId ? " selected" : ""}>${esc(project.name || project.id)}</option>`,
@@ -453,9 +454,23 @@ function loadCatalogForPanel() {
 
 // ---- opening, closing, sending ------------------------------------------------
 
+function activeProjects() {
+  return feed.projects.filter(project => !projectIsArchived(project));
+}
+
 function availableProjectId(preferred = "") {
-  const projects = feed.projects.filter(project => !projectIsArchived(project));
+  const projects = activeProjects();
   return projects.find(project => project.id === preferred)?.id || projects[0]?.id || "";
+}
+
+function refreshProjectChoices() {
+  const next = JSON.stringify(activeProjects().map(project => [project.id, project.name]));
+  if (next === projectChoicesKey) return;
+  projectChoicesKey = next;
+  if (!box) return;
+  const focusedId = document.activeElement?.id;
+  paintBox({ focus: false });
+  if (focusedId) document.getElementById(focusedId)?.focus();
 }
 
 const savedBoxFields = (saved, current) => ({
@@ -657,6 +672,7 @@ export function initCompose() {
   subscribeFeed((next) => {
     feed = deviceFeedView(next);
     syncTracked();
+    refreshProjectChoices();
   });
   if (!$("#compose")) return;
   paintPrompt();

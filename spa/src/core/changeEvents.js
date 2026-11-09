@@ -1022,7 +1022,7 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting, isCurren
   state.apiVersion = greetingVersion(greeting);
   state.adapter = adapter || null;
   state.current = isCurrent;
-  void rememberEnvironmentSupport(deviceId, adapter?.capabilities, () => isCurrent() && bridgeFor(deviceId)?.adapter === (adapter || null), greeting.bridge_epoch);
+  if (adapter) void rememberEnvironmentSupport(deviceId, adapter.capabilities, () => isCurrent() && bridgeFor(deviceId)?.adapter === adapter, greeting?.bridge_epoch ?? null);
   void rememberCompactionSupport(deviceId, adapter?.capabilities, () => isCurrent() && bridgeFor(deviceId)?.adapter === (adapter || null));
   announceGreeted(state.deviceId);
   if (!state.adapter) return abandonBridge(state);

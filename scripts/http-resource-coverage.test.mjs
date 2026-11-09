@@ -279,7 +279,8 @@ const stagedConsumerExclusions = {
 // #894 finite metadata/call-edge audit: docs/task-query-cost/http-resource-coverage-audit.md
 const sourceFingerprintParts = {
   // #1065: cached eligibility is separate from current-greeting dispatch; epoch and genuine no-epoch legacy paths wrap existing source calls.
-  "core/sourceOwnership.js": ["5bb01dc9", "cd302bf9", "b640e0f4", "b396ab65", "8c8d6b7e", "9183fa6a", "22b5fb05", "0d37ee27"],
+  // Action-specific device preflight can refuse before ownership admission; it sends no RPC.
+  "core/sourceOwnership.js": ["4dc6b96f", "5e384a49", "1765f57d", "c78540f8", "5cb6e253", "d7e82c0f", "80b93292", "b28dfe55"],
   // #1065: accepted navigation notifies only opted-in project settings; RPC edges are unchanged.
   "app.js": ["8e043a81", "cc1d5abd", "0e312435", "52018876", "d56a6883", "8c9587f5", "e34aa31b", "25b32265"],
   "appState.js": ["d24d9edc", "6e4988f0", "8a5289ee", "6c449b3f", "91bdbe42", "7cd43ada", "7a9df6a4", "acd39971"],
@@ -305,7 +306,7 @@ const sourceFingerprintParts = {
   // #997 runtime-board captureDecisionView.js:142: branch choices join cached runtime run bodies; existing RPC and mutation dispatch unchanged.
   "core/captureDecisionView.js": ["15299f0a", "f1762e74", "8af22269", "0f16e798", "ccf8e367", "d2d759e2", "554ce8fc", "002692f1"],
   // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
-  "core/changeEvents.js": ["f4e02dcd", "d30e71f5", "86dc5f7d", "8eb957a6", "2fe49fca", "7bf12ed2", "4f57e2ad", "b8259a49"],
+  "core/changeEvents.js": ["ef9ffe44", "100e1bbc", "b3dcc3e6", "611a2970", "86fcb186", "fb259289", "722d1e9a", "405fa418"],
   "core/changesComments.js": ["7a5e0b06", "c47bf122", "ac5370b8", "debd8dc8", "388227b8", "f9ea1623", "d413134a", "635a2a7d"],
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],
@@ -340,7 +341,7 @@ const sourceFingerprintParts = {
   "core/gitPane.js": ["3b9c66d1", "186e1669", "3ecc46b0", "0afe28d8", "10e87dd3", "55dfbb00", "44fa79f8", "88d71409"],
   "core/httpSession.js": ["0b7b82e7", "b8028927", "c780566d", "761fc9fc", "12ca2faa", "7e626b1a", "c51ecf85", "3e85059a"],
   "core/inboxCaptures.js": ["48a7f5fb", "b2132a83", "5901fb31", "4fb0c5ae", "97005297", "2d0b9db6", "be2c3e6d", "1271b663"],
-  "core/inboxDevices.js": ["f9a293e4", "dff4b2b4", "f5fc7940", "f5c1f48d", "a66a5718", "238826a6", "e3dc6b9f", "4060a79e"],
+  "core/inboxDevices.js": ["cd1cfdd5", "9a9734e7", "ac73df50", "cac3383d", "9b6b0229", "b72936f1", "4b2d5657", "a8586421"],
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
   // #997 runtime-board inboxView.js:193,206,320: scoped pending display and cached branch choices; existing RPC and mutation dispatch unchanged.
   // #1051: cached environment identity and wizard entry points; existing RPC methods, producers and assignment edges are unchanged.
@@ -448,9 +449,10 @@ const sourceFingerprintParts = {
   // #1065: positive ownership evidence gates both card rendering and editing.save.
   // Source replies use the shared identity-preserving writer; project-scoped methods/selectors and project.list refresh are unchanged.
   // Opening teardown and atomic Sync adoption retain current project metadata; no RPC edge changes.
+  // Source refusal notices survive cache repaints; existing RPC verbs and parameter producers are unchanged.
   // Retired-frame picker cleanup and committed navigation release only the project settings opening.
-  "sheets/projectSettings.js": ["e0385b5f", "d2f8fdc6", "35e28343", "f29b19af", "4b8f015c", "030dc1b1", "63e2c1ba", "21d4ccd9"],
-  "sheets/projectSources.js": ["824cc8cc", "c2389c5d", "c5a484d1", "a8f838bf", "b49d95de", "16e2f200", "29b81ff2", "8b6eaa5b"],
+  "sheets/projectSettings.js": ["42e05498", "8e486365", "3845c45c", "b7082348", "c94deb75", "f1558bb5", "a659dc9d", "e5e45095"],
+  "sheets/projectSources.js": ["668c3c8b", "c7f45b68", "814d6b0f", "29084876", "7d9d9f00", "cea0de62", "886e9c87", "f3c87009"],
   // #1065: sheet-owned in-flight state blocks duplicate Sync requests; the accepted callback, RPC method and selectors are unchanged.
   "sheets/sourceSyncControls.js": ["49045a5b", "1fd03d03", "c9e574df", "020f32ea", "5d64bdd0", "3ab970b7", "1c98dee9", "cb20c875"],
   // #997 workspaceSettings.js:292: the existing project.list catalog loader delegates to owned device recovery.

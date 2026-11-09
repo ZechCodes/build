@@ -70,6 +70,8 @@ function fieldHtml(source, index, field, editing) {
         value="${esc(paintedValue(source, field))}"${editable ? "" : " readonly"}>${hint}</div>`;
 }
 
+const sourceErrorHtml = notice => `<div class="adderr" data-source-error role="alert">${esc(notice?.error || "")}</div>`;
+
 function cardHtml(source, index, { editing, removable, notice, sync }) {
   const kind = source.is_git === false ? "Folder" : "Git repository";
   const editable = shownFields(source).some((field) => editing.editable(field, index));
@@ -78,7 +80,7 @@ function cardHtml(source, index, { editing, removable, notice, sync }) {
       <span class="ps-source-tag">${kind}</span></header>
     ${shownFields(source).map((field) => fieldHtml(source, index, field, editing)).join("")}
     ${syncControlsHtml(source, index, sync)}
-    <div class="adderr" data-source-error role="alert"></div>
+    ${sourceErrorHtml(notice)}
     <div class="dim" data-source-status role="status">${esc(notice?.status || "")}</div>
     <div class="ps-source-warning" data-source-warning role="alert">${esc(notice?.warning || "")}</div>
     <footer class="row ps-source-foot">${[
@@ -129,6 +131,16 @@ function sourceGroupsHtml(project, { editing, ownership, environmentName, notice
 
 const cardOf = (sheet, sourceId) =>
   [...sheet.querySelectorAll(".ps-source")].find((card) => card.dataset.sourceId === sourceId);
+
+/** A write can settle after its card was repainted. Keep its refusal with the
+ * opening's notices and show it on the current card, never a detached node. */
+export function showSourceWriteError(sheet, notices, previous, sentence) {
+  const sourceId = previous?.closest(".ps-source")?.dataset.sourceId;
+  if (sourceId) notices[sourceId] = { ...notices[sourceId], error: sentence };
+  const target = sourceId ? cardOf(sheet, sourceId)?.querySelector("[data-source-error]") : sheet.querySelector("#pssrcerr");
+  if (target) target.textContent = sentence;
+  return Boolean(target);
+}
 
 const sourceOf = (project, card) => (project.sources || [])[Number(card.dataset.sourceIndex)];
 

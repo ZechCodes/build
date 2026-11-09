@@ -125,9 +125,11 @@ function stepHtml({ step, label, state, detail }) {
     <span class="sub">${esc(state)}</span>${detail ? `<div class="sub create-progress-detail">${esc(detail)}</div>` : ""}</li>`;
 }
 
-function targetSummaryHtml(target, fallback) {
+function targetSummaryHtml(target, fallback, environment) {
   if (!target) return esc(fallback);
-  const glyph = rowIdentityBadgeHtml(target, target.kind === "project" ? "project" : "environment");
+  const identity = target.kind === "new-environment" && environment
+    ? { ...target, environment_id: environment.environment_id || environment.id } : target;
+  const glyph = rowIdentityBadgeHtml(identity, target.kind === "project" ? "project" : "environment");
   return `<span class="create-kind" aria-hidden="true">${glyph}</span><span>${esc(target.summaryLabel || target.label || target.name || target.id)}</span>
     ${target.deviceLabel ? `<span class="dim inbox-device">${esc(target.deviceLabel)}</span>` : ""}
     ${target.offline ? '<span class="dim inbox-away">Offline</span>' : ""}`;
@@ -150,7 +152,7 @@ function trapProgressTab(event, body) {
 
 function progressBodyHtml(model, targetSummary, actionError, target) {
   return `<h3 id="create-workspace-progress-title" aria-live="polite">${esc(model.status)}</h3>
-    <p class="create-target-summary">${targetSummaryHtml(target, targetSummary)}</p>${targetOutcomeHtml(target)}
+    <p class="create-target-summary">${targetSummaryHtml(target, targetSummary, model.environment)}</p>${targetOutcomeHtml(target)}
     <ol class="create-progress-steps" aria-label="Creation steps">${model.steps.map(stepHtml).join("")}</ol>
     <p role="status" aria-live="polite">${esc(model.message)}</p>
     ${model.error ? `<p class="warn create-error">${esc(model.error)}</p>` : ""}

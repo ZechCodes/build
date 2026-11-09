@@ -260,3 +260,17 @@ it.each(['close','outside','back-to-close','interaction-only'])("preserves user 
  expect(onOpenWorkspace).not.toHaveBeenCalled();
  expect(document.activeElement).toBe(expected());
 });
+
+it.each(["succeeded", "failed"])("uses the persisted environment hue once a new target lands (%s)", async state => {
+  const { identityBadgeHtml } = await import("../src/core/environmentIdentity.js");
+  const target = { kind:"new-environment", id:"draft", deviceId:"laptop", name:"Sources" };
+  const initial = operation({ request:{method:"environment.create"} });
+  const { writeOperations } = open(initial, {target, autoOpenDelay:60_000});
+  const environment = {environment_id:"env-1", name:"Sources"};
+  const confirmation = state === "succeeded" ? {result:{environment, project, workspace}}
+    : {effect:"partial", error:{message:"checkout refused", details:{environment, project}}};
+  writeOperations.update({...initial, state, effect:"partial", confirmation});
+  expect(document.querySelector('.create-target-summary .identity-badge')?.outerHTML)
+    .toBe(identityBadgeHtml({key:"laptop/env-1", name:"Sources"}, "environment"));
+  expect(target.id).toBe("draft");
+});

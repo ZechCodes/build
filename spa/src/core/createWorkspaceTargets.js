@@ -117,17 +117,19 @@ export async function createLegacyWorkspace(input) {
   await cacheCreatedWorkspace(input.target.deviceId,answer);
   return route;
 }
-export async function discardCreatedProject({target,project,operationId}) {
+export async function discardCreatedProject({target,project,operationId,record}) {
   const projectId=project.project_id || project.id;
   const method=requireRecoveryMethod(target.deviceId,'discard');
-  await deviceCall(target.deviceId,'discard this project')(method,{project_id:projectId,creation_operation_id:operationId});
+  const creationOperationId=record?.draft?.landed?.creationOperationId || operationId;
+  await deviceCall(target.deviceId,'discard this project')(method,{project_id:projectId,creation_operation_id:creationOperationId});
   await mergeCachedAtomically(listAddress(target.deviceId,'projects'),held=>(held || []).filter(row=>(row.project_id || row.id)!==projectId));
 }
 
-export async function discardCreatedEnvironment({target,environment,operationId}) {
+export async function discardCreatedEnvironment({target,environment,operationId,record}) {
   const environmentId=environment.environment_id || environment.id;
   const method=requireRecoveryMethod(target.deviceId,'discardEnvironment');
-  await deviceCall(target.deviceId,'discard the environment')(method,{environment_id:environmentId,creation_operation_id:operationId});
+  const creationOperationId=record?.draft?.landed?.environmentCreationOperationId || operationId;
+  await deviceCall(target.deviceId,'discard the environment')(method,{environment_id:environmentId,creation_operation_id:creationOperationId});
   await mergeCachedAtomically(listAddress(target.deviceId,'environments'),held=>(held || []).filter(row=>(row.environment_id || row.id)!==environmentId));
 }
 

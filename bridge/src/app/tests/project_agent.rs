@@ -2020,7 +2020,6 @@ fn a_message_from_an_agent_names_the_conversation_it_came_from() {
     );
 }
 
-
 fn environment_source_agent_fixture(root: &Path) -> (AppState, String, String) {
     for name in ["home", "other", "assets"] {
         std::fs::create_dir(root.join(name)).unwrap();
@@ -2052,11 +2051,17 @@ fn environment_source_action(value: Value) -> BridgeAction {
 fn a_project_agent_adds_folders_to_its_own_environment() {
     let root = tempfile::tempdir().unwrap();
     let (mut app, owner, agent) = environment_source_agent_fixture(root.path());
-    let result = app.agent_action(&owner, &agent, environment_source_action(json!({
-        "action":"add_environment_source","path":root.path().join("assets"),
-        "name":"Assets","base_branch":null,"remote":null,
-        "environment_id":"env-2","project_id":"proj-3"
-    }))).unwrap();
+    let result = app
+        .agent_action(
+            &owner,
+            &agent,
+            environment_source_action(json!({
+                "action":"add_environment_source","path":root.path().join("assets"),
+                "name":"Assets","base_branch":null,"remote":null,
+                "environment_id":"env-2","project_id":"proj-3"
+            })),
+        )
+        .unwrap();
     assert_eq!(result["environment_id"], "env-1");
     for project in ["proj-1", "proj-2"] {
         let row = app.projects.get(project).unwrap();
@@ -2065,19 +2070,44 @@ fn a_project_agent_adds_folders_to_its_own_environment() {
         assert!(row.added_sources.is_empty());
     }
     assert_eq!(app.projects.get("proj-3").unwrap().sources.len(), 1);
-    let reloaded = rooted(root.path()).with_config(root.path().join("config.json")).unwrap();
-    assert_eq!(reloaded.projects.environment("env-1").unwrap().sources.len(), 2);
+    let reloaded = rooted(root.path())
+        .with_config(root.path().join("config.json"))
+        .unwrap();
+    assert_eq!(
+        reloaded
+            .projects
+            .environment("env-1")
+            .unwrap()
+            .sources
+            .len(),
+        2
+    );
 
     std::fs::create_dir(root.path().join("home/nested")).unwrap();
-    for path in [root.path().join("home/nested"), root.path().join("missing"), root.path().join("home")] {
+    for path in [
+        root.path().join("home/nested"),
+        root.path().join("missing"),
+        root.path().join("home"),
+    ] {
         let before = std::fs::read(root.path().join("config.json")).unwrap();
         let params = json!({"environment_id":"env-1","path":path});
-        let expected = app.environment_add_source(&params).unwrap_err();
-        let refused = app.agent_action(&owner, &agent, environment_source_action(json!({
-            "action":"add_environment_source","path":path
-        }))).unwrap_err();
+        let expected = app
+            .with_inline_deferred(|app| app.environment_add_source(&params))
+            .unwrap_err();
+        let refused = app
+            .agent_action(
+                &owner,
+                &agent,
+                environment_source_action(json!({
+                    "action":"add_environment_source","path":path
+                })),
+            )
+            .unwrap_err();
         assert_eq!(refused, expected);
-        assert_eq!(std::fs::read(root.path().join("config.json")).unwrap(), before);
+        assert_eq!(
+            std::fs::read(root.path().join("config.json")).unwrap(),
+            before
+        );
     }
 }
 
@@ -2085,10 +2115,20 @@ fn a_project_agent_adds_folders_to_its_own_environment() {
 fn a_project_agent_removes_folders_from_its_own_environment() {
     let root = tempfile::tempdir().unwrap();
     let (mut app, owner, agent) = environment_source_agent_fixture(root.path());
-    app.environment_add_source(&json!({"environment_id":"env-1","path":root.path().join("assets")})).unwrap();
-    let removed = app.agent_action(&owner, &agent, environment_source_action(json!({
-        "action":"remove_environment_source","source_id":"source-2","environment_id":"env-2"
-    }))).unwrap();
+    let added = app.handle(req(
+        "environment.add_source",
+        json!({"environment_id":"env-1","path":root.path().join("assets")}),
+    ));
+    assert_eq!(added["ok"], true, "{added}");
+    let removed = app
+        .agent_action(
+            &owner,
+            &agent,
+            environment_source_action(json!({
+                "action":"remove_environment_source","source_id":"source-2","environment_id":"env-2"
+            })),
+        )
+        .unwrap();
     assert_eq!(removed["environment_id"], "env-1");
     for project in ["proj-1", "proj-2", "proj-3"] {
         assert_eq!(app.projects.get(project).unwrap().sources.len(), 1);
@@ -2096,13 +2136,34 @@ fn a_project_agent_removes_folders_from_its_own_environment() {
     assert!(root.path().join("assets").is_dir());
     for source in ["source-2", "source-1"] {
         let before = std::fs::read(root.path().join("config.json")).unwrap();
-        let expected = app.environment_remove_source(&json!({"environment_id":"env-1","source_id":source})).unwrap_err();
-        let refused = app.agent_action(&owner, &agent, environment_source_action(json!({
-            "action":"remove_environment_source","source_id":source
-        }))).unwrap_err();
+        let expected = app
+            .environment_remove_source(&json!({"environment_id":"env-1","source_id":source}))
+            .unwrap_err();
+        let refused = app
+            .agent_action(
+                &owner,
+                &agent,
+                environment_source_action(json!({
+                    "action":"remove_environment_source","source_id":source
+                })),
+            )
+            .unwrap_err();
         assert_eq!(refused, expected);
-        assert_eq!(std::fs::read(root.path().join("config.json")).unwrap(), before);
+        assert_eq!(
+            std::fs::read(root.path().join("config.json")).unwrap(),
+            before
+        );
     }
-    let reloaded = rooted(root.path()).with_config(root.path().join("config.json")).unwrap();
-    assert_eq!(reloaded.projects.environment("env-1").unwrap().sources.len(), 1);
+    let reloaded = rooted(root.path())
+        .with_config(root.path().join("config.json"))
+        .unwrap();
+    assert_eq!(
+        reloaded
+            .projects
+            .environment("env-1")
+            .unwrap()
+            .sources
+            .len(),
+        1
+    );
 }

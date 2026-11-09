@@ -790,6 +790,23 @@ impl AppState {
             BridgeAction::RemoveProjectSource { source_id } => {
                 self.project_agent_remove_project_source(entity_id, source_id)
             }
+            BridgeAction::AddEnvironmentSource {
+                path,
+                remote,
+                name,
+                base_branch,
+            } => self.project_agent_add_environment_source(
+                entity_id,
+                crate::app::ProjectSourceArgs {
+                    path: path.as_deref(),
+                    remote: remote.as_deref(),
+                    name: name.as_deref(),
+                    base_branch: base_branch.as_deref(),
+                },
+            ),
+            BridgeAction::RemoveEnvironmentSource { source_id } => {
+                self.project_agent_remove_environment_source(entity_id, source_id)
+            }
             BridgeAction::ReclaimWorkspace { workspace_id } => {
                 self.project_agent_reclaim_workspace(entity_id, agent_id, workspace_id)
             }

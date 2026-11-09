@@ -390,6 +390,24 @@ async fn project_worker_tools_follow_persisted_purpose() {
         !by_pin.contains("surface"),
         "the pin holds the tool: {by_pin}"
     );
+    for action in [
+        json!({"action":"add_environment_source","path":"/unreachable"}),
+        json!({"action":"remove_environment_source","source_id":"source-nope"}),
+    ] {
+        let action: BridgeAction = serde_json::from_value(action).unwrap();
+        let refused = state
+            .on_agent_mcp_action(&owner, &worker, action.clone())
+            .unwrap_err();
+        assert!(
+            refused.contains("this session is on the coding surface"),
+            "{refused}"
+        );
+        let by_pin = state.on_agent_mcp_action(&owner, &pin, action).unwrap_err();
+        assert!(
+            !by_pin.contains("surface"),
+            "the pin holds the tool: {by_pin}"
+        );
+    }
     let staffing = state
         .on_agent_mcp_action(
             &owner,

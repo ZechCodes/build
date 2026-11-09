@@ -308,6 +308,18 @@ pub enum BridgeAction {
     RemoveProjectSource {
         source_id: String,
     },
+    /// One more folder on the calling agent's environment. Project only;
+    /// the environment is derived from the bound project, never an argument.
+    AddEnvironmentSource {
+        path: Option<String>,
+        remote: Option<String>,
+        name: Option<String>,
+        base_branch: Option<String>,
+    },
+    /// Unlink a source from the calling agent's environment. Project only.
+    RemoveEnvironmentSource {
+        source_id: String,
+    },
     /// Remove a workspace whose work is somewhere else and whose tasks are
     /// finished (#135). Project only: what becomes of a quiet workspace is
     /// the project agent's call.
@@ -572,6 +584,8 @@ impl BridgeAction {
             BridgeAction::DeleteWorkspace { .. } => "delete_workspace",
             BridgeAction::AddProjectSource { .. } => "add_project_source",
             BridgeAction::RemoveProjectSource { .. } => "remove_project_source",
+            BridgeAction::AddEnvironmentSource { .. } => "add_environment_source",
+            BridgeAction::RemoveEnvironmentSource { .. } => "remove_environment_source",
             BridgeAction::ReclaimWorkspace { .. } => "reclaim_workspace",
             BridgeAction::AddWorkspaceDirectory { .. } => "add_workspace_directory",
             BridgeAction::RemoveWorkspaceDirectory { .. } => "remove_workspace_directory",
@@ -648,6 +662,8 @@ impl BridgeAction {
             // the next workspace will be made of.
             BridgeAction::AddProjectSource { .. }
             | BridgeAction::RemoveProjectSource { .. }
+            | BridgeAction::AddEnvironmentSource { .. }
+            | BridgeAction::RemoveEnvironmentSource { .. }
             | BridgeAction::ReclaimWorkspace { .. } => &[McpSurface::Project],
             // Compacting ANOTHER agent is staffing, which is the project
             // agent's business; every agent compacts itself.
@@ -1681,21 +1697,16 @@ impl DoneServer {
         ]
     }
 
-    /// The project agent's tools: the workspaces every project-bound agent
-    /// shares, the two verbs that change what the project itself is made of,
-    /// and the conversation. Every one of them is about the agent's OWN
-    /// project: none takes a project, and the binding the agent was minted with
-    /// is the only thing that says which it is.
-    ///
-    /// What is deliberately here and nowhere else: `add_project_source` and
-    /// `remove_project_source`. They change the template every NEXT workspace
-    /// is cut from, which is the project agent's business and no coding
-    /// agent's.
+    /// The project agent's tools include source membership for its own
+    /// project and environment. These forward-looking changes belong here
+    /// alone: Coding agents can change their existing workspace's directories.
+    /// Neither project nor environment selectors come from tool arguments;
+    /// the daemon resolves both from the caller's owner binding.
     fn project_tools() -> Value {
         let mut tools = Self::workspace_tools();
         tools.extend([json!({
             "name": "add_project_source",
-            "description": "Add a folder to your project. The project is the template every new workspace is cut from, so this changes what the NEXT workspace gets; use add_workspace_directory to put the folder into a workspace that already exists. Name exactly one of path or remote.",
+            "description": "Add a folder to this project only, making it diverge from its environment. New workspaces in this project include it; use add_workspace_directory to put the folder into a workspace that already exists. Name exactly one of path or remote.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1707,11 +1718,33 @@ impl DoneServer {
             }
         }), json!({
             "name": "remove_project_source",
-            "description": "Take a folder off your project. Nothing on disk moves and no workspace loses a directory: new workspaces stop being cut from it. A project keeps at least one source.",
+            "description": "Remove a folder added to this project only, reducing its divergence from its environment. Removing the last added folder ends that divergence. Environment sources must be removed with remove_environment_source. Nothing on disk moves and no existing workspace loses a directory; new workspaces in this project stop including it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "source_id": { "type": "string", "description": "From list_workspaces' project sources." }
+                },
+                "required": ["source_id"]
+            }
+        }), json!({
+            "name": "add_environment_source",
+            "description": "Add a folder to this project's environment. New workspaces in every project in this environment include it; use add_workspace_directory for a workspace that already exists. Name exactly one of path or remote.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "A folder on this device. A Git repository or an ordinary folder." },
+                    "remote": { "type": "string", "description": "A clone url. Build clones it into the environment's own sources folder." },
+                    "name": { "type": "string", "description": "What to call it. The folder's own name when omitted." },
+                    "base_branch": { "type": "string", "description": "The branch workspaces are cut from. The repository's own when omitted." }
+                }
+            }
+        }), json!({
+            "name": "remove_environment_source",
+            "description": "Remove a folder from this project's environment. Nothing on disk moves and no existing workspace loses a directory; new workspaces in every project in this environment stop including it. An environment keeps at least one source.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "source_id": { "type": "string", "description": "An environment source id from list_workspaces' project sources, excluding folders added to this project only." }
                 },
                 "required": ["source_id"]
             }
@@ -1862,6 +1895,19 @@ impl DoneServer {
             ),
             "remove_project_source" => match required_argument(params, "source_id") {
                 Ok(source_id) => acted(id, BridgeAction::RemoveProjectSource { source_id }),
+                Err(message) => refused(id, message),
+            },
+            "add_environment_source" => acted(
+                id,
+                BridgeAction::AddEnvironmentSource {
+                    path: optional_argument(params, "path"),
+                    remote: optional_argument(params, "remote"),
+                    name: optional_argument(params, "name"),
+                    base_branch: optional_argument(params, "base_branch"),
+                },
+            ),
+            "remove_environment_source" => match required_argument(params, "source_id") {
+                Ok(source_id) => acted(id, BridgeAction::RemoveEnvironmentSource { source_id }),
                 Err(message) => refused(id, message),
             },
             "reclaim_workspace" => match required_argument(params, "workspace_id") {
@@ -3794,14 +3840,18 @@ mod tests {
     #[test]
     fn mcp_project_surface_lists_environment_source_tools() {
         for (name, arguments) in [
-            ("add_environment_source", json!({"path":"/assets", "remote":"https://example.com/repo", "name":"assets", "base_branch":"main"})),
+            (
+                "add_environment_source",
+                json!({"path":"/assets", "remote":"https://example.com/repo", "name":"assets", "base_branch":"main"}),
+            ),
             ("remove_environment_source", json!({"source_id":"source-2"})),
         ] {
             assert!(tool_names(&project()).contains(&name.to_string()), "{name}");
             assert!(!tool_names(&server()).contains(&name.to_string()), "{name}");
             assert!(!tool_names(&router()).contains(&name.to_string()), "{name}");
             let call = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
-                "params":{"name":name,"arguments":arguments}}).to_string();
+                "params":{"name":name,"arguments":arguments}})
+            .to_string();
             let handled = project().handle_message(&call);
             let action = handled.action.expect("project tool parses an action");
             assert_eq!(action.tool_name(), name);
@@ -3817,8 +3867,11 @@ mod tests {
                 assert_eq!(parse(&refused.reply.unwrap())["result"]["isError"], true);
             }
         }
-        let missing = project().handle_message(&json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":"remove_environment_source","arguments":{}}}).to_string());
+        let missing = project().handle_message(
+            &json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"remove_environment_source","arguments":{}}})
+            .to_string(),
+        );
         assert!(missing.action.is_none());
         assert_eq!(parse(&missing.reply.unwrap())["result"]["isError"], true);
     }
@@ -3863,6 +3916,8 @@ mod tests {
                 &[
                     "add_project_source",
                     "remove_project_source",
+                    "add_environment_source",
+                    "remove_environment_source",
                     "reclaim_workspace",
                     "compact_agent"
                 ][..],
@@ -3883,6 +3938,8 @@ mod tests {
         for project_only in [
             "add_project_source",
             "remove_project_source",
+            "add_environment_source",
+            "remove_environment_source",
             "reclaim_workspace",
             "compact_agent",
         ] {

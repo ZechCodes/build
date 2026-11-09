@@ -259,3 +259,17 @@ remain separate.
 These are fixture and isolated Chromium tests; no live bridge, paired client,
 user browser or original source process was used. The broader integrated
 PS522-6 acceptance stays pending for #538.
+
+
+## #1097 — S2.3 environment source MCP tools
+
+The Project-only MCP tools derive the environment from the caller's bound
+project and reuse `environment_add_source` / `environment_remove_source`.
+They introduce no alternate filesystem or Git path. The implemented checklist
+remains **100/100** within its existing scope.
+
+| Control | Evidence |
+| --- | --- |
+| Tool arguments cannot select a different environment; Coding agents and project workers cannot mutate source membership. | `mcp_project_surface_lists_environment_source_tools`; `project_worker_tools_follow_persisted_purpose`; `a_project_agent_adds_folders_to_its_own_environment` ignores foreign scope arguments. |
+| Adding a source applies the existing canonical-directory, containment, duplicate and remote validation; refused edits leave the config unchanged. | `project_agent_add_environment_source` delegates to `environment_add_source`; `a_project_agent_adds_folders_to_its_own_environment` compares missing, nested and duplicate path refusals with the underlying operation. |
+| Removing a source unlinks its environment reference without deleting files or changing another environment, and retains the last-source refusal. | `a_project_agent_removes_folders_from_its_own_environment` covers sibling projections, persistence, kept files, unknown source and last-source refusals. |

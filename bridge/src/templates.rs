@@ -843,6 +843,13 @@ mod tests {
         }
     }
 
+    #[test]
+    fn attached_secret_template_describes_scope_without_promising_environment_access() {
+        assert!(MESSAGE_ATTACHED_SECRETS.contains("Access depends on each secret's scope"));
+        assert!(MESSAGE_ATTACHED_SECRETS.contains("environment, project or agent"));
+        assert!(!MESSAGE_ATTACHED_SECRETS.contains("Environment secrets are accessible"));
+    }
+
     /// A project agent says what it is and what it can do. It has no checkout,
     /// no phases and no work verbs, so the template must not imply any.
     #[test]
@@ -912,7 +919,7 @@ mod tests {
             "The task is the record",
             "Parallelize independent work in separate workspaces",
             "give shared files one writer",
-            "Your reach ends at this project, and you cannot read an agent's conversation.",
+            "Your reach ends at this project and its environment's source membership, and you cannot read an agent's conversation.",
         ] {
             assert!(
                 project.contains(sentence),

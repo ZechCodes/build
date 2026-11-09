@@ -119,6 +119,15 @@ it("environment grouping searches workspace names while default rows go to proje
   expect(searched.lastVisited).toEqual([]);
 });
 
+it("legacy switcher hides archived projects and recent visits until searched", () => {
+  const held = navigationCatalog({ projects: [{ ...project("one", "p", "Retired"), archived_at: 1 }, project("one", "live", "Active")], workspaces: [] });
+  const visits = [{ kind: "project", key: "one/p", at: 100 }];
+  const picker = globalNavigationPicker(held, { visits });
+  expect(picker.groups.map(group => group.key)).toEqual(["one/live"]);
+  expect(picker.lastVisited).toEqual([]);
+  expect(globalNavigationPicker(held, { query: "Retired" }).groups[0].key).toBe("one/p");
+});
+
 it("environment search finds archived projects with a tag but omits them from the default list", () => {
   const held = navigationCatalog({ projects: [{ ...project("one", "p", "Retired"), environment_id: "e", archived: true }], workspaces: [] });
   const options = { support: { one: true }, environments: [{ id: "e", deviceId: "one", name: "Environment" }] };

@@ -3205,7 +3205,9 @@ placeholder label and retains defaulted `waiting_for_name` and `name_asked`
 fields in its manifest (schema remains 26). Named, agent-created and adopted
 workspaces do not wait. Blank workspace creation intents under distinct
 operation IDs do not conflict; retries under the same ID retain the journal's
-existing identity checks. The wizard keeps the derived environment-target
+existing identity checks. Private creation writes the ordinary pending-workspace
+marker before materialization, so each Git source registration uses its
+workspace-qualified name before the final manifest exists. The wizard keeps the derived environment-target
 project name separate from the workspace's optional name.
 
 The first delivered coding turn claims the workspace naming request once

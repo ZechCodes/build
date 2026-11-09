@@ -232,7 +232,13 @@ impl WorkspaceRegistry {
             )
             .map_err(|e| e.to_string())?;
         }
-        create_owned_container(reserved)
+        create_owned_container(reserved)?;
+        // Private creation has no manifest until publication. The same marker
+        // legacy creation uses makes Git qualify each source registration by
+        // its workspace rather than reusing the source mount's name.
+        let marker = reserved.root.join(PENDING_MARKER_FILE);
+        refuse_symlink(&marker)?;
+        fs::write(marker, b"").map_err(|error| error.to_string())
     }
     pub(crate) fn recovered_creation_workspace(
         &self,

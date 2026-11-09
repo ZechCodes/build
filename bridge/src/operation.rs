@@ -33,6 +33,18 @@ pub(crate) fn agent_name_note(provider: AgentProvider) -> String {
     )
 }
 
+/// The first coding turn in an unnamed workspace asks for its label.
+pub(crate) fn workspace_name_note(provider: AgentProvider) -> String {
+    let tool = tool_name(provider, BuildTool::SetWorkspaceName);
+    format!(
+        "\n{}\n",
+        fill(
+            crate::templates::MESSAGE_WORKSPACE_NAME,
+            &[("set_workspace_name", &tool)]
+        )
+    )
+}
+
 /// `tool` as a delivery's wording names it to `provider`'s model.
 fn tool_name(provider: AgentProvider, tool: BuildTool) -> String {
     crate::harness::harness_for(provider).build_tool_name(tool)

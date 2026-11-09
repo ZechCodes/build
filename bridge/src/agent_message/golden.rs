@@ -37,6 +37,7 @@ pub(crate) struct Scenario {
     payload: OperationPayload,
     scope: Scope,
     cold: bool,
+    ask_workspace_name: bool,
 }
 
 impl Scenario {
@@ -50,11 +51,24 @@ impl Scenario {
             }
             Scope::Legacy => self.payload.legacy_delivery_prompt(self.cold, provider),
         };
+        let mut attachments = self.payload.turn_attachments();
+        let prompt = if self.ask_workspace_name {
+            attachments.merge(super::TurnAttachments {
+                replies: Vec::new(),
+                tools: vec![super::BuildTool::SetWorkspaceName],
+            });
+            format!(
+                "{}{prompt}",
+                crate::operation::workspace_name_note(provider)
+            )
+        } else {
+            prompt
+        };
         super::turn_text(
             crate::harness::harness_for(provider),
             prompt,
             self.payload.message_kind(provider),
-            self.payload.turn_attachments(),
+            attachments,
         )
     }
 }
@@ -218,14 +232,32 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
         payload: payload(messages),
         scope: Scope::Native("op-1"),
         cold,
+        ask_workspace_name: false,
     };
     let legacy = |name, messages| Scenario {
         name,
         payload: payload(messages),
         scope: Scope::Legacy,
         cold: false,
+        ask_workspace_name: false,
+    };
+    let workspace_naming = Scenario {
+        name: "first_delivery_asking_workspace_name",
+        ask_workspace_name: true,
+        ..native("unused", vec![user_in_thread()], false)
+    };
+    let both_names = Scenario {
+        name: "first_delivery_asking_both_names",
+        payload: OperationPayload {
+            ask_to_name: true,
+            ..payload(vec![user_in_thread()])
+        },
+        ask_workspace_name: true,
+        ..native("unused", Vec::new(), false)
     };
     vec![
+        workspace_naming,
+        both_names,
         native("user_in_thread", vec![user_in_thread()], false),
         native("user_in_thread_cold", vec![user_in_thread()], true),
         native("user_looking_at_task", vec![user_looking_at_task()], false),
@@ -255,6 +287,7 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             },
             scope: Scope::Native("op-1"),
             cold: false,
+            ask_workspace_name: false,
         },
         Scenario {
             name: "agent_report_to_project_agent",
@@ -264,6 +297,7 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             },
             scope: Scope::Native("op-1"),
             cold: false,
+            ask_workspace_name: false,
         },
         native("compact_command", vec![compact_command()], false),
         native(
@@ -280,6 +314,7 @@ pub(crate) fn scenarios() -> Vec<Scenario> {
             },
             scope: Scope::Native("op-1"),
             cold: false,
+            ask_workspace_name: false,
         },
     ]
 }

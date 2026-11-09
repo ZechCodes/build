@@ -3200,6 +3200,22 @@ armed (`spa/src/core/harnessInventoryEvents.js`). Controls and evidence:
 
 ### Messages to agents
 
+A workspace created with a missing or whitespace-only name gets a distinct
+placeholder label and retains defaulted `waiting_for_name` and `name_asked`
+fields in its manifest (schema remains 26). Named, agent-created and adopted
+workspaces do not wait. Blank workspace creation intents under distinct
+operation IDs do not conflict; retries under the same ID retain the journal's
+existing identity checks. The wizard keeps the derived environment-target
+project name separate from the workspace's optional name.
+
+The first delivered coding turn claims the workspace naming request once
+across its agents, waiting for in-flight manifest writers before claiming.
+`messages/workspace_name.md` asks for 2–4 words and carries
+`BuildTool::SetWorkspaceName`, so on-demand harnesses load the tool. It composes
+with the agent-name note. Provider commands remain bare, project coordinators
+are exempt, and a rejected provider write releases the claim for another turn.
+
+
 Everything Build says into an agent's conversation goes through
 `bridge/src/agent_message/`. A message is a `MessageKind` (a delivery, a
 thread nudge, a task notice, a restart, a usage-limit resume, a compaction, a
@@ -3297,6 +3313,16 @@ one reset; cancelling the chooser keeps the conversation. Detail and compact
 settings are retained, and the empty conversation opens in the same place.
 
 ### MCP tools
+
+Coding agents have `set_workspace_name`, taking only `name`, for their own
+workspace when its creator left the name blank. It collapses whitespace and
+refuses empty labels, labels over 80 bytes, callers outside a workspace, and
+workspaces already named. It uses the ordinary `workspace.rename` path, with
+its busy checks and board-list notification, changing only the label and
+clearing the wait. A client rename clears that wait too, so an agent cannot
+overwrite the person's choice. This is an ordinary mutating control turn,
+like `set_name`; no provider or external work runs under a new lock scope.
+
 
 Review tools expose one workspace flow: `open_review`, `push_review`,
 `update_review_base`, `merge_review`, `close_review`, `reopen_review`,

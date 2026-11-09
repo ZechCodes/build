@@ -105,6 +105,9 @@ pub(crate) const MESSAGE_ATTACHED_SECRETS: &str = template!("messages/attached_s
 /// The request an unnamed agent hears on its first turn: the tool `{set_name}`.
 pub(crate) const MESSAGE_AGENT_NAME: &str = template!("messages/agent_name.md");
 
+/// The workspace's first delivered naming request: `{set_workspace_name}`.
+pub(crate) const MESSAGE_WORKSPACE_NAME: &str = template!("messages/workspace_name.md");
+
 /// The turn that tells an agent its thread has new messages:
 /// `{post_thread_message}` is that tool as the agent's harness names it.
 pub(crate) const MESSAGE_NEW_THREAD_MESSAGES: &str = template!("messages/new_thread_messages.md");

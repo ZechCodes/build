@@ -888,6 +888,9 @@ impl AppState {
         if let BridgeAction::SetName { name } = &action {
             return self.set_agent_name(entity_id, agent_id, name);
         }
+        if let BridgeAction::SetWorkspaceName { name } = &action {
+            return self.set_workspace_name(entity_id, name);
+        }
         let attachments = if let BridgeAction::PostThreadMessage {
             body, attachments, ..
         } = &action

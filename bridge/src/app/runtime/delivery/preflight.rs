@@ -95,6 +95,56 @@ fn turn_kind(
         })
 }
 
+/// Naming claims are captured at the provider write, never while a turn waits.
+#[derive(Default)]
+struct NameRequests {
+    agent: bool,
+    workspace: Option<String>,
+}
+impl NameRequests {
+    fn claim(
+        state: &mut AppState,
+        owner: &str,
+        agent: &str,
+        kind: MessageKind,
+    ) -> Result<Self, String> {
+        if kind == MessageKind::ProviderCommand {
+            return Ok(Self::default());
+        }
+        let workspace = state.claim_workspace_name_request(owner, agent)?;
+        Ok(Self {
+            agent: state.claim_agent_name_request(owner, agent),
+            workspace,
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        !self.agent && self.workspace.is_none()
+    }
+
+    fn release(&self, state: &mut AppState, owner: &str, agent: &str) {
+        if self.agent {
+            state.release_agent_name_request(owner, agent);
+        }
+        if let Some(workspace) = &self.workspace {
+            if let Err(error) = state.workspaces.release_name_request(workspace) {
+                eprintln!("retry workspace naming request: {error}");
+            }
+        }
+    }
+
+    fn tools(&self) -> Vec<crate::agent_message::BuildTool> {
+        let mut tools = Vec::new();
+        if self.agent {
+            tools.push(crate::agent_message::BuildTool::SetName);
+        }
+        if self.workspace.is_some() {
+            tools.push(crate::agent_message::BuildTool::SetWorkspaceName);
+        }
+        tools
+    }
+}
+
 /// The exact text a turn of `kind` hands `provider`'s session: its own words
 /// with any unread thread it reads, the naming request, and every attachment
 /// the turn and the thread it reads ask for, framed by the harness.
@@ -102,23 +152,24 @@ fn framed_turn(
     prompt: &str,
     say: Option<&TurnText>,
     payload: Option<&crate::operation::OperationPayload>,
-    (kind, asks_name): (MessageKind, bool),
+    (kind, names): (MessageKind, &NameRequests),
     provider: crate::models::AgentProvider,
 ) -> String {
     let mut text = delivered_prompt(prompt, payload, provider);
-    if asks_name {
+    if names.workspace.is_some() {
+        text = format!("{}{text}", crate::operation::workspace_name_note(provider));
+    }
+    if names.agent {
         text = format!("{}{text}", crate::operation::agent_name_note(provider));
     }
     let mut asks = say.map(|say| say.attachments.clone()).unwrap_or_default();
     if let Some(payload) = payload {
         asks.merge(payload.turn_attachments());
     }
-    if asks_name {
-        asks.merge(crate::agent_message::TurnAttachments {
-            replies: Vec::new(),
-            tools: vec![crate::agent_message::BuildTool::SetName],
-        });
-    }
+    asks.merge(crate::agent_message::TurnAttachments {
+        replies: Vec::new(),
+        tools: names.tools(),
+    });
     crate::agent_message::turn_text(crate::harness::harness_for(provider), text, kind, asks)
 }
 
@@ -333,7 +384,7 @@ pub(in crate::app) fn deliver(
     // sweep wait on that lock, and how long a session takes to accept a turn is
     // its own business — a protocol write to a full pipe, an ack a harness
     // answers late, the exit-race wait below.
-    let (session, instance, legacy_payload, (kind, asks_name)) = {
+    let (session, instance, legacy_payload, (kind, names)) = {
         let mut s = timer.lock(state);
         if !s.queued_agent_target_exists(turn) {
             return Ok(DeliveryOutcome::Delivered(None));
@@ -384,9 +435,13 @@ pub(in crate::app) fn deliver(
             legacy_payload.as_ref().map(|frozen| &frozen.payload),
             model_choice.provider,
         );
-        let asks_name =
-            kind != MessageKind::ProviderCommand && s.claim_agent_name_request(owner, agent_id);
-        if say.is_none() && !asks_name {
+        // A filesystem job writes its captured manifest back on settlement.
+        // Wait before claiming so that older snapshot cannot erase this ask.
+        if s.workspace_name_request_blocked(owner, kind) {
+            return Ok(DeliveryOutcome::Deferred);
+        }
+        let names = NameRequests::claim(&mut s, owner, agent_id, kind)?;
+        if say.is_none() && names.is_empty() {
             return Ok(DeliveryOutcome::Delivered(Some((wire_id, spawned))));
         }
         if let Some(payload) = legacy_payload.as_ref() {
@@ -401,7 +456,7 @@ pub(in crate::app) fn deliver(
             Arc::clone(&tab.session),
             tab.instance.clone(),
             legacy_payload,
-            (kind, asks_name),
+            (kind, names),
         )
     };
     if *interrupt && spawned == Spawned::Warm {
@@ -414,7 +469,7 @@ pub(in crate::app) fn deliver(
         prompt.unwrap_or_default(),
         say.as_ref(),
         legacy_payload.as_ref().map(|frozen| &frozen.payload),
-        (kind, asks_name),
+        (kind, &names),
         model_choice.provider,
     );
     let mut native_turn = Turn::with_choice(prompt, model_choice.clone(), *choice_revision);
@@ -431,10 +486,8 @@ pub(in crate::app) fn deliver(
         })
     });
     if let Err(error) = session.send_turn(&native_turn) {
-        if asks_name {
-            timer
-                .lock(state)
-                .release_agent_name_request(owner, agent_id);
+        if !names.is_empty() {
+            names.release(&mut timer.lock(state), owner, agent_id);
         }
         // A harness that exits immediately still owns its tab: PTYs return EIO
         // once the child's side is closed, and the child closes it BEFORE the

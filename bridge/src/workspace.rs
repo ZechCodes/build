@@ -28,6 +28,7 @@ mod file_reopen;
 pub(crate) use file_reopen::FileReopen;
 #[cfg(test)]
 mod changes_tests;
+mod naming;
 mod reservation;
 #[cfg(test)]
 use std::process::Command;
@@ -85,6 +86,12 @@ pub struct Workspace {
     pub id: String,
     pub project_id: String,
     pub name: String,
+    /// A client left the name blank. Older and adopted records are named.
+    #[serde(default)]
+    pub waiting_for_name: bool,
+    /// Reserved at provider delivery, once per workspace across its agents.
+    #[serde(default)]
+    pub name_asked: bool,
     pub root: PathBuf,
     pub status: WorkspaceStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -102,6 +109,16 @@ pub struct Workspace {
     /// Only the user can change this removal guard. Older manifests are unlocked.
     #[serde(default)]
     pub locked: bool,
+}
+
+impl Workspace {
+    pub(crate) fn remember_creation_name(&mut self, requested: &str) {
+        let unnamed = requested.trim().is_empty();
+        self.waiting_for_name = unnamed && !self.created_by_agent;
+        if unnamed {
+            self.name = format!("Workspace {}", self.id);
+        }
+    }
 }
 
 /// Source snapshot used while provisioning. Remote sources have already been
@@ -349,6 +366,8 @@ impl WorkspaceRegistry {
             );
         }
         workspace.name = name.to_string();
+        workspace.waiting_for_name = false;
+        workspace.name_asked = false;
         persist(&workspace)?;
         self.install_workspace(workspace.clone());
         Ok(workspace)
@@ -658,6 +677,8 @@ impl WorkspaceRegistry {
             isolation,
             managed: true,
             created_by_agent: false,
+            waiting_for_name: false,
+            name_asked: false,
             locked: false,
         };
         Ok(workspace)
@@ -1062,6 +1083,8 @@ impl WorkspaceRegistry {
             isolation: Isolation::default(),
             managed: false,
             created_by_agent: false,
+            waiting_for_name: false,
+            name_asked: false,
             locked: registry_root.join(".locks").join(&id).is_file(),
         };
         if let Some(proof) = proof {

@@ -242,6 +242,8 @@ fn workspace(binding: &ReviewBranchBinding) -> Workspace {
         isolation: Default::default(),
         managed: false,
         created_by_agent: false,
+        waiting_for_name: false,
+        name_asked: false,
         locked: false,
     }
 }

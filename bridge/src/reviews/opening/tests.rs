@@ -86,6 +86,8 @@ fn request(home: &Path, source: &Path) -> OpenReviewRequest {
         isolation: Default::default(),
         managed: true,
         created_by_agent: false,
+        waiting_for_name: false,
+        name_asked: false,
         locked: false,
         directories: vec![WorkspaceDirectory {
             id: "directory-1".into(),

@@ -399,3 +399,25 @@ fn revoke_receipts_are_bounded_without_blocking_revocation_and_pruned_on_sweep()
         "revoked"
     );
 }
+
+#[test]
+fn environment_secret_upload_validates_current_stage_project_in_writer() {
+    let mut f=fixture();
+    let project=f.params["scope"]["owner_id"].as_str().unwrap().to_string();
+    let env=f.app.projects.get(&project).unwrap().environment_id.clone();
+    f.params["grant"]=json!({"scope":"environment","environment_id":env});
+    let accepted=create(&mut f).unwrap();
+    assert_eq!(accepted["grant"]["scope"],"environment");
+    assert_eq!(accepted["status"],"staged");
+    let mut context:UploadContext=serde_json::from_value(json!({
+        "device_id":f.params["device_id"],"creator":f.params["creator"],"request_id":uuid::Uuid::new_v4().to_string(),
+        "name":"FOREIGN","ttl_seconds":null,"grant":{"scope":"environment","environment_id":"foreign-environment"},"stage":f.params["scope"]
+    })).unwrap();
+    let authority:SecretScope=serde_json::from_value(json!({"project_id":project,"stage":f.params["scope"]})).unwrap();
+    let service=f.app.secret_service().unwrap();
+    assert!(service.stage_upload_authorized(&context,"synthetic-ciphertext",&SyntheticOpener(f.calls.clone()),&authority).is_err());
+    context.grant=serde_json::from_value(json!({"scope":"environment","environment_id":env})).unwrap();
+    f.app.store.as_ref().unwrap().writer_for_test().execute("UPDATE secret_project_membership SET archived=1 WHERE project_id=?1",[&project]).unwrap();
+    assert!(service.stage_upload_authorized(&context,"synthetic-ciphertext",&SyntheticOpener(f.calls.clone()),&authority).is_err());
+    assert_eq!(f.app.store.as_ref().unwrap().writer_for_test().query_row("SELECT COUNT(*) FROM secret_records",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+}

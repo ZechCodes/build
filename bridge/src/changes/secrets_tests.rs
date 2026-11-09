@@ -122,3 +122,19 @@ fn secret_event_and_kind_follow_the_metadata_capability_gate() {
     }
     assert!(event_is_advertised(COMPACTION_CHANGED_EVENT, &[]));
 }
+
+#[test]
+fn environment_secret_events_route_only_to_environment_and_all_subscriptions() {
+    let bus=ChangeBus::new(Duration::ZERO);
+    let (sender,mut rx,key)=SessionSender::observable("environment");
+    let (other,mut other_rx,_)=SessionSender::observable("other");
+    bus.subscribe(&sender,subscription(Scope::Environment("env-a".into())));
+    bus.subscribe(&other,subscription(Scope::Environment("env-b".into())));
+    bus.note_secret_change(json!({"type":"secrets.changed","scope":"environment","environment_id":"env-a","revision":2,"secret_ids":["sec_synthetic"]}));
+    assert_eq!(bus.flush(),1);
+    assert!(other_rx.try_recv().is_err());
+    let frame=SessionSender::decrypt_push(&key,&rx.try_recv().unwrap());
+    assert_eq!(frame["environment_id"],"env-a");
+    assert_eq!(frame["scope"],"environment");
+    assert!(frame.get("name").is_none());
+}

@@ -87,7 +87,10 @@ fn models_list_offers_what_the_installed_clis_run() {
         assert_eq!(claude["cli_version"], "2.1.280");
         assert_eq!(
             claude["unavailable"],
-            json!([{ "id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5", "requires_cli": "2.1.284" }])
+            json!([
+                { "id": "claude-fable-5-2", "label": "Claude Fable 5.2", "requires_cli": "2.1.319" },
+                { "id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5", "requires_cli": "2.1.284" }
+            ])
         );
     }
     assert!(
@@ -123,7 +126,13 @@ fn list_harnesses_answers_the_same_offer() {
         .unwrap();
 
     assert_eq!(claude["cli_version"], "2.1.280");
-    assert_eq!(claude["unavailable"][0]["requires_cli"], "2.1.284");
+    assert_eq!(
+        claude["unavailable"],
+        json!([
+            { "id": "claude-fable-5-2", "label": "Claude Fable 5.2", "requires_cli": "2.1.319" },
+            { "id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5", "requires_cli": "2.1.284" }
+        ])
+    );
 }
 
 /// Run the bridge's list_harnesses handler against a real installed Codex by
@@ -227,7 +236,10 @@ async fn a_greeted_session_hears_when_an_installed_cli_changes() {
         .is_some());
     let after = handler.call(session, req("models.list", json!({})));
     assert!(model_ids(provider(&after, "claude_adk")).contains(&"claude-sonnet-5-5"));
-    assert_eq!(provider(&after, "claude_adk")["unavailable"], json!([]));
+    assert_eq!(
+        provider(&after, "claude_adk")["unavailable"],
+        json!([{ "id": "claude-fable-5-2", "label": "Claude Fable 5.2", "requires_cli": "2.1.319" }])
+    );
 }
 
 fn reviewers_sonnet_5_5_then_opus_5_5() -> crate::models::RoleModels {

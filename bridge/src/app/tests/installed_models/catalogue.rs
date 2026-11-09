@@ -99,7 +99,10 @@ fn harness_catalogue_observes_updated_cli_readings_without_a_new_settings_captur
         .find(|row| row["id"] == "claude_adk")
         .unwrap();
     assert_eq!(claude["cli_version"], "2.1.284");
-    assert_eq!(claude["unavailable"], json!([]));
+    assert_eq!(
+        claude["unavailable"],
+        json!([{ "id": "claude-fable-5-2", "label": "Claude Fable 5.2", "requires_cli": "2.1.319" }])
+    );
 }
 
 #[test]

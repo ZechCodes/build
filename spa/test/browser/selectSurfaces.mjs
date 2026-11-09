@@ -27,6 +27,7 @@ export const SELECT_SOURCES = {
   "core/trackerAssigneeControl.js": "task controls",
   "core/trackerTaskRender.js": "task controls",
   "core/workspaceReviewForm.js": "Request review",
+  "sheets/environmentSettings.js": "environment settings",
   "sheets/newRepo.js": "new project",
   "sheets/workspaceSettings.js": "workspace settings",
   "views/settings.js": "local settings",
@@ -41,6 +42,7 @@ export const SELECT_SURFACES = [
   { name: "workspace advanced folders", selectors: ["#create-work-isolation", "[data-create-advanced][open]"] },
   { name: "compose", selectors: ["#compose-project", "#compose-choice-provider", "#compose-choice-model", "#compose-choice-effort"] },
   { name: "workspace settings", selectors: ["#wsdiradd", "#wsdefprovider", "[data-harness-model]", "[data-harness-effort]"] },
+  { name: "environment settings", selectors: ["#esisolation"] },
   { name: "project settings", selectors: ['[data-isolation="select"]'] },
   { name: "new project", selectors: ["#nrdevice"] },
   { name: "Request review", selectors: ["#review-create-assignee", "[data-review-for-task]"] },
@@ -66,6 +68,7 @@ const modules = {
   defaults: "src/core/harnessDefaults.js", task: "src/core/trackerTaskRender.js", assignee: "src/core/trackerAssigneeControl.js",
   capture: "src/core/captureDecision.js", create: "src/core/createWorkspaceWizard.js", legacyCreate: "src/core/createWorkspaceLegacy.js", sort: "src/core/diffSort.js",
   compose: "src/core/composeView.js", workspace: "src/sheets/workspaceSettings.js", newRepo: "src/sheets/newRepo.js",
+  environment: "src/sheets/environmentSettings.js", environmentCache: "src/core/environmentCache.js", environmentSupport: "src/core/environmentSupport.js",
   project: "src/sheets/projectSettings.js", reviewEntry: "src/core/workspaceReviewEntry.js", tracker: "src/core/trackerCache.js",
   review: "src/core/taskReviewPage.js", reviewSupport: "src/core/taskReviewSupport.js", reviewCache: "src/core/taskReviewCache.js",
   reviewMerge: "src/core/taskReviewMerge.js",
@@ -166,6 +169,20 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
   }
   if (name === "workspace settings") {
     disposers.push(m.workspace.openWorkspaceSettings({ id: "workspace-1", name: "Select styling", workspaceKey: `${device.id}/workspace-1` }, { callRpc, catalog, deviceId: device.id }));
+  }
+  if (name === "environment settings") {
+    const environment = {
+      environment_id: "select-environment", name: "Build environment", home_path: project.path,
+      sources: project.sources.map(source => ({ ...source, base_branch: "main", remote: "git@github.com:example/website.git" })),
+      isolation: null, isolation_effective: "worktree", project_ids: [project.id],
+    };
+    await m.cache.writeCached(m.environmentCache.environmentsAddress(device.id), [environment]);
+    await m.environmentSupport.rememberEnvironmentSupport(device.id, { environments: { list: true, environmentRename: true } });
+    m.environment.openEnvironmentSettings(environment.environment_id, {
+      deviceId: device.id,
+      callRpc: (method, params) => method === "environment.list" ? Promise.resolve({ environments: [environment] }) : callRpc(method, params),
+    });
+    disposers.push(() => root.ownerDocument.querySelector("#esclose")?.click());
   }
   if (name === "project settings") {
     m.project.openProjectSettings(project.id, { callRpc, deviceId: device.id });

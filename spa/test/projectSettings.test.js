@@ -14,6 +14,8 @@ import { sourceEditSupportAddress } from "../src/core/sourceEditSupport.js";
 import { environmentSupportAddress, rememberEnvironmentSupport } from "../src/core/environmentSupport.js";
 import { environmentsAddress } from "../src/core/environmentCache.js";
 
+const actionCapabilities = vi.hoisted(() => ({ archive: true, projectRename: true, environmentRename: true }));
+vi.mock("../src/core/changeEvents.js", async original => ({ ...await original(), bridgeCapabilities: () => ({ environments: actionCapabilities }) }));
 const sourceAuthority = vi.hoisted(() => ({ epoch: "legacy-epoch", greetingError: null, greetingWait: null, waiting: 0 }));
 vi.mock("../src/core/deviceContexts.js", async importOriginal => ({
   ...await importOriginal(),
@@ -62,13 +64,14 @@ beforeEach(async () => {
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
   await wipeCache();
   await wipeUiRecords();
+  actionCapabilities.archive = true; actionCapabilities.projectRename = true; actionCapabilities.environmentRename = true;
   sourceAuthority.epoch = "legacy-epoch";
   sourceAuthority.greetingError = null;
   sourceAuthority.greetingWait = null;
   sourceAuthority.waiting = 0;
   // Legacy fixtures positively identify a device that predates environments.
   for (const deviceId of ["", "dev-1"]) await writeCached(environmentSupportAddress(deviceId), {
-    list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false, bridge_epoch: "legacy-epoch",
+    list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false, bridge_epoch: "legacy-epoch",
   });
   confirmAction.mockReset();
   openWizard.mockReset();
@@ -1195,4 +1198,139 @@ it("preserves the cached compaction editor and focused draft across project and 
   expect([input.selectionStart, input.selectionEnd]).toEqual([1, 4]);
   expect(document.querySelector("#sheet").textContent).toContain("Compaction defaults for this project");
   document.querySelector("#pscancel").click();
+});
+
+describe("M3 settings", () => {
+  const row = { ...PROJECT, environment_id: "e1", environment_name: "Shared", added_sources: [] };
+  async function mountM3(callRpc, support = { archive: true, projectRename: true, environmentRename: true }) {
+    await writeCached(environmentSupportAddress("dev-1"), support);
+    await writeCached(environmentsAddress("dev-1"), [{ environment_id: "e1", name: "Shared", home_path: "/shared", sources: [] }]);
+    await writeCached(projectSettingsAddress("dev-1", "proj-1"), row);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, [row]);
+    openProjectSettings("proj-1", { deviceId: "dev-1", callRpc });
+    await vi.waitFor(() => expect(document.querySelector("#psproject")).not.toBeNull());
+  }
+  it.each(["refusal", "success"])("archive refusal shows blockers verbatim, stays enabled and retries to a new %s", async result => {
+    const blockers = ["finish or delete workspace W <one>", "answer #12"];
+    const first = "Cannot archive build: " + blockers.join("; ");
+    let attempts = 0;
+    const callRpc = vi.fn(async method => {
+      if (method !== "project.archive") return new Promise(() => {});
+      attempts += 1;
+      if (attempts === 2 && result === "success") return { project: { ...row, archived_at: 12 } };
+      const message = attempts === 1 ? first : "Cannot archive build: answer #21";
+      throw Object.assign(new Error(message), { details: { blockers: attempts === 1 ? blockers : ["answer #21"] } });
+    });
+    await mountM3(callRpc); document.querySelector("#psarchive").click();
+    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toBe(first));
+    for (const blocker of blockers) expect(document.querySelector("#psarchiveerr").textContent).toContain(blocker);
+    expect(document.querySelector("#psarchive").disabled).toBe(false); expect(document.querySelector("one")).toBeNull();
+    // An identical refresh must retain the refusal without blocking a retry.
+    await writeCached(projectSettingsAddress("dev-1", "proj-1"), row);
+    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toBe(first));
+    document.querySelector("#psarchive").click();
+    await vi.waitFor(() => expect(attempts).toBe(2));
+    if (result === "refusal") {
+      await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toBe("Cannot archive build: answer #21"));
+    } else {
+      await vi.waitFor(() => expect(document.querySelector("#psarchive").textContent).toBe("Restore"));
+      expect(document.querySelector("#psarchiveerr").textContent).toBe("");
+      expect((await readCached(projectSettingsAddress("dev-1", "proj-1"))).value.archived_at).toBe(12);
+    }
+    expect(document.querySelector("#psarchive").disabled).toBe(false);
+  });
+  it("Archive stays single flight through cache repaints and retries after refusal", async () => {
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    const callRpc = vi.fn(async method => {
+      if (method === "project.archive") {
+        await held;
+        throw Object.assign(new Error("answer #12"), { details: { blockers: ["answer #12"] } });
+      }
+      return new Promise(() => {});
+    });
+    await mountM3(callRpc);
+    const first = document.querySelector("#psarchive"); first.click(); first.onclick();
+    await vi.waitFor(() => expect(callRpc.mock.calls.filter(([method]) => method === "project.archive")).toHaveLength(1));
+    await writeCached(projectSettingsAddress("dev-1", "proj-1"), { ...row, name: "Changed in cache" });
+    await vi.waitFor(() => expect(document.querySelector("#psproject").value).toBe("Changed in cache"));
+    const repainted = document.querySelector("#psarchive");
+    expect(repainted).not.toBe(first); expect(repainted.disabled).toBe(true);
+    repainted.onclick();
+    expect(callRpc.mock.calls.filter(([method]) => method === "project.archive")).toHaveLength(1);
+    release();
+    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toBe("answer #12"));
+    expect(document.querySelector("#psarchive").disabled).toBe(false);
+    document.querySelector("#psarchive").click();
+    await vi.waitFor(() => expect(callRpc.mock.calls.filter(([method]) => method === "project.archive")).toHaveLength(2));
+  });
+  it("rename writes the cache then redraws", async () => {
+    const callRpc = vi.fn(async (method, params) => method === "project.rename" ? { ...row, name: params.name } : new Promise(() => {}));
+    await mountM3(callRpc); document.querySelector("#psproject").value = "New name"; document.querySelector("#psrename").click();
+    await vi.waitFor(() => expect(document.querySelector("#psproject").value).toBe("New name"));
+    await vi.waitFor(async () => expect((await readCached(projectSettingsAddress("dev-1", "proj-1"))).value.name).toBe("New name"));
+    expect((await readCached({ deviceId: "dev-1", entityId: "", kind: "projects" })).value[0].name).toBe("New name");
+  });
+  it("edit in environment opens the environment sheet", async () => {
+    await mountM3(vi.fn(() => new Promise(() => {})));
+    expect(document.querySelector("[data-edit-environment]").textContent).toBe("Edit in Shared"); document.querySelector("[data-edit-environment]").click();
+    await vi.waitFor(() => expect(document.querySelector("#sheet h3").textContent).toBe("Environment settings"));
+  });
+  it("no archive or rename controls without the capability", async () => {
+    await mountM3(vi.fn(() => new Promise(() => {})), {});
+    expect(document.querySelector("#psproject").readOnly).toBe(true);
+    for (const selector of ["#psrename", "#psarchive", "[data-edit-environment]"]) expect(document.querySelector(selector)).toBeNull();
+  });
+  it("rechecks rename capability after a greeting wait without changing cached paint", async () => {
+    const callRpc = vi.fn(() => new Promise(() => {})); await mountM3(callRpc);
+    let release; sourceAuthority.greetingWait = new Promise(resolve => { release = resolve; });
+    document.querySelector("#psproject").value = "New name"; document.querySelector("#psrename").click();
+    await vi.waitFor(() => expect(sourceAuthority.waiting).toBe(1)); actionCapabilities.projectRename = false; release();
+    await vi.waitFor(() => expect(document.querySelector("#psrenameerr").textContent).toContain("Update Build"));
+    expect(callRpc.mock.calls.some(([method]) => method === "project.rename")).toBe(false);
+    expect(document.querySelector("#psrename")).not.toBeNull();
+  });
+
+  it.each(["device unavailable", "capability changed", "timeout"])("Archive retries after %s", async message => {
+    const callRpc = vi.fn(async method => { if (method === "project.archive") throw new Error(message); return new Promise(() => {}); });
+    await mountM3(callRpc); document.querySelector("#psarchive").click();
+    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toBe(message));
+    expect(document.querySelector("#psarchive").disabled).toBe(false);
+    document.querySelector("#psarchive").click();
+    await vi.waitFor(() => expect(callRpc.mock.calls.filter(([method]) => method === "project.archive")).toHaveLength(2));
+  });
+  it("Restore failure stays retryable in the project sheet", async () => {
+    const archived = { ...row, archived_at: 1 };
+    const callRpc = vi.fn(async method => { if (method === "project.restore") throw new Error("Restore unavailable"); return new Promise(() => {}); });
+    await mountM3(callRpc); await writeCached(projectSettingsAddress("dev-1", "proj-1"), archived);
+    await vi.waitFor(() => expect(document.querySelector("#psarchive").textContent).toBe("Restore"));
+    document.querySelector("#psarchive").click();
+    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toBe("Restore unavailable"));
+    expect(document.querySelector("#psarchive").disabled).toBe(false);
+  });
+
+  it.each([
+    [{ projectRename: true, environmentRename: false }, true, false],
+    [{ projectRename: false, environmentRename: true }, false, true],
+  ])("renders project rename and environment editing independently for %j", async (flags, projectRename, environmentRename) => {
+    Object.assign(actionCapabilities, flags);
+    const callRpc = vi.fn(async (method, params) => method === "project.rename" ? { ...row, name: params.name } : new Promise(() => {}));
+    await mountM3(callRpc, flags);
+    expect(Boolean(document.querySelector("#psrename"))).toBe(projectRename);
+    expect(Boolean(document.querySelector("[data-edit-environment]"))).toBe(environmentRename);
+    if (projectRename) {
+      document.querySelector("#psproject").value = "Renamed"; document.querySelector("#psrename").click();
+      await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.rename", { project_id: "proj-1", name: "Renamed" }));
+    }
+  });
+
+  it("keeps Archive retryable when projects.archive disappears after cached paint", async () => {
+    const callRpc = vi.fn(() => new Promise(() => {})); await mountM3(callRpc);
+    actionCapabilities.archive = false;
+    document.querySelector("#psarchive").click();
+    await vi.waitFor(() => expect(document.querySelector("#psarchiveerr").textContent).toContain("Update Build"));
+    expect(document.querySelector("#psarchive").disabled).toBe(false);
+    expect(callRpc.mock.calls.some(([method]) => method === "project.archive")).toBe(false);
+  });
+
 });

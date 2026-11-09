@@ -453,3 +453,19 @@ describe("directory context actions", () => {
     await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith(root, "docs", "docs/nested", "folder"));
   });
 });
+
+it("archived project file menus offer no writes, including a menu opened before archive", () => {
+  let readOnly = false;
+  actions = mountFilesUploadActions(host, { roots: [root], capabilities: { uploads: true, createDirectory: true }, uploads, callRpc, onCreated, readOnly: () => readOnly });
+  row("docs").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+  const menu = document.querySelector(".file-context-menu"); expect(menu).not.toBeNull();
+  readOnly = true;
+  [...menu.querySelectorAll("[role=menuitem]")].find(item => item.textContent.includes("New directory")).click();
+  expect(host.querySelector(".fupload-folder")).toBeNull();
+  actions.refreshReadOnly();
+  expect(document.querySelector(".file-context-menu")).toBeNull();
+  row("docs").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+  expect(document.querySelector(".file-context-menu")).toBeNull();
+  row("guide.md").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+  expect(document.querySelector(".file-context-menu").textContent).toContain("Download");
+});

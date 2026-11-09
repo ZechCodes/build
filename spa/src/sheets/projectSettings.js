@@ -14,7 +14,7 @@ import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
 import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
 import { readSourceSupport, SOURCE_EDIT_SUPPORT_KIND } from "../core/sourceEditSupport.js";
-import { environmentSupportAddress } from "../core/environmentSupport.js";
+import { environmentSupportAddress, readEnvironmentSupport } from "../core/environmentSupport.js";
 import { guardProjectSourceRpc, readSourceOwnershipEvidence } from "../core/sourceOwnership.js";
 import { environmentsAddress, readCachedEnvironments } from "../core/environmentCache.js";
 import { mountSourceCards, readSourceEdits, restoreSourceEdits, sourceEditing, sourcesSectionHtml, showSourceWriteError } from "./projectSources.js";
@@ -22,12 +22,9 @@ import { withNewerSyncs } from "../core/sourceSyncModel.js";
 import { onNavigationCommitted } from "../core/navigationLifetime.js";
 import { watchSheetLifetime } from "../core/sheetLifetime.js";
 
-/** The project's own name. It is the first source's folder's, and is not a
- *  source's label: a source is renamed on its card. */
-const generalHtml = (project) => `<section class="ps-section" aria-labelledby="ps-general-h"><h4 id="ps-general-h">General</h4>
-    <div class="field"><label for="psproject">Project name</label>
-      <input id="psproject" style="width:100%" ${fieldTraits("identifier")} value="${esc(project.name || "")}" readonly>
-      <div class="dim ps-hint">Named after the project's first folder.</div></div></section>`;
+import { projectGeneralHtml, projectArchiveHtml, mountProjectGeneral } from "./projectGeneral.js";
+import { openEnvironmentSettings } from "./environmentSettings.js";
+import { projectIsArchived } from "../core/environmentWrites.js";
 
 const isolationHtml = () => `<section class="ps-section" aria-labelledby="ps-isolation-h"><h4 id="ps-isolation-h">Isolation</h4>
     ${isolationFieldHtml()}</section>`;
@@ -138,6 +135,8 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   // Requests outlive the card nodes replaced by cache-driven repaints.
   const syncInFlight = new Set();
   const notices = {};
+  let actionSupport = {};
+  const archiveAction = { pending: false, message: "" };
   let cachedDraft = null;
   let displayedDraft = {};
   let draftRecord;
@@ -154,11 +153,12 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   // Whether this machine edits sources in place is a fact a greeting writes
   // to the cache; the cards repaint when it lands.
   const readSupport = async () => {
-    const [sources, support, rows] = await Promise.all([
-      readSourceSupport(deviceId), readSourceOwnershipEvidence(deviceId), readCachedEnvironments(deviceId),
+    const [sources, support, rows, actions] = await Promise.all([
+      readSourceSupport(deviceId), readSourceOwnershipEvidence(deviceId), readCachedEnvironments(deviceId), readEnvironmentSupport(deviceId),
     ]);
     ({ editsSources, syncsBase } = sources);
     environmentSupport = support;
+    actionSupport = actions;
     environments = rows;
     supportReady = true;
     if (painted) paint(painted);
@@ -210,6 +210,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     if (!current() || view !== "settings") return;
     if (!supportReady) { painted = project; return; }
     const live = captureDraft(sheet, painted);
+    const nameDraft = projectNameDraft(sheet, painted);
     const draft = combineDraft(live, cachedDraft, displayedDraft);
     const editing = sourceEditing(project, editsSources, environmentSupport);
     const environmentName = environmentNameOf(project, environments);
@@ -217,10 +218,11 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     disposeRepoPickers(sheet);
     sheet.innerHTML = settingsSheetHtml({
       title: "Project settings",
-      bodyHtml: `${generalHtml(project)}
-      ${sourcesSectionHtml(project, { editing, editsSources, environmentSupport, environmentName, notices, sync: { syncsBase, syncing, inFlight: syncInFlight } })}
+      bodyHtml: `${projectGeneralHtml(project, { ...actionSupport, environmentName, deviceId })}
+      ${sourcesSectionHtml(project, { editing, editsSources, environmentSupport, environmentName, editEnvironment: actionSupport.environmentRename, notices, sync: { syncsBase, syncing, inFlight: syncInFlight } })}
       ${isolationHtml()}
       ${scopedCompactionEditorHtml({ scope: "project", prefix: "project-compaction" })}
+      ${projectArchiveHtml(project, actionSupport, archiveAction)}
       ${dangerHtml()}
       <div class="row"><button class="btn" id="pscancel" style="margin-left:auto">Close</button></div>`,
     });
@@ -234,7 +236,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
       });
     }
     painted = project;
-    mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), deviceId, fromProjectRecord: true, current });
+    mountIsolation(sheet, { callRpc, target: namedIsolationTarget(project, environmentName), deviceId, fromProjectRecord: true, readOnly: projectIsArchived(project), current });
     mountSources(project, {
       callRpc: sourceRpc, record, deviceId, editing, refresh, syncInFlight,
       saveDraft,
@@ -246,8 +248,14 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
       onReturn: () => { view = "settings"; void record.read(); },
     });
     restoreDraft(sheet, project, draft);
+    restoreProjectNameDraft(sheet, nameDraft);
     if (draft.edits === cachedDraft?.edits) displayedDraft.edits = draft.edits;
     if (draft.source === cachedDraft?.source) displayedDraft.source = draft.source;
+    mountProjectGeneral(sheet, project, {
+      deviceId, callRpc, archiveAction, onArchiveSettled: () => { void record.read(); },
+      openEnvironment: () => { close(); openEnvironmentSettings(project.environment_id, { deviceId, callRpc }); },
+    });
+    lockArchivedSettings(sheet, project);
     $("#pscancel").onclick = close;
     $("#psdelete").onclick = () => deleteProject(project, { callRpc, onDeleted, close, deviceId });
   };
@@ -449,4 +457,20 @@ async function deleteProject(project, { callRpc, onDeleted, close, deviceId }) {
   } catch (error) {
     notifyError("Project deleted, but refreshing the project list failed", error.message);
   }
+}
+
+function lockArchivedSettings(sheet, project) {
+  if (!projectIsArchived(project)) return;
+  sheet.querySelectorAll("button:not(#psarchive):not(#pscancel), select, textarea, input:not([readonly])").forEach(control => { control.disabled = true; });
+}
+
+const namedIsolationTarget = (project, name) => projectIsolationTarget({ ...project, environment_name: name || project.environment_name });
+
+function projectNameDraft(sheet, project) {
+  const input = sheet.querySelector("#psproject");
+  return input && !input.readOnly && input.value !== project?.name ? input.value : null;
+}
+function restoreProjectNameDraft(sheet, draft) {
+  const input = sheet.querySelector("#psproject");
+  if (draft !== null && input && !input.readOnly) input.value = draft;
 }

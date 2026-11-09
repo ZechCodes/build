@@ -89,13 +89,19 @@ function cardHtml(source, index, { editing, removable, notice, sync }) {
     ].join("")}</footer></article>`;
 }
 
+export function sourceCardsHtml(project, editing, { notices = {}, sync = {} } = {}) {
+  return (project.sources || []).map((source, index) => cardHtml(source, index, {
+    editing, removable: index > 0 && project.sources.length > 1, notice: notices[source.id], sync,
+  })).join("");
+}
+
 /** The section: a card per source, then the two ways one is added. */
-export function sourcesSectionHtml(project, { editing, editsSources, environmentSupport, environmentName, notices = {}, sync = {} }) {
+export function sourcesSectionHtml(project, { editing, editsSources, environmentSupport, environmentName, editEnvironment = false, notices = {}, sync = {} }) {
   const ownership = sourceOwnershipState(project, environmentSupport);
   return `<section class="ps-section" aria-labelledby="ps-sources-h"><h4 id="ps-sources-h">Sources</h4>
     <p class="sub">New workspaces are cut from these folders. A workspace that already exists keeps its own directories.</p>
     ${sourceHelpHtml(ownership, editsSources)}
-    ${sourceGroupsHtml(project, { editing, ownership, environmentName, notices, sync })}
+    ${sourceGroupsHtml(project, { editing, ownership, environmentName, editEnvironment, notices, sync })}
     <div class="row"><button class="btn" id="psaddfolder" type="button">Add folder…</button>
       <button class="btn" id="psaddremote" type="button">Add Git remote…</button></div>
     <div id="psaddsource"></div>
@@ -109,7 +115,7 @@ function sourceHelpHtml(ownership, editsSources) {
     ? '<p class="dim">Update Build on this device to edit a folder\'s label, path and base branch here.</p>' : "";
 }
 
-function sourceGroupsHtml(project, { editing, ownership, environmentName, notices, sync }) {
+function sourceGroupsHtml(project, { editing, ownership, environmentName, editEnvironment, notices, sync }) {
   const sources = project.sources || [];
   const addedIds = new Set((Array.isArray(project.added_sources) ? project.added_sources : []).map(source => source.id));
   const cards = sources.map((source, index) => {
@@ -125,8 +131,13 @@ function sourceGroupsHtml(project, { editing, ownership, environmentName, notice
   if (ownership === "unknown") return `<div data-source-group="unknown">${cards.map(card => card.html).join("")}</div>`;
   const inherited = cards.filter(card => card.inherited).map(card => card.html).join("");
   const added = cards.filter(card => !card.inherited).map(card => card.html).join("");
-  return `<div data-source-group="environment"><h5>From ${esc(environmentName || project.environment_name || project.environment_id || "environment")}</h5>${inherited}</div>
+  return `<div data-source-group="environment">${environmentSourceHeading(project, environmentName, editEnvironment)}${inherited}</div>
     <div data-source-group="added"><h5>Added to this project</h5>${added}</div>`;
+}
+
+function environmentSourceHeading(project, name, editable) {
+  const label = name || project.environment_name || project.environment_id || "environment";
+  return `<h5>From ${esc(label)}</h5>${editable ? `<button class="btn mini" data-edit-environment>Edit in ${esc(label)}</button>` : ""}`;
 }
 
 const cardOf = (sheet, sourceId) =>

@@ -1,3 +1,4 @@
+import { visibleProjectRows } from "./archivedProjectModel.js";
 // The inbox rail's entries: the feed, the paint, the four things a row can do —
 // open, Done, mute, and say why it failed — and the one disclosure at the end
 // of the list, Recent.
@@ -248,7 +249,7 @@ export function setInboxView(next) {
  *  attention. The projects face groups these same rows by project. */
 function railRows() {
   const rows = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
-  return [...captureEntries(rows), ...watchedTaskRows(), ...workRows(rows)].sort(byAnchor);
+  return visibleProjectRows([...captureEntries(rows), ...watchedTaskRows(), ...workRows(rows)], projects).sort(byAnchor);
 }
 
 function draw() {

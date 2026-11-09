@@ -136,7 +136,7 @@ describe("adapter selection", () => {
       push: { registerKey: false, revokeKey: false },
       agents: { createdBy: false, projectWorkers: false },
       projects: { updateSource: false, syncBase: false, syncBasePath: false },
-      environments: { list: false, createProject: false, create: false, addedSources: false, archive: false, rename: false, secrets: false },
+      environments: { list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false },
       workspaces: { measureSizes: false, setLocked: false },
     });
   });

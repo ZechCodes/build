@@ -1,3 +1,4 @@
+import { mountArchivedProjectView } from "../core/archivedProjectView.js";
 // The legacy plan page: two persistent columns, the planned stages and the
 // stage viewer, read-only. No tabs — the conversation is the agent rail.
 //
@@ -36,8 +37,15 @@ export async function renderTask() {
   }
   // The device's caller, not the session's: a drop and resume under this
   // surface replaces the transport, and the surface keeps asking the machine.
-  const callRpc = context.rpc;
+  const callRpc = (...args) => archiveView ? archiveView.callRpc(...args) : context.rpc(...args);
   root.innerHTML = '<div id="tabbody" class="flush"></div>';
+  let archiveView = null;
+  const standOnProject = project => {
+    archiveView?.dispose();
+    archiveView = mountArchivedProjectView(root, { deviceId: context.deviceId, projectId: project, callRpc: context.rpc,
+      archiveMutationHosts: [$("#agent-rail")] });
+  };
+  if (projectId) standOnProject(projectId);
   // While the machine cannot answer, what the records hold stays on screen and
   // the strip says whose state that is.
   const deviceStrip = mountDeviceStrip(root, context);
@@ -80,6 +88,7 @@ export async function renderTask() {
     // #/issue/<id> link); the first payload says which one it is, and the URL
     // catches up.
     onProject: (project) => {
+      if (projectId !== project) standOnProject(project);
       projectId = project;
       syncHash();
     },
@@ -92,5 +101,6 @@ export async function renderTask() {
   App.viewDispose = () => {
     view.dispose();
     deviceStrip();
+    archiveView?.dispose();
   };
 }

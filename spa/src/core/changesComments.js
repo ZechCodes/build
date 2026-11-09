@@ -23,7 +23,7 @@ const GUTTER_COMMENT_HTML = `<button class="dcmt" type="button" title="Note to a
 import { pathOf } from "./diff.js";
 import { commentLayerBusy } from "./changesModel.js";
 import { diffThreadMessages } from "./notes.js";
-import { showCommentPop, hideCommentPop, hasCommentPop, openCommentComposer, suspendCommentPop } from "../commentPop.js";
+import { showCommentPop as showPop, hideCommentPop, hasCommentPop, openCommentComposer as openComposer, suspendCommentPop } from "../commentPop.js";
 import { watchSelection, selectionInside } from "../selectWatch.js";
 import { notifyError } from "./notify.js";
 import { watchUiState } from "./localUiState.js";
@@ -60,6 +60,16 @@ export function createCommentLayer({
   const popOwner = Symbol("changes comments");
   let visible = true;
   let restorePop = null;
+  // The enclosing view publishes this state from its cached project row.
+  // All entry paths share the guard, including selection and body popovers.
+  const readOnly = () => Boolean(host?.closest('[data-project-archive-state="archived"]'));
+  const showCommentPop = (...args) => { if (!readOnly()) showPop(...args); };
+  const openCommentComposer = (...args) => { if (!readOnly()) openComposer(...args); };
+  const refreshReadOnly = () => {
+    if (readOnly()) hideCommentPop(popOwner);
+    renderActions();
+  };
+  const boundaryObserver = new MutationObserver(refreshReadOnly);
 
   const q = (sel) => (host ? host.querySelector(sel) : null);
 
@@ -77,6 +87,7 @@ export function createCommentLayer({
   };
 
   const addComment = (file, lnA, lnB, snippet, comment, side = "new") => {
+    if (readOnly()) return;
     const selection = window.getSelection();
     if (selection) selection.removeAllRanges();
     changeComments((next) => next.push({
@@ -86,6 +97,7 @@ export function createCommentLayer({
   };
 
   const changeComments = (change) => {
+    if (readOnly()) return Promise.resolve();
     if (!draftRecord) {
       change(comments);
       onChange();
@@ -93,6 +105,7 @@ export function createCommentLayer({
     }
     const next = draftWrites.then(async () => {
       await draftRecord.ready;
+      if (readOnly()) return;
       const proposed = comments.map((entry) => ({ ...entry }));
       change(proposed);
       await draftRecord.write({ comments: proposed });
@@ -150,9 +163,10 @@ export function createCommentLayer({
   };
 
   const send = async () => {
-    if (sending) return;
+    if (sending || readOnly()) return;
     await draftRecord?.ready;
     await draftWrites;
+    if (readOnly()) return;
     const messages = diffThreadMessages(comments, readNote(), revisionId());
     if (!messages.length) return;
     sending = true;
@@ -179,6 +193,7 @@ export function createCommentLayer({
    *  button to press, and it is not up here among the comments. */
   function renderActions() {
     const cancel = q(".cscancel");
+    if (cancel) cancel.disabled = readOnly();
     if (cancel)
       cancel.onclick = () => {
         void clear();
@@ -233,6 +248,10 @@ export function createCommentLayer({
       host?.classList.remove("commentable-diff");
       host = element;
       host.classList.add("commentable-diff");
+      boundaryObserver.disconnect();
+      const boundary = host.closest("[data-project-archive-state]");
+      if (boundary) boundaryObserver.observe(boundary, { attributes: true, attributeFilter: ["data-project-archive-state"] });
+      refreshReadOnly();
       if (!draftRecord && cacheAddressOf) {
         const address = cacheAddressOf();
         if (address) draftRecord = watchUiState(address, (saved) => {
@@ -331,6 +350,7 @@ export function createCommentLayer({
     },
 
     dispose() {
+      boundaryObserver.disconnect();
       draftRecord?.dispose({ flushPending: false });
       draftRecord = null;
       if (selectionWatcher) selectionWatcher();

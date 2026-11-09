@@ -161,7 +161,7 @@ const rootedCheckout = (roots, keepDraft) => {
  * then names its root too ({ rootId, path, line }), and `onFileOpen(path,
  * rootId)` hears which root the opened file is in.
  */
-export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, cacheScope = null, openAt = null, onFileOpen = null, viewingContext = null }) {
+export function renderFilesTab(body, { scope, roots, readOnly, layoutEntityId, callRpc, cacheScope = null, openAt = null, onFileOpen = null, viewingContext = null }) {
   let disposed = false;
   // The tree and the preview are the two columns of the shell's two-column
   // primitive, so the browser's outer box measures like every other tab.
@@ -921,7 +921,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
   });
 
   const uploadView = mountFilesUploads({
-    treeEl, viewerEl: body.querySelector("#fpreview"), roots: checkout.roots,
+    readOnly, treeEl, viewerEl: body.querySelector("#fpreview"), roots: checkout.roots,
     keyOf: checkout.keyOf, tree, callRpc, deviceId: filesDeviceId(cacheScope),
     listingAddress: (root, parent) => rootAddress(root, "tree", parent),
     onOpen: (key) => void openCreated(key),
@@ -930,6 +930,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
   if (openKey) void tree.reveal(openKey);
 
   return {
+    refreshReadOnly: () => uploadView.refreshReadOnly(),
     dispose() {
       disposed = true;
       fileRequest += 1;

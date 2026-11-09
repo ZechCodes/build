@@ -77,7 +77,8 @@ use std::collections::BTreeSet;
 /// 3.36.0 adds sealed staged secrets and metadata-only attachment delivery (#1003).
 /// 3.37.0 exposes M1 environments with journaled creation and read-only settings.
 /// 3.38.0 exposes new-environment creation and project-only added folders.
-pub const API_VERSION: &str = "3.38.0";
+/// 3.39.0 advertises project archive/restore, project rename and environment settings edits.
+pub const API_VERSION: &str = "3.39.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -106,13 +107,16 @@ pub const QA_METHODS: &[&str] = &["stream.events", "stream.start", "stream.state
 /// Cross-verb wire features whose availability cannot be expressed by a
 /// single method name. The SPA consumes a subset as shape and behavior gates.
 pub const FEATURE_CAPABILITIES: &[&str] = &[
-    "environments.create", // Since 3.38.0: new environments and unused-environment discard.
+    "projects.archive",      // Since 3.39.0: retained archived projects and restore.
+    "projects.rename",       // Since 3.39.0: project display-name edits.
+    "environments.rename",   // Since 3.39.0: environment display-name and settings edits.
+    "environments.create",   // Since 3.38.0: new environments and unused-environment discard.
     "projects.addedSources", // Since 3.38.0: folders added to a project only.
-    "environments",        // Since 3.37.0: M1 environments, project creation and recovery.
-    "sync.device",         // Since 3.33.0: complete leased device recovery (#995).
-    "sync.projectTasks",   // Since 3.32.0: durable filtered project task recovery (#892).
-    "sync.task",           // Since 3.32.0: durable opened-task head recovery (#892).
-    "thread.retention",    // Since 3.25.0: inclusive generation-scoped history floors (#836).
+    "environments",          // Since 3.37.0: M1 environments, project creation and recovery.
+    "sync.device",           // Since 3.33.0: complete leased device recovery (#995).
+    "sync.projectTasks",     // Since 3.32.0: durable filtered project task recovery (#892).
+    "sync.task",             // Since 3.32.0: durable opened-task head recovery (#892).
+    "thread.retention",      // Since 3.25.0: inclusive generation-scoped history floors (#836).
     "bridge.epoch", // Since 3.24.0: authenticated process epochs and journal incarnation (#739).
     "unread.watchScoped", // Since 3.19.0: watched-only unread after the persisted watch baseline (#474).
     "agents.createdBy",   // Since 3.1.0: created_by on an agent's digest (#216).
@@ -203,17 +207,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
 
 /// Known methods or features deliberately held out of greetings while a later
 /// slice finishes their end-to-end product surface.
-pub const UNADVERTISED_CAPABILITIES: &[&str] = &[
-    "project.rename",
-    "environment.rename",
-    "environment.add_source",
-    "environment.remove_source",
-    "environment.update_source",
-    "environment.sync_source",
-    "environment.set_isolation",
-    "project.archive",
-    "project.restore",
-];
+pub const UNADVERTISED_CAPABILITIES: &[&str] = &[];
 
 /// Everything this bridge can serve on a session, as exact method names and
 /// explicit feature names. Sorting and deduplication make the greeting stable.

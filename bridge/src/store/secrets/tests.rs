@@ -566,3 +566,34 @@ fn attachment_hook_refuses_a_non_durable_outer_transaction() {
     )
     .is_err());
 }
+
+#[test]
+fn schema_26_to_27_preserves_secret_rows_and_reopen_is_noop() {
+    let dir=tempfile::tempdir().unwrap();
+    let connection=rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
+    connection.execute_batch(include_str!("../../../tests/fixtures/secrets-schema-26.sql")).unwrap();
+    connection.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO meta VALUES('schema_version','26');
+        INSERT INTO secret_records(id,device_id,creator,name,ttl_seconds,grant_scope,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,created_at,attached_at,expires_at,revoked_at,revocation_reason,revision,message_operation_id,upload_request_id,upload_digest,blob_present) VALUES ('sec_00000000-0000-4000-8000-000000000001','device','user','TEST',60,'project','project','owner','conversation','generation',100,110,170,150,'revoked',3,'operation','00000000-0000-4000-8000-000000000002','abcdef',0);
+        INSERT INTO secret_final_bindings VALUES('sec_00000000-0000-4000-8000-000000000001','operation','project','owner','agent','conversation','generation');
+        INSERT INTO secret_audit(sequence,secret_id,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome) VALUES(5,'sec_00000000-0000-4000-8000-000000000001','project','owner','agent','conversation','generation','session','request',150,'revoked');").unwrap();
+    let columns=[("secret_records","id,device_id,creator,name,ttl_seconds,grant_scope,grant_agent_id,grant_conversation_id,grant_generation,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,stage_draft_id,created_at,attached_at,expires_at,revoked_at,revocation_reason,revision,message_operation_id,upload_request_id,upload_digest,blob_present"),("secret_final_bindings","secret_id,operation_id,project_id,owner_id,agent_id,conversation_id,generation"),("secret_audit","sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,attempt_count,last_occurred_at,outcome")];
+    fn snapshot(c:&rusqlite::Connection,t:&str,cols:&str)->Vec<Vec<rusqlite::types::Value>> {
+        let mut stmt=c.prepare(&format!("SELECT {cols} FROM {t} ORDER BY 1")).unwrap();
+        let n=stmt.column_count();
+        stmt.query_map([],|r|(0..n).map(|i|r.get(i)).collect()).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+    }
+    let before:Vec<_>=columns.iter().map(|(t,c)|snapshot(&connection,t,c)).collect();
+    drop(connection);
+    for _ in 0..2 {
+        let store=Store::new(dir.path()).unwrap();
+        let c=store.writer_for_test();
+        assert_eq!(crate::store::SCHEMA_VERSION,27);
+        for ((table,cols),expected) in columns.iter().zip(&before) {
+            assert_eq!(&snapshot(&c,table,cols),expected);
+        }
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        assert!(c.prepare("SELECT grant_environment_id FROM secret_records").is_ok());
+        assert!(c.prepare("SELECT environment_id FROM secret_final_bindings").is_ok());
+        assert!(c.prepare("SELECT environment_id FROM secret_audit").is_ok());
+    }
+}

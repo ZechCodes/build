@@ -1174,3 +1174,6 @@ fn lifecycle_metadata_survives_denial_group_cap_and_retention_without_entering_d
         .iter()
         .all(|event| event.attempt_count == 1 && event.last_occurred_at == event.occurred_at));
 }
+
+#[path = "environment_tests.rs"]
+mod environments;

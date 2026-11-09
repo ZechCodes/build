@@ -1,0 +1,123 @@
+use super::*;
+use crate::api::v1::secrets::{AuditParams, ListParams, SecretScope};
+use serde_json::json;
+
+fn grant() -> GrantScope {
+    serde_json::from_value(json!({"scope":"environment","environment_id":"env-a"})).unwrap()
+}
+fn membership(f: &Fixture, project: &str, environment: &str, archived: bool) {
+    f.store.writer_for_test().execute("INSERT OR IGNORE INTO secret_environments VALUES (?1)", [environment]).unwrap();
+    f.store.writer_for_test().execute("INSERT INTO secret_project_membership(project_id,environment_id,archived) VALUES (?1,?2,?3) ON CONFLICT(project_id) DO UPDATE SET environment_id=?2,archived=?3",rusqlite::params![project,environment,archived]).unwrap();
+}
+fn setup() -> (Fixture, SecretCaller) {
+    let f = Fixture::new();
+    let sibling = f.add_member("sibling-agent", "sibling-owner", "sibling-project", false);
+    membership(&f, &f.caller.project_id, "env-a", false);
+    membership(&f, &sibling.project_id, "env-a", false);
+    (f, sibling)
+}
+fn query(project: &str) -> ListParams {
+    ListParams { scope: serde_json::from_value(json!({"project_id":project})).unwrap(), secret_ids: vec![], request_ids: vec![], after: None, limit: 100 }
+}
+fn list(f: &Fixture, project: &str) -> Vec<crate::api::v1::secrets::SecretMetadata> {
+    f.store.writer().secret_metadata_page(&f.caller.device_id, "synthetic-user", &query(project)).unwrap().secrets
+}
+fn read(f: &Fixture, caller: &SecretCaller, id: &str) -> Result<SecretValue> {
+    f.service.release(caller,id,"synthetic-request",||true)
+}
+#[test]
+fn environment_scoped_secret_readable_across_projects() {
+    let (f, sibling) = setup();
+    let secret = f.secret(grant(), None);
+    for caller in [&f.caller, &sibling] {
+        assert_eq!(read(&f,caller,&secret.context.id).unwrap().as_bytes(), b"synthetic-value-only");
+        assert_eq!(list(&f,&caller.project_id)[0].secret_id,secret.context.id);
+    }
+    let outsider=f.add_member("outside-agent","outside-owner","outside-project",false);
+    membership(&f,&outsider.project_id,"env-b",false);
+    assert!(matches!(read(&f,&outsider,&secret.context.id),Err(SecretError::Unavailable)));
+    assert!(list(&f,&outsider.project_id).is_empty());
+}
+#[test]
+fn project_secret_overrides_environment_name() {
+    let (f,sibling)=setup();
+    let inherited=f.secret(grant(),None);
+    let local=f.secret(GrantScope::Project{project_id:f.caller.project_id.clone()},None);
+    assert_eq!(list(&f,&f.caller.project_id).iter().map(|s|&s.secret_id).collect::<Vec<_>>(),vec![&local.context.id]);
+    assert_eq!(list(&f,&sibling.project_id)[0].secret_id,inherited.context.id);
+    assert!(matches!(read(&f,&f.caller,&inherited.context.id),Err(SecretError::Unavailable)));
+    assert!(read(&f,&sibling,&inherited.context.id).is_ok());
+    f.service.revoke(&local.context.id).unwrap();
+    assert!(read(&f,&f.caller,&inherited.context.id).is_ok());
+}
+#[test]
+fn environment_membership_revalidated_per_read() {
+    let (f,sibling)=setup();
+    let secret=f.secret(grant(),None);
+    assert!(read(&f,&sibling,&secret.context.id).is_ok());
+    membership(&f,&sibling.project_id,"env-b",false);
+    assert!(matches!(read(&f,&sibling,&secret.context.id),Err(SecretError::Unavailable)));
+    assert!(list(&f,&sibling.project_id).is_empty());
+    membership(&f,&sibling.project_id,"env-a",false);
+    assert!(read(&f,&sibling,&secret.context.id).is_ok());
+    f.store.writer().mark_sync_dirty("registry","lifecycle",1001).unwrap();
+    assert!(read(&f,&sibling,&secret.context.id).is_err());
+    assert!(f.store.writer().secret_metadata_page(&f.caller.device_id,"synthetic-user",&query(&sibling.project_id)).is_err());
+}
+#[test]
+fn archived_project_agent_not_current_for_secrets() {
+    let (f,sibling)=setup();
+    let secret=f.secret(grant(),None);
+    membership(&f,&sibling.project_id,"env-a",true);
+    assert!(matches!(read(&f,&sibling,&secret.context.id),Err(SecretError::Unauthorized)));
+    assert!(f.store.writer().secret_metadata_page(&f.caller.device_id,"synthetic-user",&query(&sibling.project_id)).is_err());
+    assert!(read(&f,&f.caller,&secret.context.id).is_ok());
+    membership(&f,&sibling.project_id,"env-a",false);
+    assert!(read(&f,&sibling,&secret.context.id).is_ok());
+}
+mod release {
+    use super::*;
+    #[test]
+    fn sibling_project_cannot_read_project_scoped_secret() {
+        let (f,sibling)=setup();
+        let secret=f.secret(GrantScope::Project{project_id:f.caller.project_id.clone()},None);
+        assert!(matches!(read(&f,&sibling,&secret.context.id),Err(SecretError::Unavailable)));
+        assert!(f.store.writer().secret_audit_page(&secret.context.id,0,100).unwrap().is_empty());
+    }
+}
+mod listing {
+    use super::*;
+    #[test]
+    fn sibling_project_cannot_read_project_scoped_secret() {
+        let (f,sibling)=setup();
+        f.secret(GrantScope::Project{project_id:f.caller.project_id.clone()},None);
+        assert!(list(&f,&sibling.project_id).is_empty());
+        let scope:SecretScope=serde_json::from_value(json!({"environment_id":"env-a"})).unwrap();
+        let mut q=query(&sibling.project_id); q.scope=scope;
+        assert!(f.store.writer().secret_metadata_page(&f.caller.device_id,"synthetic-user",&q).unwrap().secrets.is_empty());
+    }
+}
+mod audit {
+    use super::*;
+    #[test]
+    fn sibling_project_cannot_read_project_scoped_secret() {
+        let (f,sibling)=setup();
+        let secret=f.secret(GrantScope::Project{project_id:f.caller.project_id.clone()},None);
+        let params=AuditParams{scope:query(&sibling.project_id).scope,secret_id:secret.context.id,after:0,limit:100};
+        assert!(matches!(f.store.writer().secret_metadata_audit(&f.caller.device_id,"synthetic-user",&params),Err(SecretError::Unavailable)));
+    }
+}
+mod attach {
+    use super::*;
+    #[test]
+    fn sibling_project_cannot_read_project_scoped_secret() {
+        let (f,sibling)=setup();
+        let mut record=f.secret(GrantScope::Project{project_id:f.caller.project_id.clone()},None);
+        record.context.id=format!("sec_{}",uuid::Uuid::new_v4()); record.upload_request_id=uuid::Uuid::new_v4().to_string(); record.attached_at=None; record.expires_at=None; record.message_operation_id=None; record.revision=1;
+        record.context.device_id=f.caller.device_id.clone();
+        record.context.stage=StageContext{owner_id:sibling.owner_id.clone(),conversation_id:sibling.conversation_id.clone(),generation:sibling.generation.clone(),draft_id:None};
+        f.store.writer().secrets_stage(&record).unwrap();
+        let binding=SecretPostBinding{ids:vec![record.context.id],device_id:f.caller.device_id.clone(),creator:"synthetic-user".into(),project_id:sibling.project_id,owner_id:sibling.owner_id,agent_id:sibling.agent_id,conversation_id:sibling.conversation_id,generation:sibling.generation,draft_id:None,attached_at:record.created_at+1};
+        assert!(f.store.writer().secrets_post_preflight(&binding).is_err());
+    }
+}

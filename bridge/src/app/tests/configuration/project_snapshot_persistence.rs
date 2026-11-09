@@ -170,3 +170,31 @@ fn deleting_project_removes_its_cached_watched_tasks_from_snapshot() {
     assert_eq!(response["ok"], true, "{response}");
     assert!(state.snapshot_watched_task_rows().is_empty());
 }
+
+#[test]
+fn cold_project_registration_keeps_owned_observation_before_publication() {
+    let (directory, repository) = init_repo();
+    let remote = "https://example.invalid/prospective-observation.git";
+    git2::Repository::open(&repository)
+        .unwrap()
+        .remote("origin", remote)
+        .unwrap();
+    let mut state = crate::app::tests::project_agent::rooted(directory.path());
+    assert!(!state.snapshot_projection_initialized());
+    let opened = state.handle(req(
+        "project.create",
+        open_folder(json!({"path":repository})),
+    ));
+    assert_eq!(opened["ok"], true, "{opened}");
+    let id = opened["result"]["project_id"].as_str().unwrap();
+    assert!(
+        state.has_current_project_snapshot_observation(state.project_for(id).unwrap()),
+        "registration must keep the facts collected before candidate publication"
+    );
+    state.warm_snapshot_observations_for_test();
+    state.publish_all_snapshot_projection();
+    let view = state.read_view.load();
+    let rows = view.get("project.list", "").unwrap();
+    assert_eq!(rows["projects"][0]["project_id"], id);
+    assert_eq!(rows["projects"][0]["remote"], remote);
+}

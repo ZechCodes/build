@@ -51,7 +51,7 @@ const unreadOf = (item) => conversationSummaryUnreadCount(item, true);
  *  conversations represented in those feed rows. */
 export function projectMenuModel({ projects = [], items = [], devices = [], projectKey = null, query = "" } = {}) {
   const tags = deviceTags(projects, devices);
-  const entries = projects.map((project) => ({
+  const entries = projects.filter(project => project.archived_at == null).map((project) => ({
     key: project.projectKey,
     id: project.id,
     deviceId: project.deviceId,

@@ -38,7 +38,7 @@ function environmentGroups(picker, catalog, options) {
   const groups = new Map();
   for (const group of picker.groups) {
     const identity = projectEnvironmentIdentity(group.destination.project, projects, options);
-    if (!identity) { groups.set(group.key, group); continue; }
+    if (!identity) { groups.set(group.key, { ...group, destinations: group.destinations.map(row => ({ ...row, archived: archived(group.destination.project) })) }); continue; }
     const destinations = environmentDestinations(group, options);
     if (!destinations.length) continue;
     if (!groups.has(identity.key)) groups.set(identity.key, {
@@ -62,7 +62,9 @@ function environmentDestinations(group, options) {
 
 /** Legacy groups pass through intact on old devices, including in mixed accounts. */
 export function switcherModel(catalog, options = {}) {
-  const picker = navigationPickerModel(catalog, options);
+  const searching = !!String(options.query || "").trim();
+  const visible = searching ? catalog : { ...catalog, projects: catalog.projects.filter(group => !archived(group.destination.project)) };
+  const picker = navigationPickerModel(visible, options);
   const visits = options.visits || [];
   const projects = catalog.projects.filter((group) => environmentNavigationSupported(options, group.deviceId))
     .map((group) => projectDestination(group, visits, options.environments)).filter((row) => !row.archived);
@@ -70,6 +72,6 @@ export function switcherModel(catalog, options = {}) {
   const recent = projects.filter((row) => row.at > 0 && now - row.at <= 24 * 3600_000).sort(byRecency).slice(0, 5);
   return { ...picker, groups: environmentGroups(picker, catalog, options),
     lastVisited: String(options.query || "").trim() ? [] : recent,
-    legacyLastVisited: lastVisitedDestinations(catalog, options, row => !environmentNavigationSupported(options, row.deviceId)),
+    legacyLastVisited: lastVisitedDestinations(visible, options, row => !environmentNavigationSupported(options, row.deviceId)),
     environmentGrouped: true };
 }

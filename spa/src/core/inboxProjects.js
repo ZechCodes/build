@@ -1,3 +1,4 @@
+import { projectIsArchived, visibleProjectRows } from "./archivedProjectModel.js";
 // The rail's projects face, as a pure model: the account's workspaces, grouped
 // by the project they are in. A project belongs to one machine, so a block is
 // keyed by the account-wide project key and says the machine after its name
@@ -115,7 +116,8 @@ export function projectsUnreadCount(entries = [], projects = []) {
  *  `proj-1`, and two projects may share a name — which is what the device tag
  *  on the head is for. */
 export function workspaceProjectBlocks(entries = [], projects = [], devices = [], offlineDeviceIds = null, nowMs = Date.now(), runningTaskProjectKeys = new Set(), heldActiveKey = null, environmentNavigation = {}) {
-  const named = projectsNamed(projects, entries);
+  entries = visibleProjectRows(entries, projects);
+  const named = projectsNamed(projects.filter(project => !projectIsArchived(project)), entries);
   const tags = deviceTags([...named.values()], devices, offlineDeviceIds);
   const blocks = [...named.values()].map((project) =>
     workspaceBlockFor(

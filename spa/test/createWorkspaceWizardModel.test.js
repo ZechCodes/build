@@ -110,3 +110,10 @@ it("replaces the M1 add-project empty state when a cached device can create envi
  const model=createWorkspaceWizardModel({devices:[device],support:{d1:true},features:{d1:{create:true}}});
  expect(model.emptyText).not.toContain("Add a project");expect(model.newEnvironmentDevices).toEqual([device]);
 });
+
+it("archived projects are hidden from the wizard", () => {
+  const archived = { ...project, archived_at: 1 };
+  const model = createWorkspaceWizardModel({ ...base, projects: [archived], fixedProject: true, deviceId: "d1", projectId: "p1" });
+  expect(model.sections.flatMap(section => section.targets).some(row => row.kind === "project")).toBe(false);
+  expect(model.target).toBeNull();
+});

@@ -371,3 +371,9 @@ describe("environment inbox identities", () => {
     expect(projectHeadHtml(blocks[0])).not.toContain('data-kind="project"');
   });
 });
+
+it("archived projects and their entries are absent from inbox blocks", () => {
+  const project = { id: "p1", projectKey: "d1/p1", deviceId: "d1", name: "Old", archived_at: 1 };
+  const result = workspaceProjectBlocks([{ kind: "workspace", projectKey: "d1/p1", key: "d1/w1" }], [project]);
+  expect(result.blocks).toHaveLength(0); expect(result.unsorted).toHaveLength(0);
+});

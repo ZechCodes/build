@@ -1,3 +1,4 @@
+import { mountArchivedProjectView } from "../core/archivedProjectView.js";
 // A workspace is a durable root containing one or more registered source
 // directories. Directory selection scopes Files and Changes; the console stays
 // scoped to the workspace, so navigating between directories or refs never
@@ -265,11 +266,11 @@ function mountTasksTab(body, { canonical, callRpc, context, feed, agentSelection
 /** Files over every directory of the workspace, one root each (#174). The
  *  route's `sourceId` is the opened file's root and its `file` a path in that
  *  root's directory; with no file open it is the first root. */
-function mountFilesPane(body, { canonical, workspace, callRpc, cacheScope }) {
+function mountFilesPane(body, { canonical, workspace, callRpc, cacheScope, readOnly }) {
   const roots = workspaceFilesRoots(workspace, canonical.workspaceId);
   const openAt = canonical.file ? { rootId: canonical.sourceId, path: canonical.file, line: canonical.line || null } : null;
   const files = renderFilesTab(body, {
-    roots,
+    roots, readOnly,
     layoutEntityId: workspaceLayoutCacheId(canonical.workspaceId),
     callRpc,
     cacheScope,
@@ -497,6 +498,7 @@ function refreshWorkspacePane(state, workspace) {
     workspace: state.workspace,
     callRpc: state.callRpc,
     cacheScope: state.context.cacheScope,
+    readOnly: state.readOnly,
     agentSelection: state.selection,
     context: state.context,
     onSelectDirectory: (next, commit) => standOnDirectory(state, next, commit),
@@ -546,7 +548,6 @@ export async function renderWorkspace() {
     return;
   }
   const state = { selection: shellSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, workspaceAction: null, refreshPane: null, workspace: null, sourceId: null, gitInit: new Map(), paintTabs: null, rail: null, gitInitialization: new Map(), unwatchFeed: null, workspaceRead: null, gitOptionsRead: null, gitOptionsRevision: new Map(), retryRefreshPending: false, workspaceObservations: new WeakMap() };
-  state.callRpc = workspaceResultRpc(state);
   const unwatchWorkspace = subscribeCache(workspaceListAddress(state), () => {
     state.workspaceRead = readWorkspaceResult(state);
   });
@@ -556,6 +557,10 @@ export async function renderWorkspace() {
     state.gitOptionsRead = readGitOptions(state, address.sub);
   });
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
+  const archiveView = mountArchivedProjectView(root, { deviceId: route.deviceId, projectId: route.projectId,
+    callRpc: workspaceResultRpc(state), archiveMutationHosts: [$("#agent-rail"), $("#tb-verb")], onArchiveChanged: () => state.pane?.refreshReadOnly?.() });
+  state.callRpc = archiveView.callRpc;
+  state.readOnly = archiveView.readOnly;
   // The rail is the workspace's, not a directory's: it stands on the route
   // alone, before the record naming the workspace has landed.
   state.rail = mountWorkspaceRail($("#dir-rail"), {
@@ -583,6 +588,7 @@ export async function renderWorkspace() {
     // it: leaving hands it back empty rather than leaving this workspace's
     // faces up over the next view.
     state.rail.dispose();
+    archiveView.dispose();
     deviceStrip();
     if (App.routeLeaveGuard === state.pane?.canLeave) App.routeLeaveGuard = null;
     state.pane?.dispose?.();

@@ -1,3 +1,4 @@
+import { projectIsArchived } from "../core/archivedProjectModel.js";
 // Original sources share the kept directory panes, without workspace review or
 // Git initialization: each pane acts on the source's actual checkout HEAD.
 import { mountWorkspaceChanges } from "./workspaceChanges.js";
@@ -57,7 +58,7 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
     const source = sourceOf(standing);
     note.textContent = source ? projectSourceContext(source) : "No project sources configured.";
     sync.hidden = !source || source.is_git === false || !support.syncBase || !projectSourceWritable(project, source.id, ownershipEvidence);
-    sync.disabled = pending;
+    sync.disabled = pending || projectIsArchived(project);
     paintRequestedSource(source);
   };
   const selectSource = (id) => {
@@ -114,7 +115,7 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
   }
   useSource.onclick = () => selectSource(standing);
   sync.onclick = async () => {
-    if (pending || !sourceOf(standing)) return;
+    if (pending || projectIsArchived(project) || !sourceOf(standing)) return;
     if (!projectSourceWritable(project, standing, ownershipEvidence)) { error.textContent = SOURCE_READ_ONLY; return; }
     pending = true;
     error.textContent = "";

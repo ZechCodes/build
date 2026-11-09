@@ -183,3 +183,102 @@ fn archive_merge_environment_discard_keeps_archived_project_and_environment() {
         before
     );
 }
+
+fn temporarily_move_project_home(f: &Fixture) -> (std::path::PathBuf, std::path::PathBuf) {
+    let home = f
+        .state
+        .lock()
+        .unwrap()
+        .projects
+        .get("proj-1")
+        .unwrap()
+        .home_path
+        .clone();
+    let aside = home.with_extension("aside");
+    std::fs::rename(&home, &aside).unwrap();
+    (home, aside)
+}
+
+fn admit_fresh_workspace_retry(
+    f: &Fixture,
+    project: &str,
+    prior: &str,
+    n: u128,
+) -> Result<MutationRecord, ApiError> {
+    admit(
+        &f.state,
+        "workspace.create",
+        json!({"project_id":project,"name":"retry","continues":prior}),
+        WriteMetadata {
+            operation_id: operation(n),
+            after: None,
+        },
+    )
+}
+
+fn assert_archived_retry_refused_until_restore(f: &Fixture, project: &str, prior: &str, n: u128) {
+    let failed = f.record(prior);
+    f.state.lock().unwrap().project_archive(project).unwrap();
+    let err = admit_fresh_workspace_retry(f, project, prior, n).unwrap_err();
+    assert_eq!(err.code(), "project_archived");
+    assert!(f
+        .store
+        .writer()
+        .creation_record(PRINCIPAL, &operation(n))
+        .unwrap()
+        .is_none());
+    assert_eq!(f.record(prior).revision, failed.revision);
+    assert!(f
+        .state
+        .lock()
+        .unwrap()
+        .workspaces
+        .list(Some(project))
+        .is_empty());
+    f.state.lock().unwrap().project_restore(project).unwrap();
+    admit_fresh_workspace_retry(f, project, prior, n).unwrap();
+    f.run(&operation(n));
+    let done = f.record(&operation(n));
+    assert_eq!(done.state, "succeeded", "{done:?}");
+    assert_eq!(f.record(prior).state, "failed");
+    let app = f.state.lock().unwrap();
+    let rows = app.workspaces.list(Some(project));
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].status, crate::workspace::WorkspaceStatus::Ready);
+}
+
+#[test]
+fn failed_workspace_creation_fresh_retry_refused_until_project_restored() {
+    let f = Fixture::new();
+    let id = operation(1079001);
+    admit(
+        &f.state,
+        "workspace.create",
+        json!({"project_id":"proj-1","name":"guarded"}),
+        WriteMetadata {
+            operation_id: id.clone(),
+            after: None,
+        },
+    )
+    .unwrap();
+    let (home, aside) = temporarily_move_project_home(&f);
+    f.run(&id);
+    std::fs::rename(&aside, &home).unwrap();
+    let failed = f.record(&id);
+    assert_eq!(failed.state, "failed", "{failed:?}");
+    assert_archived_retry_refused_until_restore(&f, "proj-1", &id, 1079002);
+}
+
+#[test]
+fn failed_first_workspace_fresh_retry_refused_until_project_restored() {
+    let f = Fixture::new();
+    let id = operation(1079003);
+    f.admit(&id);
+    let (home, aside) = temporarily_move_project_home(&f);
+    f.run(&id);
+    std::fs::rename(&aside, &home).unwrap();
+    let failed = f.record(&id);
+    assert_eq!(failed.state, "failed", "{failed:?}");
+    assert_eq!(failed.execution["project_id"], "proj-2");
+    assert_archived_retry_refused_until_restore(&f, "proj-2", &id, 1079004);
+}

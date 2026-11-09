@@ -32,7 +32,9 @@ const destination = (root, parent) => [root.label, parent].filter(Boolean).join(
 
 /** Directory affordances decorate existing rows; drag feedback only changes a
  * class and an overlay attribute, preserving the tree's elements and geometry. */
-export function mountFilesUploadActions(host, { roots, capabilities, uploads, callRpc, onCreated, onFinished, deviceId }) {
+export function mountFilesUploadActions(host, { roots, capabilities, uploads, callRpc, onCreated, onFinished, deviceId, readOnly }) {
+  const locked = () => readOnly?.() === true;
+  let wasReadOnly = locked();
   let support = capabilities;
   let disposed = false;
   let dropRow = null;
@@ -92,6 +94,7 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
     if (!host.contains(event.relatedTarget)) clearDrop();
   };
   const onDrop = (event) => {
+    if (locked()) return;
     if (!fileDrag(event)) return;
     event.preventDefault();
     const target = targetOf(event);
@@ -114,6 +117,7 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
     draft.field.focus();
   };
   const createEntry = async () => {
+    if (locked()) return;
     const current = draft;
     const entry = NEW_ENTRIES[current.kind];
     const name = current.field.value;
@@ -131,6 +135,7 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
     }
   };
   const newEntry = (target, kind) => {
+    if (locked()) return;
     closeDraft();
     const entry = NEW_ENTRIES[kind];
     const element = document.createElement("div");
@@ -149,6 +154,7 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
     mountSplitMenu(container, { onChoose: (kind) => { if (NEW_ENTRIES[kind]) newEntry(targetOfRow(row), kind); } });
   };
   const pickFiles = (target) => {
+    if (locked()) return;
     selectedTarget = target;
     input.value = "";
     input.click();
@@ -170,6 +176,7 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
     if (event.key === "Enter") { event.preventDefault(); if (!draft.field.disabled) void createEntry(); }
   };
   const onChange = () => {
+    if (locked()) return;
     if (selectedTarget && input.files.length) uploads.enqueue({ ...uploadTarget(selectedTarget), files: Array.from(input.files) });
   };
 
@@ -217,7 +224,7 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
   const contextItems = (row) => {
     if (!rootOf(row)) return [];
     if (row.dataset.kind === "file") return [{ id: "download", label: "Download" }];
-    if (!row.matches('[data-kind="dir"], [data-root-head], [data-upload-root]')) return [];
+    if (locked() || !row.matches('[data-kind="dir"], [data-root-head], [data-upload-root]')) return [];
     return [
       ...(support.uploads ? [{ id: "upload", label: "Upload files here" }] : []),
       ...(support.createDirectory ? [{ id: "folder", label: "New directory" }] : []),
@@ -240,6 +247,13 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
   host.addEventListener("drop", onDrop);
   input.addEventListener("change", onChange);
   return {
+    refreshReadOnly() {
+      const next = locked();
+      if (wasReadOnly === next) return;
+      wasReadOnly = next;
+      contextMenu.reset();
+      closeSplitMenusWithin(host);
+    },
     setCapabilities(next) { support = next; contextMenu.reset(); clearDrop(); if (draft && !newEntryKinds(support).includes(draft.kind)) closeDraft(); decorate(); },
     dispose() {
       disposed = true;

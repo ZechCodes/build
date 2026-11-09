@@ -125,7 +125,7 @@ const lockLine = (available) => {
  *  answer, so it shows what the bridge holds rather than what was merely asked
  *  for; a refusal is the bridge's own sentence, and the control goes back to the
  *  answer it last had. */
-export async function mountIsolation(host, { callRpc, target, settings, deviceId = "", fromProjectRecord = false, current: ownerCurrent = () => true }) {
+export async function mountIsolation(host, { callRpc, target, settings, deviceId = "", fromProjectRecord = false, readOnly, current: ownerCurrent = () => true }) {
   const select = host.querySelector("[data-isolation=select]");
   if (!select) return;
   const lock = host.querySelector("[data-isolation=lock]");
@@ -149,10 +149,11 @@ export async function mountIsolation(host, { callRpc, target, settings, deviceId
     if (!current()) { dispose(); return; }
     if (!state) return;
     paint(state);
-    select.disabled = false;
+    select.disabled = readOnly;
   });
   const dispose = watchSheetLifetime(current, record.dispose);
   select.onchange = async () => {
+    if (readOnly) return;
     const chosen = select.value || null;
     select.disabled = true;
     error.textContent = "";
@@ -171,7 +172,7 @@ export async function mountIsolation(host, { callRpc, target, settings, deviceId
       saved.textContent = "";
       await record.read();
     }
-    select.disabled = false;
+    select.disabled = readOnly;
   };
   try {
     if (fromProjectRecord) await record.read();

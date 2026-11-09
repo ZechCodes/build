@@ -8,7 +8,7 @@ vi.mock("../src/core/inboxDevices.js", () => ({ deviceCall: id => (...args) => s
 vi.mock("../src/core/createWorkspaceWizard.js", () => ({ openCreateWorkspaceWizard: vi.fn() }));
 vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo: vi.fn() }));
 vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: vi.fn() }));
-vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: id => ({ environments: { list: state.support.get(id) } }),
+vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: id => ({ environments: { list: state.support.get(id), archive: true, projectRename: true, environmentRename: true } }),
   onBridgeGreeted: fn => { state.greetings.add(fn); return () => state.greetings.delete(fn); } }));
 vi.mock("../src/core/scopedSyncRuntime.js", () => ({ deviceScopedSyncOwns: () => state.deviceOwned, wakeScopedSync: vi.fn(async () => []) }));
 import { renderEnvironmentsSettings } from "../src/views/environmentsSettings.js";
@@ -358,3 +358,65 @@ it.each([{create:true,createProject:false},{create:false,createProject:true}])('
  if(support.create){host.querySelector('[data-environment-create="new"]').click();expect(openCreateWorkspaceWizard).toHaveBeenCalledWith(expect.objectContaining({newEnvironment:true,deviceId:'laptop'}));}
  else {host.querySelector('[data-legacy-add-project]').click();expect(openNewRepo).toHaveBeenCalledWith(expect.any(Function),expect.objectContaining({deviceId:'laptop'}));}
 });
+
+import { openEnvironmentSettings } from "../src/sheets/environmentSettings.js";
+it("archived group is collapsed and lists only archived projects", async () => {
+  await seed("laptop", [environment()], [project, { ...project, project_id: "old", name: "Old release", archived_at: 123 }]); await seed("desktop", [], []);
+  await writeCached(address("laptop", "environment-support"), { list: true, archive: true, projectRename: true, environmentRename: true }); await mount();
+  await vi.waitFor(() => expect(document.querySelector("[data-archived-projects]")).not.toBeNull());
+  const group = document.querySelector("[data-archived-projects]");
+  expect(group.open).toBe(false); expect(group.textContent).toContain("Old release"); expect(group.textContent).not.toContain("Release");
+  expect(group.querySelector("[data-restore-project]")).not.toBeNull();
+});
+it("restore row restores and repaints from cache", async () => {
+  await seed("laptop", [environment()], [{ ...project, archived_at: 123 }]); await seed("desktop", [], []);
+  await writeCached(address("laptop", "environment-support"), { list: true, archive: true });
+  state.calls.set("laptop", vi.fn(async method => method === "project.restore" ? { project: { ...project, archived_at: null } } : new Promise(() => {})));
+  await mount(); await vi.waitFor(() => expect(document.querySelector("[data-restore-project]")).not.toBeNull()); document.querySelector("[data-restore-project]").click();
+  await vi.waitFor(() => expect(document.querySelector("[data-archived-projects]")).toBeNull());
+  expect((await readCached(address("laptop", "projects"))).value[0].archived_at).toBeNull(); expect(document.querySelector("[data-environment-project]")).not.toBeNull();
+});
+async function mountEnvironmentSheet(projects = [project]) {
+  await seed("laptop", [{ ...environment(), sources: [{ id: "home", path: "/work/source", name: "source", is_git: false }] }], projects);
+  await writeCached(address("laptop", "environment-support"), { list: true, environmentRename: true });
+  document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
+  return openEnvironmentSettings("env-1", { deviceId: "laptop", callRpc: state.calls.get("laptop") });
+}
+it("environment sheet renames and keeps home path read only", async () => {
+  state.calls.set("laptop", vi.fn(async (method, params) => method === "environment.rename" ? { ...environment(params.name), sources: [] } : new Promise(() => {})));
+  await mountEnvironmentSheet(); await vi.waitFor(() => expect(document.querySelector("#esdisplay")).not.toBeNull());
+  expect(document.querySelector("#eshome").readOnly).toBe(true); document.querySelector("#esdisplay").value = "Renamed"; document.querySelector("#esrename").click();
+  await vi.waitFor(() => expect((document.querySelector("#esdisplay")).value).toBe("Renamed"));
+  await vi.waitFor(async () => expect((await readCached(address("laptop", "environments"))).value[0].name).toBe("Renamed"));
+  expect(state.calls.get("laptop")).toHaveBeenCalledWith("environment.rename", { environment_id: "env-1", name: "Renamed" });
+});
+it("shared source row names the other project", async () => {
+  await mountEnvironmentSheet([project, { ...project, project_id: "p2", name: "P₂", sources: [{ id: "home", path: "/work/source" }] }]);
+  await vi.waitFor(() => expect(document.querySelector("#sheet").textContent).toContain("also used by P₂"));
+});
+
+it("environment sources save against environment verbs and repaint their reply", async () => {
+  const updated = { ...environment(), sources: [{ id: "home", name: "Updated", path: "/work/source", is_git: false }] };
+  const call = vi.fn(async method => method === "environment.update_source" ? updated : new Promise(() => {}));
+  state.calls.set("laptop", call); await mountEnvironmentSheet();
+  await vi.waitFor(() => expect(document.querySelector("[data-save-source]")).not.toBeNull());
+  const input = document.querySelector('input[data-field="name"]');
+  input.value = "Updated"; input.dispatchEvent(new Event("input")); document.querySelector("[data-save-source]").click();
+  await vi.waitFor(async () => expect((await readCached(address("laptop", "environments"))).value[0].sources[0].name).toBe("Updated"));
+  expect(call).toHaveBeenCalledWith("environment.update_source", { environment_id: "env-1", source_id: "home", name: "Updated" });
+  await vi.waitFor(() => expect(document.querySelector("[data-source-status]").textContent).toBe("Saved."));
+  expect(document.querySelector('[data-field="path"]').readOnly).toBe(true);
+});
+it("environment isolation sends its exact nullable override", async () => {
+  const call = vi.fn(async (method, params) => method === "environment.set_isolation" ? { ...environment(), isolation: params.isolation } : new Promise(() => {}));
+  state.calls.set("laptop", call); await mountEnvironmentSheet();
+  await vi.waitFor(() => expect(document.querySelector("#esisolation")?.disabled).toBe(false));
+  const select = document.querySelector("#esisolation"); select.value = "rift"; select.dispatchEvent(new Event("change"));
+  await vi.waitFor(() => expect(call).toHaveBeenCalledWith("environment.set_isolation", { environment_id: "env-1", isolation: "rift" }));
+  await vi.waitFor(async () => expect((await readCached(address("laptop", "environments"))).value[0].isolation).toBe("rift"));
+  await vi.waitFor(() => expect(document.querySelector("#esisolation").value).toBe("rift"));
+  const inherit = document.querySelector("#esisolation"); inherit.value = ""; inherit.dispatchEvent(new Event("change"));
+  await vi.waitFor(() => expect(call).toHaveBeenCalledWith("environment.set_isolation", { environment_id: "env-1", isolation: null }));
+});
+
+vi.mock("../src/core/deviceContexts.js", async original => ({ ...await original(), whenGreeted: async (_context, send) => ({ sent: send() }) }));

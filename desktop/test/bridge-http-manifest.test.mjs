@@ -5,6 +5,7 @@ import { readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import {
   buildRoute,
   compatibleTransport,
@@ -121,7 +122,7 @@ test("desktop source archive includes real manifest at the main import path", as
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const archive = join(directory, "app.asar");
   await asar.createPackage(
-    new URL("../src/", import.meta.url).pathname,
+    fileURLToPath(new URL("../src/", import.meta.url)),
     archive,
   );
   const content = asar.extractFile(archive, "bridge-http-resources.json");

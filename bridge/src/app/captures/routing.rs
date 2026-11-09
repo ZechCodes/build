@@ -205,7 +205,7 @@ impl AppState {
             self.require_undecided(capture_id)?;
         }
         match action {
-            BridgeAction::ListProjects => Ok(self.defer_project_list()),
+            BridgeAction::ListProjects => Ok(self.defer_router_project_list()),
             BridgeAction::ListWork => Ok(self.router_work_digest()),
             BridgeAction::ReadConversation {
                 entity_id,

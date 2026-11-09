@@ -204,8 +204,30 @@ fn router_launch_fallback_requires_an_active_project() {
     );
     let restored = app.handle(req("project.restore", json!({"project_id": second})));
     assert_eq!(restored["ok"], true, "{restored}");
+    app.project_at_mut(1).orch = Orchestrator::new(
+        app.repo_path_for(&second).unwrap(),
+        dir.path().join("fallback-worktrees"),
+        Agent::Warm(Box::new(crate::pty::HarnessSpec::new(
+            "active-second-project",
+        ))),
+        crate::templates::Templates::default(),
+        test_bridge_exe(),
+    );
     let state = app.shared();
     let reserved = reserve_agent_spawn(&mut state.lock().unwrap(), &key, &request)
         .expect("restoring the second project makes the fallback launchable");
+    let prepared = reserved
+        .plan
+        .launch
+        .prepare(
+            &owner,
+            crate::orchestrator::LaunchDirs::at(router.scratch_dir()),
+            router.choice(),
+            false,
+            None,
+            "fallback-test-token",
+        )
+        .unwrap();
     reserved.holding.abandon(&state, (), &a_frame(&state));
+    assert_eq!(prepared.spec.binary, "active-second-project");
 }

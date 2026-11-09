@@ -54,9 +54,16 @@ fn capture(
         None => return Err(format!("{method}: snapshot was not initialized")),
     };
     let work_digest = matches!(action, BridgeAction::ListWork);
+    let projects_only = matches!(action, BridgeAction::ListProjects);
     let prepared = PreparedRead::query(None, move |_| {
         Ok(ReadWork::external(move || {
-            Ok(snapshot_value(&value, work_digest))
+            let mut answer = snapshot_value(&value, work_digest);
+            if projects_only {
+                if let Some(projects) = answer.get_mut("projects").and_then(Value::as_array_mut) {
+                    projects.retain(|project| project["archived_at"].is_null());
+                }
+            }
+            Ok(answer)
         }))
     });
     Ok(match scope {

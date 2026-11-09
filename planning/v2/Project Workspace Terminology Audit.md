@@ -36,6 +36,31 @@ fixtures may display the addressed workspace ID. The default fallback remains
 The ordinary Git `Pull` action stays distinct from `Sync base`. `Project agents`
 remains a roster/overview collection label; `Project agent` names the pin.
 
+## Environments M3 terminology amendment — #1080
+
+The earlier inventory and validation evidence below remain historical. This
+docs-only amendment checks M3.1/M3.2 at dev
+`9796b07270cea28fb2d86c1b87524e84851a5e14` and the approved M3.3 consumer at
+`ea6637ab0804bcf6bb8b2186b84a5d1ecd870237` (`task/env-m3.3-settings`). It
+records settled display terms without renaming wire, route or stored identities.
+
+| Surface | Settled M3 copy and meaning | Source checked |
+| --- | --- | --- |
+| Environment settings | `Environment settings`; `General`, `Sources`, `Isolation`; `Environment name`, `Save name`, read-only `Home path`; `Inherit device setting` | `spa/src/sheets/environmentSettings.js` |
+| Project settings | `Project name`, `Save name`; `In environment E` links to environment settings | `spa/src/sheets/projectGeneral.js` |
+| Folder ownership | `From E` is inherited and read-only in the project sheet; `Edit in E` opens environment settings; `Added to this project` edits only project-owned references; environment cards say `also used by P` | `spa/src/sheets/projectSources.js`, `environmentSettings.js` |
+| Archive action and refusal | `Archive` section, `Archive project`; refusal `Cannot archive P: …` shown verbatim; the action remains available after refusal and allows only one pending request | `spa/src/sheets/projectGeneral.js`; `bridge/src/app/projects/archive.rs` |
+| Archived projects in settings and search | Collapsed `Archived (N)` group with `Archived`, `Settings…` and `Restore` per row; switcher search tags archived project rows `Archived` | `spa/src/views/environmentsSettings.js`, `spa/src/core/environmentSwitcherModel.js`, `navigationPickerRender.js` |
+| Archived view banner | `P is archived. Restore it to make changes.` with `Restore` on project/task/review surfaces; bridge mutation refusal is separately `P is archived; restore it first` (`project_archived`) | `spa/src/core/archivedProjectView.js`; `bridge/src/app/projects/archive_guard.rs` |
+| Rename meaning | Project and environment names are display-only; one non-empty line, at most 200 bytes; ids, keys, folders and branches stay the same | `bridge/src/app/environments/edits.rs`, `edit_tests.rs` |
+
+`docs/using.md` uses those labels. Environment source and isolation editing are
+existing-environment settings, distinct from wizard creation and from a
+project's extra folders. Environment secrets, environment deletion, deletion
+of a project together with its tasks, MCP environment tools and identity
+badges remain Stage 2. No new runtime tests or captures were run for this
+amendment; Stage 1's manual dev acceptance journeys remain pending.
+
 ## Baseline comment inventory
 
 The spec's coordinates refer to the earlier baseline, so this inventory records

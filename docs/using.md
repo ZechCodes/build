@@ -207,13 +207,101 @@ refreshes every referencing project's views. Sync status stays separate for
 each project's source, so projects using different
 base branches or sync choices keep their own results.
 
-### Current M2 limitations
+### Environment settings and names
 
-- Archive is not available yet. New lines of work stay listed until deleted.
-- Environment and project rename are not available yet.
-- Editing an environment's folders in settings is not available yet.
+Open **Settings** → **Environments**, then **Settings…** on the environment's
+card to open **Environment settings**. Its **General** section has
+**Environment name** and **Save name**; **Home path** is read-only. For a
+project, open **Project settings** → **General**, edit **Project name** and
+choose **Save name**. The project's **In environment E** link also opens
+that environment's settings, where E is its name.
+
+Both names are display names: renaming changes no folders, ids, task keys or
+branches. An environment rename does not rename its projects. A name must be
+non-empty after trimming, fit on one line without control characters, and use
+at most 200 bytes. A refusal reads **A name must be one bounded line (at most
+200 bytes).**
+
+The environment sheet's **Sources** section edits the folders inherited by
+all its projects. Cards have **Label**, **Folder**, and, for Git sources,
+**Base branch** and **Remote (origin)**, with **Save** and **Remove** where
+allowed. The first source's Folder is read-only and it cannot be removed.
+**Add folder…** selects an existing folder; **Add Git remote…** clones another
+repository. Shared cards say **also used by P**, with the project's name.
+The shared-folder rules above still apply, and removing a reference keeps the
+files. Membership changes affect new workspaces; existing workspaces keep
+their recorded directories.
+
+This differs from **Added to this project** in Project settings, which edits
+only that project's extra folders. **From E** remains read-only there;
+**Edit in E** opens the environment sheet to edit the inherited folders.
+These settings actions edit existing sources directly and create no workspace.
+
+Under **Isolation** on the environment sheet, choose **Git worktree**,
+**Rift (copy-on-write)** or **Inherit device setting**. Projects without their
+own override inherit that choice; existing checkouts keep their isolation.
+
+### Archive a project
+
+Open **Project settings** → **Archive** → **Archive project**. Archiving
+keeps the project and its history, and refuses while work still needs to be
+settled. It does not stop work for you. The refusal is shown exactly as the
+bridge returns it: **Cannot archive P:** followed by each blocker, separated
+by semicolons. P is the project's name; workspace and agent names, task
+numbers and terminal ids identify what needs attention:
+
+- Unfinished or provisioning workspaces: **finish or delete workspace W**.
+  A pending workspace creation says **wait for workspace W creation to finish**.
+- Running, starting or queued agents: **stop worker X** or **stop coordinator X**.
+  Queued, in-flight or settling wakes say **wait for pending wake for O**,
+  where O is the owning conversation's id.
+- Terminals: **wait for terminal creation to finish**, or **close the open
+  terminal in this project**. A removed or replaced terminal or agent still
+  shutting down says **wait for the closed terminal to exit (T)** or
+  **wait for the stopped agent to exit (A)**, with its terminal or agent id.
+- Tasks needing attention or blocked on other tasks: **answer #12** or
+  **resolve waiting-on for #12**. Assignment and dependency work says
+  **settle pending delivery for #12** or **settle pending dependency
+  reconciliation for #12**.
+- Reviews and their handoffs: **give a verdict on #12**, **settle pending
+  verdict delivery for #12**, **settle pending revision dispatch for #12**,
+  or **settle revision delivery notice for #12**. Other queued task notices
+  say **settle pending task notice for #12**.
+- Filesystem work still running: **wait for filesystem operations to finish**.
+
+Clear the named blockers and press **Archive project** again. The button is
+disabled only while one request is pending; a refusal leaves it available for
+a new attempt, because a blocker can clear without the client knowing.
+
+An archived project leaves the inbox, the workspace wizard, the switcher's
+ordinary list and Recent targets, and the workspace selector. Find it by
+searching the switcher, where it is tagged **Archived**, or in **Environments**
+settings under its environment's collapsed **Archived** group. Direct links
+to the project, its old tasks and reviews still open read-only. Their banner
+says **P is archived. Restore it to make changes.** and offers **Restore**.
+
+Changes to an archived project are refused from the UI, MCP and agents; its
+agents are not started. The bridge refusal is **P is archived; restore it
+first**, with error code `project_archived`. Reading its history still works.
+Environment source maintenance can still update the inherited source list;
+it does not change the archived project's finished workspace directories.
+
+### Restore a project
+
+In **Environments** settings, expand **Archived** under the environment and
+choose **Restore** beside the project. The banner on a directly opened
+project, task or review offers the same action; Project settings also offers
+Restore. The project returns to active lists with the same identity, task
+board, reviews, comments, runs, plans and finished workspaces. Changes are
+available again and retained background work becomes eligible to resume.
+
+### Current MVP limitations
+
 - Environment secrets are not available yet; existing Agent and Project
   secret scopes stay separate.
+- Environment deletion and deleting a project together with its tasks are
+  not available yet. The existing Delete project behavior is described below.
+- MCP tools for managing environments and identity badges are not available yet.
 
 ### Delete a project
 

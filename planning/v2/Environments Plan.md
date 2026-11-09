@@ -402,18 +402,38 @@ comment and finished workspace under the same key. While archived:
   restore it first" (`error_code: project_archived`); MCP tools of its agents
   get the same refusal; its project agent and workers are not started;
   `workspace.create` into it is refused. Reads are unchanged.
-- **Guarded**, not silent: `project.archive` is refused while the project has
-  an unfinished or provisioning workspace, a live or queued agent session or
-  coordinator turn (`agent_session_held`, `source_holds.rs:61`), a pending
-  delivery intent or waiting-on, or a task in **Needs you** / a review
-  awaiting a verdict. The refusal names each blocker with its action ("finish
-  or delete workspace W", "stop worker X", "answer #12"). *Recommendation*:
-  guard rather than archive-and-stop; the alternative of archiving while
-  preserving attention visibility is listed in 5B.1. Archiving itself is
-  settled.
-- **Exceptions to read-only**, by name: `project.restore` and (Stage 2)
-  `project.delete` are the only user mutations an archived project accepts;
-  without them an archived project could never be removed. **Reference
+- **Guarded**, not silent (**M3.4 implementation amendment, #1080**):
+  `project.archive` enumerates blockers in `app/projects/archive.rs`,
+  `app/runtime/sessions/registry.rs` and `store/project_archive.rs`:
+
+  - Every unfinished or provisioning workspace, and pending journaled
+    workspace creation for the project's key.
+  - Live, starting or held worker/coordinator sessions (`agent_session_held`),
+    and queued, in-flight or settling owner wakes.
+  - Pending shell reservations and registered live shells in the project.
+    Project-attributed retiring shells and retiring project-owner agents
+    remain blockers until their retirement receipts are reaped, even after
+    removal or replacement in the visible tab list. An exited registered
+    shell awaiting row cleanup does not block by itself.
+  - Needs-you tasks, unfinished waiting-on tasks, pending assignment intents
+    (including failed delivery on an unfinished task), dependency-reconciliation
+    markers, reviews awaiting a verdict, pending verdict/revision deliveries,
+    unposted revision-failure notices and queued task notices.
+  - Active deferred filesystem work (the global filesystem-job fence).
+
+  The sorted refusal is `Cannot archive P: <blocker>; <blocker>`, with
+  `error_code: conflict`, `retryable: false`, and `details.blockers` naming
+  every action (for example, "finish or delete workspace W", "stop worker X",
+  "wait for the closed terminal to exit (T)", "answer #12"). No work is
+  implicitly stopped. A fresh user attempt after clearing a blocker is
+  expected; `retryable: false` does not mean the Archive action stays disabled.
+  The guard remains the chosen policy; the alternative of archiving while
+  preserving attention visibility is listed in 5B.1.
+- **Exceptions to read-only**, by name (**M3.4 implementation amendment,
+  #1080**): the bridge already accepts `project.restore` and the existing
+  `project.delete` on archived projects. M3.3 settings offers Restore while
+  disabling Delete project on an archived project; deletion together with
+  tasks remains Stage 2. **Reference
   maintenance is not user work on the project**: an environment source edit
   (3.3, M3.2) changes the environment, and the archived project's effective
   sources follow it as derived data, with no `project_archived` refusal and
@@ -942,7 +962,8 @@ device from cache; per-device pulls via `pullDeviceProjection` (pattern
   <count text>`, "Settings…" (today's sheet until M3). An environment with
   no projects (a resumable partial creation, 2.3) shows "no projects yet"
   and a **Resume…** row (M2.2). An **Archived** group under each environment
-  (M3), collapsed, with Restore per row. Footer **"New environment…"** opens
+  (M3), collapsed, headed "Archived (N)", with "Archived", "Settings…" and
+  "Restore" per row. Footer **"New environment…"** opens
   the wizard at page 2 (M2.2). Per environment, **"New project in E…"** opens
   the wizard at page 3 with E preselected, and **"New project with extra
   folders in E…"** opens it at page 3 with Advanced expanded (both M2.2).
@@ -950,18 +971,26 @@ device from cache; per-device pulls via `pullDeviceProjection` (pattern
   the button's secondary line. In M1 the list is read-only: no footer, no
   shortcuts, and the legacy "Add project" sheet stays where it is today.
 - **Environment settings sheet** (`sheets/environmentSettings.js`, modelled on
-  `projectSettings.js`; M3): General (name → `environment.rename`; home path
-  read-only), Sources (`sheets/projectSources.js` cards against
-  `environment.*_source`; a shared row says "also used by P₂"), Isolation,
-  Secrets (Stage 2), Danger zone (delete, Stage 2; disabled with "Delete its N
-  projects first").
+  `projectSettings.js`; M3): General ("Environment name", "Save name" →
+  `environment.rename`; "Home path" read-only), Sources
+  (`sheets/projectSources.js` cards against `environment.*_source`; a shared
+  row says "also used by P₂"; "Add folder…" / "Add Git remote…"), Isolation
+  ("Inherit device setting", "Git worktree", "Rift (copy-on-write)").
+  **M3.4 implementation amendment (#1080):** those three sections ship in
+  M3.3; Secrets and environment deletion controls remain Stage 2 and are
+  absent, rather than disabled placeholders.
 - **Project settings sheet** (`projectSettings.js`, amended): General: name
-  (editable, M3 → `project.rename`), "In environment E" link, device; Sources:
+  ("Project name", "Save name", M3 → `project.rename`), "In environment E"
+  link, device; Sources:
   "From E" (read-only, "Edit in E") and **"Added to this project"**
   (editable, `project.*_source`, M2; this is ordinary editing of this project
   and **never opens the wizard**); Isolation "Inherit E's setting"; Archive
-  (M3) with the guard's refusal shown verbatim and the button disabled while
-  refused; Danger zone (delete, Stage 2).
+  (M3) with the guard's refusal shown verbatim. **M3.4 implementation amendment
+  (#1080):** Archive stays pressable after a refusal; only a pending request
+  disables it, with a single-flight latch surviving cache repaints. Blockers
+  can clear without the client knowing, so the next click asks the bridge
+  again. Danger zone retains the existing Delete project action; deletion
+  together with tasks is Stage 2.
 - States: cached list paints at once; "loading…" only when the cache is
   empty; an error replaces only a still-empty list (`deviceProjects.js:87-89`);
   empty shows "No environments on this device yet". Old bridge: projects
@@ -1150,6 +1179,24 @@ M2; the limitations are listed separately so later slices can remove them.
 
 ### Stage 1, M3: sustained use (MVP complete)
 
+**MVP implementation complete through M3.4 (#1080).** M3.1 archive/restore
+and M3.2 rename/environment source verbs are on dev. The M3.3 settings
+consumer is approved at `ea6637ab0804bcf6bb8b2186b84a5d1ecd870237` on
+`task/env-m3.3-settings`, awaiting integration and its final `API_VERSION` /
+capability advertisement. This records implementation and documentation
+completion, not acceptance on dev: the seven Stage 1 journeys below remain
+**pending manual execution on dev** against a migrated device.
+
+**M3.4 documentation amendment (#1080):** `docs/using.md` now covers archive
+blockers and reattempts, settings/banner Restore, display-only names bounded
+to one line and 200 bytes, and environment General/Sources/Isolation versus
+project-only folders. The M2 archive/rename/environment-folder limitations
+are removed; the Stage 2 limitations below remain. The Terminology Audit
+records the settled M3 labels; §1.9 and §3.3 follow the implemented guard and
+single-flight Archive behavior. `ARCHITECTURE.md` describes wire publication
+in terms of `API_VERSION` and consumer capabilities, without fixing a minor
+before the consumer lands.
+
 **Try:** live on it for a week: archive finished lines of work and see them
 leave the inbox and wizard, restore one from settings, rename a project and
 an environment, edit an environment's folders in settings, find an archived
@@ -1165,8 +1212,8 @@ everything. **Gate:** M2 exposed; `projects.archive`, `projects.rename`,
 | --- | --- | --- | --- |
 | M3.1 | **Bridge: archive/restore** (`archived_at`, guards of 1.9, `project_archived` refusals across task/review/comment/source/workspace verbs and MCP, agents not started, rows kept on the wire with `archived_at`) | guards enumerate blockers; every mutation path refuses; reads work; restore clears; migration leaves none archived | `archive_refused_names_each_blocker` (workspace, worker, coordinator turn, pending intent, needs-you task, pending verdict); `archived_project_refuses_mutations_on_every_path` (one assertion per verb family + MCP); `archived_project_agent_not_started`; `restore_restores_everything` |
 | M3.2 | **Bridge: rename + environment source verbs** (`project.rename`, `environment.rename`, `environment.*_source`, `environment.set_isolation`; one-line bounded names) | display-only renames; shared-directory rules apply to environment sources | `environment_rename_keeps_ids_and_paths`; `rename_is_one_bounded_line`; `isolation_resolution_order` |
-| M3.3 | **SPA: settings page full** (environment sheet General/Sources/Isolation, project sheet rename/archive, Archived group with Restore, search tags, read-only banner on archived project/task/review views, hidden from wizard/switcher/inbox/selector) | every list hides archived rows except search and settings; banner + Restore; refusals verbatim with disabled buttons | `environmentsSettingsDom.test.js`, `projectSettings.test.js`, `archivedProjectViews.test.js`, `createWorkspaceWizardModel.test.js` (archived hidden), `toolbarModel.test.js` (search tag) |
-| M3.4 | **Docs**: MVP complete; `docs/using.md` archive section; Terminology Audit amended | | n/a |
+| M3.3 | **SPA: settings page full** (environment sheet General/Sources/Isolation, project sheet rename/archive, Archived group with Restore, search tags, read-only banner on archived project/task/review views, hidden from wizard/switcher/inbox/selector) | every list hides archived rows except search and settings; banner + Restore; refusals verbatim; Archive pressable after refusal and disabled only during its single in-flight request | `environmentsSettingsDom.test.js`, `projectSettings.test.js`, `archivedProjectViews.test.js`, `createWorkspaceWizardModel.test.js` (archived hidden), `toolbarModel.test.js` (search tag) |
+| M3.4 | **Docs complete (#1080)**: MVP implementation complete; archive/restore, rename, environment settings and remaining limits in `docs/using.md`; Terminology Audit and architecture amended | labels/refusals checked against M3.1/M3.2 on dev and approved M3.3 consumer; §1.9/§3.3 match the implementation; Stage 1 manual dev acceptance still pending | n/a (docs only) |
 
 **Stage 1 done when** each of these journeys runs on dev, by hand, against
 a migrated device:

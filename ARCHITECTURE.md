@@ -3448,7 +3448,7 @@ workspace never retires a project worker, even one its agents made.
 `project.delete` retires the pin and every worker, revokes their tokens and
 queued turns, and removes the project's scratch; its sources stay.
 
-**Project archive (staged M3.1, #1059).** `project.archive` and
+**Project archive (M3.1, #1059).** `project.archive` and
 `project.restore` retain the project's identity and all history, persisting
 `archived_at` in `config.json`. Project-list publication carries the timestamp,
 including archived rows. Archive reports every unfinished/provisioning workspace,
@@ -3468,7 +3468,8 @@ The registry retains the reservation's project attribution at registration;
 exited shell rows do not block while awaiting cleanup. Removal and replacement
 retain project-attributed shell and agent retirement receipts until reaping
 completes, separate from the tab list. Archive polls and prunes these receipts
-without waiting under the app guard, retaining the existing conflict response.
+without waiting under the app guard. Each held receipt names the terminal or
+agent still exiting in the archive refusal (`conflict`, `retryable: false`).
 Agent start checks its addressed owner before resolving or changing the roster.
 RPC write classification comes from the effect registry, with project scope
 resolved from project, workspace, task or conversation identities; upload calls resolve their
@@ -3523,8 +3524,13 @@ or retry backoff changes; restore makes them eligible on the normal service tick
 The workspace admission hold spans both retained retries and new reservation
 through durable admission. Terminal environment-creation results remain readable.
 Configured conversation-item retention applies independently of project archive.
-The two method names are explicitly withheld from greetings, `projects.archive`
-is not advertised, and the wire stays at 3.36.0 until the consumer checkpoint.
+The active wire contract is `API_VERSION` in `bridge/src/api/mod.rs`, advanced
+to the next available minor when the consumer checkpoint lands. Archive/restore
+are gated by `projects.archive`; display-name edits by `projects.rename` and
+`environments.rename` (the latter also gates environment source/isolation
+editing). Those capabilities and method advertisements are released with the
+M3.3 consumer, rather than by the staged bridge slices alone; clients use the
+advertised capabilities to enable each action.
 
 **Waiting-on tools.** `create_task` accepts `waiting_on`; `link_task` adds
 those edges atomically with its ordinary links. `unlink_task` removes only

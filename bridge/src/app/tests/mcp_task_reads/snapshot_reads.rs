@@ -65,6 +65,40 @@ fn deferred_sentinel(fixture: &Fixture) -> Arc<AtomicUsize> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_router_list_projects_omits_archived() {
+    let fixture = Fixture::new();
+    let (_capture, agent) = router(&fixture);
+    let (_other_home, other_repo) = init_repo();
+    let active = {
+        let mut app = fixture.state.lock().unwrap();
+        let active = app.add_project(other_repo, "main".into());
+        app.projects.at_mut(0).archived_at = Some(1);
+        app.publish_all_snapshot_projection();
+        let ordinary = published(&app, "project.list", None);
+        assert_eq!(ordinary["projects"].as_array().unwrap().len(), 2);
+        active
+    };
+    let held = fixture.held_turns().await;
+    let answer = fixture
+        .reply(router_frame(&agent, BridgeAction::ListProjects))
+        .await;
+    assert_eq!(answer["ok"], true, "{answer}");
+    let projects = answer["result"]["projects"].as_array().unwrap();
+    assert_eq!(projects.len(), 1, "{answer}");
+    assert_eq!(projects[0]["project_id"], active);
+    {
+        let mut app = fixture.state.lock().unwrap();
+        app.projects.at_mut(1).archived_at = Some(1);
+        app.publish_all_snapshot_projection();
+    }
+    let answer = fixture
+        .reply(router_frame(&agent, BridgeAction::ListProjects))
+        .await;
+    assert_eq!(answer["result"]["projects"], json!([]), "{answer}");
+    drop(held);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_router_snapshot_lists_reply_with_both_writer_turns_held() {
     let fixture = Fixture::new();
     let (capture, agent) = router(&fixture);

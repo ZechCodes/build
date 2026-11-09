@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   launch,
   response,
@@ -50,8 +51,9 @@ test("main installs only sandboxed typed preload and fences old handles on OAuth
     bridgeFetch: bridgeFetch(requests),
     fetch: (count) => response(tokens(count === 1 ? "initial" : "replacement")),
   });
-  assert.ok(
-    h.calls.windows[0].options.webPreferences.preload.endsWith("/preload.cjs"),
+  assert.equal(
+    h.calls.windows[0].options.webPreferences.preload,
+    fileURLToPath(new URL("../src/preload.cjs", import.meta.url)),
   );
   const first = await invoke(h, "resume", [resume]);
   assert.equal(first.ok, true);

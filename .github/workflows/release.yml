@@ -150,7 +150,7 @@ jobs:
       matrix:
         include:
           - key: macos-arm64
-            runner: macos-14
+            runner: macos-15
             target: aarch64-apple-darwin
           - key: macos-x86_64
             runner: macos-15-intel
@@ -257,7 +257,7 @@ jobs:
     name: Sign and notarize ${{ matrix.key }}
     needs: [version, build, apple-creds]
     if: ${{ needs.apple-creds.outputs.configured == 'true' }}
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 120
     strategy:
       fail-fast: false

@@ -103,7 +103,7 @@ jobs:
         include:
           - arch: arm64
             key: macos-arm64
-            runner: macos-14
+            runner: macos-15
     defaults:
       run:
         working-directory: desktop

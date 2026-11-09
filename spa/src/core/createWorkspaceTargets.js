@@ -63,7 +63,7 @@ function creationRequest(input) {
   const continuation = continues ? {continues} : {};
   if(target.kind !== 'new-environment') return {method,params:{environment_id:target.id,...project,...continuation}};
   const environment = input.environmentDraft;
-  return {method,params:{name:environment.name.trim(),sources:environment.sources.map(sourceDraftParams),
+  return {method,params:{name:environment.name.trim() || target.name,sources:environment.sources.map(sourceDraftParams),
     ...(environment.isolation ? {isolation:environment.isolation}:{}),project,...continuation}};
 }
 export function submitCreateWorkspace(input) {

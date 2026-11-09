@@ -75,7 +75,7 @@ function projectTarget(project, context) {
     summaryLabel: environmentName ? `${environmentName} › ${base.name}` : base.name,
     taskText,
     sources: projectSources(project, environment),
-    description: `${project.workspaces ?? children.length} workspaces · ${taskText}`,
+    description: `${countText(project.workspaces ?? children.length,"workspace")} · ${taskText}`,
     at: projectTime(project, children, visits),
   };
 }
@@ -89,7 +89,7 @@ function environmentTarget(environment, context, projectTargets) {
   const count = environment.project_ids?.length ?? children.length;
   return {
     ...targetBase(environment, "environment", devices), empty: count === 0, sources: environment.sources || [],
-    description: count ? `${count} projects · ${childWorkspaces.length} workspaces` : `no projects yet · ${childWorkspaces.length} workspaces`,
+    description: count ? `${countText(count,"project")} · ${countText(childWorkspaces.length,"workspace")}` : `no projects yet · ${countText(childWorkspaces.length,"workspace")}`,
     at: Math.max(rowTime(environment), visitTime("environment", keyOf(environment), visits), latest(childTargets, (row) => row.at)),
   };
 }
@@ -151,7 +151,7 @@ export function createWorkspaceWizardModel(options = {}) {
   const target = presetTarget(options, context, [...projects, ...environments]);
   const legacy = context.devices.some((row) => !wizardEntrySupported(context,row.id));
   return {
-    sections, target, page: options.newEnvironment && creationSupportForMethod(options.features?.[options.deviceId],"environment.create") ? 2 : target ? 3 : 1,
+    sections, target, page: options.newEnvironment && creationSupportForMethod(options.features?.[options.deviceId],"environment.create") ? 2 : 1,
     newEnvironmentDevices: context.devices.filter(row => creationSupportForMethod(options.features?.[row.id],"environment.create")),
     emptyText: emptyText(sections, options.query, context.devices.some(row => creationSupportForMethod(options.features?.[row.id],"environment.create"))),
     legacyNote: legacy ? "This device needs an update to create environments here" : "",
@@ -168,4 +168,17 @@ export function addedFolderLabel(source, deviceId, snapshot) {
   if (environment) return `shared with ${environment.name}`;
   const project = references(snapshot.projects, row => [...(row.sources || []), ...(row.added_sources || [])]);
   return project ? `shared with ${project.name}` : "new folder";
+}
+
+const countText = (count,noun) => `${count} ${noun}${count===1 ? '':'s'}`;
+
+export function optionalWorkspaceName({target,name=''},snapshot) {
+  if(name.trim() || target.kind==='project')return name;
+  const base=target.name;
+  const siblings=target.kind==='new-environment' ? []:(snapshot.projects || []).filter(project=>
+    deviceOf(project)===target.deviceId && project.environment_id===target.id);
+  const names=new Set(siblings.map(project=>project.name));
+  let derived=base,index=2;
+  while(names.has(derived))derived=`${base} ${index++}`;
+  return derived;
 }

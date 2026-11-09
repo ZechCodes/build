@@ -837,6 +837,30 @@ else `"102 tasks"`, including `"0 tasks"`.
 
 ### 3.1 Create-workspace wizard
 
+
+**#1085 implementation amendment (2026-11-09).** The creation wizard now has
+one main page, "New workspace": search stays at the top, the target
+list scrolls in the middle, and optional Name, Advanced, errors/progress and New environment…,
+Cancel/Close and Create workspace stay at the bottom. Rows select in place
+with a check mark and pressed state; a device-labelled summary and outcome
+remain beside Name after filtering or scrolling. Preset targets omit the
+picker. Advanced is always available and contains isolation and effective
+directories, plus project-only added folders where supported; its expanded
+body stays directly below the summary in the pinned footer and scrolls within
+a capped height. The target list shrinks to keep the other controls visible.
+Selected and device names use single-line ellipses with full-text titles, while
+the separate Offline label stays visible. The summary outcome says "Uses this
+project's task board" or "Creates a new task board" without repeating the name. Errors and retained progress scroll within three-line caps.
+New environment… opens configuration
+on page 2; Back preserves the draft and Use environment returns it as a
+selectable, editable row on page 1 without creating anything. Saved page-3
+drafts restore on page 1. Blank project names are refused by the bridge, so
+the SPA derives the environment's name and the lowest free cached sibling
+suffix (2, 3, …) before sending the existing creation command. This amendment
+supersedes the three-page layout, required name, hidden fixed-project Advanced
+and Next-button descriptions below; the durable creation/progress protocol
+is unchanged.
+
 Replaces today's "New workspace in P" modal (`spa/src/core/createWork.js:54-68`)
 as the single creation entry point, opened from: the switcher's "New
 workspace…" (`toolbar.js:853-869`), the inbox's "New project" button

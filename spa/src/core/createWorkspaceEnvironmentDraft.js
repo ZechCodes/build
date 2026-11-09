@@ -40,16 +40,17 @@ export function wireEnvironmentDraft(host, state, {save,paint,fail}) {
   host.querySelector('#create-environment-isolation').onchange = event => {draft.isolation=event.target.value;save();};
   const device = host.querySelector('#create-environment-device');
   if (device) device.onchange = () => {
+    if(draft.deviceId===device.value)return;
     draft.deviceId=device.value;
     draft.sources.forEach(source => {if(source.kind==='path')source.path='';});
-    state.addedSources=[];changed();paint();
+    changed();paint();
   };
 }
 
 export function refusalDraftPage(target, error) {
-  if (target?.kind !== 'new-environment') return 3;
+  if (target?.kind !== 'new-environment') return 1;
   const creation = error?.details?.creation || {};
-  const sourcePages = new Map([['project',3],['environment',2]]);
-  const stepPages = new Map([['project',3],['workspace',3],['environment',2]]);
+  const sourcePages = new Map([['project',1],['environment',2]]);
+  const stepPages = new Map([['project',1],['workspace',1],['environment',2]]);
   return sourcePages.get(creation.source_scope) || stepPages.get(creation.step) || 2;
 }

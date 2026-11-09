@@ -62,3 +62,9 @@ it('sends a new environment, project, workspace and added sources as one retaine
  expect(mocked.service.submit).toHaveBeenCalledTimes(1);
  expect(mocked.service.submit).toHaveBeenCalledWith(expect.objectContaining({operationId:'one',method:'environment.create',params:{name:'Sources',sources:[{remote:source.remote,name:'api',base_branch:'main'}],isolation:'worktree',project:{name:'Ship',workspace:{name:'Ship',isolation:'rift'},added_sources:[{remote:'https://github.com/org/extra.git',name:'extra',base_branch:'main'}]}}}));
 });
+
+it('uses a derived environment label when its optional configuration name is blank',()=>{
+ const source={kind:'remote',remote:'https://github.com/org/api.git',name:'api',base_branch:''};
+ submitCreateWorkspace({target:{kind:'new-environment',deviceId:'d1',name:'api'},environmentDraft:{name:'  ',sources:[source],isolation:''},name:'api',operationId:'blank'});
+ expect(mocked.service.submit.mock.calls[0][0]).toMatchObject({params:{name:'api',project:{name:'api',workspace:{name:'api'}}}});
+});

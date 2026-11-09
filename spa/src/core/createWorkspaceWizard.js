@@ -1,105 +1,56 @@
-import { folderDraftsHtml, folderDraftError, wireFolderDrafts } from './createWorkspaceFolders.js';
-import { environmentDraftHtml, initialEnvironmentDraft, draftEnvironmentTarget, environmentDraftError, wireEnvironmentDraft, refusalDraftPage } from './createWorkspaceEnvironmentDraft.js';
-import { kindGlyphHtml } from './environmentIdentity.js';
+import { folderDraftError, wireFolderDrafts } from './createWorkspaceFolders.js';
+import { initialEnvironmentDraft, draftEnvironmentTarget, environmentDraftError, wireEnvironmentDraft, refusalDraftPage } from './createWorkspaceEnvironmentDraft.js';
 import { creationSupportForMethod, creationMethodForTarget } from './writeOperationProgress.js';
 import { environmentWizardSupported } from './environmentSupport.js';
 import { go } from '../app.js';
-import { esc, messageOf } from './text.js';
-import { fieldTraits } from './fieldTraits.js';
-import { isolationOptionsHtml } from './isolation.js';
-import { modalDialogHtml, openModal } from './modal.js';
+import { messageOf } from './text.js';
+import { openModal } from './modal.js';
 import { branchNamePreview } from './toolbarModel.js';
 import { uiAddress, watchUiState, updateUiState } from './localUiState.js';
 import { readUiRecord, deleteUiDraftsIfUnwritten } from './localUiStore.js';
-import { createWorkspaceWizardModel } from './createWorkspaceWizardModel.js';
+import { createWorkspaceWizardBodyHtml, createWorkspaceWizardHtml, wireWizardAdvanced, workspaceSourcesHtml, targetText, wizardTargets, sameTarget } from './createWorkspaceWizardRender.js';
+export { createWorkspaceWizardBodyHtml, createWorkspaceWizardHtml, createWorkspaceTargetSummaryHtml, wireWizardAdvanced } from './createWorkspaceWizardRender.js';
+import { optionalWorkspaceName, createWorkspaceWizardModel } from './createWorkspaceWizardModel.js';
 import { openCreateWorkspaceProgress } from './createWorkspaceProgress.js';
 import { openCreateWorkspaceLegacy } from './createWorkspaceLegacy.js';
 import { readCreateWorkspaceTargets, followCreateWorkspaceTargets, submitCreateWorkspace,
   createLegacyWorkspace, cacheCreatedResources, createdWorkspaceRoute, discardCreatedProject, discardCreatedEnvironment, consumeCreateWorkspaceAttempt } from './createWorkspaceTargets.js';
 export { createWorkspaceWizardModel } from './createWorkspaceWizardModel.js';
-const glyph = kind => `<span class="create-kind" aria-hidden="true">${kindGlyphHtml(kind === 'project' ? 'project' : 'environment')}</span>`;
-const deviceHtml = target => `${target.deviceLabel ? `<span class="dim inbox-device">${esc(target.deviceLabel)}</span>` : ''}${target.offline ? '<span class="dim inbox-away">Offline</span>' : ''}`;
-const targetLabel = target => target.summaryLabel || target.label || target.name || target.id;
-export function createWorkspaceTargetSummaryHtml(target) {
-  return `${glyph(target.kind)}<span>${esc(targetLabel(target))}</span>${deviceHtml(target)}`;
-}
-const targetText = target => [targetLabel(target),target.deviceLabel,target.offline ? 'Offline':''].filter(Boolean).join(' · ');
-function targetHtml(target,index) {
-  return `<button type="button" class="create-target" data-create-target="${index}" data-kind="${target.kind}">
-    ${glyph(target.kind)}<span class="create-target-copy"><span>${esc(target.label)}</span><span class="sub">${esc(target.description)}${target.empty ? ' · Resume…' : ''}</span></span>${deviceHtml(target)}</button>`;
-}
-function pickerHtml(state) {
-  let index=0;
-  return `<h3 id="create-workspace-title">Where?</h3>
-    <label class="create-label" for="create-workspace-search">Find a project or environment</label>
-    <input id="create-workspace-search" type="search" ${fieldTraits('search')} value="${esc(state.query || '')}">
-    <div class="create-targets">${(state.sections || []).map(section=>`<section data-create-section="${section.kind}"><h4>${esc(section.title)}</h4>
-      ${section.helper ? `<p class="sub">${esc(section.helper)}</p>`:''}${section.targets.map(target=>targetHtml(target,index++)).join('')}</section>`).join('')}
-    ${state.emptyText ? `<p class="sub">${esc(state.emptyText)}</p><p class="sub">Build keeps your code in environments. Make one from a folder or a Git URL.</p>`:''}</div>
-    ${state.newEnvironmentDevices?.length ? '<button class="btn" type="button" data-create-new-environment>New environment…</button>' : ''}
-    ${state.legacyNote ? `<p class="sub">${esc(state.legacyNote)}</p>`:''}`;
-}
-function nameHtml(state) {
-  const target=state.target;
-  const outcome=target.kind === 'project' ? `Uses ${target.name}'s task board · ${target.taskText || '0 tasks'}`:'Creates a new task board';
-  return `<h3 id="create-workspace-title">New workspace in ${esc(targetLabel(target))}</h3>
-    <p class="sub">What are you working on?</p><p class="create-target-summary">${createWorkspaceTargetSummaryHtml(target)}</p>
-    <p class="sub">${esc(outcome)}</p>
-    <label class="create-label" for="create-work-input">Name${target.kind === 'project' ? ' (optional)':''}</label>
-    <input id="create-work-input" type="text" ${fieldTraits('identifier','go')} value="${esc(state.name || '')}"${target.kind !== 'project' ? ' required':''}${state.busy ? ' disabled':''}>
-    <p class="sub create-preview" data-branch-preview>${esc(branchNamePreview(state.name))}</p>
-    <label class="create-label" for="create-work-isolation">Isolation</label><select id="create-work-isolation"${state.busy ? ' disabled':''}>
-    ${isolationOptionsHtml(state.isolation,null,{inheritLabel:target.kind === 'project' ? 'Inherit project setting':"Inherit environment's setting"})}</select>
-    <h4>Directories this workspace will contain</h4><ul class="create-sources">${workspaceSourcesHtml(state)}</ul>${advancedHtml(state)}`;
-}
-function workspaceSourcesHtml(state) {
-  const added=state.target.kind==='project' ? []:state.addedSources || [];
-  return [...(state.target.sources || []), ...added].map(source=>`<li>${esc(source.path || source.remote || source.name)}</li>`).join('');
-}
-function advancedHtml(state) {
-  if (!state.showAdvanced || state.target?.kind === 'project') return '';
-  return `<details data-create-advanced${state.advancedExpanded ? ' open' : ''}><summary>Advanced</summary><p>Also add folders to this project only</p>${folderDraftsHtml(state.addedSources || [],{deviceId:state.target.deviceId,snapshot:state.folderReferences || {},advanced:true})}</details>`;
-}
-function wizardActionsHtml(state) {
-  const back=state.page !== 1 && !state.fixedProject ? '<button class="btn" type="button" data-create-back>Back</button>':'';
-  const create=state.page === 3 ? `<button class="btn primary" type="button" data-create-go${state.busy || state.operationId ? ' disabled':''}>${state.busy ? 'Creating…':'Create workspace'}</button>`:'';
-  return `<div class="row create-row">${back}<button class="btn" type="button" data-create-cancel${state.busy ? ' disabled':''}>${state.operationId ? 'Close':'Cancel'}</button>${state.page === 2 ? '<button class="btn primary" type="button" data-create-next>Next</button>' : ''}${create}</div>`;
-}
-export function createWorkspaceWizardBodyHtml(state) {
-  const page=wizardPageHtml(state);
-  const progress=state.operationId ? `<p role="status">Still creating ‹${esc(state.name || 'workspace')}›… <button class="btn" type="button" data-create-resume>View progress</button></p>`:'';
-  return `<div class="create-workspace-page${state.pageTransition ? ' create-workspace-page-enter':''}">${page}</div>${progress}<div class="warn create-error" role="alert"${state.error ? '':' hidden'}>${esc(state.error || '')}</div>${wizardActionsHtml(state)}`;
-}
-function wizardPageHtml(state) {
-  if (state.page === 2) return environmentDraftHtml(state,state.folderReferences || {});
-  return state.page === 3 && state.target ? nameHtml(state):pickerHtml(state);
-}
-export function createWorkspaceWizardHtml(state) {
-  return modalDialogHtml(createWorkspaceWizardBodyHtml(state),{className:'modal-create create-workspace-sheet'});
-}
 const draftOf = state => ({target:state.target,page:state.page,name:state.name,isolation:state.isolation,operationId:state.operationId,continues:state.continues,environmentDraft:state.environmentDraft,addedSources:state.addedSources,advancedExpanded:state.advancedExpanded});
 async function deleteDraft(address) {
   const record=await readUiRecord(address);
   if(record) await deleteUiDraftsIfUnwritten([{address,record}],()=>true);
 }
 function trapTab(event,body) {
-  const controls=[...body.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled)')];
+  const controls=[...body.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary')].filter(el=>!el.closest('[hidden]') && (!el.closest('details:not([open])') || el.tagName==='SUMMARY')).sort((a,b)=>a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING ? -1:1);
   const edge=event.shiftKey ? controls[0]:controls.at(-1);
   if(document.activeElement !== edge) return;
   event.preventDefault();(event.shiftKey ? controls.at(-1):controls[0])?.focus();
 }
 function pickerKey(event,body) {
-  if(event.key === '/' && event.target.tagName !== 'INPUT') {event.preventDefault();body.querySelector('#create-workspace-search')?.focus();return;}
+  if(event.key === '/' && !event.target.closest('input,textarea,select,[contenteditable]')) {event.preventDefault();body.querySelector('#create-workspace-search')?.focus();return;}
   const direction={ArrowDown:1,ArrowUp:-1}[event.key];
-  if(!direction) return;
+  if(!direction || event.target.closest('input,textarea,select,[contenteditable],.create-error,.create-resume')) return;
   const rows=[...body.querySelectorAll('[data-create-target], [data-create-new-environment]')];
   if(!rows.length) return;
   event.preventDefault();const at=rows.indexOf(document.activeElement);rows[(at+direction+rows.length)%rows.length].focus();
 }
-function validName(input,target,name) {
-  input.setCustomValidity(target.kind !== 'project' && !name.trim() ? 'Enter a name for this line of work.':'');
-  if(input.checkValidity()) return true;
-  input.reportValidity();return false;
+function initialFocusSelector(state,name=false) {
+  if(state.page===2)return '#create-environment-device, [data-folder-add]';
+  return state.presetTarget || name ? '#create-work-input':'#create-workspace-search';
+}
+function rememberWizardFocus(body) {
+  const focused=document.activeElement;
+  if(!body.contains(focused))return {};
+  return {id:focused.id,kind:focused.dataset.kind,key:focused.dataset.createKey,selection:focused.selectionStart};
+}
+function restoreWizardFocus(body,{id,kind,key,selection}) {
+  let restored=id && body.querySelector(`#${id}`);
+  if(key)restored=[...body.querySelectorAll('[data-create-target]')].find(row=>row.dataset.kind===kind && row.dataset.createKey===key)
+    || body.querySelector('#create-workspace-search');
+  if(!restored)return;
+  restored.focus({preventScroll:true});
+  if(restored.type==='text' && selection!=null)restored.setSelectionRange(selection,selection);
 }
 function deviceSupportsWizard(snapshot,deviceId) {
   const features=snapshot.features?.[deviceId];
@@ -151,7 +102,9 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
   const initial=createWorkspaceWizardModel({...snapshot,...options,fixedProject});
   const state={...initial,query:'',name:'',isolation:'',error:options.error || '',busy:false,operationId:null,fixedProject,
     environmentDraft:initialEnvironmentDraft(options,initial),addedSources:[],advancedExpanded:options.advancedExpanded === true,folderReferences:snapshot};
+  state.presetTarget=Boolean(initial.target);
   if(savedDraft)Object.assign(state,savedDraft);
+  if(state.page===3)state.page=1;
   updateAdvanced();
   const opener=document.activeElement;
   const address=uiAddress({deviceId:options.deviceId,entityId:options.projectId || options.environmentId,view:'create-workspace',kind:'draft'});
@@ -159,18 +112,18 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
   let legacyScreen=null;
   let detached=false,submitting=false,readGeneration=0;
   let draft,stop=()=>{};
-  const modal=openModal({dialogHtml:createWorkspaceWizardHtml(state),scrimId:'create-scrim',canDismiss:()=>!state.busy,onClose:cancelled,initialFocus:':not(*)'});
+  const modal=openModal({dialogHtml:createWorkspaceWizardHtml(state),scrimId:'create-scrim',canDismiss:()=>!state.busy,onClose:cancelled,initialFocus:initialFocusSelector(state)});
   modal.body.setAttribute('aria-labelledby','create-workspace-title');
   modal.body.dataset.createPage=String(state.page);
   draft=watchUiState(address,restoreDraft,{active:()=>!detached});
   stop=followCreateWorkspaceTargets(()=>{void refresh();});
   wire();
-  const ready=draft.ready.then(async()=>{await recoverAttempt();if(!detached)focusPage(options.fromShortcut);});
+  const ready=draft.ready.then(async()=>{await recoverAttempt();if(!detached)focusPage();});
   return {ready,close:()=>legacyScreen ? legacyScreen.close():cancel(),
     detach:()=>legacyScreen ? legacyScreen.detach():detach(),flushDraft:()=>draft.flush()};
 
   function recoverProgress(attempt) {
-    Object.assign(state,attempt.draft,{operationId:attempt.operationId,page:3});
+    Object.assign(state,attempt.draft,{operationId:attempt.operationId,page:1});
     let progress=null,closed=false;
     const ready=updateUiState(address,()=>draftOf(state)).then(async()=>{
       if(closed)return;
@@ -187,15 +140,15 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     const latest=[...attempts].sort((left,right)=>(right.localOrder ?? right.createdAt ?? 0)-(left.localOrder ?? left.createdAt ?? 0));
     const attempt=state.operationId ? latest.find(row=>row.operationId===state.operationId):latest[0];
     if(!attempt)return;
-    Object.assign(state,attempt.draft,{operationId:attempt.operationId,page:3});updateModel();paint();
+    Object.assign(state,attempt.draft,{operationId:attempt.operationId,page:1});updateModel();paint();
     await draft.write(draftOf(state));
     if(['succeeded','failed','result_expired'].includes(attempt.state))await showProgress(attempt.operationId);
   }
   function restoreDraft(value) {
     if(!value || detached || JSON.stringify(value) === JSON.stringify(draftOf(state))) return;
-    Object.assign(state,value);updateModel();paint();
+    Object.assign(state,value);if(state.page===3)state.page=1;updateModel();paint();
   }
-  function save() {void draft.write(draftOf(state));}
+  function save() {syncEnvironmentTarget();void draft.write(draftOf(state));}
   function dispose() {if(detached)return;detached=true;stop();draft.dispose();}
   async function detach() {await draft.flush();dispose();await modal.close();}
   async function cancelled() {
@@ -215,11 +168,19 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
   function updateModel() {
     const model=createWorkspaceWizardModel({...snapshot,...options,fixedProject,query:state.query});
     state.sections=model.sections;state.emptyText=model.emptyText;state.legacyNote=model.legacyNote;state.newEnvironmentDevices=model.newEnvironmentDevices;state.folderReferences=snapshot;
-    if(!state.target && model.target){state.target=model.target;state.page=3;}
+    if(!state.target && model.target){state.target=model.target;state.page=1;}
     if(state.target) refreshTarget(model);
     updateAdvanced();
   }
+  function syncEnvironmentTarget() {
+    state.draftTarget=draftEnvironmentTarget(state.environmentDraft,snapshot.devices);
+    if(state.target?.kind==='new-environment'){
+      changeAddedDevice(state.draftTarget.deviceId);state.target=state.draftTarget;
+    }
+    if(!state.environmentDraft.sources.length && state.target?.kind!=='new-environment')state.draftTarget=null;
+  }
   function updateAdvanced() {
+    syncEnvironmentTarget();
     state.showAdvanced=state.target?.kind !== 'project' && snapshot.features?.[state.target?.deviceId]?.addedSources === true;
   }
   function refreshTarget(model) {
@@ -227,31 +188,42 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     state.target=targets.find(target=>target.kind===state.target.kind && target.key===state.target.key) || state.target;
   }
   function focusPage(shortcut=false) {
-    const selector=state.page===3 ? '#create-work-input':state.page===2 ? '#create-environment-device, [data-folder-add]':shortcut ? '[data-create-target], [data-create-new-environment]':'#create-workspace-search';
+    const selector=initialFocusSelector(state,shortcut);
     modal.body.querySelector(selector)?.focus();
   }
-  function paint() {
+  function paint(keepPicker=false) {
     if(detached) return;
-    const focused=document.activeElement;
-    const id=modal.body.contains(focused) ? focused.id:null;
-    const selection=focused?.selectionStart;
+    const focus=rememberWizardFocus(modal.body);
+    const scrollTop=modal.body.querySelector('[data-create-scroll]')?.scrollTop || 0;
     state.pageTransition=modal.body.dataset.createPage !== String(state.page);
     modal.body.dataset.createPage=String(state.page);
-    modal.body.innerHTML=createWorkspaceWizardBodyHtml(state);wire();
-    const restored=id ? modal.body.querySelector(`#${id}`):null;
-    restored?.focus();if(restored?.type==='text' && selection!==null) restored.setSelectionRange(selection,selection);
+    if(keepPicker)paintSelection();else modal.body.innerHTML=createWorkspaceWizardBodyHtml(state);
+    wire();
+    restoreWizardFocus(modal.body,focus);
+    modal.body.querySelector('[data-create-scroll]').scrollTop=scrollTop;
+  }
+  function paintSelection() {
+    const template=document.createElement('template');template.innerHTML=createWorkspaceWizardBodyHtml(state);
+    modal.body.querySelector('#create-advanced-body')?.remove();
+    modal.body.querySelector('.create-workspace-bottom').replaceWith(template.content.querySelector('.create-workspace-bottom'));
+    const targets=wizardTargets(state).flatMap(section=>section.targets);
+    modal.body.querySelectorAll('[data-create-target]').forEach(button=>{
+      const selected=sameTarget(targets[Number(button.dataset.createTarget)],state.target);
+      button.setAttribute('aria-pressed',String(selected));button.querySelector('.create-selected').textContent=selected ? '✓':'';
+    });
   }
   function changeAddedDevice(deviceId) {
     if(!state.target || state.target.deviceId===deviceId)return;
     state.addedSources.forEach(source=>{if(source.kind==='path')source.path='';});
   }
   function selectTarget(target) {
+    if(target.kind==='new-environment' && !validEnvironmentDraft())return;
     if(!targetSupportsDurableCreation(snapshot,target)){
       if(target.kind==='project')void handoffLegacy(target);
       else {state.error='This device needs an update to create a project in this environment.';paint();}
       return;
     }
-    changeAddedDevice(target.deviceId);state.target=target;state.page=3;state.error='';updateAdvanced();save();paint();focusPage();
+    changeAddedDevice(target.deviceId);state.target=target;state.page=1;state.error='';updateAdvanced();save();paint(true);
   }
   async function handoffLegacy(target) {
     await cancel();
@@ -269,7 +241,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
   }
   function wireActions() {
     modal.body.querySelector('[data-create-cancel]').onclick=()=>{void cancel();};
-    const back=modal.body.querySelector('[data-create-back]');if(back)back.onclick=()=>{state.page=state.page===3 && state.target?.kind==='new-environment' ? 2:1;save();paint();focusPage();};
+    const back=modal.body.querySelector('[data-create-back]');if(back)back.onclick=()=>{state.page=1;updateModel();save();paint();focusPage();};
     const next=modal.body.querySelector('[data-create-next]');if(next)next.onclick=nextPage;
     const create=modal.body.querySelector('[data-create-go]');if(create)create.onclick=()=>{void submit();};
     const resume=modal.body.querySelector('[data-create-resume]');if(resume)resume.onclick=()=>{void showProgress(state.operationId);};
@@ -279,19 +251,20 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     if(state.page===2) {wireEnvironmentDraft(modal.body,state,{save,paint,fail});return;}
     const advanced=modal.body.querySelector('[data-create-advanced]');
     if(!advanced)return;
-    advanced.ontoggle=()=>{state.advancedExpanded=advanced.open;save();};
+    wireWizardAdvanced(modal.body,expanded=>{state.advancedExpanded=expanded;save();},state.busy);
+    if(!state.target || !state.showAdvanced)return;
     wireFolderDrafts(modal.body,{sources:state.addedSources,deviceId:state.target.deviceId,changed:()=>{save();modal.body.querySelector('.create-sources').innerHTML=workspaceSourcesHtml(state);},repaint:paint,fail});
   }
   function nextPage() {
-    state.error=environmentDraftError(state.environmentDraft);
-    if(state.error){paint();return;}
-    state.target=draftEnvironmentTarget(state.environmentDraft,snapshot.devices);state.page=3;updateAdvanced();save();paint();focusPage();
+    if(!validEnvironmentDraft())return;
+    changeAddedDevice(state.environmentDraft.deviceId);state.target=draftEnvironmentTarget(state.environmentDraft,snapshot.devices);state.draftTarget=state.target;state.page=1;updateAdvanced();save();paint();focusPage(true);
   }
   function wirePicker() {
-    const targets=(state.sections || []).flatMap(section=>section.targets);
+    const targets=wizardTargets(state).flatMap(section=>section.targets);
     modal.body.querySelectorAll('[data-create-target]').forEach(button=>{button.onclick=()=>selectTarget(targets[Number(button.dataset.createTarget)]);});
     const fresh=modal.body.querySelector('[data-create-new-environment]');
-    if(fresh)fresh.onclick=()=>{changeAddedDevice(state.environmentDraft.deviceId);state.page=2;state.error='';save();paint();focusPage();};
+    if(fresh)fresh.onclick=()=>{state.page=2;state.error='';save();paint();focusPage();};
+    const edit=modal.body.querySelector('[data-create-edit]');if(edit)edit.onclick=()=>fresh?.click();
     const search=modal.body.querySelector('#create-workspace-search');
     if(search)search.oninput=()=>{state.query=search.value;updateModel();paint();};
   }
@@ -300,16 +273,22 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     if(input)input.oninput=()=>{state.name=input.value;modal.body.querySelector('[data-branch-preview]').textContent=branchNamePreview(state.name);save();};
     const isolation=modal.body.querySelector('#create-work-isolation');if(isolation)isolation.onchange=()=>{state.isolation=isolation.value;save();};
   }
-  function validSubmission(input) {
-    if(!validName(input,state.target,state.name))return false;
+  function validEnvironmentDraft() {
+    state.error=environmentDraftError(state.environmentDraft);
+    if(!state.error)return true;
+    state.page=2;save();paint();focusPage();return false;
+  }
+  function validSubmission() {
+    syncEnvironmentTarget();
+    if(state.target.kind==='new-environment' && !validEnvironmentDraft())return false;
     const error=state.showAdvanced ? folderDraftError(state.addedSources):'';
     if(!error)return true;
     state.error=error;state.advancedExpanded=true;paint();return false;
   }
   async function submit() {
-    if(submitting || state.operationId || !state.target) return;
-    const input=modal.body.querySelector('#create-work-input');
-    if(!validSubmission(input))return;
+    if(submitting || state.operationId) return;
+    if(!state.target){state.error='Choose a project or environment.';paint();modal.body.querySelector('#create-workspace-search')?.focus();return;}
+    if(!validSubmission())return;
     submitting=true;state.busy=true;state.error='';paint();
     try {
       await draft.write(draftOf(state));
@@ -324,7 +303,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     await deleteDraft(address);dispose();await modal.close();(options.navigate || go)(route);
   }
   async function submitDurable(continues=state.continues) {
-    const attempt=submitCreateWorkspace({...draftOf(state),continues,draft:draftOf(state)});
+    const attempt=submitCreateWorkspace({...draftOf(state),name:optionalWorkspaceName(state,snapshot),continues,draft:draftOf(state)});
     await attempt.ready;
     state.operationId=attempt.operationId;state.busy=false;
     await draft.write(draftOf(state));
@@ -336,7 +315,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
   }
   function refusalPage(error) {
     state.page=refusalDraftPage(state.target,error);
-    state.advancedExpanded=state.page===3;
+    state.advancedExpanded=state.page===1;
   }
   async function returnToWizard(error='',continues=state.operationId) {
     state.error=messageOf(error);refusalPage(error);
@@ -356,7 +335,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
   }
   async function submitContinuation(operationId) {
     const nextDraft={...draftOf(state),operationId:null,continues:operationId};
-    const attempt=submitCreateWorkspace({...nextDraft,operationId:crypto.randomUUID(),draft:nextDraft});
+    const attempt=submitCreateWorkspace({...nextDraft,name:optionalWorkspaceName(state,snapshot),operationId:crypto.randomUUID(),draft:nextDraft});
     await attempt.ready;
     state.operationId=attempt.operationId;state.continues=operationId;
     await updateUiState(address,()=>draftOf(state));

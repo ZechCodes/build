@@ -11,7 +11,7 @@ export const SELECT_SOURCES = {
   "core/captureDecision.js": "task controls",
   "core/composeView.js": "compose",
   "core/createWorkspaceEnvironmentDraft.js": "new environment",
-  "core/createWorkspaceWizard.js": "task controls / new environment / workspace advanced folders",
+  "core/createWorkspaceWizardRender.js": "task controls / new environment / workspace advanced folders",
   "core/createWorkspaceLegacy.js": "task controls",
   "core/defaultHarness.js": "device settings",
   "core/diffSort.js": "task controls",
@@ -137,10 +137,11 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
   }
   if (name === "workspace advanced folders") {
     root.innerHTML = m.create.createWorkspaceWizardHtml({
-      page: 3, target: { kind: "environment", id: "env-1", deviceId: device.id, name: "Platform", sources: project.sources },
+      page: 1, target: { kind: "environment", id: "env-1", deviceId: device.id, name: "Platform", sources: project.sources },
       name: "Ship wizard", isolation: "", showAdvanced: true, advancedExpanded: true, addedSources: wizardFolders,
       folderReferences: { environments: [{ deviceId: device.id, name: "Tools", sources: [{ path: "/code/shared" }] }] },
     });
+    m.create.wireWizardAdvanced(root);
   }
   if (name === "task controls") {
     const task = { id: "task-1", state: "open", status: "backlog", priority: "medium", labels: [] };
@@ -149,7 +150,7 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
     const draft = { optionId: "workspace", name: "", isolation: "", choiceOpen: true, choice: { provider: "claude_adk", model: "claude-opus-4", effort: "high" } };
     const assignee = m.assignee.assigneeControlHtml(options, draft, { prefix: "assign", catalog });
     const capture = m.capture.captureDecisionHtml(m.capture.captureDecisionModel({ id: "capture-1", text: "Fix selects", state: "needs_input" }), { projects: [project], projectId: project.id });
-    root.innerHTML = rail + m.waiting.waitingOnFrameHtml() + `<div class="modal-create">${assignee}</div>` + capture + `<div class="modal-create">${m.create.createWorkspaceWizardBodyHtml({ page: 3, target: { kind: "project", id: project.id, deviceId: device.id, name: project.name, label: project.name, sources: project.sources, taskText: "0 tasks" }, name: "", isolation: "", error: "" })}</div><div class="modal-create">${m.legacyCreate.createWorkspaceLegacyBodyHtml({ projectName: project.name, name: "", isolation: "", error: "", busy: false }).replaceAll('create-work-', 'legacy-create-work-')}</div>` + m.sort.diffSortHtml("latest") + '<label>Compact control<select class="mini"><option>First</option><option>Second</option></select></label>';
+    root.innerHTML = rail + m.waiting.waitingOnFrameHtml() + `<div class="modal-create">${assignee}</div>` + capture + `<div class="modal-create">${m.create.createWorkspaceWizardBodyHtml({ page: 1, target: { kind: "project", id: project.id, deviceId: device.id, name: project.name, label: project.name, sources: project.sources, taskText: "0 tasks" }, name: "", isolation: "", error: "", advancedExpanded:true })}</div><div class="modal-create">${m.legacyCreate.createWorkspaceLegacyBodyHtml({ projectName: project.name, name: "", isolation: "", error: "", busy: false }).replaceAll('create-work-', 'legacy-create-work-')}</div>` + m.sort.diffSortHtml("latest") + '<label>Compact control<select class="mini"><option>First</option><option>Second</option></select></label>';
   }
   if (name === "task controls") {
     root.querySelector("[data-waiting-choice]").innerHTML = m.waiting.blockerOptionsHtml([

@@ -468,6 +468,20 @@ describe("the advanced panel", () => {
     await vi.waitFor(() => expect(bridge.call).toHaveBeenCalledWith("branch.dispatch", expect.objectContaining({ project_id: "p2" })));
   });
 
+  it("updates project choices when the open panel's cached project becomes archived", async () => {
+    await openAdvanced();
+    const text = type("#compose-text", "keep this draft while projects change");
+    text.focus();
+    text.setSelectionRange(4, 4);
+    feedProjects[0] = { ...feedProjects[0], archived_at: 1 };
+    subscriber(feedSnapshot());
+    expect([...document.querySelectorAll("#compose-project option")].map(option => option.value)).toEqual(["p2"]);
+    expect($("#compose-project").value).toBe("p2");
+    expect($("#compose-text").value).toBe("keep this draft while projects change");
+    expect(document.activeElement).toBe($("#compose-text"));
+    expect($("#compose-text").selectionStart).toBe(4);
+  });
+
   it("has no manual destination when every project is archived", async () => {
     feedProjects = feedProjects.map(project => ({ ...project, archived_at: 1 }));
     subscriber(feedSnapshot());

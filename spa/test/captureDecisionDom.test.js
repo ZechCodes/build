@@ -161,6 +161,19 @@ afterEach(() => {
 const choices = () => [...host.querySelectorAll("[data-capture-option]")];
 
 describe("the capture decision page", () => {
+  it("omits archived projects and defaults past archived offers and routing", async () => {
+    surface.dispose();
+    feedSnapshot = { items: feedItems, projects: [{ ...feedProjects[0], archived_at: 1 }, feedProjects[1]] };
+    const { writeCached } = await import("../src/core/localCache.js");
+    await writeCached({ deviceId: "dev-1", entityId: "capture-1", kind: "capture" }, asking({ routing: { project_id: "p1", kind: "branch" } }));
+    surface = mountCaptureDecision(host, "capture-1");
+    await vi.waitFor(() => expect(host.querySelector("#capture-project")).toBeTruthy());
+    expect([...host.querySelectorAll("#capture-project option")].map(option => option.value)).toEqual(["p2"]);
+    expect(host.querySelector("#capture-project").value).toBe("p2");
+    host.querySelector("#capture-route").click();
+    await vi.waitFor(() => expect(homeCall).toHaveBeenCalledWith("capture.answer", expect.objectContaining({ text: "Route this to project p2 as a branch" })));
+  });
+
   it("paints a stored capture before a late reply and redraws from a cache write", async () => {
     const { writeCached } = await import("../src/core/localCache.js");
     const address = { deviceId: "dev-1", entityId: "capture-1", kind: "capture" };

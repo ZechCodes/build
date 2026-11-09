@@ -444,6 +444,40 @@ describe("while the device is away", () => {
 });
 
 describe("the advanced panel", () => {
+  it("omits the archived first project and defaults to the next active project", async () => {
+    feedProjects[0] = { ...feedProjects[0], archived_at: 1 };
+    subscriber(feedSnapshot());
+    await openAdvanced();
+    expect([...document.querySelectorAll("#compose-project option")].map(option => option.value)).toEqual(["p2"]);
+    expect($("#compose-project").value).toBe("p2");
+    type("#compose-text", "use the active destination");
+    $("#compose-manual-go").click();
+    await vi.waitFor(() => expect(bridge.call).toHaveBeenCalledWith("branch.dispatch", expect.objectContaining({ project_id: "p2" })));
+  });
+
+  it("replaces an archived project restored from the cached compose draft", async () => {
+    const { writeUiRecord } = await import("../src/core/localUiStore.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    await writeUiRecord(uiAddress({ deviceId: "dev-1", view: "compose", kind: "draft" }), { value: "saved words", projectId: "p1", advancedOpen: true });
+    feedProjects[0] = { ...feedProjects[0], archived_at: 1 };
+    subscriber(feedSnapshot());
+    press("c");
+    await vi.waitFor(() => expect($("#compose-project")).toBeTruthy());
+    expect($("#compose-project").value).toBe("p2");
+    $("#compose-manual-go").click();
+    await vi.waitFor(() => expect(bridge.call).toHaveBeenCalledWith("branch.dispatch", expect.objectContaining({ project_id: "p2" })));
+  });
+
+  it("has no manual destination when every project is archived", async () => {
+    feedProjects = feedProjects.map(project => ({ ...project, archived_at: 1 }));
+    subscriber(feedSnapshot());
+    await openAdvanced();
+    expect($("#compose-project").value).toBe("");
+    type("#compose-text", "keep the capture");
+    $("#compose-manual-go").click();
+    expect(bridge.call).not.toHaveBeenCalledWith("branch.dispatch", expect.anything());
+  });
+
   // The panel's harness picker is filled from the creation device's catalog, so
   // opening it is a round trip the tests below wait out.
   const openAdvanced = async ({ catalog = true } = {}) => {

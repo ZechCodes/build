@@ -35,6 +35,10 @@ function pickerKey(event,body) {
   if(!rows.length) return;
   event.preventDefault();const at=rows.indexOf(document.activeElement);rows[(at+direction+rows.length)%rows.length].focus();
 }
+function initialFocusSelector(state,name=false) {
+  if(state.page===2)return '#create-environment-device, [data-folder-add]';
+  return state.presetTarget || name ? '#create-work-input':'#create-workspace-search';
+}
 function rememberWizardFocus(body) {
   const focused=document.activeElement;
   if(!body.contains(focused))return {};
@@ -107,7 +111,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
   let legacyScreen=null;
   let detached=false,submitting=false,readGeneration=0;
   let draft,stop=()=>{};
-  const modal=openModal({dialogHtml:createWorkspaceWizardHtml(state),scrimId:'create-scrim',canDismiss:()=>!state.busy,onClose:cancelled,initialFocus:':not(*)'});
+  const modal=openModal({dialogHtml:createWorkspaceWizardHtml(state),scrimId:'create-scrim',canDismiss:()=>!state.busy,onClose:cancelled,initialFocus:initialFocusSelector(state)});
   modal.body.setAttribute('aria-labelledby','create-workspace-title');
   modal.body.dataset.createPage=String(state.page);
   draft=watchUiState(address,restoreDraft,{active:()=>!detached});
@@ -177,7 +181,7 @@ function mountCreateWorkspaceWizard(options,initialSnapshot,recoveryAttempt=null
     state.target=targets.find(target=>target.kind===state.target.kind && target.key===state.target.key) || state.target;
   }
   function focusPage(shortcut=false) {
-    const selector=state.page===2 ? '#create-environment-device, [data-folder-add]':state.presetTarget || shortcut ? '#create-work-input':'#create-workspace-search';
+    const selector=initialFocusSelector(state,shortcut);
     modal.body.querySelector(selector)?.focus();
   }
   function paint(keepPicker=false) {

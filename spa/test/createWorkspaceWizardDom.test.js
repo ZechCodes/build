@@ -308,3 +308,25 @@ it('Escape cancels the wizard and restores the opener',async()=>{
  await open({fixedProject:false});document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
  await vi.waitFor(()=>expect(dialog()).toBeNull());expect(document.activeElement.id).toBe('opener');
 });
+it('disables the picker, name, disclosure and actions during durable admission',async()=>{
+ let admitted;const ready=new Promise(resolve=>{admitted=resolve;});
+ mocks.submit.mockReturnValue({operationId:'busy',ready,completion:Promise.resolve(),get:async()=>({})});
+ await open({fixedProject:false});clickTarget('environment');dialog().querySelector('[data-create-go]').click();
+ expect(dialog().querySelector('#create-work-input').disabled).toBe(true);
+ expect(dialog().querySelector('#create-workspace-search').disabled).toBe(true);
+ expect([...dialog().querySelectorAll('[data-create-target],[data-create-go],[data-create-cancel]')].every(el=>el.disabled)).toBe(true);
+ dialog().querySelector('summary').click();expect(dialog().querySelector('[data-create-advanced]').open).toBe(false);
+ document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));expect(dialog()).not.toBeNull();
+ admitted();await vi.waitFor(()=>expect(mocks.progress).toHaveBeenCalledTimes(1));
+});
+it('keeps environment update refusals on the main page at selection time',async()=>{
+ const held={...snapshot(),features:{d1:{create:true,createProject:true}}};mocks.read.mockResolvedValue(held);
+ await open({fixedProject:false});held.features.d1.createProject=false;clickTarget('environment');
+ expect(dialog().dataset.createPage).toBe('1');expect(dialog().querySelector('.create-error').textContent).toContain('needs an update');
+ expect(dialog().querySelector('[data-create-target][aria-pressed="true"]')).toBeNull();expect(mocks.submit).not.toHaveBeenCalled();
+});
+it('uses the lowest free derived name across cached siblings when creating a project',async()=>{
+ const held=snapshot();held.projects.push({id:'collision',deviceId:'d1',environment_id:'e1',name:'Platform'},{id:'third',deviceId:'d1',environment_id:'e1',name:'Platform 3'});mocks.read.mockResolvedValue(held);
+ await open({fixedProject:false});clickTarget('environment');dialog().querySelector('[data-create-go]').click();
+ await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));expect(mocks.submit.mock.calls[0][0].name).toBe('Platform 2');
+});

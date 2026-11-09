@@ -122,3 +122,9 @@ it('creates with a blank workspace name on a new-environment draft',async()=>{
  await open({newEnvironment:true,deviceId:'d1'});click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');click('[data-create-next]');click('[data-create-go]');
  await vi.waitFor(()=>expect(mocks.submit).toHaveBeenCalledTimes(1));expect(mocks.submit.mock.calls[0][0]).toMatchObject({name:'api',target:{kind:'new-environment'}});
 });
+it('restores the editable draft row after reloading on page one',async()=>{
+ await open();click('[data-create-new-environment]');click('[data-folder-add="remote"]');input('[data-folder-value]','https://github.com/org/api.git');click('[data-create-next]');
+ await screen.flushDraft();await screen.detach();screen=null;await open();
+ expect(query('[data-create-target][data-kind="new-environment"]')?.getAttribute('aria-pressed')).toBe('true');
+ click('[data-create-edit]');expect(query('[data-folder-value]').value).toContain('api.git');
+});

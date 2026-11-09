@@ -38,14 +38,14 @@ for(const [width,height] of [[390,844],[440,956],[320,568],[1280,800]]){
    expect(Math.min(...rows)).toBeGreaterThanOrEqual(44);
    const scroll=page.locator('[data-create-scroll]');
    expect(await scroll.evaluate(el=>el.scrollHeight>el.clientHeight)).toBe(true);
-   await scroll.evaluate(el=>{el.scrollTop=el.scrollHeight;});await pinned(page,pageOne);
    if(width===440)await page.screenshot({path:`${scratch}/page-1-440.png`});
+   await scroll.evaluate(el=>{el.scrollTop=el.scrollHeight;});await pinned(page,pageOne);
    await page.locator('[data-create-advanced] summary').click();await pinned(page,pageOne);
    expect(await page.getByLabel('Isolation',{exact:true}).isVisible()).toBe(true);
+   if(width===440)await page.screenshot({path:`${scratch}/page-1-advanced-440.png`});
    await scroll.evaluate(el=>{el.scrollTop=el.scrollHeight;});await pinned(page,pageOne);
    await page.locator('[data-folder-add="remote"]').scrollIntoViewIfNeeded();
    await pinned(page,pageOne);
-   if(width===440)await page.screenshot({path:`${scratch}/page-1-advanced-440.png`});
   },{width,height});
  },30000);
  it(`pins page two actions while its form scrolls at ${width}x${height}`,async()=>{
@@ -54,8 +54,8 @@ for(const [width,height] of [[390,844],[440,956],[320,568],[1280,800]]){
    const controls=['[data-create-back]','[data-create-cancel]','[data-create-next]'];await pinned(page,controls);
    expect(await page.locator('[data-create-next]').textContent()).toBe('Use environment');
    const scroll=page.locator('[data-create-scroll]');expect(await scroll.evaluate(el=>el.scrollHeight>el.clientHeight)).toBe(true);
-   await scroll.evaluate(el=>{el.scrollTop=el.scrollHeight;});await pinned(page,controls);
    if(width===440)await page.screenshot({path:`${scratch}/page-2-440.png`});
+   await scroll.evaluate(el=>{el.scrollTop=el.scrollHeight;});await pinned(page,controls);
   },{width,height});
  },30000);
 }

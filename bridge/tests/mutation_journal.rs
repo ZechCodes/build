@@ -388,13 +388,13 @@ fn canonical_uuid_and_normalized_json_fence_retries() {
 #[test]
 fn schema_seventeen_gains_empty_journal_without_changing_existing_domain_records() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     drop(store);
     // Build a disposable pre-journal fixture; no rollback executable is used.
     let fixture = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
     fixture.execute_batch("DROP TABLE mutation_outbox;DROP TABLE mutation_reservations;DROP TABLE mutation_dependencies;DROP TABLE mutation_owner_order;DROP TABLE mutation_commands;DELETE FROM meta WHERE key='journal_incarnation';UPDATE meta SET value='17' WHERE key='schema_version';INSERT INTO meta(key,value) VALUES('fixture-domain-record','preserved');").unwrap();
     drop(fixture);
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     assert!(uuid::Uuid::parse_str(store.journal_incarnation()).is_ok());
     store.writer().admit_mutation(&intent(A)).unwrap();
     drop(store);

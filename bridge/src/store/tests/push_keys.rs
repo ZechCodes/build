@@ -204,7 +204,7 @@ fn a_v10_store_opens_at_current_schema_with_push_keys_and_its_data_intact() {
     let dir = tempfile::tempdir().unwrap();
     let expected_task = v10_store(dir.path());
 
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     assert_v10_data_intact(&store, &expected_task);
     assert!(
         !dir.path()
@@ -216,7 +216,7 @@ fn a_v10_store_opens_at_current_schema_with_push_keys_and_its_data_intact() {
     assert_eq!(listed(&store).len(), 1, "the new table takes keys");
     drop(store);
 
-    let reopened = Store::new(dir.path()).unwrap();
+    let reopened = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     assert_v10_data_intact(&reopened, &expected_task);
     assert_eq!(listed(&reopened), vec![(sid(1), "key".into())]);
 }

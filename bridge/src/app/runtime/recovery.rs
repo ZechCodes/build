@@ -143,8 +143,15 @@ pub(in crate::app) fn record_session_death_in_thread(
     );
 }
 
-pub(in crate::app) fn load_stored_tasks(dir: std::path::PathBuf) -> Result<StoredTasks, String> {
-    let store = Store::new(dir).map_err(|error| error.to_string())?;
+pub(in crate::app) fn load_stored_tasks(
+    dir: std::path::PathBuf,
+    config: Option<&serde_json::Value>,
+) -> Result<StoredTasks, String> {
+    let store = match config {
+        Some(config) => Store::new_with_secret_config(dir, config),
+        None => Store::new(dir),
+    }
+    .map_err(|error| error.to_string())?;
     store
         .refuse_a_rolled_back_store()
         .map_err(|error| error.to_string())?;
@@ -1079,7 +1086,7 @@ mod review_boot_tests {
                 .unwrap();
             task.id
         };
-        let recovered = load_stored_tasks(state).unwrap();
+        let recovered = load_stored_tasks(state, None).unwrap();
         assert!(!checkout.exists());
         assert!(
             git_command(&repo, &["show-ref", "--verify", "refs/heads/target"])

@@ -19,14 +19,21 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecretScope {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<StageContext>,
 }
 
 impl SecretScope {
     pub fn validate(&self) -> crate::secrets::Result<()> {
-        let mut fields = vec![self.project_id.as_str()];
+        let mut fields = match (&*self.project_id, &self.environment_id, &self.stage) {
+            ("", Some(environment), None) => vec![environment.as_str()],
+            (project, None, _) if !project.is_empty() => vec![project],
+            _ => return Err(crate::secrets::SecretError::Invalid),
+        };
         if let Some(stage) = &self.stage {
             fields.extend([
                 stage.owner_id.as_str(),
@@ -69,10 +76,16 @@ pub fn default_limit() -> usize {
     100
 }
 
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListParams {
     pub scope: SecretScope,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_environment: bool,
     #[serde(default)]
     pub secret_ids: Vec<String>,
     #[serde(default)]

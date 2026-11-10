@@ -4,7 +4,7 @@ use crate::secrets::{
 use crate::store::StoreWriter;
 use rusqlite::{Connection, OptionalExtension, Row};
 
-pub(super) const COLUMNS: &str = "id,device_id,creator,name,ttl_seconds,grant_scope,grant_agent_id,grant_conversation_id,grant_generation,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,stage_draft_id,created_at,attached_at,expires_at,revoked_at,revision,message_operation_id,upload_request_id,upload_digest,blob_present,revocation_reason";
+pub(super) const COLUMNS: &str = "id,device_id,creator,name,ttl_seconds,grant_scope,grant_agent_id,grant_conversation_id,grant_generation,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,stage_draft_id,created_at,attached_at,expires_at,revoked_at,revision,message_operation_id,upload_request_id,upload_digest,blob_present,revocation_reason,grant_environment_id";
 
 impl StoreWriter {
     /// Bounded unique lookup used after upload timeout and same-request retries.
@@ -92,6 +92,9 @@ pub(super) fn from_row(row: &Row<'_>) -> rusqlite::Result<SecretRecord> {
         },
         "project" => GrantScope::Project {
             project_id: row.get(9)?,
+        },
+        "environment" => GrantScope::Environment {
+            environment_id: row.get(24)?,
         },
         _ => return Err(rusqlite::Error::InvalidQuery),
     };

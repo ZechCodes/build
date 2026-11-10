@@ -875,7 +875,23 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
   `environments.create` / `projects.addedSources` and the M2.2 consumer.
   3.39.0 releases archive/restore, project rename and environment settings
   with `projects.archive`, `projects.rename` and `environments.rename`,
-  respectively, and the M3.3 consumer. Environment secrets remain unavailable.
+  respectively, and the M3.3 consumer. S2.1 implements environment-secret grants
+  without advertising `secrets.environmentScope`; S2.4 owns its consumer and
+  wire-version advertisement. Creation retains its sealed StageContext and atomic
+  send lifetime, with an environment `grant`; list/revoke/audit additionally accept
+  `{environment_id}` scope. Project/stage lists include inherited Environment
+  grants only with `include_environment: true`; old-shaped lists keep their
+  Agent/Project contract. Membership reconciliation captures plain committed routes and joiner/leaver
+  scopes after clearing the dedicated config-membership read fence. The existing off-lock ChangeBus
+  flusher probes committed SQL and captures this data after acquiring/releasing
+  the app guard, then enqueues legacy project refreshes. List/audit reads refused
+  by that membership fence retain bounded project/All retry scopes at the SQL boundary;
+  every clear drains them, including unchanged membership and late old-snapshot
+  refusals. A retry refused by another dirty interval registers again. Environment events
+  with no members still give All subscribers a legacy device refresh. Encryption
+  and delivery remain in the off-app-lock flusher. Environment subscriptions receive environment hints;
+  project and All subscribers receive compatible project invalidations for each
+  member project. No standalone settings-create lifetime exists.
   3.31.0 retires snapshot-mode creation and actions, removes legacy agent
   mutation tools and adds the compact `legacy_review` summary marker,
   independently announced by `tasks.review.snapshotRetired` (#974).
@@ -1192,9 +1208,10 @@ and its controls are
   their tables: `migrate_agents_to_v6` in `bridge/src/store/entities.rs` and
   `ensure_operation_receipt_columns` in `bridge/src/store/operations.rs`. The
   store refuses to open a newer schema before applying pragmas or DDL. The
-  current schema is 26: creation's write-ahead effect-evidence migration marks
+  current schema is 27 (environment secret grants and config-owned membership
+  projections); schema 26’s creation write-ahead effect-evidence migration marks
   older pending creation records without proof as unknown. Binaries supporting
-  a schema below 26 cannot open this store; startup fails rather than serving
+  a schema below 27 cannot open this store; startup fails rather than serving
   without it. Restoring only an older config does not cross that boundary.
   Task-summary initialization and its
   completion marker run during Store startup before the writer and read pool are
@@ -1283,7 +1300,17 @@ mutex and performs disk/SQL work on the blocking pool.
 Schema 24 adds dedicated metadata and clock tables. Agent grants bind agent,
 canonical conversation and generation; reset/removal tombstones them in the
 existing domain transaction. Project grants bind the canonical project ID and
-survive their originating conversation; project deletion retires them. No
+survive their originating conversation; project deletion retires them. Schema 27
+adds environment grants, binding/audit environment IDs and a lossless metadata
+table rebuild. The rebuild, all secret DDL/indexes, schema-version publication
+and startup config projection commit in one transaction; failure restores the
+schema-26 database bytes through the full Store open. An existing pre-27 store
+requires successfully loaded authoritative config; missing/unreadable config
+refuses startup before database writes. A fresh store may start without config.
+The backup command opens only a read-only source and copies its existing schema
+without migration. `secrets_retire_environment` revokes those grants with audit facts
+before an environment registration can be removed; the environment-delete verb
+integration belongs to S2.2. No
 value or sealed upload is a database field or journal payload. Secret-bearing
 sends use `store::secrets::attach_in` inside the **same** FULL transaction as
 message admission, frozen descriptors and the operation receipt. The standalone
@@ -1324,7 +1351,23 @@ incarnation. They never enter argv or messages. The separate mode-0600
 it is not MCP, HTTP or browser RPC. Current issued authority and committed SQL
 membership/project/generation are revalidated on each release. Agent grants
 require the exact recipient generation; Project grants permit current members,
-including the coordinator. Unknown IDs and wrong scope share one error.
+including the coordinator. Environment grants permit current agents of every
+unarchived project in that environment. Environment membership and archive state
+are projected from config into `secret_environments` / `secret_project_membership`
+on every config write and at startup/reconciliation. Synchronous config persistence
+and config migration mark a dedicated `secrets/membership` dirty fence before
+writing the file; projection rewrite and marker clear commit together afterwards.
+A refused file write cancels the marker without changing the old projection.
+Only environment-dependent operations consult that fence, including the whole
+`include_environment:true` list. The independent registry/lifecycle fence and
+long-running registry jobs never block secrets. The writer transaction rechecks
+membership, grant and project-name override before environment release.
+Project/agent/stage operations do not depend on environment membership or either
+fence. Archive refuses create/release with `project_archived`, while project list,
+audit and safety revoke remain available. Environment revoke/audit require the
+explicit environment selector; project/stage selectors never reach those grants.
+A live project grant with the same name hides the inherited environment grant.
+Unknown IDs and wrong scope share one error.
 
 Schema 25 adds metadata-only release/denial audit and persistent summaries.
 Vault decryption runs off the app lock and SQLite writer. A short FULL writer

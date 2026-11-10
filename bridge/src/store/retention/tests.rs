@@ -517,7 +517,7 @@ fn legacy_upload_reservations_get_a_migration_grace_period() {
     let conn = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
     conn.execute_batch("CREATE TABLE conversation_attachment_uploads (conversation_id TEXT NOT NULL, thread_id TEXT NOT NULL, path TEXT NOT NULL, PRIMARY KEY (conversation_id,thread_id,path)); INSERT INTO conversation_attachment_uploads VALUES ('a','t','draft.png');").unwrap();
     drop(conn);
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let baseline: String = store
         .connection()
         .query_row(
@@ -678,7 +678,7 @@ fn existing_retention_boundaries_gain_timestamp_summary_without_resetting_cursor
     let conn = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
     conn.execute_batch("CREATE TABLE conversation_retention (agent_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, history_start_sequence INTEGER NOT NULL, high_watermark INTEGER NOT NULL); INSERT INTO conversation_retention VALUES ('a','t',51,150);").unwrap();
     drop(conn);
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let boundary = store.thread_retention_boundary("a").unwrap().unwrap();
     assert_eq!(boundary.history_start_sequence, 51);
     assert_eq!(boundary.high_watermark, 150);
@@ -923,7 +923,7 @@ fn malformed_legacy_deliveries_survive_schema_migration_writes_and_retention_que
         Ok(())
     }).unwrap();
     drop(store);
-    let store = Store::new(dir.path())
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({}))
         .expect("non-JSON pending delivery must not break schema19 migration");
     store.in_transaction(|tx| {
         tx.execute("UPDATE operations SET delivery = 'another non-JSON value' WHERE operation_id = 'legacy'", [])?;
@@ -1001,7 +1001,7 @@ fn malformed_thread_items_and_dynamic_timestamp_literals_do_not_break_writes_or_
         Ok(())
     }).unwrap();
     drop(store);
-    let store = Store::new(dir.path())
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({}))
         .expect("legacy malformed items and nonliteral timestamps must not break index creation");
     store.in_transaction(|tx| {
         tx.execute("UPDATE thread_items SET item = 'still not JSON' WHERE sequence = 1", [])?;
@@ -1137,7 +1137,7 @@ fn malformed_agent_metadata_does_not_block_unrelated_retention_but_requested_ide
         })
         .unwrap();
     drop(store);
-    let store = Store::new(dir.path())
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({}))
         .expect("preexisting malformed metadata must not break schema19 alias index creation");
     store.in_transaction(|tx| {
         tx.execute("UPDATE agents SET record = 'still not JSON' WHERE id = 'corrupt'", [])?;

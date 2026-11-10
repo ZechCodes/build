@@ -36,10 +36,27 @@ impl StoreWriter {
         validate_stage(record)?;
         durable(self, |tx| {
             super::metadata::authorize(tx, scope)?;
+            super::membership::authorize_active_project(tx, &scope.project_id)?;
+            super::membership::authorize_grant(tx, &scope.project_id, &record.context.grant)?;
             check_conflict(tx, record)?;
             check_quota(tx, record)?;
             insert(tx, record)?;
             super::append_metadata_in(tx, record, "created", record.created_at)
+        })
+    }
+
+    pub(crate) fn secrets_authorize_upload(
+        &self,
+        authority: &crate::api::v1::secrets::SecretScope,
+        expected: &crate::secrets::upload::UploadContext,
+    ) -> Result<()> {
+        if authority.stage.as_ref() != Some(&expected.stage) {
+            return Err(SecretError::Unavailable);
+        }
+        durable(self, |tx| {
+            super::metadata::authorize(tx, authority)?;
+            super::membership::authorize_active_project(tx, &authority.project_id)?;
+            super::membership::authorize_grant(tx, &authority.project_id, &expected.grant)
         })
     }
 
@@ -100,6 +117,14 @@ impl StoreWriter {
     /// Retire project grants before committing removal of its external config.
     pub fn secrets_retire_project(&self, project_id: &str) -> Result<()> {
         let retired = durable(self, |tx| retirement::retire_project_in(tx, project_id))?;
+        self.notify_secret_records(&retired);
+        Ok(())
+    }
+
+    pub fn secrets_retire_environment(&self, environment_id: &str) -> Result<()> {
+        let retired = durable(self, |tx| {
+            retirement::retire_environment_in(tx, environment_id)
+        })?;
         self.notify_secret_records(&retired);
         Ok(())
     }
@@ -205,7 +230,7 @@ fn check_quota(tx: &Connection, record: &SecretRecord) -> Result<()> {
 
 fn insert(tx: &Transaction<'_>, record: &SecretRecord) -> Result<()> {
     let context = &record.context;
-    let (scope, agent, conversation, generation, project) = match &context.grant {
+    let (scope, agent, conversation, generation, project, environment) = match &context.grant {
         GrantScope::Agent {
             agent_id,
             conversation_id,
@@ -216,9 +241,13 @@ fn insert(tx: &Transaction<'_>, record: &SecretRecord) -> Result<()> {
             Some(conversation_id),
             Some(generation),
             None,
+            None,
         ),
-        GrantScope::Project { project_id } => ("project", None, None, None, Some(project_id)),
+        GrantScope::Project { project_id } => ("project", None, None, None, Some(project_id), None),
+        GrantScope::Environment { environment_id } => {
+            ("environment", None, None, None, None, Some(environment_id))
+        }
     };
-    tx.execute("INSERT INTO secret_records (id,device_id,creator,name,ttl_seconds,grant_scope,grant_agent_id,grant_conversation_id,grant_generation,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,stage_draft_id,created_at,revision,upload_request_id,upload_digest,blob_present) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,1,?16,?17,1)",params![context.id,context.device_id,context.creator,context.name,context.ttl_seconds,scope,agent,conversation,generation,project,context.stage.owner_id,context.stage.conversation_id,context.stage.generation,context.stage.draft_id,record.created_at,record.upload_request_id,record.upload_digest])?;
+    tx.execute("INSERT INTO secret_records (id,device_id,creator,name,ttl_seconds,grant_scope,grant_agent_id,grant_conversation_id,grant_generation,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,stage_draft_id,created_at,revision,upload_request_id,upload_digest,blob_present,grant_environment_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,1,?16,?17,1,?18)",params![context.id,context.device_id,context.creator,context.name,context.ttl_seconds,scope,agent,conversation,generation,project,context.stage.owner_id,context.stage.conversation_id,context.stage.generation,context.stage.draft_id,record.created_at,record.upload_request_id,record.upload_digest,environment])?;
     Ok(())
 }

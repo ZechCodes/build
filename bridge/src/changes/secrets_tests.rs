@@ -122,3 +122,124 @@ fn secret_event_and_kind_follow_the_metadata_capability_gate() {
     }
     assert!(event_is_advertised(COMPACTION_CHANGED_EVENT, &[]));
 }
+
+#[test]
+fn environment_secret_events_route_only_to_environment_and_all_subscriptions() {
+    let bus = ChangeBus::new(Duration::ZERO);
+    let (sender, mut rx, key) = SessionSender::observable("environment");
+    let (other, mut other_rx, _) = SessionSender::observable("other");
+    bus.subscribe(&sender, subscription(Scope::Environment("env-a".into())));
+    bus.subscribe(&other, subscription(Scope::Environment("env-b".into())));
+    bus.note_secret_change(json!({"type":"secrets.changed","scope":"environment","environment_id":"env-a","revision":2,"secret_ids":["sec_synthetic"]}));
+    assert_eq!(bus.flush(), 1);
+    assert!(other_rx.try_recv().is_err());
+    let frame = SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+    assert_eq!(frame["environment_id"], "env-a");
+    assert_eq!(frame["scope"], "environment");
+    assert!(frame.get("name").is_none());
+}
+
+#[test]
+fn environment_secret_invalidations_reach_member_projects_in_legacy_shape() {
+    let bus = ChangeBus::new(Duration::ZERO);
+    bus.set_secret_project_environments([
+        (String::from("p-a"), String::from("env-a")),
+        (String::from("p-b"), String::from("env-a")),
+        (String::from("outside"), String::from("env-b")),
+    ]);
+    let (a, mut a_rx, a_key) = SessionSender::observable("a");
+    let (b, mut b_rx, b_key) = SessionSender::observable("b");
+    let (all, mut all_rx, all_key) = SessionSender::observable("all");
+    let (outside, mut outside_rx, _) = SessionSender::observable("outside");
+    let (env, mut env_rx, env_key) = SessionSender::observable("env");
+    bus.subscribe(&a, subscription(Scope::Entity("p-a".into())));
+    bus.subscribe(&b, subscription(Scope::Entity("p-b".into())));
+    bus.subscribe(&all, subscription(Scope::All));
+    bus.subscribe(&outside, subscription(Scope::Entity("outside".into())));
+    bus.subscribe(&env, subscription(Scope::Environment("env-a".into())));
+    for revision in 1..=4 {
+        bus.note_secret_change(json!({"type":"secrets.changed","scope":"environment","environment_id":"env-a","revision":revision,"secret_ids":["sec_synthetic"]}));
+        bus.flush();
+        for (rx, key, project) in [(&mut a_rx, &a_key, "p-a"), (&mut b_rx, &b_key, "p-b")] {
+            let event = SessionSender::decrypt_push(key, &rx.try_recv().unwrap());
+            assert_eq!(event["scope"], "project");
+            assert_eq!(event["project_id"], project);
+            assert_eq!(event["revision"], revision);
+            assert!(event.get("environment_id").is_none());
+        }
+        for _ in 0..2 {
+            let event = SessionSender::decrypt_push(&all_key, &all_rx.try_recv().unwrap());
+            assert_eq!(event["scope"], "project");
+        }
+        assert!(all_rx.try_recv().is_err());
+        assert!(outside_rx.try_recv().is_err());
+        assert_eq!(
+            SessionSender::decrypt_push(&env_key, &env_rx.try_recv().unwrap())["scope"],
+            "environment"
+        );
+    }
+}
+
+#[test]
+fn environment_secret_interleaving_invalidates_leaving_and_joining_projects() {
+    for joins in [false, true] {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let old = if joins {
+            vec![]
+        } else {
+            vec![("p-a".into(), "env-a".into())]
+        };
+        bus.set_secret_project_environments(old);
+        let (project, mut rx, key) = SessionSender::observable("member");
+        let (all, mut all_rx, all_key) = SessionSender::observable("all");
+        bus.subscribe(&project, subscription(Scope::Entity("p-a".into())));
+        bus.subscribe(&all, subscription(Scope::All));
+        // The durable grant has committed; its after-commit observer is delayed.
+        let committed = json!({"type":"secrets.changed","scope":"environment","environment_id":"env-a","revision":9,"secret_ids":["sec_synthetic"]});
+        let new = if joins {
+            vec![("p-a".into(), "env-a".into())]
+        } else {
+            vec![]
+        };
+        bus.set_secret_project_environments(new);
+        bus.note_secret_change(committed);
+        bus.flush();
+        let hint = SessionSender::decrypt_push(
+            &key,
+            &rx.try_recv().expect("changed member needs refresh"),
+        );
+        assert_eq!(hint["scope"], "project");
+        assert_eq!(hint["project_id"], "p-a");
+        assert_eq!(hint["truncated"], true);
+        let hint =
+            SessionSender::decrypt_push(&all_key, &all_rx.try_recv().expect("All needs refresh"));
+        assert_ne!(hint["scope"], "environment");
+        // Joining after the grant fan-out also needs a compensating refresh.
+        bus.set_secret_project_environments(Vec::new());
+        bus.flush();
+        while rx.try_recv().is_ok() {}
+        while all_rx.try_recv().is_ok() {}
+        bus.note_secret_change(json!({"type":"secrets.changed","scope":"environment","environment_id":"env-a","revision":10,"secret_ids":["sec_synthetic"]}));
+        bus.flush();
+        bus.set_secret_project_environments([("p-a".into(), "env-a".into())]);
+        bus.flush();
+        let hint =
+            SessionSender::decrypt_push(&key, &rx.try_recv().expect("late join needs refresh"));
+        assert_eq!(hint["scope"], "project");
+        assert_eq!(hint["truncated"], true);
+    }
+}
+
+#[test]
+fn environment_secret_without_members_still_invalidates_all_in_legacy_shape() {
+    let bus = ChangeBus::new(Duration::ZERO);
+    let (all, mut rx, key) = SessionSender::observable("all");
+    bus.subscribe(&all, subscription(Scope::All));
+    bus.note_secret_change(json!({"type":"secrets.changed","scope":"environment","environment_id":"env-empty","revision":17,"secret_ids":["sec_synthetic"]}));
+    assert_eq!(bus.flush(), 1);
+    let hint = SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+    assert_eq!(hint["scope"], "device");
+    assert_eq!(hint["truncated"], true);
+    assert_eq!(hint["revision"], 17);
+    assert!(hint.get("environment_id").is_none());
+}

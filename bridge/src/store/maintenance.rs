@@ -424,7 +424,8 @@ mod tests {
         )
         .unwrap();
         drop(old);
-        let store = Store::new(directory.path()).unwrap();
+        let store =
+            Store::new_with_secret_config(directory.path(), &serde_json::json!({})).unwrap();
         let wal_bytes = std::fs::metadata(directory.path().join("build.db-wal"))
             .map(|metadata| metadata.len())
             .unwrap_or(0);
@@ -556,7 +557,8 @@ mod tests {
         );
         drop(old);
         for _ in 0..2 {
-            let store = Store::new(directory.path()).unwrap();
+            let store =
+                Store::new_with_secret_config(directory.path(), &serde_json::json!({})).unwrap();
             let connection = store.writer.connection();
             assert_eq!(
                 connection

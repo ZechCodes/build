@@ -17,7 +17,13 @@ impl ReadTransaction<'_> {
         creator: &str,
         params: &ListParams,
     ) -> Result<MetadataPage> {
-        list(self.connection(), device, creator, params)
+        remember_refusal(
+            self.connection(),
+            self.secret_retries,
+            &params.scope,
+            params.include_environment || params.scope.environment_id.is_some(),
+            list(self.connection(), device, creator, params),
+        )
     }
     pub fn secret_metadata_audit(
         &self,
@@ -25,7 +31,13 @@ impl ReadTransaction<'_> {
         creator: &str,
         params: &AuditParams,
     ) -> Result<AuditPage> {
-        audit(self.connection(), device, creator, params)
+        remember_refusal(
+            self.connection(),
+            self.secret_retries,
+            &params.scope,
+            params.scope.environment_id.is_some(),
+            audit(self.connection(), device, creator, params),
+        )
     }
 }
 impl StoreWriter {
@@ -43,7 +55,14 @@ impl StoreWriter {
         creator: &str,
         params: &ListParams,
     ) -> Result<MetadataPage> {
-        list(&self.connection(), device, creator, params)
+        let connection = self.connection();
+        remember_refusal(
+            &connection,
+            Some(&self.secret_read_retries),
+            &params.scope,
+            params.include_environment || params.scope.environment_id.is_some(),
+            list(&connection, device, creator, params),
+        )
     }
     pub fn secret_metadata_audit(
         &self,
@@ -51,12 +70,58 @@ impl StoreWriter {
         creator: &str,
         params: &AuditParams,
     ) -> Result<AuditPage> {
-        audit(&self.connection(), device, creator, params)
+        let connection = self.connection();
+        remember_refusal(
+            &connection,
+            Some(&self.secret_read_retries),
+            &params.scope,
+            params.scope.environment_id.is_some(),
+            audit(&connection, device, creator, params),
+        )
     }
+}
+
+fn remember_refusal<T>(
+    connection: &Connection,
+    retries: Option<&super::SecretReadRetries>,
+    scope: &SecretScope,
+    membership_read: bool,
+    result: Result<T>,
+) -> Result<T> {
+    // Writer calls hold their mutex; independent readers hold one SQL snapshot.
+    // Preserve original validation/errors and record only actual fence refusals.
+    if membership_read
+        && matches!(&result, Err(SecretError::Unavailable))
+        && !super::membership::clean(connection)?
+    {
+        if let Some(retries) = retries {
+            retries.record(connection, scope)?;
+        }
+    }
+    result
 }
 
 pub(super) fn authorize(connection: &Connection, scope: &SecretScope) -> Result<()> {
     scope.validate()?;
+    if let Some(environment) = &scope.environment_id {
+        if !super::membership::clean(connection)? {
+            return Err(SecretError::Unavailable);
+        }
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM secret_environments WHERE environment_id=?1)",
+            [environment],
+            |r| r.get(0),
+        )?;
+        return if exists {
+            Ok(())
+        } else {
+            Err(SecretError::Unavailable)
+        };
+    }
+    authorize_project(connection, scope)
+}
+
+fn authorize_project(connection: &Connection, scope: &SecretScope) -> Result<()> {
     let exists: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM device_project_ids WHERE project_id=?1)",
         [&scope.project_id],
@@ -131,8 +196,13 @@ struct Cursor {
     id: String,
 }
 fn query_hash(params: &ListParams) -> Result<String> {
-    let json = serde_json::to_vec(&(&params.scope, &params.secret_ids, &params.request_ids))
-        .map_err(|_| SecretError::Invalid)?;
+    let json = if params.include_environment {
+        serde_json::to_vec(&(&params.scope, &params.secret_ids, &params.request_ids, true))
+    } else {
+        // Preserve the original cursor basis for old-shaped requests.
+        serde_json::to_vec(&(&params.scope, &params.secret_ids, &params.request_ids))
+    }
+    .map_err(|_| SecretError::Invalid)?;
     Ok(format!("{:x}", Sha256::digest(json)))
 }
 fn position(params: &ListParams) -> Result<String> {
@@ -169,8 +239,18 @@ pub(super) fn list(
     let (ids, requests) = filters(asked)?;
     let after = position(asked)?;
     authorize(connection, &asked.scope)?;
+    if asked.include_environment && !super::membership::clean(connection)? {
+        return Err(SecretError::Unavailable);
+    }
     let (owner, conversation, generation, draft) = stage_values(asked.scope.stage.as_ref());
-    let sql = format!("SELECT {} FROM secret_records WHERE device_id=?1 AND creator=?2 AND id>?3 AND ((grant_scope='project' AND grant_project_id=?4) OR (?5!='' AND stage_owner_id=?5 AND stage_conversation_id=?6 AND stage_generation=?7 AND stage_draft_id IS ?8) OR (?5!='' AND EXISTS(SELECT 1 FROM secret_final_bindings b WHERE b.secret_id=secret_records.id AND b.project_id=?4 AND b.owner_id=?5 AND b.conversation_id=?6 AND b.generation=?7))) AND (json_array_length(?9)=0 OR id IN (SELECT value FROM json_each(?9))) AND (json_array_length(?10)=0 OR upload_request_id IN (SELECT value FROM json_each(?10))) ORDER BY id LIMIT ?11",records::COLUMNS);
+    let sql = format!("SELECT {} FROM secret_records WHERE device_id=?1 AND creator=?2 AND id>?3 AND (
+        (grant_scope='project' AND grant_project_id=?4)
+        OR (grant_scope='environment' AND (
+            grant_environment_id=?12 OR (?14=1 AND grant_environment_id=(SELECT environment_id FROM secret_project_membership WHERE project_id=?4 AND archived=0)
+                AND NOT EXISTS(SELECT 1 FROM secret_records p WHERE p.device_id=secret_records.device_id AND p.name=secret_records.name AND p.grant_scope='project' AND p.grant_project_id=?4 AND p.attached_at IS NOT NULL AND p.revoked_at IS NULL AND p.blob_present=1 AND (p.expires_at IS NULL OR p.expires_at>?13)))))
+        OR (grant_scope='agent' AND ?5!='' AND ((stage_owner_id=?5 AND stage_conversation_id=?6 AND stage_generation=?7 AND stage_draft_id IS ?8)
+            OR EXISTS(SELECT 1 FROM secret_final_bindings b WHERE b.secret_id=secret_records.id AND b.project_id=?4 AND b.owner_id=?5 AND b.conversation_id=?6 AND b.generation=?7))))
+        AND (json_array_length(?9)=0 OR id IN (SELECT value FROM json_each(?9))) AND (json_array_length(?10)=0 OR upload_request_id IN (SELECT value FROM json_each(?10))) ORDER BY id LIMIT ?11", records::COLUMNS);
     let mut statement = connection.prepare(&sql)?;
     let mut records = statement
         .query_map(
@@ -185,7 +265,10 @@ pub(super) fn list(
                 draft,
                 ids,
                 requests,
-                asked.limit as i64 + 1
+                asked.limit as i64 + 1,
+                asked.scope.environment_id.as_deref().unwrap_or(""),
+                now(),
+                asked.include_environment
             ],
             records::from_row,
         )?
@@ -256,6 +339,7 @@ fn audit(
         return Err(SecretError::Invalid);
     }
     let query = ListParams {
+        include_environment: false,
         scope: asked.scope.clone(),
         secret_ids: vec![asked.secret_id.clone()],
         request_ids: vec![],
@@ -268,7 +352,7 @@ fn audit(
     {
         return Err(SecretError::Unavailable);
     }
-    let mut statement=connection.prepare("SELECT sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome,attempt_count,last_occurred_at FROM secret_audit WHERE secret_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3")?;
+    let mut statement=connection.prepare("SELECT sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome,attempt_count,last_occurred_at,environment_id FROM secret_audit WHERE secret_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3")?;
     let mut events = statement
         .query_map(
             params![asked.secret_id, asked.after, asked.limit as i64 + 1],
@@ -297,7 +381,9 @@ mod tests {
 
     fn params() -> ListParams {
         ListParams {
+            include_environment: false,
             scope: SecretScope {
+                environment_id: None,
                 project_id: "project-a".into(),
                 stage: None,
             },
@@ -308,6 +394,8 @@ mod tests {
         }
     }
     fn project(store: &Store, id: &str) {
+        super::super::seed_current_project_for_test(store, id);
+
         store
             .writer_for_test()
             .execute(

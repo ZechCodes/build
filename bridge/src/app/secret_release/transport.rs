@@ -189,6 +189,7 @@ async fn write_error(stream: &mut UnixStream, code: &'static str) {
 fn error_code(error: &SecretError) -> &'static str {
     match error {
         SecretError::Unauthorized => "unauthorized",
+        SecretError::ProjectArchived => "project_archived",
         SecretError::Expired => "secret_expired",
         SecretError::Revoked => "secret_revoked",
         SecretError::Limit => "secret_limit",

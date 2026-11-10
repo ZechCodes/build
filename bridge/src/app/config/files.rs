@@ -88,7 +88,11 @@ fn remove_temporary(path: &Path) -> Result<(), String> {
 }
 
 impl AppState {
-    pub(super) fn write_config_file(&self, path: &Path, config: &Value) -> Result<(), String> {
+    pub(in crate::app) fn write_config_file(
+        &self,
+        path: &Path,
+        config: &Value,
+    ) -> Result<(), String> {
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -102,6 +106,10 @@ impl AppState {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(io_error(path, error)),
         };
+        #[cfg(test)]
+        if let Some(gate) = &self.config_persist_gate {
+            gate.arrive();
+        }
         #[cfg(test)]
         if self.config_persist_failure == Some(crate::app::ConfigPersistStep::Write) {
             return Err(format!(

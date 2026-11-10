@@ -315,7 +315,7 @@ fn migration_reduces_huge_histories_before_reader_admission_and_reads_stay_small
     let dir = tempfile::tempdir().unwrap();
     let task_id;
     {
-        let store = Store::new(dir.path()).unwrap();
+        let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
         let mut task = Task::drafted(
             "/summary",
             "huge history",
@@ -349,7 +349,7 @@ fn migration_reduces_huge_histories_before_reader_admission_and_reads_stay_small
         tx.commit().unwrap();
     }
     let migration_started = std::time::Instant::now();
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let migration_elapsed = migration_started.elapsed();
     let row = summary(&store, "/summary");
     assert_eq!(row["unread_count"], 10_000);
@@ -387,7 +387,7 @@ fn migration_reduces_huge_histories_before_reader_admission_and_reads_stay_small
     assert_eq!(summary(&store, "/summary")["unread_count"], 10_001);
     drop(store);
     let started = std::time::Instant::now();
-    let reopened = Store::new(dir.path()).unwrap();
+    let reopened = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     eprintln!(
         "summary fixture: already-migrated reopen={:?}",
         started.elapsed()
@@ -1091,7 +1091,7 @@ fn failed_migration_keeps_only_committed_batches_and_resumes_before_reader_admis
     let task_id;
     let repaired_record;
     {
-        let store = Store::new(dir.path()).unwrap();
+        let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
         let mut task = Task::drafted("/summary", "resume batches", Actor::User, support::NOW);
         task.watched = true;
         let task = store.create_tracker_task(task, &[]).unwrap();
@@ -1127,9 +1127,13 @@ fn failed_migration_keeps_only_committed_batches_and_resumes_before_reader_admis
         drop(insert);
         tx.commit().unwrap();
     }
+    let error = match Store::new_with_secret_config(dir.path(), &serde_json::json!({})) {
+        Ok(_) => panic!("a partial migration must not publish a read pool"),
+        Err(error) => error,
+    };
     assert!(
-        Store::new(dir.path()).is_err(),
-        "a partial migration must not publish a read pool"
+        matches!(&error, StoreError::Db(rusqlite::Error::SqliteFailure(_, Some(message))) if message.contains("malformed JSON")),
+        "expected the injected malformed comment error, got {error:?}"
     );
     let connection = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
     let checkpoint: String = connection
@@ -1158,7 +1162,7 @@ fn failed_migration_keeps_only_committed_batches_and_resumes_before_reader_admis
         )
         .unwrap();
     drop(connection);
-    let recovered = Store::new(dir.path()).unwrap();
+    let recovered = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let row = summary(&recovered, "/summary");
     assert_eq!(row["unread_count"], 256);
     assert_eq!(

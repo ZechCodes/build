@@ -33,6 +33,12 @@ fn preflight(connection: &Connection, binding: &SecretPostBinding) -> Result<Vec
     for id in &binding.ids {
         let mut record = records::required(connection, id)?;
         validate_context(&record, binding)?;
+        super::membership::authorize_grant(connection, &binding.project_id, &record.context.grant)?;
+        if matches!(record.context.grant, GrantScope::Environment { .. })
+            && super::membership::overridden(connection, &binding.project_id, &record)?
+        {
+            return Err(SecretError::Unavailable);
+        }
         if !names.insert(record.context.name.clone()) {
             return Err(SecretError::Invalid);
         }
@@ -78,6 +84,7 @@ fn validate_context(record: &SecretRecord, binding: &SecretPostBinding) -> Resul
     }
     let allowed = match &context.grant {
         GrantScope::Project { project_id } => project_id == &binding.project_id,
+        GrantScope::Environment { .. } => true,
         GrantScope::Agent {
             agent_id,
             conversation_id,
@@ -115,7 +122,7 @@ pub fn attach_post_in(
     preflight(tx, binding)?;
     let records = attach_in(tx, &binding.ids, operation, binding.attached_at)?;
     for record in &records {
-        tx.execute("INSERT INTO secret_final_bindings(secret_id,operation_id,project_id,owner_id,agent_id,conversation_id,generation) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![record.context.id,operation,binding.project_id,binding.owner_id,binding.agent_id,binding.conversation_id,binding.generation])?;
+        tx.execute("INSERT INTO secret_final_bindings(secret_id,operation_id,project_id,owner_id,agent_id,conversation_id,generation,environment_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",params![record.context.id,operation,binding.project_id,binding.owner_id,binding.agent_id,binding.conversation_id,binding.generation,super::membership::grant_environment(&record.context.grant)])?;
         super::append_metadata_in(tx, record, "attached", binding.attached_at)?;
     }
     Ok(records)
@@ -126,6 +133,15 @@ pub(super) fn final_scope_allows(
     caller: &crate::secrets::SecretCaller,
     record: &SecretRecord,
 ) -> Result<bool> {
+    if let GrantScope::Environment { environment_id } = &record.context.grant {
+        return Ok(caller.device_id == record.context.device_id
+            && super::membership::environment_allows(
+                connection,
+                &caller.project_id,
+                environment_id,
+            )?
+            && !super::membership::overridden(connection, &caller.project_id, record)?);
+    }
     if record.context.stage.draft_id.is_none()
         || matches!(record.context.grant, GrantScope::Project { .. })
     {

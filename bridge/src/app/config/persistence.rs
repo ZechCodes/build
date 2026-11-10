@@ -85,10 +85,7 @@ impl AppState {
     /// Persist projects and settings atomically, if persistence is configured.
     pub(in crate::app) fn persist_config(&self, config: &Value) -> Result<(), String> {
         self.mark_device_lifecycle_dirty()?;
-        let Some(path) = &self.config_path else {
-            return Ok(());
-        };
-        self.write_config_file(path, config)
+        self.persist_secret_membership_config(self.config_path.as_deref(), config)
     }
 }
 

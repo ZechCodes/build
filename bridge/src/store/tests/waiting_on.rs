@@ -233,7 +233,7 @@ fn waiting_on_lifecycle_paths() {
 #[test]
 fn waiting_on_migration_defaults() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let mut old = filed(&store, "old assignment");
     old.assignee = Some(crate::tracker::Assignee::ProjectAgent);
     store.save_tracker_task_activity(&old, &[], &[]).unwrap();
@@ -247,7 +247,7 @@ fn waiting_on_migration_defaults() {
         )
         .unwrap();
     drop(store);
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let summary = store.waiting_on_summary(PROJECT, &old.id).unwrap();
     assert!(!summary.blocked);
     assert!(summary.waiting_on.is_empty());

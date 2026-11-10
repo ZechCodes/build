@@ -174,14 +174,10 @@ fn backup() {
         std::process::exit(2);
     };
     let tasks_dir = bridge_config().tasks_dir;
-    let store = match build_bridge::store::Store::new(&tasks_dir) {
-        Ok(store) => store,
-        Err(error) => {
-            eprintln!("cannot open the store at {}: {error}", tasks_dir.display());
-            std::process::exit(1);
-        }
-    };
-    match store.backup_to(std::path::Path::new(&destination)) {
+    match build_bridge::store::Store::backup_existing(
+        &tasks_dir,
+        std::path::Path::new(&destination),
+    ) {
         Ok(()) => println!("wrote {destination}"),
         Err(error) => {
             eprintln!("backup failed: {error}");

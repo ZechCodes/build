@@ -9,7 +9,12 @@ use serde::{Deserialize, Serialize};
 
 pub fn methods() -> &'static [(&'static str, Handler)] {
     v1_methods![
-        v1_method!("environment.delete", delete, DeleteParams, super::board::EmptyResult),
+        v1_method!(
+            "environment.delete",
+            delete,
+            DeleteParams,
+            super::board::EmptyResult
+        ),
         v1_method!("environment.rename", rename, RenameParams, EnvironmentRow),
         v1_method!(
             "environment.add_source",
@@ -298,6 +303,9 @@ pub struct DeleteParams {
     pub environment_id: String,
 }
 
-fn delete(app: &mut AppState, params: DeleteParams) -> Result<Answer<super::board::EmptyResult>, ApiError> {
+fn delete(
+    app: &mut AppState,
+    params: DeleteParams,
+) -> Result<Answer<super::board::EmptyResult>, ApiError> {
     answer(app.environment_delete(&params.environment_id)).map_err(super::board::refine)
 }

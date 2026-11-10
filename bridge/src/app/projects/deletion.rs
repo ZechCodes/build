@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 struct DeleteProjectFiles {
     project_id: String,
+    task_history: Option<(crate::store::Store, String)>,
     roots: Vec<PathBuf>,
     rift_root: PathBuf,
     retirements: Vec<crate::reaper::Retirement>,
@@ -18,6 +19,7 @@ impl DeferredGitWork for DeleteProjectFiles {
                 return Err("Workspace cleanup stopped because a process did not exit; workspace files were preserved. Retry project deletion".into());
             }
         }
+        self.delete_task_history()?;
         for (source, path) in &self.checkouts {
             if path.exists() {
                 crate::worktree::WorktreeManager::new(source, path.parent().unwrap_or(path))
@@ -64,7 +66,39 @@ impl DeferredGitWork for DeleteProjectFiles {
     }
 }
 
+impl DeleteProjectFiles {
+    fn delete_task_history(&self) -> Result<(), String> {
+        if let Some((store, key)) = &self.task_history {
+            crate::reviews::service::delete_project_history(store, key).map_err(|error| {
+                format!("delete project history: {error}; retry project deletion")
+            })?;
+        }
+        Ok(())
+    }
+}
+
 impl AppState {
+    /// The opt-in mode owns history deletion; legacy deletion keeps that history.
+    fn project_task_history_deletion(
+        &self,
+        project_id: &str,
+        params: &Value,
+    ) -> Result<Option<(crate::store::Store, String)>, String> {
+        if params["tasks"] != "delete" {
+            return Ok(None);
+        }
+        if self
+            .workspaces
+            .list(Some(project_id))
+            .iter()
+            .any(|workspace| workspace.status != crate::workspace::WorkspaceStatus::Finished)
+        {
+            return Err("Finish its workspaces before deleting tasks".into());
+        }
+        let key = self.tracker_project_path(project_id)?;
+        Ok(self.store.clone().map(|store| (store, key)))
+    }
+
     pub(crate) fn project_delete(&mut self, params: &Value) -> Result<Value, String> {
         self.mark_device_lifecycle_dirty()?;
         let project_id = require_str(params, "project_id")?;
@@ -82,6 +116,7 @@ impl AppState {
             .projects
             .get(&project_id)
             .ok_or_else(|| format!("unknown project: {project_id}"))?;
+        let task_history = self.project_task_history_deletion(&project_id, params)?;
         let mut source_paths: Vec<_> = project
             .sources
             .iter()
@@ -174,6 +209,7 @@ impl AppState {
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(DeleteProjectFiles {
                 project_id: project_id.clone(),
+                task_history,
                 roots,
                 rift_root: self.project_worktrees_root(&project_id),
                 retirements,

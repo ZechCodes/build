@@ -41,13 +41,15 @@ impl AppState {
             .device_registry_markers()
             .map_err(|error| error.to_string())?;
         let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
-        self.publish_secret_project_routes(&config);
         self.reconcile_secret_membership(&config)?;
         let (rows, projects) = self.device_registry_rows()?;
         writer
             .reconcile_device_registry(generation, &rows, &projects, &markers)
             .map_err(|error| error.to_string())?;
         self.device_lifecycle_dirty.set(false);
+        // Compensating membership hints must follow the cleared SQL read fence,
+        // otherwise an eager client could refresh while reads still fail closed.
+        self.publish_secret_project_routes(&config);
         Ok(())
     }
     pub(in crate::app) fn settle_device_lifecycle(&self) {

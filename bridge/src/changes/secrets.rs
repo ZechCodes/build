@@ -11,7 +11,19 @@ impl ChangeBus {
         for (project, environment) in projects {
             environments.entry(environment).or_default().insert(project);
         }
-        *self.secret_environment_projects.lock().unwrap() = environments;
+        let changed = {
+            let mut previous = self.secret_environment_projects.lock().unwrap();
+            let changed = changed_projects(&previous, &environments);
+            *previous = environments;
+            changed
+        };
+        // Only enqueue here. Encryption, transport and subscription read/ack
+        // fencing stay in the off-app-lock flusher. No SQL or I/O is done here.
+        for project in changed {
+            self.note_secret_change(json!({"type":SECRETS_CHANGED_EVENT,
+                "scope":"project","project_id":project,"revision":1,
+                "secret_ids":[],"truncated":true}));
+        }
     }
 
     fn secret_payloads(&self, payload: Value) -> Vec<Value> {
@@ -44,9 +56,19 @@ impl ChangeBus {
 
     pub(crate) fn note_secret_change(&self, payload: Value) {
         let events = self.secret_payloads(payload);
+        // Environment-shaped hints are withheld from legacy All subscribers.
+        // With no member project hint, give All an existing device refresh.
+        let empty_environment = events.len() == 1 && events[0]["scope"] == "environment";
         let now = Instant::now();
         let mut subscriptions = self.subscriptions.lock().unwrap();
         for sub in subscriptions.iter_mut() {
+            if empty_environment && matches!(sub.spec.scope, Scope::All) {
+                sub.note_secret_change(
+                    json!({"type":SECRETS_CHANGED_EVENT,"scope":"device",
+                    "revision":events[0]["revision"],"secret_ids":[],"truncated":true}),
+                    now,
+                );
+            }
             for event in &events {
                 sub.note_secret_change(event.clone(), now);
             }
@@ -54,6 +76,22 @@ impl ChangeBus {
         drop(subscriptions);
         self.wake.notify_one();
     }
+}
+
+fn changed_projects(
+    old: &BTreeMap<String, BTreeSet<String>>,
+    new: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    let empty = BTreeSet::new();
+    old.keys()
+        .chain(new.keys())
+        .flat_map(|environment| {
+            old.get(environment)
+                .unwrap_or(&empty)
+                .symmetric_difference(new.get(environment).unwrap_or(&empty))
+                .cloned()
+        })
+        .collect()
 }
 
 fn payload(record: &crate::secrets::SecretRecord) -> Value {

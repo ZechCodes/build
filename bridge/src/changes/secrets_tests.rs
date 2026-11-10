@@ -179,3 +179,67 @@ fn environment_secret_invalidations_reach_member_projects_in_legacy_shape() {
         );
     }
 }
+
+#[test]
+fn environment_secret_interleaving_invalidates_leaving_and_joining_projects() {
+    for joins in [false, true] {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let old = if joins {
+            vec![]
+        } else {
+            vec![("p-a".into(), "env-a".into())]
+        };
+        bus.set_secret_project_environments(old);
+        let (project, mut rx, key) = SessionSender::observable("member");
+        let (all, mut all_rx, all_key) = SessionSender::observable("all");
+        bus.subscribe(&project, subscription(Scope::Entity("p-a".into())));
+        bus.subscribe(&all, subscription(Scope::All));
+        // The durable grant has committed; its after-commit observer is delayed.
+        let committed = json!({"type":"secrets.changed","scope":"environment","environment_id":"env-a","revision":9,"secret_ids":["sec_synthetic"]});
+        let new = if joins {
+            vec![("p-a".into(), "env-a".into())]
+        } else {
+            vec![]
+        };
+        bus.set_secret_project_environments(new);
+        bus.note_secret_change(committed);
+        bus.flush();
+        let hint = SessionSender::decrypt_push(
+            &key,
+            &rx.try_recv().expect("changed member needs refresh"),
+        );
+        assert_eq!(hint["scope"], "project");
+        assert_eq!(hint["project_id"], "p-a");
+        assert_eq!(hint["truncated"], true);
+        let hint =
+            SessionSender::decrypt_push(&all_key, &all_rx.try_recv().expect("All needs refresh"));
+        assert_ne!(hint["scope"], "environment");
+        // Joining after the grant fan-out also needs a compensating refresh.
+        bus.set_secret_project_environments(Vec::new());
+        bus.flush();
+        while rx.try_recv().is_ok() {}
+        while all_rx.try_recv().is_ok() {}
+        bus.note_secret_change(json!({"type":"secrets.changed","scope":"environment","environment_id":"env-a","revision":10,"secret_ids":["sec_synthetic"]}));
+        bus.flush();
+        bus.set_secret_project_environments([("p-a".into(), "env-a".into())]);
+        bus.flush();
+        let hint =
+            SessionSender::decrypt_push(&key, &rx.try_recv().expect("late join needs refresh"));
+        assert_eq!(hint["scope"], "project");
+        assert_eq!(hint["truncated"], true);
+    }
+}
+
+#[test]
+fn environment_secret_without_members_still_invalidates_all_in_legacy_shape() {
+    let bus = ChangeBus::new(Duration::ZERO);
+    let (all, mut rx, key) = SessionSender::observable("all");
+    bus.subscribe(&all, subscription(Scope::All));
+    bus.note_secret_change(json!({"type":"secrets.changed","scope":"environment","environment_id":"env-empty","revision":17,"secret_ids":["sec_synthetic"]}));
+    assert_eq!(bus.flush(), 1);
+    let hint = SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+    assert_eq!(hint["scope"], "device");
+    assert_eq!(hint["truncated"], true);
+    assert_eq!(hint["revision"], 17);
+    assert!(hint.get("environment_id").is_none());
+}

@@ -280,4 +280,10 @@ revocation before the environment capability is released; this slice makes
 no claim to verify schema-27 secret revocation.
 
 
-**S2.2 scoped security score: 100/100.** The focused regression and gate receipts are recorded on #1096.
+| ID | Control | Evidence |
+| --- | --- | --- |
+| ENV-S22-R3-1 | Every first attempt/resume reconstructs and waits for recorded-scope sessions before config or cleanup, without retiring same-source siblings. Retirement failure preserves a pending plan and untouched files/history. | `project_deletion_retires_sessions_before_config_and_on_same_process_retry` (config write/checkpoint failures, awaited live sessions, same-process retries, shared-source sibling). |
+| ENV-S22-R3-2 | History/phase/exact ref receipts commit atomically without irreversible Git effects; ref release is an idempotent post-commit phase. | `project_deletion_history_checkpoint_rollback_preserves_real_review_pins` (actual pinned RPC review, SQL abort, post-commit release failure, missing-ref retry); store tracker and review-service groups. |
+| ENV-S22-R3-3 | In-memory provisional per-project fencing precedes off-lock inventory/hash/SQLite and retry validation; failures retain only durable fences. Startup evidence runs before the shared mutex exists. Unrelated reads/project requests progress. | `project_deletion_inventory_does_not_block_unrelated_requests` uses an injected gate; `project_deletion_config_checkpoint_preserves_lock_markers_until_cleanup` checks memory-only publication and exact marker cleanup; recovery and independent SQL/MCP fence groups. |
+
+**S2.2 scoped security score: 100/100.** Round-3 retirement, pin rollback/retry, off-lock inventory and marker-ordering regressions pass; focused gate receipts and the final head are recorded on #1096.

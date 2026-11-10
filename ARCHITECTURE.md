@@ -1245,11 +1245,31 @@ project deletion modes write an internal per-project plan into the existing
 `mutation_commands` JSON storage before removing config or touching files.
 The plan fixes exact ID/key, mode, owned paths and entity IDs, scoped history
 fingerprint and file evidence; retries cannot broaden that authority. Config
-removal precedes deferred filesystem cleanup. The review history service runs
-off the app lock; its FULL writer transaction deletes the project's task,
-review and intent rows and checkpoints the phase together. Legacy mode retains
+removal precedes deferred filesystem cleanup. Every attempt first reconstructs
+and retires live sessions by recorded project/workspace/run IDs and owned paths,
+then waits for retirement before config removal or cleanup. Shared source paths
+do not authorize retiring sibling agents; failed retirement leaves deletion pending.
+The review history service runs off the app lock; its FULL writer transaction
+deletes task/review/intent rows, checkpoints the phase and persists exact pin
+release receipts together. No irreversible effect occurs inside that transaction.
+Ref/marker release is its own idempotent post-commit phase, repeated from the
+receipt after failure/crash; an already absent ref/marker is success. Legacy mode retains
 history and cancels delivery authority. Unfinished review recovery still refuses
 the history phase. Every intermediate failure remains explicitly retryable.
+
+Deletion admission only validates/captures memory and installs a per-project
+provisional fence under the app mutex. Chained deferred stages perform inventory,
+hashing, retry evidence, SQLite, config IO, cleanup, and final device-registry
+reconciliation off the lock. They check
+claim ownership before applying memory results. Private workspace marker paths are part of new immutable plans and are unlinked
+only in the off-lock file phase; index publication is memory-only. Older records
+default to no additional marker authority. The cached journal view and
+published task/MCP overlays carry fences without querying SQLite under the lock;
+independent reads and unrelated project requests continue during inventory.
+Failures drop provisional fences unless a durable pending record exists. Config
+persistence is reserved only after evidence and retirement, with the latest config
+captured at that point; other config writes are refused until it settles. Startup
+evidence is checked by the consuming task-store builder, before sharing AppState.
 
 Startup leaves unchanged pending records fenced and reports the ID and original
 `project.delete` retry parameters in the daemon log. Before config removal the

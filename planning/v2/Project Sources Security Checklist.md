@@ -273,11 +273,11 @@ changing source containment. The existing 100/100 score retains its scope;
 | ENV-S22-PS2 | A home returning after legacy parked migration binds retained entities by exact project key, even when a sibling sharing that home is restored first. No retained key is canonicalized for an ownership join. | `parked_home_return_binds_only_exact_project_keys`; existing `bind_retained_entities_ignores_sibling_path` (ENV-M02-3). |
 | ENV-S22-PS3 | Project deletion retries use only captured owned paths. New or changed files, re-added registration or changed history abandon stale authority on startup; source folders and sibling registrations remain protected. Environment deletion retries after success/restart do not touch files or config. | `project_deletion_journal_failure_restart_and_retry`; `project_deletion_return_trip_abandons_readded_registration`; `project_deletion_return_trip_abandons_changed_history_and_workspace`; `environment_delete_post_success_restart_retry_is_idempotent`. |
 
-Environment secret revocation is intentionally an integration seam:
-`revoke_environment_secrets_before_delete` is a no-op on schema 26, where no
-environment-scoped secret can exist. The orchestrator must connect S2.1's
-revocation before the environment capability is released; this slice makes
-no claim to verify schema-27 secret revocation.
+The S2.1 join now wires `revoke_environment_secrets_before_delete` to durable
+`StoreWriter::secrets_retire_environment`. The schema-27 grant is revoked before
+config persistence; injected retirement failure preserves the environment,
+config bytes and complete grant record for retry. Schema 27 is inherited from
+dev, with no deletion-owned DDL or capability advertisement.
 
 
 | ID | Control | Evidence |
@@ -286,7 +286,7 @@ no claim to verify schema-27 secret revocation.
 | ENV-S22-R3-2 | History/phase/exact ref receipts commit atomically without irreversible Git effects; ref release is an idempotent post-commit phase. | `project_deletion_history_checkpoint_rollback_preserves_real_review_pins` (actual pinned RPC review, SQL abort, post-commit release failure, missing-ref retry); store tracker and review-service groups. |
 | ENV-S22-R3-3 | In-memory provisional per-project fencing precedes off-lock inventory/hash/SQLite and retry validation; failures retain only durable fences. Startup evidence runs before the shared mutex exists. Unrelated reads/project requests progress. | `project_deletion_inventory_does_not_block_unrelated_requests` uses an injected gate; `project_deletion_config_checkpoint_preserves_lock_markers_until_cleanup` checks memory-only publication and exact marker cleanup; recovery and independent SQL/MCP fence groups. |
 
-**S2.2 round-5 evidence pending.** The accepted round-4 controls remain covered; provisional claim lifetime, unavailable-repository debt and successful missing-source deletion need the round-5 focused receipts on #1096.
+**S2.2 scoped security score: 100/100.** Round-5 claim lifetime, unavailable-repository debt and missing-source deletion regressions pass. The schema-27 joined head also passes real environment-grant retirement, SQL-failure rollback/retry and deleted-project membership tests, alongside the preserved round-4 controls. Focused gate receipts are recorded on #1096.
 
 
 | ID | Round-4 control | Evidence |
@@ -296,7 +296,7 @@ no claim to verify schema-27 secret revocation.
 | ENV-S22-R4-3 | Deletion and archive admission use only memory ownership projections; no SQLite lookup under the app mutex; with no deletion active, its guard returns immediately from memory. | `project_deletion_admission_is_sql_free_with_and_without_fences` probes actual authority-query calls under the app lock; archive/refusal and independent-read regressions. |
 
 
-| ID | Round-5 control | Evidence (pending focused validation) |
+| ID | Round-5 control | Evidence |
 | --- | --- | --- |
 | ENV-S22-R5-1 | Admission claims own independent provisional plans until their checked owner publishes its journal or releases after failure; old terminal/abandoned records and sibling publication cannot remove a claim. | `project_deletion_provisional_claim_survives_sibling_publication_after_abandonment`: real startup abandonment, paused preparation, real sibling delete, task/source/owned-path refusals, success and record-failure cleanup. |
 | ENV-S22-R5-2 | Unavailable Git repositories never count as drained; known refs and exact deferred snapshot metadata stay owed, including on abandoned/completed tombstones, until opened and drained at startup. No unregistered-source discard. | `project_deletion_unavailable_pin_repository_retains_receipt_until_restart`; `history_pin_preflight_records_unavailable_repository_debt`; collection and returned-ref assertions. |
@@ -329,3 +329,9 @@ producer root. `mcp_guardfree_project_sources_complete_with_app_and_both_writer_
 mutex and both writer permits, require socket replies within 100 ms, enforce
 Project purpose/token/binding scope and verify freshly committed environment
 and project-only additions/removals without manual publication.
+
+
+| ID | S2.1/S2.2 join control | Evidence |
+| --- | --- | --- |
+| ENV-S22-JOIN-1 | The real environment-delete RPC commits grant retirement before config removal; writer failure rolls back grants and preserves config/registration for retry. | `environment_delete_rpc_retires_environment_secret_grant`; `environment_delete_rpc_retire_failure_preserves_config_and_grants_for_retry`; environment-secret group. |
+| ENV-S22-JOIN-2 | The short off-lock project config stage preserves S2.1 membership fencing/projection; deleted projects lose environment membership before long cleanup, siblings remain current and newer writes cannot be overwritten by final cleanup. | `project_delete_reconciles_environment_secret_membership`; existing secret-membership config-failure/race tests; deletion cleanup concurrency regression. |

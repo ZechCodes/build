@@ -1308,8 +1308,9 @@ a migrated device:
 Partial-failure review found that deleting history before checkout/config cleanup
 could leave a registered project with its history permanently gone. Both project
 delete modes now use a per-project record in the existing schema-26
-`mutation_commands` JSON columns. No schema, wire-version or capability change
-belongs to this deviation. The FULL writer transaction records exact project ID,
+`mutation_commands` JSON columns (storage present at schema 26). The joined head
+inherits schema 27 from S2.1; no deletion-owned schema, wire-version or capability
+change belongs to this deviation. The FULL writer transaction records exact project ID,
 project key, task-deletion mode, the immutable owned path/checkout (including exact backend registration name) and entity-ID
 plan, file evidence, scoped history fingerprint, phase and completion tombstone
 before destructive effects. Retries never derive a new cleanup plan from config.
@@ -1354,9 +1355,12 @@ plans live in a separate claim map: only their checked owner may hand off to its
 journal or release them after failure. Terminal/abandoned records and concurrent
 sibling publication cannot drop that authority. Unrelated
 reads/project work proceed while inventory or cleanup is paused. A config-write
-reservation covers only its separate synchronous config-file write, capturing
-the latest config after inventory/retirement and releasing before SQL checkpoints
-or long cleanup. Deletion stages use project fences instead of the global
+reservation covers only the synchronous config commit: S2.1's durable membership
+veto, atomic file replacement and membership projection on the off-lock lane.
+It captures the latest config after inventory/retirement and releases before
+history checkpoints or long cleanup. File failure restores the previous
+membership projection; a post-file projection failure keeps denial and publishes
+the landed registration removal for retry. Deletion stages use project fences instead of the global
 filesystem-job exclusion, so sibling renames/config writes and unrelated workspace
 creation/deletion continue. Source references overlapping captured cleanup paths
 remain refused by the scoped fence. Both deletion and archived-task admission use a
@@ -1383,7 +1387,7 @@ most 256 and at most 30 days. Records with undrained pin receipts are exempt
 until the debt is durably drained. An expired project tombstone no longer
 authorizes a retry.
 
-**Binary rollback boundary:** a previous schema-26 bridge ignores the internal
+**Binary rollback boundary:** a schema-compatible previous bridge ignores the internal
 journal's unknown `deletion_pending`/`deletion_complete` states without decoding
 or executing them. Config is removed before destructive cleanup, and SQL history
 is deleted atomically, so rollback neither crashes nor exposes a half-deleted
@@ -1416,6 +1420,22 @@ read lane. It takes neither writer permits nor the app mutex; real-socket
 regressions hold both and enforce a 100 ms response budget, including scope
 refusals and immediately committed source additions/removals. This is an MCP-only plan extension, with no RPC, schema, wire-version or
 capability change.
+
+#### S2.1/S2.2 join (#1096)
+
+Dev at `d5801741406ad10b657edaee07eab13e6db80bda` is merged, without
+rebasing the reviewed deletion commits. `revoke_environment_secrets_before_delete`
+calls `StoreWriter::secrets_retire_environment(environment_id)` before config
+persistence. That method owns its FULL transaction, returns `SecretError`, and
+notifies only after commit; the seam holds no writer guard and propagates error.
+Actual environment-grant RPC deletion and injected SQL-retirement rollback tests
+cover revocation, unchanged config/registration/grants on failure and retry.
+S2.2's short off-lock config stage also carries the S2.1 membership protocol;
+deleted project membership is reconciled before cleanup, so an old cleanup
+snapshot never overwrites a newer sibling config's secret authority.
+No production DDL, version, capability or complexity annotation is added at the join.
+The older-reader residuals require schema compatibility; a schema-26 binary
+cannot open the schema-27 joined database.
 
 ### Stage 3: polish (after dogfooding, informed by it)
 

@@ -1254,8 +1254,10 @@ S2.2 privately registers `environment.delete` and the optional
 deletion counts live and parked projects, archived entries included, and refuses
 with `Delete its N projects first` until empty. It removes only the registration,
 preserving source folders. `revoke_environment_secrets_before_delete` is the
-schema-26 no-op seam for S2.1's durable environment-secret revocation and runs
-before the config is removed; an error leaves config and registration intact.
+S2.1 retirement seam: it calls `StoreWriter::secrets_retire_environment` in
+its own FULL writer transaction before config persistence. A retirement failure
+leaves config, registration and grants intact; retry is safe. The joined store
+uses S2.1's schema 27 without a deletion-owned migration.
 S2.5 owns capability release and the SPA consumer.
 Task-deleting project requests require every workspace to be finished. Both
 project deletion modes write an internal per-project plan into the existing
@@ -1293,8 +1295,11 @@ Independent reads and unrelated project requests continue during inventory and c
 Failures drop provisional fences unless a durable pending record exists. Config
 persistence is reserved only for a separate synchronous config-write stage after
 evidence and retirement, with the latest config captured at that point. The
-reservation is released and config removal published before checkpoint/cleanup
-runs. Scoped deletion jobs do not claim the device-wide filesystem exclusion;
+short stage includes S2.1's durable membership veto and projection around the
+atomic file replacement, all off the app lock. A file failure restores the old
+projection; a projection failure after replacement keeps the veto and publishes
+the landed registration removal for explicit retry. The reservation is released
+and config removal published before checkpoint/cleanup runs. Scoped deletion jobs do not claim the device-wide filesystem exclusion;
 sibling renames, config writes and workspace creation/deletion remain available. New source references overlapping the captured cleanup paths are
 refused without blocking sources elsewhere. Startup evidence is checked by the consuming task-store builder, before sharing AppState.
 
@@ -1319,7 +1324,9 @@ There is no missing-and-unregistered discard shortcut. Even permanently removed
 repositories retain their small receipt until they can be opened.
 Environment deletion is harmless on repeated absent-ID requests across restart.
 
-Older schema-26 journal readers ignore the internal deletion states. Config
+Schema-compatible older journal readers ignore the internal deletion states.
+The original schema-26 proof now uses the schema-27 joined reader; a schema-26
+binary still refuses a newer database through the ordinary schema guard. Config
 removal before effects and atomic history deletion preserve rollback safety.
 An older binary cannot honor the new fence: between config removal and the
 tombstone it can list remaining manifests or reattach pending history when a

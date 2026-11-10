@@ -1277,3 +1277,97 @@ fn secrets_late_dirty_snapshot_refusal_after_drain_rearms_all_without_unbounded_
         .unwrap()
         .is_ok());
 }
+
+#[test]
+fn secrets_real_settings_write_rehints_refused_read_after_unchanged_membership_settles() {
+    let (root, app, store) = secret_fence_fixture();
+    let path = root.path().join("config.json");
+    let app = app.with_config(&path).unwrap();
+    let requested = !app.watch_agent_filed_tasks;
+    app.persist();
+    let before: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let shared = app.with_change_window(std::time::Duration::ZERO).shared();
+    let bus = shared.lock().unwrap().changes();
+    let (sender, mut rx, key) = crate::carrier::SessionSender::observable("real-settings-secrets");
+    bus.subscribe(
+        &sender,
+        crate::changes::SubscriptionSpec {
+            id: "secrets".into(),
+            scope: crate::changes::Scope::Entity("proj-1".into()),
+            kinds: [crate::changes::Kind::SecretsChanged].into_iter().collect(),
+            mode: Default::default(),
+            priority: Default::default(),
+        },
+    );
+    shared
+        .lock()
+        .unwrap()
+        .initialize_device_lifecycle()
+        .unwrap();
+    bus.publish_pending_secret_updates();
+    let (gate, control) = crate::test_support::off_lock::OffLockGate::new();
+    shared.lock().unwrap().config_persist_gate = Some(gate);
+    let writer_state = shared.clone();
+    let write = std::thread::spawn(move || {
+        writer_state.lock().unwrap().dispatch(
+            "settings.set",
+            &json!({"watch_agent_filed_tasks":requested}),
+        )
+    });
+    control.wait_for_arrival();
+    // The actual settings persistence path must have marked the SQL fence.
+    let dirty_during_write = !store.writer().secret_registry_clean().unwrap();
+    let push = crate::liveness::DedicatedRuntime::push().unwrap();
+    crate::changes::ChangeBus::spawn_flusher_on(bus.clone(), Some(push.handle()));
+    let join_hint = push.handle().block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), rx.recv())
+            .await
+            .expect("queued join hint is delivered")
+            .expect("subscription stays open")
+    });
+    let query = serde_json::from_value(json!({"scope":{"project_id":"proj-1"}})).unwrap();
+    let refused = matches!(
+        store
+            .writer()
+            .secret_metadata_page("device", "device_user", &query),
+        Err(crate::secrets::SecretError::Unavailable)
+    );
+    // Always release/join before assertions, including the negative control.
+    control.release();
+    let result = write.join().unwrap().unwrap();
+    assert!(
+        dirty_during_write,
+        "settings.set must mark the registry fence"
+    );
+    let hint = crate::carrier::SessionSender::decrypt_push(&key, &join_hint);
+    assert_eq!(hint["scope"], "project");
+    assert!(refused, "the hinted read overlaps the real settings write");
+    assert_eq!(result["watch_agent_filed_tasks"], requested);
+    let after: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(after["watch_agent_filed_tasks"], requested);
+    assert_ne!(
+        before["watch_agent_filed_tasks"],
+        after["watch_agent_filed_tasks"]
+    );
+    assert_eq!(before["projects"], after["projects"]);
+    assert_eq!(before["environments"], after["environments"]);
+    assert!(
+        store.writer().secret_registry_clean().unwrap(),
+        "settings.set must settle its fence"
+    );
+    // No manual post-write flush: normal settlement must drive the replacement.
+    let replacement = push.handle().block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(20), rx.recv())
+            .await
+            .expect("settings settlement automatically re-hints the refused scope")
+            .expect("subscription stays open")
+    });
+    let retry = crate::carrier::SessionSender::decrypt_push(&key, &replacement);
+    assert_eq!(retry["scope"], "project");
+    assert_eq!(retry["project_id"], "proj-1");
+    assert_eq!(retry["truncated"], true);
+    assert!(store
+        .writer()
+        .secret_metadata_page("device", "device_user", &query)
+        .is_ok());
+}

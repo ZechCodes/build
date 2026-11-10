@@ -339,6 +339,8 @@ pub struct AppState {
     retention: crate::retention::RetentionConfig,
     #[cfg(test)]
     config_persist_failure: Option<ConfigPersistStep>,
+    #[cfg(test)]
+    config_persist_gate: Option<OffLockGate>,
     agent: Agent,
     harness: String,
     /// Project-scoped plans, keyed by `plan_id`.
@@ -746,6 +748,8 @@ impl AppState {
             retention: crate::retention::RetentionConfig::default(),
             #[cfg(test)]
             config_persist_failure: None,
+            #[cfg(test)]
+            config_persist_gate: None,
             agent,
             harness,
             plans: HashMap::new(),

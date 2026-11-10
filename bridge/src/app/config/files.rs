@@ -103,6 +103,10 @@ impl AppState {
             Err(error) => return Err(io_error(path, error)),
         };
         #[cfg(test)]
+        if let Some(gate) = &self.config_persist_gate {
+            gate.arrive();
+        }
+        #[cfg(test)]
         if self.config_persist_failure == Some(crate::app::ConfigPersistStep::Write) {
             return Err(format!(
                 "write config {}: injected write failure",

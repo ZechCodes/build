@@ -372,3 +372,52 @@ fn project_delete_preserves_environment_scope_for_sibling() {
         Err(SecretError::Revoked)
     ));
 }
+
+#[test]
+fn old_secret_list_nonempty_cursor_preserves_contract_and_refuses_cross_mode() {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    let (f, _) = setup();
+    for _ in 0..3 {
+        f.secret(
+            GrantScope::Project {
+                project_id: f.caller.project_id.clone(),
+            },
+            None,
+        );
+    }
+    f.secret(grant(), None);
+    let mut old: ListParams =
+        serde_json::from_value(json!({"scope":{"project_id":f.caller.project_id},"limit":1}))
+            .unwrap();
+    let page = |q: &ListParams| {
+        f.store
+            .writer()
+            .secret_metadata_page(&f.caller.device_id, "synthetic-user", q)
+    };
+    let first = page(&old).unwrap();
+    let cursor = first.next.clone().expect("non-empty old cursor");
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&cursor)
+        .unwrap();
+    let cursor_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let old_basis = serde_json::to_vec(&(&old.scope, &old.secret_ids, &old.request_ids)).unwrap();
+    assert_eq!(
+        cursor_json["query"],
+        format!("{:x}", Sha256::digest(old_basis))
+    );
+    old.after = Some(cursor);
+    let next = page(&old).unwrap();
+    assert_ne!(next.secrets[0].secret_id, first.secrets[0].secret_id);
+    assert!(matches!(next.secrets[0].grant, GrantScope::Project { .. }));
+    let mut opted = old.clone();
+    opted.include_environment = true;
+    assert!(
+        page(&opted).is_err(),
+        "old cursor refused by opted-in query"
+    );
+    opted.after = None;
+    let opted_cursor = page(&opted).unwrap().next.expect("non-empty opt-in cursor");
+    old.after = Some(opted_cursor);
+    assert!(page(&old).is_err(), "opt-in cursor refused by old query");
+}

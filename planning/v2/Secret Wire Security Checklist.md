@@ -63,3 +63,13 @@ verify those contracts. Fresh cryptographically sealed contexts and fresh reques
 IDs in `environment_secret_creation_never_widens_project_grant` demonstrate that
 creating a separate environment value leaves the original project's grant and
 value unchanged; a foreign grant attempt is refused without touching either.
+
+Re-review regressions cover a non-empty legacy cursor and refusal in both
+cross-mode directions (`old_secret_list_nonempty_cursor_preserves_contract_and_refuses_cross_mode`).
+Membership reconciliation enqueues truncated project hints for every joining or
+leaving project after the durable read fence clears; All subscribers receive
+those hints and a legacy device refresh for an environment event with no members.
+`environment_secret_interleaving_invalidates_leaving_and_joining_projects` and
+`environment_secret_without_members_still_invalidates_all_in_legacy_shape` cover
+the delayed-notification interleavings. Notes perform no SQL or transport work;
+existing off-lock read/ack-fenced delivery and descriptor revision checks remain.

@@ -109,6 +109,14 @@ are checked after fresh sealed uploads, and both the retirement hook and actual
 `project.delete` entry point preserve the sibling's environment grant. Schema 27's
 DDL, indexes, config projection and version fence now share one transaction;
 `schema_27_failure_rolls_back_schema_indexes_version_and_projection` verifies exact
-old database bytes after an injected failure, then a successful retry.
+old database bytes after an injected failure through full Store open, then a successful retry.
 `schema_26_startup_populates_membership_from_config_before_publication` verifies
 startup population rather than a manual reconciliation after opening.
+
+The re-review requires loaded authoritative config for every existing pre-27
+store. Missing/unreadable-config and fresh-install tests cover the daemon entry
+path. `schema_26_open_without_authoritative_config_refuses_without_writes` checks
+the bare Store refusal; the CLI backup regression copies populated schema 26
+through a read-only source without migration. Membership compensation covers
+leavers, joiners before/after delayed grant notification, and zero-member All
+subscribers. Release authority and the S2.2 retirement seam are unchanged.

@@ -881,7 +881,10 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
   send lifetime, with an environment `grant`; list/revoke/audit additionally accept
   `{environment_id}` scope. Project/stage lists include inherited Environment
   grants only with `include_environment: true`; old-shaped lists keep their
-  Agent/Project contract. Environment subscriptions receive environment hints;
+  Agent/Project contract. Membership reconciliation queues legacy project refreshes
+  for joiners/leavers after clearing the dirty read fence. Environment events
+  with no members still give All subscribers a legacy device refresh. Encryption
+  and delivery remain in the off-app-lock flusher. Environment subscriptions receive environment hints;
   project and All subscribers receive compatible project invalidations for each
   member project. No standalone settings-create lifetime exists.
   3.31.0 retires snapshot-mode creation and actions, removes legacy agent
@@ -1296,7 +1299,11 @@ survive their originating conversation; project deletion retires them. Schema 27
 adds environment grants, binding/audit environment IDs and a lossless metadata
 table rebuild. The rebuild, all secret DDL/indexes, schema-version publication
 and startup config projection commit in one transaction; failure restores the
-schema-26 database bytes. `secrets_retire_environment` revokes those grants with audit facts
+schema-26 database bytes through the full Store open. An existing pre-27 store
+requires successfully loaded authoritative config; missing/unreadable config
+refuses startup before database writes. A fresh store may start without config.
+The backup command opens only a read-only source and copies its existing schema
+without migration. `secrets_retire_environment` revokes those grants with audit facts
 before an environment registration can be removed; the environment-delete verb
 integration belongs to S2.2. No
 value or sealed upload is a database field or journal payload. Secret-bearing

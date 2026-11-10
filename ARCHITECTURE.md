@@ -1258,7 +1258,10 @@ history and cancels delivery authority. Unfinished review recovery still refuses
 the history phase. Every intermediate failure remains explicitly retryable.
 
 Deletion admission only validates/captures memory and installs a per-project
-provisional fence under the app mutex. Chained deferred stages perform inventory,
+provisional fence under the app mutex. A separate claim map owns that provisional
+plan until its checked owner publishes a durable journal or releases the claim.
+Terminal/abandoned records and sibling publications cannot remove it.
+Chained deferred stages perform inventory,
 hashing, retry evidence, SQLite, config IO, cleanup, and final device-registry
 reconciliation off the lock. They check
 claim ownership before applying memory results. Private workspace marker paths are part of new immutable plans and are unlinked
@@ -1289,7 +1292,14 @@ drained tombstones to 256 and thirty days, never collecting pending authority
 or a record with undrained pin receipts. Recovery drains committed receipts
 regardless of plan fate, including abandoned/completed tombstones. Failed drains
 log the pending pin release and retain the exact receipt for the next startup;
-new project work remains usable after safe abandonment.
+new project work remains usable after safe abandonment. Ref absence is accepted
+only in an actually opened repository. Unavailable repositories never erase
+receipts and do not block project/task deletion: deletion completes with pin
+debt retained on its tombstone. Preflight captures known refs plus exact deferred
+task/snapshot/directory metadata for unreadable target ownership markers; later
+startup resolves only those captured snapshot namespaces, never current config.
+There is no missing-and-unregistered discard shortcut. Even permanently removed
+repositories retain their small receipt until they can be opened.
 Environment deletion is harmless on repeated absent-ID requests across restart.
 
 Older schema-26 journal readers ignore the internal deletion states. Config

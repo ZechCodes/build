@@ -46,3 +46,20 @@ values, sealed markers, live DB/WAL, metadata, pushes, harness prompts and Git,
 with the existing negative controls. The frozen schema-26 fixture preserves all
 old secret state through schema 27 and a second open; config repopulates the
 membership projection behind the durable registry dirty fence.
+
+### Review #1104 qualification
+
+Old-shaped `secrets.list` requests omit environment grants, including after an
+override is revoked. Only an explicit environment selector or
+`include_environment:true` opts into the new DTO kind. Existing project and All
+subscriptions receive project-shaped invalidations for every member project;
+explicit environment subscriptions receive the environment hint. The old client's
+list therefore remains parseable, while a real visibility gap remains for its
+agents' readable inherited grants until that client adopts the new consumer.
+
+`old_secret_list_excludes_environment_without_opt_in_even_after_override_revoke`
+and `environment_secret_invalidations_reach_member_projects_in_legacy_shape`
+verify those contracts. Fresh cryptographically sealed contexts and fresh request
+IDs in `environment_secret_creation_never_widens_project_grant` demonstrate that
+creating a separate environment value leaves the original project's grant and
+value unchanged; a foreign grant attempt is refused without touching either.

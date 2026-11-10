@@ -530,7 +530,7 @@ Changed:
 | M2 (planned restriction) | `project.add_source` / `remove_source` / `update_source` | operate on **added** sources only; naming an environment source id is refused "source-N belongs to environment E; edit it there". Planned old-client compatibility for `update_source` routes an environment source edit to its owning record (5C.5). M1 still accepts legacy project source edits; it does not enforce this future restriction |
 | M3 | every task/review/comment/workspace/source mutation | refused with `project_archived` on an archived project |
 | S2.1 | `secrets.create` | `grant` accepts `{scope:"environment", environment_id}`; `scope` remains the required owner/conversation/generation StageContext. Sealed upload and atomic-send lifetime are unchanged; there is no standalone settings-create lifetime. The writer transaction revalidates the stage owner’s current, unarchived project membership in the requested environment. |
-| S2.1 | `secrets.list/revoke/audit` | `scope` accepts `{environment_id}` in addition to the existing project/stage selector; mixed selectors are refused. |
+| S2.1 | `secrets.list/revoke/audit` | `scope` accepts `{environment_id}` in addition to the existing project/stage selector; mixed selectors are refused. `secrets.list` alone adds `include_environment?: bool` (default false) for inherited grants in a project/stage list. Old-shaped requests return only Agent/Project grants, even after a project override is revoked. Explicit environment selectors require no opt-in. S2.4 sends the opt-in once it advertises `secrets.environmentScope`; release authority is unchanged. |
 | — | `tasks.*` | **unchanged** |
 
 MCP tools (`bridge/src/mcp.rs`): no project arguments anywhere; scope comes
@@ -828,7 +828,10 @@ unknown (`store/mutations/creation.rs:5-20`); creation uses the journal introduc
 in schema 18, with this additional migration. S2.1 introduces **schema 27**:
 `secret_records` is rebuilt to admit `'environment'` with
 `grant_environment_id`, preserving existing metadata and encrypted AAD. A frozen
-schema-26 SQL fixture verifies migration and a second open;
+schema-26 SQL fixture verifies migration and a second open. The table rebuild,
+all secret DDL/indexes, startup population from loaded config and schema-version
+publication share one transaction; an injected version-publication failure leaves
+the exact schema-26 database bytes, and a retry reaches 27;
 `secret_final_bindings`/`secret_audit` (`schema.rs:110-141`) gain the
 environment id. `secret_environments` and `secret_project_membership` are
 disposable SQL projections of config-owned registration, environment membership

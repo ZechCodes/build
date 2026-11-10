@@ -879,7 +879,11 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
   without advertising `secrets.environmentScope`; S2.4 owns its consumer and
   wire-version advertisement. Creation retains its sealed StageContext and atomic
   send lifetime, with an environment `grant`; list/revoke/audit additionally accept
-  `{environment_id}` scope. No standalone settings-create lifetime exists.
+  `{environment_id}` scope. Project/stage lists include inherited Environment
+  grants only with `include_environment: true`; old-shaped lists keep their
+  Agent/Project contract. Environment subscriptions receive environment hints;
+  project and All subscribers receive compatible project invalidations for each
+  member project. No standalone settings-create lifetime exists.
   3.31.0 retires snapshot-mode creation and actions, removes legacy agent
   mutation tools and adds the compact `legacy_review` summary marker,
   independently announced by `tasks.review.snapshotRetired` (#974).
@@ -1290,7 +1294,9 @@ canonical conversation and generation; reset/removal tombstones them in the
 existing domain transaction. Project grants bind the canonical project ID and
 survive their originating conversation; project deletion retires them. Schema 27
 adds environment grants, binding/audit environment IDs and a lossless metadata
-table rebuild. `secrets_retire_environment` revokes those grants with audit facts
+table rebuild. The rebuild, all secret DDL/indexes, schema-version publication
+and startup config projection commit in one transaction; failure restores the
+schema-26 database bytes. `secrets_retire_environment` revokes those grants with audit facts
 before an environment registration can be removed; the environment-delete verb
 integration belongs to S2.2. No
 value or sealed upload is a database field or journal payload. Secret-bearing

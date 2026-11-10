@@ -102,3 +102,13 @@ retirement through the store hook; S2.2 integrates environment deletion.
 and rebuild only the disposable config projection. Raw release, sealing and
 vault AAD retain their existing contracts. Task #1095 records final evidence
 and gate exit codes; capability advertisement remains with S2.4.
+
+Review #1104 adds explicit legacy-list opt-in and compatible project invalidation
+fanout, without changing release authority. The original project value and grant
+are checked after fresh sealed uploads, and both the retirement hook and actual
+`project.delete` entry point preserve the sibling's environment grant. Schema 27's
+DDL, indexes, config projection and version fence now share one transaction;
+`schema_27_failure_rolls_back_schema_indexes_version_and_projection` verifies exact
+old database bytes after an injected failure, then a successful retry.
+`schema_26_startup_populates_membership_from_config_before_publication` verifies
+startup population rather than a manual reconciliation after opening.

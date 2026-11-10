@@ -293,6 +293,7 @@ pub struct AppState {
     device_name: String,
     /// Prevent new mutations while project cleanup runs with the mutex released.
     project_deletion_in_progress: bool,
+    project_deletion_fences: Vec<crate::store::ProjectDeletionPlan>,
     read_context: read_context::ReadContextSlot,
     committed_entities: transactions::CommittedEntities,
     read_view: read_view::ReadViewSlot,
@@ -337,6 +338,8 @@ pub struct AppState {
     config_persist_failure: Option<ConfigPersistStep>,
     #[cfg(test)]
     environment_secret_revocation_error: Option<String>,
+    #[cfg(test)]
+    project_deletion_failure: Option<&'static str>,
     agent: Agent,
     harness: String,
     /// Project-scoped plans, keyed by `plan_id`.
@@ -720,6 +723,7 @@ impl AppState {
             projects: ProjectRegistry::new(),
             device_name: "bridge".into(),
             project_deletion_in_progress: false,
+            project_deletion_fences: Vec::new(),
             read_context: Arc::new(arc_swap::ArcSwapOption::empty()),
             committed_entities: Default::default(),
             read_view: read_view::ReadViewSlot::default(),
@@ -744,6 +748,8 @@ impl AppState {
             config_persist_failure: None,
             #[cfg(test)]
             environment_secret_revocation_error: None,
+            #[cfg(test)]
+            project_deletion_failure: None,
             agent,
             harness,
             plans: HashMap::new(),

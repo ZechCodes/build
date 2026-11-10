@@ -5,7 +5,6 @@ use std::path::PathBuf;
 
 struct DeleteProjectFiles {
     project_id: String,
-    task_history: Option<(crate::store::Store, String)>,
     roots: Vec<PathBuf>,
     rift_root: PathBuf,
     retirements: Vec<crate::reaper::Retirement>,
@@ -19,7 +18,6 @@ impl DeferredGitWork for DeleteProjectFiles {
                 return Err("Workspace cleanup stopped because a process did not exit; workspace files were preserved. Retry project deletion".into());
             }
         }
-        self.delete_task_history()?;
         for (source, path) in &self.checkouts {
             if path.exists() {
                 crate::worktree::WorktreeManager::new(source, path.parent().unwrap_or(path))
@@ -66,41 +64,27 @@ impl DeferredGitWork for DeleteProjectFiles {
     }
 }
 
-impl DeleteProjectFiles {
-    fn delete_task_history(&self) -> Result<(), String> {
-        if let Some((store, key)) = &self.task_history {
-            crate::reviews::service::delete_project_history(store, key).map_err(|error| {
-                format!("delete project history: {error}; retry project deletion")
-            })?;
-        }
-        Ok(())
-    }
-}
-
 impl AppState {
     /// The opt-in mode owns history deletion; legacy deletion keeps that history.
-    fn project_task_history_deletion(
+    fn refuse_unfinished_task_deletion(
         &self,
         project_id: &str,
         params: &Value,
-    ) -> Result<Option<(crate::store::Store, String)>, String> {
+    ) -> Result<(), String> {
         if params["tasks"] != "delete" {
-            return Ok(None);
+            return Ok(());
         }
         if self
-            .workspaces
-            .list(Some(project_id))
+            .project_deletion_workspaces(project_id)?
             .iter()
             .any(|workspace| workspace.status != crate::workspace::WorkspaceStatus::Finished)
         {
             return Err("Finish its workspaces before deleting tasks".into());
         }
-        let key = self.tracker_project_path(project_id)?;
-        Ok(self.store.clone().map(|store| (store, key)))
+        Ok(())
     }
 
     pub(crate) fn project_delete(&mut self, params: &Value) -> Result<Value, String> {
-        self.mark_device_lifecycle_dirty()?;
         let project_id = require_str(params, "project_id")?;
         if params.get("confirm").and_then(Value::as_bool) != Some(true) {
             return Err("project.delete requires confirm: true".into());
@@ -112,18 +96,21 @@ impl AppState {
         {
             return Err("another filesystem operation is still running".into());
         }
+        if let Some(result) = self.retry_recorded_project_delete(&project_id, params)? {
+            return Ok(result);
+        }
         let project = self
             .projects
             .get(&project_id)
             .ok_or_else(|| format!("unknown project: {project_id}"))?;
-        let task_history = self.project_task_history_deletion(&project_id, params)?;
+        self.refuse_unfinished_task_deletion(&project_id, params)?;
         let mut source_paths: Vec<_> = project
             .sources
             .iter()
             .map(|source| source.path.clone())
             .collect();
         source_paths.push(project.repo_path.clone());
-        let workspaces = self.workspaces.list(Some(&project_id));
+        let workspaces = self.project_deletion_workspaces(&project_id)?;
         if workspaces.iter().any(|workspace| workspace.locked) {
             return Err(crate::workspace::LOCKED_REFUSAL.into());
         }
@@ -183,33 +170,32 @@ impl AppState {
                 )
             })
         }));
+        if self.store.is_some() {
+            return self.begin_recorded_project_delete(
+                &project_id,
+                params["tasks"] == "delete",
+                roots,
+                checkouts,
+                run_ids,
+                session_roots,
+            );
+        }
+        if self.config_path.is_some() {
+            return Err("project deletion needs a durable store".into());
+        }
+        // Store-free, nonpersistent fixtures have no durable history.
         // Fail before touching files if the configuration is not writable.
         self.preserve_project_task_identities(&project_id)?;
         let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
         self.persist_config(&config)?;
         self.retire_project_task_deliveries(&project_id)?;
-        let mut retirements = Vec::new();
-        for root in &session_roots {
-            retirements.extend(self.retire_workspace_agents(root));
-            let keys: Vec<_> = self
-                .session_registry
-                .tab_keys()
-                .into_iter()
-                .filter(|key| key.root == *root)
-                .collect();
-            for key in keys {
-                if let Some(retirement) = self.retire_tab(&key, "closed") {
-                    retirements.push(retirement);
-                }
-            }
-        }
+        let retirements = self.retire_project_roots(&session_roots);
         self.revoke_project_agents(&run_ids);
         self.project_deletion_in_progress = true;
         self.publish_read_metadata();
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(DeleteProjectFiles {
                 project_id: project_id.clone(),
-                task_history,
                 roots,
                 rift_root: self.project_worktrees_root(&project_id),
                 retirements,
@@ -253,11 +239,33 @@ impl AppState {
         roots
     }
 
+    pub(super) fn retire_project_roots(
+        &mut self,
+        session_roots: &[PathBuf],
+    ) -> Vec<crate::reaper::Retirement> {
+        let mut retirements = Vec::new();
+        for root in session_roots {
+            retirements.extend(self.retire_workspace_agents(root));
+            let keys: Vec<_> = self
+                .session_registry
+                .tab_keys()
+                .into_iter()
+                .filter(|key| key.root == *root)
+                .collect();
+            for key in keys {
+                if let Some(retirement) = self.retire_tab(&key, "closed") {
+                    retirements.push(retirement);
+                }
+            }
+        }
+        retirements
+    }
+
     /// Take every agent of the project's runs off the control plane: the
     /// token its harness authenticates with, and any turn still queued for
     /// it. Their sessions are retired with their roots; this is what could
     /// still reach them after.
-    fn revoke_project_agents(&mut self, run_ids: &[String]) {
+    pub(super) fn revoke_project_agents(&mut self, run_ids: &[String]) {
         let agent_ids: Vec<String> = run_ids
             .iter()
             .filter_map(|id| self.runs.get(id))

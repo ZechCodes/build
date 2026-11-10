@@ -106,6 +106,7 @@ pub(in crate::app) use conversation::{
 pub(crate) use coordinator::PINNED_AGENT_STAYS;
 mod creation;
 mod deletion;
+mod deletion_journal;
 mod lifecycle;
 mod list;
 mod persistence;
@@ -385,6 +386,15 @@ impl AppState {
     /// written back on every save, and [`Self::revive_parked_projects`]
     /// loads it the moment the folder is back.
     pub(in crate::app) fn restore_configured_project(&mut self, project: &Value) -> Option<String> {
+        if self
+            .refuse_deleting_identity(
+                project["id"].as_str().unwrap_or_default(),
+                configured_project_key(project).unwrap_or_default(),
+            )
+            .is_err()
+        {
+            return None;
+        }
         let repo = std::path::PathBuf::from(configured_primary_path(project)?);
         if let Some(environment_id) = project.get("environment_id").and_then(Value::as_str) {
             if self.projects.environment(environment_id).is_none() {
@@ -668,6 +678,7 @@ impl AppState {
     /// The registered project a client names by id, or the one refusal every
     /// verb that takes a `project_id` gives when nothing is registered under it.
     pub(in crate::app) fn project_for(&self, project_id: &str) -> Result<&Project, String> {
+        self.refuse_deleting_address(project_id)?;
         self.projects
             .get(project_id)
             .ok_or_else(|| format!("unknown project_id: {project_id}"))

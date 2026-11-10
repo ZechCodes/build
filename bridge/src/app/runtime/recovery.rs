@@ -235,6 +235,7 @@ impl AppState {
         } = stored;
         self.board.attention_mut().replace_entries(attention);
         self.store = Some(store);
+        self.recover_project_deletions()?;
         self.board.replace_archived(
             archived_worktrees
                 .into_iter()

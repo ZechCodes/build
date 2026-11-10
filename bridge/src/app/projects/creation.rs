@@ -12,6 +12,7 @@ impl AppState {
         added: Vec<ProjectSource>,
         checkpoint_identity: impl FnOnce(&str) -> Result<(), String>,
     ) -> Result<String, String> {
+        self.refuse_deleting_identity(provisional_id, key)?;
         if let Some(project) = self
             .projects
             .iter()

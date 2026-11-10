@@ -107,6 +107,7 @@ impl AppState {
     ) -> Result<Value, String> {
         let value = (|| {
             opened.path = canonical_source_path(&opened.path)?;
+            self.refuse_deleting_identity("", &opened.path.display().to_string())?;
             self.validate_secret_source(&opened.path)?;
             self.refuse_source_directory_claim(&opened.path)?;
             self.validate_prepared_sources(None, &mut sources, &cloned_paths)?;
@@ -208,6 +209,7 @@ impl AppState {
         cloned_paths: &[PathBuf],
     ) -> Result<Value, String> {
         opened.path = canonical_source_path(&opened.path)?;
+        self.refuse_deleting_identity("", &opened.path.display().to_string())?;
         self.validate_secret_source(&opened.path)?;
         self.refuse_source_directory_claim(&opened.path)?;
         if let Some(existing) = self.projects.find_by_canonical_path(&opened.path) {

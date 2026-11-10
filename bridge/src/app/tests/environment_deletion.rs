@@ -3,7 +3,7 @@ use super::project_agent::workspace;
 use super::tracker::{filed, tracked};
 use super::*;
 
-fn call(app: &mut AppState, method: &str, params: Value) -> Value {
+pub(super) fn call(app: &mut AppState, method: &str, params: Value) -> Value {
     let reply = app.handle(req(method, params));
     assert_eq!(reply["ok"], true, "{reply}");
     reply["result"].clone()
@@ -355,19 +355,11 @@ fn project_delete_tasks_cleanup_failure_preserves_history_for_retry() {
     crate::workspace::persist_review_workspace(&finished).unwrap();
     app.workspaces.reload().unwrap();
     app.persist();
-    let before = std::fs::read(&config).unwrap();
-    let parked = root.path().join("parked-checkout");
-    std::fs::rename(&finished.root, &parked).unwrap();
-    std::fs::write(
-        &finished.root,
-        "inject cleanup failure: expected directory is a file",
-    )
-    .unwrap();
+    app.project_deletion_failure = Some("checkout");
     let params = json!({"project_id":project,"confirm":true,"tasks":"delete"});
     let refused = app.handle(req("project.delete", params.clone()));
     assert_eq!(refused["ok"], false, "{refused}");
-    assert_eq!(std::fs::read(&config).unwrap(), before);
-    assert!(app.projects.get(&project).is_some());
+    assert!(app.projects.get(&project).is_none());
     let store = app.store.as_ref().unwrap();
     assert!(
         store
@@ -380,9 +372,7 @@ fn project_delete_tasks_cleanup_failure_preserves_history_for_retry() {
         .load_tracker_task(sibling_task["id"].as_str().unwrap())
         .unwrap()
         .is_some());
-    std::fs::remove_file(&finished.root).unwrap();
-    std::fs::rename(parked, &finished.root).unwrap();
-    app.workspaces.reload().unwrap();
+    app.project_deletion_failure = None;
     call(&mut app, "project.delete", params);
     assert!(app.projects.get(&project).is_none());
     let store = app.store.as_ref().unwrap();

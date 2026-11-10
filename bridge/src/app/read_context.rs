@@ -28,6 +28,7 @@ pub(in crate::app) struct ReadContext {
     tasks: TaskReadContext,
     threads: ThreadReadContext,
     deleting_project: bool,
+    deletion_addresses: std::collections::HashSet<String>,
     pub(in crate::app) mutations: super::mutations::MutationAuthority,
     addresses: Arc<McpAddresses>,
     bootstrap: Arc<McpBootstrap>,
@@ -59,6 +60,7 @@ impl AppState {
             addresses: Arc::new(McpAddresses::capture(self)),
             bootstrap: Arc::new(McpBootstrap::capture(self)),
             deleting_project: self.project_deletion_in_progress,
+            deletion_addresses: self.deletion_pending_addresses(),
             mutations: super::mutations::MutationAuthority::capture(self),
         })));
     }
@@ -87,6 +89,7 @@ impl AppState {
         next.tasks
             .retain_live_owners(&previous.tasks, self, Some((owner, saved)));
         next.deleting_project = self.project_deletion_in_progress;
+        next.deletion_addresses = self.deletion_pending_addresses();
         next.mutations = super::mutations::MutationAuthority::capture(self);
         self.read_context.store(Some(Arc::new(next)));
     }
@@ -108,6 +111,7 @@ impl AppState {
         next.tasks
             .retain_saved_owners(&previous.tasks, self, owners);
         next.deleting_project = self.project_deletion_in_progress;
+        next.deletion_addresses = self.deletion_pending_addresses();
         next.mutations = super::mutations::MutationAuthority::capture(self);
         self.read_context.store(Some(Arc::new(next)));
     }
@@ -151,6 +155,7 @@ impl AppState {
             addresses,
             bootstrap: Arc::clone(&previous.bootstrap),
             deleting_project: self.project_deletion_in_progress,
+            deletion_addresses: self.deletion_pending_addresses(),
             mutations: super::mutations::MutationAuthority::capture(self),
         };
         next.tasks.retain_live_owners(&previous.tasks, self, None);
@@ -214,12 +219,18 @@ impl AppState {
 impl ReadService {
     pub(in crate::app) fn mcp_input_snapshot(
         &self,
-    ) -> (Arc<McpAddresses>, Arc<McpBootstrap>, bool) {
+    ) -> (
+        Arc<McpAddresses>,
+        Arc<McpBootstrap>,
+        bool,
+        std::collections::HashSet<String>,
+    ) {
         let current = self.context.load_full().expect("initialized read context");
         (
             Arc::clone(&current.addresses),
             Arc::clone(&current.bootstrap),
             current.deleting_project,
+            current.deletion_addresses.clone(),
         )
     }
 

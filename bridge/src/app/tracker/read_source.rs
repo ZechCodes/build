@@ -53,6 +53,7 @@ macro_rules! task_queries {
 }
 
 task_queries! {
+    project_deletion_pending(identity: &str) -> bool;
     task_summary_by_number(project: &str, number: u64) -> Option<TaskSummaryCandidate>;
     task_project_authority(id: &str) -> Option<(String, Option<String>)>;
     task_counts(project: &str, agents: &[String]) -> Vec<crate::store::TaskCounts>;

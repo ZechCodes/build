@@ -27,6 +27,7 @@ pub(super) struct Inputs {
     pub(super) authority: McpAuthoritySnapshot,
     pub(super) view: Arc<ReadView>,
     deleting_project: bool,
+    deletion_addresses: std::collections::HashSet<String>,
 }
 
 impl McpReadService {
@@ -49,12 +50,14 @@ impl McpReadService {
 
     pub(super) fn inputs(&self) -> Inputs {
         let authority = self.authority.load();
-        let (addresses, bootstrap, deleting_project) = self.read.mcp_input_snapshot();
+        let (addresses, bootstrap, deleting_project, deletion_addresses) =
+            self.read.mcp_input_snapshot();
         Inputs {
             authority,
             addresses,
             bootstrap,
             deleting_project,
+            deletion_addresses,
             view: self.view.load(),
         }
     }
@@ -62,6 +65,9 @@ impl McpReadService {
 
 impl Inputs {
     pub(super) fn project_binding(&self, owner: &str) -> Result<&str, String> {
+        if self.deletion_addresses.contains(owner) {
+            return Err("Project is deletion-pending; retry project.delete".into());
+        }
         let binding = match &self.view.observations {
             Some(context) => context.scopes.mcp_project_binding(owner),
             None => self.bootstrap.project_binding(owner),
@@ -74,6 +80,9 @@ impl Inputs {
             Some(context) => context.scopes.mcp_project_path(id),
             None => self.bootstrap.project_path(id),
         };
+        if self.deletion_addresses.contains(id) {
+            return Err("Project is deletion-pending; retry project.delete".into());
+        }
         path.ok_or_else(|| format!("unknown project_id: {id}"))
     }
 

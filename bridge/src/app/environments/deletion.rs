@@ -4,9 +4,9 @@ use serde_json::{json, Value};
 
 impl AppState {
     pub(crate) fn environment_delete(&mut self, environment_id: &str) -> Result<Value, String> {
-        self.projects
-            .environment(environment_id)
-            .ok_or_else(|| format!("unknown environment: {environment_id}"))?;
+        if self.projects.environment(environment_id).is_none() {
+            return Ok(json!({}));
+        }
         let count = self
             .projects
             .iter()
@@ -17,6 +17,19 @@ impl AppState {
                 .parked()
                 .iter()
                 .filter(|p| p["environment_id"] == environment_id)
+                .count()
+            + self
+                .project_deletion_fences
+                .iter()
+                .filter(|p| {
+                    p.project_config["environment_id"] == environment_id
+                        && self.projects.get(&p.project_id).is_none()
+                        && !self
+                            .projects
+                            .parked()
+                            .iter()
+                            .any(|entry| entry["id"] == p.project_id)
+                })
                 .count();
         if count != 0 {
             return Err(format!("Delete its {count} projects first"));

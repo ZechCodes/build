@@ -19,10 +19,17 @@ impl AppState {
                     .filter(|project| project["archived_at"].is_number())
                     .filter_map(|project| project["project_key"].as_str().map(str::to_owned)),
             )
+            .chain(
+                self.project_deletion_fences
+                    .iter()
+                    .map(|p| p.project_key.clone()),
+            )
             .collect()
     }
 
     pub(in crate::app) fn refuse_archived_project(&self, id: &str) -> Result<(), ApiError> {
+        self.refuse_deleting_address(id)
+            .map_err(ApiError::classify)?;
         let name = self
             .projects
             .get(id)
@@ -45,6 +52,7 @@ impl AppState {
     }
 
     pub(in crate::app) fn refuse_archived_entity(&self, owner: &str) -> Result<(), String> {
+        self.refuse_deleting_address(owner)?;
         let id = self
             .projects
             .project_id_of(owner)
@@ -63,6 +71,7 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> Result<(), ApiError> {
+        self.guard_deleting_rpc(method, params)?;
         if !archive_guard_required(method) {
             return Ok(());
         }
@@ -110,14 +119,22 @@ impl AppState {
     }
 
     pub(in crate::app) fn project_id_for_archive_key(&self, key: &str) -> Option<String> {
-        self.project_by_key(key).map(|p| p.id.clone()).or_else(|| {
-            self.projects
-                .parked()
-                .iter()
-                .find(|p| p["project_key"].as_str() == Some(key))
-                .and_then(|p| p["id"].as_str())
-                .map(str::to_string)
-        })
+        self.project_by_key(key)
+            .map(|p| p.id.clone())
+            .or_else(|| {
+                self.projects
+                    .parked()
+                    .iter()
+                    .find(|p| p["project_key"].as_str() == Some(key))
+                    .and_then(|p| p["id"].as_str())
+                    .map(str::to_string)
+            })
+            .or_else(|| {
+                self.project_deletion_fences
+                    .iter()
+                    .find(|p| p.project_key == key)
+                    .map(|p| p.project_id.clone())
+            })
     }
 
     pub(in crate::app) fn guard_archived_action(
@@ -125,6 +142,7 @@ impl AppState {
         owner: &str,
         action: &BridgeAction,
     ) -> Result<(), String> {
+        self.refuse_deleting_address(owner)?;
         if !action_is_read(action) {
             self.refuse_archived_entity(owner)?;
             self.refuse_run_recovery(owner)?;

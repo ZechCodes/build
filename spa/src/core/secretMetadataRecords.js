@@ -60,14 +60,12 @@ function carriedObservation(held = {}) {
 }
 
 function nextObservation(held, serverNow, observedNow) {
-  if (!Number.isSafeInteger(serverNow)) return carriedObservation(held);
-  if (serverNow < held?.server_now) return null;
+  if (!Number.isSafeInteger(serverNow) || serverNow < held?.server_now) return carriedObservation(held);
   return { server_now: serverNow, clock_now: Math.max(serverNow, observedNow ?? held?.clock_now ?? serverNow), observed_at_ms: Date.now() };
 }
 
 function nextRecord(held, entries, serverNow, replace, selection, observedNow) {
   const observation = nextObservation(held, serverNow, observedNow);
-  if (!observation) return null;
   return { secrets: reconciledEntries(held?.secrets, entries, replace, observation.clock_now, selection), ...observation };
 }
 
@@ -89,7 +87,6 @@ function publication(group, held, token, serverNow, replace, selection, observe)
   const heldRecord = held[1]?.value;
   const observedNow = heldRecord ? observe?.(group.address, heldRecord) : null;
   const record = nextRecord(heldRecord, group.entries, serverNow, replace && group.primary, group.primary ? selection : undefined, observedNow);
-  if (!record) return [null, null];
   return [group.primary ? { token: randomToken() } : null, record];
 }
 

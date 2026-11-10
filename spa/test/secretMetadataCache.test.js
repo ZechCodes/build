@@ -426,3 +426,22 @@ it.each(["secretIds", "requestIds"])("a malformed filtered %s lookup preserves a
   await expect(cache.refresh(projectScope, { [selector]: [selected] })).rejects.toThrow();
   expect(await cache.read(projectScope)).toEqual(original.sort((a, b) => a.secret_id.localeCompare(b.secret_id)));
 });
+
+it.each(["project", "environment"])("publishes newer %s metadata after bridge time steps back while retaining the time anchor", async kind => {
+  const scope = kind === "project" ? projectScope : { environmentId: "env-step-back" };
+  const original = { ...metadata({ status: "available" }), attached_at: 1800000000,
+    ...(kind === "environment" ? { grant: { scope: "environment", environment_id: "env-step-back" } } : {}) };
+  const revoked = { ...original, revision: 2, status: "revoked", revoked_at: 1800000005 };
+  const call = vi.fn().mockResolvedValueOnce({ secrets: [original], server_now: 1800000010, next: null })
+    .mockResolvedValueOnce({ secrets: [revoked], server_now: 1800000005, next: null });
+  const deviceId = `step-back-${kind}`;
+  const cache = createSecretMetadataCache({ deviceId, capabilities: environmentCapabilities, call }); caches.push(cache);
+  await cache.refresh(scope);
+  const { readCached } = await import("../src/core/localCache.js");
+  const address = secretMetadataAddress(deviceId, scope);
+  const anchor = (await readCached(address)).value;
+  await cache.refresh(scope);
+  expect(await cache.read(scope)).toEqual([revoked]);
+  expect((await readCached(address)).value).toMatchObject({ server_now: anchor.server_now,
+    clock_now: anchor.clock_now, observed_at_ms: anchor.observed_at_ms });
+});

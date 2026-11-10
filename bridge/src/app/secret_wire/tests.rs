@@ -488,19 +488,79 @@ fn environment_secret_upload_rechecks_membership_after_opening() {
     assert!(!opener.writer.secrets_have_records().unwrap());
 }
 
+fn seal_real_upload(params: &mut Value, value: &[u8]) {
+    use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine};
+    use dryoc::classic::{crypto_box::crypto_box_seal, crypto_core::crypto_scalarmult_base};
+    let context = UploadContext {
+        device_id: params["device_id"].as_str().unwrap().into(),
+        creator: params["creator"].as_str().unwrap().into(),
+        request_id: params["request_id"].as_str().unwrap().into(),
+        name: params["name"].as_str().unwrap().into(),
+        ttl_seconds: None,
+        grant: serde_json::from_value(params["grant"].clone()).unwrap(),
+        stage: serde_json::from_value(params["scope"].clone()).unwrap(),
+    };
+    let encoded=serde_json::to_vec(&json!({"domain":"build.secrets.upload","version":1,"context":context,"value_b64":BASE64.encode(value)})).unwrap();
+    let mut padded = vec![0; crate::secrets::upload::PADDED_BYTES];
+    padded[..4].copy_from_slice(&(encoded.len() as u32).to_be_bytes());
+    padded[4..4 + encoded.len()].copy_from_slice(&encoded);
+    let mut public = [0; 32];
+    crypto_scalarmult_base(&mut public, &[7; 32]);
+    let mut sealed = vec![0; padded.len() + 48];
+    crypto_box_seal(&mut sealed, &padded, &public).unwrap();
+    params["sealed_payload"] = json!(BASE64.encode(sealed));
+}
+
 #[test]
 fn environment_secret_creation_never_widens_project_grant() {
+    use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine};
     let mut f = fixture();
+    f.app = f.app.with_secret_upload_opener(Arc::new(
+        crate::secrets::upload::SealedUploadOpener::new(&BASE64.encode([7; 32])).unwrap(),
+    ));
+    seal_real_upload(&mut f.params, b"synthetic-original-project-value");
     let original = create(&mut f).unwrap();
-    let project = f.params["scope"]["owner_id"].as_str().unwrap();
-    let environment = &f.app.projects.get(project).unwrap().environment_id;
-    f.params["grant"] = json!({"scope":"environment","environment_id":environment});
-    assert_eq!(create(&mut f).err().unwrap().code(), "conflict");
     let writer = f.app.store.as_ref().unwrap().writer();
-    let record = writer
+    let before = writer
         .secret_record(original["secret_id"].as_str().unwrap())
         .unwrap()
         .unwrap();
-    assert!(matches!(record.context.grant, GrantScope::Project { .. }));
-    assert_eq!(writer.secret_records().unwrap().len(), 1);
+    let project = f.params["scope"]["owner_id"].as_str().unwrap();
+    let environment = f.app.projects.get(project).unwrap().environment_id.clone();
+    f.params["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+    f.params["grant"] = json!({"scope":"environment","environment_id":environment});
+    seal_real_upload(&mut f.params, b"synthetic-new-environment-value");
+    let created = create(&mut f).unwrap();
+    assert_ne!(created["secret_id"], original["secret_id"]);
+    assert_ne!(created["request_id"], original["request_id"]);
+    let after = writer.secret_record(&before.context.id).unwrap().unwrap();
+    assert_eq!(after, before);
+    assert!(matches!(after.context.grant, GrantScope::Project { .. }));
+    let vault = crate::secrets::vault::Vault::open(f.root.path(), true).unwrap();
+    assert_eq!(
+        vault.read(&after.context).unwrap().as_bytes(),
+        b"synthetic-original-project-value"
+    );
+    let environment = writer
+        .secret_record(created["secret_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        vault.read(&environment.context).unwrap().as_bytes(),
+        b"synthetic-new-environment-value"
+    );
+    assert_eq!(writer.secret_records().unwrap().len(), 2);
+    f.params["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+    f.params["grant"] = json!({"scope":"environment","environment_id":"foreign-environment"});
+    seal_real_upload(&mut f.params, b"synthetic-refused-value");
+    assert!(create(&mut f).is_err());
+    assert_eq!(writer.secret_records().unwrap().len(), 2);
+    assert_eq!(
+        writer.secret_record(&before.context.id).unwrap().unwrap(),
+        before
+    );
+    assert_eq!(
+        vault.read(&before.context).unwrap().as_bytes(),
+        b"synthetic-original-project-value"
+    );
 }

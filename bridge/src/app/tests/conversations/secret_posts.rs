@@ -904,3 +904,55 @@ fn secret_post_provisional_release_resolves_final_recipient_and_refuses_unbound(
         .unwrap();
     assert_eq!(record.context.stage.generation, "provisional");
 }
+
+#[test]
+fn project_delete_entry_point_preserves_environment_secret_for_sibling() {
+    let mut f = Fixture::new();
+    let sibling = f.app.add_environment_sibling_for_test(&f.project);
+    let (owner, agent) = super::super::project_agent::project_agent(&mut f.app, &sibling);
+    let mut caller = f.caller();
+    let thread = &f.app.runs[&owner].agents.by_id(&agent).unwrap().thread;
+    caller.project_id = sibling;
+    caller.owner_id = owner.clone();
+    caller.canonical_owner_id = owner;
+    caller.agent_id = agent.clone();
+    caller.conversation_id = agent;
+    caller.thread_id = thread.id.clone();
+    caller.generation = thread.id.clone();
+    caller.generation_revision = thread.generation_revision;
+    let id = f.stage_wire(true);
+    let service = f.app.secret_service().unwrap();
+    service
+        .attach(std::slice::from_ref(&id), "environment-delete-origin-send")
+        .unwrap();
+    assert_eq!(
+        service
+            .release(&caller, &id, "before-delete", || true)
+            .unwrap()
+            .as_bytes(),
+        b"synthetic-test-value"
+    );
+    let deleted = f.app.handle(req(
+        "project.delete",
+        json!({"project_id":f.project,"confirm":true}),
+    ));
+    assert_eq!(deleted["ok"], true, "{deleted}");
+    assert!(f
+        .app
+        .store
+        .as_ref()
+        .unwrap()
+        .writer()
+        .secret_record(&id)
+        .unwrap()
+        .unwrap()
+        .revoked_at
+        .is_none());
+    assert_eq!(
+        service
+            .release(&caller, &id, "after-delete", || true)
+            .unwrap()
+            .as_bytes(),
+        b"synthetic-test-value"
+    );
+}

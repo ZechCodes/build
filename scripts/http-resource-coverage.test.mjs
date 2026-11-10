@@ -400,7 +400,8 @@ const sourceFingerprintParts = {
   // #1099: Environment create keeps StageContext; revoke/reconciliation use environment selectors on existing methods.
   "core/secretDrafts.js": ["7b0b56e3", "00439462", "a747e9f8", "be3d5e89", "24a66628", "b0192207", "5dc92589", "2e0c9abe"],
   // #1099: Existing secrets.list gains environment selector/inherited opt-in and cache keys; no new verb.
-  "core/secretMetadataCache.js": ["d49077b8", "c3ec2214", "20a05df3", "ceee5533", "01b89a76", "f06c3cd3", "267c4bdd", "4fc782e8"],
+  // #1108: complete list publication and cache-owned expiry; existing secrets.list method/selectors only.
+  "core/secretMetadataCache.js": ["5cd30669", "43e47dff", "c6eb493d", "4ce2d202", "4ab3cf95", "45c11809", "3bd0ce78", "9f67dc55"],
   "core/session.js": ["3d180500", "f13f38ec", "64d5d01d", "ec44e3c7", "ef80b3cc", "85470f82", "ad7080e1", "69c47137"],
   "core/sessionRpc.js": ["11569cd1", "0840b413", "9f5e3cca", "af2c8f93", "9da0933e", "35717c2d", "41d6f18b", "2a893133"],
   "core/sessionSwitch.js": ["dc232a71", "5b006195", "d7910b8e", "8c59e611", "a36dd264", "8bbcfcc8", "0d8739f3", "371accc7"],

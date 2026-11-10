@@ -10,7 +10,7 @@ vi.mock("../src/core/environmentWrites.js", () => ({ environmentAction: async (_
 } }));
 import { createEnvironmentSettingsSecrets } from "../src/core/environmentSettingsSecrets.js";
 import { createSecretMetadataCache } from "../src/core/secretMetadataCache.js";
-import { readCached, writeCached } from "../src/core/localCache.js";
+import { readCached, writeCached, wipeCache } from "../src/core/localCache.js";
 import { takeEnvironmentSecretNavigation } from "../src/core/environmentSecretNavigation.js";
 import { notifyNavigationCommitted } from "../src/core/navigationLifetime.js";
 
@@ -36,7 +36,7 @@ async function mount(projects = [project], callRpc = vi.fn(() => new Promise(() 
   await vi.waitFor(() => expect(document.querySelector("[data-environment-secrets]") !== null).toBe(state.secrets));
   return { section, callRpc, navigate };
 }
-beforeEach(() => { state.secrets = true; document.body.innerHTML = "<main></main>"; });
+beforeEach(async () => { await wipeCache(); state.secrets = true; document.body.innerHTML = "<main></main>"; });
 afterEach(() => { sections.splice(0).forEach(section => section.dispose()); caches.splice(0).forEach(cache => cache.dispose()); document.body.innerHTML = ""; });
 
 it("lists cached environment metadata while offline and shows same-name project overrides", async () => {
@@ -114,4 +114,41 @@ it("refreshes cached environment membership when a task rail learns its project 
     await writeCached({ deviceId, entityId: "", kind: "environment-support" }, { secrets: false });
     await watcher.refresh(); expect(changed).toHaveBeenLastCalledWith(null);
   } finally { watcher.dispose(); }
+});
+
+it.each(["project", "environment"])("removes the override badge when the %s grant expires at the same revision", async kind => {
+  const environment = { ...grant, expires_at: kind === "environment" ? 1800000060 : null };
+  const own = { ...projectSecret, expires_at: kind === "project" ? 1800000060 : null };
+  let serverNow = 1800000000;
+  const callRpc = vi.fn(async (_method, params) => ({ secrets: params.scope.environment_id ? [environment] : [own, environment],
+    server_now: serverNow, next: null }));
+  const cache = createSecretMetadataCache({ deviceId, capabilities: support, call: callRpc }); caches.push(cache);
+  const scope = kind === "project" ? { projectId: "p1", environmentId } : { environmentId };
+  await mount([project], callRpc);
+  await vi.waitFor(() => expect(document.querySelector("main").textContent).toContain("overrides environment"));
+  serverNow = 1800000060; // same records and revisions; availability is time-derived
+  await cache.refresh(scope);
+  await vi.waitFor(() => expect(document.querySelector("main").textContent).not.toContain("overrides environment"));
+  expect((await cache.read(scope))[0].status).toBe("expired");
+  if (kind === "environment") expect(document.querySelector("main").textContent).toContain("expired");
+});
+
+it.each(["project", "environment"])("repaints availability and the override badge when cached %s expiry passes without a refresh", async kind => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date("2040-01-01T00:00:00Z"));
+  const environment = { ...grant, expires_at: kind === "environment" ? 1800000060 : null };
+  const own = { ...projectSecret, expires_at: kind === "project" ? 1800000060 : null };
+  const call = vi.fn(async () => ({ secrets: [own, environment], server_now: 1800000000, next: null }));
+  const cache = createSecretMetadataCache({ deviceId, capabilities: support, call }); caches.push(cache);
+  let section;
+  try {
+    await cache.refresh({ projectId: "p1", environmentId });
+    ({ section } = await mount([project])); // every subsequent network read remains unresolved
+    await vi.waitFor(() => expect(document.querySelector("main").textContent).toContain("overrides environment"));
+    await vi.advanceTimersByTimeAsync(60000);
+    await vi.waitFor(() => expect(document.querySelector("main").textContent).not.toContain("overrides environment"));
+    const scope = kind === "project" ? { projectId: "p1" } : { environmentId };
+    expect((await cache.read(scope))[0]).toMatchObject({ status: "expired", revision: 1 });
+    if (kind === "environment") expect(document.querySelector("main").textContent).toContain("expired");
+    expect(call).toHaveBeenCalledOnce();
+  } finally { section?.dispose(); cache.dispose(); vi.useRealTimers(); }
 });

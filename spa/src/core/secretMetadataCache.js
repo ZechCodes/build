@@ -1,6 +1,7 @@
 // Secret values never enter this module. It owns only the bridge's explicit
 // metadata DTO and writes every pull before a consumer paints it.
-import { mergeCachedRecordsTogether, readCached, subscribeCache } from "./localCache.js";
+import { readCached, subscribeCache } from "./localCache.js";
+import { admitSecretRead, publishSecretGroups, createSecretExpiry } from "./secretMetadataRecords.js";
 import { onSecretsChanged } from "./secretMetadataEvents.js";
 
 const SECRET_METADATA_KIND = "secret-metadata";
@@ -155,23 +156,22 @@ function hintMatches(hint, scope) {
   }
 }
 
-const byId = (left, right) => left.secret_id.localeCompare(right.secret_id);
 const trackedActive = (entry) => [...entry.registrations].some((registration) => registration.active());
-function mergeEntries(held = [], incoming = []) {
-  const entries = new Map(held.map((entry) => [entry.secret_id, entry]));
-  for (const entry of incoming) {
-    const previous = entries.get(entry.secret_id);
-    if (!previous || entry.revision > previous.revision) entries.set(entry.secret_id, entry);
-  }
-  return [...entries.values()].sort(byId);
+
+function targetScopes(scope) {
+  if (!scope.projectId) return [scope];
+  const scopes = [projectScope(scope.projectId)];
+  if (scope.conversationId) scopes.push(scope);
+  if (scope.environmentId) scopes.push({ environmentId: scope.environmentId });
+  return scopes;
 }
 
-async function writeEntries(deviceId, scope, entries, serverNow) {
-  const address = secretMetadataAddress(deviceId, scope);
-  await mergeCachedRecordsTogether([address], ([held]) => [{
-    secrets: mergeEntries(held?.value?.secrets, entries),
-    server_now: Number.isSafeInteger(serverNow) ? serverNow : held?.value?.server_now ?? null,
-  }]);
+function groupsFor(deviceId, scope, entries) {
+  return targetScopes(scope).map(target => ({
+    address: secretMetadataAddress(deviceId, target),
+    primary: JSON.stringify(secretMetadataAddress(deviceId, target)) === JSON.stringify(secretMetadataAddress(deviceId, scope)),
+    entries: entries.filter(entry => JSON.stringify(secretMetadataAddress(deviceId, entryScope(entry, scope))) === JSON.stringify(secretMetadataAddress(deviceId, target))),
+  }));
 }
 
 export async function readCachedSecrets(deviceId, scope) {
@@ -195,6 +195,8 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
   const current = () => !disposed && active();
   const supported = () => current() && secretFeaturesAvailable(capabilities());
   const scopeSupported = scope => !scope.environmentId || capabilities()?.environmentScope === true;
+  const expiry = createSecretExpiry(current);
+  const watchGroups = groups => Promise.all(groups.map(group => expiry.watch(group.address)));
 
   async function upsert(raw, queryScope) {
     const metadata = secretMetadataOf(raw);
@@ -202,31 +204,21 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
     if (!belongsTo(metadata, normalized)) invalidMetadata();
     const target = normalizedScope(entryScope(metadata, normalized));
     if (!current()) return null;
-    await writeEntries(deviceId, target, [metadata]);
+    const groups = [{ address: secretMetadataAddress(deviceId, target), entries: [metadata], primary: true }];
+    const token = await admitSecretRead(groups.map(group => group.address), current);
+    await publishSecretGroups(groups, { token, replace: false, active: current, observe: expiry.now });
+    await watchGroups(groups);
     return current() ? metadata : null;
   }
 
-  async function writePage(scope, page) {
+  function entriesOfPage(scope, page) {
     if (!page || !Array.isArray(page.secrets) || !Number.isSafeInteger(page.server_now)) throw safeReadError("invalid_metadata_page");
-    const groups = new Map();
-    const accepted = [];
-    for (const raw of page.secrets) {
-      let metadata;
-      try { metadata = secretMetadataOf(raw); } catch { continue; }
-      // A staged descriptor can move to its final scope while this page is in
-      // flight. Leave the old copy to age out on a later authoritative pull;
-      // one moved entry must not discard the valid grants beside it.
-      if (!belongsTo(metadata, scope)) continue;
-      accepted.push(metadata);
-      const target = normalizedScope(entryScope(metadata, scope));
-      const key = scopeKey(target);
-      const group = groups.get(key) || { scope: target, entries: [] };
-      group.entries.push(metadata);
-      groups.set(key, group);
-    }
-    if (!current()) return [];
-    await Promise.all([...groups.values()].map((group) => writeEntries(deviceId, group.scope, group.entries, page.server_now)));
-    return accepted;
+    return page.secrets.flatMap(raw => {
+      try {
+        const metadata = secretMetadataOf(raw);
+        return belongsTo(metadata, scope) ? [metadata] : [];
+      } catch { return []; }
+    });
   }
 
   async function readPage(scope, secretIds, requestIds, after) {
@@ -252,20 +244,33 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
     if (!supported()) return [];
     const scope = normalizedScope(rawScope);
     if (!scopeSupported(scope)) return [];
+    const addresses = targetScopes(scope).map(target => secretMetadataAddress(deviceId, target));
+    const token = await admitSecretRead(addresses, current, secretMetadataAddress(deviceId, scope));
+    const page = await collectPages(scope, secretIds, requestIds);
+    if (!refreshCurrent(scope)) return [];
+    const groups = groupsFor(deviceId, scope, page.entries);
+    await publishSecretGroups(groups, { token, serverNow: page.serverNow, replace: !secretIds.length && !requestIds.length, selection: { secretIds, requestIds }, observe: expiry.now, active: () => refreshCurrent(scope) });
+    await watchGroups(groups);
+    return page.entries;
+  }
+
+  async function collectPages(scope, secretIds, requestIds) {
     const entries = [];
-    let after = null;
+    let after = null, serverNow = 0;
     do {
       const page = await readPage(scope, secretIds, requestIds, after);
-      if (!refreshCurrent(scope)) return [];
-      entries.push(...await writePage(scope, page));
+      if (!refreshCurrent(scope)) return { entries: [], serverNow };
+      entries.push(...entriesOfPage(scope, page));
+      serverNow = Math.max(serverNow, page.server_now);
       after = nextCursor(page);
       if (!validCursor(after)) throw safeReadError("invalid_metadata_page");
     } while (after !== null);
-    return entries;
+    return { entries, serverNow };
   }
 
   function track(rawScope, { active: scopeActive = () => true } = {}) {
     const scope = normalizedScope(rawScope);
+    void Promise.all(targetScopes(scope).map(target => expiry.watch(secretMetadataAddress(deviceId, target)))).catch(() => {});
     const key = scopeKey(scope);
     const entry = tracked.get(key) || { scope, registrations: new Set() };
     const wasActive = trackedActive(entry);
@@ -299,7 +304,10 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
     refreshTracked,
     track,
     upsert,
-    read: (scope) => readCachedSecrets(deviceId, scope),
+    async read(scope) {
+      await expiry.watch(secretMetadataAddress(deviceId, scope));
+      return readCachedSecrets(deviceId, scope);
+    },
     async findRequest(rawScope, requestId) {
       const scope = normalizedScope(rawScope);
       const scopes = [scope];
@@ -316,6 +324,7 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
       disposed = true;
       tracked.clear();
       stopEvents();
+      expiry.dispose();
     },
   });
 }

@@ -248,3 +248,124 @@ it("does not clear a cached environment list when an inherited read is refused",
   await expect(cache.refresh({ projectId: "project-cache", environmentId: "env-refusal" })).rejects.toThrow();
   expect(await cache.read({ environmentId: "env-refusal" })).toEqual([environment]);
 });
+
+it.each(["project", "environment"])("updates %s expiry at the same revision and never regresses to an older server time", async kind => {
+  const scope = kind === "project" ? projectScope : { environmentId: "env-expiry" };
+  const available = { ...metadata({ status: "available" }), attached_at: 1800000000, expires_at: 1800000060,
+    ...(kind === "environment" ? { grant: { scope: "environment", environment_id: "env-expiry" } } : {}) };
+  const pages = [
+    { secrets: [available], server_now: 1800000000, next: null },
+    { secrets: [{ ...available, status: "expired" }], server_now: 1800000060, next: null },
+    { secrets: [available], server_now: 1800000001, next: null },
+  ];
+  const cache = createSecretMetadataCache({ deviceId: `expiry-${kind}`, capabilities: () => ({ ...capabilities(), environmentScope: true }), call: async () => pages.shift() });
+  caches.push(cache);
+  await cache.refresh(scope); expect((await cache.read(scope))[0].status).toBe("available");
+  await cache.refresh(scope); expect((await cache.read(scope))[0]).toMatchObject({ status: "expired", revision: 1 });
+  await cache.refresh(scope); expect((await cache.read(scope))[0].status).toBe("expired");
+});
+
+it.each(["project", "environment"])("expires cached %s grants at an authoritative deadline without a push, read, or revision change", async kind => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2040-01-01T00:00:00Z")); // deliberately unlike the bridge clock
+  const scope = kind === "project" ? projectScope : { environmentId: "env-timer" };
+  const available = { ...metadata({ status: "available" }), attached_at: 1800000000, expires_at: 1800000060,
+    ...(kind === "environment" ? { grant: { scope: "environment", environment_id: "env-timer" } } : {}) };
+  const call = vi.fn(async () => ({ secrets: [available], server_now: 1800000000, next: null }));
+  const cache = createSecretMetadataCache({ deviceId: `timer-${kind}`, capabilities: () => ({ ...capabilities(), environmentScope: true }), call });
+  caches.push(cache);
+  try {
+    await cache.refresh(scope);
+    const changed = vi.fn(); const stop = cache.subscribe(scope, changed);
+    await vi.advanceTimersByTimeAsync(59000);
+    expect((await cache.read(scope))[0].status).toBe("available");
+    vi.setSystemTime(new Date("2000-01-01T00:00:00Z")); // a wall-clock rollback must not extend the lease
+    await vi.advanceTimersByTimeAsync(1000);
+    expect((await readCachedSecrets(`timer-${kind}`, scope))[0]).toMatchObject({ status: "expired", revision: 1 });
+    expect(changed).toHaveBeenCalled(); expect(call).toHaveBeenCalledOnce(); stop();
+  } finally { cache.dispose(); vi.useRealTimers(); }
+});
+
+it.each(["project", "environment"])("replaces a complete %s list and fences an older in-flight list", async kind => {
+  const scope = kind === "project" ? projectScope : { environmentId: "env-replace" };
+  const row = kind === "project" ? metadata() : { ...metadata(), grant: { scope: "environment", environment_id: "env-replace" } };
+  let releaseOld;
+  const call = vi.fn()
+    .mockResolvedValueOnce({ secrets: [row], server_now: 1800000000, next: null })
+    .mockImplementationOnce(() => new Promise(resolve => { releaseOld = resolve; }))
+    .mockResolvedValueOnce({ secrets: [], server_now: 1800000001, next: null });
+  const cache = createSecretMetadataCache({ deviceId: `replace-secrets-${kind}`, capabilities: () => ({ ...capabilities(), environmentScope: true }), call }); caches.push(cache);
+  await cache.refresh(scope);
+  const old = cache.refresh(scope);
+  await vi.waitFor(() => expect(releaseOld).toBeTypeOf("function"));
+  await cache.refresh(scope); expect(await cache.read(scope)).toEqual([]);
+  releaseOld({ secrets: [row], server_now: 1800000001, next: null }); await old;
+  expect(await cache.read(scope)).toEqual([]);
+});
+
+it("publishes a full paginated list only after all pages succeed and retains cached rows on failure", async () => {
+  const call = vi.fn()
+    .mockResolvedValueOnce({ secrets: [metadata()], server_now: 1800000000, next: null })
+    .mockResolvedValueOnce({ secrets: [metadata({ id: "sec_new" })], server_now: 1800000001, next: "page2" })
+    .mockRejectedValueOnce(new Error("membership uncertain"));
+  const cache = createSecretMetadataCache({ deviceId: "atomic-secret-pages", capabilities, call }); caches.push(cache);
+  await cache.refresh(projectScope);
+  await expect(cache.refresh(projectScope)).rejects.toThrow();
+  expect(await cache.read(projectScope)).toEqual([metadata()]);
+});
+
+it("does not discard an immediate mutation or resurrect a removed grant from an incidental stage read", async () => {
+  const pending = [];
+  const call = vi.fn((_method, params) => new Promise(resolve => pending.push({ resolve, params })));
+  const cache = createSecretMetadataCache({ deviceId: "secret-write-fence", capabilities, call }); caches.push(cache);
+  const read = cache.refresh(projectScope);
+  await vi.waitFor(() => expect(pending).toHaveLength(1));
+  await cache.upsert(metadata({ revision: 3, status: "revoked" }), projectScope);
+  pending[0].resolve({ secrets: [], server_now: 1800000000, next: null }); await read;
+  expect((await cache.read(projectScope))[0]).toMatchObject({ revision: 3, status: "revoked" });
+
+  const full = cache.refresh(projectScope);
+  await vi.waitFor(() => expect(pending).toHaveLength(2));
+  const stage = cache.refresh(agentScope);
+  await vi.waitFor(() => expect(pending).toHaveLength(3));
+  pending[1].resolve({ secrets: [], server_now: 1800000001, next: null }); await full;
+  pending[2].resolve({ secrets: [metadata()], server_now: 1800000001, next: null }); await stage;
+  expect(await cache.read(projectScope)).toEqual([]);
+});
+
+it("a filtered request lookup preserves unrelated cached rows", async () => {
+  const call = vi.fn(async () => ({ secrets: [], server_now: 1800000000, next: null }));
+  const cache = createSecretMetadataCache({ deviceId: "secret-filtered-list", capabilities, call }); caches.push(cache);
+  await cache.upsert(metadata(), projectScope);
+  await cache.refresh(projectScope, { requestIds: ["missing-request"] });
+  expect(await cache.read(projectScope)).toEqual([metadata()]);
+});
+
+
+it("removes a missing explicitly queried ID without clearing unrelated grants", async () => {
+  const cache = createSecretMetadataCache({ deviceId: "secret-filtered-removal", capabilities,
+    call: async () => ({ secrets: [], server_now: 1800000000, next: null }) }); caches.push(cache);
+  const other = { ...metadata(), secret_id: "sec_other" };
+  await cache.upsert(metadata(), projectScope); await cache.upsert(other, projectScope);
+  await cache.refresh(projectScope, { secretIds: ["sec_project"] });
+  expect(await cache.read(projectScope)).toEqual([other]);
+});
+
+it("keeps elapsed bridge time when an equal-time page arrives late, including across a cache restart", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date("2040-01-01T00:00:00Z"));
+  const row = { ...metadata({ status: "available" }), attached_at: 1800000000, expires_at: 1800000060 };
+  const options = { deviceId: "clock-restart", capabilities,
+    call: async () => ({ secrets: [row], server_now: 1800000000, next: null }) };
+  const first = createSecretMetadataCache(options); caches.push(first);
+  let restarted;
+  try {
+    await first.refresh(projectScope);
+    await vi.advanceTimersByTimeAsync(59000);
+    await first.refresh(projectScope); // delayed old server_now must not restart its 60 seconds
+    first.dispose();
+    restarted = createSecretMetadataCache(options); caches.push(restarted);
+    await restarted.read(projectScope);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect((await readCachedSecrets(options.deviceId, projectScope))[0].status).toBe("expired");
+  } finally { first.dispose(); restarted?.dispose(); vi.useRealTimers(); }
+});

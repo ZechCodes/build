@@ -25,7 +25,9 @@ export function secretChipLabel(metadata) {
 
 /** Only live grants can shadow another live name. Staged uploads acquire
  * authority when the user's own message is accepted. */
+export const secretIsAvailable = entry => entry?.status === "available" && entry.revoked_at == null;
+
 export function secretOverridesEnvironment(secret, entries = []) {
-  return secret?.grant?.scope === "project" && secret.status === "available"
-    && entries.some(entry => entry.grant?.scope === "environment" && entry.status === "available" && entry.name === secret.name);
+  return secret?.grant?.scope === "project" && secretIsAvailable(secret)
+    && entries.some(entry => entry.grant?.scope === "environment" && secretIsAvailable(entry) && entry.name === secret.name);
 }

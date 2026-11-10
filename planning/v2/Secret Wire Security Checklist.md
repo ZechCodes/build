@@ -134,3 +134,16 @@ hashes and update only the root transport README's current digest.
 
 Focused commands and final exit codes are recorded on #1099; the full suite and
 Semgrep remain the serial merge gate under the task's rules.
+
+
+Review #1108 qualification: `secretMetadataCache.test.js` and
+`environmentSettingsSecrets.test.js` reproduce expiry at the same revision for
+both project and environment grants, with availability and override-badge
+assertions. Server-time anchors and monotonic deadline timers publish expired
+status into the cache without a push or successful refresh, including a skewed
+local clock and a wall-clock rollback. Equal-revision terminal statuses and
+server-time/order fences refuse stale availability. Complete paginated lists
+replace the queried scope only after all pages succeed; failed reads retain
+rows, filtered lookups preserve unrelated rows, and admission/publication tokens
+fence immediate mutations and late incidental stage reads. The score remains
+100/100; no view computes time-derived availability.

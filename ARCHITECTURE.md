@@ -1240,15 +1240,40 @@ preserving source folders. `revoke_environment_secrets_before_delete` is the
 schema-26 no-op seam for S2.1's durable environment-secret revocation and runs
 before the config is removed; an error leaves config and registration intact.
 S2.5 owns capability release and the SPA consumer.
-Task-deleting project requests require every workspace to be finished; the
-existing deferred deletion job invokes the review history service off the app
-lock with that project's exact opaque key. It releases review pins and deletes
-SQL task, review and delivery-intent rows in one transaction; Git pin and file
-cleanup retain the existing retry semantics. Unfinished review recovery still
-refuses deletion. Requests without `tasks` preserve task history and
-keep the existing workspace-deletion policy. Restoring parked projects already
-binds retained entities by exact key; returning a shared home cannot bind them
-to a sibling.
+Task-deleting project requests require every workspace to be finished. Both
+project deletion modes write an internal per-project plan into the existing
+`mutation_commands` JSON storage before removing config or touching files.
+The plan fixes exact ID/key, mode, owned paths and entity IDs, scoped history
+fingerprint and file evidence; retries cannot broaden that authority. Config
+removal precedes deferred filesystem cleanup. The review history service runs
+off the app lock; its FULL writer transaction deletes the project's task,
+review and intent rows and checkpoints the phase together. Legacy mode retains
+history and cancels delivery authority. Unfinished review recovery still refuses
+the history phase. Every intermediate failure remains explicitly retryable.
+
+Startup leaves unchanged pending records fenced and reports the ID and original
+`project.delete` retry parameters in the daemon log. Before config removal the
+project remains listed but refuses ordinary use; afterward it is absent from
+ordinary project lists. Captured project/entity/workspace addresses return a
+`deletion-pending` refusal on RPC/MCP; task SQL reads also check the durable
+record. The same ID or opaque key cannot be registered while pending. Success
+leaves a tombstone; collection at startup and completion bounds these internal
+tombstones to 256 and thirty days, never collecting pending authority.
+Environment deletion is harmless on repeated absent-ID requests across restart.
+
+Older schema-26 journal readers ignore the internal deletion states. Config
+removal before effects and atomic history deletion preserve rollback safety.
+An older binary cannot honor the new fence: between config removal and the
+tombstone it can list remaining manifests or reattach pending history when a
+legacy path is reopened. Those rollback-only residuals are accepted. On return
+to the new binary, a re-added registration or changed scoped history/remaining
+files abandons and tombstones the stale plan without destructive work; when
+necessary it restores the captured registration so preserved work is usable.
+Preserved manifests keep their directory identity. A fresh explicit delete can
+capture their IDs through the abandoned record's exact project-key link, provided
+the old ID has not been taken by another project. It captures the changed state. Startup never deletes files.
+Restoring parked projects binds retained entities by exact key; returning a
+shared home cannot bind them to a sibling.
 
 The first migration saves the exact original bytes once beside the config in
 `config.json.pre-environments`. Atomic config replacement also retains one

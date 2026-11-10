@@ -271,11 +271,13 @@ changing source containment. The existing 100/100 score retains its scope;
 | --- | --- | --- |
 | ENV-S22-PS1 | Environment deletion counts live, archived and parked project registrations, refuses while any belongs to it, and only removes the environment registration after secret revocation and config persistence. A revocation error leaves config bytes and runtime registration untouched. Source files survive. | `environment_delete_refused_while_projects_exist`; `environment_delete_persists_and_preserves_sources`; `environment_delete_revocation_failure_preserves_config`; `parked_home_return_binds_only_exact_project_keys`. |
 | ENV-S22-PS2 | A home returning after legacy parked migration binds retained entities by exact project key, even when a sibling sharing that home is restored first. No retained key is canonicalized for an ownership join. | `parked_home_return_binds_only_exact_project_keys`; existing `bind_retained_entities_ignores_sibling_path` (ENV-M02-3). |
+| ENV-S22-PS3 | Project deletion retries use only captured owned paths. New or changed files, re-added registration or changed history abandon stale authority on startup; source folders and sibling registrations remain protected. Environment deletion retries after success/restart do not touch files or config. | `project_deletion_journal_failure_restart_and_retry`; `project_deletion_return_trip_abandons_readded_registration`; `project_deletion_return_trip_abandons_changed_history_and_workspace`; `environment_delete_post_success_restart_retry_is_idempotent`. |
 
 Environment secret revocation is intentionally an integration seam:
 `revoke_environment_secrets_before_delete` is a no-op on schema 26, where no
 environment-scoped secret can exist. The orchestrator must connect S2.1's
 revocation before the environment capability is released; this slice makes
 no claim to verify schema-27 secret revocation.
+
 
 **S2.2 scoped security score: 100/100.** The focused regression and gate receipts are recorded on #1096.

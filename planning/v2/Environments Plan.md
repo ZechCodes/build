@@ -514,7 +514,7 @@ New family file `bridge/src/api/v1/environment.rs`, registered with
 | M3 | `project.rename` / `environment.rename` | `{…_id, name}` | row | display only; one bounded line; never a folder |
 | M3 | `environment.add_source` / `remove_source` / `update_source` / `sync_source` / `set_isolation` | as the `project.*` twins (`board.rs:206-240`) with `environment_id` | as today | forward-looking; shared-directory rules of 1.4 |
 | S2 | `environment.delete` | `{environment_id}` | `{}` | refused while any project belongs to it; revokes environment secrets |
-| S2 | `project.delete` | gains `tasks: "delete"` | | refused while a workspace is unfinished; removes the project's tasks, reviews and intents under its key (5B) |
+| S2 | `project.delete` | gains `tasks: "delete"` | | refused while a workspace is unfinished; a durable deletion record fences the project and captures owned cleanup before config removal, then removes history under its exact key (5B) |
 
 Changed:
 
@@ -1269,11 +1269,64 @@ a migrated device:
 | # | slice | acceptance | TDD tests |
 | --- | --- | --- | --- |
 | S2.1 | **Bridge: environment secrets** (`GrantScope::Environment`, planned schema 27 rebuild, membership revalidated per read incl. archived = not current, revoke on environment delete, name override, `secrets.*` scope, `secrets.changed` scope, `secrets.environmentScope`) | readable by agents of every project in the environment and none outside; project secret of the same name wins; a sibling never reads another project's secret; archived project's agents refused; deletion revokes | `environment_scoped_secret_readable_across_projects`; `project_secret_overrides_environment_name`; `sibling_project_cannot_read_project_scoped_secret` (one per mechanism: release, list, attach, audit); `archived_project_agent_not_current_for_secrets`; `environment_delete_revokes_environment_scope`; leak sweep row 14 rerun |
-| S2.2 | **Bridge: environment delete, project delete with tasks** (`environment.delete`, `project.delete {tasks}` accepted on archived projects too, parked-project unpark migration) | environment delete refused with "Delete its N projects first" while any project, archived or not, belongs to it; project delete refused while a workspace is unfinished, otherwise removes tasks, reviews and intents under its key only | `environment_delete_refused_while_projects_exist` (incl. archived); `project_delete_removes_its_tasks_only`; `archived_project_accepts_delete` |
+| S2.2 | **Bridge: environment delete, project delete with tasks** (`environment.delete`, `project.delete {tasks}` accepted on archived projects too, parked-project unpark migration) | environment delete refused with "Delete its N projects first" while any project, archived or not, belongs to it; project delete refused while a workspace is unfinished, otherwise removes tasks, reviews and intents under its key only; journal-first, config-first deletion survives partial failure and restart using an immutable plan; pending deletions are fenced until completion or safe abandonment | `project_deletion_journal_failure_restart_and_retry`; `project_deletion_fences_rpc_mcp_and_registration_after_config_removal`; `project_deletion_history_and_phase_commit_atomically`; `project_deletion_return_trip_abandons_readded_registration`; `project_deletion_return_trip_abandons_changed_history_and_workspace`; `environment_delete_post_success_restart_retry_is_idempotent`; `environment_delete_refused_while_projects_exist` (incl. archived); `project_delete_removes_its_tasks_only`; `archived_project_accepts_delete` |
 | S2.3 | **Bridge: MCP** (`add_environment_source`/`remove_environment_source`, reworded `add_project_source`, templates) | project agent can add a folder to its environment; a Coding-surface agent has no such tool | `mcp_project_surface_lists_environment_source_tools`; template snapshot |
 | S2.4 | **SPA: secrets in environment settings + composer scope** (#1006 composer "This environment"; "overrides environment" chips) | create/list/revoke; old bridge hides the scope | `secretsWire.test.js`, `environmentSettingsSecrets.test.js` |
 | S2.5 | **SPA: environment delete and project delete in settings** | refusal reasons verbatim; confirm names task and workspace counts | `environmentsSettingsDom.test.js`, `projectSettings.test.js` |
 | S2.6 | **SPA: identity badges** (tokens, `identityBadgeHtml`, replaces kind glyphs in place) | identical hue across tabs; siblings share hue, differ by glyph; contrast in both themes | `identityBadge.test.js`, theme token test |
+
+#### S2.2 approved recovery deviation (#1096)
+
+Partial-failure review found that deleting history before checkout/config cleanup
+could leave a registered project with its history permanently gone. Both project
+delete modes now use a per-project record in the existing schema-26
+`mutation_commands` JSON columns. No schema, wire-version or capability change
+belongs to this deviation. The FULL writer transaction records exact project ID,
+project key, task-deletion mode, the immutable owned path/checkout (including exact backend registration name) and entity-ID
+plan, file evidence, scoped history fingerprint, phase and completion tombstone
+before destructive effects. Retries never derive a new cleanup plan from config.
+
+Ordering is record, config removal, owned checkout cleanup, history, completion.
+Task/review/intent deletion and its phase checkpoint commit in one writer
+transaction. Legacy mode keeps task history and retires delivery authority.
+Every unfinished record fences RPC writes/assignments, workspace creation,
+task reads and MCP use and refuses registration under its ID/key. After config
+removal only a matching record authorizes the original delete; mismatched
+identity or task mode is refused. Sibling history and source folders survive.
+
+Startup performs no destructive cleanup. It logs `deletion-pending`, the
+project ID and the retry instruction. A config failure leaves the project listed
+but fenced, with config bytes and history intact. Once config is removed the
+project disappears from ordinary project lists; requests to its captured
+addresses return a deletion-pending error. Retry through the existing RPC:
+`project.delete {project_id, confirm:true, tasks:"delete"}` (omit `tasks` for
+legacy mode). Successful repeated project deletes use the retained completion
+tombstone; absent environment deletes are harmless idempotent successes, across
+restart as well. Pending records are never collected. Completed/abandoned
+records are collected at startup and completion: retain at most 256 and at most
+30 days. An expired project tombstone no longer authorizes a retry.
+
+**Binary rollback boundary:** a previous schema-26 bridge ignores the internal
+journal's unknown `deletion_pending`/`deletion_complete` states without decoding
+or executing them. Config is removed before destructive cleanup, and SQL history
+is deleted atomically, so rollback neither crashes nor exposes a half-deleted
+history set. During the window from config removal to tombstone, only under a
+binary rollback, two residuals are accepted: `workspace.list` can show remaining
+manifests, and reopening the same legacy path can reattach the history that has
+not yet been cleaned (an un-deletion). The older bridge cannot honor a fence it
+does not implement; this does not authorize loss of new user work.
+
+On the return trip, startup checks registration, scoped history and the remaining
+owned files. A re-added registration, changed history, or new/changed owned file
+abandons and tombstones the stale plan without destructive cleanup. If no
+registration remains, it restores the captured project registration (and its
+captured environment registration if rollback removed that too) so preserved
+work is usable. Preserved workspace manifests keep their original directory identity. A fresh
+delete can capture those workspace IDs through the abandoned record's exact
+project-key link, provided no other project has taken their old ID.
+The user then deletes again to capture fresh authority. Partial
+cleanup may remove captured files; that alone does not invent authority over new
+files. New sources occupying captured roots also prevent stale cleanup.
 
 ### Stage 3: polish (after dogfooding, informed by it)
 

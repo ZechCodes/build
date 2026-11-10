@@ -109,3 +109,20 @@ CREATE TABLE IF NOT EXISTS secret_unauthenticated_summary (
     last_at INTEGER NOT NULL
 );
 
+
+CREATE TABLE secret_revocations (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT NOT NULL,
+    creator TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    secret_id TEXT NOT NULL,
+    accepted_at INTEGER NOT NULL CHECK (accepted_at >= 0),
+    request TEXT NOT NULL,
+    response TEXT NOT NULL,
+    UNIQUE(device_id,creator,operation_id)
+);
+CREATE INDEX secret_revocations_retention ON secret_revocations(accepted_at,sequence);
+CREATE TRIGGER secret_records_prune_lifecycle_audit AFTER DELETE ON secret_records
+BEGIN
+    DELETE FROM secret_audit WHERE secret_id=OLD.id AND outcome IN ('created','attached','expired','revoked');
+END;

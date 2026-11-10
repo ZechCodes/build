@@ -580,7 +580,22 @@ fn schema_26_to_27_preserves_secret_rows_and_reopen_is_noop() {
         INSERT INTO secret_records(id,device_id,creator,name,ttl_seconds,grant_scope,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,created_at,attached_at,expires_at,revoked_at,revocation_reason,revision,message_operation_id,upload_request_id,upload_digest,blob_present) VALUES ('sec_00000000-0000-4000-8000-000000000001','device','user','TEST',60,'project','project','owner','conversation','generation',100,110,170,150,'revoked',3,'operation','00000000-0000-4000-8000-000000000002','abcdef',0);
         INSERT INTO secret_final_bindings VALUES('sec_00000000-0000-4000-8000-000000000001','operation','project','owner','agent','conversation','generation');
         INSERT INTO secret_audit(sequence,secret_id,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome) VALUES(5,'sec_00000000-0000-4000-8000-000000000001','project','owner','agent','conversation','generation','session','request',150,'revoked');").unwrap();
-    let columns=[("secret_records","id,device_id,creator,name,ttl_seconds,grant_scope,grant_agent_id,grant_conversation_id,grant_generation,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,stage_draft_id,created_at,attached_at,expires_at,revoked_at,revocation_reason,revision,message_operation_id,upload_request_id,upload_digest,blob_present"),("secret_final_bindings","secret_id,operation_id,project_id,owner_id,agent_id,conversation_id,generation"),("secret_audit","sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,attempt_count,last_occurred_at,outcome")];
+    connection.execute_batch(r#"INSERT INTO secret_records(id,device_id,creator,name,grant_scope,grant_agent_id,grant_conversation_id,grant_generation,stage_owner_id,stage_conversation_id,stage_generation,stage_draft_id,created_at,revision,upload_request_id,upload_digest,blob_present) VALUES ('sec_00000000-0000-4000-8000-000000000003','device','user','STAGED','agent','agent','conversation','generation','owner','conversation','generation','draft',100,1,'00000000-0000-4000-8000-000000000004','immutable-ciphertext-digest',1);
+        INSERT INTO secret_clock VALUES(1,150,7);
+        INSERT INTO secret_vault_state VALUES(1,'original-key',NULL);
+        INSERT INTO secret_bindings VALUES('operation','["sec_00000000-0000-4000-8000-000000000001"]',110);
+        INSERT INTO secret_audit_summaries VALUES('sec_00000000-0000-4000-8000-000000000001',3,2,140,'revoked');
+        INSERT INTO secret_audit(sequence,secret_id,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome) VALUES(900,'unavailable','project','owner','agent','conversation','generation','session','request',150,'secret_unavailable');
+        DELETE FROM secret_audit WHERE sequence=900;
+        INSERT INTO secret_revocations VALUES(1,'device','user','revoke','sec_00000000-0000-4000-8000-000000000001',150,'metadata-request','metadata-response');"#).unwrap();
+    let columns=[("secret_records","id,device_id,creator,name,ttl_seconds,grant_scope,grant_agent_id,grant_conversation_id,grant_generation,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,stage_draft_id,created_at,attached_at,expires_at,revoked_at,revocation_reason,revision,message_operation_id,upload_request_id,upload_digest,blob_present"),("secret_final_bindings","secret_id,operation_id,project_id,owner_id,agent_id,conversation_id,generation"),("secret_audit","sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,attempt_count,last_occurred_at,outcome"),
+        ("secret_bindings","operation_id,secret_ids,attached_at"),
+        ("secret_clock","singleton,high_water,revision"),
+        ("secret_vault_state","singleton,active_key_id,pending_key_id"),
+        ("secret_audit_summaries","secret_id,release_count,denial_count,last_released_at,last_outcome"),
+        ("secret_revocations","sequence,device_id,creator,operation_id,secret_id,accepted_at,request,response"),
+        ("(SELECT name,seq FROM sqlite_sequence WHERE name LIKE 'secret_%')","name,seq")
+];
     fn snapshot(c: &rusqlite::Connection, t: &str, cols: &str) -> Vec<Vec<rusqlite::types::Value>> {
         let mut stmt = c
             .prepare(&format!("SELECT {cols} FROM {t} ORDER BY 1"))

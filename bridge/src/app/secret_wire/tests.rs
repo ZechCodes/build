@@ -456,3 +456,34 @@ fn environment_secret_upload_validates_current_stage_project_in_writer() {
         1
     );
 }
+
+#[test]
+fn environment_secret_upload_rechecks_membership_after_opening() {
+    struct MovingOpener {
+        writer: crate::store::StoreWriter,
+        project: String,
+    }
+    impl UploadOpener for MovingOpener {
+        fn open(&self, _: &str, _: &UploadContext) -> crate::secrets::Result<SecretValue> {
+            self.writer.secrets_reconcile_config(&json!({"environments":[{"id":"foreign-env"}],"projects":[{"id":self.project,"environment_id":"foreign-env","archived_at":null}]}))?;
+            SecretValue::new(b"synthetic-test-value-only".to_vec())
+        }
+    }
+    let f = fixture();
+    let project = f.params["scope"]["owner_id"].as_str().unwrap();
+    let environment = &f.app.projects.get(project).unwrap().environment_id;
+    let context:UploadContext=serde_json::from_value(json!({"device_id":f.params["device_id"],"creator":f.params["creator"],"request_id":f.params["request_id"],"name":f.params["name"],"ttl_seconds":null,"grant":{"scope":"environment","environment_id":environment},"stage":f.params["scope"]})).unwrap();
+    let authority: SecretScope =
+        serde_json::from_value(json!({"project_id":project,"stage":f.params["scope"]})).unwrap();
+    let opener = MovingOpener {
+        writer: f.app.store.as_ref().unwrap().writer(),
+        project: project.into(),
+    };
+    assert!(f
+        .app
+        .secret_service()
+        .unwrap()
+        .stage_upload_authorized(&context, "synthetic-ciphertext", &opener, &authority)
+        .is_err());
+    assert!(!opener.writer.secrets_have_records().unwrap());
+}

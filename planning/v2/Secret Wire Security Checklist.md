@@ -23,10 +23,26 @@ facts surviving the denial cap and retention cleanup.
 | 5 | Blob publication precedes metadata commit; failed SQL leaves inaccessible encrypted orphan; startup removes it. | staging persistence-boundary injection, existing vault crash tests. |
 | 6 | Send commits complete set, message, descriptor and receipt atomically with FULL durability. Replay preserves original acceptance and TTL. | `secret_atomic`, `post_secret_claim`, failed binding rollback. |
 | 7 | Existing/final provisional recipient is fenced by canonical project, owner, agent, conversation and generation. Immutable AAD stays intact. | `secret_post`, generation-race and provisional release tests. |
-| 8 | Metadata and audit reads are bounded scoped snapshots; cursor scope changes are refused; tombstones and TTL remain authoritative. | `store::secrets::metadata`, malformed query/authorization tests. |
-| 9 | Invalidation contains only IDs/revision/scope; project routing survives originating conversation retirement; lost/reordered hints reconcile without uploads. | `changes::secrets_tests`, SPA `secretsWire` tests. |
-| 10 | Delivery exact revision block includes scope and no values, wrapped/pinned for all five harnesses; features remain unadvertised. | `agent_message::secret_tests`, API contract + withheld capability tests. |
+| 8 | Metadata and audit reads are bounded scoped snapshots; cursor scope changes are refused; tombstones and TTL remain authoritative. | `store::secrets::metadata`, malformed query/authorization tests; `environment_membership_revalidated_per_read`, archived-project denial and the sibling list/audit negatives. |
+| 9 | Invalidation contains only IDs/revision/scope; project routing survives originating conversation retirement; lost/reordered hints reconcile without uploads. | `changes::secrets_tests`, including environment/all subscription routing, SPA `secretsWire` tests. |
+| 10 | Delivery exact revision block includes scope and no values, wrapped/pinned for all five harnesses; the environment feature remains unadvertised until S2.4 (the existing 3.36 features retain their advertisements). | `agent_message::secret_tests`, API contract + withheld capability tests. |
 
 Run only targeted gates under `nice -n 10`, with scratch CARGO_TARGET_DIR and
 TMPDIR. The final task comment records exit codes, test counts, scanner results,
 frozen head and merge overlap with the CLI slice. No installed bridge is run.
+
+## S2.1 — environment grant extension (#1095)
+
+The scoped score remains **100/100**. `secrets_contract_includes_environment_scope`
+checks additive grant/selectors, strict fields, unchanged wire 3.39.0 and the
+withheld environment capability. `environment_secret_upload_validates_current_stage_project_in_writer`
+and `environment_secret_upload_rechecks_membership_after_opening` cover foreign
+environments, archive and a membership change between opening and publication.
+`environment_secret_creation_never_widens_project_grant` keeps request replay
+from widening or copying an existing project grant. Create retains StageContext;
+list/revoke/audit accept the environment selector. No standalone creation lifetime
+is introduced. Both accepted-secret and environment-secret leak sweeps cover
+values, sealed markers, live DB/WAL, metadata, pushes, harness prompts and Git,
+with the existing negative controls. The frozen schema-26 fixture preserves all
+old secret state through schema 27 and a second open; config repopulates the
+membership projection behind the durable registry dirty fence.

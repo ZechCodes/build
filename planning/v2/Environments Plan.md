@@ -1417,9 +1417,11 @@ passes the named minor and the desktop app ships that SPA.
 20. **Provisioning cancel**: not in MVP; a `workspace.cancel_create` that
     turns an unpublished candidate into a terminal failed outcome is a
     candidate for Stage 2 if dogfooding asks for it.
-21. **Secrets lifecycle in Stage 2** needs environment membership checks and
-    revocation on environment delete and archive, not the identity split
-    alone (S2.1 tests).
+21. **Secrets lifecycle in Stage 2** revalidates environment membership on every
+    read and revokes environment grants on environment deletion. Archive denies
+    that project's agents without revoking siblings' shared environment grants;
+    project deletion retires only its Agent/Project grants (S2.1 tests and the
+    S2.2 deletion integration).
 22. **`proj-N` durability**: ids are persisted and restored
     (`persistence.rs:49`, `projects/mod.rs:426`); the recovery comment that
     says otherwise (`recovery.rs:328`) predates that and is amended in M0.2.

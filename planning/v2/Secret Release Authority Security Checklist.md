@@ -13,8 +13,8 @@ No public capability is advertised by this change.
 | # | Control | Evidence |
 |---|---|---|
 | 1 | Purpose-limited capability is independent of MCP and binds device/channel, canonical project/owner/conversation/generation and process incarnation. | `runtime/sessions/secret_authority.rs`, `secret_release_authority.rs`; token independence, selector spoof, device-rebind and same-generation restart tests. |
-| 2 | Authority derives from the issued record and current committed membership; no caller selector, CWD, path or task grants access. | `read_context/mcp_addresses.rs`, `store/secrets/release.rs`; saved/candidate membership, removed member, canonical and alias project rebind, durable generation regressions; real AppState workspace-member and project-coordinator probes pass the SQL boundary. |
-| 3 | Agent grants require exact recipient/generation; Project grants allow current members including coordinator; cross-project and wrong-scope reads disclose no existence/status. | Scope and caller matrices in `secrets/release_tests.rs`; scope precedes expiry/revocation lookup outcomes. |
+| 2 | Authority derives from the issued record and current committed membership, including the config-owned environment/archive projection; dirty registry state denies reads. No caller selector, CWD, path or task grants access. | `read_context/mcp_addresses.rs`, `store/secrets/release.rs`; saved/candidate membership, removed member, canonical and alias project rebind, durable generation regressions; real AppState workspace-member and project-coordinator probes pass the SQL boundary. |
+| 3 | Agent grants require exact recipient/generation; Project grants allow current members including coordinator; Environment grants allow current unarchived member projects, with project-name precedence; cross-project and wrong-scope reads disclose no existence/status. | Scope and caller matrices in `secrets/release_tests.rs`; scope precedes expiry/revocation lookup outcomes. |
 | 4 | Authority originates in the dedicated launch environment. Runtime CLI follow-up #1004 restores the Codex shell capability through a private per-launch TUI profile or app-server stdio config, as documented in `docs/device-secret-release.md`. Every provider strips inherited capability prefixes; probes and ordinary terminal tabs acquire no agent authority. | `harness/secret_launch.rs`, PTY/ADK/app-server spawn integration, installed probe test; HarnessSpec Debug redacts argument and environment values. |
 | 5 | Private mode-0600 Unix socket is separate from MCP/HTTP/browser RPC. Live or full-backlog sockets are not replaced; arbitrary entries/symlinks are preserved. | `app/secret_release.rs`; protected binding and full-backlog bounded-probe tests. |
 | 6 | Frames, admitted connections, jobs, rate state and I/O time are bounded. Only strict request fields and canonical request UUIDs are accepted. | `app/secret_release/transport.rs`; oversized/malformed/selectors, pipelining, rate and actual idle-client admission tests; shared four-job vault budget. |
@@ -85,3 +85,20 @@ checks remain recorded on #1002. The pre-auth slot hold, authenticated-denial
 coalescing and runtime vault-capture follow-ups are unchanged, as directed for
 #1004. The final task report records the revised frozen head and Gitleaks before
 its push. The full suite remains the serial merge gate.
+
+## S2.1 — environment membership and lifecycle (#1095)
+
+The scoped score remains **100/100**. `environment_scoped_secret_readable_across_projects`,
+`environment_membership_revalidated_per_read` and
+`archived_project_agent_not_current_for_secrets` exercise the writer release
+boundary with current config-derived membership. `project_secret_overrides_environment_name`
+checks precedence, including direct-ID denial of the hidden inherited grant.
+The four `sibling_project_cannot_read_project_scoped_secret` cases cover release,
+list, attach and audit; wrong-scope release keeps the fixed unavailable audit
+target. `environment_delete_revokes_environment_scope` proves idempotent audited
+retirement through the store hook; S2.2 integrates environment deletion.
+`schema_26_to_27_preserves_secret_rows_and_reopen_is_noop` and
+`schema_26_to_27_populates_membership_from_current_config_only` preserve old state
+and rebuild only the disposable config projection. Raw release, sealing and
+vault AAD retain their existing contracts. Task #1095 records final evidence
+and gate exit codes; capability advertisement remains with S2.4.

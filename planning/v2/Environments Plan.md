@@ -1269,7 +1269,7 @@ a migrated device:
 | # | slice | acceptance | TDD tests |
 | --- | --- | --- | --- |
 | S2.1 | **Bridge: environment secrets** (`GrantScope::Environment`, planned schema 27 rebuild, membership revalidated per read incl. archived = not current, revoke on environment delete, name override, `secrets.*` scope, `secrets.changed` scope, `secrets.environmentScope`) | readable by agents of every project in the environment and none outside; project secret of the same name wins; a sibling never reads another project's secret; archived project's agents refused; deletion revokes | `environment_scoped_secret_readable_across_projects`; `project_secret_overrides_environment_name`; `sibling_project_cannot_read_project_scoped_secret` (one per mechanism: release, list, attach, audit); `archived_project_agent_not_current_for_secrets`; `environment_delete_revokes_environment_scope`; leak sweep row 14 rerun |
-| S2.2 | **Bridge: environment delete, project delete with tasks** (`environment.delete`, `project.delete {tasks}` accepted on archived projects too, parked-project unpark migration) | environment delete refused with "Delete its N projects first" while any project, archived or not, belongs to it; project delete refused while a workspace is unfinished, otherwise removes tasks, reviews and intents under its key only; journal-first, config-first deletion survives partial failure and restart using an immutable plan; pending deletions are fenced until completion or safe abandonment | `project_deletion_journal_failure_restart_and_retry`; `project_deletion_fences_rpc_mcp_and_registration_after_config_removal`; `project_deletion_history_and_phase_commit_atomically`; `project_deletion_retires_sessions_before_config_and_on_same_process_retry`; `project_deletion_history_checkpoint_rollback_preserves_real_review_pins`; `project_deletion_inventory_does_not_block_unrelated_requests`; `project_deletion_return_trip_abandons_readded_registration`; `project_deletion_return_trip_abandons_changed_history_and_workspace`; `environment_delete_post_success_restart_retry_is_idempotent`; `environment_delete_refused_while_projects_exist` (incl. archived); `project_delete_removes_its_tasks_only`; `archived_project_accepts_delete` |
+| S2.2 | **Bridge: environment delete, project delete with tasks** (`environment.delete`, `project.delete {tasks}` accepted on archived projects too, parked-project unpark migration) | environment delete refused with "Delete its N projects first" while any project, archived or not, belongs to it; project delete refused while a workspace is unfinished, otherwise removes tasks, reviews and intents under its key only; journal-first, config-first deletion survives partial failure and restart using an immutable plan; pending deletions are fenced until completion or safe abandonment | `project_deletion_journal_failure_restart_and_retry`; `project_deletion_fences_rpc_mcp_and_registration_after_config_removal`; `project_deletion_history_and_phase_commit_atomically`; `project_deletion_retires_sessions_before_config_and_on_same_process_retry`; `project_deletion_history_checkpoint_rollback_preserves_real_review_pins`; `project_deletion_inventory_does_not_block_unrelated_requests`; `project_deletion_return_trip_drains_committed_pin_receipts`; `project_deletion_cleanup_allows_sibling_rename_and_workspace_delete`; `project_deletion_admission_is_sql_free_with_and_without_fences`; `project_deletion_return_trip_abandons_readded_registration`; `project_deletion_return_trip_abandons_changed_history_and_workspace`; `environment_delete_post_success_restart_retry_is_idempotent`; `environment_delete_refused_while_projects_exist` (incl. archived); `project_delete_removes_its_tasks_only`; `archived_project_accepts_delete` |
 | S2.3 | **Bridge: MCP** (`add_environment_source`/`remove_environment_source`, reworded `add_project_source`, templates) | project agent can add a folder to its environment; a Coding-surface agent has no such tool | `mcp_project_surface_lists_environment_source_tools`; template snapshot |
 | S2.4 | **SPA: secrets in environment settings + composer scope** (#1006 composer "This environment"; "overrides environment" chips) | create/list/revoke; old bridge hides the scope | `secretsWire.test.js`, `environmentSettingsSecrets.test.js` |
 | S2.5 | **SPA: environment delete and project delete in settings** | refusal reasons verbatim; confirm names task and workspace counts | `environmentsSettingsDom.test.js`, `projectSettings.test.js` |
@@ -1298,7 +1298,11 @@ Task/review/intent deletion, the history phase checkpoint and exact pin-release
 receipts (repository/ref/expected OID and ownership-marker bytes) commit in one
 writer transaction. That transaction performs no irreversible Git/file effect.
 Pin release is a separate idempotent post-commit phase; missing refs/markers are
-success and failures retain the receipt for retry. A rollback retains history
+success and failures retain the receipt for retry. Receipt draining is owed work
+independent of plan abandonment: startup retries it even on terminal records,
+and durably clears receipts only after successful release. A failed drain logs
+the debt, preserves its record against collection, and retries at next startup.
+A rollback retains history
 and all pins; a crash after commit may leave stray pins. Legacy mode keeps task
 history and retires delivery authority.
 
@@ -1311,16 +1315,23 @@ publication never unlinks them. Older records default to no additional marker
 authority. The final response/confirmation contract remains unchanged. Each continuation
 checks its per-project claim before applying memory results. An off-lock failure
 clears the provisional fence unless a durable pending record exists. Unrelated
-reads/project work proceed while inventory is paused. A config-write
-reservation starts after inventory/retirement, capturing the latest config and
-refusing competing config persistence until its result is applied. Startup
+reads/project work proceed while inventory or cleanup is paused. A config-write
+reservation covers only its separate synchronous config-file write, capturing
+the latest config after inventory/retirement and releasing before SQL checkpoints
+or long cleanup. Deletion stages use project fences instead of the global
+filesystem-job exclusion, so sibling renames/config writes and unrelated workspace
+creation/deletion continue. Source references overlapping captured cleanup paths
+remain refused by the scoped fence. Both deletion and archived-task admission use a
+memory ownership index seeded before sharing AppState and updated with committed
+task publications; admission performs no SQLite lookup. Startup
 checks evidence during owned-state construction, before the shared mutex exists.
 Every unfinished record fences RPC writes/assignments, workspace creation,
 task reads and MCP use and refuses registration under its ID/key. After config
 removal only a matching record authorizes the original delete; mismatched
 identity or task mode is refused. Sibling history and source folders survive.
 
-Startup performs no destructive cleanup. It logs `deletion-pending`, the
+Startup performs no owned-file or history cleanup; committed pin-release receipts
+are drained independently of pending-plan recovery. It logs `deletion-pending`, the
 project ID and the retry instruction. A config failure leaves the project listed
 but fenced, with config bytes and history intact. Once config is removed the
 project disappears from ordinary project lists; requests to its captured
@@ -1329,8 +1340,10 @@ addresses return a deletion-pending error. Retry through the existing RPC:
 legacy mode). Successful repeated project deletes use the retained completion
 tombstone; absent environment deletes are harmless idempotent successes, across
 restart as well. Pending records are never collected. Completed/abandoned
-records are collected at startup and completion: retain at most 256 and at most
-30 days. An expired project tombstone no longer authorizes a retry.
+records with drained receipts are collected at startup and completion: retain at
+most 256 and at most 30 days. Records with undrained pin receipts are exempt
+until the debt is durably drained. An expired project tombstone no longer
+authorizes a retry.
 
 **Binary rollback boundary:** a previous schema-26 bridge ignores the internal
 journal's unknown `deletion_pending`/`deletion_complete` states without decoding
@@ -1344,7 +1357,9 @@ does not implement; this does not authorize loss of new user work.
 
 On the return trip, startup checks registration, scoped history and the remaining
 owned files. A re-added registration, changed history, or new/changed owned file
-abandons and tombstones the stale plan without destructive cleanup. If no
+abandons and tombstones stale owned-file/history authority. Committed pin
+receipts are independent owed work: recovery drains them regardless of
+abandonment and never collects an undrained receipt. If no
 registration remains, it restores the captured project registration (and its
 captured environment registration if rollback removed that too) so preserved
 work is usable. Preserved workspace manifests keep their original directory identity. A fresh

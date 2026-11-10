@@ -1265,11 +1265,18 @@ claim ownership before applying memory results. Private workspace marker paths a
 only in the off-lock file phase; index publication is memory-only. Older records
 default to no additional marker authority. The cached journal view and
 published task/MCP overlays carry fences without querying SQLite under the lock;
-independent reads and unrelated project requests continue during inventory.
+an immutable task-ownership admission index is seeded during owned-store startup
+and updated with committed task publications. Neither deletion nor archive admission
+queries SQLite. With no deletion in flight, the deletion guard returns
+immediately from memory.
+Independent reads and unrelated project requests continue during inventory and cleanup.
 Failures drop provisional fences unless a durable pending record exists. Config
-persistence is reserved only after evidence and retirement, with the latest config
-captured at that point; other config writes are refused until it settles. Startup
-evidence is checked by the consuming task-store builder, before sharing AppState.
+persistence is reserved only for a separate synchronous config-write stage after
+evidence and retirement, with the latest config captured at that point. The
+reservation is released and config removal published before checkpoint/cleanup
+runs. Scoped deletion jobs do not claim the device-wide filesystem exclusion;
+sibling renames, config writes and workspace creation/deletion remain available. New source references overlapping the captured cleanup paths are
+refused without blocking sources elsewhere. Startup evidence is checked by the consuming task-store builder, before sharing AppState.
 
 Startup leaves unchanged pending records fenced and reports the ID and original
 `project.delete` retry parameters in the daemon log. Before config removal the
@@ -1278,7 +1285,11 @@ ordinary project lists. Captured project/entity/workspace addresses return a
 `deletion-pending` refusal on RPC/MCP; task SQL reads also check the durable
 record. The same ID or opaque key cannot be registered while pending. Success
 leaves a tombstone; collection at startup and completion bounds these internal
-tombstones to 256 and thirty days, never collecting pending authority.
+drained tombstones to 256 and thirty days, never collecting pending authority
+or a record with undrained pin receipts. Recovery drains committed receipts
+regardless of plan fate, including abandoned/completed tombstones. Failed drains
+log the pending pin release and retain the exact receipt for the next startup;
+new project work remains usable after safe abandonment.
 Environment deletion is harmless on repeated absent-ID requests across restart.
 
 Older schema-26 journal readers ignore the internal deletion states. Config
@@ -1287,11 +1298,12 @@ An older binary cannot honor the new fence: between config removal and the
 tombstone it can list remaining manifests or reattach pending history when a
 legacy path is reopened. Those rollback-only residuals are accepted. On return
 to the new binary, a re-added registration or changed scoped history/remaining
-files abandons and tombstones the stale plan without destructive work; when
-necessary it restores the captured registration so preserved work is usable.
+files abandons and tombstones stale file/history cleanup authority; owed committed
+pin releases are drained independently. When necessary it restores the captured registration so preserved work is usable.
 Preserved manifests keep their directory identity. A fresh explicit delete can
 capture their IDs through the abandoned record's exact project-key link, provided
-the old ID has not been taken by another project. It captures the changed state. Startup never deletes files.
+the old ID has not been taken by another project. It captures the changed state. Startup never removes workspace files or history;
+only committed pin refs and their captured ownership markers may be released.
 Restoring parked projects binds retained entities by exact key; returning a
 shared home cannot bind them to a sibling.
 

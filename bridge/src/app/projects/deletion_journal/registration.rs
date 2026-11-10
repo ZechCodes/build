@@ -1,5 +1,5 @@
-//! Reserve configuration only for its synchronous atomic file write. SQL and
-//! owned-file/history cleanup run in separate stages without that reservation.
+//! Reserve only the synchronous config commit, including S2.1 membership fencing
+//! and projection. Owned-file/history cleanup runs outside that reservation.
 use super::*;
 use crate::app::git::deferred::DeferredGitWork;
 
@@ -7,10 +7,12 @@ struct RemoveRegistration {
     operation: DeletionOperation,
     deletion: ProjectDeletion,
     config: Value,
+    before: Value,
+    store: Store,
     path: Option<PathBuf>,
     writer: crate::app::config::files::ConfigFileWrite,
     failure: DeletionFailure,
-    outcome: std::sync::Mutex<Option<Result<(), String>>>,
+    outcome: std::sync::Mutex<Option<RegistrationOutcome>>,
 }
 pub(super) fn queue_config_removal(
     app: &mut AppState,
@@ -20,7 +22,8 @@ pub(super) fn queue_config_removal(
     if app.deletion_config_write {
         return Err("configuration write in progress; retry project deletion".into());
     }
-    let mut config = app.config_value(&app.projects_dir, app.default_harness, app.isolation);
+    let before = app.config_value(&app.projects_dir, app.default_harness, app.isolation);
+    let mut config = before.clone();
     config["projects"]
         .as_array_mut()
         .expect("project array")
@@ -33,46 +36,50 @@ pub(super) fn queue_config_removal(
         operation,
         deletion,
         config,
+        before,
+        store: app.store.clone().ok_or("missing deletion store")?,
         path: app.config_path.clone(),
         writer: app.config_file_writer(),
         failure: DeletionFailure::capture(app),
         outcome: std::sync::Mutex::new(None),
     };
     app.deletion_config_write = true;
+    app.secret_membership_dirty.set(true);
     app.defer_project_deletion(work);
     Ok(())
 }
 impl DeferredGitWork for RemoveRegistration {
     fn run(&self, _: &Value) -> Result<Value, String> {
-        let result = self
-            .failure
-            .check("config")
-            .and_then(|()| match &self.path {
-                Some(path) => self.writer.write(path, &self.config),
-                None => Ok(()),
-            });
-        *self.outcome.lock().unwrap() = Some(result);
+        *self.outcome.lock().unwrap() = Some(self.commit_config());
         Ok(Value::Null)
     }
     fn settle(&self, app: &mut AppState, _: Value) -> Result<Value, String> {
         self.operation.check(app)?;
         app.deletion_config_write = false;
-        if let Err(error) = self
+        let outcome = self
             .outcome
             .lock()
             .unwrap()
             .clone()
-            .ok_or("missing config outcome")?
-        {
+            .ok_or("missing config outcome")?;
+        if outcome.removed {
+            app.apply_removed_registration(&self.deletion.plan);
+            app.device_lifecycle_dirty.set(true);
+        }
+        app.secret_membership_dirty.set(!outcome.membership_clean);
+        app.publish_secret_project_routes(if outcome.removed {
+            &self.config
+        } else {
+            &self.before
+        });
+        if let Err(error) = outcome.result {
             app.queue_deletion_reconciliation(
-                app.store.clone().ok_or("missing deletion store")?,
+                self.store.clone(),
                 self.operation.clone(),
                 Err(error),
             )?;
             return Ok(Value::Null);
         }
-        app.apply_removed_registration(&self.deletion.plan);
-        app.device_lifecycle_dirty.set(true);
         app.defer_project_deletion(super::execution::DeleteRecordedProject::capture(
             app,
             self.deletion.clone(),
@@ -90,5 +97,49 @@ impl DeferredGitWork for RemoveRegistration {
                 self.operation.finish(app);
             }
         }
+    }
+}
+
+#[derive(Clone)]
+struct RegistrationOutcome {
+    result: Result<(), String>,
+    removed: bool,
+    membership_clean: bool,
+}
+impl RemoveRegistration {
+    fn commit_config(&self) -> RegistrationOutcome {
+        let mut removed = false;
+        let result = self.write_registration(&mut removed);
+        // A reported file-write error leaves the old config authoritative.
+        // Restore that projection within the same short reservation, never
+        // from a stale snapshot after long cleanup or a sibling's commit.
+        let membership_clean = if removed {
+            result.is_ok()
+        } else {
+            self.store
+                .writer()
+                .secrets_reconcile_config(&self.before)
+                .is_ok()
+        };
+        RegistrationOutcome {
+            result,
+            removed,
+            membership_clean,
+        }
+    }
+    fn write_registration(&self, removed: &mut bool) -> Result<(), String> {
+        self.failure.check("config")?;
+        self.store
+            .writer()
+            .mark_sync_dirty("secrets", "membership", crate::store::sync::now_ms())
+            .map_err(|e| e.to_string())?;
+        if let Some(path) = &self.path {
+            self.writer.write(path, &self.config)?;
+        }
+        *removed = true;
+        self.store
+            .writer()
+            .secrets_reconcile_config(&self.config)
+            .map_err(|e| e.to_string())
     }
 }

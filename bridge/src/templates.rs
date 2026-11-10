@@ -12,6 +12,7 @@
 //! `{comments}`, `{base_branch}`, `{stage_id}`, `{stage_title}`, `{stage_path}`,
 //! `{stage_summary}`, `{next_stage_path}`, `{stage_start_sha}`, `{capture_text}`,
 //! `{project_name}`, `{project_base}`, `{project_sources}`, `{user_answer}`.
+//! `{project_source_pronoun}` is derived from whether `{project_sources}` is empty.
 //!
 //! What Build says to agents is under `bridge/templates/messages/`, filled by
 //! [`fill`]; each `MESSAGE_*` constant's doc names its own placeholders.
@@ -303,6 +304,9 @@ const ROUTER: &str = template!("router.md");
 
 const PROJECT_AGENT: &str = template!("project_agent.md");
 
+/// Extra effective sources, named only when the project has more than its home.
+pub(crate) const PROJECT_OTHER_SOURCES_NOTE: &str = template!("notes/project_other_sources.md");
+
 const PROJECT_WORKER: &str = template!("project_worker.md");
 
 /// What every code-changing phase adds about its completion message. Appended rather
@@ -480,6 +484,14 @@ pub struct Vars<'a> {
 /// Render a template by substituting every `{var}` placeholder.
 pub fn render(template: &str, vars: &Vars) -> String {
     template
+        .replace(
+            "{project_source_pronoun}",
+            if vars.project_sources.is_empty() {
+                "it"
+            } else {
+                "them"
+            },
+        )
         .replace("{goal}", vars.goal)
         .replace("{plan_path}", vars.plan_path)
         .replace("{docs_dir}", vars.docs_dir)
@@ -843,6 +855,13 @@ mod tests {
         }
     }
 
+    #[test]
+    fn attached_secret_template_describes_scope_without_promising_environment_access() {
+        assert!(MESSAGE_ATTACHED_SECRETS.contains("Access depends on each secret's scope"));
+        assert!(MESSAGE_ATTACHED_SECRETS.contains("environment, project or agent"));
+        assert!(!MESSAGE_ATTACHED_SECRETS.contains("Environment secrets are accessible"));
+    }
+
     /// A project agent says what it is and what it can do. It has no checkout,
     /// no phases and no work verbs, so the template must not imply any.
     #[test]
@@ -863,6 +882,9 @@ mod tests {
             "{project}"
         );
         for tool in [
+            "list_project_sources",
+            "add_environment_source",
+            "remove_environment_source",
             "list_workspaces",
             "list_workspace_agents",
             "post_thread_message",
@@ -882,7 +904,8 @@ mod tests {
             "a project agent runs no phases: {project}"
         );
         assert!(
-            project.contains("You stand in the project's base"),
+            project.contains("This project belongs to an environment")
+                && project.contains("You stand in the project's base"),
             "{project}"
         );
     }
@@ -909,7 +932,7 @@ mod tests {
             "The task is the record",
             "Parallelize independent work in separate workspaces",
             "give shared files one writer",
-            "Your reach ends at this project, and you cannot read an agent's conversation.",
+            "Your reach ends at this project and its environment's source membership, and you cannot read an agent's conversation.",
         ] {
             assert!(
                 project.contains(sentence),

@@ -3431,6 +3431,24 @@ A project's agents below). Each action is a `BridgeAction` variant. The tool lis
 `add_workspace_agent`, `list_project_agents`, `add_project_agent`, …) and the
 tracker (`get_task`, `comment_task`, `move_task`, `label_task`, …).
 
+Only the Project surface exposes `list_project_sources`, `add_environment_source` and
+`remove_environment_source`, alongside `add_project_source` and
+`remove_project_source`. Environment tools resolve the calling agent's bound
+project and then its environment; they accept no project or environment
+selector. `list_project_sources` reads the environment references followed by
+this project's added references from the accepted `environment.list` and
+`project.list` fragments in one immutable read view, returning
+id, path and scope for each. It works without workspaces and never derives its
+inventory from a workspace's cut-time directories or probes the filesystem.
+Its real MCP requests use the independent read lane, including session,
+purpose and bound-project validation, without writer permits or the app mutex.
+The add/remove tools reuse the client environment-source operations and their path,
+remote, membership and removal checks. Environment sources apply to every
+project in the environment; project source tools change only that project's
+added folders and therefore its divergence. Existing workspace directories
+stay as cut. Coding agents, including project workers, cannot call these
+source-membership tools, even through a direct action frame.
+
 `post_thread_message` and `message_agent` accept optional `attachments` entries
 with `path` and optional `name` (#696). They share the task tools' file intake
 in `app/tracker/agent_files.rs`: up to ten files of 50 MiB each, supported image

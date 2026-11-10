@@ -202,6 +202,33 @@ impl AppState {
         }))
     }
 
+    /// The environment source tools share the client verbs' validation,
+    /// persistence and publication. The caller supplies no scope selector.
+    pub(in crate::app) fn project_agent_add_environment_source(
+        &mut self,
+        owner_id: &str,
+        source: ProjectSourceArgs<'_>,
+    ) -> Result<Value, String> {
+        let project_id = self.project_agent_project(owner_id)?;
+        let environment_id = self.project_for(&project_id)?.environment_id.clone();
+        let mut params = source.params();
+        params["environment_id"] = json!(environment_id);
+        self.environment_add_source(&params)
+    }
+
+    pub(in crate::app) fn project_agent_remove_environment_source(
+        &mut self,
+        owner_id: &str,
+        source_id: &str,
+    ) -> Result<Value, String> {
+        let project_id = self.project_agent_project(owner_id)?;
+        let environment_id = &self.project_for(&project_id)?.environment_id;
+        self.environment_remove_source(&json!({
+            "environment_id": environment_id,
+            "source_id": source_id,
+        }))
+    }
+
     /// `add_workspace_directory` — one more directory in one of this project's
     /// workspaces, through `workspace.add_directory`.
     pub(in crate::app) fn project_agent_add_workspace_directory(

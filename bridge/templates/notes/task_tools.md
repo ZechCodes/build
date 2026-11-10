@@ -5,7 +5,8 @@ Your project has a task board, and Build's task tools reach it: `list_tasks`,
 your harness's own task or todo list (TaskCreate, TodoWrite, update_plan): that
 one tracks the steps of this conversation, and nothing in it reaches the board.
 The task tools are about YOUR project — there is nothing to pass and no other
-project is reachable — and the bridge knows who you are, so what you write is
+project is reachable, including sibling projects in the same environment —
+and the bridge knows who you are, so what you write is
 signed by you.
 
 `list_tasks` returns one page in task-number descending order, with

@@ -1232,6 +1232,24 @@ and stay parked. When a home returns, a key equal to its stored path follows the
 canonical home; an opaque sibling key stays unchanged. Legacy path lookup prefers
 the project whose key equals that home over siblings registered there first.
 
+S2.2 privately registers `environment.delete` and the optional
+`project.delete {tasks:"delete"}` mode without a wire-version bump. Environment
+deletion counts live and parked projects, archived entries included, and refuses
+with `Delete its N projects first` until empty. It removes only the registration,
+preserving source folders. `revoke_environment_secrets_before_delete` is the
+schema-26 no-op seam for S2.1's durable environment-secret revocation and runs
+before the config is removed; an error leaves config and registration intact.
+S2.5 owns capability release and the SPA consumer.
+Task-deleting project requests require every workspace to be finished; the
+existing deferred deletion job invokes the review history service off the app
+lock with that project's exact opaque key. It releases review pins and deletes
+SQL task, review and delivery-intent rows in one transaction; Git pin and file
+cleanup retain the existing retry semantics. Unfinished review recovery still
+refuses deletion. Requests without `tasks` preserve task history and
+keep the existing workspace-deletion policy. Restoring parked projects already
+binds retained entities by exact key; returning a shared home cannot bind them
+to a sibling.
+
 The first migration saves the exact original bytes once beside the config in
 `config.json.pre-environments`. Atomic config replacement also retains one
 generation in `config.json.previous`. A failed migration leaves the current

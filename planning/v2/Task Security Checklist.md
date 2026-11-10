@@ -790,3 +790,19 @@ captures and build. Changed-file Semgrep, changed-tree and branch-history
 Gitleaks exit 0. The #704 handoff preserves earlier failed attempts and the
 independent main teardown error rather than treating focused reruns as full
 passes. **#704 scoped security score: 100/100.**
+
+
+## #1096 — environment and project deletion (S2.2)
+
+The existing controls retain their 100/100 score. These rows implement the
+Tasks delta from Environments Plan §7; #1096 records focused gate receipts.
+The bridge wire remains 3.39.0 and deletion capabilities stay withheld until
+S2.5 supplies the settings consumer. No store schema changes in this slice.
+
+| ID | Control | Evidence |
+| --- | --- | --- |
+| ENV-S22-1 | Projects sharing an environment number/list tasks independently and cannot link a sibling workspace. | `sibling_projects_number_tasks_independently`; `link_workspace_of_sibling_project_refused` (existing ownership policy, exercised on shared-home siblings). |
+| ENV-S22-2 | Archived project mutations retain the shared refusal on RPC, MCP and agent paths, except restore and delete. Deleting with tasks also works while archived. | `archived_project_refuses_mutations_on_every_path`; `archived_project_accepts_delete`; `archived_project_accepts_restore_and_delete`. |
+| ENV-S22-3 | `project.delete {tasks:"delete"}` requires every workspace to be finished and removes task/review/intent rows only under its exact project key. Legacy deletion retains task history. Review pin cleanup and unfinished-review recovery guards are reused off the app lock. | `project_delete_removes_its_tasks_only` checks both legacy-key and UUID-key deletion with same-home siblings, an unfinished workspace refusal, review removal and surviving sibling review/intent state; `legacy_project_delete_preserves_task_history`; existing project-deletion and review-service regressions. |
+
+**S2.2 scoped security score: 100/100.** The focused regression and gate receipts are recorded on #1096.

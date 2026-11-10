@@ -76,11 +76,15 @@ impl DeleteRecordedProject {
                 .find(|r| r.command_id == deletion.command_id)
                 .ok_or("missing deletion history receipt")?;
         }
-        if deletion.phase == "history_removed" {
+        if deletion.phase == "history_removed" || deletion.phase == "pins_pending" {
             self.failure.check("pins")?;
-            crate::reviews::history_pins::release(&deletion.pending_pins)?;
-            deletion.pending_pins.clear();
-            deletion.phase = "pins_released".into();
+            if crate::reviews::history_pins::release_available(&deletion.pending_pins)? {
+                deletion.pending_pins.clear();
+                deletion.phase = "pins_released".into();
+            } else {
+                eprintln!("Project {} deleted with unavailable pin repositories; receipts retained for startup retry", deletion.plan.project_id);
+                deletion.phase = "pins_pending".into();
+            }
             self.checkpoint(&deletion)?;
         }
         finish_stored_project(&self.store, &deletion.plan)?;

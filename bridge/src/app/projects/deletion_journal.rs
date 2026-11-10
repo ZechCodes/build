@@ -31,6 +31,7 @@ impl DeletionOperation {
     fn finish(&self, app: &mut AppState) {
         if self.check(app).is_ok() {
             app.project_deletion_operations.remove(&self.id);
+            app.project_deletion_provisional.remove(&self.id);
             app.refresh_deletion_fences();
             app.publish_read_metadata();
         }
@@ -92,9 +93,9 @@ impl AppState {
         };
         self.project_deletion_operations
             .insert(operation.id.clone(), operation.token.clone());
-        self.project_deletion_fences
-            .retain(|p| p.project_id != plan.project_id);
-        self.project_deletion_fences.push(plan.clone());
+        self.project_deletion_provisional
+            .insert(plan.project_id.clone(), plan.clone());
+        self.refresh_deletion_fences();
         self.publish_read_metadata();
         Ok(operation)
     }

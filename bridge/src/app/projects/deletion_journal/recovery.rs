@@ -117,25 +117,23 @@ impl AppState {
     }
 
     pub(super) fn refresh_deletion_fences(&mut self) {
-        let provisional: Vec<_> = self
-            .project_deletion_fences
-            .iter()
-            .filter(|plan| {
-                self.project_deletion_operations
-                    .contains_key(&plan.project_id)
-                    && !self
-                        .project_deletion_cache
-                        .iter()
-                        .any(|record| record.plan.project_id == plan.project_id)
-            })
-            .cloned()
-            .collect();
+        // Admission claims are independent authority. No cached terminal or
+        // abandoned plan (or sibling publication) may erase another claim.
         self.project_deletion_fences = self
-            .project_deletion_cache
-            .iter()
-            .filter(|r| r.tombstone.is_none())
-            .map(|r| r.plan.clone())
-            .chain(provisional)
+            .project_deletion_provisional
+            .values()
+            .cloned()
+            .chain(
+                self.project_deletion_cache
+                    .iter()
+                    .filter(|r| {
+                        r.tombstone.is_none()
+                            && !self
+                                .project_deletion_provisional
+                                .contains_key(&r.plan.project_id)
+                    })
+                    .map(|r| r.plan.clone()),
+            )
             .collect();
     }
 }

@@ -296,6 +296,8 @@ pub struct AppState {
     project_deletion_fences: Vec<crate::store::ProjectDeletionPlan>,
     project_deletion_cache: Vec<crate::store::ProjectDeletion>,
     project_deletion_operations: std::collections::HashMap<String, String>,
+    project_deletion_provisional:
+        std::collections::HashMap<String, crate::store::ProjectDeletionPlan>,
     project_deletion_retirements: std::collections::HashMap<String, Vec<crate::reaper::Retirement>>,
     deletion_config_write: bool,
     /// Immutable task ownership for admission; seeded before sharing, published
@@ -735,6 +737,7 @@ impl AppState {
             project_deletion_fences: Vec::new(),
             project_deletion_cache: Vec::new(),
             project_deletion_operations: Default::default(),
+            project_deletion_provisional: Default::default(),
             project_deletion_retirements: Default::default(),
             deletion_config_write: false,
             task_admission_keys: Default::default(),

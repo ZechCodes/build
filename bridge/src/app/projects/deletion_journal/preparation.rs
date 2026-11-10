@@ -112,6 +112,11 @@ impl DeferredGitWork for PrepareDeletion {
             app.publish_deletion_records(&self.operation.id, records);
         }
         let deletion: ProjectDeletion = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        // Only this checked owner's successful journal admission hands off
+        // provisional authority. Publishing any other record cannot do so.
+        app.project_deletion_provisional.remove(&self.operation.id);
+        app.refresh_deletion_fences();
+        app.publish_read_metadata();
         app.queue_deletion_retirement(deletion, self.operation.clone())?;
         Ok(Value::Null)
     }

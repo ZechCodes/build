@@ -84,6 +84,9 @@ impl AppState {
 
     /// Persist projects and settings atomically, if persistence is configured.
     pub(in crate::app) fn persist_config(&self, config: &Value) -> Result<(), String> {
+        if self.deletion_config_write {
+            return Err("configuration write in progress; retry after project deletion".into());
+        }
         self.mark_device_lifecycle_dirty()?;
         let Some(path) = &self.config_path else {
             return Ok(());

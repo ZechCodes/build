@@ -51,10 +51,12 @@ pub fn snapshot(store: &Store, request: &SnapshotRequest) -> Result<Review, Stri
 
 /// Explicit task-history deletion, unlike removing a workspace or a project
 /// from the registry. Call off the app lock; closing a task keeps its refs.
+#[cfg(test)]
 pub fn delete_project_history(store: &Store, project_path: &str) -> Result<(), String> {
-    store
-        .delete_tracker_tasks_of_project(project_path, release_history_pins)
-        .map_err(|error| error.to_string())
+    let pins = store
+        .delete_tracker_tasks_with_checkpoint(project_path, plan_history_pins, None)
+        .map_err(|error| error.to_string())?;
+    super::history_pins::release(&pins)
 }
 
 pub(crate) fn delete_project_history_checkpoint(
@@ -63,18 +65,14 @@ pub(crate) fn delete_project_history_checkpoint(
     deletion: Option<&crate::store::ProjectDeletion>,
 ) -> Result<(), String> {
     store
-        .delete_tracker_tasks_with_checkpoint(project_path, release_history_pins, deletion)
+        .delete_tracker_tasks_with_checkpoint(project_path, plan_history_pins, deletion)
+        .map(|_| ())
         .map_err(|error| error.to_string())
 }
-
-fn release_history_pins(
-    review: &crate::reviews::records::Review,
-) -> Result<(), crate::store::StoreError> {
-    for snapshot in &review.snapshots {
-        cleanup_pins(&review.task_id, snapshot)
-            .map_err(crate::store::StoreError::ReviewPinCleanup)?;
-    }
-    Ok(())
+fn plan_history_pins(
+    review: &Review,
+) -> Result<super::history_pins::HistoryPins, crate::store::StoreError> {
+    super::history_pins::plan(review).map_err(crate::store::StoreError::ReviewPinCleanup)
 }
 
 #[cfg(test)]

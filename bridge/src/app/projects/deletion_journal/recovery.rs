@@ -5,18 +5,22 @@ impl AppState {
     /// plan; preserve it and make a new explicit delete capture fresh authority.
     pub(in crate::app) fn recover_project_deletions(&mut self) -> Result<(), String> {
         let store = self.store.as_ref().ok_or("missing deletion store")?.clone();
-        for deletion in store
+        self.project_deletion_cache = store
             .writer()
             .project_deletions()
-            .map_err(|e| e.to_string())?
-        {
+            .map_err(|e| e.to_string())?;
+        for deletion in self.project_deletion_cache.clone() {
             self.recover_project_deletion(deletion)?;
         }
         store
             .writer()
             .collect_project_deletion_tombstones()
             .map_err(|e| e.to_string())?;
-        self.refresh_deletion_fences()?;
+        self.project_deletion_cache = store
+            .writer()
+            .project_deletions()
+            .map_err(|e| e.to_string())?;
+        self.refresh_deletion_fences();
         for plan in &self.project_deletion_fences {
             if let Some(number) = plan
                 .project_id
@@ -52,7 +56,7 @@ impl AppState {
             .find(|p| p["id"] == plan.project_id || p["project_key"] == plan.project_key);
         let readded =
             configured && (deletion.phase != "prepared" || matching != Some(&plan.project_config));
-        if readded || self.validate_deletion_plan(&deletion).is_err() {
+        if readded || validate_plan(&store, &deletion, &self.deletion_sources()).is_err() {
             if !configured {
                 self.restore_abandoned_registration(plan)?;
             }
@@ -104,13 +108,26 @@ impl AppState {
         Ok(())
     }
 
-    pub(super) fn refresh_deletion_fences(&mut self) -> Result<(), String> {
-        self.project_deletion_fences = self
-            .project_deletion_records()?
-            .into_iter()
-            .filter(|r| r.tombstone.is_none())
-            .map(|r| r.plan)
+    pub(super) fn refresh_deletion_fences(&mut self) {
+        let provisional: Vec<_> = self
+            .project_deletion_fences
+            .iter()
+            .filter(|plan| {
+                self.project_deletion_operations
+                    .contains_key(&plan.project_id)
+                    && !self
+                        .project_deletion_cache
+                        .iter()
+                        .any(|record| record.plan.project_id == plan.project_id)
+            })
+            .cloned()
             .collect();
-        Ok(())
+        self.project_deletion_fences = self
+            .project_deletion_cache
+            .iter()
+            .filter(|r| r.tombstone.is_none())
+            .map(|r| r.plan.clone())
+            .chain(provisional)
+            .collect();
     }
 }

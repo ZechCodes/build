@@ -329,7 +329,7 @@ fn cleanup_directory_pins(
     super::publication::cleanup_snapshot_target(task_id, snapshot_id, directory)
 }
 
-fn delete_pin_if_expected(
+pub(crate) fn delete_pin_if_expected(
     repo: &git2::Repository,
     name: &str,
     expected: Option<&str>,

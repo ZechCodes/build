@@ -40,6 +40,8 @@ pub struct ProjectDeletion {
     pub history: String,
     pub phase: String,
     pub tombstone: Option<String>,
+    #[serde(default)]
+    pub pending_pins: Vec<crate::reviews::history_pins::HistoryPins>,
 }
 
 fn records(connection: &Connection) -> Result<Vec<ProjectDeletion>, StoreError> {
@@ -161,7 +163,7 @@ impl StoreWriter {
             tx.execute("INSERT INTO mutation_commands(principal,operation_id,state,accepted_at,intent,record) VALUES(?1,?2,?3,unixepoch(),?4,'{}')",
                 params![PRINCIPAL, operation_id, PENDING, json!(plan).to_string()])?;
             let command_id = tx.last_insert_rowid();
-            let deletion = ProjectDeletion { command_id, plan, history:fingerprint, phase:"prepared".into(), tombstone:None };
+            let deletion = ProjectDeletion { command_id, plan, history:fingerprint, phase:"prepared".into(), tombstone:None, pending_pins:vec![] };
             let record = MutationRecord {
                 command_id, principal:PRINCIPAL.into(), operation_id,
                 method:"project.delete".into(), params:json!({}), scope:json!({}), owners:vec![], resources:vec![],

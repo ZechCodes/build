@@ -1,8 +1,8 @@
 //! Regressions for retirement, transactional pin safety and off-lock admission.
-use super::*;
 use super::environment_deletion::call;
 use super::project_agent::workspace;
 use super::tracker::{filed, tracked};
+use super::*;
 
 fn params(project: &str) -> Value {
     json!({"project_id":project,"confirm":true,"tasks":"delete"})
@@ -15,10 +15,36 @@ fn finished(app: &mut AppState, project: &str) -> crate::workspace::Workspace {
     app.workspaces.reload().unwrap();
     w
 }
-fn live(app: &mut AppState, root: &Path, owner: &str, agent: &str) -> TabKey {
+fn live(app: &mut AppState, root: &Path, owner: &str, agent: &str) -> (TabKey, SessionLog) {
+    let log = SessionLog::default();
     let key = TabKey::agent(root, agent);
-    app.session_registry.test_insert_tab(key.clone(), dictated_agent_tab(root, owner, agent,
-        DictatedSession::reporting(crate::harness::AgentStatus::Waiting)));
+    app.session_registry.test_insert_tab(
+        key.clone(),
+        dictated_agent_tab(
+            root,
+            owner,
+            agent,
+            DictatedSession::reporting(crate::harness::AgentStatus::Waiting).recording_into(&log),
+        ),
+    );
+    (key, log)
+}
+fn shell(app: &mut AppState, root: &Path, project: &str, id: &str) -> TabKey {
+    let mut tab = dictated_agent_tab(
+        root,
+        project,
+        id,
+        DictatedSession::reporting(crate::harness::AgentStatus::Waiting),
+    );
+    tab.role = TabRole::Shell;
+    tab.tab_id = id.into();
+    tab.session_instance = None;
+    let key = TabKey {
+        root: root.into(),
+        tab_id: id.into(),
+    };
+    app.session_registry
+        .insert_opened(key.clone(), tab, Some(project.into()));
     key
 }
 fn fail_checkpoint(app: &AppState, phase: &str) {
@@ -36,24 +62,67 @@ fn project_deletion_retires_sessions_before_config_and_on_same_process_retry() {
         let task = filed(&mut app, &project, "Retirement boundary");
         let w = finished(&mut app, &project);
         let source = app.projects.get(&project).unwrap().repo_path.clone();
-        let own = live(&mut app, &source, &project, "delete-agent");
-        let other = live(&mut app, &source, &sibling, "sibling-agent");
+        let (own, own_log) = live(&mut app, &source, &project, "delete-agent");
+        let (other, _) = live(&mut app, &source, &sibling, "sibling-agent");
+        let own_shell = shell(&mut app, &source, &project, "own-shell");
+        let other_shell = shell(&mut app, &source, &sibling, "sibling-shell");
         app.config_path = Some(root.path().join("config.json"));
         app.persist();
-        if phase == "config" { app.project_deletion_failure = Some("config"); }
-        else { fail_checkpoint(&app, phase); }
+        if phase == "config" {
+            app.project_deletion_failure = Some("config");
+        } else {
+            fail_checkpoint(&app, phase);
+        }
         let failed = app.handle(req("project.delete", params(&project)));
         assert_eq!(failed["ok"], false, "{failed}");
-        assert!(!app.session_registry.contains(&own), "retire before {phase}");
-        assert!(app.session_registry.contains(&other), "shared source sibling must survive");
+        assert!(
+            !app.session_registry.contains(&own),
+            "retire before {phase}"
+        );
+        assert!(
+            app.session_registry.contains(&other),
+            "shared source sibling must survive"
+        );
+        assert!(!app.session_registry.contains(&own_shell));
+        assert!(app.session_registry.contains(&other_shell));
+        assert!(own_log.ended(), "retirement was awaited before {phase}");
         assert!(w.root.exists());
-        assert!(app.store.as_ref().unwrap().load_tracker_task(task["id"].as_str().unwrap()).unwrap().is_some());
+        assert!(app
+            .store
+            .as_ref()
+            .unwrap()
+            .load_tracker_task(task["id"].as_str().unwrap())
+            .unwrap()
+            .is_some());
         app.project_deletion_failure = None;
-        if phase != "config" { app.store.as_ref().unwrap().writer_for_test().execute_batch("DROP TRIGGER fail_phase").unwrap(); }
+        if phase != "config" {
+            app.store
+                .as_ref()
+                .unwrap()
+                .writer_for_test()
+                .execute_batch("DROP TRIGGER fail_phase")
+                .unwrap();
+        }
         // Retry must reconstruct live sessions, even after registration removal.
-        let resumed = live(&mut app, &w.root, &w.id, "retry-agent");
-        call(&mut app, "project.delete", params(&project));
+        let (resumed, resumed_log) = live(&mut app, &w.root, &w.id, "retry-agent");
+        app.project_deletion_failure = Some("checkout");
+        let failed = app.handle(req("project.delete", params(&project)));
+        assert_eq!(failed["ok"], false, "{failed}");
+        assert!(
+            resumed_log.ended(),
+            "retry must wait before checkout cleanup"
+        );
+        assert!(w.root.exists());
+        assert!(app
+            .store
+            .as_ref()
+            .unwrap()
+            .load_tracker_task(task["id"].as_str().unwrap())
+            .unwrap()
+            .is_some());
         assert!(!app.session_registry.contains(&resumed));
+        app.project_deletion_failure = None;
+        call(&mut app, "project.delete", params(&project));
         assert!(app.session_registry.contains(&other));
         assert!(!w.root.exists());
     }
@@ -64,15 +133,32 @@ fn project_deletion_history_checkpoint_rollback_preserves_real_review_pins() {
     let root = tempfile::tempdir().unwrap();
     let (_repo, mut app, project) = tracked(root.path());
     let id = workspace(&mut app, &project, "Pinned review");
-    let opened = call(&mut app, "tasks.review.open", json!({"workspace_id":id,
-        "request_id":"pin-rollback","title":"Pinned","description":"Review"}));
+    let opened = call(
+        &mut app,
+        "tasks.review.open",
+        json!({"workspace_id":id,
+        "request_id":"pin-rollback","title":"Pinned","description":"Review"}),
+    );
     let task = opened["task"]["id"].as_str().unwrap();
     let store = app.store.as_ref().unwrap().clone();
     let saved = store.load_review(task).unwrap().unwrap();
-    let pins: Vec<_> = saved.snapshots.iter().flat_map(|s| &s.directories)
-        .filter_map(|d| d.common_git_dir.clone()).collect();
-    let refs = |path: &Path| -> Vec<String> { git2::Repository::open_bare(path).unwrap().references_glob("refs/build/*").unwrap()
-        .map(|r| { let r = r.unwrap(); format!("{}:{:?}",r.name().unwrap(),r.target()) }).collect() };
+    let pins: Vec<_> = saved
+        .snapshots
+        .iter()
+        .flat_map(|s| &s.directories)
+        .filter_map(|d| d.common_git_dir.clone())
+        .collect();
+    let refs = |path: &Path| -> Vec<String> {
+        git2::Repository::open_bare(path)
+            .unwrap()
+            .references_glob("refs/build/*")
+            .unwrap()
+            .map(|r| {
+                let r = r.unwrap();
+                format!("{}:{:?}", r.name().unwrap(), r.target())
+            })
+            .collect()
+    };
     let before: Vec<_> = pins.iter().map(|p| refs(p)).collect();
     assert!(before.iter().any(|p| !p.is_empty()));
     let mut w = app.workspaces.get(&id).unwrap().clone();
@@ -84,33 +170,58 @@ fn project_deletion_history_checkpoint_rollback_preserves_real_review_pins() {
     assert_eq!(failed["ok"], false, "{failed}");
     assert_eq!(store.load_review(task).unwrap().unwrap(), saved);
     assert_eq!(pins.iter().map(|p| refs(p)).collect::<Vec<_>>(), before);
-    store.writer_for_test().execute_batch("DROP TRIGGER fail_phase").unwrap();
+    store
+        .writer_for_test()
+        .execute_batch("DROP TRIGGER fail_phase")
+        .unwrap();
     app.project_deletion_failure = Some("pins");
     let failed = app.handle(req("project.delete", params(&project)));
     assert_eq!(failed["ok"], false, "post-commit pin failure: {failed}");
     assert!(store.load_review(task).unwrap().is_none());
     assert_eq!(pins.iter().map(|p| refs(p)).collect::<Vec<_>>(), before);
+    // Model a crash after releasing one ref but before its phase checkpoint.
+    let repository = git2::Repository::open_bare(&pins[0]).unwrap();
+    let name = repository
+        .references_glob("refs/build/*")
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .name()
+        .unwrap()
+        .to_string();
+    repository.find_reference(&name).unwrap().delete().unwrap();
     app.project_deletion_failure = None;
     call(&mut app, "project.delete", params(&project));
     assert!(pins.iter().all(|p| refs(p).is_empty()));
 }
 
-#[test]
-fn project_deletion_inventory_does_not_block_unrelated_requests() {
+#[tokio::test]
+async fn project_deletion_inventory_does_not_block_unrelated_requests() {
     let root = tempfile::tempdir().unwrap();
     let (_repo, mut app, project) = tracked(root.path());
     let sibling = app.add_environment_sibling_for_test(&project);
+    let own = filed(&mut app, &project, "Provisional fence");
     finished(&mut app, &project);
     let (gate, paused) = OffLockGate::new();
     app.off_lock_gate = Some(gate);
+    app.initialize_read_context();
     let state = app.shared();
     let deleting = state.clone();
     let thread = std::thread::spawn(move || {
-        let (admitted, job) = deleting.lock().unwrap().dispatch_deferring("project.delete", &json!({"project_id":project,"confirm":true}));
+        let (admitted, job) = deleting.lock().unwrap().dispatch_deferring(
+            "project.delete",
+            &json!({"project_id":project,"confirm":true}),
+        );
         assert!(admitted.is_ok(), "{admitted:?}");
         let mut job = job.unwrap();
-        loop { let done = job.run();
-            match deleting.lock().unwrap().apply_deferred_stage("project.delete", &json!({"project_id":project,"confirm":true}), done) {
+        loop {
+            let done = job.run();
+            match deleting.lock().unwrap().apply_deferred_stage(
+                "project.delete",
+                &json!({"project_id":project,"confirm":true}),
+                done,
+            ) {
                 crate::app::runtime::deferred::DeferredNext::Again(next) => job = next,
                 crate::app::runtime::deferred::DeferredNext::Answered(result) => return result,
             }
@@ -118,15 +229,35 @@ fn project_deletion_inventory_does_not_block_unrelated_requests() {
     });
     paused.wait_for_arrival();
     let acquired = state.try_lock();
-    if let Ok(mut app) = acquired {
-        assert!(app.handle(req("project.list", json!({})))["ok"].as_bool().unwrap());
+    let (store, reads) = if let Ok(mut app) = acquired {
+        assert!(app.handle(req("project.list", json!({})))["ok"]
+            .as_bool()
+            .unwrap());
         filed(&mut app, &sibling, "Unrelated request during inventory");
         app.off_lock_gate = None;
+        (app.store.clone().unwrap(), app.read_service())
     } else {
         paused.release();
         let _ = thread.join();
         panic!("inventory held the app mutex");
-    }
+    };
+    let own_read = reads.call(
+        req("tasks.get", json!({"task_id":own["id"]})),
+        Some(store.read_pool().acquire().await),
+    );
+    assert_eq!(own_read["ok"], false, "provisional task fence: {own_read}");
+    assert!(
+        own_read["error"]
+            .as_str()
+            .unwrap()
+            .contains("deletion-pending"),
+        "{own_read}"
+    );
+    let unrelated = reads.call(
+        req("tasks.list", json!({"project_id":sibling})),
+        Some(store.read_pool().acquire().await),
+    );
+    assert_eq!(unrelated["ok"], true, "unrelated SQL read: {unrelated}");
     paused.release();
     assert!(thread.join().unwrap().is_ok());
 }

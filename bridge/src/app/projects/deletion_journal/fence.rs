@@ -30,6 +30,7 @@ impl AppState {
             .iter()
             .flat_map(|p| {
                 std::iter::once(p.project_id.clone())
+                    .chain(std::iter::once(p.project_key.clone()))
                     .chain(p.run_ids.iter().cloned())
                     .chain(p.plan_ids.iter().cloned())
                     .chain(p.workspace_ids.iter().cloned())

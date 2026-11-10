@@ -89,7 +89,6 @@ impl AppState {
         if params.get("confirm").and_then(Value::as_bool) != Some(true) {
             return Err("project.delete requires confirm: true".into());
         }
-        self.refuse_pending_creation(&project_id)?;
         if self.deferred_work.is_some()
             || self.active_deferred_filesystem_jobs > 0
             || self.session_registry.pending_shell_for_project(&project_id)
@@ -98,6 +97,9 @@ impl AppState {
         }
         if let Some(result) = self.retry_recorded_project_delete(&project_id, params)? {
             return Ok(result);
+        }
+        if self.store.is_some() {
+            return self.prepare_recorded_project_delete(&project_id, params["tasks"] == "delete");
         }
         let project = self
             .projects
@@ -170,16 +172,6 @@ impl AppState {
                 )
             })
         }));
-        if self.store.is_some() {
-            return self.begin_recorded_project_delete(
-                &project_id,
-                params["tasks"] == "delete",
-                roots,
-                checkouts,
-                run_ids,
-                session_roots,
-            );
-        }
         if self.config_path.is_some() {
             return Err("project deletion needs a durable store".into());
         }
@@ -214,7 +206,7 @@ impl AppState {
     /// workspaces, the run checkouts Build cut for it, and the scratch its
     /// own conversation stood in. Never a source: what the project was made
     /// from is the user's, and stays.
-    fn owned_project_roots(
+    pub(super) fn owned_project_roots(
         &self,
         project_id: &str,
         run_ids: &[String],

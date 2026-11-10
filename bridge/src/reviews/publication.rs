@@ -17,8 +17,8 @@ mod tracking;
 use pins::pin_mutation_checkpoint;
 pub use pins::{
     capture_received_directory, capture_snapshot, cleanup_opening_pins, cleanup_received_pins,
-    cleanup_snapshot_target, validate_snapshot_pins, with_initial_receivers_locked,
-    with_received_snapshot_locked,
+    cleanup_snapshot_target, plan_snapshot_target_cleanup, validate_snapshot_pins,
+    with_initial_receivers_locked, with_received_snapshot_locked,
 };
 pub use received::{observe_received, ReceivedCommit};
 use remote::validate_push_destination;

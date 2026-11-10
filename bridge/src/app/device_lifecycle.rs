@@ -24,6 +24,7 @@ impl AppState {
                 .is_some_and(super::DeferredWork::changes_device_registry)
             || self.active_device_registry_jobs > 0
             || self.project_deletion_in_progress
+            || !self.project_deletion_operations.is_empty()
         {
             return Ok(());
         }
@@ -172,5 +173,39 @@ mod identity_tests {
         assert_eq!(projects["/checkout"], "proj-1");
         assert_eq!(projects["project:opaque"], "proj-2");
         assert_eq!(rows[&Entity::new("project", "proj-2")]["path"], "/checkout");
+    }
+}
+
+/// Memory-only capture for deletion's final deferred stage. Reconciliation
+/// reads/writes SQLite only after the app mutex is released.
+pub(in crate::app) struct DeviceLifecycleSnapshot(RegistryRows);
+impl AppState {
+    pub(in crate::app) fn capture_device_lifecycle(
+        &self,
+    ) -> Result<DeviceLifecycleSnapshot, String> {
+        self.device_registry_rows().map(DeviceLifecycleSnapshot)
+    }
+}
+impl DeviceLifecycleSnapshot {
+    pub(in crate::app) fn reconcile(
+        &self,
+        writer: &crate::store::StoreWriter,
+    ) -> Result<(), String> {
+        let Some(generation) = writer
+            .device_registry_generation()
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(());
+        };
+        let markers = writer
+            .device_registry_markers()
+            .map_err(|e| e.to_string())?;
+        let (rows, projects) = &self.0;
+        writer
+            .reconcile_device_registry(generation, rows, projects, &markers)
+            .map_err(|e| e.to_string())
+    }
+    pub(in crate::app) fn is_current(&self, app: &AppState) -> Result<bool, String> {
+        Ok(self.0 == app.device_registry_rows()?)
     }
 }

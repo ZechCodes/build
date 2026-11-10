@@ -389,6 +389,51 @@ pub fn cleanup_snapshot_target(
     .map_err(|error| error.to_string())
 }
 
+/// Read an exact cleanup receipt without changing refs or ownership metadata.
+pub fn plan_snapshot_target_cleanup(
+    task_id: &str,
+    snapshot_id: &str,
+    directory: &ReviewDirectory,
+) -> Result<
+    Option<(
+        crate::reviews::history_pins::PinRef,
+        crate::reviews::history_pins::PinMarker,
+    )>,
+    String,
+> {
+    let Some(receiver) = directory.common_git_dir.as_deref() else {
+        return Ok(None);
+    };
+    if !receiver.exists() {
+        return Ok(None);
+    }
+    let Some(pins) = read_saved_pins(receiver, &directory.id, task_id, snapshot_id)? else {
+        return Ok(None);
+    };
+    validate_recorded_receiver(receiver)?;
+    if directory.head.as_deref() != Some(pins.head.as_str())
+        || directory.base.as_ref().map(|base| base.oid.as_str())
+            != Some(pins.comparison_base.as_str())
+    {
+        return Err("review snapshot ownership metadata changed".into());
+    }
+    let path = snapshot_marker_at(receiver, &directory.id, task_id, snapshot_id);
+    let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+    let captured: SnapshotPins = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    if captured != pins {
+        return Err("review snapshot ownership marker changed".into());
+    }
+    let prefix = super::super::capture::pin_prefix(task_id, snapshot_id, &directory.id)?;
+    Ok(Some((
+        crate::reviews::history_pins::PinRef {
+            repository: receiver.into(),
+            name: format!("{prefix}/target"),
+            expected: pins.source_base,
+        },
+        crate::reviews::history_pins::PinMarker { path, bytes },
+    )))
+}
+
 /// Recheck the immutable opening's received head and every owned snapshot pin.
 pub fn validate_snapshot_pins(
     task_id: &str,

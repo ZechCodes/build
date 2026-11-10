@@ -328,6 +328,6 @@ mod secret_session_authority;
 
 mod workspace_names;
 
-mod deletion_recovery;
 mod deletion_phases;
+mod deletion_recovery;
 mod environment_deletion;

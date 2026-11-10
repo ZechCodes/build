@@ -87,8 +87,23 @@ fn remove_temporary(path: &Path) -> Result<(), String> {
     }
 }
 
+pub(in crate::app) struct ConfigFileWrite {
+    #[cfg(test)]
+    failure: Option<crate::app::ConfigPersistStep>,
+}
 impl AppState {
+    pub(in crate::app) fn config_file_writer(&self) -> ConfigFileWrite {
+        ConfigFileWrite {
+            #[cfg(test)]
+            failure: self.config_persist_failure,
+        }
+    }
     pub(super) fn write_config_file(&self, path: &Path, config: &Value) -> Result<(), String> {
+        self.config_file_writer().write(path, config)
+    }
+}
+impl ConfigFileWrite {
+    pub(in crate::app) fn write(&self, path: &Path, config: &Value) -> Result<(), String> {
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -103,7 +118,7 @@ impl AppState {
             Err(error) => return Err(io_error(path, error)),
         };
         #[cfg(test)]
-        if self.config_persist_failure == Some(crate::app::ConfigPersistStep::Write) {
+        if self.failure == Some(crate::app::ConfigPersistStep::Write) {
             return Err(format!(
                 "write config {}: injected write failure",
                 path.display()
@@ -121,7 +136,7 @@ impl AppState {
         previous: Option<&[u8]>,
     ) -> Result<(), String> {
         #[cfg(test)]
-        if self.config_persist_failure == Some(crate::app::ConfigPersistStep::Rename) {
+        if self.failure == Some(crate::app::ConfigPersistStep::Rename) {
             return Err(format!(
                 "write config {}: injected rename failure",
                 path.display()

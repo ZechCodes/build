@@ -1,30 +1,51 @@
-//! Recoverable deletion. The record owns every destructive address; current
-//! configuration only proves identity and removes the registration.
+//! Deletion is admitted under the app lock; evidence and durable work run on
+//! the existing deferred lane. Every continuation checks its per-project claim.
 use crate::app::{AppState, DeferredGit, DeferredWork};
 use crate::store::{ProjectDeletion, ProjectDeletionPlan, Store};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
+mod admission;
 mod execution;
 mod fence;
-use execution::DeleteRecordedProject;
 mod inventory;
+mod preparation;
+mod reconciliation;
 mod recovery;
+mod retirement;
 use inventory::{capture_inventory, inventory_unchanged};
 
+#[derive(Clone)]
+struct DeletionOperation {
+    id: String,
+    token: String,
+}
+impl DeletionOperation {
+    fn check(&self, app: &AppState) -> Result<(), String> {
+        if app.project_deletion_operations.get(&self.id) != Some(&self.token) {
+            return Err("project deletion claim changed; cleanup refused".into());
+        }
+        Ok(())
+    }
+    fn finish(&self, app: &mut AppState) {
+        if self.check(app).is_ok() {
+            app.project_deletion_operations.remove(&self.id);
+            app.refresh_deletion_fences();
+            app.publish_read_metadata();
+        }
+    }
+}
 impl AppState {
-    /// A rollback may re-add a legacy key under a new numeric ID. A fresh
-    /// consent may capture its preserved manifests; a retry never does this.
     pub(super) fn project_deletion_workspaces(
         &self,
         id: &str,
     ) -> Result<Vec<&crate::workspace::Workspace>, String> {
         let key = &self.projects.get(id).ok_or("unknown project")?.project_key;
         let prior: Vec<_> = self
-            .project_deletion_records()?
-            .into_iter()
+            .project_deletion_cache
+            .iter()
             .filter(|r| r.tombstone.as_deref() == Some("abandoned") && r.plan.project_key == *key)
-            .map(|r| r.plan)
+            .map(|r| &r.plan)
             .collect();
         Ok(self
             .workspaces
@@ -45,119 +66,50 @@ impl AppState {
             })
             .collect())
     }
-
-    pub(super) fn begin_recorded_project_delete(
-        &mut self,
-        project_id: &str,
-        delete_tasks: bool,
-        roots: Vec<PathBuf>,
-        checkouts: Vec<(PathBuf, PathBuf)>,
-        run_ids: Vec<String>,
-        session_roots: Vec<PathBuf>,
-    ) -> Result<Value, String> {
-        #[cfg(test)]
-        if let Some(gate) = &self.off_lock_gate { gate.arrive(); }
-        self.deletion_fail("record")?;
-        let project = self.projects.get(project_id).ok_or("unknown project")?;
-        let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
-        let plan = ProjectDeletionPlan {
-            project_id: project_id.into(),
-            project_key: project.project_key.clone(),
-            project_config: config["projects"]
-                .as_array()
-                .expect("project array")
-                .iter()
-                .find(|p| p["id"] == project_id)
-                .cloned()
-                .ok_or("project config missing")?,
-            environment_config: config["environments"]
-                .as_array()
-                .expect("environment array")
-                .iter()
-                .find(|e| e["id"] == project.environment_id)
-                .cloned()
-                .ok_or("project environment missing")?,
-            delete_tasks,
-            inventory: capture_inventory(&roots, &self.project_worktrees_root(project_id))?,
-            roots,
-            checkouts: checkouts
-                .into_iter()
-                .map(|(source, path)| {
-                    Ok(crate::store::ProjectDeletionCheckout {
-                        registered_name: crate::isolation::checkout_name(&path)
-                            .ok_or("checkout has no registration name")?,
-                        registry_root: self
-                            .workspaces
-                            .list(None)
-                            .iter()
-                            .find(|w| w.directories.iter().any(|d| d.path == path))
-                            .map(|w| self.project_worktrees_root(&w.project_id))
-                            .unwrap_or_else(|| self.project_worktrees_root(project_id)),
-                        isolation: crate::isolation::Isolation::of(&path)
-                            .ok_or("checkout has no isolation owner")?,
-                        source,
-                        path,
-                    })
-                })
-                .collect::<Result<Vec<_>, String>>()?,
-            rift_root: self.project_worktrees_root(project_id),
-            run_ids,
-            plan_ids: self
-                .plans
-                .keys()
-                .filter(|id| self.projects.project_id_of(id) == Some(project_id))
-                .cloned()
-                .collect(),
-            capture_ids: self
-                .captures
-                .values()
-                .filter(|c| {
-                    c.routing
-                        .as_ref()
-                        .is_some_and(|r| r.project_id == project_id)
-                })
-                .map(|c| c.id.clone())
-                .collect(),
-            workspace_ids: self
-                .project_deletion_workspaces(project_id)?
-                .iter()
-                .map(|w| w.id.clone())
-                .collect(),
-        };
-        let store = self
-            .store
-            .as_ref()
-            .ok_or("project deletion needs a durable store")?
-            .clone();
-        let deletion = store
-            .writer()
-            .begin_project_deletion(plan)
-            .map_err(|e| e.to_string())?;
-        self.refresh_deletion_fences()?;
-        self.publish_read_metadata();
-        self.resume_recorded_project_delete(deletion, session_roots)
+    #[cfg(test)]
+    pub(in crate::app) fn project_deletion_records(&self) -> Result<Vec<ProjectDeletion>, String> {
+        Ok(self.project_deletion_cache.clone())
     }
-
     pub(super) fn deletion_record(&self, id: &str) -> Result<Option<ProjectDeletion>, String> {
         Ok(self
-            .project_deletion_records()?
-            .into_iter()
+            .project_deletion_cache
+            .iter()
             .rev()
-            .find(|r| r.plan.project_id == id))
+            .find(|r| r.plan.project_id == id)
+            .cloned())
     }
-
-    pub(in crate::app) fn project_deletion_records(&self) -> Result<Vec<ProjectDeletion>, String> {
-        self.store
-            .as_ref()
-            .map(|store| {
-                store
-                    .writer()
-                    .project_deletions()
-                    .map_err(|e| e.to_string())
-            })
-            .unwrap_or_else(|| Ok(vec![]))
+    fn claim_deletion(&mut self, plan: &ProjectDeletionPlan) -> Result<DeletionOperation, String> {
+        if self
+            .project_deletion_operations
+            .contains_key(&plan.project_id)
+        {
+            return Err("project deletion is already running; retry after it finishes".into());
+        }
+        let operation = DeletionOperation {
+            id: plan.project_id.clone(),
+            token: uuid::Uuid::new_v4().to_string(),
+        };
+        self.project_deletion_operations
+            .insert(operation.id.clone(), operation.token.clone());
+        self.project_deletion_fences
+            .retain(|p| p.project_id != plan.project_id);
+        self.project_deletion_fences.push(plan.clone());
+        self.publish_read_metadata();
+        Ok(operation)
     }
-
+    fn defer_project_deletion(
+        &mut self,
+        call: impl crate::app::git::deferred::DeferredGitWork + 'static,
+    ) {
+        self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
+            call: Box::new(call),
+            params: json!({}),
+            invalidates: true,
+            registry_change: true,
+            #[cfg(test)]
+            gate: None,
+        })));
+    }
     pub(super) fn retry_recorded_project_delete(
         &mut self,
         id: &str,
@@ -169,10 +121,12 @@ impl AppState {
         if deletion.tombstone.as_deref() == Some("abandoned") {
             return Ok(None);
         }
-        if let Some(project) = self.projects.get(id) {
-            if project.project_key != deletion.plan.project_key {
-                return Err("project deletion identity mismatch; no cleanup was performed".into());
-            }
+        if self
+            .projects
+            .get(id)
+            .is_some_and(|p| p.project_key != deletion.plan.project_key)
+        {
+            return Err("project deletion identity mismatch; no cleanup was performed".into());
         }
         if deletion.plan.delete_tasks != (params["tasks"] == "delete") {
             return Err("project deletion mode mismatch; retry the same delete".into());
@@ -183,72 +137,29 @@ impl AppState {
             }
             return Ok(Some(json!({"project_id":id,"deleted":true})));
         }
-        self.validate_deletion_plan(&deletion)?;
-        self.resume_recorded_project_delete(deletion, vec![])
-            .map(Some)
+        let operation = self.claim_deletion(&deletion.plan)?;
+        self.defer_project_deletion(preparation::PrepareDeletion::resume(
+            self, deletion, operation,
+        )?);
+        Ok(Some(json!({"project_id":id,"deleted":true})))
     }
-
-    fn resume_recorded_project_delete(
-        &mut self,
-        mut deletion: ProjectDeletion,
-        session_roots: Vec<PathBuf>,
-    ) -> Result<Value, String> {
-        self.mark_device_lifecycle_dirty()?;
-        let store = self
-            .store
-            .as_ref()
-            .ok_or("project deletion needs a durable store")?
-            .clone();
-        if deletion.phase == "prepared" {
-            self.remove_recorded_registration(&deletion.plan)?;
-            deletion.phase = "config_removed".into();
-            store
-                .writer()
-                .checkpoint_project_deletion(&deletion)
-                .map_err(|e| e.to_string())?;
-        }
-        let retirements = self.retire_project_roots(&session_roots);
-        self.revoke_project_agents(&deletion.plan.run_ids);
-        self.project_deletion_in_progress = true;
-        let id = deletion.plan.project_id.clone();
+    fn deletion_sources(&self) -> Vec<PathBuf> {
+        self.projects
+            .iter()
+            .flat_map(|p| {
+                std::iter::once(p.repo_path.clone()).chain(p.sources.iter().map(|s| s.path.clone()))
+            })
+            .collect()
+    }
+    fn publish_deletion_records(&mut self, records: Vec<ProjectDeletion>) {
+        self.project_deletion_cache = records;
+        self.refresh_deletion_fences();
         self.publish_read_metadata();
-        self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
-            call: Box::new(DeleteRecordedProject {
-                store,
-                deletion,
-                retirements,
-                #[cfg(test)]
-                failure: self.project_deletion_failure,
-            }),
-            params: json!({}),
-            invalidates: true,
-            registry_change: true,
-            #[cfg(test)]
-            gate: None,
-        })));
-        Ok(json!({"project_id":id,"deleted":true}))
     }
-
-    fn remove_recorded_registration(&mut self, plan: &ProjectDeletionPlan) -> Result<(), String> {
-        self.deletion_fail("config")?;
-        let mut config =
-            self.config_value(&self.projects_dir, self.default_harness, self.isolation);
-        config["projects"]
-            .as_array_mut()
-            .expect("project array")
-            .retain(|p| p["id"] != plan.project_id);
-        let mut policies = self.compaction_policies.clone();
-        policies.forget_project(&plan.project_id);
-        policies.forget_workspaces(&plan.workspace_ids);
-        policies.write_config(&mut config);
-        self.store
-            .as_ref()
-            .ok_or("missing deletion store")?
-            .writer()
-            .secrets_retire_project(&plan.project_id)
-            .map_err(|e| e.to_string())?;
-        self.persist_config(&config)?;
-        self.compaction_policies = policies;
+    fn apply_removed_registration(&mut self, plan: &ProjectDeletionPlan) {
+        self.compaction_policies.forget_project(&plan.project_id);
+        self.compaction_policies
+            .forget_workspaces(&plan.workspace_ids);
         self.retain_environment_snapshot_observation(&plan.project_id);
         self.projects.remove(&plan.project_id);
         self.board.diff_mut().remove_project(&plan.project_id);
@@ -259,21 +170,14 @@ impl AppState {
             workspaces: true,
             usage_limits: false,
         });
-        Ok(())
     }
-
-    fn finish_recorded_project(&mut self, plan: &ProjectDeletionPlan) -> Result<(), String> {
-        let store = self.store.as_ref().ok_or("missing deletion store")?.clone();
+    fn apply_finished_project(&mut self, plan: &ProjectDeletionPlan) {
         for id in &plan.run_ids {
-            store
-                .delete_run_retaining_inbox_messages(id, &plan.project_id)
-                .map_err(|e| e.to_string())?;
             self.runs.remove(id);
             self.forget_session_owner(id);
             self.forget_run(id);
         }
         for id in &plan.plan_ids {
-            store.delete_plan(id).map_err(|e| e.to_string())?;
             self.plans.remove(id);
             self.committed_entities.forget(id);
             self.projects.unbind_entity(id);
@@ -281,54 +185,69 @@ impl AppState {
             self.forget_live_roster_entity(id);
         }
         for id in &plan.capture_ids {
-            store.delete_capture(id).map_err(|e| e.to_string())?;
             self.captures.remove(id);
             self.publish_capture_snapshot(id);
         }
-        store
-            .clear_retained_project_messages(&plan.project_id)
-            .map_err(|e| e.to_string())?;
         self.forget_session_owner(&plan.project_id);
         for id in &plan.workspace_ids {
             self.workspaces.forget(id);
         }
-        Ok(())
+        self.project_deletion_retirements.remove(&plan.project_id);
     }
+}
 
-    fn validate_deletion_plan(&self, deletion: &ProjectDeletion) -> Result<(), String> {
-        for checkout in &deletion.plan.checkouts {
-            crate::isolation::WorktreeBackend
-                .verify_recorded(&checkout.source, &checkout.path, &checkout.registered_name)
-                .map_err(|e| e.to_string())?;
-        }
-        for source in self.projects.iter().flat_map(|p| p.sources.iter()) {
-            let path = Self::canonical_root(&source.path);
-            if deletion
-                .plan
-                .roots
-                .iter()
-                .any(|root| path.starts_with(Self::canonical_root(root)))
-            {
-                return Err("Project deletion-pending root now contains a registered source; cleanup refused".into());
-            }
-        }
-        if !self
-            .store
-            .as_ref()
-            .ok_or("missing deletion store")?
-            .writer()
-            .project_deletion_history_unchanged(deletion)
-            .map_err(|e| e.to_string())?
-            || !inventory_unchanged(&deletion.plan)?
+/// Evidence uses captured addresses, never app callbacks. Startup calls this
+/// only during owned-state construction, before AppState::shared creates a mutex.
+fn validate_plan(
+    store: &Store,
+    deletion: &ProjectDeletion,
+    sources: &[PathBuf],
+) -> Result<(), String> {
+    for checkout in &deletion.plan.checkouts {
+        crate::isolation::WorktreeBackend
+            .verify_recorded(&checkout.source, &checkout.path, &checkout.registered_name)
+            .map_err(|e| e.to_string())?;
+    }
+    for source in sources {
+        let path = AppState::canonical_root(source);
+        if deletion
+            .plan
+            .roots
+            .iter()
+            .any(|root| path.starts_with(AppState::canonical_root(root)))
         {
-            return Err("Project deletion-pending state changed; restart to abandon the stale plan, then delete again".into());
+            return Err(
+                "Project deletion-pending root now contains a registered source; cleanup refused"
+                    .into(),
+            );
         }
-        Ok(())
     }
-
-    pub(in crate::app) fn deletion_fail(&self, phase: &str) -> Result<(), String> {
+    if !store
+        .writer()
+        .project_deletion_history_unchanged(deletion)
+        .map_err(|e| e.to_string())?
+        || !inventory_unchanged(&deletion.plan)?
+    {
+        return Err("Project deletion-pending state changed; restart to abandon the stale plan, then delete again".into());
+    }
+    Ok(())
+}
+#[derive(Clone, Copy, Default)]
+struct DeletionFailure {
+    #[cfg(test)]
+    phase: Option<&'static str>,
+}
+impl DeletionFailure {
+    fn capture(app: &AppState) -> Self {
+        let _ = app;
+        Self {
+            #[cfg(test)]
+            phase: app.project_deletion_failure,
+        }
+    }
+    fn check(&self, phase: &str) -> Result<(), String> {
         #[cfg(test)]
-        if self.project_deletion_failure == Some(phase) {
+        if self.phase == Some(phase) {
             return Err(format!("injected project deletion {phase} failure"));
         }
         let _ = phase;

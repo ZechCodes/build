@@ -37,6 +37,7 @@ mod rpc;
 mod rtc;
 mod runs;
 mod runtime;
+mod secret_publication;
 mod secret_reads;
 #[cfg(unix)]
 mod secret_release;
@@ -333,6 +334,8 @@ pub struct AppState {
     /// Where to persist the projects + settings, if persistence is enabled.
     config_path: Option<std::path::PathBuf>,
     config_loaded_from_disk: bool,
+    secret_membership_publication:
+        std::cell::RefCell<secret_publication::SecretMembershipPublication>,
     retention: crate::retention::RetentionConfig,
     #[cfg(test)]
     config_persist_failure: Option<ConfigPersistStep>,
@@ -739,6 +742,7 @@ impl AppState {
             isolation: Isolation::default(),
             config_path: None,
             config_loaded_from_disk: false,
+            secret_membership_publication: Default::default(),
             retention: crate::retention::RetentionConfig::default(),
             #[cfg(test)]
             config_persist_failure: None,
@@ -978,6 +982,7 @@ impl AppState {
                 app.push_runtime.clone(),
             )
         };
+        Self::attach_secret_publication_source(&state);
         Self::spawn_snapshot_maintenance(&state);
         if let Some(updates) = state.lock().unwrap().update_service() {
             let weak = Arc::downgrade(&state);

@@ -164,6 +164,7 @@ pub fn compaction_changed_payload(scope: &str, owner_id: Option<&str>) -> Value 
 pub const SECRETS_CHANGED_EVENT: &str = "secrets.changed";
 
 mod secrets;
+pub(crate) use secrets::{SecretPublication, SecretPublicationSource};
 
 // ------------------------------------------------------------ the wire ---
 
@@ -1697,6 +1698,7 @@ pub struct ChangeBus {
     /// within one priority. A session whose push fails loses all of its
     /// subscriptions: a sender that cannot send has no connection left.
     subscriptions: Mutex<Vec<Subscription>>,
+    secret_publication_source: OnceLock<SecretPublicationSource>,
     secret_environment_projects: Mutex<BTreeMap<String, BTreeSet<String>>>,
     /// Set whenever a subscription gains something to send, so the flusher
     /// wakes on the change rather than on a tick.
@@ -1749,6 +1751,7 @@ impl ChangeBus {
         Arc::new(ChangeBus {
             publication_clock: OnceLock::new(),
             subscriptions: Mutex::new(Vec::new()),
+            secret_publication_source: OnceLock::new(),
             secret_environment_projects: Mutex::new(BTreeMap::new()),
             wake: tokio::sync::Notify::new(),
             window,
@@ -2130,6 +2133,7 @@ impl ChangeBus {
     /// The facts source runs inline here; [`ChangeBus::run`] is the caller
     /// that runs it on `spawn_blocking`.
     pub fn flush(&self) -> usize {
+        self.publish_pending_secret_updates();
         let due = self.take_due();
         if due.is_empty() {
             return 0;
@@ -2379,6 +2383,11 @@ impl ChangeBus {
     /// read for the thread tails must never run on the flusher's async
     /// worker.
     async fn flush_off_thread(bus: &Arc<Self>) -> usize {
+        if bus.secret_publication_source.get().is_some() {
+            let current = Arc::clone(bus);
+            let _ =
+                tokio::task::spawn_blocking(move || current.publish_pending_secret_updates()).await;
+        }
         let due = bus.take_due();
         if due.is_empty() {
             return 0;

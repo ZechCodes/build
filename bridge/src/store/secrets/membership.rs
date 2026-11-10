@@ -6,6 +6,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
 impl StoreWriter {
+    pub(crate) fn secret_registry_clean(&self) -> Result<bool> {
+        clean(&self.connection())
+    }
     pub(crate) fn secrets_reconcile_config(&self, config: &Value) -> Result<()> {
         super::writes::durable(self, |tx| reconcile_config_in(tx, config))
     }

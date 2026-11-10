@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 pub struct StoreWriter {
     pub(super) connection: Arc<Mutex<Connection>>,
     pub(super) wakeup: Arc<tokio::sync::Notify>,
+    pub(crate) secret_read_retries: Arc<super::secrets::SecretReadRetries>,
     secret_change_observer: Arc<Mutex<Option<crate::secrets::ChangeObserver>>>,
     #[cfg(test)]
     pub(super) fail_next_write: Arc<std::sync::atomic::AtomicBool>,
@@ -18,6 +19,7 @@ impl StoreWriter {
         Self {
             connection: Arc::new(Mutex::new(connection)),
             wakeup: Arc::new(tokio::sync::Notify::new()),
+            secret_read_retries: Arc::new(super::secrets::SecretReadRetries::default()),
             secret_change_observer: Arc::new(Mutex::new(None)),
             #[cfg(test)]
             fail_next_write: Arc::new(std::sync::atomic::AtomicBool::new(false)),

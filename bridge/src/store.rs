@@ -503,7 +503,11 @@ impl Store {
         let writer = StoreWriter::new(conn);
         // Recover ambiguous claims without executing any command at startup.
         writer.recover_mutations()?;
-        let read_pool = ReadPool::open(&dir.join(DB_FILE), writer.connection.clone())?;
+        let read_pool = ReadPool::open(
+            &dir.join(DB_FILE),
+            writer.connection.clone(),
+            writer.secret_read_retries.clone(),
+        )?;
         Ok(Store {
             dir,
             read_pool,

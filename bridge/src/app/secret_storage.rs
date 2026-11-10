@@ -65,21 +65,6 @@ impl AppState {
         Ok(())
     }
 
-    pub(in crate::app) fn publish_secret_project_routes(&self, config: &serde_json::Value) {
-        self.changes.set_secret_project_environments(
-            config["projects"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|project| {
-                    Some((
-                        project["id"].as_str()?.to_owned(),
-                        project["environment_id"].as_str()?.to_owned(),
-                    ))
-                }),
-        );
-    }
-
     /// All project admission doors use the same resolved device-vault fence.
     pub(in crate::app) fn validate_secret_source(&self, path: &Path) -> Result<(), String> {
         if let Some(root) = &self.secret_state_root {

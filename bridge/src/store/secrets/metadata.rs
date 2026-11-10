@@ -17,7 +17,12 @@ impl ReadTransaction<'_> {
         creator: &str,
         params: &ListParams,
     ) -> Result<MetadataPage> {
-        list(self.connection(), device, creator, params)
+        remember_refusal(
+            self.connection(),
+            self.secret_retries,
+            &params.scope,
+            list(self.connection(), device, creator, params),
+        )
     }
     pub fn secret_metadata_audit(
         &self,
@@ -25,7 +30,12 @@ impl ReadTransaction<'_> {
         creator: &str,
         params: &AuditParams,
     ) -> Result<AuditPage> {
-        audit(self.connection(), device, creator, params)
+        remember_refusal(
+            self.connection(),
+            self.secret_retries,
+            &params.scope,
+            audit(self.connection(), device, creator, params),
+        )
     }
 }
 impl StoreWriter {
@@ -43,7 +53,13 @@ impl StoreWriter {
         creator: &str,
         params: &ListParams,
     ) -> Result<MetadataPage> {
-        list(&self.connection(), device, creator, params)
+        let connection = self.connection();
+        remember_refusal(
+            &connection,
+            Some(&self.secret_read_retries),
+            &params.scope,
+            list(&connection, device, creator, params),
+        )
     }
     pub fn secret_metadata_audit(
         &self,
@@ -51,8 +67,30 @@ impl StoreWriter {
         creator: &str,
         params: &AuditParams,
     ) -> Result<AuditPage> {
-        audit(&self.connection(), device, creator, params)
+        let connection = self.connection();
+        remember_refusal(
+            &connection,
+            Some(&self.secret_read_retries),
+            &params.scope,
+            audit(&connection, device, creator, params),
+        )
     }
+}
+
+fn remember_refusal<T>(
+    connection: &Connection,
+    retries: Option<&super::SecretReadRetries>,
+    scope: &SecretScope,
+    result: Result<T>,
+) -> Result<T> {
+    // Writer calls hold their mutex; independent readers hold one SQL snapshot.
+    // Preserve original validation/errors and record only actual fence refusals.
+    if matches!(&result, Err(SecretError::Unavailable)) && !super::membership::clean(connection)? {
+        if let Some(retries) = retries {
+            retries.record(connection, scope)?;
+        }
+    }
+    result
 }
 
 pub(super) fn authorize(connection: &Connection, scope: &SecretScope) -> Result<()> {

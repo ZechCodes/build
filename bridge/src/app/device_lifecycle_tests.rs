@@ -1039,3 +1039,241 @@ fn device_334_sessions_unmapped_startup_keeps_exact_pooled_list_fields() {
         assert_eq!(device[field], project[field], "startup mapping: {field}");
     }
 }
+
+fn secret_fence_fixture() -> (tempfile::TempDir, AppState, crate::store::Store) {
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().join("repository");
+    std::fs::create_dir(&repo).unwrap();
+    let context = crate::harness::HarnessContext::resolved(
+        root.path().join("mcp.sock"),
+        root.path().to_path_buf(),
+    )
+    .unwrap();
+    let mut app =
+        AppState::new_configured(repo, root.path().join("worktrees"), "main", true, context);
+    let store = crate::store::Store::new(root.path().join("store")).unwrap();
+    app.store = Some(store.clone());
+    (root, app, store)
+}
+
+fn secrets_refused_refresh_cycles(cycles: usize) {
+    let (_root, app, store) = secret_fence_fixture();
+    let shared = app.with_change_window(std::time::Duration::ZERO).shared();
+    let bus = shared.lock().unwrap().changes();
+    let (sender, mut rx, key) = crate::carrier::SessionSender::observable("fenced-secrets");
+    bus.subscribe(
+        &sender,
+        crate::changes::SubscriptionSpec {
+            id: "secrets".into(),
+            scope: crate::changes::Scope::Entity("proj-1".into()),
+            kinds: [crate::changes::Kind::SecretsChanged].into_iter().collect(),
+            mode: Default::default(),
+            priority: Default::default(),
+        },
+    );
+    shared
+        .lock()
+        .unwrap()
+        .initialize_device_lifecycle()
+        .unwrap();
+    // Join commits, then the off-lock phase queues its hint without delivering.
+    bus.publish_pending_secret_updates();
+    let query: crate::api::v1::secrets::ListParams =
+        serde_json::from_value(json!({"scope":{"project_id":"proj-1"}})).unwrap();
+    let audit: crate::api::v1::secrets::AuditParams = serde_json::from_value(json!({"scope":{"project_id":"proj-1"},"secret_id":"sec_00000000-0000-4000-8000-000000000001"})).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let pool = store.read_pool();
+    let mut reader = runtime.block_on(pool.acquire());
+    for _ in 0..cycles {
+        shared
+            .lock()
+            .unwrap()
+            .mark_device_lifecycle_dirty()
+            .unwrap();
+        assert!(bus.flush() > 0);
+        let hint = crate::carrier::SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+        assert_eq!(hint["scope"], "project");
+        assert!(matches!(
+            store
+                .writer()
+                .secret_metadata_page("device", "device_user", &query),
+            Err(crate::secrets::SecretError::Unavailable)
+        ));
+        assert!(matches!(
+            store
+                .writer()
+                .secret_metadata_audit("device", "device_user", &audit),
+            Err(crate::secrets::SecretError::Unavailable)
+        ));
+        assert!(matches!(
+            reader
+                .read(|r| r.secret_metadata_page("device", "device_user", &query))
+                .unwrap(),
+            Err(crate::secrets::SecretError::Unavailable)
+        ));
+        shared.lock().unwrap().settle_device_lifecycle();
+        // Membership is identical. The refused scope still queues a replacement.
+        bus.publish_pending_secret_updates();
+    }
+    assert!(
+        bus.flush() > 0,
+        "each dirty interval owes a post-clear retry"
+    );
+    let retry = crate::carrier::SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+    assert_eq!(retry["truncated"], true);
+    assert!(retry.get("environment_id").is_none());
+    assert!(store
+        .writer()
+        .secret_metadata_page("device", "device_user", &query)
+        .is_ok());
+    assert!(reader
+        .read(|r| r.secret_metadata_page("device", "device_user", &query))
+        .unwrap()
+        .is_ok());
+}
+
+#[test]
+fn secrets_hinted_read_refused_by_unrelated_dirty_write_gets_post_clear_retry() {
+    secrets_refused_refresh_cycles(1);
+}
+#[test]
+fn secrets_hinted_read_refused_in_two_consecutive_dirty_intervals_gets_each_retry() {
+    secrets_refused_refresh_cycles(2);
+}
+#[test]
+fn secrets_membership_publication_waits_for_app_unlock_and_fence_clear() {
+    let (_root, app, store) = secret_fence_fixture();
+    // Share outside a Tokio context; only the explicit push flusher runs.
+    let shared = app.with_change_window(std::time::Duration::ZERO).shared();
+    let bus = shared.lock().unwrap().changes();
+    let (sender, mut rx, key) = crate::carrier::SessionSender::observable("unlock-secrets");
+    bus.subscribe(
+        &sender,
+        crate::changes::SubscriptionSpec {
+            id: "secrets".into(),
+            scope: crate::changes::Scope::All,
+            kinds: [crate::changes::Kind::SecretsChanged].into_iter().collect(),
+            mode: Default::default(),
+            priority: Default::default(),
+        },
+    );
+    let push = crate::liveness::DedicatedRuntime::push().unwrap();
+    crate::changes::ChangeBus::spawn_flusher_on(bus.clone(), Some(push.handle()));
+    // Completion barriers, not elapsed-time assertions or scheduling sleeps.
+    let settle = || {
+        push.handle().block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(20), bus.settle_for_test())
+                .await
+                .expect("flusher completion barrier")
+        })
+    };
+    let guard = shared.lock().unwrap();
+    guard.mark_device_lifecycle_dirty().unwrap();
+    settle();
+    assert!(rx.try_recv().is_err());
+    drop(guard);
+    settle();
+    assert!(rx.try_recv().is_err(), "unlock alone is not a commit");
+    let guard = shared.lock().unwrap();
+    guard.settle_device_lifecycle();
+    settle();
+    assert!(
+        rx.try_recv().is_err(),
+        "SQL clear alone must not enqueue under app"
+    );
+    drop(guard);
+    settle();
+    let event = crate::carrier::SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+    assert_eq!(event["scope"], "project");
+    let query = serde_json::from_value(json!({"scope":{"project_id":"proj-1"}})).unwrap();
+    shared
+        .lock()
+        .unwrap()
+        .mark_device_lifecycle_dirty()
+        .unwrap();
+    assert!(store
+        .writer()
+        .secret_metadata_page("device", "device_user", &query)
+        .is_err());
+    settle();
+    assert!(rx.try_recv().is_err());
+    shared.lock().unwrap().settle_device_lifecycle();
+    settle();
+    let retry = crate::carrier::SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+    assert_eq!(retry["truncated"], true);
+    assert!(store
+        .writer()
+        .secret_metadata_page("device", "device_user", &query)
+        .is_ok());
+}
+
+#[test]
+fn secrets_late_dirty_snapshot_refusal_after_drain_rearms_all_without_unbounded_keys() {
+    let (_root, app, store) = secret_fence_fixture();
+    let shared = app.with_change_window(std::time::Duration::ZERO).shared();
+    let bus = shared.lock().unwrap().changes();
+    shared
+        .lock()
+        .unwrap()
+        .initialize_device_lifecycle()
+        .unwrap();
+    bus.flush();
+    let (sender, mut rx, key) = crate::carrier::SessionSender::observable("late-secret-read");
+    bus.subscribe(
+        &sender,
+        crate::changes::SubscriptionSpec {
+            id: "secrets".into(),
+            scope: crate::changes::Scope::All,
+            kinds: [crate::changes::Kind::SecretsChanged].into_iter().collect(),
+            mode: Default::default(),
+            priority: Default::default(),
+        },
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let pool = store.read_pool();
+    let mut reader = runtime.block_on(pool.acquire());
+    shared
+        .lock()
+        .unwrap()
+        .mark_device_lifecycle_dirty()
+        .unwrap();
+    reader
+        .read(|read| {
+            for index in 0..100 {
+                let query = serde_json::from_value(
+                    json!({"scope":{"project_id":format!("unknown-{index}")}}),
+                )
+                .unwrap();
+                assert!(matches!(
+                    read.secret_metadata_page("device", "device_user", &query),
+                    Err(crate::secrets::SecretError::Unavailable)
+                ));
+            }
+            assert_eq!(store.writer().secret_read_retries.pending_count(), 1);
+            shared.lock().unwrap().settle_device_lifecycle();
+            assert!(bus.flush() > 0);
+            let event = crate::carrier::SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+            assert_eq!(event["scope"], "device");
+            assert_eq!(store.writer().secret_read_retries.pending_count(), 0);
+            // The same independent SQL snapshot still sees dirty after the drain.
+            let query = serde_json::from_value(json!({"scope":{"project_id":"proj-1"}})).unwrap();
+            assert!(matches!(
+                read.secret_metadata_page("device", "device_user", &query),
+                Err(crate::secrets::SecretError::Unavailable)
+            ));
+        })
+        .unwrap();
+    assert!(bus.flush() > 0, "late refusal must wake another capture");
+    assert!(rx.try_recv().is_ok());
+    let query = serde_json::from_value(json!({"scope":{"project_id":"proj-1"}})).unwrap();
+    assert!(reader
+        .read(|r| r.secret_metadata_page("device", "device_user", &query))
+        .unwrap()
+        .is_ok());
+}

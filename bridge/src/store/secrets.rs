@@ -14,6 +14,8 @@ mod membership;
 #[cfg(test)]
 pub(crate) use membership::seed_current_project_for_test;
 mod metadata;
+mod read_retries;
+pub(crate) use read_retries::SecretReadRetries;
 mod records;
 mod retirement;
 mod revoke;

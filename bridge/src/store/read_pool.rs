@@ -16,6 +16,7 @@ pub struct ReadPool {
 }
 
 struct Pool {
+    secret_retries: Arc<super::secrets::SecretReadRetries>,
     available: Mutex<Vec<Connection>>,
     permits: Arc<Semaphore>,
     classes: classes::ReadQuotas,
@@ -50,6 +51,7 @@ pub struct ReadConnection {
 /// callers outside the store, so mutations cannot accidentally use this lane.
 pub struct ReadTransaction<'a> {
     connection: &'a Connection,
+    pub(super) secret_retries: Option<&'a super::secrets::SecretReadRetries>,
 }
 
 fn open_read_connection(path: &Path) -> Result<Connection, StoreError> {
@@ -60,7 +62,11 @@ fn open_read_connection(path: &Path) -> Result<Connection, StoreError> {
 }
 
 impl ReadPool {
-    pub(super) fn open(path: &Path, writer: Arc<Mutex<Connection>>) -> Result<Self, StoreError> {
+    pub(super) fn open(
+        path: &Path,
+        writer: Arc<Mutex<Connection>>,
+        retries: Arc<super::secrets::SecretReadRetries>,
+    ) -> Result<Self, StoreError> {
         #[cfg(test)]
         let started = std::time::Instant::now();
         #[cfg(test)]
@@ -81,7 +87,8 @@ impl ReadPool {
             }
             available.push(connection);
         }
-        let pool = Self::from_connections(available, writer);
+        let mut pool = Self::from_connections(available, writer);
+        Arc::get_mut(&mut pool.inner).unwrap().secret_retries = retries;
         #[cfg(test)]
         let pool = {
             let mut pool = pool;
@@ -97,6 +104,7 @@ impl ReadPool {
     fn from_connections(available: Vec<Connection>, writer: Arc<Mutex<Connection>>) -> Self {
         Self {
             inner: Arc::new(Pool {
+                secret_retries: Arc::new(super::secrets::SecretReadRetries::default()),
                 available: Mutex::new(available),
                 permits: Arc::new(Semaphore::new(READ_CONNECTIONS)),
                 classes: classes::ReadQuotas::new(),
@@ -185,7 +193,10 @@ impl ReadConnection {
         let transaction = connection.transaction()?;
         #[cfg(test)]
         let began = std::time::Instant::now();
-        let result = work(&ReadTransaction::new(&transaction));
+        let result = work(&ReadTransaction {
+            connection: &transaction,
+            secret_retries: Some(&self.pool.secret_retries),
+        });
         #[cfg(test)]
         let queried = std::time::Instant::now();
         transaction.commit()?;
@@ -213,7 +224,10 @@ impl Drop for ReadConnection {
 
 impl<'a> ReadTransaction<'a> {
     pub(super) fn new(connection: &'a Connection) -> Self {
-        Self { connection }
+        Self {
+            connection,
+            secret_retries: None,
+        }
     }
 
     pub(super) fn connection(&self) -> &Connection {

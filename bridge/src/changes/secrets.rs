@@ -1,29 +1,69 @@
 //! Metadata invalidations are independent of conversation fact publication.
 use super::*;
 
+#[derive(Default)]
+pub(crate) struct SecretPublication {
+    pub routes: Option<Vec<(String, String)>>,
+    pub projects: BTreeSet<String>,
+    pub all: bool,
+}
+pub(crate) type SecretPublicationSource = Arc<dyn Fn() -> Option<SecretPublication> + Send + Sync>;
+
 impl ChangeBus {
+    pub(crate) fn set_secret_publication_source(&self, source: SecretPublicationSource) {
+        let _ = self.secret_publication_source.set(source);
+        self.wake_secret_publications();
+    }
+    pub(crate) fn wake_secret_publications(&self) {
+        self.wake.notify_one();
+    }
+
+    pub(crate) fn publish_pending_secret_updates(&self) {
+        let Some(batch) = self
+            .secret_publication_source
+            .get()
+            .and_then(|source| source())
+        else {
+            return;
+        };
+        // Source has released the app guard. Only this half touches subscribers.
+        if let Some(routes) = batch.routes {
+            self.replace_secret_routes(routes);
+        }
+        for project in batch.projects {
+            self.note_secret_refresh(&project);
+        }
+        if batch.all {
+            self.note_secret_change(json!({"type":SECRETS_CHANGED_EVENT,"scope":"device",
+                "revision":1,"secret_ids":[],"truncated":true}));
+        }
+    }
+    fn note_secret_refresh(&self, project: &str) {
+        self.note_secret_change(json!({"type":SECRETS_CHANGED_EVENT,
+            "scope":"project","project_id":project,"revision":1,"secret_ids":[],"truncated":true}));
+    }
     /// Routing hints only; SQL revalidates authority independently on each read.
+    #[cfg(test)]
     pub(crate) fn set_secret_project_environments(
         &self,
         projects: impl IntoIterator<Item = (String, String)>,
     ) {
+        for project in self.replace_secret_routes(projects) {
+            self.note_secret_refresh(&project);
+        }
+    }
+    fn replace_secret_routes(
+        &self,
+        projects: impl IntoIterator<Item = (String, String)>,
+    ) -> BTreeSet<String> {
         let mut environments = BTreeMap::<String, BTreeSet<String>>::new();
         for (project, environment) in projects {
             environments.entry(environment).or_default().insert(project);
         }
-        let changed = {
-            let mut previous = self.secret_environment_projects.lock().unwrap();
-            let changed = changed_projects(&previous, &environments);
-            *previous = environments;
-            changed
-        };
-        // Only enqueue here. Encryption, transport and subscription read/ack
-        // fencing stay in the off-app-lock flusher. No SQL or I/O is done here.
-        for project in changed {
-            self.note_secret_change(json!({"type":SECRETS_CHANGED_EVENT,
-                "scope":"project","project_id":project,"revision":1,
-                "secret_ids":[],"truncated":true}));
-        }
+        let mut previous = self.secret_environment_projects.lock().unwrap();
+        let changed = changed_projects(&previous, &environments);
+        *previous = environments;
+        changed
     }
 
     fn secret_payloads(&self, payload: Value) -> Vec<Value> {

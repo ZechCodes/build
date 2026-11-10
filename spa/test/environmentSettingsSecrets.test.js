@@ -152,3 +152,14 @@ it.each(["project", "environment"])("repaints availability and the override badg
     expect(call).toHaveBeenCalledOnce();
   } finally { section?.dispose(); cache.dispose(); vi.useRealTimers(); }
 });
+
+it.each([undefined, null, { invalid: true }, "not-a-timestamp", Number.MAX_SAFE_INTEGER])("omits unusable audit timestamps (%j)", async occurredAt => {
+  await seed(grant, { environmentId });
+  const callRpc = vi.fn(async method => method === "secrets.audit" ? { events: [{ sequence: 1, secret_id: grant.secret_id,
+    agent_id: "agent", outcome: "released", occurred_at: occurredAt }], next: null, server_now: 1800000002 } : new Promise(() => {}));
+  await mount([project], callRpc);
+  await vi.waitFor(() => expect(document.querySelector("[data-secret-audit]")).not.toBeNull());
+  document.querySelector("[data-secret-audit]").click();
+  await vi.waitFor(() => expect(document.querySelector("[data-secret-audit-results] li")).not.toBeNull());
+  expect(document.querySelector("[data-secret-audit-results] li").textContent).toBe("released · agent");
+});

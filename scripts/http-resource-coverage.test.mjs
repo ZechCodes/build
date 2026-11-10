@@ -275,7 +275,8 @@ const stagedConsumerExclusions = {
 // #894 finite metadata/call-edge audit: docs/task-query-cost/http-resource-coverage-audit.md
 const sourceFingerprintParts = {
   // #1099: Environment-selector list/revoke/audit use the existing mapped secrets resources; Add only navigates.
-  "core/environmentSettingsSecrets.js": ["fdac92bf", "951e122a", "03f17ed9", "a369d089", "75123b60", "4a30d52f", "31f2e511", "85da087e"],
+  // #1111: omit unusable audit timestamps; existing secret RPC methods/selectors unchanged.
+  "core/environmentSettingsSecrets.js": ["f2410ec0", "e62da51c", "70ce0a65", "fc230de2", "0e4362eb", "cc92a6e8", "03cd8a70", "b56c343a"],
   // #1098: reviewed badge-only edits in theme, settings rows, and creation
   // progress. Cached identity/paint changed; RPC calls, methods, dynamic sites,
   // metadata exemptions, and assignment edges to dispatch are unchanged.

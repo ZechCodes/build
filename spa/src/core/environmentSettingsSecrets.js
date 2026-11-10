@@ -29,9 +29,15 @@ function rowsHtml(entries, projects, projectEntries) {
   }).join("");
 }
 
+function auditTimeHtml(occurredAt) {
+  if (!Number.isSafeInteger(occurredAt)) return "";
+  const date = new Date(occurredAt * 1000);
+  return Number.isNaN(date.getTime()) ? "" : ` · ${esc(date.toLocaleString())}`;
+}
+
 function auditHtml(audit) {
   if (!audit) return "";
-  const rows = audit.events.map(row => `<li>${esc(row.outcome)} · ${esc(row.agent_id || row.creator || "Build")} · ${esc(new Date(row.occurred_at * 1000).toLocaleString())}</li>`).join("");
+  const rows = audit.events.map(row => `<li>${esc(row.outcome)} · ${esc(row.agent_id || row.creator || "Build")}${auditTimeHtml(row.occurred_at)}</li>`).join("");
   return `<div data-secret-audit-results><h5>Audit</h5>${rows ? `<ol>${rows}</ol>` : '<p class="dim">No audit events yet.</p>'}
     ${audit.next === null ? "" : '<button class="btn" data-secret-audit-more>More audit events</button>'}</div>`;
 }

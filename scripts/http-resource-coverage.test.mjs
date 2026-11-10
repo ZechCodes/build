@@ -307,7 +307,8 @@ const sourceFingerprintParts = {
   // #1006 secret draft service forwards only secrets.create/secrets.revoke;
   // cached capability rendering does not widen the transport contract.
   // #1099: Cache-only environment scope and composer preselection; existing create/revoke/post dispatch remains in its services.
-  "core/agentRail.js": ["087d92c7", "8b4a5836", "c8bb9506", "d6a34171", "d4137513", "e984b7b6", "1f91c304", "9449bdff"],
+  // #1111: consume the settings secret intent after the initial stand; RPC dispatch unchanged.
+  "core/agentRail.js": ["221dc974", "d7725277", "dbcd5e6b", "7841f96d", "e55b594e", "9c683668", "f0e5da5a", "2c2ccbb2"],
   "core/agentRailContext.js": ["e175542d", "376171c6", "e04b61df", "847af2cf", "a3a2c56e", "8fbeb913", "9593b4cb", "50809f5c"],
   "core/agentRolesPanel.js": ["c05b7c96", "5849ec7f", "0d258bc2", "96a7795e", "2a4663f4", "57e78316", "de145b90", "699b4a91"],
   "core/agentSurfacesModel.js": ["546cf5aa", "3a478c63", "4a0f02f5", "4eafcae5", "53a5ffd3", "3ad4f563", "c075aa93", "dcbbef9d"],

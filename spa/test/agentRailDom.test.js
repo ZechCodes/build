@@ -8345,3 +8345,32 @@ it("opens the settings environment-secret intent in the coordinator composer wit
   await vi.waitFor(() => expect(document.querySelector('[name="secret-scope"][value="environment"]')?.checked).toBe(true));
   expect(callsTo("secrets.create")).toHaveLength(0); expect(callsTo("thread.post")).toHaveLength(0);
 });
+
+it("consumes the settings environment-secret intent before later linked workspace agent swaps", async () => {
+  const { rememberSecretSupport } = await import("../src/core/secretSupport.js");
+  await rememberSecretSupport("dev-1", { secrets: { attachments: true, sealedUpload: true, metadataEvents: true } });
+  await writeCached({ deviceId: "dev-1", entityId: "", kind: "environment-support" }, { secrets: true });
+  payload = { kind: "project", project_id: "p1", entity_id: "run-3", pinned_agent_id: "ag-1",
+    agents: [agent({ project_role: "coordinator", thread_id: "thread-coordinator", conversation_id: "ag-1" })] };
+  const workspace = { kind: "workspace", project_id: "p1", workspace_id: "ws-secret-swap", entity_id: "run-workspace",
+    agents: [agent({ id: "ag-workspace", topic: "Workspace agent", thread_id: "thread-workspace", conversation_id: "ag-workspace" })] };
+  await writeRailBoard({ items: [payload, workspace],
+    projects: [{ project_id: "p1", environment_id: "env-rail", name: "build", entity_id: "run-3" }],
+    workspaces: [{ id: "ws-secret-swap", project_id: "p1", name: "Child", entity_id: "run-workspace" }] });
+  const cache = { upsert: vi.fn(), read: vi.fn(async () => []), subscribe: () => () => {}, track: () => () => {} };
+  await mount({ kind: "project", projectId: "p1", entityId: "run-3", openAgentId: "ag-1", panelOpen: true,
+    secretMetadataCache: cache, secretEnvironmentIntent: "env-rail" });
+  await vi.waitFor(() => expect(document.querySelector('[name="secret-scope"][value="environment"]')?.checked).toBe(true));
+  document.querySelector("[data-secret-cancel]").click();
+  await vi.waitFor(() => expect(document.querySelector(".modal-secret")).toBeNull());
+  expect(rail.retarget(railAddress({ kind: "workspace", workspaceId: "ws-secret-swap", projectId: "p1", openAgentId: "ag-1",
+    projectAgent: { projectId: "p1", entityId: "run-3", name: "build" }, secretMetadataCache: cache }))).toBe(true);
+  await vi.waitFor(() => expect(railHost().querySelector('[data-bubble="agent"][data-agent="ag-workspace"]')).not.toBeNull());
+  railHost().querySelector('[data-bubble="agent"][data-agent="ag-workspace"]').click();
+  await vi.waitFor(() => expect(headWho()).toBe("Workspace agent")); await flush();
+  expect(document.querySelector(".modal-secret")).toBeNull();
+  railHost().querySelector('[data-bubble="project"]').click();
+  await vi.waitFor(() => expect(headWho()).toBe(TOPICS["ag-1"])); await flush();
+  expect(document.querySelector(".modal-secret")).toBeNull();
+  expect(callsTo("secrets.create")).toHaveLength(0); expect(callsTo("thread.post")).toHaveLength(0);
+});

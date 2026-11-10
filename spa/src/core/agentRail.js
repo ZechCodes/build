@@ -895,6 +895,9 @@ export function mountAgentRail(host, context) {
   if (context.projectAgent) stand(workItemContext(context, known, { openAgentId: context.openAgentId || null,
     addingAgent: context.addingAgent === true }), projectSide());
   else stand(context, null);
+  // The first stand owns this one-shot request. Later retargets and swaps
+  // derive from the retained context and must not replay it.
+  delete context.secretEnvironmentIntent;
   return {
     retarget(next) {
       if (!live?.canRetarget(next)) return false;

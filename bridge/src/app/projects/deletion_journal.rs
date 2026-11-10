@@ -287,7 +287,9 @@ impl AppState {
             .clear_retained_project_messages(&plan.project_id)
             .map_err(|e| e.to_string())?;
         self.forget_session_owner(&plan.project_id);
-        self.workspaces.forget_project(&plan.project_id);
+        for id in &plan.workspace_ids {
+            self.workspaces.forget(id);
+        }
         Ok(())
     }
 

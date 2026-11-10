@@ -418,6 +418,7 @@ fn project_deletion_return_trip_abandons_readded_registration() {
         json!({"project_id":readded,"confirm":true,"tasks":"delete"}),
     );
     assert!(!workspace.root.exists());
+    assert!(app.workspaces.get(&workspace.id).is_none());
 }
 
 #[test]

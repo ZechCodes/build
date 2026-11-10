@@ -2278,3 +2278,31 @@ fn a_project_agent_discovers_sources_added_after_a_workspace_was_cut() {
     assert_eq!(current["sources"].as_array().unwrap().len(), 2);
     assert_eq!(current["sources"][1]["scope"], "project");
 }
+
+#[test]
+fn a_project_agents_prompt_uses_plural_only_for_extra_effective_sources() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut app, owner, agent) = environment_source_agent_fixture(root.path());
+    for scope in ["environment", "project"] {
+        let single = app.project_agent_prompt(&owner);
+        assert!(single.contains("Read anything in it"), "{single}");
+        assert!(!single.contains("other sources"), "{single}");
+        assert!(!single.contains("{project_"), "{single}");
+        let added = app.agent_action(&owner, &agent, environment_source_action(json!({
+            "action":format!("add_{scope}_source"), "path":root.path().join("assets"), "name":"Assets"
+        }))).unwrap();
+        let plural = app.project_agent_prompt(&owner);
+        let said = plural.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(said.contains("Read anything in them"), "{scope}: {said}");
+        assert!(said.contains(&format!("Its other sources are part of the base too: `Assets` at {}.", root.path().join("assets").display())), "{scope}: {said}");
+        assert!(said.contains("Use `list_project_sources` for current source ids and scope."), "{scope}: {said}");
+        assert!(!said.contains("{project_"), "{scope}: {said}");
+        app.agent_action(&owner, &agent, environment_source_action(json!({
+            "action":format!("remove_{scope}_source"), "source_id":added["sources"][1]["id"]
+        }))).unwrap();
+    }
+    let single = app.project_agent_prompt(&owner);
+    assert!(single.contains("Read anything in it"), "{single}");
+    assert!(!single.contains("other sources"), "{single}");
+    assert!(!single.contains("{project_"), "{single}");
+}

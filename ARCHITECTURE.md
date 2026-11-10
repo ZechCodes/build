@@ -882,10 +882,10 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
   `{environment_id}` scope. Project/stage lists include inherited Environment
   grants only with `include_environment: true`; old-shaped lists keep their
   Agent/Project contract. Membership reconciliation captures plain committed routes and joiner/leaver
-  scopes after clearing the dirty read fence. The existing off-lock ChangeBus
+  scopes after clearing the dedicated config-membership read fence. The existing off-lock ChangeBus
   flusher probes committed SQL and captures this data after acquiring/releasing
   the app guard, then enqueues legacy project refreshes. List/audit reads refused
-  by the dirty fence retain bounded project/All retry scopes at the SQL boundary;
+  by that membership fence retain bounded project/All retry scopes at the SQL boundary;
   every clear drains them, including unchanged membership and late old-snapshot
   refusals. A retry refused by another dirty interval registers again. Environment events
   with no members still give All subscribers a legacy device refresh. Encryption
@@ -1354,9 +1354,18 @@ require the exact recipient generation; Project grants permit current members,
 including the coordinator. Environment grants permit current agents of every
 unarchived project in that environment. Environment membership and archive state
 are projected from config into `secret_environments` / `secret_project_membership`
-on every config write and at startup/reconciliation. The existing durable registry
-dirty fence closes reads until current config is republished; the writer transaction
-rechecks that fence, membership, grant and project-name override before release.
+on every config write and at startup/reconciliation. Synchronous config persistence
+and config migration mark a dedicated `secrets/membership` dirty fence before
+writing the file; projection rewrite and marker clear commit together afterwards.
+A refused file write cancels the marker without changing the old projection.
+Only environment-dependent operations consult that fence, including the whole
+`include_environment:true` list. The independent registry/lifecycle fence and
+long-running registry jobs never block secrets. The writer transaction rechecks
+membership, grant and project-name override before environment release.
+Project/agent/stage operations do not depend on environment membership or either
+fence. Archive refuses create/release with `project_archived`, while project list,
+audit and safety revoke remain available. Environment revoke/audit require the
+explicit environment selector; project/stage selectors never reach those grants.
 A live project grant with the same name hides the inherited environment grant.
 Unknown IDs and wrong scope share one error.
 

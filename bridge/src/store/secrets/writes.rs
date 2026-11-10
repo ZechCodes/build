@@ -36,6 +36,7 @@ impl StoreWriter {
         validate_stage(record)?;
         durable(self, |tx| {
             super::metadata::authorize(tx, scope)?;
+            super::membership::authorize_active_project(tx, &scope.project_id)?;
             super::membership::authorize_grant(tx, &scope.project_id, &record.context.grant)?;
             check_conflict(tx, record)?;
             check_quota(tx, record)?;
@@ -54,6 +55,7 @@ impl StoreWriter {
         }
         durable(self, |tx| {
             super::metadata::authorize(tx, authority)?;
+            super::membership::authorize_active_project(tx, &authority.project_id)?;
             super::membership::authorize_grant(tx, &authority.project_id, &expected.grant)
         })
     }

@@ -464,9 +464,7 @@ impl AppState {
         files::backup_before_environments(path).map_err(migration_error)?;
         self.mark_device_lifecycle_dirty()
             .map_err(migration_error)?;
-        self.reconcile_secret_membership(&migrated)
-            .map_err(migration_error)?;
-        self.write_config_file(path, &migrated)
+        self.persist_secret_membership_config(Some(path), &migrated)
             .map_err(migration_error)?;
         Ok(migrated)
     }

@@ -1056,6 +1056,11 @@ fn secret_fence_fixture() -> (tempfile::TempDir, AppState, crate::store::Store) 
     (root, app, store)
 }
 
+fn settle_secret_membership(app: &AppState) {
+    let config = app.config_value(&app.projects_dir, app.default_harness, app.isolation);
+    app.reconcile_secret_membership(&config).unwrap();
+}
+
 fn secrets_refused_refresh_cycles(cycles: usize) {
     let (_root, app, store) = secret_fence_fixture();
     let shared = app.with_change_window(std::time::Duration::ZERO).shared();
@@ -1079,7 +1084,8 @@ fn secrets_refused_refresh_cycles(cycles: usize) {
     // Join commits, then the off-lock phase queues its hint without delivering.
     bus.publish_pending_secret_updates();
     let query: crate::api::v1::secrets::ListParams =
-        serde_json::from_value(json!({"scope":{"project_id":"proj-1"}})).unwrap();
+        serde_json::from_value(json!({"scope":{"project_id":"proj-1"},"include_environment":true}))
+            .unwrap();
     let audit: crate::api::v1::secrets::AuditParams = serde_json::from_value(json!({"scope":{"project_id":"proj-1"},"secret_id":"sec_00000000-0000-4000-8000-000000000001"})).unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1091,7 +1097,7 @@ fn secrets_refused_refresh_cycles(cycles: usize) {
         shared
             .lock()
             .unwrap()
-            .mark_device_lifecycle_dirty()
+            .mark_secret_membership_dirty()
             .unwrap();
         assert!(bus.flush() > 0);
         let hint = crate::carrier::SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
@@ -1114,7 +1120,7 @@ fn secrets_refused_refresh_cycles(cycles: usize) {
                 .unwrap(),
             Err(crate::secrets::SecretError::Unavailable)
         ));
-        shared.lock().unwrap().settle_device_lifecycle();
+        settle_secret_membership(&shared.lock().unwrap());
         // Membership is identical. The refused scope still queues a replacement.
         bus.publish_pending_secret_updates();
     }
@@ -1172,6 +1178,7 @@ fn secrets_membership_publication_waits_for_app_unlock_and_fence_clear() {
     };
     let guard = shared.lock().unwrap();
     guard.mark_device_lifecycle_dirty().unwrap();
+    guard.mark_secret_membership_dirty().unwrap();
     settle();
     assert!(rx.try_recv().is_err());
     drop(guard);
@@ -1188,11 +1195,13 @@ fn secrets_membership_publication_waits_for_app_unlock_and_fence_clear() {
     settle();
     let event = crate::carrier::SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
     assert_eq!(event["scope"], "project");
-    let query = serde_json::from_value(json!({"scope":{"project_id":"proj-1"}})).unwrap();
+    let query =
+        serde_json::from_value(json!({"scope":{"project_id":"proj-1"},"include_environment":true}))
+            .unwrap();
     shared
         .lock()
         .unwrap()
-        .mark_device_lifecycle_dirty()
+        .mark_secret_membership_dirty()
         .unwrap();
     assert!(store
         .writer()
@@ -1200,7 +1209,7 @@ fn secrets_membership_publication_waits_for_app_unlock_and_fence_clear() {
         .is_err());
     settle();
     assert!(rx.try_recv().is_err());
-    shared.lock().unwrap().settle_device_lifecycle();
+    settle_secret_membership(&shared.lock().unwrap());
     settle();
     let retry = crate::carrier::SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
     assert_eq!(retry["truncated"], true);
@@ -1241,13 +1250,13 @@ fn secrets_late_dirty_snapshot_refusal_after_drain_rearms_all_without_unbounded_
     shared
         .lock()
         .unwrap()
-        .mark_device_lifecycle_dirty()
+        .mark_secret_membership_dirty()
         .unwrap();
     reader
         .read(|read| {
             for index in 0..100 {
                 let query = serde_json::from_value(
-                    json!({"scope":{"project_id":format!("unknown-{index}")}}),
+                    json!({"scope":{"project_id":format!("unknown-{index}")},"include_environment":true}),
                 )
                 .unwrap();
                 assert!(matches!(
@@ -1256,13 +1265,13 @@ fn secrets_late_dirty_snapshot_refusal_after_drain_rearms_all_without_unbounded_
                 ));
             }
             assert_eq!(store.writer().secret_read_retries.pending_count(), 1);
-            shared.lock().unwrap().settle_device_lifecycle();
+            settle_secret_membership(&shared.lock().unwrap());
             assert!(bus.flush() > 0);
             let event = crate::carrier::SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
             assert_eq!(event["scope"], "device");
             assert_eq!(store.writer().secret_read_retries.pending_count(), 0);
             // The same independent SQL snapshot still sees dirty after the drain.
-            let query = serde_json::from_value(json!({"scope":{"project_id":"proj-1"}})).unwrap();
+            let query = serde_json::from_value(json!({"scope":{"project_id":"proj-1"},"include_environment":true})).unwrap();
             assert!(matches!(
                 read.secret_metadata_page("device", "device_user", &query),
                 Err(crate::secrets::SecretError::Unavailable)
@@ -1271,7 +1280,9 @@ fn secrets_late_dirty_snapshot_refusal_after_drain_rearms_all_without_unbounded_
         .unwrap();
     assert!(bus.flush() > 0, "late refusal must wake another capture");
     assert!(rx.try_recv().is_ok());
-    let query = serde_json::from_value(json!({"scope":{"project_id":"proj-1"}})).unwrap();
+    let query =
+        serde_json::from_value(json!({"scope":{"project_id":"proj-1"},"include_environment":true}))
+            .unwrap();
     assert!(reader
         .read(|r| r.secret_metadata_page("device", "device_user", &query))
         .unwrap()
@@ -1316,7 +1327,7 @@ fn secrets_real_settings_write_rehints_refused_read_after_unchanged_membership_s
     });
     control.wait_for_arrival();
     // The actual settings persistence path must have marked the SQL fence.
-    let dirty_during_write = !store.writer().secret_registry_clean().unwrap();
+    let dirty_during_write = !store.writer().secret_membership_clean().unwrap();
     let push = crate::liveness::DedicatedRuntime::push().unwrap();
     crate::changes::ChangeBus::spawn_flusher_on(bus.clone(), Some(push.handle()));
     let join_hint = push.handle().block_on(async {
@@ -1325,7 +1336,9 @@ fn secrets_real_settings_write_rehints_refused_read_after_unchanged_membership_s
             .expect("queued join hint is delivered")
             .expect("subscription stays open")
     });
-    let query = serde_json::from_value(json!({"scope":{"project_id":"proj-1"}})).unwrap();
+    let query =
+        serde_json::from_value(json!({"scope":{"project_id":"proj-1"},"include_environment":true}))
+            .unwrap();
     let refused = matches!(
         store
             .writer()
@@ -1337,7 +1350,7 @@ fn secrets_real_settings_write_rehints_refused_read_after_unchanged_membership_s
     let result = write.join().unwrap().unwrap();
     assert!(
         dirty_during_write,
-        "settings.set must mark the registry fence"
+        "settings.set must mark the membership fence"
     );
     let hint = crate::carrier::SessionSender::decrypt_push(&key, &join_hint);
     assert_eq!(hint["scope"], "project");
@@ -1352,7 +1365,7 @@ fn secrets_real_settings_write_rehints_refused_read_after_unchanged_membership_s
     assert_eq!(before["projects"], after["projects"]);
     assert_eq!(before["environments"], after["environments"]);
     assert!(
-        store.writer().secret_registry_clean().unwrap(),
+        store.writer().secret_membership_clean().unwrap(),
         "settings.set must settle its fence"
     );
     // No manual post-write flush: normal settlement must drive the replacement.

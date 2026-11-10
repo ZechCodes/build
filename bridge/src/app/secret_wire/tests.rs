@@ -564,3 +564,190 @@ fn environment_secret_creation_never_widens_project_grant() {
         b"synthetic-original-project-value"
     );
 }
+
+#[test]
+fn archived_project_secret_metadata_and_revoke_remain_available_create_reports_archive() {
+    let mut f = fixture();
+    let first = create(&mut f).unwrap();
+    let project = f.params["scope"]["owner_id"].as_str().unwrap().to_owned();
+    f.app.projects.at_mut(0).archived_at = Some(1);
+    f.app.persist();
+    let caller = CallContext::detached("synthetic-owner");
+    let scope = json!({"project_id":project});
+    assert!(f
+        .app
+        .dispatch_api_with_context("secrets.list", &json!({"scope":scope}), Some(&caller))
+        .is_ok());
+    assert!(f
+        .app
+        .dispatch_api_with_context(
+            "secrets.audit",
+            &json!({"scope":scope,"secret_id":first["secret_id"]}),
+            Some(&caller)
+        )
+        .is_ok());
+    let refused = create(&mut f).err().unwrap();
+    assert_eq!(refused.code(), "project_archived");
+    assert!(f.app.dispatch_api_with_context("secrets.revoke", &json!({"scope":scope,"secret_id":first["secret_id"],"operation_id":uuid::Uuid::new_v4().to_string()}), Some(&caller)).is_ok());
+}
+
+fn registry_secret_fixture() -> Fixture {
+    let mut f = fixture();
+    let source = f.root.path().join("git-source");
+    let repo = git2::Repository::init(&source).unwrap();
+    repo.set_head("refs/heads/main").unwrap();
+    let signature = git2::Signature::now("Fixture", "fixture@example.test").unwrap();
+    let tree = repo
+        .find_tree(repo.index().unwrap().write_tree().unwrap())
+        .unwrap();
+    repo.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+        .unwrap();
+    let project = f.app.add_project(source, "main".into());
+    f.params["scope"]["owner_id"] = json!(project);
+    f.params["grant"]["project_id"] = json!(project);
+    f.app
+        .dispatch(
+            "project.ensure_conversation",
+            &json!({"project_id":project}),
+        )
+        .unwrap();
+    f
+}
+
+fn assert_registry_job_keeps_secrets_available(f: &mut Fixture) {
+    assert!(f.app.active_device_registry_jobs > 0);
+    let store = f.app.store.as_ref().unwrap().clone();
+    assert!(store
+        .writer()
+        .device_registry_generation()
+        .unwrap()
+        .is_some());
+    let project = f.params["scope"]["owner_id"].as_str().unwrap().to_owned();
+    let env = f.app.projects.get(&project).unwrap().environment_id.clone();
+    let owner = f
+        .app
+        .runs
+        .keys()
+        .find(|owner| f.app.project_of(owner).ok().as_deref() == Some(project.as_str()))
+        .unwrap()
+        .clone();
+    let agent = f
+        .app
+        .entity_agents(&owner)
+        .unwrap()
+        .primary()
+        .unwrap()
+        .clone();
+    let caller = crate::secrets::SecretCaller {
+        device_id: "synthetic-device".into(),
+        channel: "dev".into(),
+        project_id: project.clone(),
+        owner_id: owner.clone(),
+        canonical_owner_id: owner,
+        agent_id: agent.id.clone(),
+        conversation_id: agent.id,
+        thread_id: agent.thread.id.clone(),
+        generation: agent.thread.id,
+        generation_revision: agent.thread.generation_revision,
+        session_incarnation: "registry-secret-session".into(),
+    };
+    let service = f.app.secret_service().unwrap();
+    let user = CallContext::detached("synthetic-owner");
+    for grant in [
+        json!({"scope":"project","project_id":project}),
+        json!({"scope":"environment","environment_id":env}),
+    ] {
+        f.params["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+        f.params["name"] = json!(if grant["scope"] == "project" {
+            "LOCAL"
+        } else {
+            "SHARED"
+        });
+        f.params["grant"] = grant.clone();
+        let created = create(f).unwrap();
+        let id = created["secret_id"].as_str().unwrap();
+        service
+            .attach(&[id.to_owned()], &uuid::Uuid::new_v4().to_string())
+            .unwrap();
+        service
+            .release(&caller, id, "registry-release", || true)
+            .expect("current committed project member releases during registry work");
+        let scope = if grant["scope"] == "project" {
+            json!({"project_id":project})
+        } else {
+            json!({"environment_id":env})
+        };
+        let listed = f
+            .app
+            .dispatch_api_with_context("secrets.list", &json!({"scope":scope}), Some(&user))
+            .unwrap();
+        assert!(listed["secrets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["secret_id"] == id));
+        assert!(f
+            .app
+            .dispatch_api_with_context(
+                "secrets.audit",
+                &json!({"scope":scope,"secret_id":id}),
+                Some(&user)
+            )
+            .is_ok());
+        assert!(f.app.dispatch_api_with_context("secrets.revoke", &json!({"scope":scope,"secret_id":id,"operation_id":uuid::Uuid::new_v4().to_string()}), Some(&user)).is_ok());
+        assert!(f.app.active_device_registry_jobs > 0);
+    }
+}
+
+#[test]
+fn workspace_creation_in_flight_preserves_secret_scope_availability() {
+    let mut f = registry_secret_fixture();
+    let params = json!({"project_id":f.params["scope"]["owner_id"],"name":"secrets-inflight","isolation":"worktree"});
+    let (answer, job) = f.app.dispatch_deferring("workspace.create", &params);
+    answer.unwrap();
+    let job = job.unwrap();
+    assert_registry_job_keeps_secrets_available(&mut f);
+    f.app
+        .apply_deferred("workspace.create", &params, job.run())
+        .unwrap();
+}
+
+#[test]
+fn review_opening_in_flight_preserves_secret_scope_availability() {
+    let mut f = registry_secret_fixture();
+    let created = f.app.dispatch("workspace.create", &json!({"project_id":f.params["scope"]["owner_id"],"name":"secrets-review","isolation":"worktree"})).unwrap();
+    let params = json!({"workspace_id":created["workspace_id"],"request_id":"secrets-inflight-review","title":"Review secrets availability","description":"Unchanged membership"});
+    let (answer, job) = f.app.dispatch_deferring("tasks.review.open", &params);
+    answer.unwrap();
+    let job = job.unwrap();
+    assert_registry_job_keeps_secrets_available(&mut f);
+    f.app
+        .apply_deferred("tasks.review.open", &params, job.run())
+        .unwrap();
+}
+
+#[test]
+fn upload_archive_after_admission_reports_archive_at_deferred_boundary() {
+    struct ArchivingOpener(crate::store::StoreWriter, String);
+    impl UploadOpener for ArchivingOpener {
+        fn open(&self, _: &str, _: &UploadContext) -> crate::secrets::Result<SecretValue> {
+            self.0.secrets_reconcile_config(&json!({"environments":[{"id":"archive-env"}],"projects":[{"id":self.1,"environment_id":"archive-env","archived_at":1}]}))?;
+            SecretValue::new(b"synthetic-test-value-only".to_vec())
+        }
+    }
+    let mut f = fixture();
+    f.app.secret_upload_opener = Some(Arc::new(ArchivingOpener(
+        f.app.store.as_ref().unwrap().writer(),
+        f.params["scope"]["owner_id"].as_str().unwrap().into(),
+    )));
+    let error = create(&mut f).err().unwrap();
+    assert_eq!(error.code(), "project_archived");
+    assert!(!f
+        .app
+        .store
+        .as_ref()
+        .unwrap()
+        .writer()
+        .secrets_have_records()
+        .unwrap());
+}

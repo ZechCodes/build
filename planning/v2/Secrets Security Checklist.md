@@ -49,3 +49,27 @@ original control governs post-creation surfaces, while an explicit reveal of
 the still-live modal input is user-controlled and never becomes cached state.
 
 **Final score: 100/100.**
+
+
+Gate #1106 qualification: legacy Project/Agent/stage operations ignore registry
+and membership fences. Environment operations alone consult the dedicated
+config-membership fence; `include_environment:true` refuses the whole list and
+records a post-clear retry. The real `settings.set` regression and retained
+consecutive/late-snapshot tests exercise this fence. Real workspace-creation and
+review-opening jobs held in flight allow project create/release/list/audit/revoke
+and environment release/list (and create/audit/revoke).
+`legacy_secret_scopes_ignore_registry_and_membership_fences` also covers legacy
+agent release and staged create/list while the membership fence is dirty.
+
+Archived projects retain project list/audit/revoke; create and release report
+`project_archived`, and an archived member cannot release an environment grant.
+Evidence: `archived_project_secret_metadata_and_revoke_remain_available_create_reports_archive`,
+`archived_project_keeps_metadata_and_safety_revoke_but_not_release`, and
+`archived_project_agent_not_current_for_secrets`.
+`project_revoke_and_audit_cannot_reach_an_environment_grant` proves project
+selectors refuse shared grant IDs just like unknown IDs, preserve metadata/value,
+and explicit environment selectors retain audit/revoke authority.
+
+Historical migration fixtures supply their synthetic authoritative config; the
+partial-migration regression asserts the injected malformed-JSON SQLite error.
+Task #1095 records the widened complete `store::` and `app::tests` results.

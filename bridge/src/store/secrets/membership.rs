@@ -1,17 +1,31 @@
 //! Config is authoritative. SQL is a disposable projection behind the durable
-//! registry dirty fence, shared by writer authorization and metadata snapshots.
+//! membership dirty fence, shared by writer authorization and metadata snapshots.
 use crate::secrets::{GrantScope, Result, SecretError, SecretRecord};
 use crate::store::StoreWriter;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
 impl StoreWriter {
-    pub(crate) fn secret_registry_clean(&self) -> Result<bool> {
+    pub(crate) fn secret_membership_clean(&self) -> Result<bool> {
         clean(&self.connection())
     }
     pub(crate) fn secrets_reconcile_config(&self, config: &Value) -> Result<()> {
-        super::writes::durable(self, |tx| reconcile_config_in(tx, config))
+        super::writes::durable(self, |tx| {
+            reconcile_config_in(tx, config)?;
+            clear_fence_in(tx)
+        })
     }
+    pub(crate) fn secrets_cancel_membership_write(&self) -> Result<()> {
+        super::writes::durable(self, clear_fence_in)
+    }
+}
+
+fn clear_fence_in(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    tx.execute(
+        "DELETE FROM sync_dirty WHERE kind='secrets' AND key='membership'",
+        [],
+    )?;
+    Ok(())
 }
 
 pub(super) fn reconcile_config_in(tx: &rusqlite::Transaction<'_>, config: &Value) -> Result<()> {
@@ -35,16 +49,13 @@ pub(super) fn reconcile_config_in(tx: &rusqlite::Transaction<'_>, config: &Value
 
 pub(super) fn clean(connection: &Connection) -> Result<bool> {
     Ok(!connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sync_dirty WHERE kind='registry' AND key='lifecycle')",
+        "SELECT EXISTS(SELECT 1 FROM sync_dirty WHERE kind='secrets' AND key='membership')",
         [],
         |r| r.get::<_, bool>(0),
     )?)
 }
 
 pub(super) fn current_project(connection: &Connection, project: &str) -> Result<bool> {
-    if !clean(connection)? {
-        return Ok(false);
-    }
     let archived: Option<bool> = connection
         .query_row(
             "SELECT archived FROM secret_project_membership WHERE project_id=?1",
@@ -60,10 +71,24 @@ pub(super) fn environment_allows(
     project: &str,
     environment: &str,
 ) -> Result<bool> {
-    if !clean(connection)? {
+    if !clean(connection)? || !current_project(connection, project)? {
         return Ok(false);
     }
     Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM secret_project_membership m JOIN secret_environments e USING(environment_id) WHERE m.project_id=?1 AND m.environment_id=?2 AND m.archived=0)",params![project,environment],|r|r.get(0))?)
+}
+
+pub(super) fn authorize_active_project(connection: &Connection, project: &str) -> Result<()> {
+    let archived: Option<bool> = connection
+        .query_row(
+            "SELECT archived FROM secret_project_membership WHERE project_id=?1",
+            [project],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if archived == Some(true) {
+        return Err(SecretError::ProjectArchived);
+    }
+    Ok(())
 }
 
 pub(super) fn authorize_grant(

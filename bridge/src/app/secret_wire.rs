@@ -42,11 +42,7 @@ impl AppState {
                 Err(ApiError::not_found("secret_unavailable"))
             };
         }
-        if self
-            .projects
-            .get(&scope.project_id)
-            .is_none_or(|p| p.archived_at.is_some())
-        {
+        if self.projects.get(&scope.project_id).is_none() {
             return Err(ApiError::not_found("secret_unavailable"));
         }
         if let Some(stage) = &scope.stage {
@@ -88,6 +84,7 @@ impl AppState {
 
     fn authorize_secret_upload(&self, params: &CreateParams) -> Result<(), ApiError> {
         let project = self.secret_stage_project(&params.scope)?;
+        self.refuse_archived_project(&project)?;
         self.authorize_secret_scope(&SecretScope {
             environment_id: None,
             project_id: project.clone(),

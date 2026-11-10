@@ -36,7 +36,7 @@ impl StoreWriter {
         writes::durable(self, |tx| {
             metadata::authorize(tx, &asked.scope)?;
             let query = ListParams {
-                include_environment: true,
+                include_environment: false,
                 scope: asked.scope.clone(),
                 secret_ids: vec![asked.secret_id.clone()],
                 request_ids: vec![],

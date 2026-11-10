@@ -29,7 +29,7 @@ impl AppState {
             let state = weak.upgrade()?;
             let writer = {
                 let app = secret_publication_lock(&state, &weak_bus)?;
-                if app.device_lifecycle_dirty.get() {
+                if app.secret_membership_dirty.get() {
                     return None;
                 }
                 app.store.as_ref().map(|store| store.writer())
@@ -37,7 +37,7 @@ impl AppState {
             // No writer lifetime is retained by the bus; no SQL runs under app.
             if writer
                 .as_ref()
-                .is_some_and(|w| w.secret_registry_clean().ok() != Some(true))
+                .is_some_and(|w| w.secret_membership_clean().ok() != Some(true))
             {
                 return None;
             }
@@ -47,7 +47,7 @@ impl AppState {
     }
 
     fn take_secret_publication(&self) -> Option<crate::changes::SecretPublication> {
-        if self.device_lifecycle_dirty.get() {
+        if self.secret_membership_dirty.get() {
             return None;
         }
         let mut batch =

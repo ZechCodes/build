@@ -23,7 +23,7 @@ facts surviving the denial cap and retention cleanup.
 | 5 | Blob publication precedes metadata commit; failed SQL leaves inaccessible encrypted orphan; startup removes it. | staging persistence-boundary injection, existing vault crash tests. |
 | 6 | Send commits complete set, message, descriptor and receipt atomically with FULL durability. Replay preserves original acceptance and TTL. | `secret_atomic`, `post_secret_claim`, failed binding rollback. |
 | 7 | Existing/final provisional recipient is fenced by canonical project, owner, agent, conversation and generation. Immutable AAD stays intact. | `secret_post`, generation-race and provisional release tests. |
-| 8 | Metadata and audit reads are bounded scoped snapshots; cursor scope changes are refused; tombstones and TTL remain authoritative. | `store::secrets::metadata`, malformed query/authorization tests; `environment_membership_revalidated_per_read`, archived-project denial and the sibling list/audit negatives. |
+| 8 | Metadata and audit reads are bounded scoped snapshots; cursor scope changes are refused; tombstones and TTL remain authoritative. | `store::secrets::metadata`, malformed query/authorization tests; `environment_membership_revalidated_per_read`, archived release/create denial with metadata/safety-revoke availability and the sibling list/audit negatives. |
 | 9 | Invalidation contains only IDs/revision/scope; project routing survives originating conversation retirement; lost/reordered hints reconcile without uploads. | `changes::secrets_tests`, including environment/all subscription routing, SPA `secretsWire` tests. |
 | 10 | Delivery exact revision block includes scope and no values, wrapped/pinned for all five harnesses; the environment feature remains unadvertised until S2.4 (the existing 3.36 features retain their advertisements). | `agent_message::secret_tests`, API contract + withheld capability tests. |
 
@@ -45,7 +45,7 @@ is introduced. Both accepted-secret and environment-secret leak sweeps cover
 values, sealed markers, live DB/WAL, metadata, pushes, harness prompts and Git,
 with the existing negative controls. The frozen schema-26 fixture preserves all
 old secret state through schema 27 and a second open; config repopulates the
-membership projection behind the durable registry dirty fence.
+membership projection behind the dedicated config-membership dirty fence.
 
 ### Review #1104 qualification
 
@@ -82,3 +82,27 @@ enqueues off-lock. Named `device_lifecycle_tests::secrets_*` regressions cover
 the exact queued-hint/unrelated-write/refused-read ordering, consecutive dirty
 intervals, deterministic lock/commit ordering, independent late snapshots and
 scope bounds. Subscription read/ack fencing and all wire shapes are unchanged.
+
+
+Gate #1106 qualification: legacy Project/Agent/stage operations ignore registry
+and membership fences. Environment operations alone consult the dedicated
+config-membership fence; `include_environment:true` refuses the whole list and
+records a post-clear retry. The real `settings.set` regression and retained
+consecutive/late-snapshot tests exercise this fence. Real workspace-creation and
+review-opening jobs held in flight allow project create/release/list/audit/revoke
+and environment release/list (and create/audit/revoke).
+`legacy_secret_scopes_ignore_registry_and_membership_fences` also covers legacy
+agent release and staged create/list while the membership fence is dirty.
+
+Archived projects retain project list/audit/revoke; create and release report
+`project_archived`, and an archived member cannot release an environment grant.
+Evidence: `archived_project_secret_metadata_and_revoke_remain_available_create_reports_archive`,
+`archived_project_keeps_metadata_and_safety_revoke_but_not_release`, and
+`archived_project_agent_not_current_for_secrets`.
+`project_revoke_and_audit_cannot_reach_an_environment_grant` proves project
+selectors refuse shared grant IDs just like unknown IDs, preserve metadata/value,
+and explicit environment selectors retain audit/revoke authority.
+
+Historical migration fixtures supply their synthetic authoritative config; the
+partial-migration regression asserts the injected malformed-JSON SQLite error.
+Task #1095 records the widened complete `store::` and `app::tests` results.

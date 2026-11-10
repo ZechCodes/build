@@ -106,7 +106,7 @@ fn environment_membership_revalidated_per_read() {
     assert!(read(&f, &sibling, &secret.context.id).is_ok());
     f.store
         .writer()
-        .mark_sync_dirty("registry", "lifecycle", 1001)
+        .mark_sync_dirty("secrets", "membership", 1001)
         .unwrap();
     assert!(read(&f, &sibling, &secret.context.id).is_err());
     assert!(f
@@ -126,7 +126,7 @@ fn archived_project_agent_not_current_for_secrets() {
     membership(&f, &sibling.project_id, "env-a", true);
     assert!(matches!(
         read(&f, &sibling, &secret.context.id),
-        Err(SecretError::Unauthorized)
+        Err(SecretError::ProjectArchived)
     ));
     assert!(f
         .store
@@ -136,7 +136,9 @@ fn archived_project_agent_not_current_for_secrets() {
             "synthetic-user",
             &query(&sibling.project_id)
         )
-        .is_err());
+        .unwrap()
+        .secrets
+        .is_empty());
     assert!(read(&f, &f.caller, &secret.context.id).is_ok());
     membership(&f, &sibling.project_id, "env-a", false);
     assert!(read(&f, &sibling, &secret.context.id).is_ok());
@@ -420,4 +422,205 @@ fn old_secret_list_nonempty_cursor_preserves_contract_and_refuses_cross_mode() {
     let opted_cursor = page(&opted).unwrap().next.expect("non-empty opt-in cursor");
     old.after = Some(opted_cursor);
     assert!(page(&old).is_err(), "opt-in cursor refused by old query");
+}
+
+#[test]
+fn project_revoke_and_audit_cannot_reach_an_environment_grant() {
+    use crate::api::v1::secrets::RevokeParams;
+    let (f, sibling) = setup();
+    let shared = f.secret(grant(), None);
+    let before = f
+        .store
+        .writer()
+        .secret_record(&shared.context.id)
+        .unwrap()
+        .unwrap();
+    let scope = query(&f.caller.project_id).scope;
+    let mut audit = AuditParams {
+        scope: scope.clone(),
+        secret_id: shared.context.id.clone(),
+        after: 0,
+        limit: 100,
+    };
+    assert!(matches!(
+        f.store
+            .writer()
+            .secret_metadata_audit(&f.caller.device_id, "synthetic-user", &audit),
+        Err(SecretError::Unavailable)
+    ));
+    let mut revoke = RevokeParams {
+        scope,
+        secret_id: shared.context.id.clone(),
+        operation_id: uuid::Uuid::new_v4().to_string(),
+    };
+    assert!(matches!(
+        f.service.revoke_operation("synthetic-user", &revoke),
+        Err(SecretError::Unavailable)
+    ));
+    revoke.secret_id = format!("sec_{}", uuid::Uuid::new_v4());
+    assert!(matches!(
+        f.service.revoke_operation("synthetic-user", &revoke),
+        Err(SecretError::Unavailable)
+    ));
+    let after = f
+        .store
+        .writer()
+        .secret_record(&shared.context.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(before).unwrap(),
+        serde_json::to_value(after).unwrap()
+    );
+    assert!(read(&f, &sibling, &shared.context.id).is_ok());
+    audit.scope = serde_json::from_value(json!({"environment_id":"env-a"})).unwrap();
+    assert!(f
+        .store
+        .writer()
+        .secret_metadata_audit(&f.caller.device_id, "synthetic-user", &audit)
+        .is_ok());
+    revoke.scope = audit.scope;
+    revoke.secret_id = shared.context.id;
+    assert!(f
+        .service
+        .revoke_operation("synthetic-user", &revoke)
+        .is_ok());
+}
+
+#[test]
+fn legacy_secret_scopes_ignore_registry_and_membership_fences() {
+    let (f, sibling) = setup();
+    let local = f.secret(
+        GrantScope::Project {
+            project_id: f.caller.project_id.clone(),
+        },
+        None,
+    );
+    let agent = f.secret(f.agent_grant(), None);
+    let shared = f.secret(grant(), None);
+    f.store
+        .writer()
+        .mark_sync_dirty("registry", "lifecycle", 1001)
+        .unwrap();
+    assert!(f.release(&local.context.id).is_ok());
+    assert!(f.release(&agent.context.id).is_ok());
+    assert!(read(&f, &sibling, &shared.context.id).is_ok());
+    assert!(!list(&f, &sibling.project_id).is_empty());
+    f.store
+        .writer()
+        .mark_sync_dirty("secrets", "membership", 1002)
+        .unwrap();
+    // Environment projection presence is not legacy authority either.
+    f.store
+        .writer_for_test()
+        .execute(
+            "DELETE FROM secret_project_membership WHERE project_id=?1",
+            [&f.caller.project_id],
+        )
+        .unwrap();
+    assert!(f.release(&local.context.id).is_ok());
+    assert!(f.release(&agent.context.id).is_ok());
+    let mut old = query(&f.caller.project_id);
+    old.include_environment = false;
+    assert!(f
+        .store
+        .writer()
+        .secret_metadata_page(&f.caller.device_id, "synthetic-user", &old)
+        .is_ok());
+    let audit = AuditParams {
+        scope: old.scope.clone(),
+        secret_id: local.context.id.clone(),
+        after: 0,
+        limit: 100,
+    };
+    assert!(f
+        .store
+        .writer()
+        .secret_metadata_audit(&f.caller.device_id, "synthetic-user", &audit)
+        .is_ok());
+    assert!(matches!(
+        f.store.writer().secret_metadata_page(
+            &f.caller.device_id,
+            "synthetic-user",
+            &query(&sibling.project_id)
+        ),
+        Err(SecretError::Unavailable)
+    ));
+    assert!(read(&f, &sibling, &shared.context.id).is_err());
+    let mut staged = local.clone();
+    staged.context.id = format!("sec_{}", uuid::Uuid::new_v4());
+    staged.upload_request_id = uuid::Uuid::new_v4().to_string();
+    staged.attached_at = None;
+    staged.expires_at = None;
+    staged.message_operation_id = None;
+    staged.revision = 1;
+    let mut stage_scope = old.scope.clone();
+    stage_scope.stage = Some(staged.context.stage.clone());
+    f.store
+        .writer()
+        .secrets_stage_authorized(&staged, &stage_scope)
+        .unwrap();
+    let mut stage_list = old.clone();
+    stage_list.scope = stage_scope;
+    assert!(f
+        .store
+        .writer()
+        .secret_metadata_page(&f.caller.device_id, "synthetic-user", &stage_list)
+        .is_ok());
+    let revoke = crate::api::v1::secrets::RevokeParams {
+        scope: old.scope,
+        secret_id: local.context.id,
+        operation_id: uuid::Uuid::new_v4().to_string(),
+    };
+    assert!(f
+        .service
+        .revoke_operation("synthetic-user", &revoke)
+        .is_ok());
+}
+
+#[test]
+fn archived_project_keeps_metadata_and_safety_revoke_but_not_release() {
+    let (f, _) = setup();
+    let local = f.secret(
+        GrantScope::Project {
+            project_id: f.caller.project_id.clone(),
+        },
+        None,
+    );
+    membership(&f, &f.caller.project_id, "env-a", true);
+    let mut q = query(&f.caller.project_id);
+    q.include_environment = false;
+    assert_eq!(
+        f.store
+            .writer()
+            .secret_metadata_page(&f.caller.device_id, "synthetic-user", &q)
+            .unwrap()
+            .secrets
+            .len(),
+        1
+    );
+    let audit = AuditParams {
+        scope: q.scope.clone(),
+        secret_id: local.context.id.clone(),
+        after: 0,
+        limit: 100,
+    };
+    assert!(f
+        .store
+        .writer()
+        .secret_metadata_audit(&f.caller.device_id, "synthetic-user", &audit)
+        .is_ok());
+    assert_eq!(
+        f.release(&local.context.id).err().unwrap().to_string(),
+        "project_archived"
+    );
+    let revoke = crate::api::v1::secrets::RevokeParams {
+        scope: q.scope,
+        secret_id: local.context.id,
+        operation_id: uuid::Uuid::new_v4().to_string(),
+    };
+    assert!(f
+        .service
+        .revoke_operation("synthetic-user", &revoke)
+        .is_ok());
 }

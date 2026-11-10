@@ -530,7 +530,7 @@ Changed:
 | M2 (planned restriction) | `project.add_source` / `remove_source` / `update_source` | operate on **added** sources only; naming an environment source id is refused "source-N belongs to environment E; edit it there". Planned old-client compatibility for `update_source` routes an environment source edit to its owning record (5C.5). M1 still accepts legacy project source edits; it does not enforce this future restriction |
 | M3 | every task/review/comment/workspace/source mutation | refused with `project_archived` on an archived project |
 | S2.1 | `secrets.create` | `grant` accepts `{scope:"environment", environment_id}`; `scope` remains the required owner/conversation/generation StageContext. Sealed upload and atomic-send lifetime are unchanged; there is no standalone settings-create lifetime. The writer transaction revalidates the stage owner’s current, unarchived project membership in the requested environment. |
-| S2.1 | `secrets.list/revoke/audit` | `scope` accepts `{environment_id}` in addition to the existing project/stage selector; mixed selectors are refused. `secrets.list` alone adds `include_environment?: bool` (default false) for inherited grants in a project/stage list. Old-shaped requests return only Agent/Project grants, even after a project override is revoked. Explicit environment selectors require no opt-in. S2.4 sends the opt-in once it advertises `secrets.environmentScope`. Accepted compatibility ruling: a client that predates `include_environment` lists only project/stage grants, so its list omits environment grants that its agents can still release. This gap is accepted because only a client that knows the environment scope can create such grants; release authority is unchanged. |
+| S2.1 | `secrets.list/revoke/audit` | `scope` accepts `{environment_id}` in addition to the existing project/stage selector; mixed selectors are refused. `secrets.list` alone adds `include_environment?: bool` (default false) for inherited grants in a project/stage list. Old-shaped requests return only Agent/Project grants, even after a project override is revoked. Explicit environment selectors require no opt-in. Revoke and audit of an environment grant require `scope:{environment_id}`; a project/stage selector cannot reach it, and `include_environment` is list-only. S2.4 sends the opt-in once it advertises `secrets.environmentScope`. Accepted compatibility ruling: a client that predates `include_environment` lists only project/stage grants, so its list omits environment grants that its agents can still release. This gap is accepted because only a client that knows the environment scope can create such grants; release authority is unchanged. |
 | — | `tasks.*` | **unchanged** |
 
 MCP tools (`bridge/src/mcp.rs`): no project arguments anywhere; scope comes
@@ -835,10 +835,15 @@ the exact schema-26 database bytes through the full Store open, and a retry reac
 `secret_final_bindings`/`secret_audit` (`schema.rs:110-141`) gain the
 environment id. `secret_environments` and `secret_project_membership` are
 disposable SQL projections of config-owned registration, environment membership
-and archive state. Every config write refreshes them behind the existing durable
-registry dirty fence; startup and registry reconciliation republish current config.
-Secret reads fail closed while that fence is dirty, so stale membership cannot
-grant access. Refused list/audit reads record bounded project/All scopes at the
+and archive state. Every synchronous config persist (including config migration) marks a dedicated
+`secrets/membership` dirty fence, writes config, then atomically refreshes the
+projection and clears that fence. A refused file write leaves the old projection
+and cancels its marker. Startup and registry reconciliation also republish current
+config. The separate registry/lifecycle fence and off-lock registry jobs never
+block secrets. Only environment-dependent paths consult the membership fence:
+environment release/create/list/revoke/audit and the whole project/stage list
+when `include_environment:true`. Old-shaped project/agent/stage operations ignore
+both fences. Stale environment membership cannot grant access. Refused list/audit reads record bounded project/All scopes at the
 SQL boundary. On clear, plain membership changes and refused scopes are captured
 under the app guard; the existing off-lock ChangeBus flusher enqueues and emits
 after releasing it. Unchanged membership still re-hints refused reads, and every
@@ -1498,7 +1503,7 @@ New rows for `Project Sources Security Checklist.md` (Stage 1) and
 | Tasks | Two projects in one environment number and list tasks independently; a task link to a sibling's workspace is refused | `sibling_projects_number_tasks_independently`; `link_workspace_of_sibling_project_refused` |
 | Tasks | Every mutation on an archived project is refused on RPC, MCP and agent paths with one error code, except `project.restore` and (Stage 2) `project.delete` (1.9) | `archived_project_refuses_mutations_on_every_path`; `archived_project_accepts_restore_and_delete` |
 | Tasks | `project.delete` removes only rows under the deleted project's key | `project_delete_removes_its_tasks_only` |
-| Secrets (8) | Environment scope derives from the issued session's project's environment at read time; archived projects are not current | `environment_membership_revalidated_per_read`; `archived_project_agent_not_current_for_secrets` |
+| Secrets (8) | Environment scope derives from the issued session's project's environment at read time; archived projects cannot create or release (`project_archived`), but project-scope list, audit and safety revoke remain available. Only environment-dependent paths consult the short config-membership fence; registry jobs never block secrets. | `environment_membership_revalidated_per_read`; `archived_project_agent_not_current_for_secrets` |
 | Secrets (11) | Environment deletion revokes environment-scoped secrets before the registration is removed; project deletion leaves environment scope intact | `environment_delete_revokes_environment_scope` |
 | Secrets (new) | A project-scoped secret is never released to a sibling's agent by list, attach, CLI release or audit, and never copied by a creation attempt | one negative test per mechanism |
 | Secrets (19) | `secrets.environmentScope` capability, fixtures, manifest and version pins; an older client never sees the scope | `secrets_contract_includes_environment_scope` |

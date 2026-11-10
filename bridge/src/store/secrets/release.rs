@@ -20,6 +20,7 @@ impl StoreWriter {
             if !is_current() || !committed_member(tx, caller)? {
                 return Err(SecretError::Unauthorized);
             }
+            super::membership::authorize_active_project(tx, &caller.project_id)?;
             clock_observe_in(tx, observed_at)?;
             // A malformed identifier is indistinguishable from an absent one.
             let record = if crate::secrets::validate_id(id).is_ok() {
@@ -69,9 +70,6 @@ fn validate_request(caller: &SecretCaller, request: &str) -> Result<()> {
 }
 
 fn committed_member(connection: &Connection, caller: &SecretCaller) -> Result<bool> {
-    if !super::membership::current_project(connection, &caller.project_id)? {
-        return Ok(false);
-    }
     for owner in [&caller.owner_id, &caller.canonical_owner_id] {
         let project: Option<String> = connection.query_row(
             "SELECT p.project_id FROM device_owner_projects o JOIN device_project_ids p ON p.path=o.project_path WHERE o.owner_id=?1",

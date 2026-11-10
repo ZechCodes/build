@@ -139,6 +139,7 @@ fn safe_error(code: Option<&str>) -> &'static str {
         Some("secret_revoked") => "secret_revoked",
         Some("secret_expired") => "secret_expired",
         Some("secret_limit") => "secret_limit",
+        Some("project_archived") => "project_archived",
         _ => "secret_unavailable",
     }
 }

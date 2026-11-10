@@ -13,7 +13,7 @@ No public capability is advertised by this change.
 | # | Control | Evidence |
 |---|---|---|
 | 1 | Purpose-limited capability is independent of MCP and binds device/channel, canonical project/owner/conversation/generation and process incarnation. | `runtime/sessions/secret_authority.rs`, `secret_release_authority.rs`; token independence, selector spoof, device-rebind and same-generation restart tests. |
-| 2 | Authority derives from the issued record and current committed membership, including the config-owned environment/archive projection; dirty registry state denies reads. No caller selector, CWD, path or task grants access. | `read_context/mcp_addresses.rs`, `store/secrets/release.rs`; saved/candidate membership, removed member, canonical and alias project rebind, durable generation regressions; real AppState workspace-member and project-coordinator probes pass the SQL boundary. |
+| 2 | Authority derives from the issued record and current committed membership, including the config-owned environment/archive projection; only the short config-membership fence denies environment-dependent reads; registry jobs never block secrets. No caller selector, CWD, path or task grants access. | `read_context/mcp_addresses.rs`, `store/secrets/release.rs`; saved/candidate membership, removed member, canonical and alias project rebind, durable generation regressions; real AppState workspace-member and project-coordinator probes pass the SQL boundary. |
 | 3 | Agent grants require exact recipient/generation; Project grants allow current members including coordinator; Environment grants allow current unarchived member projects, with project-name precedence; cross-project and wrong-scope reads disclose no existence/status. | Scope and caller matrices in `secrets/release_tests.rs`; scope precedes expiry/revocation lookup outcomes. |
 | 4 | Authority originates in the dedicated launch environment. Runtime CLI follow-up #1004 restores the Codex shell capability through a private per-launch TUI profile or app-server stdio config, as documented in `docs/device-secret-release.md`. Every provider strips inherited capability prefixes; probes and ordinary terminal tabs acquire no agent authority. | `harness/secret_launch.rs`, PTY/ADK/app-server spawn integration, installed probe test; HarnessSpec Debug redacts argument and environment values. |
 | 5 | Private mode-0600 Unix socket is separate from MCP/HTTP/browser RPC. Live or full-backlog sockets are not replaced; arbitrary entries/symlinks are preserved. | `app/secret_release.rs`; protected binding and full-backlog bounded-probe tests. |
@@ -127,3 +127,27 @@ list/audit fence refusals retain bounded project/All retry scopes; each dirty
 interval and late old-snapshot refusal re-arms a post-clear hint. The four
 `device_lifecycle_tests::secrets_*` regressions cover these orderings without
 changing release authority or the S2.2 retirement seam.
+
+
+Gate #1106 qualification: legacy Project/Agent/stage operations ignore registry
+and membership fences. Environment operations alone consult the dedicated
+config-membership fence; `include_environment:true` refuses the whole list and
+records a post-clear retry. The real `settings.set` regression and retained
+consecutive/late-snapshot tests exercise this fence. Real workspace-creation and
+review-opening jobs held in flight allow project create/release/list/audit/revoke
+and environment release/list (and create/audit/revoke).
+`legacy_secret_scopes_ignore_registry_and_membership_fences` also covers legacy
+agent release and staged create/list while the membership fence is dirty.
+
+Archived projects retain project list/audit/revoke; create and release report
+`project_archived`, and an archived member cannot release an environment grant.
+Evidence: `archived_project_secret_metadata_and_revoke_remain_available_create_reports_archive`,
+`archived_project_keeps_metadata_and_safety_revoke_but_not_release`, and
+`archived_project_agent_not_current_for_secrets`.
+`project_revoke_and_audit_cannot_reach_an_environment_grant` proves project
+selectors refuse shared grant IDs just like unknown IDs, preserve metadata/value,
+and explicit environment selectors retain audit/revoke authority.
+
+Historical migration fixtures supply their synthetic authoritative config; the
+partial-migration regression asserts the injected malformed-JSON SQLite error.
+Task #1095 records the widened complete `store::` and `app::tests` results.

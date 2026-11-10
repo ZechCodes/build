@@ -300,6 +300,7 @@ pub struct AppState {
     snapshot_observations: snapshot_projection::SnapshotObservations,
     device_lifecycle_holds: usize,
     device_lifecycle_dirty: std::cell::Cell<bool>,
+    secret_membership_dirty: std::cell::Cell<bool>,
     /// Projects one of whose sources is moving; their workers wait (#533).
     source_moves: projects::SourceMoves,
     source_directory_claims: projects::SourceDirectoryClaims,
@@ -730,6 +731,7 @@ impl AppState {
             snapshot_observations: snapshot_projection::SnapshotObservations::default(),
             device_lifecycle_holds: 0,
             device_lifecycle_dirty: std::cell::Cell::new(false),
+            secret_membership_dirty: std::cell::Cell::new(false),
             source_moves: projects::SourceMoves::default(),
             source_directory_claims: projects::SourceDirectoryClaims::default(),
             active_deferred_filesystem_jobs: 0,

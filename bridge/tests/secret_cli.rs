@@ -100,6 +100,7 @@ fn untrusted_error_and_partial_value_never_reach_output() {
         b"{\"ok\":false,\"error\":\"synthetic-sensitive-diagnostic\"}\n".as_slice(),
         b"{\"ok\":true,\"length\":42}\nsynthetic-partial-value".as_slice(),
         b"{\"ok\":false,\"error\":\"secret_revoked\"}\n".as_slice(),
+        b"{\"ok\":false,\"error\":\"project_archived\"}\n".as_slice(),
     ] {
         let root = tempfile::tempdir().unwrap();
         let socket = root.path().join("release.sock");
@@ -118,6 +119,8 @@ fn untrusted_error_and_partial_value_never_reach_output() {
             output,
             if response.windows(14).any(|s| s == b"secret_revoked") {
                 "secret_revoked"
+            } else if response.windows(16).any(|s| s == b"project_archived") {
+                "project_archived"
             } else {
                 "secret_unavailable"
             },

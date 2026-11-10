@@ -21,6 +21,7 @@ impl ReadTransaction<'_> {
             self.connection(),
             self.secret_retries,
             &params.scope,
+            params.include_environment || params.scope.environment_id.is_some(),
             list(self.connection(), device, creator, params),
         )
     }
@@ -34,6 +35,7 @@ impl ReadTransaction<'_> {
             self.connection(),
             self.secret_retries,
             &params.scope,
+            params.scope.environment_id.is_some(),
             audit(self.connection(), device, creator, params),
         )
     }
@@ -58,6 +60,7 @@ impl StoreWriter {
             &connection,
             Some(&self.secret_read_retries),
             &params.scope,
+            params.include_environment || params.scope.environment_id.is_some(),
             list(&connection, device, creator, params),
         )
     }
@@ -72,6 +75,7 @@ impl StoreWriter {
             &connection,
             Some(&self.secret_read_retries),
             &params.scope,
+            params.scope.environment_id.is_some(),
             audit(&connection, device, creator, params),
         )
     }
@@ -81,11 +85,15 @@ fn remember_refusal<T>(
     connection: &Connection,
     retries: Option<&super::SecretReadRetries>,
     scope: &SecretScope,
+    membership_read: bool,
     result: Result<T>,
 ) -> Result<T> {
     // Writer calls hold their mutex; independent readers hold one SQL snapshot.
     // Preserve original validation/errors and record only actual fence refusals.
-    if matches!(&result, Err(SecretError::Unavailable)) && !super::membership::clean(connection)? {
+    if membership_read
+        && matches!(&result, Err(SecretError::Unavailable))
+        && !super::membership::clean(connection)?
+    {
         if let Some(retries) = retries {
             retries.record(connection, scope)?;
         }
@@ -95,10 +103,10 @@ fn remember_refusal<T>(
 
 pub(super) fn authorize(connection: &Connection, scope: &SecretScope) -> Result<()> {
     scope.validate()?;
-    if !super::membership::clean(connection)? {
-        return Err(SecretError::Unavailable);
-    }
     if let Some(environment) = &scope.environment_id {
+        if !super::membership::clean(connection)? {
+            return Err(SecretError::Unavailable);
+        }
         let exists: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM secret_environments WHERE environment_id=?1)",
             [environment],
@@ -119,7 +127,7 @@ fn authorize_project(connection: &Connection, scope: &SecretScope) -> Result<()>
         [&scope.project_id],
         |row| row.get(0),
     )?;
-    if !exists || !super::membership::current_project(connection, &scope.project_id)? {
+    if !exists {
         return Err(SecretError::Unavailable);
     }
     let Some(stage) = &scope.stage else {
@@ -231,6 +239,9 @@ pub(super) fn list(
     let (ids, requests) = filters(asked)?;
     let after = position(asked)?;
     authorize(connection, &asked.scope)?;
+    if asked.include_environment && !super::membership::clean(connection)? {
+        return Err(SecretError::Unavailable);
+    }
     let (owner, conversation, generation, draft) = stage_values(asked.scope.stage.as_ref());
     let sql = format!("SELECT {} FROM secret_records WHERE device_id=?1 AND creator=?2 AND id>?3 AND (
         (grant_scope='project' AND grant_project_id=?4)
@@ -328,7 +339,7 @@ fn audit(
         return Err(SecretError::Invalid);
     }
     let query = ListParams {
-        include_environment: true,
+        include_environment: false,
         scope: asked.scope.clone(),
         secret_ids: vec![asked.secret_id.clone()],
         request_ids: vec![],

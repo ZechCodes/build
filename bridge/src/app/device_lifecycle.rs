@@ -47,9 +47,6 @@ impl AppState {
             .reconcile_device_registry(generation, &rows, &projects, &markers)
             .map_err(|error| error.to_string())?;
         self.device_lifecycle_dirty.set(false);
-        // Capture only plain committed membership data after the SQL fence clears.
-        // The existing off-lock flusher captures it after this app guard releases.
-        self.publish_secret_project_routes(&config);
         Ok(())
     }
     pub(in crate::app) fn settle_device_lifecycle(&self) {

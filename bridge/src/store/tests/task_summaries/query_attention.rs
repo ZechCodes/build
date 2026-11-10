@@ -559,7 +559,7 @@ fn marked_review_service_mention_still_calls_user_on_done_until_read() {
 #[test]
 fn previous_projection_shape_rebuilds_marked_service_mentions_before_reads() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let mut task = Task::drafted(
         "/attention",
         "Unread review notice",
@@ -577,7 +577,7 @@ fn previous_projection_shape_rebuilds_marked_service_mentions_before_reads() {
         .unwrap();
     store.connection().execute_batch("ALTER TABLE tracker_task_summary_facts DROP COLUMN service_mention; ALTER TABLE tracker_task_summary_context DROP COLUMN unread_service_mentions; UPDATE meta SET value='20' WHERE key='schema_version';").unwrap();
     drop(store);
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     assert_attention(
         &store,
         &task.id,

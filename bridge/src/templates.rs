@@ -870,6 +870,7 @@ mod tests {
             "{project}"
         );
         for tool in [
+            "list_project_sources",
             "add_environment_source",
             "remove_environment_source",
             "list_workspaces",

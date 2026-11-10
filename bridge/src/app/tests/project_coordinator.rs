@@ -390,24 +390,6 @@ async fn project_worker_tools_follow_persisted_purpose() {
         !by_pin.contains("surface"),
         "the pin holds the tool: {by_pin}"
     );
-    for action in [
-        json!({"action":"add_environment_source","path":"/unreachable"}),
-        json!({"action":"remove_environment_source","source_id":"source-nope"}),
-    ] {
-        let action: BridgeAction = serde_json::from_value(action).unwrap();
-        let refused = state
-            .on_agent_mcp_action(&owner, &worker, action.clone())
-            .unwrap_err();
-        assert!(
-            refused.contains("this session is on the coding surface"),
-            "{refused}"
-        );
-        let by_pin = state.on_agent_mcp_action(&owner, &pin, action).unwrap_err();
-        assert!(
-            !by_pin.contains("surface"),
-            "the pin holds the tool: {by_pin}"
-        );
-    }
     let staffing = state
         .on_agent_mcp_action(
             &owner,
@@ -947,4 +929,48 @@ async fn archive_round_final_spawn_hold_requeues_without_start_error() {
         .unwrap()
         .start_error
         .is_none());
+}
+
+
+#[test]
+fn project_worker_environment_source_refusals_preserve_configuration() {
+    let (_home, repo) = a_repo();
+    let (_tmp, root) = a_state_root();
+    let mut state = booted(&root);
+    let project = added_project(&mut state, &repo);
+    let owner = ensure(&mut state, &project);
+    let pin = state.project_pin(&owner).unwrap().to_string();
+    let linked = root.join("linked");
+    let addable = root.join("addable");
+    std::fs::create_dir(&linked).unwrap();
+    std::fs::create_dir(&addable).unwrap();
+    let added = state.agent_action(&owner, &pin, serde_json::from_value(json!({
+        "action":"add_environment_source","path":linked
+    })).unwrap()).unwrap();
+    let source = added["sources"][1]["id"].as_str().unwrap().to_string();
+    let worker = add_worker(&mut state, &owner, json!({}));
+    for action in [
+        json!({"action":"add_environment_source","path":addable}),
+        json!({"action":"remove_environment_source","source_id":source}),
+    ] {
+        let before_config = std::fs::read(root.join("config.json")).unwrap();
+        let before_sources = state.sources_for(&project).unwrap();
+        let before_environment = state.environment_list();
+        let action: BridgeAction = serde_json::from_value(action).unwrap();
+        let refused = state.agent_action(&owner, &worker, action).unwrap_err();
+        assert!(refused.contains("this session is on the coding surface"), "{refused}");
+        assert_eq!(std::fs::read(root.join("config.json")).unwrap(), before_config);
+        assert_eq!(state.sources_for(&project).unwrap(), before_sources);
+        assert_eq!(state.environment_list(), before_environment);
+    }
+    // The same inputs succeed for the coordinator, proving both were actionable.
+    state.agent_action(&owner, &pin, serde_json::from_value(json!({
+        "action":"add_environment_source","path":addable
+    })).unwrap()).unwrap();
+    state.agent_action(&owner, &pin, serde_json::from_value(json!({
+        "action":"remove_environment_source","source_id":source
+    })).unwrap()).unwrap();
+    let sources = state.sources_for(&project).unwrap();
+    assert!(sources.iter().any(|s| s.path == addable));
+    assert!(!sources.iter().any(|s| s.path == linked));
 }

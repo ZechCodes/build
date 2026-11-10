@@ -3840,6 +3840,7 @@ mod tests {
     #[test]
     fn mcp_project_surface_lists_environment_source_tools() {
         for (name, arguments) in [
+            ("list_project_sources", json!({})),
             (
                 "add_environment_source",
                 json!({"path":"/assets", "remote":"https://example.com/repo", "name":"assets", "base_branch":"main"}),

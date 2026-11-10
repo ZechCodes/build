@@ -1,7 +1,7 @@
 use super::*;
 
 impl AppState {
-    /// Never delete files on startup. Changed rollback state invalidates the
+    /// Only committed pin receipts are drained at startup. Changed state invalidates the
     /// plan; preserve it and make a new explicit delete capture fresh authority.
     pub(in crate::app) fn recover_project_deletions(&mut self) -> Result<(), String> {
         let store = self.store.as_ref().ok_or("missing deletion store")?.clone();
@@ -35,6 +35,14 @@ impl AppState {
 
     fn recover_project_deletion(&mut self, mut deletion: ProjectDeletion) -> Result<(), String> {
         let store = self.store.as_ref().ok_or("missing deletion store")?.clone();
+        // A committed receipt is owed independently of stale cleanup authority.
+        // Failed releases remain durable, including on abandoned tombstones.
+        if let Err(error) = drain_recovered_pins(&store, &mut deletion) {
+            eprintln!(
+                "Project {} pin release pending: {error}; retained receipt for startup retry",
+                deletion.plan.project_id
+            );
+        }
         if deletion.tombstone.is_some() {
             return Ok(());
         }
@@ -130,4 +138,21 @@ impl AppState {
             .chain(provisional)
             .collect();
     }
+}
+
+/// Safe on pending, completed and abandoned records. Clear authority only
+/// after every recorded ref/marker is absent; a partial release is repeatable.
+fn drain_recovered_pins(store: &Store, deletion: &mut ProjectDeletion) -> Result<(), String> {
+    if deletion.pending_pins.is_empty() {
+        return Ok(());
+    }
+    crate::reviews::history_pins::release(&deletion.pending_pins)?;
+    let mut drained = deletion.clone();
+    drained.pending_pins.clear();
+    store
+        .writer()
+        .checkpoint_project_deletion(&drained)
+        .map_err(|e| e.to_string())?;
+    *deletion = drained;
+    Ok(())
 }

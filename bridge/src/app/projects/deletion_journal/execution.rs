@@ -76,6 +76,7 @@ impl DeleteRecordedProject {
         if deletion.phase == "history_removed" {
             self.failure.check("pins")?;
             crate::reviews::history_pins::release(&deletion.pending_pins)?;
+            deletion.pending_pins.clear();
             deletion.phase = "pins_released".into();
             self.checkpoint(&deletion)?;
         }

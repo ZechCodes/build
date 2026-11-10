@@ -71,7 +71,7 @@ pub(in crate::store) fn checkpoint(
         return Err(invalid("project deletion cleanup plan is immutable"));
     }
     let mut deletion = deletion.clone();
-    if deletion.phase == "history_removed" {
+    if deletion.phase == "history_removed" && record.execution["phase"] != "history_removed" {
         deletion.history = history(tx, &deletion.plan.project_key)?;
     }
     record.execution = json!(deletion);
@@ -194,10 +194,11 @@ impl StoreWriter {
     }
 
     /// Eagerly bound internal tombstones to 256 and thirty days. Pending plans
-    /// are never collected; a collected identity cannot authorize a retry.
+    /// and undrained pin receipts are never collected; a collected identity
+    /// cannot authorize a retry.
     pub fn collect_project_deletion_tombstones(&self) -> Result<(), StoreError> {
         self.durable_transaction(|tx| {
-            tx.execute("DELETE FROM mutation_commands WHERE principal=?1 AND state=?2 AND (terminal_at<unixepoch()-30*86400 OR command_id NOT IN (SELECT command_id FROM mutation_commands WHERE principal=?1 AND state=?2 ORDER BY command_id DESC LIMIT 256))",params![PRINCIPAL,TERMINAL])?;
+            tx.execute("DELETE FROM mutation_commands WHERE principal=?1 AND state=?2 AND COALESCE(json_array_length(record,'$.execution.pending_pins'),0)=0 AND (terminal_at<unixepoch()-30*86400 OR command_id NOT IN (SELECT command_id FROM mutation_commands WHERE principal=?1 AND state=?2 AND COALESCE(json_array_length(record,'$.execution.pending_pins'),0)=0 ORDER BY command_id DESC LIMIT 256))",params![PRINCIPAL,TERMINAL])?;
             Ok(())
         })
     }
@@ -231,7 +232,7 @@ pub(in crate::store) fn verify_history(
 mod tests {
     use super::*;
     use crate::store::Store;
-    fn plan() -> ProjectDeletionPlan {
+    pub(super) fn plan() -> ProjectDeletionPlan {
         ProjectDeletionPlan {
             project_id: "proj-1".into(),
             project_key: "project:one".into(),
@@ -345,5 +346,48 @@ mod tests {
         let records = store.writer().project_deletions().unwrap();
         assert_eq!(records.len(), 1);
         assert!(records[0].tombstone.is_none());
+    }
+}
+
+#[cfg(test)]
+mod receipt_collection_tests {
+    use super::*;
+    #[test]
+    fn deletion_tombstone_collection_keeps_undrained_pin_receipts() {
+        let root = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::new(root.path()).unwrap();
+        let mut plan = tests::plan();
+        plan.project_id = "owed-pins".into();
+        let mut record = store.writer().begin_project_deletion(plan).unwrap();
+        record
+            .pending_pins
+            .push(crate::reviews::history_pins::HistoryPins::default());
+        record.phase = "abandoned".into();
+        record.tombstone = Some("abandoned".into());
+        store.writer().checkpoint_project_deletion(&record).unwrap();
+        store
+            .writer_for_test()
+            .execute("UPDATE mutation_commands SET terminal_at=0", [])
+            .unwrap();
+        store
+            .writer()
+            .collect_project_deletion_tombstones()
+            .unwrap();
+        assert_eq!(
+            store.writer().project_deletions().unwrap().len(),
+            1,
+            "GC lost owed pin receipt"
+        );
+        record.pending_pins.clear();
+        store.writer().checkpoint_project_deletion(&record).unwrap();
+        store
+            .writer_for_test()
+            .execute("UPDATE mutation_commands SET terminal_at=0", [])
+            .unwrap();
+        store
+            .writer()
+            .collect_project_deletion_tombstones()
+            .unwrap();
+        assert!(store.writer().project_deletions().unwrap().is_empty());
     }
 }

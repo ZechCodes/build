@@ -48,10 +48,11 @@ function badgeLetters(name) {
 }
 
 /** One existing sixteen-pixel SVG slot; cached identity alone determines paint.
+ * Generated content paints the letters without adding DOM text to labels.
  * key is deviceKey(deviceId, environmentId), never a project/workspace key. */
 export function identityBadgeHtml({ key, name }, kind = "project") {
   const hue = badgeHue(key);
-  return `<svg class="identity-kind identity-badge" data-kind="${esc(kind)}" data-hue="${hue}" style="--identity-hue:var(--badge-${hue})" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect width="16" height="16" rx="3"></rect><text x="8" y="8" dy=".35em" text-anchor="middle">${esc(badgeLetters(name))}</text></svg>`;
+  return `<svg class="identity-kind identity-badge" data-kind="${esc(kind)}" data-hue="${hue}" style="--identity-hue:var(--badge-${hue})" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><rect width="16" height="16" rx="3"></rect><foreignObject width="16" height="16"><span xmlns="http://www.w3.org/1999/xhtml" class="identity-letters" data-glyph="${esc(badgeLetters(name))}"></span></foreignObject></svg>`;
 }
 
 /** Rows without an environment (legacy projects or unsubmitted drafts) use

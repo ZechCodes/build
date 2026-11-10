@@ -49,6 +49,9 @@ it.each([1280, 761, 760, 390, 320].flatMap(width => ["light", "dark"].map(theme 
     expect(await page.locator('[data-environment-group="nav-device/shared"]').textContent()).toContain("Workshop");
     const accessible = await page.locator('[data-environment-group="nav-device/shared"] [data-kind]').getAttribute("aria-hidden");
     expect(accessible).toBe("true");
+    const projectRow = page.locator('[data-project="nav-device/build"]:not([data-visit])');
+    expect((await projectRow.textContent()).replace(/\s+/g,' ').trim()).toBe('Build Workshop');
+    expect(await projectRow.ariaSnapshot()).toContain('link "Build Workshop"');
     const geometry = await page.evaluate(() => {
       const badges = [...document.querySelectorAll('.identity-badge')].filter(node => node.getBoundingClientRect().width);
       const measure = () => badges.map(node => {
@@ -56,7 +59,12 @@ it.each([1280, 761, 760, 390, 320].flatMap(width => ["light", "dark"].map(theme 
         const next = node.nextElementSibling?.getBoundingClientRect();
         return [rect.x, rect.y, rect.width, rect.height, row.width, row.height, next?.x, next?.y];
       });
-      const colors = badges.map(node => ({ background: getComputedStyle(node.querySelector('rect')).fill, ink: getComputedStyle(node.querySelector('text')).fill, fontSize: getComputedStyle(node.querySelector('text')).fontSize }));
+      const colors = badges.map(node => {
+        const letters = node.querySelector('.identity-letters');
+        const style = getComputedStyle(letters, '::before');
+        return { background:getComputedStyle(node.querySelector('rect')).fill, ink:style.color, fontSize:style.fontSize,
+          textTransform:style.textTransform, letterSpacing:style.letterSpacing, glyph:style.content, expectedGlyph:`"${letters.dataset.glyph}"`, text:node.textContent };
+      });
       const badgeGeometry = measure();
       const contents = badges.map(node => node.innerHTML);
       badges.forEach(node => { node.innerHTML = '<circle cx="8" cy="8" r="4" fill="currentColor"/>'; });
@@ -69,6 +77,10 @@ it.each([1280, 761, 760, 390, 320].flatMap(width => ["light", "dark"].map(theme 
     for (const colors of geometry.colors) {
       expect(colors.background).not.toBe(colors.ink);
       expect(colors.fontSize).toBe('8px');
+      expect(colors.glyph).toBe(colors.expectedGlyph);
+      expect(colors.text).toBe('');
+      expect(colors.textTransform).toBe('none');
+      expect(colors.letterSpacing).toBe('normal');
     }
     await captureLayout(page, `environment-switcher-${width}-${theme}.png`);
   }, { width, height: 844, hasTouch: width < 900 });

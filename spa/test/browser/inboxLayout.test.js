@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { openLayoutSession } from "./layoutHarness.mjs";
+import { captureLayout, openLayoutSession } from "./layoutHarness.mjs";
 import { LAYOUT_DEVICE, LAYOUT_ROWS, disposeInboxLayout, mountInboxLayout, showInboxLayoutFace } from "./inboxLayoutSeed.mjs";
 
 let session;
@@ -159,3 +159,27 @@ it.each(["inbox", "projects"])("preserves workspace, task and project row nodes 
     await disposeInboxLayout(page);
   }, { width: 1280, height: 960 });
 }, 30_000);
+
+for (const width of [1280,390]) for (const theme of ["light","dark"]) {
+  it(`keeps environment badge letters out of inbox heads and flat labels at ${width}px in ${theme}`, async () => {
+    await session.withPage(async ({page,basePath}) => {
+      await mountInboxLayout(page,basePath,{environments:true,theme});
+      for (const face of ["projects","inbox"]) {
+        await showInboxLayoutFace(page,face);
+        const label = face === "projects" ? blockFor(page).locator('.inbox-project-name')
+          : rowFor(page,`workspace:${LAYOUT_DEVICE}/live-workspace`).locator('.inbox-project-line .inbox-tag');
+        await label.locator('.identity-badge').waitFor({state:'attached'});
+        expect((await label.textContent()).trim()).toBe('Shared › Build');
+        const painted = await label.locator('.identity-badge').evaluate(badge => {
+          const rect=badge.getBoundingClientRect();
+          return {text:badge.textContent,size:[rect.width,rect.height],hidden:badge.getAttribute('aria-hidden'),
+            glyph:getComputedStyle(badge.querySelector('.identity-letters'),'::before').content};
+        });
+        expect(painted).toEqual({text:'',size:[16,16],hidden:'true',glyph:'"BU"'});
+        if(face === 'projects')expect(await label.ariaSnapshot()).toContain('button "Fold Build"');
+        await captureLayout(page,`inbox-badges-${face}-${width}-${theme}.png`);
+      }
+      await disposeInboxLayout(page);
+    },{width,height:960,hasTouch:width<900});
+  },30_000);
+}

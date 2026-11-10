@@ -300,10 +300,15 @@ describe('workspace wizard pages',()=>{
 
 it.each(['project','environment','new-environment'])('keeps the badge in the wizard %s target and summary slots',async kind=>{
  const {identityBadgeHtml}=await import('../src/core/environmentIdentity.js');
- const target={kind,id:'env',environment_id:'env',deviceId:'d1',name:'Target',label:'Shared › Target',sources:[]};
+ const target={kind,id:'env',environment_id:'env',deviceId:'d1',name:'Target',label:'Shared › Target',summaryLabel:'Shared › Target',deviceLabel:'Laptop',sources:[]};
  const host=document.createElement('div');
  host.innerHTML=createWorkspaceWizardHtml({page:3,target,sections:[{kind:'project',targets:[target]}]});
  const expected=identityBadgeHtml({key:'d1/env',name:'Target'},kind==='project'?'project':'environment');
+ for(const selector of ['.create-summary-name','.create-summary-device-name']) {
+  const label=host.querySelector(selector);
+  expect(label.textContent.trim()).toBe(label.title);
+ }
+ expect(host.querySelector('.create-target .create-kind').textContent).toBe('');
  for(const selector of ['.create-target > .create-kind','.create-summary-name > .create-kind']) {
   expect(host.querySelector(selector)?.innerHTML).toBe(expected);
   expect(host.querySelector(selector)?.childElementCount).toBe(1);

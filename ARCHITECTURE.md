@@ -5752,6 +5752,8 @@ before first paint. Identity badge colors live only in `core/theme.js`:
 select a stable hue; row names supply the first two Unicode letters, each
 uppercased only when the result is one code point (otherwise the original
 letter is kept; `?` without letters). Badges retain the original 16px SVG slots.
+Their letters are CSS-generated inside an aria-hidden SVG foreignObject, so
+badges contribute no DOM text or accessible name to neighboring labels.
 
 - `--accent` is the foreground and affordance colour (text, icons, borders). It
   is `#006d43` in light and `#51ffb4` in dark.

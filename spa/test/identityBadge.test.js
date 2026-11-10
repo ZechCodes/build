@@ -10,6 +10,16 @@ const badge = (name, device = "laptop", environment = "env-1", kind = "project")
 };
 
 describe("identityBadgeHtml", () => {
+  it("keeps decorative glyph letters out of adjacent labels' DOM text", () => {
+    for (const kind of ["environment", "project", "workspace"]) {
+      const host = document.createElement("button");
+      host.innerHTML = identityBadgeHtml({ key:"laptop/env-1", name:"Alpha" }, kind) + "Alpha";
+      expect(host.firstElementChild.getAttribute("aria-hidden")).toBe("true");
+      expect(host.firstElementChild.textContent).toBe("");
+      expect(host.textContent).toBe("Alpha");
+    }
+  });
+
   it("keeps the same device/environment hue after module reload and name changes", async () => {
     const first = badge("Alpha");
     vi.resetModules();
@@ -24,7 +34,7 @@ describe("identityBadgeHtml", () => {
   it("gives siblings the same hue and their own glyph", () => {
     const siblings = [badge("Alpha"), badge("Beta"), badge("Sources", "laptop", "env-1", "environment"), badge("Checkout", "laptop", "env-1", "workspace")];
     expect(new Set(siblings.map(row => row.dataset.hue)).size).toBe(1);
-    expect(siblings.map(row => row.textContent)).toEqual(["AL", "BE", "SO", "CH"]);
+    expect(siblings.map(row => row.querySelector("[data-glyph]").dataset.glyph)).toEqual(["AL", "BE", "SO", "CH"]);
     for (const keys of [Array.from({ length: 24 }, (_, i) => badge("Alpha", `device-${i}`)), Array.from({ length: 24 }, (_, i) => badge("Alpha", "laptop", `env-${i}`))]) {
       expect(new Set(keys.map(row => row.dataset.hue)).size).toBeGreaterThan(1);
     }
@@ -36,7 +46,7 @@ describe("identityBadgeHtml", () => {
   });
 
   it.each([["alpha beta", "AL"], [" a ", "A"], ["123", "?"], ["🛠", "?"], ["", "?"], ["123 café", "CA"], ["文档", "文档"], ["ßa", "ßA"], ["ß", "ß"]])("selects two source letters before uppercasing each without expansion: %j", (name, expected) => {
-    expect(badge(name).textContent).toBe(expected);
+    expect(badge(name).querySelector("[data-glyph]").dataset.glyph).toBe(expected);
   });
 
   it("escapes untrusted names and attributes inside the existing hidden 16px SVG slot", () => {

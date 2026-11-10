@@ -134,6 +134,8 @@ describe("workspace creation progress", () => {
     open(operation(), { target: { kind: "project", name: "Payments", summaryLabel: "Sources › Payments", deviceLabel: "Laptop", offline: true, taskText: "7 open tasks" } });
     const summary = document.querySelector(".create-target-summary");
     expect(summary.querySelector('.create-kind[aria-hidden="true"]')).not.toBeNull();
+    expect(summary.querySelector('.create-kind').textContent).toBe("");
+    expect(summary.textContent.trim().startsWith("Sources › Payments")).toBe(true);
     expect(summary.querySelector(".dim.inbox-device").textContent).toBe("Laptop");
     expect(summary.textContent).toContain("Offline");
     expect(document.body.textContent).toContain("Uses Payments's task board · 7 open tasks");

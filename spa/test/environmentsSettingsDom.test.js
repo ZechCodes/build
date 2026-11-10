@@ -208,6 +208,8 @@ it("keeps identity badges in the settings environment and project glyph slots", 
   for (const [selector,kind,name] of [["h3", "environment",environment().name],[".pname","project",project.name]]) {
     const svg = card.querySelector(selector).firstElementChild;
     expect(svg.outerHTML).toBe(identityBadgeHtml({key:"laptop/env-1",name},kind));
+    expect(svg.textContent).toBe("");
+    expect(card.querySelector(selector).textContent.trim().startsWith(name)).toBe(true);
   }
 });
 

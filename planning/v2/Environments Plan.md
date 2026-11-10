@@ -1433,6 +1433,14 @@ cover revocation, unchanged config/registration/grants on failure and retry.
 S2.2's short off-lock config stage also carries the S2.1 membership protocol;
 deleted project membership is reconciled before cleanup, so an old cleanup
 snapshot never overwrites a newer sibling config's secret authority.
+Final deletion reconciliation always refreshes membership and device rows,
+including post-config projection failures and completion-tombstone retries. A
+memory config revision spans ordinary and detached config commits; the off-lock
+worker validates that revision inside the store writer transaction, recapturing
+superseded snapshots before publishing. This prevents a final refresh from
+reopening a sibling archived by a newer config. A failed refresh preserves dirty
+fences and refuses success; the same delete owns recovery, without waiting for an
+unrelated mutation or restarting and without repeating completed owned cleanup.
 No production DDL, version, capability or complexity annotation is added at the join.
 The older-reader residuals require schema compatibility; a schema-26 binary
 cannot open the schema-27 joined database.

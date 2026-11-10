@@ -80,19 +80,20 @@ impl AppState {
             .find(|r| r.plan.project_id == id)
             .cloned())
     }
-    fn claim_deletion(&mut self, plan: &ProjectDeletionPlan) -> Result<DeletionOperation, String> {
-        if self
-            .project_deletion_operations
-            .contains_key(&plan.project_id)
-        {
+    fn claim_deletion_operation(&mut self, id: &str) -> Result<DeletionOperation, String> {
+        if self.project_deletion_operations.contains_key(id) {
             return Err("project deletion is already running; retry after it finishes".into());
         }
         let operation = DeletionOperation {
-            id: plan.project_id.clone(),
+            id: id.into(),
             token: uuid::Uuid::new_v4().to_string(),
         };
         self.project_deletion_operations
             .insert(operation.id.clone(), operation.token.clone());
+        Ok(operation)
+    }
+    fn claim_deletion(&mut self, plan: &ProjectDeletionPlan) -> Result<DeletionOperation, String> {
+        let operation = self.claim_deletion_operation(&plan.project_id)?;
         self.project_deletion_provisional
             .insert(plan.project_id.clone(), plan.clone());
         self.refresh_deletion_fences();
@@ -137,7 +138,16 @@ impl AppState {
             if self.projects.get(id).is_some() {
                 return Err("project deletion identity has been registered again".into());
             }
-            return Ok(Some(json!({"project_id":id,"deleted":true})));
+            let store = self.store.clone().ok_or("missing deletion store")?;
+            let operation = self.claim_deletion_operation(id)?;
+            let reply = json!({"project_id":id,"deleted":true});
+            if let Err(error) =
+                self.queue_deletion_reconciliation(store, operation.clone(), Ok(reply.clone()))
+            {
+                operation.finish(self);
+                return Err(error);
+            }
+            return Ok(Some(reply));
         }
         let operation = self.claim_deletion(&deletion.plan)?;
         self.defer_project_deletion(preparation::PrepareDeletion::resume(

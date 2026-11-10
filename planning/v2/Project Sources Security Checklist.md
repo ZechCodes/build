@@ -286,7 +286,7 @@ dev, with no deletion-owned DDL or capability advertisement.
 | ENV-S22-R3-2 | History/phase/exact ref receipts commit atomically without irreversible Git effects; ref release is an idempotent post-commit phase. | `project_deletion_history_checkpoint_rollback_preserves_real_review_pins` (actual pinned RPC review, SQL abort, post-commit release failure, missing-ref retry); store tracker and review-service groups. |
 | ENV-S22-R3-3 | In-memory provisional per-project fencing precedes off-lock inventory/hash/SQLite and retry validation; failures retain only durable fences. Startup evidence runs before the shared mutex exists. Unrelated reads/project requests progress. | `project_deletion_inventory_does_not_block_unrelated_requests` uses an injected gate; `project_deletion_config_checkpoint_preserves_lock_markers_until_cleanup` checks memory-only publication and exact marker cleanup; recovery and independent SQL/MCP fence groups. |
 
-**S2.2 scoped security score: 100/100.** Round-5 claim lifetime, unavailable-repository debt and missing-source deletion regressions pass. The schema-27 joined head also passes real environment-grant retirement, SQL-failure rollback/retry and deleted-project membership tests, alongside the preserved round-4 controls. Focused gate receipts are recorded on #1096.
+**S2.2 scoped score: 100/100.** Round-6 real-RPC regressions pass for deletion-owned final membership refresh, fail-closed completion and current-config retry. Deletion/recovery (67), environment-secret RPC/scope (3/15), membership/races (2/5), lifecycle (32), configuration (171), workspace (176), archive (14) and API contract (1) groups, library clippy and fmt all exit 0. TDD red/green and command receipts are attached to the round-6 report on #1096.
 
 
 | ID | Round-4 control | Evidence |
@@ -335,3 +335,8 @@ and project-only additions/removals without manual publication.
 | --- | --- | --- |
 | ENV-S22-JOIN-1 | The real environment-delete RPC commits grant retirement before config removal; writer failure rolls back grants and preserves config/registration for retry. | `environment_delete_rpc_retires_environment_secret_grant`; `environment_delete_rpc_retire_failure_preserves_config_and_grants_for_retry`; environment-secret group. |
 | ENV-S22-JOIN-2 | The short off-lock project config stage preserves S2.1 membership fencing/projection; deleted projects lose environment membership before long cleanup, siblings remain current and newer writes cannot be overwritten by final cleanup. | `project_delete_reconciles_environment_secret_membership`; existing secret-membership config-failure/race tests; deletion cleanup concurrency regression. |
+
+
+| ID | Round-6 control | Evidence |
+| --- | --- | --- |
+| ENV-S22-R6-1 | Final deletion reconciliation refreshes membership/device projections off-lock, rejects superseded config revisions inside the writer transaction, and clears fences only for current successful results. Projection failure refuses success; completion-tombstone retry repairs metadata without replaying owned cleanup. | `project_deletion_post_config_membership_failure_recovers_in_own_reconciliation` (real RPC, post-rename SQL abort, injected pause, recovery and newer sibling archive); `project_deletion_final_membership_failure_refuses_success_and_completed_retry_repairs_it` (persistent failure, fail-closed access and same-delete repair). |

@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 impl AppState {
     pub(in crate::app) fn mark_device_lifecycle_dirty(&self) -> Result<(), String> {
+        self.deletion_reconciliation_failed.set(false);
         if let Some(store) = &self.store {
             store
                 .writer()
@@ -17,6 +18,7 @@ impl AppState {
     }
     pub(in crate::app) fn reconcile_device_lifecycle(&self) -> Result<(), String> {
         if !self.device_lifecycle_dirty.get()
+            || self.deletion_reconciliation_failed.get()
             || self.device_lifecycle_holds > 0
             || self
                 .deferred_work

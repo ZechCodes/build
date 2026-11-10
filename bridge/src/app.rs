@@ -310,7 +310,9 @@ pub struct AppState {
     snapshot_observations: snapshot_projection::SnapshotObservations,
     device_lifecycle_holds: usize,
     device_lifecycle_dirty: std::cell::Cell<bool>,
+    deletion_reconciliation_failed: std::cell::Cell<bool>,
     secret_membership_dirty: std::cell::Cell<bool>,
+    secret_membership_revision: secret_storage::MembershipRevision,
     /// Projects one of whose sources is moving; their workers wait (#533).
     source_moves: projects::SourceMoves,
     source_directory_claims: projects::SourceDirectoryClaims,
@@ -424,6 +426,8 @@ pub struct AppState {
     off_lock_gate: Option<OffLockGate>,
     #[cfg(test)]
     deletion_cleanup_gate: Option<OffLockGate>,
+    #[cfg(test)]
+    deletion_reconciliation_gate: Option<OffLockGate>,
     /// Test-only pause after workspace OID preparation, before materialization.
     #[cfg(test)]
     off_lock_workspace_prepared_gate: Option<OffLockGate>,
@@ -754,7 +758,9 @@ impl AppState {
             snapshot_observations: snapshot_projection::SnapshotObservations::default(),
             device_lifecycle_holds: 0,
             device_lifecycle_dirty: std::cell::Cell::new(false),
+            deletion_reconciliation_failed: std::cell::Cell::new(false),
             secret_membership_dirty: std::cell::Cell::new(false),
+            secret_membership_revision: Default::default(),
             source_moves: projects::SourceMoves::default(),
             source_directory_claims: projects::SourceDirectoryClaims::default(),
             active_deferred_filesystem_jobs: 0,
@@ -809,6 +815,8 @@ impl AppState {
             off_lock_gate: None,
             #[cfg(test)]
             deletion_cleanup_gate: None,
+            #[cfg(test)]
+            deletion_reconciliation_gate: None,
             #[cfg(test)]
             off_lock_workspace_prepared_gate: None,
             #[cfg(test)]

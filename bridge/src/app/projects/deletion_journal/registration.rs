@@ -12,6 +12,7 @@ struct RemoveRegistration {
     path: Option<PathBuf>,
     writer: crate::app::config::files::ConfigFileWrite,
     failure: DeletionFailure,
+    revision: crate::app::secret_storage::MembershipWrite,
     outcome: std::sync::Mutex<Option<RegistrationOutcome>>,
 }
 pub(super) fn queue_config_removal(
@@ -41,6 +42,7 @@ pub(super) fn queue_config_removal(
         path: app.config_path.clone(),
         writer: app.config_file_writer(),
         failure: DeletionFailure::capture(app),
+        revision: app.secret_membership_revision.begin()?,
         outcome: std::sync::Mutex::new(None),
     };
     app.deletion_config_write = true;
@@ -72,6 +74,7 @@ impl DeferredGitWork for RemoveRegistration {
         } else {
             &self.before
         });
+        self.revision.finish();
         if let Err(error) = outcome.result {
             app.queue_deletion_reconciliation(
                 self.store.clone(),
@@ -92,6 +95,7 @@ impl DeferredGitWork for RemoveRegistration {
     }
     fn invalidate(&self, app: &mut AppState) {
         if self.operation.check(app).is_ok() {
+            self.revision.finish();
             app.deletion_config_write = false;
             if app.deferred_work.is_none() {
                 self.operation.finish(app);

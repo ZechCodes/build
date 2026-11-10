@@ -1298,10 +1298,21 @@ evidence and retirement, with the latest config captured at that point. The
 short stage includes S2.1's durable membership veto and projection around the
 atomic file replacement, all off the app lock. A file failure restores the old
 projection; a projection failure after replacement keeps the veto and publishes
-the landed registration removal for explicit retry. The reservation is released
+the landed registration removal for deletion-owned final reconciliation. The reservation is released
 and config removal published before checkpoint/cleanup runs. Scoped deletion jobs do not claim the device-wide filesystem exclusion;
 sibling renames, config writes and workspace creation/deletion remain available. New source references overlapping the captured cleanup paths are
 refused without blocking sources elsewhere. Startup evidence is checked by the consuming task-store builder, before sharing AppState.
+
+Final deletion reconciliation refreshes secret membership as well as device
+registry rows, including after a post-file projection error and on completed
+journal retries. It captures config and a memory revision under app, waits for
+in-flight config commits off-lock, and checks the revision inside the writer
+transaction before applying membership. Superseded snapshots are recaptured;
+clear/publication happens only after the result still matches current app state.
+Persistent projection failure keeps both dirty flags and refuses RPC success;
+the same delete retries its own reconciliation without replaying file/history
+cleanup. The immediate generic under-lock reconciliation hook is suppressed on
+such a failure; a new lifecycle mutation or the explicit retry can recover it.
 
 Startup leaves unchanged pending records fenced and reports the ID and original
 `project.delete` retry parameters in the daemon log. Before config removal the

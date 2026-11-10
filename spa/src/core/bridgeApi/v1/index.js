@@ -150,6 +150,7 @@ function secretCapabilities(names, version) {
     attachments: supported && names.has("secrets.attachments"),
     sealedUpload: supported && names.has("secrets.sealedUpload"),
     metadataEvents: supported && names.has("secrets.metadataEvents"),
+    environmentScope: supported && names.has("secrets.environmentScope"),
   };
 }
 

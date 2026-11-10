@@ -50,9 +50,13 @@ fn padded(value: &Value) -> Vec<u8> {
 }
 
 fn open_javascript(value: &str) -> SecretValue {
+    open_javascript_context(value, &context())
+}
+
+fn open_javascript_context(value: &str, expected: &UploadContext) -> SecretValue {
     let mut public = [0; 32];
     crypto_scalarmult_base(&mut public, &[7u8; 32]);
-    let input = json!({"deviceTransportPublicKeyB64": BASE64.encode(public), "context": context(), "value": value});
+    let input = json!({"deviceTransportPublicKeyB64": BASE64.encode(public), "context": expected, "value": value});
     let mut child = Command::new("node")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -72,7 +76,7 @@ fn open_javascript(value: &str) -> SecretValue {
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success(), "JS sealing helper failed");
     let sealed = String::from_utf8(output.stdout).unwrap();
-    opener().open(&sealed, &context()).unwrap()
+    opener().open(&sealed, expected).unwrap()
 }
 
 #[test]
@@ -213,5 +217,22 @@ fn upload_context_enforces_name_uuid_and_ttl_limits() {
         body[field] = changed;
         let invalid: UploadContext = serde_json::from_value(body).unwrap();
         assert!(invalid.validate().is_err(), "accepted invalid {field}");
+    }
+}
+
+#[test]
+fn javascript_environment_grant_opens_exact_utf8_value() {
+    let mut expected = context();
+    expected.grant = GrantScope::Environment {
+        environment_id: "env-test".into(),
+    };
+    for value in [
+        " synthetic-é-environment\n ".to_string(),
+        "\n".repeat(16 * 1024),
+    ] {
+        assert_eq!(
+            open_javascript_context(&value, &expected).as_bytes(),
+            value.as_bytes()
+        );
     }
 }

@@ -28,7 +28,7 @@ export function createSecretMetadataBinding({ cache, onPublish }) {
       onPublish(newestById(lists));
     };
     const requestPublish = () => void publish().catch(() => {});
-    stops = scopes.map((scope) => cache.subscribe(scope, requestPublish));
+    stops = scopes.flatMap((scope) => [cache.subscribe(scope, requestPublish), ...(cache.track ? [cache.track(scope)] : [])]);
     requestPublish();
   };
 

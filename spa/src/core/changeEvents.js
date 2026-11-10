@@ -113,7 +113,7 @@ const NO_CAPABILITIES = Object.freeze({
     listPaged: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false,
   }),
   compaction: Object.freeze({ harnessThresholds: false }),
-  secrets: Object.freeze({ attachments: false, sealedUpload: false, metadataEvents: false }),
+  secrets: Object.freeze({ attachments: false, sealedUpload: false, metadataEvents: false, environmentScope: false }),
   conversations: Object.freeze({ settings: false, reset: false }),
   github: Object.freeze({ repos: false }),
   messages: Object.freeze({ context: false }),

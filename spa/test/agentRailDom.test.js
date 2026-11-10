@@ -380,6 +380,66 @@ afterEach(async () => {
   }, () => null)));
 });
 
+it("does not read environment-secret support when the rail has no metadata service", async () => {
+  const cache = await import("../src/core/localCache.js");
+  const reads = vi.spyOn(cache, "readCached");
+  try {
+    await mount();
+    expect(reads.mock.calls.filter(([address]) => address.kind === "environment-support")).toEqual([]);
+  } finally { reads.mockRestore(); }
+});
+
+it("paints cached conversation, pills and models while enabled environment-secret reads are pending", async () => {
+  await writeRailWorkItem(payload);
+  await writeRailThread("run-3", "ag-1", { items: [
+    { type: "message", data: { sequence: 1, role: "agent", body: "cached conversation" } },
+  ], has_more: false });
+  await writeCached(deviceModelsAddress("dev-1"), CATALOG);
+  await writeCached(surfacesCacheAddress({ deviceId: "dev-1", entityId: "run-3", agentId: "ag-1" }),
+    surfacesRecord({ shells: [{ id: "cached-shell", description: "cached shell", state: "running", tail: [] }] }, "surface-session-1"));
+  const { createSecretMetadataCache } = await import("../src/core/secretMetadataCache.js");
+  const metadata = createSecretMetadataCache({ deviceId: "dev-1",
+    capabilities: () => ({ attachments: true, sealedUpload: true, metadataEvents: true, environmentScope: true }),
+    call: async () => ({ secrets: [], server_now: 1800000000, next: null }),
+  });
+  const cache = await import("../src/core/localCache.js");
+  const read = cache.readCached;
+  const support = await import("../src/core/environmentSupport.js");
+  const held = [];
+  let observerProjectRead = false;
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const supportReads = vi.spyOn(support, "readEnvironmentSupport").mockImplementation(() => {
+    held.push("environment-support");
+    observerProjectRead = true;
+    return pending;
+  });
+  const reads = vi.spyOn(cache, "readCached").mockImplementation(address => {
+    // Hold the observer's paired read, while the rail's own row lookup can
+    // still read the cached project roster it needs to locate the branch.
+    if (observerProjectRead && address.kind === "projects") {
+      observerProjectRead = false;
+      held.push("projects");
+      return pending;
+    }
+    return read(address);
+  });
+  try {
+    rail = mountAgentRail(railHost(), railAddress({ secretMetadataCache: metadata }));
+    await vi.waitFor(() => {
+      expect(panel()?.textContent).toContain("cached conversation");
+      expect(railHost().querySelector('[data-surface-kind="shells"]')).toBeTruthy();
+      expect(menuItem("model:claude-opus-5")).toBeTruthy();
+    });
+    expect(held).toEqual(expect.arrayContaining(["environment-support", "projects"]));
+  } finally {
+    rail?.dispose(); rail = null;
+    metadata.dispose();
+    reads.mockRestore(); supportReads.mockRestore(); release();
+    await flush();
+  }
+});
+
 describe("shared mounted chat reader (#704)", () => {
   const subscriptions = [];
   const observeReader = (identity) => {
@@ -8329,4 +8389,48 @@ describe("cached project worker notice labels", () => {
     await vi.waitFor(() => expect(name()?.textContent).toBe("Sol"));
     expect(panel().querySelector('[data-task-notice="task-worker"]').textContent).not.toContain("Other");
   });
+});
+
+
+it("opens the settings environment-secret intent in the coordinator composer without staging or sending", async () => {
+  const { rememberSecretSupport } = await import("../src/core/secretSupport.js");
+  await rememberSecretSupport("dev-1", { secrets: { attachments: true, sealedUpload: true, metadataEvents: true } });
+  await writeCached({ deviceId: "dev-1", entityId: "", kind: "environment-support" }, { secrets: true });
+  await writeRailBoard({ projects: [{ project_id: "p1", environment_id: "env-rail", name: "build", entity_id: "run-3" }] });
+  payload = { kind: "project", project_id: "p1", entity_id: "run-3", agents: [agent({ thread_id: "thread-rail", conversation_id: "ag-1" })],
+    run: { run_id: "run-3", thread: { items: [], sessions: [] } } };
+  const cache = { upsert: vi.fn(), read: vi.fn(async () => []), subscribe: () => () => {}, track: () => () => {} };
+  await mount({ kind: "project", projectId: "p1", entityId: "run-3", openAgentId: "ag-1", panelOpen: true,
+    secretMetadataCache: cache, secretEnvironmentIntent: "env-rail" });
+  await vi.waitFor(() => expect(document.querySelector('[name="secret-scope"][value="environment"]')?.checked).toBe(true));
+  expect(callsTo("secrets.create")).toHaveLength(0); expect(callsTo("thread.post")).toHaveLength(0);
+});
+
+it("consumes the settings environment-secret intent before later linked workspace agent swaps", async () => {
+  const { rememberSecretSupport } = await import("../src/core/secretSupport.js");
+  await rememberSecretSupport("dev-1", { secrets: { attachments: true, sealedUpload: true, metadataEvents: true } });
+  await writeCached({ deviceId: "dev-1", entityId: "", kind: "environment-support" }, { secrets: true });
+  payload = { kind: "project", project_id: "p1", entity_id: "run-3", pinned_agent_id: "ag-1",
+    agents: [agent({ project_role: "coordinator", thread_id: "thread-coordinator", conversation_id: "ag-1" })] };
+  const workspace = { kind: "workspace", project_id: "p1", workspace_id: "ws-secret-swap", entity_id: "run-workspace",
+    agents: [agent({ id: "ag-workspace", topic: "Workspace agent", thread_id: "thread-workspace", conversation_id: "ag-workspace" })] };
+  await writeRailBoard({ items: [payload, workspace],
+    projects: [{ project_id: "p1", environment_id: "env-rail", name: "build", entity_id: "run-3" }],
+    workspaces: [{ id: "ws-secret-swap", project_id: "p1", name: "Child", entity_id: "run-workspace" }] });
+  const cache = { upsert: vi.fn(), read: vi.fn(async () => []), subscribe: () => () => {}, track: () => () => {} };
+  await mount({ kind: "project", projectId: "p1", entityId: "run-3", openAgentId: "ag-1", panelOpen: true,
+    secretMetadataCache: cache, secretEnvironmentIntent: "env-rail" });
+  await vi.waitFor(() => expect(document.querySelector('[name="secret-scope"][value="environment"]')?.checked).toBe(true));
+  document.querySelector("[data-secret-cancel]").click();
+  await vi.waitFor(() => expect(document.querySelector(".modal-secret")).toBeNull());
+  expect(rail.retarget(railAddress({ kind: "workspace", workspaceId: "ws-secret-swap", projectId: "p1", openAgentId: "ag-1",
+    projectAgent: { projectId: "p1", entityId: "run-3", name: "build" }, secretMetadataCache: cache }))).toBe(true);
+  await vi.waitFor(() => expect(railHost().querySelector('[data-bubble="agent"][data-agent="ag-workspace"]')).not.toBeNull());
+  railHost().querySelector('[data-bubble="agent"][data-agent="ag-workspace"]').click();
+  await vi.waitFor(() => expect(headWho()).toBe("Workspace agent")); await flush();
+  expect(document.querySelector(".modal-secret")).toBeNull();
+  railHost().querySelector('[data-bubble="project"]').click();
+  await vi.waitFor(() => expect(headWho()).toBe(TOPICS["ag-1"])); await flush();
+  expect(document.querySelector(".modal-secret")).toBeNull();
+  expect(callsTo("secrets.create")).toHaveLength(0); expect(callsTo("thread.post")).toHaveLength(0);
 });

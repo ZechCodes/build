@@ -42,9 +42,11 @@ const metadataUses = {
     ["writes.confirmed",", \"secrets.changed\" , [\"writes.confirmed\"] , \"writes.progress\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
     ["writes.progress",", \"writes.confirmed\" , [\"writes.progress\"] , \"bridge.restarting\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
     ["bridge.restarting",", \"writes.progress\" , [\"bridge.restarting\"] , ] )","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
-    ["secrets.attachments",". has ( [\"secrets.attachments\"] ) , sealedUpload","d602aee9fb486c0ef7a43dd7fc204224b250ee6b9c56e419bed26ac4f56d6adf"],
-    ["secrets.sealedUpload",". has ( [\"secrets.sealedUpload\"] ) , metadataEvents","d602aee9fb486c0ef7a43dd7fc204224b250ee6b9c56e419bed26ac4f56d6adf"],
-    ["secrets.metadataEvents",". has ( [\"secrets.metadataEvents\"] ) , }","d602aee9fb486c0ef7a43dd7fc204224b250ee6b9c56e419bed26ac4f56d6adf"],
+    ["secrets.attachments",". has ( [\"secrets.attachments\"] ) , sealedUpload","7bb78ae88368517d4112053e77e2808e7e821ab9ff080f53624ae97b42fa3e7e"],
+    ["secrets.sealedUpload",". has ( [\"secrets.sealedUpload\"] ) , metadataEvents","7bb78ae88368517d4112053e77e2808e7e821ab9ff080f53624ae97b42fa3e7e"],
+    // #1099: four finite secret feature lookups; these names never produce RPC methods.
+    ["secrets.metadataEvents",". has ( [\"secrets.metadataEvents\"] ) , environmentScope","7bb78ae88368517d4112053e77e2808e7e821ab9ff080f53624ae97b42fa3e7e"],
+    ["secrets.environmentScope",". has ( [\"secrets.environmentScope\"] ) , }","7bb78ae88368517d4112053e77e2808e7e821ab9ff080f53624ae97b42fa3e7e"],
     ["changes.subscriptions",". has ( [\"changes.subscriptions\"] ) ; const","20fb6a0c88c128a1254da272bc70614f9aba7dc095f927a02e0b67717a777c23"],
     ["bridge.epoch",". has ( [\"bridge.epoch\"] ) , ackConfirmMethods","afa5432d2b3a591053703e49953d53e08a7c44a2f70bfec6d5d5e7d74b6fb8e7"],
     ["bridge.epoch",". has ( [\"bridge.epoch\"] ) ) }","afa5432d2b3a591053703e49953d53e08a7c44a2f70bfec6d5d5e7d74b6fb8e7"],
@@ -272,6 +274,9 @@ const stagedConsumerExclusions = {
 // modules; neither delegating view has its own RPC/producer occurrence.
 // #894 finite metadata/call-edge audit: docs/task-query-cost/http-resource-coverage-audit.md
 const sourceFingerprintParts = {
+  // #1099: Environment-selector list/revoke/audit use the existing mapped secrets resources; Add only navigates.
+  // #1111: omit unusable audit timestamps; existing secret RPC methods/selectors unchanged.
+  "core/environmentSettingsSecrets.js": ["f2410ec0", "e62da51c", "70ce0a65", "fc230de2", "0e4362eb", "cc92a6e8", "03cd8a70", "b56c343a"],
   // #1098: reviewed badge-only edits in theme, settings rows, and creation
   // progress. Cached identity/paint changed; RPC calls, methods, dynamic sites,
   // metadata exemptions, and assignment edges to dispatch are unchanged.
@@ -286,7 +291,8 @@ const sourceFingerprintParts = {
   // cached archive transitions retire Files menus without changing RPC edges. Source cards translate only the three SOURCE_METHODS keys.
   "core/archivedProjectView.js": ["3752fb0a", "1bd74b83", "477027f9", "0caa3694", "75e564ba", "74d7a7f2", "668502e2", "c6f97911"],
   "core/environmentWrites.js": ["035dbf26", "683d9297", "9306e4cc", "51f549d6", "c0cad335", "51198b2c", "3981d520", "129d2b31"],
-  "sheets/environmentSettings.js": ["46b8c3c8", "c4c507ab", "4e081f06", "84ba399f", "32479c6d", "4110a01f", "e3233fe3", "f1acab81"],
+  // #1099: Mounts the metadata section; existing environment edit dispatch remains unchanged.
+  "sheets/environmentSettings.js": ["e9ab405d", "f78b0c9c", "dea70305", "f42eba59", "35eb7311", "77ca9c60", "b78e11cc", "0f5035b1"],
   "sheets/projectGeneral.js": ["a89586e4", "f50590d4", "7dfb57a5", "46b4313c", "b7cf7255", "76085087", "8abea538", "ec72d05c"],
   // #1065: cached eligibility is separate from current-greeting dispatch; epoch and genuine no-epoch legacy paths wrap existing source calls.
   // Action-specific device preflight can refuse before ownership admission; it sends no RPC.
@@ -301,12 +307,16 @@ const sourceFingerprintParts = {
   "core/agentModes.js": ["5764f59d", "200944fd", "e1fb485f", "a1b58c05", "633b7f0f", "f9b7cbcd", "4e62b9db", "31bcb3a8"],
   // #1006 secret draft service forwards only secrets.create/secrets.revoke;
   // cached capability rendering does not widen the transport contract.
-  "core/agentRail.js": ["9aabb9f2", "26f1e8ce", "ca461195", "d457e4eb", "54e1906d", "17a0eae4", "e03db199", "65200a2e"],
+  // #1099: Cache-only environment scope and composer preselection; existing create/revoke/post dispatch remains in its services.
+  // #1111: consume the settings secret intent after the initial stand; RPC dispatch unchanged.
+  // #1111: skip environment-secret observation without a metadata service; RPC dispatch unchanged.
+  "core/agentRail.js": ["40119cbb", "2f0a50a9", "3bfca039", "ec25d61b", "c74d37b8", "7964b64c", "47a2334a", "14708df4"],
   "core/agentRailContext.js": ["e175542d", "376171c6", "e04b61df", "847af2cf", "a3a2c56e", "8fbeb913", "9593b4cb", "50809f5c"],
   "core/agentRolesPanel.js": ["c05b7c96", "5849ec7f", "0d258bc2", "96a7795e", "2a4663f4", "57e78316", "de145b90", "699b4a91"],
   "core/agentSurfacesModel.js": ["546cf5aa", "3a478c63", "4a0f02f5", "4eafcae5", "53a5ffd3", "3ad4f563", "c075aa93", "dcbbef9d"],
   "core/bridgeApi/v1/compactionParams.js": ["506db6e2", "f8148bc4", "925e889b", "61c6fe15", "d8cf74e2", "ef7e468f", "b610115f", "7132ce5b"],
-  "core/bridgeApi/v1/index.js": ["18364f82", "ddfbd7ab", "bf278a68", "b2f1b380", "ce22a44f", "718a8381", "7e93dcfe", "6679262e"],
+  // #1099: Explicit environment feature flag added; adapter method dispatch is unchanged.
+  "core/bridgeApi/v1/index.js": ["a42cc41b", "67769eaf", "4b3d57c0", "ade0692f", "4a80b496", "cd04c442", "b69f00ed", "0cc25cd7"],
   "core/bridgeApi/v1/writeMethods.js": ["c78ae754", "d23774c3", "664a2901", "97e2fcce", "bf94d04d", "13e8fc66", "96313eb2", "3ea76832"],
   "core/bridgeEpoch.js": ["e04a0a11", "6535b020", "abcac20c", "972a554f", "8d51fbb9", "6ef07fd8", "16062ed0", "9cd4d213"],
   "core/bridgeUpdatePanel.js": ["f9b19cc7", "4abdfc5a", "d159194d", "49ee91ed", "d39ab2e7", "15a6a80f", "0cb51530", "623ca8e5"],
@@ -317,7 +327,8 @@ const sourceFingerprintParts = {
   "core/captureDecisionView.js": ["66de7f78", "fbbd155f", "c29e58b8", "da80c68a", "2069fabf", "03333d95", "69b155a6", "382df322"],
   // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
   // #1065: concrete hello gates cached capability evidence; greeting refusal still disarms. RPC edges are unchanged.
-  "core/changeEvents.js": ["e60915c6", "3f465a36", "2f04b726", "353cd899", "b5751557", "33b82f6a", "729747b4", "37c1188c"],
+  // #1099: Default environment secret flag is false; event dispatch is unchanged.
+  "core/changeEvents.js": ["54aae960", "c5f82891", "7e58621a", "0897d3ab", "a2cbb4d4", "903d0d72", "291263af", "6fcaa14f"],
   "core/changesComments.js": ["a4d03b10", "31dbf6e1", "6e12294d", "e69ceb46", "2958a35c", "7f2f07c9", "4088008f", "f1d7394d"],
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],
@@ -389,12 +400,17 @@ const sourceFingerprintParts = {
   // #1005: staged-secret draft metadata and cache reads use explicit secrets.* methods.
   // #1006 stage/revoke are the two finite methods forwarded by agentRail's
   // reviewed secret draft dispatcher; unavailable live capability rejects.
-  "core/secretDrafts.js": ["8d98dad3", "bcad794d", "d621f14a", "9e6a58b6", "e36e2e52", "5b82c46b", "6f82d443", "d4712ffb"],
-  "core/secretMetadataCache.js": ["06759ad6", "c728c4c1", "2c49dcb7", "bff92033", "da9b45f7", "99cccfe5", "496164ab", "3c96c0e1"],
+  // #1099: Environment create keeps StageContext; revoke/reconciliation use environment selectors on existing methods.
+  "core/secretDrafts.js": ["7b0b56e3", "00439462", "a747e9f8", "be3d5e89", "24a66628", "b0192207", "5dc92589", "2e0c9abe"],
+  // #1099: Existing secrets.list gains environment selector/inherited opt-in and cache keys; no new verb.
+  // #1108: complete list publication and cache-owned expiry; existing secrets.list method/selectors only.
+  // #1108 re-review: atomic acknowledged writes and strict snapshot validation; secrets.list dispatch unchanged.
+  "core/secretMetadataCache.js": ["cc784908", "e6ea9ba9", "c52e1b9b", "7ad39c10", "85a85995", "a0ecc176", "24ceb42b", "7e853e1a"],
   "core/session.js": ["3d180500", "f13f38ec", "64d5d01d", "ec44e3c7", "ef80b3cc", "85470f82", "ad7080e1", "69c47137"],
   "core/sessionRpc.js": ["11569cd1", "0840b413", "9f5e3cca", "af2c8f93", "9da0933e", "35717c2d", "41d6f18b", "2a893133"],
   "core/sessionSwitch.js": ["dc232a71", "5b006195", "d7910b8e", "8c59e611", "a36dd264", "8bbcfcc8", "0d8739f3", "371accc7"],
-  "core/shell.js": ["0f5d52c0", "19499900", "de686569", "6e687a5e", "abf49c6a", "8801b17a", "a3446163", "1a1df469"],
+  // #1099: Cache-only settings intent opens the coordinator composer; no new RPC or method producer.
+  "core/shell.js": ["4ceaf08a", "0f8a5e3c", "93d46bb0", "7736ccbd", "ae80acfc", "8d92588e", "f8e72bf1", "3513c3af"],
   // #1003: bounded secret metadata reads use the shared SQL admission lane.
   "core/sqlReadCredits.js": ["6c9b5955", "301a1704", "ef9798df", "3853302b", "edb5b267", "872386a6", "e8e0f30f", "8689421c"],
   // #997 syncDiagnostics.js:14: the device label extends diagnostics only; RPC verb inventory is unchanged.

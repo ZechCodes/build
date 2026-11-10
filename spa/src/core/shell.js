@@ -1,3 +1,4 @@
+import { takeEnvironmentSecretNavigation } from "./environmentSecretNavigation.js";
 // The shell's own parts: the conversation rail and the console region.
 //
 // The shell is one thing, mounted once. index.html carries its regions and they
@@ -174,18 +175,20 @@ export function standShell(route) {
   // the surface does (core/surfaceContext.js). Only a machine nothing here has
   // ever held stands the reader nowhere; the page names it (core/deviceNotice.js).
   const { context, key } = shellStanding(route, parts);
-  const kept = keepLinkedPin(parts, context, key);
+  const secretIntent = parts && takeEnvironmentSecretNavigation(parts.rail);
+  if (secretIntent) parts.rail.secretEnvironmentIntent = secretIntent.environmentId;
+  const kept = !secretIntent && keepLinkedPin(parts, context, key);
   if (kept) { stoodAt = hashFromRoute(route); return live.selection; }
   collapseChatOnNavigation(route);
   // The same standing over the same machine's context is kept. A machine
   // retired and landed anew is a new context, and the rail over the old one
   // stands on a retired repository (core/agentRail.js `standing`), so the
   // route's shell is stood up again over the new one, from the cache.
-  if (live && live.key === key && key && live.context === context) {
+  if (sameStanding(context, key)) {
     // Same standing, but the link names a conversation: the rail stands again
     // on it, panel out, from the cache — however it was left (collapsed, or
     // open on another agent).
-    if (reopensAgent) standRail(parts, context);
+    if (reopensAgent || secretIntent) standRail(parts, context);
     return live.selection;
   }
   teardown();
@@ -194,6 +197,8 @@ export function standShell(route) {
   mountShellParts(parts, context);
   return live.selection;
 }
+
+const sameStanding = (context, key) => Boolean(key && live?.key === key && live.context === context);
 
 function shellStanding(route, parts) {
   const context = parts ? surfaceContext(route) : null;
@@ -408,7 +413,7 @@ function mountRail(descriptor, context) {
     // One-shot, set right before navigating to a branch just cut from the
     // toolbar's create form. Read here because the rail is mounted here now,
     // and cleared in the same breath so the next mount does not steal focus.
-    autofocusComposer: takeComposerFocus(),
+    autofocusComposer: takeComposerFocus() || Boolean(descriptor.secretEnvironmentIntent),
     ...adoptingSupplier(descriptor),
   });
 }

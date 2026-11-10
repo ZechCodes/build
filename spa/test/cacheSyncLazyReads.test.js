@@ -17,6 +17,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({
 vi.mock("../src/core/changeEvents.js", () => ({
   bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] } }),
   subscriptionsSettledFor: async () => {}, onSubscriptionHeld: () => () => {},
+  onBridgeGreeted: () => () => {},
   watchChanges: (registration) => {
     const held = { ...registration, disposed: false };
     fake.watchers.push(held);

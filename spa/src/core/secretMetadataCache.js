@@ -1,6 +1,7 @@
 // Secret values never enter this module. It owns only the bridge's explicit
 // metadata DTO and writes every pull before a consumer paints it.
-import { mergeCachedRecordsTogether, readCached, subscribeCache } from "./localCache.js";
+import { readCached, subscribeCache } from "./localCache.js";
+import { admitSecretRead, publishSecretGroups, mergeSecretWrite, createSecretExpiry } from "./secretMetadataRecords.js";
 import { onSecretsChanged } from "./secretMetadataEvents.js";
 
 const SECRET_METADATA_KIND = "secret-metadata";
@@ -25,6 +26,9 @@ function stageMetadata(stage) {
 }
 
 function grantMetadata(grant) {
+  if (grant?.scope === "environment" && presentText(grant.environment_id)) {
+    return Object.freeze({ scope: "environment", environment_id: grant.environment_id });
+  }
   if (grant?.scope === "project" && presentText(grant.project_id)) {
     return Object.freeze({ scope: "project", project_id: grant.project_id });
   }
@@ -71,13 +75,15 @@ export const secretFeaturesAvailable = (features) => features?.attachments === t
   && features.sealedUpload === true && features.metadataEvents === true;
 
 function normalizedScope(scope) {
+  if (presentText(scope?.environmentId) && !scope.projectId) return Object.freeze({ environmentId: scope.environmentId });
   if (!presentText(scope?.projectId)) throw new Error("Secret metadata requires a project");
-  if (!scope.conversationId) return Object.freeze({ projectId: scope.projectId });
+  const project = { projectId: scope.projectId, ...(presentText(scope.environmentId) ? { environmentId: scope.environmentId } : {}) };
+  if (!scope.conversationId) return Object.freeze(project);
   if (![scope.ownerId, scope.agentId, scope.conversationId, scope.generation].every(presentText)) {
     throw new Error("Secret metadata requires an exact recipient generation");
   }
   return Object.freeze({
-    projectId: scope.projectId,
+    ...project,
     ownerId: scope.ownerId,
     agentId: scope.agentId,
     conversationId: scope.conversationId,
@@ -90,6 +96,7 @@ const scopeKey = (scope) => JSON.stringify(normalizedScope(scope));
 
 export function secretMetadataAddress(deviceId, rawScope) {
   const scope = normalizedScope(rawScope);
+  if (!scope.projectId) return { deviceId, entityId: scope.environmentId, kind: SECRET_METADATA_KIND, sub: "environment" };
   return scope.conversationId
     ? { deviceId, entityId: scope.conversationId, kind: SECRET_METADATA_KIND, sub: `${scope.ownerId}:${scope.agentId}:${scope.generation}` }
     : { deviceId, entityId: scope.projectId, kind: SECRET_METADATA_KIND, sub: "project" };
@@ -105,6 +112,7 @@ const stageOf = (scope) => scope.conversationId ? {
 
 function wireScope(rawScope) {
   const scope = normalizedScope(rawScope);
+  if (!scope.projectId) return { environment_id: scope.environmentId };
   return {
     project_id: scope.projectId,
     ...(scope.conversationId ? { stage: stageOf(scope) } : {}),
@@ -112,6 +120,7 @@ function wireScope(rawScope) {
 }
 
 function entryScope(metadata, queryScope) {
+  if (metadata.grant.scope === "environment") return { environmentId: metadata.grant.environment_id };
   if (metadata.grant.scope === "project") return projectScope(metadata.grant.project_id);
   const stage = metadata.scope;
   return {
@@ -125,6 +134,7 @@ function entryScope(metadata, queryScope) {
 }
 
 function belongsTo(metadata, scope) {
+  if (metadata.grant.scope === "environment") return metadata.grant.environment_id === scope.environmentId;
   if (metadata.grant.scope === "project") return metadata.grant.project_id === scope.projectId;
   return Boolean(scope.conversationId)
     && metadata.grant.agent_id === scope.agentId
@@ -136,23 +146,32 @@ function belongsTo(metadata, scope) {
     && metadata.scope.draft_id === scope.draftId;
 }
 
-const byId = (left, right) => left.secret_id.localeCompare(right.secret_id);
-const trackedActive = (entry) => [...entry.registrations].some((registration) => registration.active());
-function mergeEntries(held = [], incoming = []) {
-  const entries = new Map(held.map((entry) => [entry.secret_id, entry]));
-  for (const entry of incoming) {
-    const previous = entries.get(entry.secret_id);
-    if (!previous || entry.revision > previous.revision) entries.set(entry.secret_id, entry);
+function hintMatches(hint, scope) {
+  switch (hint.scope) {
+    case "device": return true;
+    case "environment": return scope.environmentId === hint.environment_id;
+    case "project": return scope.projectId === hint.project_id && !scope.conversationId;
+    case "agent": return scope.ownerId === hint.entity_id && scope.conversationId === hint.conversation_id && scope.generation === hint.generation;
+    default: return false;
   }
-  return [...entries.values()].sort(byId);
 }
 
-async function writeEntries(deviceId, scope, entries, serverNow) {
-  const address = secretMetadataAddress(deviceId, scope);
-  await mergeCachedRecordsTogether([address], ([held]) => [{
-    secrets: mergeEntries(held?.value?.secrets, entries),
-    server_now: Number.isSafeInteger(serverNow) ? serverNow : held?.value?.server_now ?? null,
-  }]);
+const trackedActive = (entry) => [...entry.registrations].some((registration) => registration.active());
+
+function targetScopes(scope) {
+  if (!scope.projectId) return [scope];
+  const scopes = [projectScope(scope.projectId)];
+  if (scope.conversationId) scopes.push(scope);
+  if (scope.environmentId) scopes.push({ environmentId: scope.environmentId });
+  return scopes;
+}
+
+function groupsFor(deviceId, scope, entries) {
+  return targetScopes(scope).map(target => ({
+    address: secretMetadataAddress(deviceId, target),
+    primary: JSON.stringify(secretMetadataAddress(deviceId, target)) === JSON.stringify(secretMetadataAddress(deviceId, scope)),
+    entries: entries.filter(entry => JSON.stringify(secretMetadataAddress(deviceId, entryScope(entry, scope))) === JSON.stringify(secretMetadataAddress(deviceId, target))),
+  }));
 }
 
 export async function readCachedSecrets(deviceId, scope) {
@@ -175,6 +194,9 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
   let disposed = false;
   const current = () => !disposed && active();
   const supported = () => current() && secretFeaturesAvailable(capabilities());
+  const scopeSupported = scope => !scope.environmentId || capabilities()?.environmentScope === true;
+  const expiry = createSecretExpiry(current);
+  const watchGroups = groups => Promise.all(groups.map(group => expiry.watch(group.address)));
 
   async function upsert(raw, queryScope) {
     const metadata = secretMetadataOf(raw);
@@ -182,37 +204,26 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
     if (!belongsTo(metadata, normalized)) invalidMetadata();
     const target = normalizedScope(entryScope(metadata, normalized));
     if (!current()) return null;
-    await writeEntries(deviceId, target, [metadata]);
+    const address = secretMetadataAddress(deviceId, target);
+    const committed = await mergeSecretWrite(address, [metadata], current);
+    if (!committed && current()) throw safeReadError();
+    await expiry.watch(address);
     return current() ? metadata : null;
   }
 
-  async function writePage(scope, page) {
+  function entriesOfPage(scope, page) {
     if (!page || !Array.isArray(page.secrets) || !Number.isSafeInteger(page.server_now)) throw safeReadError("invalid_metadata_page");
-    const groups = new Map();
-    const accepted = [];
-    for (const raw of page.secrets) {
-      let metadata;
-      try { metadata = secretMetadataOf(raw); } catch { continue; }
-      // A staged descriptor can move to its final scope while this page is in
-      // flight. Leave the old copy to age out on a later authoritative pull;
-      // one moved entry must not discard the valid grants beside it.
-      if (!belongsTo(metadata, scope)) continue;
-      accepted.push(metadata);
-      const target = normalizedScope(entryScope(metadata, scope));
-      const key = scopeKey(target);
-      const group = groups.get(key) || { scope: target, entries: [] };
-      group.entries.push(metadata);
-      groups.set(key, group);
-    }
-    if (!current()) return [];
-    await Promise.all([...groups.values()].map((group) => writeEntries(deviceId, group.scope, group.entries, page.server_now)));
-    return accepted;
+    // Parse the entire page before filtering scope transitions. A malformed
+    // descriptor makes the snapshot incomplete and must not remove cached rows.
+    return page.secrets.map(secretMetadataOf).filter(metadata => belongsTo(metadata, scope));
   }
 
   async function readPage(scope, secretIds, requestIds, after) {
     try {
       return await call("secrets.list", {
-        scope: wireScope(scope), secret_ids: [...secretIds], request_ids: [...requestIds], after, limit: 100,
+        scope: wireScope(scope),
+        ...(scope.projectId && scope.environmentId && capabilities()?.environmentScope === true ? { include_environment: true } : {}),
+        secret_ids: [...secretIds], request_ids: [...requestIds], after, limit: 100,
       });
     } catch {
       throw safeReadError();
@@ -229,20 +240,34 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
   async function refresh(rawScope, { secretIds = [], requestIds = [] } = {}) {
     if (!supported()) return [];
     const scope = normalizedScope(rawScope);
+    if (!scopeSupported(scope)) return [];
+    const addresses = targetScopes(scope).map(target => secretMetadataAddress(deviceId, target));
+    const token = await admitSecretRead(addresses, current, secretMetadataAddress(deviceId, scope));
+    const page = await collectPages(scope, secretIds, requestIds);
+    if (!refreshCurrent(scope)) return [];
+    const groups = groupsFor(deviceId, scope, page.entries);
+    await publishSecretGroups(groups, { token, serverNow: page.serverNow, replace: !secretIds.length && !requestIds.length, selection: { secretIds, requestIds }, observe: expiry.now, active: () => refreshCurrent(scope) });
+    await watchGroups(groups);
+    return page.entries;
+  }
+
+  async function collectPages(scope, secretIds, requestIds) {
     const entries = [];
-    let after = null;
+    let after = null, serverNow = 0;
     do {
       const page = await readPage(scope, secretIds, requestIds, after);
-      if (!refreshCurrent(scope)) return [];
-      entries.push(...await writePage(scope, page));
+      if (!refreshCurrent(scope)) return { entries: [], serverNow };
+      entries.push(...entriesOfPage(scope, page));
+      serverNow = Math.max(serverNow, page.server_now);
       after = nextCursor(page);
       if (!validCursor(after)) throw safeReadError("invalid_metadata_page");
     } while (after !== null);
-    return entries;
+    return { entries, serverNow };
   }
 
   function track(rawScope, { active: scopeActive = () => true } = {}) {
     const scope = normalizedScope(rawScope);
+    void Promise.all(targetScopes(scope).map(target => expiry.watch(secretMetadataAddress(deviceId, target)))).catch(() => {});
     const key = scopeKey(scope);
     const entry = tracked.get(key) || { scope, registrations: new Set() };
     const wasActive = trackedActive(entry);
@@ -263,12 +288,7 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
 
   function onHint(hint) {
     if (!supported()) return;
-    const candidates = [...tracked.values()].filter((entry) => trackedActive(entry) && (
-      hint.scope === "device"
-      || (hint.scope === "project" && entry.scope.projectId === hint.project_id && !entry.scope.conversationId)
-      || (hint.scope === "agent" && entry.scope.ownerId === hint.entity_id
-        && entry.scope.conversationId === hint.conversation_id && entry.scope.generation === hint.generation)
-    ));
+    const candidates = [...tracked.values()].filter(entry => trackedActive(entry) && hintMatches(hint, entry.scope));
     for (const entry of candidates) {
       const filters = hint.truncated ? {} : { secretIds: hint.secret_ids };
       void refresh(entry.scope, filters).catch(() => {});
@@ -281,10 +301,15 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
     refreshTracked,
     track,
     upsert,
-    read: (scope) => readCachedSecrets(deviceId, scope),
+    async read(scope) {
+      await expiry.watch(secretMetadataAddress(deviceId, scope));
+      return readCachedSecrets(deviceId, scope);
+    },
     async findRequest(rawScope, requestId) {
       const scope = normalizedScope(rawScope);
-      const scopes = scope.conversationId ? [scope, projectScope(scope.projectId)] : [scope];
+      const scopes = [scope];
+      if (scope.conversationId) scopes.push(projectScope(scope.projectId));
+      if (scope.projectId && scope.environmentId) scopes.push({ environmentId: scope.environmentId });
       const lists = await Promise.all(scopes.map((candidate) => readCachedSecrets(deviceId, candidate)));
       return lists.flat().find((entry) => entry.request_id === requestId) || null;
     },
@@ -296,6 +321,7 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
       disposed = true;
       tracked.clear();
       stopEvents();
+      expiry.dispose();
     },
   });
 }

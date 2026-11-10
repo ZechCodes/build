@@ -1,3 +1,4 @@
+import { createEnvironmentSettingsSecrets } from "../core/environmentSettingsSecrets.js";
 import { readSourceSupport, SOURCE_EDIT_SUPPORT_KIND } from "../core/sourceEditSupport.js";
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
@@ -48,6 +49,7 @@ export function openEnvironmentSettings(environmentId, { deviceId, callRpc }) {
   let syncsBase = false;
   let frame = sheet.firstElementChild, painted = null, support = {}, projects = [], active = true;
   const current = () => active && sheet.firstElementChild === frame && scrim.classList.contains("show");
+  const secrets = createEnvironmentSettingsSecrets({ deviceId, environmentId, callRpc, current });
   const close = () => { const owns = current(); dispose(); if (owns) scrim.classList.remove("show"); };
   const record = watchSettingsRecord(environmentsAddress(deviceId), rows => {
     const environment = rows?.find(row => row.environment_id === environmentId);
@@ -58,7 +60,7 @@ export function openEnvironmentSettings(environmentId, { deviceId, callRpc }) {
   });
   const navigation = onNavigationCommitted(close);
   const dispose = watchSheetLifetime(current, () => {
-    active = false; record.dispose(); unsubscribe(); navigation(); disposeRepoPickers(sheet);
+    active = false; secrets.dispose(); record.dispose(); unsubscribe(); navigation(); disposeRepoPickers(sheet);
   });
   async function readSupport() {
     const [actions, held, sourceSupport] = await Promise.all([readEnvironmentSupport(deviceId), readCached({ deviceId, entityId: "", kind: "projects" }), readSourceSupport(deviceId)]);
@@ -88,10 +90,12 @@ export function openEnvironmentSettings(environmentId, { deviceId, callRpc }) {
       <section class="ps-section"><h4>Sources</h4>${sourceCardsHtml(owner, editing, { notices, sync: { syncsBase: support.environmentRename && syncsBase, syncing, inFlight } })}
       ${support.environmentRename ? '<div class="row"><button class="btn" id="esfolder">Add folder…</button><button class="btn" id="esremote">Add Git remote…</button></div><div id="esadd"></div>' : ""}</section>
       <section class="ps-section"><h4>Isolation</h4><select id="esisolation" aria-label="Work isolation">${isolationOptionsHtml(environment.isolation, null, { inheritLabel: "Inherit device setting" })}</select></section>
+      <div data-environment-secrets-host></div>
       <div class="adderr" id="eserror" role="alert"></div><button class="btn" id="esclose">Close</button>` });
     frame = sheet.firstElementChild; painted = environment;
     sheet.querySelector("#esdisplay").value = draftName;
     mountGeneral(environment);
+    secrets.mount(sheet.querySelector("[data-environment-secrets-host]"));
     const sourceRpc = (method, params) => {
       requireEnvironmentAction(deviceId, "environmentRename");
       const { project_id: _projectId, ...rest } = params;

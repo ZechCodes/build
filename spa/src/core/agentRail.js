@@ -1,3 +1,4 @@
+import { watchSecretEnvironment } from "./secretEnvironmentContext.js";
 import { agentIsRunning } from "./agentRunning.js";
 // The agent rail: the conversation surface for whatever the view area is
 // standing in.
@@ -388,6 +389,11 @@ const railStandingPlace = (context) => {
   const store = context.viewingContext || App.viewingContext;
   return { fromWorkspace, composerViewingContext: stampedViewingContext(store, fromWorkspace) };
 };
+
+function withEnvironmentSecretScope(scopes, environmentId) {
+  if (!environmentId) return scopes;
+  return [...scopes.map(scope => ({ ...scope, environmentId })), { environmentId }];
+}
 
 export function createRailChatOwnership(repository, key, entityOf, { metadataCache = null, projectId = null } = {}) {
   let provisional = null;
@@ -889,6 +895,9 @@ export function mountAgentRail(host, context) {
   if (context.projectAgent) stand(workItemContext(context, known, { openAgentId: context.openAgentId || null,
     addingAgent: context.addingAgent === true }), projectSide());
   else stand(context, null);
+  // The first stand owns this one-shot request. Later retargets and swaps
+  // derive from the retained context and must not replay it.
+  delete context.secretEnvironmentIntent;
   return {
     retarget(next) {
       if (!live?.canRetarget(next)) return false;
@@ -1377,6 +1386,8 @@ function mountRailOnContext(host, context, swap) {
   let composerController = null;
   let composerSecrets = null;
   let secretMetadata = [];
+  let secretEnvironmentId = null;
+  let secretEnvironmentIntent = context.secretEnvironmentIntent;
   let unsubscribeComposerController = null;
   let surfacesBlock = null;
   let observationBlock = null;
@@ -1414,6 +1425,7 @@ function mountRailOnContext(host, context, swap) {
 
   const bindSecretMetadata = (controller) => {
     releaseSecretMetadata();
+    void secretEnvironmentContext.refresh();
     const projectIdForSecrets = entity.projectId || projectOfRail(context, projectId);
     const identity = controller?.identity;
     if (!context.secretMetadataCache || typeof context.secretMetadataCache.read !== "function"
@@ -1423,7 +1435,22 @@ function mountRailOnContext(host, context, swap) {
       { projectId: projectIdForSecrets, ownerId: identity.entityId, agentId: identity.agentId,
         conversationId: identity.conversationId, generation: identity.threadId, draftId: identity.draftId || null },
     ];
-    secretMetadataBinding.bind(scopes);
+    secretMetadataBinding.bind(withEnvironmentSecretScope(scopes, secretEnvironmentId));
+  };
+  const secretEnvironmentContext = watchSecretEnvironment({ deviceId: context.deviceId,
+    enabled: Boolean(context.secretMetadataCache),
+    projectId: () => entity.projectId || projectId,
+    onChange: environmentId => {
+      if (environmentId === secretEnvironmentId) return;
+      secretEnvironmentId = environmentId;
+      bindSecretMetadata(composerController);
+      openEnvironmentSecretIntent();
+    },
+  });
+  const openEnvironmentSecretIntent = () => {
+    if (!secretEnvironmentIntent || secretEnvironmentIntent !== secretEnvironmentId || !composerSecrets) return;
+    secretEnvironmentIntent = null;
+    composerSecrets.open({ scope: "environment" });
   };
   let closeSurfaceMenu = null; // shuts the head's ⋯, and with it its outside-press watch
   let panelMotion = null;
@@ -3199,6 +3226,7 @@ function mountRailOnContext(host, context, swap) {
       reportAfterLanding(body);
     };
     syncComposer();
+    openEnvironmentSecretIntent();
     syncSurfaces();
     syncUserMessageTicks(body);
     reportAfterLanding(body);
@@ -3477,6 +3505,7 @@ function mountRailOnContext(host, context, swap) {
         deviceId: context.deviceId,
         creator: "device_user",
         projectId: secretProjectId,
+        environmentId: () => secretEnvironmentId,
         recipient: () => {
           const identity = controller.identity;
           if (!identity.agentId || !identity.threadId) throw new Error("Start this agent before attaching a secret");
@@ -3498,6 +3527,7 @@ function mountRailOnContext(host, context, swap) {
       });
       composerSecrets = createSecretComposer({
         service: secretService,
+        environmentAvailable: () => Boolean(secretEnvironmentId),
         onChange: () => composerControl?.refreshSecrets(),
         onError: (error) => notifyError("Secret failed", error.message),
       });
@@ -3545,6 +3575,7 @@ function mountRailOnContext(host, context, swap) {
     unsubscribeComposerController = controller.subscribe(syncComposer);
     mountSurfaces(panel);
     syncComposer();
+    openEnvironmentSecretIntent();
     syncSurfaces();
     disposeComposerClearance = mountComposerClearance(panel);
   };
@@ -4569,6 +4600,7 @@ function mountRailOnContext(host, context, swap) {
     unsubscribePending();
     unsubscribeFeed();
     unsubscribeReferenceIndex();
+    secretEnvironmentContext.dispose();
     unsubscribeComposerController?.();
     unsubscribeComposerController = null;
   };

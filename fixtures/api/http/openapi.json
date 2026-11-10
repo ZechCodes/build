@@ -15346,7 +15346,7 @@
                       "id": "example",
                       "ok": true,
                       "result": {
-                        "api_version": "3.39.0",
+                        "api_version": "3.40.0",
                         "ack_confirm_methods": [
                           "environment.create",
                           "environment.create_project",
@@ -15494,6 +15494,7 @@
                           "secrets.attachments",
                           "secrets.audit",
                           "secrets.create",
+                          "secrets.environmentScope",
                           "secrets.list",
                           "secrets.metadataEvents",
                           "secrets.revoke",

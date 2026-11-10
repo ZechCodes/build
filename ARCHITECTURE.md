@@ -865,7 +865,7 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
 
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.39.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.40.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   3.37.0 advertises `environments` for the M1 list, journaled project/first
   workspace creation, recovery and read-only environment settings. Creating
   environments or selecting extra folders in the creation wizard, archive,
@@ -875,9 +875,9 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
   `environments.create` / `projects.addedSources` and the M2.2 consumer.
   3.39.0 releases archive/restore, project rename and environment settings
   with `projects.archive`, `projects.rename` and `environments.rename`,
-  respectively, and the M3.3 consumer. S2.1 implements environment-secret grants
-  without advertising `secrets.environmentScope`; S2.4 owns its consumer and
-  wire-version advertisement. Creation retains its sealed StageContext and atomic
+  respectively, and the M3.3 consumer. 3.40.0 advertises
+  `secrets.environmentScope` with the S2.4 settings/composer consumer for S2.1’s
+  environment-secret grants. Creation retains its sealed StageContext and atomic
   send lifetime, with an environment `grant`; list/revoke/audit additionally accept
   `{environment_id}` scope. Project/stage lists include inherited Environment
   grants only with `include_environment: true`; old-shaped lists keep their
@@ -4594,13 +4594,20 @@ download controls serve all three. Message role and connection status do not
 gate attachment display.
 
 Secret attachments follow the same cache rule without sharing the file path.
-`secretComposer.js` owns the accessible Agent/Project and TTL modal. Its live
+`secretComposer.js` owns the accessible Agent/Project/This environment and TTL modal. Its live
 value exists only in the password field and the immediate sealed request: it is
 masked by default, a user-controlled toggle can reveal only the value still
 being typed, and close or submit wipes and re-masks the field. No later UI can
 retrieve a value.
 `secretDrafts.js` stages and revokes descriptors, while `secretMetadataCache.js`
-stores metadata-only project and conversation-generation records. The composer
+stores metadata-only environment, project and conversation-generation records.
+Environment metadata has its own cache key even when names overlap; inherited
+project reads explicitly opt in, and refusals retain the last cached rows.
+Environment settings lists, revokes and audits those records. Add secret
+navigates to an active member project's coordinator composer with environment
+scope preselected (one: direct; several: choose; none: unavailable). Settings
+never uploads or sends a message; the user's own send activates a grant.
+Available project grants with a live inherited name show “overrides environment”. The composer
 menu reads cached support, and current-greeting capability checks authorize
 the actual create/revoke/post calls. Draft and sent chips resolve exact IDs from
 the metadata cache; `secrets.changed` only invalidates a scope and causes an

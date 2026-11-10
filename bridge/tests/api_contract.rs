@@ -1473,6 +1473,7 @@ fn check_secret_metadata_event(event: &Value) {
             vec!["type", "scope", "secret_ids", "revision"]
         }
         "project" => vec!["type", "scope", "project_id", "secret_ids", "revision"],
+        "environment" => vec!["type", "scope", "environment_id", "secret_ids", "revision"],
         "agent" => {
             assert_eq!(event["thread_id"], event["generation"]);
             vec![

@@ -53,6 +53,25 @@ impl WorktreeManager {
         self
     }
 
+    /// Resume only the exact checkout identity saved before project deletion.
+    pub(crate) fn remove_recorded_checkout(
+        &self,
+        path: &Path,
+        name: &str,
+        isolation: Isolation,
+    ) -> Result<(), WorktreeError> {
+        self.worktree.verify_recorded(&self.repo_path, path, name)?;
+        match isolation {
+            Isolation::Worktree => self.worktree.remove_recorded(&self.repo_path, path, name)?,
+            Isolation::Rift => self.rift.remove(&self.repo_path, path)?,
+        }
+        if !path.exists() {
+            self.worktree.remove_recorded(&self.repo_path, path, name)?;
+            self.rift.remove(&self.repo_path, path)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn lock_creation(&self) -> Result<MutexGuard<'_, ()>, WorktreeError> {
         self.creation_lock.lock().map_err(|_| {
             WorktreeError::Refused(

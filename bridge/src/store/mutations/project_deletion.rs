@@ -12,15 +12,25 @@ pub struct ProjectDeletionPlan {
     pub project_id: String,
     pub project_key: String,
     pub project_config: Value,
+    pub environment_config: Value,
     pub delete_tasks: bool,
     pub roots: Vec<PathBuf>,
-    pub checkouts: Vec<(PathBuf, PathBuf)>,
+    pub checkouts: Vec<ProjectDeletionCheckout>,
     pub rift_root: PathBuf,
     pub run_ids: Vec<String>,
     pub plan_ids: Vec<String>,
     pub capture_ids: Vec<String>,
     pub workspace_ids: Vec<String>,
     pub inventory: std::collections::BTreeMap<PathBuf, String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProjectDeletionCheckout {
+    pub source: PathBuf,
+    pub path: PathBuf,
+    pub registered_name: String,
+    pub registry_root: PathBuf,
+    pub isolation: crate::isolation::Isolation,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,6 +63,9 @@ pub(in crate::store) fn checkpoint(
         |row| row.get(0),
     )?;
     let mut record = decode(raw)?;
+    if record.execution["plan"] != json!(deletion.plan) {
+        return Err(invalid("project deletion cleanup plan is immutable"));
+    }
     let mut deletion = deletion.clone();
     if deletion.phase == "history_removed" {
         deletion.history = history(tx, &deletion.plan.project_key)?;
@@ -219,6 +232,7 @@ mod tests {
             project_id: "proj-1".into(),
             project_key: "project:one".into(),
             project_config: json!({"id":"proj-1"}),
+            environment_config: json!({"id":"env-1"}),
             delete_tasks: true,
             roots: vec![],
             checkouts: vec![],

@@ -11,7 +11,7 @@ mod creation;
 mod execution;
 pub mod project_deletion;
 mod reads;
-pub use project_deletion::{ProjectDeletion, ProjectDeletionPlan};
+pub use project_deletion::{ProjectDeletion, ProjectDeletionCheckout, ProjectDeletionPlan};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MutationOwner {

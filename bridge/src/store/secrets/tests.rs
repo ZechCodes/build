@@ -85,7 +85,7 @@ fn metadata_survives_restart_and_migrates_existing_database_without_history_chan
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(version, "26");
+    assert_eq!(version, "27");
 }
 
 #[test]
@@ -577,10 +577,10 @@ fn schema_26_to_27_preserves_secret_rows_and_reopen_is_noop() {
         ))
         .unwrap();
     connection.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO meta VALUES('schema_version','26');
-        INSERT INTO secret_records(id,device_id,creator,name,ttl_seconds,grant_scope,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,created_at,attached_at,expires_at,revoked_at,revocation_reason,revision,message_operation_id,upload_request_id,upload_digest,blob_present) VALUES ('sec_00000000-0000-4000-8000-000000000001','device','user','TEST',60,'project','project','owner','conversation','generation',100,110,170,150,'revoked',3,'operation','00000000-0000-4000-8000-000000000002','abcdef',0);
+        INSERT INTO secret_records(id,device_id,creator,name,ttl_seconds,grant_scope,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,created_at,attached_at,expires_at,revoked_at,revocation_reason,revision,message_operation_id,upload_request_id,upload_digest,blob_present) VALUES ('sec_00000000-0000-4000-8000-000000000001','device','user','TEST',60,'project','project','owner','conversation','generation',100,110,170,150,'revoked',3,'operation','00000000-0000-4000-8000-000000000002','abababababababababababababababababababababababababababababababab',0);
         INSERT INTO secret_final_bindings VALUES('sec_00000000-0000-4000-8000-000000000001','operation','project','owner','agent','conversation','generation');
         INSERT INTO secret_audit(sequence,secret_id,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome) VALUES(5,'sec_00000000-0000-4000-8000-000000000001','project','owner','agent','conversation','generation','session','request',150,'revoked');").unwrap();
-    connection.execute_batch(r#"INSERT INTO secret_records(id,device_id,creator,name,grant_scope,grant_agent_id,grant_conversation_id,grant_generation,stage_owner_id,stage_conversation_id,stage_generation,stage_draft_id,created_at,revision,upload_request_id,upload_digest,blob_present) VALUES ('sec_00000000-0000-4000-8000-000000000003','device','user','STAGED','agent','agent','conversation','generation','owner','conversation','generation','draft',100,1,'00000000-0000-4000-8000-000000000004','immutable-ciphertext-digest',1);
+    connection.execute_batch(r#"INSERT INTO secret_records(id,device_id,creator,name,grant_scope,grant_agent_id,grant_conversation_id,grant_generation,stage_owner_id,stage_conversation_id,stage_generation,stage_draft_id,created_at,revision,upload_request_id,upload_digest,blob_present) VALUES ('sec_00000000-0000-4000-8000-000000000003','device','user','STAGED','agent','agent','conversation','generation','owner','conversation','generation','00000000-0000-4000-8000-000000000005',100,1,'00000000-0000-4000-8000-000000000004','cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd',1);
         INSERT INTO secret_clock VALUES(1,150,7);
         INSERT INTO secret_vault_state VALUES(1,'original-key',NULL);
         INSERT INTO secret_bindings VALUES('operation','["sec_00000000-0000-4000-8000-000000000001"]',110);

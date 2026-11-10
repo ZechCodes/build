@@ -105,10 +105,7 @@ impl Fixture {
     fn params(&self, ids: &[String]) -> Value {
         json!({"entity_id":self.owner,"agent_id":self.agent,"conversation_id":self.agent,"thread_id":self.generation(),"operation_id":"secret-send","body":"Use these test credentials","secret_ids":ids})
     }
-    fn stage_wire(&mut self) -> String {
-        self.stage_wire_grant(false)
-    }
-    fn stage_wire_grant(&mut self, environment: bool) -> String {
+    fn stage_wire(&mut self, environment: bool) -> String {
         let grant = if environment {
             json!({"scope":"environment","environment_id":self.app.projects.get(&self.project).unwrap().environment_id})
         } else {
@@ -388,7 +385,7 @@ fn leak_sweep(environment: bool) {
             priority: Default::default(),
         },
     );
-    let id = fixture.stage_wire_grant(environment);
+    let id = fixture.stage_wire(environment);
     fixture.app.changes.flush();
     let params = fixture.params(std::slice::from_ref(&id));
     fixture.send(&params).unwrap();

@@ -76,6 +76,7 @@ impl Fixture {
         }
     }
     fn add_member(&self, id: &str, owner: &str, project: &str, coordinator: bool) -> SecretCaller {
+        crate::store::secrets::seed_current_project_for_test(&self.store, project);
         let mut agent = Agent::new(id, owner, ModelChoice::default(), 2, "2026-11-04T00:00:00Z");
         if coordinator {
             agent.project_role = Some(crate::project_roster::ProjectRole::Coordinator);
@@ -87,7 +88,6 @@ impl Fixture {
                 rusqlite::params![id, owner, serde_json::to_string(&agent).unwrap()],
             )
             .unwrap();
-        crate::store::secrets::seed_current_project_for_test(&self.store, project);
         let path = format!("/synthetic-project-{project}");
         connection
             .execute(
@@ -815,7 +815,7 @@ fn schema_24_upgrade_adds_audit_without_changing_existing_metadata_or_value() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "26");
+    assert_eq!(version, "27");
 }
 
 #[test]

@@ -14,6 +14,15 @@ pub(super) fn upgrade(connection: &Connection) -> rusqlite::Result<()> {
     if old.is_empty() {
         return Ok(());
     }
+    let bindings = columns(connection, "secret_final_bindings")?;
+    let audit = columns(connection, "secret_audit")?;
+    if old.iter().any(|column| column == "grant_environment_id")
+        && [bindings, audit]
+            .iter()
+            .all(|names| names.is_empty() || names.iter().any(|column| column == "environment_id"))
+    {
+        return Ok(());
+    }
     // SQLite's documented create/copy/drop/rename rebuild requires FK checks
     // disabled outside the transaction; restore the original setting on error.
     let foreign_keys: bool = connection.pragma_query_value(None, "foreign_keys", |r| r.get(0))?;

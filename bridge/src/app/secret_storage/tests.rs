@@ -533,17 +533,14 @@ fn secret_membership_projection_follows_config_writes_and_startup() {
     let config = state.config_value(&state.projects_dir, state.default_harness, state.isolation);
     state.persist_config(&config).unwrap();
     state.settle_device_lifecycle();
-    assert_eq!(
-        store
-            .writer_for_test()
-            .query_row(
-                "SELECT archived FROM secret_project_membership WHERE project_id=?1",
-                [&project],
-                |r| r.get::<_, bool>(0)
-            )
-            .unwrap(),
-        true
-    );
+    assert!(store
+        .writer_for_test()
+        .query_row(
+            "SELECT archived FROM secret_project_membership WHERE project_id=?1",
+            [&project],
+            |r| r.get::<_, bool>(0)
+        )
+        .unwrap());
     // A stale disk projection cannot survive composition from current config.
     store
         .writer_for_test()

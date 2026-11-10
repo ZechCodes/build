@@ -487,3 +487,20 @@ fn environment_secret_upload_rechecks_membership_after_opening() {
         .is_err());
     assert!(!opener.writer.secrets_have_records().unwrap());
 }
+
+#[test]
+fn environment_secret_creation_never_widens_project_grant() {
+    let mut f = fixture();
+    let original = create(&mut f).unwrap();
+    let project = f.params["scope"]["owner_id"].as_str().unwrap();
+    let environment = &f.app.projects.get(project).unwrap().environment_id;
+    f.params["grant"] = json!({"scope":"environment","environment_id":environment});
+    assert_eq!(create(&mut f).err().unwrap().code(), "conflict");
+    let writer = f.app.store.as_ref().unwrap().writer();
+    let record = writer
+        .secret_record(original["secret_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert!(matches!(record.context.grant, GrantScope::Project { .. }));
+    assert_eq!(writer.secret_records().unwrap().len(), 1);
+}

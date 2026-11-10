@@ -281,10 +281,24 @@ fn project_deletion_config_checkpoint_preserves_lock_markers_until_cleanup() {
     fail_checkpoint(&app, "config_removed");
     let failed = app.handle(req("project.delete", params(&project)));
     assert_eq!(failed["ok"], false, "{failed}");
-    assert!(marker.exists(), "config checkpoint failure unlinked the marker");
+    assert!(
+        marker.exists(),
+        "config checkpoint failure unlinked the marker"
+    );
     assert!(w.root.exists());
-    assert!(app.store.as_ref().unwrap().load_tracker_task(task["id"].as_str().unwrap()).unwrap().is_some());
-    app.store.as_ref().unwrap().writer_for_test().execute_batch("DROP TRIGGER fail_phase").unwrap();
+    assert!(app
+        .store
+        .as_ref()
+        .unwrap()
+        .load_tracker_task(task["id"].as_str().unwrap())
+        .unwrap()
+        .is_some());
+    app.store
+        .as_ref()
+        .unwrap()
+        .writer_for_test()
+        .execute_batch("DROP TRIGGER fail_phase")
+        .unwrap();
     call(&mut app, "project.delete", params(&project));
     assert!(!marker.exists());
     assert_eq!(std::fs::read(other).unwrap(), b"keep sibling marker");

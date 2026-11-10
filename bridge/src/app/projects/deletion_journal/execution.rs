@@ -202,5 +202,20 @@ fn remove_files(plan: &ProjectDeletionPlan) -> Result<(), String> {
             }
         }
     }
+    remove_lock_markers(plan)
+}
+fn remove_lock_markers(plan: &ProjectDeletionPlan) -> Result<(), String> {
+    for path in &plan.lock_markers {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                "Project deletion-pending: lock marker cleanup {}: {error}; retry project.delete",
+                path.display()
+            ))
+            }
+        }
+    }
     Ok(())
 }

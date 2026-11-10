@@ -72,6 +72,10 @@ impl AppState {
                 .ok_or("project environment missing")?,
             delete_tasks,
             roots,
+            lock_markers: workspaces
+                .iter()
+                .map(|w| self.workspaces.root().join(".locks").join(&w.id))
+                .collect(),
             checkouts: vec![],
             rift_root: self.project_worktrees_root(id),
             run_ids,

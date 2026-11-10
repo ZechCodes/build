@@ -15,6 +15,8 @@ pub struct ProjectDeletionPlan {
     pub environment_config: Value,
     pub delete_tasks: bool,
     pub roots: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lock_markers: Vec<PathBuf>,
     pub checkouts: Vec<ProjectDeletionCheckout>,
     pub rift_root: PathBuf,
     pub run_ids: Vec<String>,
@@ -237,6 +239,7 @@ mod tests {
             environment_config: json!({"id":"env-1"}),
             delete_tasks: true,
             roots: vec![],
+            lock_markers: vec![],
             checkouts: vec![],
             rift_root: "/unused".into(),
             run_ids: vec![],

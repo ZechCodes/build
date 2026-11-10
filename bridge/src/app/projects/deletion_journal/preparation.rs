@@ -151,7 +151,16 @@ fn complete_capture(captured: &CapturedDeletion) -> Result<ProjectDeletionPlan, 
             isolation,
         });
     }
-    plan.inventory = capture_inventory(&plan.roots, &plan.rift_root)?;
+    plan.lock_markers = plan
+        .lock_markers
+        .iter()
+        .map(|path| {
+            let parent = path.parent().ok_or("invalid workspace marker parent")?;
+            let name = path.file_name().ok_or("invalid workspace marker name")?;
+            Ok(crate::worktree::canonical_planned_path(parent).join(name))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    plan.inventory = capture_plan_inventory(&plan)?;
     Ok(plan)
 }
 fn validate_paths(

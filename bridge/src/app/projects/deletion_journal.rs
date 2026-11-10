@@ -13,7 +13,7 @@ mod preparation;
 mod reconciliation;
 mod recovery;
 mod retirement;
-use inventory::{capture_inventory, inventory_unchanged};
+use inventory::{capture_plan_inventory, inventory_unchanged};
 
 #[derive(Clone)]
 struct DeletionOperation {
@@ -163,7 +163,9 @@ impl AppState {
         self.retain_environment_snapshot_observation(&plan.project_id);
         self.projects.remove(&plan.project_id);
         self.board.diff_mut().remove_project(&plan.project_id);
-        self.workspaces.forget_project(&plan.project_id);
+        for id in &plan.workspace_ids {
+            self.workspaces.forget_memory(id);
+        }
         self.note_board_lists_changed(crate::changes::BoardLists {
             projects: true,
             environments: true,
@@ -190,7 +192,7 @@ impl AppState {
         }
         self.forget_session_owner(&plan.project_id);
         for id in &plan.workspace_ids {
-            self.workspaces.forget(id);
+            self.workspaces.forget_memory(id);
         }
         self.project_deletion_retirements.remove(&plan.project_id);
     }

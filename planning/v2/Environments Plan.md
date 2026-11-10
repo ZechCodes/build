@@ -529,7 +529,8 @@ Changed:
 | M1 | `project.sync_source` | resolves the source from the project's effective sources, validates its captured path, and queues the existing project/source sync service (`{pending: true}`). It is not routed to a separate environment job; shared checkout mutations invalidate every referencing project's views, with sync status kept per reference |
 | M2 (planned restriction) | `project.add_source` / `remove_source` / `update_source` | operate on **added** sources only; naming an environment source id is refused "source-N belongs to environment E; edit it there". Planned old-client compatibility for `update_source` routes an environment source edit to its owning record (5C.5). M1 still accepts legacy project source edits; it does not enforce this future restriction |
 | M3 | every task/review/comment/workspace/source mutation | refused with `project_archived` on an archived project |
-| S2 | `secrets.create/list/revoke/audit` | `scope` accepts `{environment_id}` |
+| S2.1 | `secrets.create` | `grant` accepts `{scope:"environment", environment_id}`; `scope` remains the required owner/conversation/generation StageContext. Sealed upload and atomic-send lifetime are unchanged; there is no standalone settings-create lifetime. The writer transaction revalidates the stage owner’s current, unarchived project membership in the requested environment. |
+| S2.1 | `secrets.list/revoke/audit` | `scope` accepts `{environment_id}` in addition to the existing project/stage selector; mixed selectors are refused. |
 | — | `tasks.*` | **unchanged** |
 
 MCP tools (`bridge/src/mcp.rs`): no project arguments anywhere; scope comes
@@ -824,13 +825,19 @@ as `AGENTS.md` requires.
 **SQLite:** M0.4 changed the schema to **26** for creation write-ahead
 effect evidence. Pending older creation records without that proof are marked
 unknown (`store/mutations/creation.rs:5-20`); creation uses the journal introduced
-in schema 18, with this additional migration. Stage 2 now plans **schema 27**:
-`secret_records.grant_scope` is `CHECK (grant_scope IN ('agent','project'))`
-with `grant_project_id` (`store/secrets/schema.rs:58-62`), so the environment
-scope is a table rebuild with `'environment'` and `grant_environment_id`,
-planned with a schema-26 fixture for the migration test;
+in schema 18, with this additional migration. S2.1 introduces **schema 27**:
+`secret_records` is rebuilt to admit `'environment'` with
+`grant_environment_id`, preserving existing metadata and encrypted AAD. A frozen
+schema-26 SQL fixture verifies migration and a second open;
 `secret_final_bindings`/`secret_audit` (`schema.rs:110-141`) gain the
-environment id. A newer store is refused by an older binary before any write
+environment id. `secret_environments` and `secret_project_membership` are
+disposable SQL projections of config-owned registration, environment membership
+and archive state. Every config write refreshes them behind the existing durable
+registry dirty fence; startup and registry reconciliation republish current config.
+Secret reads fail closed while that fence is dirty, so stale membership cannot
+grant access. The migration tests cover populating the projection from current
+config. Config remains the sole authority; these tables are never an independent
+registration source. A newer store is refused by an older binary before any write
 (`store.rs:368-386`). `archived_at` lives in `config.json`; the planned M2/M3
 config fields do not require another SQLite version in this plan.
 

@@ -23,6 +23,10 @@ fn payload(record: &crate::secrets::SecretRecord) -> Value {
     use crate::secrets::GrantScope;
     let mut value = json!({"type":SECRETS_CHANGED_EVENT,"revision":record.revision,"secret_ids":[record.context.id]});
     match &record.context.grant {
+        GrantScope::Environment { environment_id } => {
+            value["scope"] = json!("environment");
+            value["environment_id"] = json!(environment_id);
+        }
         GrantScope::Project { project_id } => {
             value["scope"] = json!("project");
             value["project_id"] = json!(project_id);
@@ -47,8 +51,9 @@ pub(super) fn covered(scope: &Scope, payload: &Value) -> bool {
 }
 
 fn route(payload: &Value) -> &str {
-    payload["project_id"]
+    payload["environment_id"]
         .as_str()
+        .or_else(|| payload["project_id"].as_str())
         .or_else(|| payload["entity_id"].as_str())
         .unwrap_or("")
 }

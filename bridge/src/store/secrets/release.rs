@@ -69,6 +69,9 @@ fn validate_request(caller: &SecretCaller, request: &str) -> Result<()> {
 }
 
 fn committed_member(connection: &Connection, caller: &SecretCaller) -> Result<bool> {
+    if !super::membership::current_project(connection, &caller.project_id)? {
+        return Ok(false);
+    }
     for owner in [&caller.owner_id, &caller.canonical_owner_id] {
         let project: Option<String> = connection.query_row(
             "SELECT p.project_id FROM device_owner_projects o JOIN device_project_ids p ON p.path=o.project_path WHERE o.owner_id=?1",
@@ -130,6 +133,8 @@ pub(crate) fn scope_allows(caller: &SecretCaller, record: &SecretRecord) -> bool
                 && generation == &caller.generation
         }
         GrantScope::Project { project_id } => project_id == &caller.project_id,
+        // Environment authority requires the current SQL membership, never a launch snapshot.
+        GrantScope::Environment { .. } => false,
     }
 }
 

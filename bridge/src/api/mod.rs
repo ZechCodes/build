@@ -207,7 +207,8 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
 
 /// Known methods or features deliberately held out of greetings while a later
 /// slice finishes their end-to-end product surface.
-pub const UNADVERTISED_CAPABILITIES: &[&str] = &[];
+pub const SECRETS_ENVIRONMENT_SCOPE_CAPABILITY: &str = "secrets.environmentScope";
+pub const UNADVERTISED_CAPABILITIES: &[&str] = &[SECRETS_ENVIRONMENT_SCOPE_CAPABILITY];
 
 /// Everything this bridge can serve on a session, as exact method names and
 /// explicit feature names. Sorting and deduplication make the greeting stable.

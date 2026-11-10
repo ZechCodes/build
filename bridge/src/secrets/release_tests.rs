@@ -45,6 +45,7 @@ impl Fixture {
             )
             .unwrap();
         store.writer_for_test().execute_batch("INSERT INTO device_project_ids(path,project_id) VALUES ('/synthetic-project','synthetic-project'); INSERT INTO device_owner_projects(owner_id,project_path) VALUES ('synthetic-project','/synthetic-project')").unwrap();
+        crate::store::secrets::seed_current_project_for_test(&store, "synthetic-project");
         let caller = SecretCaller {
             device_id: "synthetic-device".into(),
             channel: "dev".into(),
@@ -86,6 +87,7 @@ impl Fixture {
                 rusqlite::params![id, owner, serde_json::to_string(&agent).unwrap()],
             )
             .unwrap();
+        crate::store::secrets::seed_current_project_for_test(&self.store, project);
         let path = format!("/synthetic-project-{project}");
         connection
             .execute(
@@ -1159,6 +1161,7 @@ fn lifecycle_metadata_survives_denial_group_cap_and_retention_without_entering_d
             "synthetic-user",
             &crate::api::v1::secrets::AuditParams {
                 scope: crate::api::v1::secrets::SecretScope {
+                    environment_id: None,
                     project_id: f.caller.project_id.clone(),
                     stage: Some(expired.context.stage.clone()),
                 },

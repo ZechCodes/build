@@ -19,6 +19,9 @@ pub enum GrantScope {
     Project {
         project_id: String,
     },
+    Environment {
+        environment_id: String,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +154,7 @@ impl SecretContext {
                 }
             }
             GrantScope::Project { project_id } => validate_text(project_id)?,
+            GrantScope::Environment { environment_id } => validate_text(environment_id)?,
         }
         Ok(())
     }

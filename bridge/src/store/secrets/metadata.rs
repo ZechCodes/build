@@ -57,12 +57,31 @@ impl StoreWriter {
 
 pub(super) fn authorize(connection: &Connection, scope: &SecretScope) -> Result<()> {
     scope.validate()?;
+    if !super::membership::clean(connection)? {
+        return Err(SecretError::Unavailable);
+    }
+    if let Some(environment) = &scope.environment_id {
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM secret_environments WHERE environment_id=?1)",
+            [environment],
+            |r| r.get(0),
+        )?;
+        return if exists {
+            Ok(())
+        } else {
+            Err(SecretError::Unavailable)
+        };
+    }
+    authorize_project(connection, scope)
+}
+
+fn authorize_project(connection: &Connection, scope: &SecretScope) -> Result<()> {
     let exists: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM device_project_ids WHERE project_id=?1)",
         [&scope.project_id],
         |row| row.get(0),
     )?;
-    if !exists {
+    if !exists || !super::membership::current_project(connection, &scope.project_id)? {
         return Err(SecretError::Unavailable);
     }
     let Some(stage) = &scope.stage else {
@@ -170,7 +189,14 @@ pub(super) fn list(
     let after = position(asked)?;
     authorize(connection, &asked.scope)?;
     let (owner, conversation, generation, draft) = stage_values(asked.scope.stage.as_ref());
-    let sql = format!("SELECT {} FROM secret_records WHERE device_id=?1 AND creator=?2 AND id>?3 AND ((grant_scope='project' AND grant_project_id=?4) OR (?5!='' AND stage_owner_id=?5 AND stage_conversation_id=?6 AND stage_generation=?7 AND stage_draft_id IS ?8) OR (?5!='' AND EXISTS(SELECT 1 FROM secret_final_bindings b WHERE b.secret_id=secret_records.id AND b.project_id=?4 AND b.owner_id=?5 AND b.conversation_id=?6 AND b.generation=?7))) AND (json_array_length(?9)=0 OR id IN (SELECT value FROM json_each(?9))) AND (json_array_length(?10)=0 OR upload_request_id IN (SELECT value FROM json_each(?10))) ORDER BY id LIMIT ?11",records::COLUMNS);
+    let sql = format!("SELECT {} FROM secret_records WHERE device_id=?1 AND creator=?2 AND id>?3 AND (
+        (grant_scope='project' AND grant_project_id=?4)
+        OR (grant_scope='environment' AND (
+            grant_environment_id=?12 OR (grant_environment_id=(SELECT environment_id FROM secret_project_membership WHERE project_id=?4 AND archived=0)
+                AND NOT EXISTS(SELECT 1 FROM secret_records p WHERE p.device_id=secret_records.device_id AND p.name=secret_records.name AND p.grant_scope='project' AND p.grant_project_id=?4 AND p.attached_at IS NOT NULL AND p.revoked_at IS NULL AND p.blob_present=1 AND (p.expires_at IS NULL OR p.expires_at>?13)))))
+        OR (grant_scope='agent' AND ?5!='' AND ((stage_owner_id=?5 AND stage_conversation_id=?6 AND stage_generation=?7 AND stage_draft_id IS ?8)
+            OR EXISTS(SELECT 1 FROM secret_final_bindings b WHERE b.secret_id=secret_records.id AND b.project_id=?4 AND b.owner_id=?5 AND b.conversation_id=?6 AND b.generation=?7))))
+        AND (json_array_length(?9)=0 OR id IN (SELECT value FROM json_each(?9))) AND (json_array_length(?10)=0 OR upload_request_id IN (SELECT value FROM json_each(?10))) ORDER BY id LIMIT ?11", records::COLUMNS);
     let mut statement = connection.prepare(&sql)?;
     let mut records = statement
         .query_map(
@@ -185,7 +211,9 @@ pub(super) fn list(
                 draft,
                 ids,
                 requests,
-                asked.limit as i64 + 1
+                asked.limit as i64 + 1,
+                asked.scope.environment_id.as_deref().unwrap_or(""),
+                now()
             ],
             records::from_row,
         )?
@@ -268,7 +296,7 @@ fn audit(
     {
         return Err(SecretError::Unavailable);
     }
-    let mut statement=connection.prepare("SELECT sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome,attempt_count,last_occurred_at FROM secret_audit WHERE secret_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3")?;
+    let mut statement=connection.prepare("SELECT sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome,attempt_count,last_occurred_at,environment_id FROM secret_audit WHERE secret_id=?1 AND sequence>?2 ORDER BY sequence LIMIT ?3")?;
     let mut events = statement
         .query_map(
             params![asked.secret_id, asked.after, asked.limit as i64 + 1],
@@ -298,6 +326,7 @@ mod tests {
     fn params() -> ListParams {
         ListParams {
             scope: SecretScope {
+                environment_id: None,
                 project_id: "project-a".into(),
                 stage: None,
             },
@@ -308,6 +337,8 @@ mod tests {
         }
     }
     fn project(store: &Store, id: &str) {
+        super::super::seed_current_project_for_test(store, id);
+
         store
             .writer_for_test()
             .execute(

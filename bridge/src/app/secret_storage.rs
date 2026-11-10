@@ -15,6 +15,11 @@ impl AppState {
         self.secret_state_root = Some(state_root.to_path_buf());
         self.session_registry.set_secret_device(device_id);
         self.secret_service = None;
+        let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
+        if self.reconcile_secret_membership(&config).is_err() {
+            eprintln!("secret vault unavailable");
+            return Ok(self);
+        }
         if let Some(store) = &self.store {
             let changes = Arc::clone(&self.changes);
             store
@@ -43,6 +48,19 @@ impl AppState {
             Err(_) => eprintln!("secret vault unavailable"),
         }
         Ok(self)
+    }
+
+    pub(in crate::app) fn reconcile_secret_membership(
+        &self,
+        config: &serde_json::Value,
+    ) -> Result<(), String> {
+        if let Some(store) = &self.store {
+            store
+                .writer()
+                .secrets_reconcile_config(config)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     /// All project admission doors use the same resolved device-vault fence.

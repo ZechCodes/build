@@ -20,6 +20,8 @@ pub struct SecretCaller {
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SecretAuditRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
     pub sequence: i64,
     pub secret_id: String,
     pub creator: Option<String>,

@@ -31,6 +31,11 @@ impl SecretService {
         authority: Option<&crate::api::v1::secrets::SecretScope>,
     ) -> Result<SecretRecord> {
         expected.validate()?;
+        if let Some(authority) = authority {
+            self.inner
+                .writer
+                .secrets_authorize_upload(authority, expected)?;
+        }
         let digest = format!("{:x}", Sha256::digest(sealed.as_bytes()));
         if let Some(record) = self.upload_replay(expected, &digest)? {
             return Ok(record);

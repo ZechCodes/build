@@ -40,6 +40,8 @@ impl AppState {
         let markers = writer
             .device_registry_markers()
             .map_err(|error| error.to_string())?;
+        let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
+        self.reconcile_secret_membership(&config)?;
         let (rows, projects) = self.device_registry_rows()?;
         writer
             .reconcile_device_registry(generation, &rows, &projects, &markers)

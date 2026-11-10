@@ -501,3 +501,64 @@ fn secrets_open_error_keeps_normal_app_available_and_retains_admission_policy() 
         .is_err());
     assert!(!root.path().join("secrets").exists());
 }
+
+#[test]
+fn secret_membership_projection_follows_config_writes_and_startup() {
+    let root = tempfile::tempdir().unwrap();
+    let mut state = protected_app(root.path());
+    let source = root.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let project = state.add_project(source, "main".into());
+    let environment = state.projects.get(&project).unwrap().environment_id.clone();
+    let config = state.config_value(&state.projects_dir, state.default_harness, state.isolation);
+    state.persist_config(&config).unwrap();
+    let store = state.store.as_ref().unwrap().clone();
+    assert_eq!(
+        store
+            .writer_for_test()
+            .query_row(
+                "SELECT environment_id FROM secret_project_membership WHERE project_id=?1",
+                [&project],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        environment
+    );
+    assert!(store
+        .writer()
+        .device_registry_generation()
+        .unwrap()
+        .is_some());
+    state.project_archive(&project).unwrap();
+    let config = state.config_value(&state.projects_dir, state.default_harness, state.isolation);
+    state.persist_config(&config).unwrap();
+    state.settle_device_lifecycle();
+    assert_eq!(
+        store
+            .writer_for_test()
+            .query_row(
+                "SELECT archived FROM secret_project_membership WHERE project_id=?1",
+                [&project],
+                |r| r.get::<_, bool>(0)
+            )
+            .unwrap(),
+        true
+    );
+    // A stale disk projection cannot survive composition from current config.
+    store
+        .writer_for_test()
+        .execute("UPDATE secret_project_membership SET archived=0", [])
+        .unwrap();
+    let state = state
+        .with_secret_vault(root.path(), "synthetic-device")
+        .unwrap();
+    assert!(state.secret_service().is_some());
+    assert!(store
+        .writer_for_test()
+        .query_row(
+            "SELECT archived FROM secret_project_membership WHERE project_id=?1",
+            [project],
+            |r| r.get::<_, bool>(0)
+        )
+        .unwrap());
+}

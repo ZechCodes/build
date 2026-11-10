@@ -106,6 +106,14 @@ impl Fixture {
         json!({"entity_id":self.owner,"agent_id":self.agent,"conversation_id":self.agent,"thread_id":self.generation(),"operation_id":"secret-send","body":"Use these test credentials","secret_ids":ids})
     }
     fn stage_wire(&mut self) -> String {
+        self.stage_wire_grant(false)
+    }
+    fn stage_wire_grant(&mut self, environment: bool) -> String {
+        let grant = if environment {
+            json!({"scope":"environment","environment_id":self.app.projects.get(&self.project).unwrap().environment_id})
+        } else {
+            json!({"scope":"agent","agent_id":self.agent,"conversation_id":self.agent,"generation":self.generation()})
+        };
         let request_id = uuid::Uuid::new_v4().to_string();
         let generation = self.generation();
         let created = self
@@ -121,12 +129,7 @@ impl Fixture {
                         "conversation_id": self.agent,
                         "generation": generation
                     },
-                    "grant": {
-                        "scope": "agent",
-                        "agent_id": self.agent,
-                        "conversation_id": self.agent,
-                        "generation": generation
-                    },
+                    "grant": grant,
                     "name": "SYNTHETIC_SWEEP_TOKEN",
                     "ttl_seconds": null,
                     "sealed_payload": "synthetic-sweep-ciphertext"
@@ -364,6 +367,15 @@ fn secret_post_atomically_claims_multiple_and_replays_the_original_message() {
 
 #[test]
 fn accepted_secret_leak_sweep_excludes_every_incidental_bridge_artifact() {
+    leak_sweep(false);
+}
+
+#[test]
+fn environment_secret_leak_sweep_excludes_every_incidental_bridge_artifact() {
+    leak_sweep(true);
+}
+
+fn leak_sweep(environment: bool) {
     let mut fixture = Fixture::new();
     let (browser, mut rx, key) = SessionSender::observable("qualification-push");
     fixture.app.changes.subscribe(
@@ -376,7 +388,7 @@ fn accepted_secret_leak_sweep_excludes_every_incidental_bridge_artifact() {
             priority: Default::default(),
         },
     );
-    let id = fixture.stage_wire();
+    let id = fixture.stage_wire_grant(environment);
     fixture.app.changes.flush();
     let params = fixture.params(std::slice::from_ref(&id));
     fixture.send(&params).unwrap();

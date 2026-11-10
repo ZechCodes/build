@@ -881,8 +881,13 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
   send lifetime, with an environment `grant`; list/revoke/audit additionally accept
   `{environment_id}` scope. Project/stage lists include inherited Environment
   grants only with `include_environment: true`; old-shaped lists keep their
-  Agent/Project contract. Membership reconciliation queues legacy project refreshes
-  for joiners/leavers after clearing the dirty read fence. Environment events
+  Agent/Project contract. Membership reconciliation captures plain committed routes and joiner/leaver
+  scopes after clearing the dirty read fence. The existing off-lock ChangeBus
+  flusher probes committed SQL and captures this data after acquiring/releasing
+  the app guard, then enqueues legacy project refreshes. List/audit reads refused
+  by the dirty fence retain bounded project/All retry scopes at the SQL boundary;
+  every clear drains them, including unchanged membership and late old-snapshot
+  refusals. A retry refused by another dirty interval registers again. Environment events
   with no members still give All subscribers a legacy device refresh. Encryption
   and delivery remain in the off-app-lock flusher. Environment subscriptions receive environment hints;
   project and All subscribers receive compatible project invalidations for each

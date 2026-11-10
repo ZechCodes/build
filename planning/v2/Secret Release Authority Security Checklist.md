@@ -120,3 +120,10 @@ the bare Store refusal; the CLI backup regression copies populated schema 26
 through a read-only source without migration. Membership compensation covers
 leavers, joiners before/after delayed grant notification, and zero-member All
 subscribers. Release authority and the S2.2 retirement seam are unchanged.
+
+Membership fan-out now captures plain committed data under app and queues only
+through the existing off-lock flusher after unlock/SQL fence clear. Actual
+list/audit fence refusals retain bounded project/All retry scopes; each dirty
+interval and late old-snapshot refusal re-arms a post-clear hint. The four
+`device_lifecycle_tests::secrets_*` regressions cover these orderings without
+changing release authority or the S2.2 retirement seam.

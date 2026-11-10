@@ -838,7 +838,13 @@ disposable SQL projections of config-owned registration, environment membership
 and archive state. Every config write refreshes them behind the existing durable
 registry dirty fence; startup and registry reconciliation republish current config.
 Secret reads fail closed while that fence is dirty, so stale membership cannot
-grant access. The migration tests cover populating the projection from current
+grant access. Refused list/audit reads record bounded project/All scopes at the
+SQL boundary. On clear, plain membership changes and refused scopes are captured
+under the app guard; the existing off-lock ChangeBus flusher enqueues and emits
+after releasing it. Unchanged membership still re-hints refused reads, and every
+later dirty interval records a refused retry again. Old SQL snapshots that refuse
+after a drain wake another capture. No subscriptions mutex is taken by this
+membership capture while the app guard is held. The migration tests cover populating the projection from current
 config. Config remains the sole authority; these tables are never an independent
 registration source. A newer store is refused by an older binary before any write
 (`store.rs:368-386`). `archived_at` lives in `config.json`; the planned M2/M3

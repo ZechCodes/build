@@ -66,10 +66,19 @@ value unchanged; a foreign grant attempt is refused without touching either.
 
 Re-review regressions cover a non-empty legacy cursor and refusal in both
 cross-mode directions (`old_secret_list_nonempty_cursor_preserves_contract_and_refuses_cross_mode`).
-Membership reconciliation enqueues truncated project hints for every joining or
-leaving project after the durable read fence clears; All subscribers receive
+Membership reconciliation captures plain committed changes for every joining or
+leaving project after the durable read fence clears; the off-lock flusher captures
+after app unlock and enqueues truncated project hints. All subscribers receive
 those hints and a legacy device refresh for an environment event with no members.
 `environment_secret_interleaving_invalidates_leaving_and_joining_projects` and
 `environment_secret_without_members_still_invalidates_all_in_legacy_shape` cover
 the delayed-notification interleavings. Notes perform no SQL or transport work;
 existing off-lock read/ack-fenced delivery and descriptor revision checks remain.
+
+The final membership-fencing revision records actual SQL list/audit fence
+refusals as bounded project/All scopes. Reconciliation captures plain committed
+data only; the existing flusher captures after SQL clear and app unlock, then
+enqueues off-lock. Named `device_lifecycle_tests::secrets_*` regressions cover
+the exact queued-hint/unrelated-write/refused-read ordering, consecutive dirty
+intervals, deterministic lock/commit ordering, independent late snapshots and
+scope bounds. Subscription read/ack fencing and all wire shapes are unchanged.

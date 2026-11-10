@@ -12,6 +12,7 @@ mod inventory;
 mod preparation;
 mod reconciliation;
 mod recovery;
+mod registration;
 mod retirement;
 use inventory::{capture_plan_inventory, inventory_unchanged};
 
@@ -102,7 +103,7 @@ impl AppState {
         call: impl crate::app::git::deferred::DeferredGitWork + 'static,
     ) {
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
-            call: Box::new(call),
+            call: Box::new(ScopedDeletion(call)),
             params: json!({}),
             invalidates: true,
             registry_change: true,
@@ -151,8 +152,18 @@ impl AppState {
             })
             .collect()
     }
-    fn publish_deletion_records(&mut self, records: Vec<ProjectDeletion>) {
-        self.project_deletion_cache = records;
+    fn publish_deletion_records(&mut self, id: &str, records: Vec<ProjectDeletion>) {
+        // Concurrent projects settle independently. An older off-lock snapshot
+        // must not overwrite another project's more recent phase or tombstone.
+        let newest = records.iter().map(|r| r.command_id).max().unwrap_or(0);
+        self.project_deletion_cache.retain(|cached| {
+            cached.plan.project_id != id
+                && (cached.tombstone.is_none()
+                    || cached.command_id > newest
+                    || records.iter().any(|r| r.command_id == cached.command_id))
+        });
+        self.project_deletion_cache
+            .extend(records.into_iter().filter(|r| r.plan.project_id == id));
         self.refresh_deletion_fences();
         self.publish_read_metadata();
     }
@@ -174,6 +185,11 @@ impl AppState {
         });
     }
     fn apply_finished_project(&mut self, plan: &ProjectDeletionPlan) {
+        if plan.delete_tasks {
+            self.task_admission_keys
+                .borrow_mut()
+                .retain(|_, key| key != &plan.project_key);
+        }
         for id in &plan.run_ids {
             self.runs.remove(id);
             self.forget_session_owner(id);
@@ -254,5 +270,28 @@ impl DeletionFailure {
         }
         let _ = phase;
         Ok(())
+    }
+}
+
+/// Project fences, rather than the generic device-wide filesystem exclusion,
+/// protect every deletion stage. Other jobs keep their existing exclusion.
+struct ScopedDeletion<T>(T);
+impl<T: crate::app::git::deferred::DeferredGitWork> crate::app::git::deferred::DeferredGitWork
+    for ScopedDeletion<T>
+{
+    fn run(&self, params: &Value) -> Result<Value, String> {
+        self.0.run(params)
+    }
+    fn settle(&self, app: &mut AppState, result: Value) -> Result<Value, String> {
+        self.0.settle(app, result)
+    }
+    fn invalidate(&self, app: &mut AppState) {
+        self.0.invalidate(app);
+    }
+    fn invalidates_on_error(&self) -> bool {
+        self.0.invalidates_on_error()
+    }
+    fn blocks_unrelated_filesystem(&self) -> bool {
+        false
     }
 }

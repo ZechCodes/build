@@ -6,7 +6,6 @@ use std::sync::Mutex;
 #[derive(Default)]
 struct CompletedDeletion {
     records: Option<Vec<ProjectDeletion>>,
-    config_removed: bool,
     finished: bool,
     result: Option<Result<Value, String>>,
 }
@@ -14,30 +13,27 @@ pub(super) struct DeleteRecordedProject {
     store: Store,
     deletion: ProjectDeletion,
     operation: DeletionOperation,
-    config: Value,
-    config_path: Option<PathBuf>,
-    config_writer: crate::app::config::files::ConfigFileWrite,
     sources: Vec<PathBuf>,
     failure: DeletionFailure,
     completed: Mutex<CompletedDeletion>,
+    #[cfg(test)]
+    cleanup_gate: Option<crate::app::OffLockGate>,
 }
 impl DeleteRecordedProject {
     pub(super) fn capture(
         app: &AppState,
         deletion: ProjectDeletion,
         operation: DeletionOperation,
-        config: Value,
     ) -> Result<Self, String> {
         Ok(Self {
             store: app.store.clone().ok_or("missing deletion store")?,
             deletion,
             operation,
-            config,
-            config_path: app.config_path.clone(),
-            config_writer: app.config_file_writer(),
             sources: app.deletion_sources(),
             failure: DeletionFailure::capture(app),
             completed: Mutex::new(CompletedDeletion::default()),
+            #[cfg(test)]
+            cleanup_gate: app.deletion_cleanup_gate.clone(),
         })
     }
     fn execute(&self) -> Result<Value, String> {
@@ -48,9 +44,16 @@ impl DeleteRecordedProject {
             .mark_sync_dirty("registry", "lifecycle", crate::store::sync::now_ms())
             .map_err(|e| e.to_string())?;
         if deletion.phase == "prepared" {
-            self.remove_registration(&mut deletion)?;
+            // The config write settled before this job was queued. Checkpoint
+            // off-lock before any owned file or history cleanup.
+            deletion.phase = "config_removed".into();
+            self.checkpoint(&deletion)?;
         }
         if deletion.phase == "config_removed" {
+            #[cfg(test)]
+            if let Some(gate) = &self.cleanup_gate {
+                gate.arrive();
+            }
             self.failure.check("checkout")?;
             remove_files(&deletion.plan)?;
             deletion.phase = "files_removed".into();
@@ -96,19 +99,6 @@ impl DeleteRecordedProject {
             .checkpoint_project_deletion(deletion)
             .map_err(|e| e.to_string())
     }
-    fn remove_registration(&self, deletion: &mut ProjectDeletion) -> Result<(), String> {
-        self.failure.check("config")?;
-        self.store
-            .writer()
-            .secrets_retire_project(&deletion.plan.project_id)
-            .map_err(|e| e.to_string())?;
-        if let Some(path) = &self.config_path {
-            self.config_writer.write(path, &self.config)?;
-        }
-        self.completed.lock().unwrap().config_removed = true;
-        deletion.phase = "config_removed".into();
-        self.checkpoint(deletion)
-    }
 }
 impl DeferredGitWork for DeleteRecordedProject {
     fn run(&self, _: &Value) -> Result<Value, String> {
@@ -133,15 +123,14 @@ impl DeferredGitWork for DeleteRecordedProject {
     fn settle(&self, app: &mut AppState, _: Value) -> Result<Value, String> {
         self.operation.check(app)?;
         let completed = self.completed.lock().unwrap();
-        app.deletion_config_write = false;
-        if completed.config_removed || self.deletion.phase != "prepared" {
+        if self.deletion.phase != "prepared" {
             app.apply_removed_registration(&self.deletion.plan);
         }
         if completed.finished {
             app.apply_finished_project(&self.deletion.plan);
         }
         if let Some(records) = &completed.records {
-            app.publish_deletion_records(records.clone());
+            app.publish_deletion_records(&self.operation.id, records.clone());
         }
         app.device_lifecycle_dirty.set(true);
         let result = completed.result.clone().ok_or("missing deletion outcome")?;
@@ -155,7 +144,6 @@ impl DeferredGitWork for DeleteRecordedProject {
         if self.operation.check(app).is_err() {
             return;
         }
-        app.deletion_config_write = false;
         if app.deferred_work.is_none() {
             self.operation.finish(app);
         }

@@ -298,6 +298,9 @@ pub struct AppState {
     project_deletion_operations: std::collections::HashMap<String, String>,
     project_deletion_retirements: std::collections::HashMap<String, Vec<crate::reaper::Retirement>>,
     deletion_config_write: bool,
+    /// Immutable task ownership for admission; seeded before sharing, published
+    /// with committed task observations. Never consult SQLite from a guard.
+    task_admission_keys: std::cell::RefCell<HashMap<String, String>>,
     read_context: read_context::ReadContextSlot,
     committed_entities: transactions::CommittedEntities,
     read_view: read_view::ReadViewSlot,
@@ -307,7 +310,7 @@ pub struct AppState {
     /// Projects one of whose sources is moving; their workers wait (#533).
     source_moves: projects::SourceMoves,
     source_directory_claims: projects::SourceDirectoryClaims,
-    /// Deferred filesystem work claimed under the mutex and not yet applied.
+    /// Device-wide filesystem exclusions; project deletion uses scoped fences.
     active_deferred_filesystem_jobs: usize,
     /// Only jobs that can publish project/workspace registry changes fence sync.
     active_device_registry_jobs: usize,
@@ -410,6 +413,8 @@ pub struct AppState {
     /// Test seam: see [`OffLockGate`]. `None` in production.
     #[cfg(test)]
     off_lock_gate: Option<OffLockGate>,
+    #[cfg(test)]
+    deletion_cleanup_gate: Option<OffLockGate>,
     /// Test-only pause after workspace OID preparation, before materialization.
     #[cfg(test)]
     off_lock_workspace_prepared_gate: Option<OffLockGate>,
@@ -732,6 +737,7 @@ impl AppState {
             project_deletion_operations: Default::default(),
             project_deletion_retirements: Default::default(),
             deletion_config_write: false,
+            task_admission_keys: Default::default(),
             read_context: Arc::new(arc_swap::ArcSwapOption::empty()),
             committed_entities: Default::default(),
             read_view: read_view::ReadViewSlot::default(),
@@ -786,6 +792,8 @@ impl AppState {
             diff_compute_observer: None,
             #[cfg(test)]
             off_lock_gate: None,
+            #[cfg(test)]
+            deletion_cleanup_gate: None,
             #[cfg(test)]
             off_lock_workspace_prepared_gate: None,
             #[cfg(test)]
@@ -950,6 +958,13 @@ impl AppState {
         }
         let stored = load_stored_tasks(dir)?;
         self.restore_stored_tasks(stored)?;
+        self.task_admission_keys = std::cell::RefCell::new(
+            self.store
+                .as_ref()
+                .expect("attached store")
+                .task_admission_snapshot()
+                .map_err(|e| e.to_string())?,
+        );
         Ok(self)
     }
 

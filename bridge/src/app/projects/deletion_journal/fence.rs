@@ -43,7 +43,7 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> Result<(), ApiError> {
-        if method == "project.delete" {
+        if self.project_deletion_fences.is_empty() || method == "project.delete" {
             return Ok(());
         }
         for field in [
@@ -60,14 +60,9 @@ impl AppState {
             }
         }
         if let Some(task) = params["task_id"].as_str() {
-            if let Some(store) = &self.store {
-                if let Some((key, _)) = store
-                    .task_project_authority(task)
-                    .map_err(|e| ApiError::unavailable(e.to_string()))?
-                {
-                    self.refuse_deleting_identity("", &key)
-                        .map_err(ApiError::classify)?;
-                }
+            if let Some(key) = self.task_admission_keys.borrow().get(task) {
+                self.refuse_deleting_identity("", key)
+                    .map_err(ApiError::classify)?;
             }
         }
         Ok(())

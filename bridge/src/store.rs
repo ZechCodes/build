@@ -330,6 +330,8 @@ pub struct Store {
     /// Test-only pause at the actual canonical plan-doc directory probe.
     #[cfg(test)]
     plan_docs_probe_gate: Arc<Mutex<Option<crate::test_support::off_lock::OffLockGate>>>,
+    #[cfg(test)]
+    pub(crate) task_authority_queries: Arc<std::sync::atomic::AtomicUsize>,
     /// Whether this open ran the task rename (#190): the boot that did is
     /// the one whose resumed agents remember tools that no longer exist.
     renamed_tasks: bool,
@@ -468,6 +470,8 @@ impl Store {
             fail_next_write: writer.fail_next_write.clone(),
             #[cfg(test)]
             plan_docs_probe_gate: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            task_authority_queries: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             writer,
             journal_incarnation: journal_incarnation.into(),
             waiting_on_wakeup: Arc::new(tokio::sync::Notify::new()),

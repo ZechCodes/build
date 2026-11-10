@@ -106,13 +106,11 @@ impl AppState {
     }
 
     fn guard_archived_task(&self, task: &str) -> Result<(), ApiError> {
-        let Some(store) = &self.store else {
-            return Ok(());
-        };
-        let authority = store
-            .task_project_authority(task)
-            .map_err(|error| ApiError::unavailable(error.to_string()))?;
-        if let Some(id) = authority.and_then(|(key, _)| self.project_id_for_archive_key(&key)) {
+        let keys = self.task_admission_keys.borrow();
+        if let Some(id) = keys
+            .get(task)
+            .and_then(|key| self.project_id_for_archive_key(key))
+        {
             self.refuse_archived_project(&id)?;
         }
         Ok(())

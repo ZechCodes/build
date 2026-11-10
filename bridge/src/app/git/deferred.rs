@@ -115,6 +115,11 @@ impl DeferredGit {
 /// released, and which cached summaries to drop once it has changed the tree
 /// underneath them.
 pub(in crate::app) trait DeferredGitWork: Send {
+    /// Narrowly fenced jobs need no device-wide filesystem exclusion.
+    fn blocks_unrelated_filesystem(&self) -> bool {
+        true
+    }
+
     fn run(&self, params: &Value) -> Result<Value, String>;
     fn invalidate(&self, app: &mut AppState);
 

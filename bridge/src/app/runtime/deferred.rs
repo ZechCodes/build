@@ -104,6 +104,12 @@ impl DeferredDone {
 }
 
 impl DeferredWork {
+    fn blocks_unrelated_filesystem(&self) -> bool {
+        match self {
+            Self::Git(git) => git.call.blocks_unrelated_filesystem(),
+            _ => true,
+        }
+    }
     pub(in crate::app) fn changes_device_registry(&self) -> bool {
         match self {
             Self::Lifecycle(_) => true,
@@ -178,6 +184,15 @@ pub(in crate::app) enum DeferredOutcome {
     Read(Result<Value, String>),
     /// The subscribe/unsubscribe reply, watchers reconciled.
     Watch(Value),
+}
+
+impl DeferredOutcome {
+    fn blocks_unrelated_filesystem(&self) -> bool {
+        match self {
+            Self::Git { git, .. } => git.call.blocks_unrelated_filesystem(),
+            _ => true,
+        }
+    }
 }
 
 /// A read whose git work needs nothing the app mutex holds: the lock resolves
@@ -707,7 +722,8 @@ impl AppState {
         params: &Value,
         done: DeferredDone,
     ) -> Result<Value, String> {
-        self.active_deferred_filesystem_jobs -= 1;
+        self.active_deferred_filesystem_jobs -=
+            usize::from(done.outcome.blocks_unrelated_filesystem());
         if match &done.outcome {
             DeferredOutcome::Lifecycle(_) => true,
             DeferredOutcome::Git { git, .. } => git.registry_change,
@@ -822,8 +838,9 @@ impl AppState {
         let check = self.deferred_result_check.take();
         let work = self.deferred_work.take()?;
         // Claim before either the relay or MCP drain releases the mutex.
-        // All variants can observe filesystem state that deletion would remove.
-        self.active_deferred_filesystem_jobs += 1;
+        // Unscoped jobs retain the device-wide exclusion. Project deletion
+        // protects its exact identities and paths with its own fence.
+        self.active_deferred_filesystem_jobs += usize::from(work.blocks_unrelated_filesystem());
         if work.changes_device_registry() {
             self.active_device_registry_jobs += 1;
         }

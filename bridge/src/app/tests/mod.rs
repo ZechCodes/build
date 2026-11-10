@@ -328,6 +328,7 @@ mod secret_session_authority;
 
 mod workspace_names;
 
+mod deletion_concurrency;
 mod deletion_phases;
 mod deletion_receipts;
 mod deletion_recovery;

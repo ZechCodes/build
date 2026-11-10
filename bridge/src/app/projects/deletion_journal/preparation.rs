@@ -109,7 +109,7 @@ impl DeferredGitWork for PrepareDeletion {
     fn settle(&self, app: &mut AppState, value: Value) -> Result<Value, String> {
         self.operation.check(app)?;
         if let Some(records) = self.records.lock().unwrap().clone() {
-            app.publish_deletion_records(records);
+            app.publish_deletion_records(&self.operation.id, records);
         }
         let deletion: ProjectDeletion = serde_json::from_value(value).map_err(|e| e.to_string())?;
         app.queue_deletion_retirement(deletion, self.operation.clone())?;
@@ -123,7 +123,7 @@ impl DeferredGitWork for PrepareDeletion {
             return;
         }
         if let Some(records) = self.records.lock().unwrap().clone() {
-            app.publish_deletion_records(records);
+            app.publish_deletion_records(&self.operation.id, records);
         }
         if app.deferred_work.is_none() {
             self.operation.finish(app);

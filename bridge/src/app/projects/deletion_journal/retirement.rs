@@ -7,6 +7,8 @@ struct RetireDeletionSessions {
     operation: DeletionOperation,
     deletion: ProjectDeletion,
     retirements: Vec<crate::reaper::Retirement>,
+    store: Store,
+    sources: Vec<PathBuf>,
 }
 impl AppState {
     pub(super) fn queue_deletion_retirement(
@@ -34,6 +36,8 @@ impl AppState {
             operation,
             deletion,
             retirements,
+            store: self.store.clone().ok_or("missing deletion store")?,
+            sources: self.deletion_sources(),
         });
         Ok(())
     }
@@ -43,23 +47,13 @@ impl AppState {
         operation: DeletionOperation,
     ) -> Result<(), String> {
         operation.check(self)?;
-        if self.deletion_config_write {
-            return Err("configuration write in progress; retry project deletion".into());
+        if deletion.phase == "prepared" {
+            super::registration::queue_config_removal(self, deletion, operation)?;
+        } else {
+            self.defer_project_deletion(super::execution::DeleteRecordedProject::capture(
+                self, deletion, operation,
+            )?);
         }
-        let mut config =
-            self.config_value(&self.projects_dir, self.default_harness, self.isolation);
-        config["projects"]
-            .as_array_mut()
-            .expect("project array")
-            .retain(|p| p["id"] != deletion.plan.project_id);
-        let mut policies = self.compaction_policies.clone();
-        policies.forget_project(&deletion.plan.project_id);
-        policies.forget_workspaces(&deletion.plan.workspace_ids);
-        policies.write_config(&mut config);
-        let call =
-            super::execution::DeleteRecordedProject::capture(self, deletion, operation, config)?;
-        self.deletion_config_write = true;
-        self.defer_project_deletion(call);
         Ok(())
     }
 }
@@ -72,6 +66,17 @@ impl DeferredGitWork for RetireDeletionSessions {
                         .into(),
                 );
             }
+        }
+        validate_plan(&self.store, &self.deletion, &self.sources)?;
+        self.store
+            .writer()
+            .mark_sync_dirty("registry", "lifecycle", crate::store::sync::now_ms())
+            .map_err(|e| e.to_string())?;
+        if self.deletion.phase == "prepared" {
+            self.store
+                .writer()
+                .secrets_retire_project(&self.deletion.plan.project_id)
+                .map_err(|e| e.to_string())?;
         }
         Ok(Value::Null)
     }

@@ -253,10 +253,22 @@ impl Store {
         ReadTransaction::new(&self.connection()).load_tracker_task_bounded(task_id)
     }
 
+    /// Boot-owned admission projection, before AppState is shared. Task keys
+    /// cannot move between projects; live publications append new identities.
+    pub(crate) fn task_admission_snapshot(&self) -> Result<HashMap<String, String>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare("SELECT id,project_key FROM tracker_tasks")?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     pub fn task_project_authority(
         &self,
         task_id: &str,
     ) -> Result<Option<(String, Option<String>)>, StoreError> {
+        #[cfg(test)]
+        self.task_authority_queries
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         ReadTransaction::new(&self.connection()).task_project_authority(task_id)
     }
 

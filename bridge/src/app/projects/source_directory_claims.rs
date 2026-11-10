@@ -156,6 +156,19 @@ impl SourceDirectoryLease {
 
 impl AppState {
     pub(in crate::app) fn refuse_source_directory_claim(&self, path: &Path) -> Result<(), String> {
+        // Callers pass their resolved source candidate. Reject only paths
+        // overlapping the immutable deletion scope, without a global exclusion
+        // or a filesystem probe under the app lock.
+        for plan in &self.project_deletion_fences {
+            if plan
+                .roots
+                .iter()
+                .chain(plan.checkouts.iter().map(|c| &c.path))
+                .any(|root| paths_overlap(path, root))
+            {
+                return self.refuse_deleting_identity(&plan.project_id, &plan.project_key);
+            }
+        }
         self.source_directory_claims.refuse_reference(path)
     }
 }

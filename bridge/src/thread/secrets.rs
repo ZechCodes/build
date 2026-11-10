@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub enum MessageSecretScope {
     Agent,
     Project,
+    Environment,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +63,7 @@ impl MessageSecret {
             scope: match record.context.grant {
                 crate::secrets::GrantScope::Agent { .. } => MessageSecretScope::Agent,
                 crate::secrets::GrantScope::Project { .. } => MessageSecretScope::Project,
+                crate::secrets::GrantScope::Environment { .. } => MessageSecretScope::Environment,
             },
             ttl_seconds: record.context.ttl_seconds,
             expires_at,

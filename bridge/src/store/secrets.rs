@@ -10,7 +10,12 @@ pub(crate) use audit_metadata::append_metadata_in;
 mod release;
 pub(crate) use release::{clock_observe_in, expire_in, scope_allows};
 mod key_state;
+mod membership;
+#[cfg(test)]
+pub(crate) use membership::seed_current_project_for_test;
 mod metadata;
+mod read_retries;
+pub(crate) use read_retries::SecretReadRetries;
 mod records;
 mod retirement;
 mod revoke;
@@ -21,7 +26,7 @@ pub use attach::attach_in;
 pub(super) use retirement::{
     retire_agent_in, retire_conversation_in, retire_owner_in, retire_project_in,
 };
-pub(super) use schema::initialize;
+pub(super) use schema::initialize_store;
 
 pub(super) fn store_error(error: crate::secrets::SecretError) -> super::StoreError {
     match error {

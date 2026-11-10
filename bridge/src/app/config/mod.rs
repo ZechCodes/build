@@ -423,6 +423,7 @@ impl AppState {
     /// file untouched and prevents startup.
     pub fn with_config(mut self, path: impl Into<std::path::PathBuf>) -> Result<Self, ConfigError> {
         let path = path.into();
+        self.config_loaded_from_disk = false;
         if let Some(config) = read_config(&path)? {
             self.compaction_policies =
                 CompactionPolicies::from_config(&config).map_err(|reason| {
@@ -440,6 +441,7 @@ impl AppState {
                 })?;
             let config = self.migrate_environment_config(&path, config)?;
             self.apply_config(&config);
+            self.config_loaded_from_disk = true;
         }
         self.config_path = Some(path);
         Ok(self)
@@ -460,7 +462,9 @@ impl AppState {
             return Ok(config);
         };
         files::backup_before_environments(path).map_err(migration_error)?;
-        self.write_config_file(path, &migrated)
+        self.mark_device_lifecycle_dirty()
+            .map_err(migration_error)?;
+        self.persist_secret_membership_config(Some(path), &migrated)
             .map_err(migration_error)?;
         Ok(migrated)
     }

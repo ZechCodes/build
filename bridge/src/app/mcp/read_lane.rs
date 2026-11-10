@@ -38,6 +38,7 @@ pub(super) fn action(frame: &Value) -> Option<BridgeAction> {
             | "list_projects"
             | "list_work"
             | "list_workspaces"
+            | "list_project_sources"
             | "search_conversation"
             | "read_conversation"
             | "tracker_read_comment"

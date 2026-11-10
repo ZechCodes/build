@@ -211,7 +211,7 @@ fn every_row(store: &Store) -> Vec<String> {
 fn migrated() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();
     v9_store(dir.path());
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     (dir, store)
 }
 
@@ -350,7 +350,7 @@ fn the_copy_is_of_the_store_before_anything_was_renamed() {
 fn running_the_rename_again_changes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     v9_store(dir.path());
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let migrated = every_row(&store);
     let backup = std::fs::read(dir.path().join(crate::store::task_rename::BACKUP_FILE)).unwrap();
 
@@ -358,7 +358,7 @@ fn running_the_rename_again_changes_nothing() {
     // skipping it by version.
     store.set_schema_version(crate::store::task_rename::TASK_RENAME_VERSION - 1);
     drop(store);
-    let reopened = Store::new(dir.path()).unwrap();
+    let reopened = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
 
     assert_eq!(every_row(&reopened), migrated);
     assert_eq!(
@@ -389,7 +389,7 @@ fn a_v9_store_finds_a_retired_plans_docs_where_they_were_written() {
     std::fs::create_dir_all(docs.join(".build/plan")).unwrap();
     std::fs::write(docs.join(".build/plan/01-stage.md"), "# stage").unwrap();
 
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
 
     assert!(store.has_plan_docs("plan-1"));
     let worktree = tempfile::tempdir().unwrap();
@@ -419,7 +419,7 @@ fn a_partial_copy_left_by_a_killed_boot_is_replaced_by_a_whole_one() {
         .join(format!("{}.tmp", crate::store::task_rename::BACKUP_FILE));
     std::fs::write(&partial, b"SQLite format 3\0 cut off here").unwrap();
 
-    drop(Store::new(dir.path()).unwrap());
+    drop(Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap());
 
     assert!(!partial.exists(), "the partial copy was left behind");
     let copy = rusqlite::Connection::open(&backup).unwrap();

@@ -20,7 +20,7 @@ const environment = (name = "Sources") => ({ environment_id: "env-1", name, home
 const project = { project_id: "proj-1", environment_id: "env-1", name: "Release", is_git: false, added_sources: [{ id: "added" }], workspaces: 2, open_tasks: 3, total_tasks: 5 };
 import { createScopedDeviceSyncCache } from "../src/core/scopedDeviceSyncCache.js";
 import { deviceRecords } from "./fixtures/deviceSync.js";
-import { kindGlyphHtml } from "../src/core/environmentIdentity.js";
+import { identityBadgeHtml } from "../src/core/environmentIdentity.js";
 let dispose;
 async function seed(id, environments = [environment()], projects = [project], supported = true, settingsCached = true) {
   state.support.set(id, supported);
@@ -202,13 +202,14 @@ it("omits device tags on a single online device", async () => {
   } finally { state.devices = original; }
 });
 
-it("renders both kinds with the shared environment identity glyphs", async () => {
+it("keeps identity badges in the settings environment and project glyph slots", async () => {
   await seed("laptop"); await seed("desktop", [], []); await mount();
   const card = document.querySelector('[data-environment]');
-  for (const kind of ["environment", "project"]) {
-    const svg = card.querySelector('svg[data-kind="' + kind + '"]');
-    const expected = document.createElement("template"); expected.innerHTML = kindGlyphHtml(kind);
-    expect(svg?.outerHTML).toBe(expected.content.firstChild.outerHTML);
+  for (const [selector,kind,name] of [["h3", "environment",environment().name],[".pname","project",project.name]]) {
+    const svg = card.querySelector(selector).firstElementChild;
+    expect(svg.outerHTML).toBe(identityBadgeHtml({key:"laptop/env-1",name},kind));
+    expect(svg.textContent).toBe("");
+    expect(card.querySelector(selector).textContent.trim().startsWith(name)).toBe(true);
   }
 });
 

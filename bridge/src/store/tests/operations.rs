@@ -463,14 +463,14 @@ fn recovery_ignores_an_orphaned_receipt_without_deleting_it() {
 #[test]
 fn v5_database_gains_operation_receipts_without_touching_conversations() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let mut record = plan_record("task-1");
     record.agents[0].thread.post_user("keep me", None, NOW);
     store.save_task_plan(&record).unwrap();
     store.pretend_to_be_v5();
     drop(store);
 
-    let migrated = Store::new(dir.path()).unwrap();
+    let migrated = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     assert_eq!(
         migrated.thread_items(&record.agents[0].id).unwrap().len(),
         1

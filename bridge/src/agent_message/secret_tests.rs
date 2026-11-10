@@ -20,7 +20,7 @@ fn secret_metadata_block_uses_exact_revision_words_and_harness_wrapper() {
     let block = "Attached secrets (values are not included):\n\
 {\"name\":\"TEST_TOKEN\",\"secret_id\":\"sec_test\",\"scope\":\"project\",\"ttl_seconds\":null,\"expires_at\":null}\n\
 Read a value with: buildctl --env dev secrets get --id <secret_id>\n\
-Project secrets are accessible to agents in this project. Agent secrets are limited to this agent’s conversation generation.\n\
+Access depends on each secret's scope (environment, project or agent), its expiry and the current conversation's authorization.\n\
 Printing, logging, or committing secret values is dangerous. A CLI read prints the value and may expose it in tool output, transcripts or terminal history. Retrieve only when needed and avoid unnecessary disclosure.";
     for provider in super::golden::HARNESSES.map(|(provider, _)| provider) {
         let prompt = payload().delivery_prompt("op-test", false, provider);

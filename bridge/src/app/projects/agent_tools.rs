@@ -19,6 +19,30 @@ impl AppState {
         self.workspace_list(&json!({ "project_id": project_id }))
     }
 
+    /// Current config references, independent of workspace snapshots and
+    /// filesystem availability. This read neither refreshes nor probes sources.
+    pub(in crate::app) fn project_agent_sources(&self, owner_id: &str) -> Result<Value, String> {
+        let project_id = self.project_agent_project(owner_id)?;
+        let project = self.project_for(&project_id)?;
+        let environment = self
+            .projects
+            .environment(&project.environment_id)
+            .ok_or_else(|| format!("unknown environment: {}", project.environment_id))?;
+        let sources = environment
+            .sources
+            .iter()
+            .map(|source| (source, "environment"))
+            .chain(
+                project
+                    .added_sources
+                    .iter()
+                    .map(|source| (source, "project")),
+            )
+            .map(|(source, scope)| json!({"id":source.id,"path":source.path.display().to_string(),"scope":scope}))
+            .collect::<Vec<_>>();
+        Ok(json!({"project_id":project_id,"environment_id":environment.id,"sources":sources}))
+    }
+
     /// `list_workspace_agents` — the agents on one of this project's
     /// workspaces, answered by the roster of that workspace's conversation
     /// owner. A workspace of another project is refused; a workspace nobody has
@@ -96,10 +120,11 @@ impl AppState {
         let sources = if others.is_empty() {
             String::new()
         } else {
-            format!(
-                " Its other sources are part of the base too: {}.",
-                others.join(", ")
-            )
+            let note = crate::templates::fill(
+                crate::templates::PROJECT_OTHER_SOURCES_NOTE,
+                &[("sources", &others.join(", "))],
+            );
+            format!(" {}", note.trim_end())
         };
         crate::templates::render(
             &crate::templates::Templates::default().project_agent,

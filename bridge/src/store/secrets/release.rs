@@ -20,6 +20,7 @@ impl StoreWriter {
             if !is_current() || !committed_member(tx, caller)? {
                 return Err(SecretError::Unauthorized);
             }
+            super::membership::authorize_active_project(tx, &caller.project_id)?;
             clock_observe_in(tx, observed_at)?;
             // A malformed identifier is indistinguishable from an absent one.
             let record = if crate::secrets::validate_id(id).is_ok() {
@@ -130,6 +131,8 @@ pub(crate) fn scope_allows(caller: &SecretCaller, record: &SecretRecord) -> bool
                 && generation == &caller.generation
         }
         GrantScope::Project { project_id } => project_id == &caller.project_id,
+        // Environment authority requires the current SQL membership, never a launch snapshot.
+        GrantScope::Environment { .. } => false,
     }
 }
 

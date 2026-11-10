@@ -17,25 +17,26 @@ const body = readFileSync(fileURLToPath(new URL("../../index.html", import.meta.
 
 /** A mounted production rail fed entirely by local records. Its fake device
  * session answers no transport, account or bridge and records only row opens. */
-export async function mountInboxLayout(page, basePath, { captures = false } = {}) {
+export async function mountInboxLayout(page, basePath, { captures = false, environments = false, theme = "light" } = {}) {
   await page.clock.setFixedTime(LAYOUT_NOW);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await mountLayout(page, body, { basePath });
   await loadBrowserModules(page, {
     app: "src/appState.js", cache: "src/core/localCache.js", tracker: "src/core/trackerCache.js",
     feed: "src/core/taskFeed.js", rail: "src/core/inboxShell.js", inbox: "src/core/inboxView.js",
-    contexts: "src/core/deviceContexts.js",
+    contexts: "src/core/deviceContexts.js", theme: "src/core/theme.js",
   }, basePath);
-  await page.evaluate(async ({ deviceId, captures }) => {
+  await page.evaluate(async ({ deviceId, captures, environments, theme }) => {
     const { app, cache, tracker, feed, rail, inbox, contexts } = window.__layoutModules;
     Object.assign(app.App, { route: { name: "inbox" }, devices: [{ id: deviceId, name: "This computer" }],
       selectedDeviceId: deviceId, deviceFilter: null });
+    window.__layoutModules.theme.applyTheme(theme);
     const now = Date.now();
     const minutesAgo = (minutes) => now - minutes * 60_000;
     const projects = [
       { id: "live-project", name: "Build", entity_id: "live-project-run" },
       { id: "quiet-project", name: "Notes", entity_id: "quiet-project-run" },
-    ].map((project) => ({ ...project, project_id: project.id, projectKey: `${deviceId}/${project.id}`, deviceId }));
+    ].map((project) => ({ ...project, ...(environments ? {environment_id:"shared"} : {}), project_id: project.id, projectKey: `${deviceId}/${project.id}`, deviceId }));
     const workspace = (id, project, name, age) => ({ id, name, project_id: project.id,
       deviceId, projectKey: project.projectKey, workspaceKey: `${deviceId}/${id}`, entity_id: `${id}-run`,
       status: "ready", managed: true, can_finish: false, finish_blockers: ["dirty"],
@@ -68,6 +69,10 @@ export async function mountInboxLayout(page, basePath, { captures = false } = {}
       task("quiet-layout-task", 628, "Keep the current ordering", projects[1], 2000)];
     const address = (kind) => ({ deviceId, entityId: "", kind });
     await cache.writeCached(cache.DEVICES_ADDRESS, app.App.devices);
+    if (environments) {
+      await cache.writeCached(address("environment-support"), {list:true,createProject:true});
+      await cache.writeCached(address("environments"), [{environment_id:"shared",name:"Shared",project_ids:projects.map(project=>project.id)}]);
+    }
     await cache.writeCached(address("projects"), projects);
     await cache.writeCached(address("workspaces"), workspaces);
     await cache.writeCached(address("feed"), { items, runs: items, projects, workspaces });
@@ -85,7 +90,7 @@ export async function mountInboxLayout(page, basePath, { captures = false } = {}
     inbox.setInboxView("inbox");
     await feed.startFeed();
     if (innerWidth <= 900) await rail.setInboxCollapsed(true, { animate: false, persist: false, reveal: true });
-  }, { deviceId: LAYOUT_DEVICE, captures });
+  }, { deviceId: LAYOUT_DEVICE, captures, environments, theme });
   await page.locator('[data-key="tracker_task:live-layout-task"]').waitFor({ state: "visible" });
 }
 

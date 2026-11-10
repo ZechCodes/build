@@ -501,3 +501,108 @@ fn secrets_open_error_keeps_normal_app_available_and_retains_admission_policy() 
         .is_err());
     assert!(!root.path().join("secrets").exists());
 }
+
+#[test]
+fn secret_membership_projection_follows_config_writes_and_startup() {
+    let root = tempfile::tempdir().unwrap();
+    let mut state = protected_app(root.path());
+    let source = root.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    let project = state.add_project(source, "main".into());
+    let environment = state.projects.get(&project).unwrap().environment_id.clone();
+    let config = state.config_value(&state.projects_dir, state.default_harness, state.isolation);
+    state.persist_config(&config).unwrap();
+    let store = state.store.as_ref().unwrap().clone();
+    assert_eq!(
+        store
+            .writer_for_test()
+            .query_row(
+                "SELECT environment_id FROM secret_project_membership WHERE project_id=?1",
+                [&project],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        environment
+    );
+    assert!(store
+        .writer()
+        .device_registry_generation()
+        .unwrap()
+        .is_some());
+    state.project_archive(&project).unwrap();
+    let config = state.config_value(&state.projects_dir, state.default_harness, state.isolation);
+    state.persist_config(&config).unwrap();
+    state.settle_device_lifecycle();
+    assert!(store
+        .writer_for_test()
+        .query_row(
+            "SELECT archived FROM secret_project_membership WHERE project_id=?1",
+            [&project],
+            |r| r.get::<_, bool>(0)
+        )
+        .unwrap());
+    // A stale disk projection cannot survive composition from current config.
+    store
+        .writer_for_test()
+        .execute("UPDATE secret_project_membership SET archived=0", [])
+        .unwrap();
+    let state = state
+        .with_secret_vault(root.path(), "synthetic-device")
+        .unwrap();
+    assert!(state.secret_service().is_some());
+    assert!(store
+        .writer_for_test()
+        .query_row(
+            "SELECT archived FROM secret_project_membership WHERE project_id=?1",
+            [project],
+            |r| r.get::<_, bool>(0)
+        )
+        .unwrap());
+}
+
+#[test]
+fn secrets_daemon_open_requires_loaded_config_only_for_existing_old_store() {
+    for config_state in ["absent", "unreadable", "fresh"] {
+        let root = tempfile::tempdir().unwrap();
+        let tasks = root.path().join("tasks");
+        let config_path = root.path().join("config.json");
+        let path = tasks.join("build.db");
+        if config_state != "fresh" {
+            std::fs::create_dir_all(&tasks).unwrap();
+            let c = rusqlite::Connection::open(&path).unwrap();
+            c.execute_batch(include_str!(
+                "../../../tests/fixtures/secrets-schema-26.sql"
+            ))
+            .unwrap();
+            c.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO meta VALUES('schema_version','26'); INSERT INTO secret_vault_state VALUES(1,'retained-key',NULL);INSERT INTO secret_records(id,device_id,creator,name,grant_scope,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,created_at,revision,upload_request_id,upload_digest,blob_present) VALUES('sec_00000000-0000-4000-8000-000000000001','device','creator','RETAINED','project','project-a','owner','conversation','generation',100,1,'00000000-0000-4000-8000-000000000002','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',1);").unwrap();
+        }
+        let before = std::fs::read(&path).ok();
+        if config_state == "unreadable" {
+            // A directory gives a deterministic read failure, even under root.
+            std::fs::create_dir(&config_path).unwrap();
+        }
+        let context =
+            HarnessContext::resolved(root.path().join("mcp.sock"), root.path().to_path_buf())
+                .unwrap();
+        let state =
+            AppState::new_unrooted_configured(root.path().join("worktrees"), "main", true, context);
+        let configured = state.with_config(&config_path);
+        if config_state == "unreadable" {
+            let error = configured
+                .err()
+                .expect("unreadable config must refuse startup");
+            assert!(error.to_string().contains("read config"), "{error}");
+        } else {
+            let opened = configured.unwrap().with_task_store(&tasks);
+            if config_state == "fresh" {
+                assert!(opened.is_ok());
+            } else {
+                let error = opened.err().expect("missing config must not migrate");
+                assert!(error.contains("authoritative config"), "{error}");
+            }
+        }
+        if let Some(before) = before {
+            assert_eq!(std::fs::read(&path).unwrap(), before, "{config_state}");
+        }
+    }
+}

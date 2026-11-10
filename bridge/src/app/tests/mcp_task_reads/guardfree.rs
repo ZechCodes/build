@@ -356,3 +356,130 @@ fn mcp_guardfree_harness_catalogue_does_not_probe_executables_under_either_guard
         "MCP catalogue resolved executable metadata or canonical paths while holding AppState"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_guardfree_project_sources_complete_with_app_and_both_writer_turns_held() {
+    let fixture = Fixture::new();
+    successful_group(
+        &fixture,
+        vec![legacy_request(&fixture, BridgeAction::ListProjectSources)],
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_guardfree_project_sources_enforce_surface_token_and_bound_project() {
+    let fixture = Fixture::new();
+    let (_other_root, other_repo) = init_repo();
+    let (foreign, worker) = {
+        let mut app = fixture.state.lock().unwrap();
+        let foreign = super::super::project_agent::added_project(&mut app, &other_repo);
+        let worker =
+            super::super::project_coordinator::add_worker(&mut app, &fixture.owner, json!({}));
+        app.test_install_mcp_token(worker.clone(), TOKEN.into());
+        (foreign, worker)
+    };
+    let (_, router) = snapshot_reads::router(&fixture);
+    let expected = fixture.legacy(BridgeAction::ListProjectSources);
+    let mut scoped = fixture.frame(BridgeAction::ListProjectSources);
+    scoped["request"]["project_id"] = json!(foreign);
+    scoped["request"]["environment_id"] = json!("foreign-environment");
+    let mut worker_frame = fixture.frame(BridgeAction::ListProjectSources);
+    worker_frame["task_id"] = json!(worker);
+    let mut unknown = fixture.frame(BridgeAction::ListProjectSources);
+    unknown["session_token"] = json!("wrong-source-token");
+    held::group(&fixture, vec![
+        held::Request::new(scoped, expected),
+        held::Request::new(worker_frame, json!({"ok":false,"error":"list_project_sources is a project tool; this session is on the coding surface"})),
+        held::Request::new(snapshot_reads::router_frame(&router, BridgeAction::ListProjectSources),
+            json!({"ok":false,"error":"list_project_sources is a project tool; this session routes captures"})),
+        held::Request::new(unknown, json!({"ok":false,"error":"unauthorized MCP session"})),
+    ], || {}).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_guardfree_project_sources_follow_source_add_remove_commits() {
+    let fixture = Fixture::new();
+    let environment_path = fixture._root.path().join("environment-source");
+    let project_path = fixture._root.path().join("project-source");
+    std::fs::create_dir(&environment_path).unwrap();
+    std::fs::create_dir(&project_path).unwrap();
+    let environment = source_mutation(
+        &fixture,
+        BridgeAction::AddEnvironmentSource {
+            path: Some(environment_path.display().to_string()),
+            remote: None,
+            name: None,
+            base_branch: None,
+        },
+    );
+    let env_source = environment["sources"][1]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let added = fixture.legacy(BridgeAction::ListProjectSources);
+    assert_eq!(
+        added["result"]["sources"][1],
+        json!({"id":env_source,"path":environment_path,"scope":"environment"})
+    );
+    source_read_while_held(&fixture, added).await;
+
+    let project = source_mutation(
+        &fixture,
+        BridgeAction::AddProjectSource {
+            path: Some(project_path.display().to_string()),
+            remote: None,
+            name: None,
+            base_branch: None,
+        },
+    );
+    let project_source = project["sources"][2]["id"].as_str().unwrap().to_string();
+    let added = fixture.legacy(BridgeAction::ListProjectSources);
+    assert_eq!(
+        added["result"]["sources"][2],
+        json!({"id":project_source,"path":project_path,"scope":"project"})
+    );
+    source_read_while_held(&fixture, added).await;
+
+    source_mutation(
+        &fixture,
+        BridgeAction::RemoveEnvironmentSource {
+            source_id: env_source,
+        },
+    );
+    let removed = fixture.legacy(BridgeAction::ListProjectSources);
+    assert_eq!(removed["result"]["sources"].as_array().unwrap().len(), 2);
+    assert_eq!(removed["result"]["sources"][1]["scope"], "project");
+    source_read_while_held(&fixture, removed).await;
+
+    source_mutation(
+        &fixture,
+        BridgeAction::RemoveProjectSource {
+            source_id: project_source,
+        },
+    );
+    let removed = fixture.legacy(BridgeAction::ListProjectSources);
+    assert_eq!(removed["result"]["sources"].as_array().unwrap().len(), 1);
+    source_read_while_held(&fixture, removed).await;
+}
+
+fn source_mutation(fixture: &Fixture, action: BridgeAction) -> Value {
+    fixture
+        .state
+        .lock()
+        .unwrap()
+        .agent_action(&fixture.owner, &fixture.agent, action)
+        .unwrap()
+}
+
+async fn source_read_while_held(fixture: &Fixture, expected: Value) {
+    held::group(
+        fixture,
+        vec![held::Request::new(
+            fixture.frame(BridgeAction::ListProjectSources),
+            expected,
+        )],
+        || {},
+    )
+    .await;
+}

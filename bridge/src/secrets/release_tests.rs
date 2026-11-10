@@ -45,6 +45,7 @@ impl Fixture {
             )
             .unwrap();
         store.writer_for_test().execute_batch("INSERT INTO device_project_ids(path,project_id) VALUES ('/synthetic-project','synthetic-project'); INSERT INTO device_owner_projects(owner_id,project_path) VALUES ('synthetic-project','/synthetic-project')").unwrap();
+        crate::store::secrets::seed_current_project_for_test(&store, "synthetic-project");
         let caller = SecretCaller {
             device_id: "synthetic-device".into(),
             channel: "dev".into(),
@@ -75,6 +76,7 @@ impl Fixture {
         }
     }
     fn add_member(&self, id: &str, owner: &str, project: &str, coordinator: bool) -> SecretCaller {
+        crate::store::secrets::seed_current_project_for_test(&self.store, project);
         let mut agent = Agent::new(id, owner, ModelChoice::default(), 2, "2026-11-04T00:00:00Z");
         if coordinator {
             agent.project_role = Some(crate::project_roster::ProjectRole::Coordinator);
@@ -781,7 +783,7 @@ fn schema_24_upgrade_adds_audit_without_changing_existing_metadata_or_value() {
     let connection = rusqlite::Connection::open(_dir.path().join("tasks/build.db")).unwrap();
     connection.execute_batch("DROP TABLE secret_audit; DROP TABLE secret_audit_summaries; DROP TABLE secret_unauthenticated_summary; UPDATE meta SET value='24' WHERE key='schema_version'").unwrap();
     drop(connection);
-    let store = Store::new(_dir.path().join("tasks")).unwrap();
+    let store = Store::new_with_secret_config(_dir.path().join("tasks"), &serde_json::json!({"environments":[{"id":"synthetic-environment"}],"projects":[{"id":caller.project_id,"environment_id":"synthetic-environment"}]})).unwrap();
     let service =
         SecretService::open_with_clock(_dir.path(), &caller.device_id, store.writer(), clock)
             .unwrap();
@@ -813,7 +815,7 @@ fn schema_24_upgrade_adds_audit_without_changing_existing_metadata_or_value() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "26");
+    assert_eq!(version, "27");
 }
 
 #[test]
@@ -1159,6 +1161,7 @@ fn lifecycle_metadata_survives_denial_group_cap_and_retention_without_entering_d
             "synthetic-user",
             &crate::api::v1::secrets::AuditParams {
                 scope: crate::api::v1::secrets::SecretScope {
+                    environment_id: None,
                     project_id: f.caller.project_id.clone(),
                     stage: Some(expired.context.stage.clone()),
                 },
@@ -1174,3 +1177,6 @@ fn lifecycle_metadata_survives_denial_group_cap_and_retention_without_entering_d
         .iter()
         .all(|event| event.attempt_count == 1 && event.last_occurred_at == event.occurred_at));
 }
+
+#[path = "environment_tests.rs"]
+mod environments;

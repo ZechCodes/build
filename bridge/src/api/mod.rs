@@ -207,7 +207,9 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
 
 /// Known methods or features deliberately held out of greetings while a later
 /// slice finishes their end-to-end product surface.
-pub const UNADVERTISED_CAPABILITIES: &[&str] = &["environment.delete"];
+pub const SECRETS_ENVIRONMENT_SCOPE_CAPABILITY: &str = "secrets.environmentScope";
+pub const UNADVERTISED_CAPABILITIES: &[&str] =
+    &["environment.delete", SECRETS_ENVIRONMENT_SCOPE_CAPABILITY];
 
 /// Everything this bridge can serve on a session, as exact method names and
 /// explicit feature names. Sorting and deduplication make the greeting stable.
@@ -570,6 +572,10 @@ impl From<String> for ApiError {
 /// include decrypted payloads or storage diagnostics in public errors.
 fn secret_refusal(message: &str) -> Option<ApiError> {
     let error = match message {
+        "project_archived" => ApiError::ProjectArchived {
+            message: message.into(),
+            details: None,
+        },
         "secret_invalid" => ApiError::invalid_params(message),
         "secret_conflict" => ApiError::conflict(message, None),
         "secret_limit" => ApiError::busy(message),
@@ -704,6 +710,7 @@ mod tests {
     #[test]
     fn deferred_secret_errors_keep_their_closed_public_classification() {
         for (message, code) in [
+            ("project_archived", "project_archived"),
             ("secret_invalid", "invalid_params"),
             ("secret_conflict", "conflict"),
             ("secret_limit", "busy"),

@@ -20,6 +20,8 @@ pub enum SecretError {
     Unavailable,
     #[error("unauthorized")]
     Unauthorized,
+    #[error("project_archived")]
+    ProjectArchived,
     #[error("secret_expired")]
     Expired,
     #[error("secret_revoked")]

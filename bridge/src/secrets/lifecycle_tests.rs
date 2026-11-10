@@ -652,11 +652,13 @@ fn present_unregistered_key_with_no_records_is_not_adopted_or_replaced() {
 fn revoke_operation_preserves_expiry_when_only_monotonic_time_advances() {
     let (_dir, store, clock, service) = fixture();
     store.writer_for_test().execute("INSERT INTO device_project_ids(path,project_id) VALUES ('/synthetic/project','synthetic-project')", []).unwrap();
+    crate::store::secrets::seed_current_project_for_test(&store, "synthetic-project");
     let record = stage(&service, Some(60));
     attach(&service, &record);
     clock.mono.store(60, Ordering::SeqCst);
     let params = crate::api::v1::secrets::RevokeParams {
         scope: crate::api::v1::secrets::SecretScope {
+            environment_id: None,
             project_id: "synthetic-project".into(),
             stage: None,
         },
@@ -688,8 +690,10 @@ fn revoke_operation_with_a_new_id_does_not_republish_an_existing_tombstone() {
     service.set_change_observer(Arc::new(move |_| {
         observed.fetch_add(1, Ordering::SeqCst);
     }));
+    crate::store::secrets::seed_current_project_for_test(&store, "synthetic-project");
     let mut params = crate::api::v1::secrets::RevokeParams {
         scope: crate::api::v1::secrets::SecretScope {
+            environment_id: None,
             project_id: "synthetic-project".into(),
             stage: None,
         },

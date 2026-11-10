@@ -1,5 +1,6 @@
 A separate checkout is a Build workspace, and `create_workspace` is how you get
-one. It cuts every source of this project afresh, on a branch of its own, the
+one. It cuts the environment's sources plus any folders added to this project
+only, on a branch of its own, the
 way the project is configured to cut them — a git worktree, or a copy-on-write
 clone. Never `git worktree add`, never `git clone`, never a copy of the folder
 you are standing in: a checkout Build did not cut is one nobody can see, nobody

@@ -1,4 +1,6 @@
 use rusqlite::OptionalExtension;
+#[path = "schema_environment.rs"]
+mod environment;
 
 pub(super) const DENIAL_OUTCOMES: &[&str] =
     &["secret_unavailable", "secret_expired", "secret_revoked"];
@@ -14,7 +16,7 @@ pub(super) fn denial_outcomes_sql() -> String {
     )
 }
 
-const AUDIT_COLUMNS: &str = "sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,attempt_count,last_occurred_at,outcome";
+const AUDIT_COLUMNS: &str = "sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,attempt_count,last_occurred_at,outcome,environment_id";
 
 /// Durable audit outcomes shared by release and metadata lifecycle writers.
 pub(crate) const AUDIT_OUTCOMES: &[&str] = &[
@@ -55,11 +57,12 @@ CREATE TABLE IF NOT EXISTS secret_records (
     creator TEXT NOT NULL,
     name TEXT NOT NULL,
     ttl_seconds INTEGER CHECK (ttl_seconds IS NULL OR ttl_seconds > 0),
-    grant_scope TEXT NOT NULL CHECK (grant_scope IN ('agent','project')),
+    grant_scope TEXT NOT NULL CHECK (grant_scope IN ('agent','project','environment')),
     grant_agent_id TEXT,
     grant_conversation_id TEXT,
     grant_generation TEXT,
     grant_project_id TEXT,
+    grant_environment_id TEXT,
     stage_owner_id TEXT NOT NULL,
     stage_conversation_id TEXT NOT NULL,
     stage_generation TEXT NOT NULL,
@@ -75,8 +78,9 @@ CREATE TABLE IF NOT EXISTS secret_records (
     upload_digest TEXT NOT NULL,
     blob_present INTEGER NOT NULL CHECK (blob_present IN (0,1)),
     UNIQUE (device_id, creator, upload_request_id),
-    CHECK ((grant_scope='agent' AND grant_agent_id IS NOT NULL AND grant_conversation_id IS NOT NULL AND grant_generation IS NOT NULL AND grant_project_id IS NULL)
-        OR (grant_scope='project' AND grant_agent_id IS NULL AND grant_conversation_id IS NULL AND grant_generation IS NULL AND grant_project_id IS NOT NULL)),
+    CHECK ((grant_scope='agent' AND grant_agent_id IS NOT NULL AND grant_conversation_id IS NOT NULL AND grant_generation IS NOT NULL AND grant_project_id IS NULL AND grant_environment_id IS NULL)
+        OR (grant_scope='project' AND grant_agent_id IS NULL AND grant_conversation_id IS NULL AND grant_generation IS NULL AND grant_project_id IS NOT NULL AND grant_environment_id IS NULL)
+        OR (grant_scope='environment' AND grant_agent_id IS NULL AND grant_conversation_id IS NULL AND grant_generation IS NULL AND grant_project_id IS NULL AND grant_environment_id IS NOT NULL)),
     CHECK ((attached_at IS NULL AND expires_at IS NULL AND message_operation_id IS NULL)
         OR (attached_at IS NOT NULL AND message_operation_id IS NOT NULL))
 );
@@ -90,6 +94,14 @@ CREATE INDEX IF NOT EXISTS secrets_agent
     ON secret_records(grant_agent_id) WHERE grant_scope='agent' AND revoked_at IS NULL;
 CREATE INDEX IF NOT EXISTS secrets_project
     ON secret_records(grant_project_id) WHERE grant_scope='project' AND revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS secrets_environment ON secret_records(grant_environment_id) WHERE grant_scope='environment' AND revoked_at IS NULL;
+CREATE TABLE IF NOT EXISTS secret_environments (environment_id TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS secret_project_membership (
+    project_id TEXT PRIMARY KEY,
+    environment_id TEXT NOT NULL REFERENCES secret_environments(environment_id),
+    archived INTEGER NOT NULL CHECK (archived IN (0,1))
+);
+CREATE INDEX IF NOT EXISTS secret_membership_environment ON secret_project_membership(environment_id,project_id);
 CREATE INDEX IF NOT EXISTS secrets_unretired
     ON secret_records(id) WHERE revoked_at IS NULL;
 CREATE TABLE IF NOT EXISTS secret_vault_state (
@@ -114,7 +126,8 @@ CREATE TABLE IF NOT EXISTS secret_final_bindings (
     owner_id TEXT NOT NULL,
     agent_id TEXT NOT NULL,
     conversation_id TEXT NOT NULL,
-    generation TEXT NOT NULL
+    generation TEXT NOT NULL,
+    environment_id TEXT
 );
 CREATE INDEX IF NOT EXISTS secret_final_agent ON secret_final_bindings(agent_id,conversation_id);
 CREATE INDEX IF NOT EXISTS secrets_metadata_project
@@ -137,7 +150,8 @@ CREATE TABLE IF NOT EXISTS secret_audit (
     occurred_at INTEGER NOT NULL,
     attempt_count INTEGER NOT NULL DEFAULT 1 CHECK (attempt_count > 0),
     last_occurred_at INTEGER NOT NULL DEFAULT 0,
-    outcome TEXT NOT NULL CHECK (outcome IN ('released','secret_unavailable','secret_expired','secret_revoked','created','attached','expired','revoked'))
+    outcome TEXT NOT NULL CHECK (outcome IN ('released','secret_unavailable','secret_expired','secret_revoked','created','attached','expired','revoked')),
+    environment_id TEXT
 );
 CREATE INDEX IF NOT EXISTS secret_audit_by_secret ON secret_audit(secret_id,sequence);
 CREATE INDEX IF NOT EXISTS secret_audit_by_caller ON secret_audit(agent_id,sequence);
@@ -163,7 +177,60 @@ CREATE TABLE IF NOT EXISTS secret_unauthenticated_summary (
 /// Schema 24 was unadvertised before key-loss recovery was revised. Upgrade
 /// those same-version databases too; an absent identity is never adopted while
 /// unretired grants remain.
+#[cfg(test)]
 pub(in crate::store) fn initialize(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
+    initialize_atomic(connection, None, false)
+}
+
+pub(in crate::store) fn initialize_store(
+    connection: &rusqlite::Connection,
+    config: Option<&serde_json::Value>,
+) -> Result<(), crate::store::StoreError> {
+    let stored: Option<i64> = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM meta WHERE key='schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if config.is_none() && stored.unwrap_or(0) < 27 {
+        return Err(crate::store::StoreError::SecretMigrationConfigRequired {
+            found: stored.unwrap_or(0),
+        });
+    }
+    initialize_atomic(connection, config, true).map_err(Into::into)
+}
+
+fn initialize_atomic(
+    connection: &rusqlite::Connection,
+    config: Option<&serde_json::Value>,
+    publish_version: bool,
+) -> rusqlite::Result<()> {
+    // SQLite requires FK enforcement disabled outside the table-rebuild
+    // transaction. The rebuild, all DDL/indexes, projection and schema fence
+    // commit together; any failure leaves the old store usable by its binary.
+    let foreign_keys: bool = connection.pragma_query_value(None, "foreign_keys", |r| r.get(0))?;
+    connection.pragma_update(None, "foreign_keys", false)?;
+    let result = (|| {
+        let tx = connection.unchecked_transaction()?;
+        initialize_in(&tx)?;
+        if let Some(config) = config {
+            super::membership::reconcile_config_in(&tx, config).map_err(|error| match error {
+                crate::secrets::SecretError::Database(error) => error,
+                _ => rusqlite::Error::InvalidQuery,
+            })?;
+        }
+        if publish_version {
+            tx.execute("INSERT INTO meta(key,value) VALUES('schema_version',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value!=excluded.value",[crate::store::SCHEMA_VERSION.to_string()])?;
+        }
+        tx.commit()
+    })();
+    let restored = connection.pragma_update(None, "foreign_keys", foreign_keys);
+    result.and(restored)
+}
+
+fn initialize_in(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
+    environment::upgrade(connection)?;
     connection.execute_batch(&SCHEMA)?;
     let columns = connection
         .prepare("PRAGMA table_info(secret_records)")?

@@ -301,3 +301,31 @@ no claim to verify schema-27 secret revocation.
 | ENV-S22-R5-1 | Admission claims own independent provisional plans until their checked owner publishes its journal or releases after failure; old terminal/abandoned records and sibling publication cannot remove a claim. | `project_deletion_provisional_claim_survives_sibling_publication_after_abandonment`: real startup abandonment, paused preparation, real sibling delete, task/source/owned-path refusals, success and record-failure cleanup. |
 | ENV-S22-R5-2 | Unavailable Git repositories never count as drained; known refs and exact deferred snapshot metadata stay owed, including on abandoned/completed tombstones, until opened and drained at startup. No unregistered-source discard. | `project_deletion_unavailable_pin_repository_retains_receipt_until_restart`; `history_pin_preflight_records_unavailable_repository_debt`; collection and returned-ref assertions. |
 | ENV-S22-R5-3 | An absent registered source with its checkout already removed still permits project/task deletion; unavailable pins retain a small receipt and protect the completion tombstone from collection. | `project_delete_missing_source_completes_with_owed_pin_receipts`: history removed, completion succeeds, receipt remains, sources return, actual restart drains refs. |
+
+
+## #1097 — S2.3 environment source MCP tools
+
+The Project-only MCP tools derive the environment from the caller's bound
+project and reuse `environment_add_source` / `environment_remove_source`.
+They introduce no alternate filesystem or Git path. The implemented checklist
+remains **100/100** within its existing scope.
+
+| Control | Evidence |
+| --- | --- |
+| Tool arguments cannot select a different environment; Coding agents and project workers cannot mutate source membership. | `mcp_project_surface_lists_environment_source_tools`; `project_worker_environment_source_refusals_preserve_configuration` uses valid add/remove inputs, compares config bytes and membership, and proves both succeed for the coordinator; `a_project_agent_adds_folders_to_its_own_environment` ignores foreign scope arguments. |
+| Adding a source applies the existing canonical-directory, containment, duplicate and remote validation; refused edits leave the config unchanged. | `project_agent_add_environment_source` delegates to `environment_add_source`; `a_project_agent_adds_folders_to_its_own_environment` compares missing, nested and duplicate path refusals with the underlying operation. |
+| Removing a source unlinks its environment reference without deleting files or changing another environment, and retains the last-source refusal. | `a_project_agent_removes_folders_from_its_own_environment` covers sibling projections, persistence, kept files, unknown source and last-source refusals. |
+
+Current source selection is proved by
+`a_project_agent_discovers_current_sources_without_workspaces` and
+`a_project_agent_discovers_sources_added_after_a_workspace_was_cut`:
+`list_project_sources` stays caller-bound and labels environment references
+separately from this project's added references. Reading changes no config.
+
+The inventory uses the independent MCP snapshot read lane over one accepted
+producer root. `mcp_guardfree_project_sources_complete_with_app_and_both_writer_turns_held`,
+`mcp_guardfree_project_sources_enforce_surface_token_and_bound_project` and
+`mcp_guardfree_project_sources_follow_source_add_remove_commits` hold the app
+mutex and both writer permits, require socket replies within 100 ms, enforce
+Project purpose/token/binding scope and verify freshly committed environment
+and project-only additions/removals without manual publication.

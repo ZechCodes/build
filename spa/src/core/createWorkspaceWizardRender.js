@@ -1,19 +1,19 @@
 import { folderDraftsHtml } from './createWorkspaceFolders.js';
 import { environmentDraftHtml } from './createWorkspaceEnvironmentDraft.js';
-import { kindGlyphHtml } from './environmentIdentity.js';
+import { rowIdentityBadgeHtml } from './environmentIdentity.js';
 import { esc } from './text.js';
 import { fieldTraits } from './fieldTraits.js';
 import { isolationOptionsHtml } from './isolation.js';
 import { branchNamePreview } from './toolbarModel.js';
 import { modalDialogHtml } from './modal.js';
-const glyph = kind => `<span class="create-kind" aria-hidden="true">${kindGlyphHtml(kind === 'project' ? 'project' : 'environment')}</span>`;
+const glyph = target => `<span class="create-kind" aria-hidden="true">${rowIdentityBadgeHtml(target, target.kind === 'project' ? 'project' : 'environment')}</span>`;
 const deviceHtml = target => `${target.deviceLabel ? `<span class="dim inbox-device">${esc(target.deviceLabel)}</span>` : ''}${target.offline ? '<span class="dim inbox-away">Offline</span>' : ''}`;
 const targetLabel = target => target.summaryLabel || target.label || target.name || target.id;
 export function createWorkspaceTargetSummaryHtml(target) {
   const label=targetLabel(target);
   const device=[target.deviceLabel,target.offline ? 'Offline':''].filter(Boolean).join(' · ');
   const deviceName=target.deviceLabel ? `<span class="create-summary-device-name" title="${esc(target.deviceLabel)}">${esc(target.deviceLabel)}</span>`:'';
-  return `<span class="create-summary-name" title="${esc(label)}">${glyph(target.kind)}${esc(label)}</span>
+  return `<span class="create-summary-name" title="${esc(label)}">${glyph(target)}${esc(label)}</span>
     ${device ? `<span class="create-summary-device dim" title="${esc(device)}">${deviceName}${target.offline ? ' <span class="create-summary-offline">Offline</span>':''}</span>`:''}`;
 }
 export const targetText = target => [targetLabel(target),target.deviceLabel,target.offline ? 'Offline':''].filter(Boolean).join(' · ');
@@ -25,7 +25,7 @@ export function wizardTargets(state) {
 function targetHtml(target,index,state) {
   const selected=sameTarget(target,state.target);
   return `<div class="create-target-row"><button type="button" class="create-target" data-create-target="${index}" data-kind="${target.kind}" data-create-key="${esc(target.key || `${target.deviceId}/${target.id}`)}" aria-pressed="${selected}"${state.busy ? ' disabled':''}>
-    ${glyph(target.kind)}<span class="create-target-copy"><span>${esc(target.label || target.name)}</span><span class="sub">${esc(target.description || 'Creates a new task board')}${target.empty ? ' · Resume…' : ''}</span></span>${deviceHtml(target)}<span class="create-selected" aria-hidden="true">${selected ? '✓':''}</span></button>
+    ${glyph(target)}<span class="create-target-copy"><span>${esc(target.label || target.name)}</span><span class="sub">${esc(target.description || 'Creates a new task board')}${target.empty ? ' · Resume…' : ''}</span></span>${deviceHtml(target)}<span class="create-selected" aria-hidden="true">${selected ? '✓':''}</span></button>
     ${target.kind==='new-environment' ? `<button type="button" class="btn" data-create-edit${state.busy ? ' disabled':''} aria-label="Edit new environment">Edit</button>`:''}</div>`;
 }
 function pickerHtml(state) {

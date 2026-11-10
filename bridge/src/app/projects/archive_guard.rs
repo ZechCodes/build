@@ -175,6 +175,7 @@ fn action_is_read(action: &BridgeAction) -> bool {
         action,
         BridgeAction::ListHarnesses
             | BridgeAction::ListWorkspaces
+            | BridgeAction::ListProjectSources
             | BridgeAction::ListWorkspaceAgents { .. }
             | BridgeAction::ListProjectAgents
             | BridgeAction::ListProjects

@@ -35,6 +35,13 @@ impl AppState {
         scope
             .validate()
             .map_err(|error| ApiError::classify(error.to_string()))?;
+        if let Some(environment) = &scope.environment_id {
+            return if self.projects.environment(environment).is_some() {
+                Ok(())
+            } else {
+                Err(ApiError::not_found("secret_unavailable"))
+            };
+        }
         if self.projects.get(&scope.project_id).is_none() {
             return Err(ApiError::not_found("secret_unavailable"));
         }
@@ -77,12 +84,18 @@ impl AppState {
 
     fn authorize_secret_upload(&self, params: &CreateParams) -> Result<(), ApiError> {
         let project = self.secret_stage_project(&params.scope)?;
+        self.refuse_archived_project(&project)?;
         self.authorize_secret_scope(&SecretScope {
+            environment_id: None,
             project_id: project.clone(),
             stage: Some(params.scope.clone()),
         })?;
         let valid = match &params.grant {
             GrantScope::Project { project_id } => project_id == &project,
+            GrantScope::Environment { environment_id } => self
+                .projects
+                .get(&project)
+                .is_some_and(|p| p.archived_at.is_none() && p.environment_id == *environment_id),
             GrantScope::Agent {
                 agent_id,
                 conversation_id,
@@ -121,6 +134,7 @@ impl AppState {
         validate_create_size(&params)?;
         self.authorize_secret_upload(&params)?;
         let authority = SecretScope {
+            environment_id: None,
             project_id: self.secret_stage_project(&params.scope)?,
             stage: Some(params.scope.clone()),
         };

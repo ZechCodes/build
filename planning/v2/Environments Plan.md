@@ -529,7 +529,8 @@ Changed:
 | M1 | `project.sync_source` | resolves the source from the project's effective sources, validates its captured path, and queues the existing project/source sync service (`{pending: true}`). It is not routed to a separate environment job; shared checkout mutations invalidate every referencing project's views, with sync status kept per reference |
 | M2 (planned restriction) | `project.add_source` / `remove_source` / `update_source` | operate on **added** sources only; naming an environment source id is refused "source-N belongs to environment E; edit it there". Planned old-client compatibility for `update_source` routes an environment source edit to its owning record (5C.5). M1 still accepts legacy project source edits; it does not enforce this future restriction |
 | M3 | every task/review/comment/workspace/source mutation | refused with `project_archived` on an archived project |
-| S2 | `secrets.create/list/revoke/audit` | `scope` accepts `{environment_id}` |
+| S2.1 | `secrets.create` | `grant` accepts `{scope:"environment", environment_id}`; `scope` remains the required owner/conversation/generation StageContext. Sealed upload and atomic-send lifetime are unchanged; there is no standalone settings-create lifetime. The writer transaction revalidates the stage owner’s current, unarchived project membership in the requested environment. |
+| S2.1 | `secrets.list/revoke/audit` | `scope` accepts `{environment_id}` in addition to the existing project/stage selector; mixed selectors are refused. `secrets.list` alone adds `include_environment?: bool` (default false) for inherited grants in a project/stage list. Old-shaped requests return only Agent/Project grants, even after a project override is revoked. Explicit environment selectors require no opt-in. Revoke and audit of an environment grant require `scope:{environment_id}`; a project/stage selector cannot reach it, and `include_environment` is list-only. S2.4 sends the opt-in once it advertises `secrets.environmentScope`. Accepted compatibility ruling: a client that predates `include_environment` lists only project/stage grants, so its list omits environment grants that its agents can still release. This gap is accepted because only a client that knows the environment scope can create such grants; release authority is unchanged. |
 | — | `tasks.*` | **unchanged** |
 
 MCP tools (`bridge/src/mcp.rs`): no project arguments anywhere; scope comes
@@ -824,13 +825,33 @@ as `AGENTS.md` requires.
 **SQLite:** M0.4 changed the schema to **26** for creation write-ahead
 effect evidence. Pending older creation records without that proof are marked
 unknown (`store/mutations/creation.rs:5-20`); creation uses the journal introduced
-in schema 18, with this additional migration. Stage 2 now plans **schema 27**:
-`secret_records.grant_scope` is `CHECK (grant_scope IN ('agent','project'))`
-with `grant_project_id` (`store/secrets/schema.rs:58-62`), so the environment
-scope is a table rebuild with `'environment'` and `grant_environment_id`,
-planned with a schema-26 fixture for the migration test;
+in schema 18, with this additional migration. S2.1 introduces **schema 27**:
+`secret_records` is rebuilt to admit `'environment'` with
+`grant_environment_id`, preserving existing metadata and encrypted AAD. A frozen
+schema-26 SQL fixture verifies migration and a second open. The table rebuild,
+all secret DDL/indexes, startup population from loaded config and schema-version
+publication share one transaction; an injected version-publication failure leaves
+the exact schema-26 database bytes through the full Store open, and a retry reaches 27. Existing pre-27 stores require authoritative config successfully loaded from disk; absent or unreadable config refuses startup before any database write. Fresh installs may initialize without config. The backup command uses a read-only source connection and copies the existing schema without migration;
 `secret_final_bindings`/`secret_audit` (`schema.rs:110-141`) gain the
-environment id. A newer store is refused by an older binary before any write
+environment id. `secret_environments` and `secret_project_membership` are
+disposable SQL projections of config-owned registration, environment membership
+and archive state. Every synchronous config persist (including config migration) marks a dedicated
+`secrets/membership` dirty fence, writes config, then atomically refreshes the
+projection and clears that fence. A refused file write leaves the old projection
+and cancels its marker. Startup and registry reconciliation also republish current
+config. The separate registry/lifecycle fence and off-lock registry jobs never
+block secrets. Only environment-dependent paths consult the membership fence:
+environment release/create/list/revoke/audit and the whole project/stage list
+when `include_environment:true`. Old-shaped project/agent/stage operations ignore
+both fences. Stale environment membership cannot grant access. Refused list/audit reads record bounded project/All scopes at the
+SQL boundary. On clear, plain membership changes and refused scopes are captured
+under the app guard; the existing off-lock ChangeBus flusher enqueues and emits
+after releasing it. Unchanged membership still re-hints refused reads, and every
+later dirty interval records a refused retry again. Old SQL snapshots that refuse
+after a drain wake another capture. No subscriptions mutex is taken by this
+membership capture while the app guard is held. The migration tests cover populating the projection from current
+config. Config remains the sole authority; these tables are never an independent
+registration source. A newer store is refused by an older binary before any write
 (`store.rs:368-386`). `archived_at` lives in `config.json`; the planned M2/M3
 config fields do not require another SQLite version in this plan.
 
@@ -1065,11 +1086,18 @@ Two layers, kept apart:
   circle, all 16 px, current foreground colour, `aria-hidden`), the **device
   label** (1.7), and the existing unread `.badge` pill (`styles.css:471`).
   No colour tokens, no hashing: nothing to design or theme before first try.
-- **Identity badges (Stage 2, recommendation 5B.3)**: hue from
-  `hash(deviceKey(device, environmentId)) mod 12` over tokens `--badge-1…12`
-  in both themes (`styles.css:164-237`; colours live only in `core/theme.js`),
-  glyph = first two letters of the row's name; siblings share hue, differ by
-  glyph. Replaces the kind glyph in the same slot, so no layout moves.
+- **Identity badges (Stage 2, S2.6)**: hue from a stable FNV-1a hash of
+  `deviceKey(device, environmentId)` modulo 12 over tokens `--badge-1…12`.
+  `core/theme.js` installs both themes' tokens and `--badge-ink`, and owns all
+  badge colour values. The glyph is the first two Unicode letters of the row's
+  name, each uppercased only if its uppercase form is one code point; expanding
+  letters keep their original form (`ßa` → `ßA`, `ß` → `ß`). One letter stays
+  one; no letters gives `?`. Siblings share hue and differ by glyph.
+  Replaces the kind glyph in its existing 16px SVG slot, so no layout moves.
+  Decorative letters use generated content inside the hidden SVG, contributing
+  no DOM text or accessible name to adjacent labels. A draft or legacy row
+  without an environment id uses its device-qualified row id; progress adopts the persisted environment
+  id as soon as it appears in the cached operation outcome.
 
 Placement (both layers): switcher rows, wizard rows and target summary,
 progress screen, crumb, inbox block heads (`projectHeadHtml`,
@@ -1270,7 +1298,7 @@ a migrated device:
 | --- | --- | --- | --- |
 | S2.1 | **Bridge: environment secrets** (`GrantScope::Environment`, planned schema 27 rebuild, membership revalidated per read incl. archived = not current, revoke on environment delete, name override, `secrets.*` scope, `secrets.changed` scope, `secrets.environmentScope`) | readable by agents of every project in the environment and none outside; project secret of the same name wins; a sibling never reads another project's secret; archived project's agents refused; deletion revokes | `environment_scoped_secret_readable_across_projects`; `project_secret_overrides_environment_name`; `sibling_project_cannot_read_project_scoped_secret` (one per mechanism: release, list, attach, audit); `archived_project_agent_not_current_for_secrets`; `environment_delete_revokes_environment_scope`; leak sweep row 14 rerun |
 | S2.2 | **Bridge: environment delete, project delete with tasks** (`environment.delete`, `project.delete {tasks}` accepted on archived projects too, parked-project unpark migration) | environment delete refused with "Delete its N projects first" while any project, archived or not, belongs to it; project delete refused while a workspace is unfinished, otherwise removes tasks, reviews and intents under its key only; journal-first, config-first deletion survives partial failure and restart using an immutable plan; pending deletions are fenced until completion or safe abandonment | `project_deletion_journal_failure_restart_and_retry`; `project_deletion_fences_rpc_mcp_and_registration_after_config_removal`; `project_deletion_history_and_phase_commit_atomically`; `project_deletion_retires_sessions_before_config_and_on_same_process_retry`; `project_deletion_history_checkpoint_rollback_preserves_real_review_pins`; `project_deletion_inventory_does_not_block_unrelated_requests`; `project_deletion_provisional_claim_survives_sibling_publication_after_abandonment`; `project_deletion_unavailable_pin_repository_retains_receipt_until_restart`; `project_delete_missing_source_completes_with_owed_pin_receipts`; `project_deletion_return_trip_drains_committed_pin_receipts`; `project_deletion_cleanup_allows_sibling_rename_and_workspace_delete`; `project_deletion_admission_is_sql_free_with_and_without_fences`; `project_deletion_return_trip_abandons_readded_registration`; `project_deletion_return_trip_abandons_changed_history_and_workspace`; `environment_delete_post_success_restart_retry_is_idempotent`; `environment_delete_refused_while_projects_exist` (incl. archived); `project_delete_removes_its_tasks_only`; `archived_project_accepts_delete` |
-| S2.3 | **Bridge: MCP** (`add_environment_source`/`remove_environment_source`, reworded `add_project_source`, templates) | project agent can add a folder to its environment; a Coding-surface agent has no such tool | `mcp_project_surface_lists_environment_source_tools`; template snapshot |
+| S2.3 | **Bridge: MCP** (`add_environment_source`/`remove_environment_source`, `list_project_sources`, reworded `add_project_source`, templates) | project agent can add a folder to its environment and discover current source ids/scopes without a workspace or after a workspace cut; a Coding-surface agent has no such tool | `mcp_project_surface_lists_environment_source_tools`; `a_project_agent_discovers_current_sources_without_workspaces`; `a_project_agent_discovers_sources_added_after_a_workspace_was_cut`; `project_worker_environment_source_refusals_preserve_configuration`; template snapshot |
 | S2.4 | **SPA: secrets in environment settings + composer scope** (#1006 composer "This environment"; "overrides environment" chips) | create/list/revoke; old bridge hides the scope | `secretsWire.test.js`, `environmentSettingsSecrets.test.js` |
 | S2.5 | **SPA: environment delete and project delete in settings** | refusal reasons verbatim; confirm names task and workspace counts | `environmentsSettingsDom.test.js`, `projectSettings.test.js` |
 | S2.6 | **SPA: identity badges** (tokens, `identityBadgeHtml`, replaces kind glyphs in place) | identical hue across tabs; siblings share hue, differ by glyph; contrast in both themes | `identityBadge.test.js`, theme token test |
@@ -1378,6 +1406,16 @@ project-key link, provided no other project has taken their old ID.
 The user then deletes again to capture fresh authority. Partial
 cleanup may remove captured files; that alone does not invent authority over new
 files. New sources occupying captured roots also prevent stale cleanup.
+
+**S2.3 review amendment (#1102):** the existing Project-surface reads do not
+expose current source references: `list_workspaces` contains cut-time directory
+snapshots. The slice therefore adds Project-only `list_project_sources`, a
+read-only MCP tool returning current config ids, paths and environment/project
+scope from accepted immutable producer fragments through the independent MCP
+read lane. It takes neither writer permits nor the app mutex; real-socket
+regressions hold both and enforce a 100 ms response budget, including scope
+refusals and immediately committed source additions/removals. This is an MCP-only plan extension, with no RPC, schema, wire-version or
+capability change.
 
 ### Stage 3: polish (after dogfooding, informed by it)
 
@@ -1514,9 +1552,11 @@ passes the named minor and the desktop app ships that SPA.
 20. **Provisioning cancel**: not in MVP; a `workspace.cancel_create` that
     turns an unpublished candidate into a terminal failed outcome is a
     candidate for Stage 2 if dogfooding asks for it.
-21. **Secrets lifecycle in Stage 2** needs environment membership checks and
-    revocation on environment delete and archive, not the identity split
-    alone (S2.1 tests).
+21. **Secrets lifecycle in Stage 2** revalidates environment membership on every
+    read and revokes environment grants on environment deletion. Archive denies
+    that project's agents without revoking siblings' shared environment grants;
+    project deletion retires only its Agent/Project grants (S2.1 tests and the
+    S2.2 deletion integration).
 22. **`proj-N` durability**: ids are persisted and restored
     (`persistence.rs:49`, `projects/mod.rs:426`); the recovery comment that
     says otherwise (`recovery.rs:328`) predates that and is amended in M0.2.
@@ -1584,7 +1624,7 @@ New rows for `Project Sources Security Checklist.md` (Stage 1) and
 | Tasks | Two projects in one environment number and list tasks independently; a task link to a sibling's workspace is refused | `sibling_projects_number_tasks_independently`; `link_workspace_of_sibling_project_refused` |
 | Tasks | Every mutation on an archived project is refused on RPC, MCP and agent paths with one error code, except `project.restore` and (Stage 2) `project.delete` (1.9) | `archived_project_refuses_mutations_on_every_path`; `archived_project_accepts_restore_and_delete` |
 | Tasks | `project.delete` removes only rows under the deleted project's key | `project_delete_removes_its_tasks_only` |
-| Secrets (8) | Environment scope derives from the issued session's project's environment at read time; archived projects are not current | `environment_membership_revalidated_per_read`; `archived_project_agent_not_current_for_secrets` |
+| Secrets (8) | Environment scope derives from the issued session's project's environment at read time; archived projects cannot create or release (`project_archived`), but project-scope list, audit and safety revoke remain available. Only environment-dependent paths consult the short config-membership fence; registry jobs never block secrets. | `environment_membership_revalidated_per_read`; `archived_project_agent_not_current_for_secrets` |
 | Secrets (11) | Environment deletion revokes environment-scoped secrets before the registration is removed; project deletion leaves environment scope intact | `environment_delete_revokes_environment_scope` |
 | Secrets (new) | A project-scoped secret is never released to a sibling's agent by list, attach, CLI release or audit, and never copied by a creation attempt | one negative test per mechanism |
 | Secrets (19) | `secrets.environmentScope` capability, fixtures, manifest and version pins; an older client never sees the scope | `secrets_contract_includes_environment_scope` |

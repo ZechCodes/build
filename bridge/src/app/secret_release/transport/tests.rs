@@ -178,6 +178,7 @@ fn audited_fixture() -> (
         generation_revision: agent.thread.generation_revision,
         session_incarnation: "synthetic-session".into(),
     };
+    crate::store::secrets::seed_current_project_for_test(&store, "synthetic-project");
     let service = SecretService::open(dir.path(), "synthetic-device", store.writer()).unwrap();
     let record = service
         .stage(

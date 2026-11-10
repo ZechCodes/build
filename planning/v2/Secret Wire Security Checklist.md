@@ -23,10 +23,86 @@ facts surviving the denial cap and retention cleanup.
 | 5 | Blob publication precedes metadata commit; failed SQL leaves inaccessible encrypted orphan; startup removes it. | staging persistence-boundary injection, existing vault crash tests. |
 | 6 | Send commits complete set, message, descriptor and receipt atomically with FULL durability. Replay preserves original acceptance and TTL. | `secret_atomic`, `post_secret_claim`, failed binding rollback. |
 | 7 | Existing/final provisional recipient is fenced by canonical project, owner, agent, conversation and generation. Immutable AAD stays intact. | `secret_post`, generation-race and provisional release tests. |
-| 8 | Metadata and audit reads are bounded scoped snapshots; cursor scope changes are refused; tombstones and TTL remain authoritative. | `store::secrets::metadata`, malformed query/authorization tests. |
-| 9 | Invalidation contains only IDs/revision/scope; project routing survives originating conversation retirement; lost/reordered hints reconcile without uploads. | `changes::secrets_tests`, SPA `secretsWire` tests. |
-| 10 | Delivery exact revision block includes scope and no values, wrapped/pinned for all five harnesses; features remain unadvertised. | `agent_message::secret_tests`, API contract + withheld capability tests. |
+| 8 | Metadata and audit reads are bounded scoped snapshots; cursor scope changes are refused; tombstones and TTL remain authoritative. | `store::secrets::metadata`, malformed query/authorization tests; `environment_membership_revalidated_per_read`, archived release/create denial with metadata/safety-revoke availability and the sibling list/audit negatives. |
+| 9 | Invalidation contains only IDs/revision/scope; project routing survives originating conversation retirement; lost/reordered hints reconcile without uploads. | `changes::secrets_tests`, including environment/all subscription routing, SPA `secretsWire` tests. |
+| 10 | Delivery exact revision block includes scope and no values, wrapped/pinned for all five harnesses; the environment feature remains unadvertised until S2.4 (the existing 3.36 features retain their advertisements). | `agent_message::secret_tests`, API contract + withheld capability tests. |
 
 Run only targeted gates under `nice -n 10`, with scratch CARGO_TARGET_DIR and
 TMPDIR. The final task comment records exit codes, test counts, scanner results,
 frozen head and merge overlap with the CLI slice. No installed bridge is run.
+
+## S2.1 — environment grant extension (#1095)
+
+The scoped score remains **100/100**. `secrets_contract_includes_environment_scope`
+checks additive grant/selectors, strict fields, unchanged wire 3.39.0 and the
+withheld environment capability. `environment_secret_upload_validates_current_stage_project_in_writer`
+and `environment_secret_upload_rechecks_membership_after_opening` cover foreign
+environments, archive and a membership change between opening and publication.
+`environment_secret_creation_never_widens_project_grant` keeps request replay
+from widening or copying an existing project grant. Create retains StageContext;
+list/revoke/audit accept the environment selector. No standalone creation lifetime
+is introduced. Both accepted-secret and environment-secret leak sweeps cover
+values, sealed markers, live DB/WAL, metadata, pushes, harness prompts and Git,
+with the existing negative controls. The frozen schema-26 fixture preserves all
+old secret state through schema 27 and a second open; config repopulates the
+membership projection behind the dedicated config-membership dirty fence.
+
+### Review #1104 qualification
+
+Old-shaped `secrets.list` requests omit environment grants, including after an
+override is revoked. Only an explicit environment selector or
+`include_environment:true` opts into the new DTO kind. Existing project and All
+subscriptions receive project-shaped invalidations for every member project;
+explicit environment subscriptions receive the environment hint. The old client's
+list therefore remains parseable, while a real visibility gap remains for its
+agents' readable inherited grants until that client adopts the new consumer.
+
+`old_secret_list_excludes_environment_without_opt_in_even_after_override_revoke`
+and `environment_secret_invalidations_reach_member_projects_in_legacy_shape`
+verify those contracts. Fresh cryptographically sealed contexts and fresh request
+IDs in `environment_secret_creation_never_widens_project_grant` demonstrate that
+creating a separate environment value leaves the original project's grant and
+value unchanged; a foreign grant attempt is refused without touching either.
+
+Re-review regressions cover a non-empty legacy cursor and refusal in both
+cross-mode directions (`old_secret_list_nonempty_cursor_preserves_contract_and_refuses_cross_mode`).
+Membership reconciliation captures plain committed changes for every joining or
+leaving project after the durable read fence clears; the off-lock flusher captures
+after app unlock and enqueues truncated project hints. All subscribers receive
+those hints and a legacy device refresh for an environment event with no members.
+`environment_secret_interleaving_invalidates_leaving_and_joining_projects` and
+`environment_secret_without_members_still_invalidates_all_in_legacy_shape` cover
+the delayed-notification interleavings. Notes perform no SQL or transport work;
+existing off-lock read/ack-fenced delivery and descriptor revision checks remain.
+
+The final membership-fencing revision records actual SQL list/audit fence
+refusals as bounded project/All scopes. Reconciliation captures plain committed
+data only; the existing flusher captures after SQL clear and app unlock, then
+enqueues off-lock. Named `device_lifecycle_tests::secrets_*` regressions cover
+the exact queued-hint/unrelated-write/refused-read ordering, consecutive dirty
+intervals, deterministic lock/commit ordering, independent late snapshots and
+scope bounds. Subscription read/ack fencing and all wire shapes are unchanged.
+
+
+Gate #1106 qualification: legacy Project/Agent/stage operations ignore registry
+and membership fences. Environment operations alone consult the dedicated
+config-membership fence; `include_environment:true` refuses the whole list and
+records a post-clear retry. The real `settings.set` regression and retained
+consecutive/late-snapshot tests exercise this fence. Real workspace-creation and
+review-opening jobs held in flight allow project create/release/list/audit/revoke
+and environment release/list (and create/audit/revoke).
+`legacy_secret_scopes_ignore_registry_and_membership_fences` also covers legacy
+agent release and staged create/list while the membership fence is dirty.
+
+Archived projects retain project list/audit/revoke; create and release report
+`project_archived`, and an archived member cannot release an environment grant.
+Evidence: `archived_project_secret_metadata_and_revoke_remain_available_create_reports_archive`,
+`archived_project_keeps_metadata_and_safety_revoke_but_not_release`, and
+`archived_project_agent_not_current_for_secrets`.
+`project_revoke_and_audit_cannot_reach_an_environment_grant` proves project
+selectors refuse shared grant IDs just like unknown IDs, preserve metadata/value,
+and explicit environment selectors retain audit/revoke authority.
+
+Historical migration fixtures supply their synthetic authoritative config; the
+partial-migration regression asserts the injected malformed-JSON SQLite error.
+Task #1095 records the widened complete `store::` and `app::tests` results.

@@ -161,17 +161,17 @@ fn assert_v17_delivery_migration(store: &Store, records: &[(String, String)]) {
 fn a_v16_database_migrates_without_arming_existing_assignments() {
     let dir = tempfile::tempdir().unwrap();
     let records = create_v16_fixture(dir.path());
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     assert_v17_delivery_migration(&store, &records);
     drop(store);
-    let reopened = Store::new(dir.path()).unwrap();
+    let reopened = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     assert_v17_delivery_migration(&reopened, &records);
 }
 
 #[test]
 fn v5_raw_agent_settings_and_surviving_primary_alias_are_frozen_once() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let mut task = plan_record("task-legacy");
     task.provider = crate::models::AgentProvider::Codex;
     task.model = Some("task-model".to_string());
@@ -220,7 +220,7 @@ fn v5_raw_agent_settings_and_surviving_primary_alias_are_frozen_once() {
     store.pretend_to_be_v5();
     drop(store);
 
-    let migrated = Store::new(dir.path()).unwrap();
+    let migrated = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let loaded = reload_run(&migrated, "run-legacy");
     let agent = &loaded.agents[0];
     assert_eq!(agent.ordinal, 2, "migration does not renumber survivors");
@@ -248,7 +248,7 @@ fn v5_raw_agent_settings_and_surviving_primary_alias_are_frozen_once() {
     assert_eq!(backup, raw_before);
 
     drop(migrated);
-    let reopened = Store::new(dir.path()).unwrap();
+    let reopened = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let stable = reload_run(&reopened, "run-legacy");
     assert_eq!(stable.agents[0].conversation_id(), task.agents[0].id);
     assert_eq!(
@@ -279,7 +279,8 @@ fn a_v3_database_is_migrated_and_its_tool_calls_classified() {
     let root = dir.path().join("tasks");
     let agent_id;
     {
-        let store = Store::new(&root).expect("store opens");
+        let store =
+            Store::new_with_secret_config(&root, &serde_json::json!({})).expect("store opens");
         let mut record = run_record("run-1", None, NOW);
         agent_id = record.agents[0].id.clone();
         record.agents[0].thread.post_user("said before", None, NOW);
@@ -300,7 +301,8 @@ fn a_v3_database_is_migrated_and_its_tool_calls_classified() {
         store.save_run(&record).expect("the run saves");
         store.pretend_to_be_v3();
     }
-    let migrated = Store::new(&root).expect("a v3 store opens");
+    let migrated =
+        Store::new_with_secret_config(&root, &serde_json::json!({})).expect("a v3 store opens");
 
     assert_eq!(
         migrated
@@ -324,7 +326,8 @@ fn a_v1_database_is_migrated_and_its_items_classified() {
     let agent_id;
     let floor;
     {
-        let store = Store::new(&root).expect("store opens");
+        let store =
+            Store::new_with_secret_config(&root, &serde_json::json!({})).expect("store opens");
         let mut record = run_record("run-1", None, NOW);
         agent_id = record.agents[0].id.clone();
         record.agents[0]
@@ -336,7 +339,8 @@ fn a_v1_database_is_migrated_and_its_items_classified() {
         // schema version that says so.
         store.pretend_to_be_v1();
     }
-    let migrated = Store::new(&root).expect("a v1 store opens");
+    let migrated =
+        Store::new_with_secret_config(&root, &serde_json::json!({})).expect("a v1 store opens");
     assert_eq!(
         migrated
             .unread_attention_between(&agent_id, 0, floor)
@@ -387,7 +391,8 @@ fn literal_v2_shape_upgrades_to_current_before_retention_indexes_classify_rows()
     .unwrap();
     drop(conn);
 
-    let store = Store::new(dir.path()).expect("production startup upgrades a literal v2 store");
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({}))
+        .expect("production startup upgrades a literal v2 store");
     let conn = store.connection();
     let version: String = conn
         .query_row(
@@ -531,7 +536,7 @@ fn the_json_import_runs_once_and_leaves_the_records_it_read() {
 #[test]
 fn a_v7_store_gains_the_tracker_and_loses_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let mut run = run_record("run-kept", None, NOW);
     run.agents[0]
         .thread
@@ -540,7 +545,7 @@ fn a_v7_store_gains_the_tracker_and_loses_nothing() {
     store.pretend_to_be_v7();
     drop(store);
 
-    let upgraded = Store::new(dir.path()).unwrap();
+    let upgraded = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let kept = reload_run(&upgraded, "run-kept");
     assert_eq!(
         kept.agents[0].thread.items.len(),
@@ -570,7 +575,7 @@ fn a_v7_store_gains_the_tracker_and_loses_nothing() {
 #[test]
 fn adding_a_table_does_not_reclassify_every_conversation_row() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let mut run = run_record("run-1", None, NOW);
     run.agents[0].thread.post_user("a message", None, NOW);
     store.save_run(&run).unwrap();
@@ -588,7 +593,7 @@ fn adding_a_table_does_not_reclassify_every_conversation_row() {
     store.pretend_to_be_v7();
     drop(store);
 
-    let upgraded = Store::new(dir.path()).unwrap();
+    let upgraded = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let still_zero: i64 = upgraded
         .connection()
         .query_row(

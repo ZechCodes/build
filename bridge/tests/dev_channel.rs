@@ -534,3 +534,55 @@ fn dev_mcp_uses_the_validated_socket_instead_of_a_raw_tilde_path() {
     let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(reply["result"]["isError"], true);
 }
+
+#[test]
+fn dev_backup_copies_populated_schema_26_without_migration_or_config() {
+    let home = tempfile::tempdir().unwrap();
+    let tasks = home.path().join(".local/state/build-dev/tasks");
+    std::fs::create_dir_all(&tasks).unwrap();
+    let path = tasks.join("build.db");
+    let c = rusqlite::Connection::open(&path).unwrap();
+    c.execute_batch(include_str!("fixtures/secrets-schema-26.sql"))
+        .unwrap();
+    c.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO meta VALUES('schema_version','26'); INSERT INTO secret_vault_state VALUES(1,'retained-key',NULL);INSERT INTO secret_records(id,device_id,creator,name,grant_scope,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,created_at,revision,upload_request_id,upload_digest,blob_present) VALUES('sec_00000000-0000-4000-8000-000000000001','device','creator','RETAINED','project','project-a','owner','conversation','generation',100,1,'00000000-0000-4000-8000-000000000002','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',1);").unwrap();
+    drop(c);
+    let before = std::fs::read(&path).unwrap();
+    let backup = home.path().join("backup.db");
+    let output = cli(
+        home.path(),
+        Some("dev"),
+        &["backup", backup.to_str().unwrap()],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    let c = rusqlite::Connection::open(backup).unwrap();
+    assert_eq!(
+        c.query_row(
+            "SELECT value FROM meta WHERE key='schema_version'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "26"
+    );
+    assert_eq!(
+        c.query_row("SELECT active_key_id FROM secret_vault_state", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        "retained-key"
+    );
+    assert_eq!(
+        c.query_row("SELECT name FROM secret_records", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "RETAINED"
+    );
+    assert!(c
+        .prepare("SELECT environment_id FROM secret_project_membership")
+        .is_err());
+}

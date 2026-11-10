@@ -3,7 +3,7 @@ import { workspaceLockHtml } from "./workspaceLock.js";
 import { esc } from "./text.js";
 import { toolbarBreadcrumbs } from "./toolbarBreadcrumbs.js";
 import { ICON_CHEVRON_LEFT } from "./icons.js";
-import { kindGlyphHtml, projectIdentityText } from "./environmentIdentity.js";
+import { identityBadgeHtml, projectIdentityText } from "./environmentIdentity.js";
 import { patchElement } from "./domPatch.js";
 
 const selectorHtml = (name, label, current = false) =>
@@ -73,7 +73,7 @@ function environmentCrumbHtml(project, identity) {
   const label = projectIdentityText(identity);
   return `<a class="tb-project tb-environment-project" href="${esc(project.hash)}" data-project-return
     aria-label="${esc(`Open project workspace ${label}`)}" title="${esc(label)}"${project.current ? ' aria-current="page"' : ""}>
-    ${kindGlyphHtml("project")}${environment}<span class="tb-name">${esc(project.label)}</span></a>`;
+    ${identityBadgeHtml({ key: identity.key, name: identity.projectName })}${environment}<span class="tb-name">${esc(project.label)}</span></a>`;
 }
 
 const surfaceName = (name) => ({ inbox: "Inbox", account: "Settings", device: "Device settings", settings: "Settings" }[name] || "Build");

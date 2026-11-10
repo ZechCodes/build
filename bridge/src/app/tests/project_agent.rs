@@ -2019,3 +2019,304 @@ fn a_message_from_an_agent_names_the_conversation_it_came_from() {
         answers[0]
     );
 }
+
+fn environment_source_agent_fixture(root: &Path) -> (AppState, String, String) {
+    for name in ["home", "other", "assets"] {
+        std::fs::create_dir(root.join(name)).unwrap();
+    }
+    let config = root.join("config.json");
+    std::fs::write(&config, json!({
+        "environments":[
+            {"id":"env-1","name":"Shared","next_source":2,"sources":[
+                {"id":"source-1","name":"home","mount":"home","path":root.join("home")}]},
+            {"id":"env-2","name":"Other","next_source":2,"sources":[
+                {"id":"source-1","name":"other","mount":"other","path":root.join("other")}]}
+        ],
+        "projects":[
+            {"id":"proj-1","environment_id":"env-1","project_key":"first","path":root.join("home"),"name":"First"},
+            {"id":"proj-2","environment_id":"env-1","project_key":"second","path":root.join("home"),"name":"Second"},
+            {"id":"proj-3","environment_id":"env-2","project_key":"third","path":root.join("other"),"name":"Third"}
+        ]
+    }).to_string()).unwrap();
+    let mut app = rooted(root).with_config(config).unwrap();
+    let (owner, agent) = project_agent(&mut app, "proj-1");
+    (app, owner, agent)
+}
+
+fn environment_source_action(value: Value) -> BridgeAction {
+    serde_json::from_value(value).expect("environment source MCP action")
+}
+
+#[test]
+fn a_project_agent_adds_folders_to_its_own_environment() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut app, owner, agent) = environment_source_agent_fixture(root.path());
+    let result = app
+        .agent_action(
+            &owner,
+            &agent,
+            environment_source_action(json!({
+                "action":"add_environment_source","path":root.path().join("assets"),
+                "name":"Assets","base_branch":null,"remote":null,
+                "environment_id":"env-2","project_id":"proj-3"
+            })),
+        )
+        .unwrap();
+    assert_eq!(result["environment_id"], "env-1");
+    for project in ["proj-1", "proj-2"] {
+        let row = app.projects.get(project).unwrap();
+        assert_eq!(row.sources.len(), 2);
+        assert_eq!(row.sources[1].name, "Assets");
+        assert!(row.added_sources.is_empty());
+    }
+    assert_eq!(app.projects.get("proj-3").unwrap().sources.len(), 1);
+    let reloaded = rooted(root.path())
+        .with_config(root.path().join("config.json"))
+        .unwrap();
+    assert_eq!(
+        reloaded
+            .projects
+            .environment("env-1")
+            .unwrap()
+            .sources
+            .len(),
+        2
+    );
+
+    std::fs::create_dir(root.path().join("home/nested")).unwrap();
+    for path in [
+        root.path().join("home/nested"),
+        root.path().join("missing"),
+        root.path().join("home"),
+    ] {
+        let before = std::fs::read(root.path().join("config.json")).unwrap();
+        let params = json!({"environment_id":"env-1","path":path});
+        let expected = app
+            .with_inline_deferred(|app| app.environment_add_source(&params))
+            .unwrap_err();
+        let refused = app
+            .agent_action(
+                &owner,
+                &agent,
+                environment_source_action(json!({
+                    "action":"add_environment_source","path":path
+                })),
+            )
+            .unwrap_err();
+        assert_eq!(refused, expected);
+        assert_eq!(
+            std::fs::read(root.path().join("config.json")).unwrap(),
+            before
+        );
+    }
+}
+
+#[test]
+fn a_project_agent_removes_folders_from_its_own_environment() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut app, owner, agent) = environment_source_agent_fixture(root.path());
+    let added = app.handle(req(
+        "environment.add_source",
+        json!({"environment_id":"env-1","path":root.path().join("assets")}),
+    ));
+    assert_eq!(added["ok"], true, "{added}");
+    let removed = app
+        .agent_action(
+            &owner,
+            &agent,
+            environment_source_action(json!({
+                "action":"remove_environment_source","source_id":"source-2","environment_id":"env-2"
+            })),
+        )
+        .unwrap();
+    assert_eq!(removed["environment_id"], "env-1");
+    for project in ["proj-1", "proj-2", "proj-3"] {
+        assert_eq!(app.projects.get(project).unwrap().sources.len(), 1);
+    }
+    assert!(root.path().join("assets").is_dir());
+    for source in ["source-2", "source-1"] {
+        let before = std::fs::read(root.path().join("config.json")).unwrap();
+        let expected = app
+            .environment_remove_source(&json!({"environment_id":"env-1","source_id":source}))
+            .unwrap_err();
+        let refused = app
+            .agent_action(
+                &owner,
+                &agent,
+                environment_source_action(json!({
+                    "action":"remove_environment_source","source_id":source
+                })),
+            )
+            .unwrap_err();
+        assert_eq!(refused, expected);
+        assert_eq!(
+            std::fs::read(root.path().join("config.json")).unwrap(),
+            before
+        );
+    }
+    let reloaded = rooted(root.path())
+        .with_config(root.path().join("config.json"))
+        .unwrap();
+    assert_eq!(
+        reloaded
+            .projects
+            .environment("env-1")
+            .unwrap()
+            .sources
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn a_project_agent_discovers_current_sources_without_workspaces() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut app, owner, agent) = environment_source_agent_fixture(root.path());
+    let added = app
+        .agent_action(
+            &owner,
+            &agent,
+            BridgeAction::AddProjectSource {
+                path: Some(root.path().join("assets").display().to_string()),
+                remote: None,
+                name: None,
+                base_branch: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(added["sources"].as_array().unwrap().len(), 2);
+    let listed = app
+        .agent_action(&owner, &agent, BridgeAction::ListWorkspaces)
+        .unwrap();
+    assert_eq!(listed["workspaces"], json!([]));
+    let config = std::fs::read(root.path().join("config.json")).unwrap();
+    let sources = app
+        .agent_action(
+            &owner,
+            &agent,
+            environment_source_action(json!({
+                "action":"list_project_sources", "project_id":"proj-3", "environment_id":"env-2"
+            })),
+        )
+        .unwrap();
+    assert_eq!(
+        sources,
+        json!({"project_id":"proj-1","environment_id":"env-1","sources":[
+            {"id":"source-1","path":root.path().join("home"),"scope":"environment"},
+            {"id":"source-2","path":root.path().join("assets"),"scope":"project"}
+        ]})
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("config.json")).unwrap(),
+        config
+    );
+}
+
+#[test]
+fn a_project_agent_discovers_sources_added_after_a_workspace_was_cut() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut app, owner, agent) = environment_source_agent_fixture(root.path());
+    let workspace_id = workspace(&mut app, "proj-1", "before-sources");
+    app.agent_action(
+        &owner,
+        &agent,
+        environment_source_action(json!({
+            "action":"add_environment_source", "path":root.path().join("assets")
+        })),
+    )
+    .unwrap();
+    let project_only = root.path().join("project-only");
+    std::fs::create_dir(&project_only).unwrap();
+    app.agent_action(
+        &owner,
+        &agent,
+        BridgeAction::AddProjectSource {
+            path: Some(project_only.display().to_string()),
+            remote: None,
+            name: None,
+            base_branch: None,
+        },
+    )
+    .unwrap();
+    let cut = app.workspaces.get(&workspace_id).unwrap();
+    assert_eq!(cut.directories.len(), 1);
+    let listed = app
+        .agent_action(
+            &owner,
+            &agent,
+            environment_source_action(json!({
+                "action":"list_project_sources"
+            })),
+        )
+        .unwrap();
+    assert_eq!(
+        listed["sources"],
+        json!([
+            {"id":"source-1","path":root.path().join("home"),"scope":"environment"},
+            {"id":"source-2","path":root.path().join("assets"),"scope":"environment"},
+            {"id":"source-3","path":project_only,"scope":"project"}
+        ])
+    );
+    let removable = &listed["sources"][1];
+    app.agent_action(
+        &owner,
+        &agent,
+        environment_source_action(json!({
+            "action":"remove_environment_source", "source_id":removable["id"]
+        })),
+    )
+    .unwrap();
+    let current = app
+        .agent_action(
+            &owner,
+            &agent,
+            environment_source_action(json!({
+                "action":"list_project_sources"
+            })),
+        )
+        .unwrap();
+    assert_eq!(current["sources"].as_array().unwrap().len(), 2);
+    assert_eq!(current["sources"][1]["scope"], "project");
+}
+
+#[test]
+fn a_project_agents_prompt_uses_plural_only_for_extra_effective_sources() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut app, owner, agent) = environment_source_agent_fixture(root.path());
+    for scope in ["environment", "project"] {
+        let single = app.project_agent_prompt(&owner);
+        assert!(single.contains("Read anything in it"), "{single}");
+        assert!(!single.contains("other sources"), "{single}");
+        assert!(!single.contains("{project_"), "{single}");
+        let added = app.agent_action(&owner, &agent, environment_source_action(json!({
+            "action":format!("add_{scope}_source"), "path":root.path().join("assets"), "name":"Assets"
+        }))).unwrap();
+        let plural = app.project_agent_prompt(&owner);
+        let said = plural.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(said.contains("Read anything in them"), "{scope}: {said}");
+        assert!(
+            said.contains(&format!(
+                "Its other sources are part of the base too: `Assets` at {}.",
+                root.path().join("assets").display()
+            )),
+            "{scope}: {said}"
+        );
+        assert!(
+            said.contains("Use `list_project_sources` for current source ids and scope."),
+            "{scope}: {said}"
+        );
+        assert!(!said.contains("{project_"), "{scope}: {said}");
+        app.agent_action(
+            &owner,
+            &agent,
+            environment_source_action(json!({
+                "action":format!("remove_{scope}_source"), "source_id":added["sources"][1]["id"]
+            })),
+        )
+        .unwrap();
+    }
+    let single = app.project_agent_prompt(&owner);
+    assert!(single.contains("Read anything in it"), "{single}");
+    assert!(!single.contains("other sources"), "{single}");
+    assert!(!single.contains("{project_"), "{single}");
+}

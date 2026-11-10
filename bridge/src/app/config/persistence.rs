@@ -88,10 +88,7 @@ impl AppState {
             return Err("configuration write in progress; retry after project deletion".into());
         }
         self.mark_device_lifecycle_dirty()?;
-        let Some(path) = &self.config_path else {
-            return Ok(());
-        };
-        self.write_config_file(path, config)
+        self.persist_secret_membership_config(self.config_path.as_deref(), config)
     }
 }
 

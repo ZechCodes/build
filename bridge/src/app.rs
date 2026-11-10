@@ -37,6 +37,7 @@ mod rpc;
 mod rtc;
 mod runs;
 mod runtime;
+mod secret_publication;
 mod secret_reads;
 #[cfg(unix)]
 mod secret_release;
@@ -309,6 +310,7 @@ pub struct AppState {
     snapshot_observations: snapshot_projection::SnapshotObservations,
     device_lifecycle_holds: usize,
     device_lifecycle_dirty: std::cell::Cell<bool>,
+    secret_membership_dirty: std::cell::Cell<bool>,
     /// Projects one of whose sources is moving; their workers wait (#533).
     source_moves: projects::SourceMoves,
     source_directory_claims: projects::SourceDirectoryClaims,
@@ -342,6 +344,9 @@ pub struct AppState {
     isolation: Isolation,
     /// Where to persist the projects + settings, if persistence is enabled.
     config_path: Option<std::path::PathBuf>,
+    config_loaded_from_disk: bool,
+    secret_membership_publication:
+        std::cell::RefCell<secret_publication::SecretMembershipPublication>,
     retention: crate::retention::RetentionConfig,
     #[cfg(test)]
     config_persist_failure: Option<ConfigPersistStep>,
@@ -349,6 +354,8 @@ pub struct AppState {
     environment_secret_revocation_error: Option<String>,
     #[cfg(test)]
     project_deletion_failure: Option<&'static str>,
+    #[cfg(test)]
+    config_persist_gate: Option<OffLockGate>,
     agent: Agent,
     harness: String,
     /// Project-scoped plans, keyed by `plan_id`.
@@ -747,6 +754,7 @@ impl AppState {
             snapshot_observations: snapshot_projection::SnapshotObservations::default(),
             device_lifecycle_holds: 0,
             device_lifecycle_dirty: std::cell::Cell::new(false),
+            secret_membership_dirty: std::cell::Cell::new(false),
             source_moves: projects::SourceMoves::default(),
             source_directory_claims: projects::SourceDirectoryClaims::default(),
             active_deferred_filesystem_jobs: 0,
@@ -760,6 +768,8 @@ impl AppState {
             agent_modes: AgentModes::from_legacy_default(DEFAULT_HARNESS),
             isolation: Isolation::default(),
             config_path: None,
+            config_loaded_from_disk: false,
+            secret_membership_publication: Default::default(),
             retention: crate::retention::RetentionConfig::default(),
             #[cfg(test)]
             config_persist_failure: None,
@@ -767,6 +777,8 @@ impl AppState {
             environment_secret_revocation_error: None,
             #[cfg(test)]
             project_deletion_failure: None,
+            #[cfg(test)]
+            config_persist_gate: None,
             agent,
             harness,
             plans: HashMap::new(),
@@ -959,7 +971,8 @@ impl AppState {
                 self.state_root.display()
             ));
         }
-        let stored = load_stored_tasks(dir)?;
+        let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
+        let stored = load_stored_tasks(dir, self.config_loaded_from_disk.then_some(&config))?;
         self.restore_stored_tasks(stored)?;
         self.task_admission_keys = std::cell::RefCell::new(
             self.store
@@ -1011,6 +1024,7 @@ impl AppState {
                 app.push_runtime.clone(),
             )
         };
+        Self::attach_secret_publication_source(&state);
         Self::spawn_snapshot_maintenance(&state);
         if let Some(updates) = state.lock().unwrap().update_service() {
             let weak = Arc::downgrade(&state);

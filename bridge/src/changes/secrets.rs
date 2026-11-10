@@ -1,7 +1,93 @@
 //! Metadata invalidations are independent of conversation fact publication.
 use super::*;
 
+#[derive(Default)]
+pub(crate) struct SecretPublication {
+    pub routes: Option<Vec<(String, String)>>,
+    pub projects: BTreeSet<String>,
+    pub all: bool,
+}
+pub(crate) type SecretPublicationSource = Arc<dyn Fn() -> Option<SecretPublication> + Send + Sync>;
+
 impl ChangeBus {
+    pub(crate) fn set_secret_publication_source(&self, source: SecretPublicationSource) {
+        let _ = self.secret_publication_source.set(source);
+        self.wake_secret_publications();
+    }
+    pub(crate) fn wake_secret_publications(&self) {
+        self.wake.notify_one();
+    }
+
+    pub(crate) fn publish_pending_secret_updates(&self) {
+        let Some(batch) = self
+            .secret_publication_source
+            .get()
+            .and_then(|source| source())
+        else {
+            return;
+        };
+        // Source has released the app guard. Only this half touches subscribers.
+        if let Some(routes) = batch.routes {
+            self.replace_secret_routes(routes);
+        }
+        for project in batch.projects {
+            self.note_secret_refresh(&project);
+        }
+        if batch.all {
+            self.note_secret_change(json!({"type":SECRETS_CHANGED_EVENT,"scope":"device",
+                "revision":1,"secret_ids":[],"truncated":true}));
+        }
+    }
+    fn note_secret_refresh(&self, project: &str) {
+        self.note_secret_change(json!({"type":SECRETS_CHANGED_EVENT,
+            "scope":"project","project_id":project,"revision":1,"secret_ids":[],"truncated":true}));
+    }
+    /// Routing hints only; SQL revalidates authority independently on each read.
+    #[cfg(test)]
+    pub(crate) fn set_secret_project_environments(
+        &self,
+        projects: impl IntoIterator<Item = (String, String)>,
+    ) {
+        for project in self.replace_secret_routes(projects) {
+            self.note_secret_refresh(&project);
+        }
+    }
+    fn replace_secret_routes(
+        &self,
+        projects: impl IntoIterator<Item = (String, String)>,
+    ) -> BTreeSet<String> {
+        let mut environments = BTreeMap::<String, BTreeSet<String>>::new();
+        for (project, environment) in projects {
+            environments.entry(environment).or_default().insert(project);
+        }
+        let mut previous = self.secret_environment_projects.lock().unwrap();
+        let changed = changed_projects(&previous, &environments);
+        *previous = environments;
+        changed
+    }
+
+    fn secret_payloads(&self, payload: Value) -> Vec<Value> {
+        let mut events = Vec::new();
+        if payload["scope"] == "environment" {
+            let environment = payload["environment_id"].as_str().unwrap_or("");
+            if let Some(projects) = self
+                .secret_environment_projects
+                .lock()
+                .unwrap()
+                .get(environment)
+            {
+                for project in projects {
+                    let mut hint = payload.clone();
+                    hint.as_object_mut().unwrap().remove("environment_id");
+                    hint["scope"] = json!("project");
+                    hint["project_id"] = json!(project);
+                    events.push(hint);
+                }
+            }
+        }
+        events.push(payload);
+        events
+    }
     pub fn note_secret_records(&self, records: &[crate::secrets::SecretRecord]) {
         for record in records {
             self.note_secret_change(payload(record));
@@ -9,20 +95,53 @@ impl ChangeBus {
     }
 
     pub(crate) fn note_secret_change(&self, payload: Value) {
+        let events = self.secret_payloads(payload);
+        // Environment-shaped hints are withheld from legacy All subscribers.
+        // With no member project hint, give All an existing device refresh.
+        let empty_environment = events.len() == 1 && events[0]["scope"] == "environment";
         let now = Instant::now();
         let mut subscriptions = self.subscriptions.lock().unwrap();
         for sub in subscriptions.iter_mut() {
-            sub.note_secret_change(payload.clone(), now);
+            if empty_environment && matches!(sub.spec.scope, Scope::All) {
+                sub.note_secret_change(
+                    json!({"type":SECRETS_CHANGED_EVENT,"scope":"device",
+                    "revision":events[0]["revision"],"secret_ids":[],"truncated":true}),
+                    now,
+                );
+            }
+            for event in &events {
+                sub.note_secret_change(event.clone(), now);
+            }
         }
         drop(subscriptions);
         self.wake.notify_one();
     }
 }
 
+fn changed_projects(
+    old: &BTreeMap<String, BTreeSet<String>>,
+    new: &BTreeMap<String, BTreeSet<String>>,
+) -> BTreeSet<String> {
+    let empty = BTreeSet::new();
+    old.keys()
+        .chain(new.keys())
+        .flat_map(|environment| {
+            old.get(environment)
+                .unwrap_or(&empty)
+                .symmetric_difference(new.get(environment).unwrap_or(&empty))
+                .cloned()
+        })
+        .collect()
+}
+
 fn payload(record: &crate::secrets::SecretRecord) -> Value {
     use crate::secrets::GrantScope;
     let mut value = json!({"type":SECRETS_CHANGED_EVENT,"revision":record.revision,"secret_ids":[record.context.id]});
     match &record.context.grant {
+        GrantScope::Environment { environment_id } => {
+            value["scope"] = json!("environment");
+            value["environment_id"] = json!(environment_id);
+        }
         GrantScope::Project { project_id } => {
             value["scope"] = json!("project");
             value["project_id"] = json!(project_id);
@@ -43,12 +162,17 @@ fn payload(record: &crate::secrets::SecretRecord) -> Value {
 }
 
 pub(super) fn covered(scope: &Scope, payload: &Value) -> bool {
+    if payload["scope"] == "environment" {
+        // Existing All/project subscribers receive the legacy project hints.
+        return matches!(scope,Scope::Environment(id) if payload["environment_id"].as_str()==Some(id.as_str()));
+    }
     payload["scope"] == "device" || scope.covers(route(payload))
 }
 
 fn route(payload: &Value) -> &str {
-    payload["project_id"]
+    payload["environment_id"]
         .as_str()
+        .or_else(|| payload["project_id"].as_str())
         .or_else(|| payload["entity_id"].as_str())
         .unwrap_or("")
 }

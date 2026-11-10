@@ -33,7 +33,7 @@ pub(super) fn append_in(
     }
     let request_id = uuid::Uuid::new_v4().to_string();
     let creator = record.map(|record| record.context.creator.as_str());
-    let changed=tx.execute("INSERT INTO secret_audit (secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,last_occurred_at,outcome) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10,?11)",params![id,creator,caller.project_id,caller.owner_id,caller.agent_id,caller.conversation_id,caller.generation,caller.session_incarnation,request_id,now,outcome])?;
+    let changed=tx.execute("INSERT INTO secret_audit (secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,last_occurred_at,outcome,environment_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10,?11,?12)",params![id,creator,caller.project_id,caller.owner_id,caller.agent_id,caller.conversation_id,caller.generation,caller.session_incarnation,request_id,now,outcome,record.and_then(|r|super::membership::grant_environment(&r.context.grant))])?;
     if changed != 1 {
         return Err(SecretError::Unavailable);
     }
@@ -83,7 +83,7 @@ impl StoreWriter {
             return Err(SecretError::Invalid);
         }
         let connection = self.connection();
-        let mut query=connection.prepare(&format!("SELECT sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome,attempt_count,last_occurred_at FROM secret_audit WHERE secret_id=?1 AND sequence>?2 AND (outcome='released' OR outcome IN {}) ORDER BY sequence LIMIT ?3", denial_outcomes_sql()))?;
+        let mut query=connection.prepare(&format!("SELECT sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome,attempt_count,last_occurred_at,environment_id FROM secret_audit WHERE secret_id=?1 AND sequence>?2 AND (outcome='released' OR outcome IN {}) ORDER BY sequence LIMIT ?3", denial_outcomes_sql()))?;
         let records = query
             .query_map(params![id, after, limit as i64], audit_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -107,7 +107,7 @@ impl StoreWriter {
             return Err(SecretError::Invalid);
         }
         let connection = self.connection();
-        let mut query = connection.prepare(&format!("SELECT sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome,attempt_count,last_occurred_at FROM secret_audit WHERE agent_id=?1 AND sequence>?2 AND (outcome='released' OR outcome IN {}) ORDER BY sequence LIMIT ?3", denial_outcomes_sql()))?;
+        let mut query = connection.prepare(&format!("SELECT sequence,secret_id,creator,project_id,owner_id,agent_id,conversation_id,generation,session_incarnation,request_id,occurred_at,outcome,attempt_count,last_occurred_at,environment_id FROM secret_audit WHERE agent_id=?1 AND sequence>?2 AND (outcome='released' OR outcome IN {}) ORDER BY sequence LIMIT ?3", denial_outcomes_sql()))?;
         let records = query
             .query_map(params![agent_id, after, limit as i64], audit_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -156,6 +156,7 @@ impl StoreWriter {
 
 pub(super) fn audit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SecretAuditRecord> {
     Ok(SecretAuditRecord {
+        environment_id: row.get(14)?,
         sequence: row.get(0)?,
         secret_id: row.get(1)?,
         creator: row.get(2)?,

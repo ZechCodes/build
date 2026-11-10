@@ -63,3 +63,10 @@ fn retire(tx: &Transaction<'_>, ids: Vec<String>) -> Result<Vec<SecretRecord>> {
     }
     Ok(retired)
 }
+
+pub(super) fn retire_environment_in(
+    tx: &Transaction<'_>,
+    environment: &str,
+) -> Result<Vec<SecretRecord>> {
+    retire(tx, ids(tx,"SELECT id FROM secret_records WHERE grant_scope='environment' AND grant_environment_id=?1 AND revoked_at IS NULL",[environment])?)
+}

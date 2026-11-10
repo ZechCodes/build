@@ -15,6 +15,11 @@ impl AppState {
         self.secret_state_root = Some(state_root.to_path_buf());
         self.session_registry.set_secret_device(device_id);
         self.secret_service = None;
+        let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
+        if self.reconcile_secret_membership(&config).is_err() {
+            eprintln!("secret vault unavailable");
+            return Ok(self);
+        }
         if let Some(store) = &self.store {
             let changes = Arc::clone(&self.changes);
             store
@@ -43,6 +48,58 @@ impl AppState {
             Err(_) => eprintln!("secret vault unavailable"),
         }
         Ok(self)
+    }
+
+    pub(in crate::app) fn reconcile_secret_membership(
+        &self,
+        config: &serde_json::Value,
+    ) -> Result<(), String> {
+        if let Some(store) = &self.store {
+            store
+                .writer()
+                .secrets_reconcile_config(config)
+                .map_err(|error| error.to_string())?;
+        }
+
+        self.secret_membership_dirty.set(false);
+        self.publish_secret_project_routes(config);
+        Ok(())
+    }
+
+    /// Membership uncertainty is independent of long-running registry jobs.
+    pub(in crate::app) fn mark_secret_membership_dirty(&self) -> Result<(), String> {
+        if let Some(store) = &self.store {
+            store
+                .writer()
+                .mark_sync_dirty("secrets", "membership", crate::store::sync::now_ms())
+                .map_err(|error| error.to_string())?;
+        }
+        self.secret_membership_dirty.set(true);
+        Ok(())
+    }
+
+    pub(in crate::app) fn persist_secret_membership_config(
+        &self,
+        path: Option<&Path>,
+        config: &serde_json::Value,
+    ) -> Result<(), String> {
+        self.mark_secret_membership_dirty()?;
+        if let Some(path) = path {
+            if let Err(error) = self.write_config_file(path, config) {
+                // A reported file-write error never replaces current config;
+                // the projection has not changed, so only cancel its fence.
+                if let Some(store) = &self.store {
+                    store
+                        .writer()
+                        .secrets_cancel_membership_write()
+                        .map_err(|e| e.to_string())?;
+                }
+                self.secret_membership_dirty.set(false);
+                self.changes.wake_secret_publications();
+                return Err(error);
+            }
+        }
+        self.reconcile_secret_membership(config)
     }
 
     /// All project admission doors use the same resolved device-vault fence.

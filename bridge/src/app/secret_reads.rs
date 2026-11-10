@@ -171,6 +171,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path()).unwrap();
         store.writer_for_test().execute("INSERT INTO device_project_ids(path,project_id) VALUES ('/synthetic/project','project-a')",[]).unwrap();
+        crate::store::secrets::seed_current_project_for_test(&store, "project-a");
         for (path, owner) in [
             ("/synthetic/project", "synthetic-owner-a"),
             ("/synthetic/project", "synthetic-owner-b"),

@@ -399,3 +399,355 @@ fn revoke_receipts_are_bounded_without_blocking_revocation_and_pruned_on_sweep()
         "revoked"
     );
 }
+
+#[test]
+fn environment_secret_upload_validates_current_stage_project_in_writer() {
+    let mut f = fixture();
+    let project = f.params["scope"]["owner_id"].as_str().unwrap().to_string();
+    let env = f.app.projects.get(&project).unwrap().environment_id.clone();
+    f.params["grant"] = json!({"scope":"environment","environment_id":env});
+    let accepted = create(&mut f).unwrap();
+    assert_eq!(accepted["grant"]["scope"], "environment");
+    assert_eq!(accepted["status"], "staged");
+    let mut context:UploadContext=serde_json::from_value(json!({
+        "device_id":f.params["device_id"],"creator":f.params["creator"],"request_id":uuid::Uuid::new_v4().to_string(),
+        "name":"FOREIGN","ttl_seconds":null,"grant":{"scope":"environment","environment_id":"foreign-environment"},"stage":f.params["scope"]
+    })).unwrap();
+    let authority: SecretScope =
+        serde_json::from_value(json!({"project_id":project,"stage":f.params["scope"]})).unwrap();
+    let service = f.app.secret_service().unwrap();
+    assert!(service
+        .stage_upload_authorized(
+            &context,
+            "synthetic-ciphertext",
+            &SyntheticOpener(f.calls.clone()),
+            &authority
+        )
+        .is_err());
+    context.grant =
+        serde_json::from_value(json!({"scope":"environment","environment_id":env})).unwrap();
+    f.app
+        .store
+        .as_ref()
+        .unwrap()
+        .writer_for_test()
+        .execute(
+            "UPDATE secret_project_membership SET archived=1 WHERE project_id=?1",
+            [&project],
+        )
+        .unwrap();
+    assert!(service
+        .stage_upload_authorized(
+            &context,
+            "synthetic-ciphertext",
+            &SyntheticOpener(f.calls.clone()),
+            &authority
+        )
+        .is_err());
+    assert_eq!(
+        f.app
+            .store
+            .as_ref()
+            .unwrap()
+            .writer_for_test()
+            .query_row("SELECT COUNT(*) FROM secret_records", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn environment_secret_upload_rechecks_membership_after_opening() {
+    struct MovingOpener {
+        writer: crate::store::StoreWriter,
+        project: String,
+    }
+    impl UploadOpener for MovingOpener {
+        fn open(&self, _: &str, _: &UploadContext) -> crate::secrets::Result<SecretValue> {
+            self.writer.secrets_reconcile_config(&json!({"environments":[{"id":"foreign-env"}],"projects":[{"id":self.project,"environment_id":"foreign-env","archived_at":null}]}))?;
+            SecretValue::new(b"synthetic-test-value-only".to_vec())
+        }
+    }
+    let f = fixture();
+    let project = f.params["scope"]["owner_id"].as_str().unwrap();
+    let environment = &f.app.projects.get(project).unwrap().environment_id;
+    let context:UploadContext=serde_json::from_value(json!({"device_id":f.params["device_id"],"creator":f.params["creator"],"request_id":f.params["request_id"],"name":f.params["name"],"ttl_seconds":null,"grant":{"scope":"environment","environment_id":environment},"stage":f.params["scope"]})).unwrap();
+    let authority: SecretScope =
+        serde_json::from_value(json!({"project_id":project,"stage":f.params["scope"]})).unwrap();
+    let opener = MovingOpener {
+        writer: f.app.store.as_ref().unwrap().writer(),
+        project: project.into(),
+    };
+    assert!(f
+        .app
+        .secret_service()
+        .unwrap()
+        .stage_upload_authorized(&context, "synthetic-ciphertext", &opener, &authority)
+        .is_err());
+    assert!(!opener.writer.secrets_have_records().unwrap());
+}
+
+fn seal_real_upload(params: &mut Value, value: &[u8]) {
+    use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine};
+    use dryoc::classic::{crypto_box::crypto_box_seal, crypto_core::crypto_scalarmult_base};
+    let context = UploadContext {
+        device_id: params["device_id"].as_str().unwrap().into(),
+        creator: params["creator"].as_str().unwrap().into(),
+        request_id: params["request_id"].as_str().unwrap().into(),
+        name: params["name"].as_str().unwrap().into(),
+        ttl_seconds: None,
+        grant: serde_json::from_value(params["grant"].clone()).unwrap(),
+        stage: serde_json::from_value(params["scope"].clone()).unwrap(),
+    };
+    let encoded=serde_json::to_vec(&json!({"domain":"build.secrets.upload","version":1,"context":context,"value_b64":BASE64.encode(value)})).unwrap();
+    let mut padded = vec![0; crate::secrets::upload::PADDED_BYTES];
+    padded[..4].copy_from_slice(&(encoded.len() as u32).to_be_bytes());
+    padded[4..4 + encoded.len()].copy_from_slice(&encoded);
+    let mut public = [0; 32];
+    crypto_scalarmult_base(&mut public, &[7; 32]);
+    let mut sealed = vec![0; padded.len() + 48];
+    crypto_box_seal(&mut sealed, &padded, &public).unwrap();
+    params["sealed_payload"] = json!(BASE64.encode(sealed));
+}
+
+#[test]
+fn environment_secret_creation_never_widens_project_grant() {
+    use base64::{engine::general_purpose::STANDARD_NO_PAD as BASE64, Engine};
+    let mut f = fixture();
+    f.app = f.app.with_secret_upload_opener(Arc::new(
+        crate::secrets::upload::SealedUploadOpener::new(&BASE64.encode([7; 32])).unwrap(),
+    ));
+    seal_real_upload(&mut f.params, b"synthetic-original-project-value");
+    let original = create(&mut f).unwrap();
+    let writer = f.app.store.as_ref().unwrap().writer();
+    let before = writer
+        .secret_record(original["secret_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    let project = f.params["scope"]["owner_id"].as_str().unwrap();
+    let environment = f.app.projects.get(project).unwrap().environment_id.clone();
+    f.params["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+    f.params["grant"] = json!({"scope":"environment","environment_id":environment});
+    seal_real_upload(&mut f.params, b"synthetic-new-environment-value");
+    let created = create(&mut f).unwrap();
+    assert_ne!(created["secret_id"], original["secret_id"]);
+    assert_ne!(created["request_id"], original["request_id"]);
+    let after = writer.secret_record(&before.context.id).unwrap().unwrap();
+    assert_eq!(after, before);
+    assert!(matches!(after.context.grant, GrantScope::Project { .. }));
+    let vault = crate::secrets::vault::Vault::open(f.root.path(), true).unwrap();
+    assert_eq!(
+        vault.read(&after.context).unwrap().as_bytes(),
+        b"synthetic-original-project-value"
+    );
+    let environment = writer
+        .secret_record(created["secret_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        vault.read(&environment.context).unwrap().as_bytes(),
+        b"synthetic-new-environment-value"
+    );
+    assert_eq!(writer.secret_records().unwrap().len(), 2);
+    f.params["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+    f.params["grant"] = json!({"scope":"environment","environment_id":"foreign-environment"});
+    seal_real_upload(&mut f.params, b"synthetic-refused-value");
+    assert!(create(&mut f).is_err());
+    assert_eq!(writer.secret_records().unwrap().len(), 2);
+    assert_eq!(
+        writer.secret_record(&before.context.id).unwrap().unwrap(),
+        before
+    );
+    assert_eq!(
+        vault.read(&before.context).unwrap().as_bytes(),
+        b"synthetic-original-project-value"
+    );
+}
+
+#[test]
+fn archived_project_secret_metadata_and_revoke_remain_available_create_reports_archive() {
+    let mut f = fixture();
+    let first = create(&mut f).unwrap();
+    let project = f.params["scope"]["owner_id"].as_str().unwrap().to_owned();
+    f.app.projects.at_mut(0).archived_at = Some(1);
+    f.app.persist();
+    let caller = CallContext::detached("synthetic-owner");
+    let scope = json!({"project_id":project});
+    assert!(f
+        .app
+        .dispatch_api_with_context("secrets.list", &json!({"scope":scope}), Some(&caller))
+        .is_ok());
+    assert!(f
+        .app
+        .dispatch_api_with_context(
+            "secrets.audit",
+            &json!({"scope":scope,"secret_id":first["secret_id"]}),
+            Some(&caller)
+        )
+        .is_ok());
+    let refused = create(&mut f).err().unwrap();
+    assert_eq!(refused.code(), "project_archived");
+    assert!(f.app.dispatch_api_with_context("secrets.revoke", &json!({"scope":scope,"secret_id":first["secret_id"],"operation_id":uuid::Uuid::new_v4().to_string()}), Some(&caller)).is_ok());
+}
+
+fn registry_secret_fixture() -> Fixture {
+    let mut f = fixture();
+    let source = f.root.path().join("git-source");
+    let repo = git2::Repository::init(&source).unwrap();
+    repo.set_head("refs/heads/main").unwrap();
+    let signature = git2::Signature::now("Fixture", "fixture@example.test").unwrap();
+    let tree = repo
+        .find_tree(repo.index().unwrap().write_tree().unwrap())
+        .unwrap();
+    repo.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+        .unwrap();
+    let project = f.app.add_project(source, "main".into());
+    f.params["scope"]["owner_id"] = json!(project);
+    f.params["grant"]["project_id"] = json!(project);
+    f.app
+        .dispatch(
+            "project.ensure_conversation",
+            &json!({"project_id":project}),
+        )
+        .unwrap();
+    f
+}
+
+fn assert_registry_job_keeps_secrets_available(f: &mut Fixture) {
+    assert!(f.app.active_device_registry_jobs > 0);
+    let store = f.app.store.as_ref().unwrap().clone();
+    assert!(store
+        .writer()
+        .device_registry_generation()
+        .unwrap()
+        .is_some());
+    let project = f.params["scope"]["owner_id"].as_str().unwrap().to_owned();
+    let env = f.app.projects.get(&project).unwrap().environment_id.clone();
+    let owner = f
+        .app
+        .runs
+        .keys()
+        .find(|owner| f.app.project_of(owner).ok().as_deref() == Some(project.as_str()))
+        .unwrap()
+        .clone();
+    let agent = f
+        .app
+        .entity_agents(&owner)
+        .unwrap()
+        .primary()
+        .unwrap()
+        .clone();
+    let caller = crate::secrets::SecretCaller {
+        device_id: "synthetic-device".into(),
+        channel: "dev".into(),
+        project_id: project.clone(),
+        owner_id: owner.clone(),
+        canonical_owner_id: owner,
+        agent_id: agent.id.clone(),
+        conversation_id: agent.id,
+        thread_id: agent.thread.id.clone(),
+        generation: agent.thread.id,
+        generation_revision: agent.thread.generation_revision,
+        session_incarnation: "registry-secret-session".into(),
+    };
+    let service = f.app.secret_service().unwrap();
+    let user = CallContext::detached("synthetic-owner");
+    for grant in [
+        json!({"scope":"project","project_id":project}),
+        json!({"scope":"environment","environment_id":env}),
+    ] {
+        f.params["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+        f.params["name"] = json!(if grant["scope"] == "project" {
+            "LOCAL"
+        } else {
+            "SHARED"
+        });
+        f.params["grant"] = grant.clone();
+        let created = create(f).unwrap();
+        let id = created["secret_id"].as_str().unwrap();
+        service
+            .attach(&[id.to_owned()], &uuid::Uuid::new_v4().to_string())
+            .unwrap();
+        service
+            .release(&caller, id, "registry-release", || true)
+            .expect("current committed project member releases during registry work");
+        let scope = if grant["scope"] == "project" {
+            json!({"project_id":project})
+        } else {
+            json!({"environment_id":env})
+        };
+        let listed = f
+            .app
+            .dispatch_api_with_context("secrets.list", &json!({"scope":scope}), Some(&user))
+            .unwrap();
+        assert!(listed["secrets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["secret_id"] == id));
+        assert!(f
+            .app
+            .dispatch_api_with_context(
+                "secrets.audit",
+                &json!({"scope":scope,"secret_id":id}),
+                Some(&user)
+            )
+            .is_ok());
+        assert!(f.app.dispatch_api_with_context("secrets.revoke", &json!({"scope":scope,"secret_id":id,"operation_id":uuid::Uuid::new_v4().to_string()}), Some(&user)).is_ok());
+        assert!(f.app.active_device_registry_jobs > 0);
+    }
+}
+
+#[test]
+fn workspace_creation_in_flight_preserves_secret_scope_availability() {
+    let mut f = registry_secret_fixture();
+    let params = json!({"project_id":f.params["scope"]["owner_id"],"name":"secrets-inflight","isolation":"worktree"});
+    let (answer, job) = f.app.dispatch_deferring("workspace.create", &params);
+    answer.unwrap();
+    let job = job.unwrap();
+    assert_registry_job_keeps_secrets_available(&mut f);
+    f.app
+        .apply_deferred("workspace.create", &params, job.run())
+        .unwrap();
+}
+
+#[test]
+fn review_opening_in_flight_preserves_secret_scope_availability() {
+    let mut f = registry_secret_fixture();
+    let created = f.app.dispatch("workspace.create", &json!({"project_id":f.params["scope"]["owner_id"],"name":"secrets-review","isolation":"worktree"})).unwrap();
+    let params = json!({"workspace_id":created["workspace_id"],"request_id":"secrets-inflight-review","title":"Review secrets availability","description":"Unchanged membership"});
+    let (answer, job) = f.app.dispatch_deferring("tasks.review.open", &params);
+    answer.unwrap();
+    let job = job.unwrap();
+    assert_registry_job_keeps_secrets_available(&mut f);
+    f.app
+        .apply_deferred("tasks.review.open", &params, job.run())
+        .unwrap();
+}
+
+#[test]
+fn upload_archive_after_admission_reports_archive_at_deferred_boundary() {
+    struct ArchivingOpener(crate::store::StoreWriter, String);
+    impl UploadOpener for ArchivingOpener {
+        fn open(&self, _: &str, _: &UploadContext) -> crate::secrets::Result<SecretValue> {
+            self.0.secrets_reconcile_config(&json!({"environments":[{"id":"archive-env"}],"projects":[{"id":self.1,"environment_id":"archive-env","archived_at":1}]}))?;
+            SecretValue::new(b"synthetic-test-value-only".to_vec())
+        }
+    }
+    let mut f = fixture();
+    f.app.secret_upload_opener = Some(Arc::new(ArchivingOpener(
+        f.app.store.as_ref().unwrap().writer(),
+        f.params["scope"]["owner_id"].as_str().unwrap().into(),
+    )));
+    let error = create(&mut f).err().unwrap();
+    assert_eq!(error.code(), "project_archived");
+    assert!(!f
+        .app
+        .store
+        .as_ref()
+        .unwrap()
+        .writer()
+        .secrets_have_records()
+        .unwrap());
+}

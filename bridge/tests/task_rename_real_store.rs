@@ -274,7 +274,8 @@ fn a_real_store_renames_to_tasks_with_nothing_lost_and_renames_once() {
     };
 
     // ---- the rename ----
-    let store = Store::new(work.path()).expect("the v9 store opens");
+    let store = Store::new_with_secret_config(work.path(), &serde_json::json!({}))
+        .expect("the v9 store opens");
 
     // ---- after: through the store, into the renamed types ----
     let mut tasks_after = BTreeMap::new();
@@ -368,7 +369,10 @@ fn a_real_store_renames_to_tasks_with_nothing_lost_and_renames_once() {
             [],
         )
         .unwrap();
-    drop(Store::new(work.path()).expect("the store opens a second time"));
+    drop(
+        Store::new_with_secret_config(work.path(), &serde_json::json!({}))
+            .expect("the store opens a second time"),
+    );
     assert_eq!(
         every_row(&database),
         migrated,

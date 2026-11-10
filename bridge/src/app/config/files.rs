@@ -90,12 +90,16 @@ fn remove_temporary(path: &Path) -> Result<(), String> {
 pub(in crate::app) struct ConfigFileWrite {
     #[cfg(test)]
     failure: Option<crate::app::ConfigPersistStep>,
+    #[cfg(test)]
+    gate: Option<crate::app::OffLockGate>,
 }
 impl AppState {
     pub(in crate::app) fn config_file_writer(&self) -> ConfigFileWrite {
         ConfigFileWrite {
             #[cfg(test)]
             failure: self.config_persist_failure,
+            #[cfg(test)]
+            gate: self.config_persist_gate.clone(),
         }
     }
     pub(super) fn write_config_file(&self, path: &Path, config: &Value) -> Result<(), String> {
@@ -117,6 +121,10 @@ impl ConfigFileWrite {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(io_error(path, error)),
         };
+        #[cfg(test)]
+        if let Some(gate) = &self.gate {
+            gate.arrive();
+        }
         #[cfg(test)]
         if self.failure == Some(crate::app::ConfigPersistStep::Write) {
             return Err(format!(

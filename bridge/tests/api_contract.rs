@@ -1473,6 +1473,7 @@ fn check_secret_metadata_event(event: &Value) {
             vec!["type", "scope", "secret_ids", "revision"]
         }
         "project" => vec!["type", "scope", "project_id", "secret_ids", "revision"],
+        "environment" => vec!["type", "scope", "environment_id", "secret_ids", "revision"],
         "agent" => {
             assert_eq!(event["thread_id"], event["generation"]);
             vec![
@@ -2715,4 +2716,65 @@ fn environment_and_project_delete_contracts_are_additive_and_strict() {
         invalid["tasks"] = serde_json::json!("keep");
         assert!(handler.parse_params(&invalid).is_err());
     }
+}
+
+#[test]
+fn secrets_contract_includes_environment_scope() {
+    use build_bridge::api::v1::secrets::{ListParams, SecretScope};
+    use serde_json::json;
+    assert_eq!(API_VERSION, "3.39.0");
+    assert!(!capabilities(false).contains(&"secrets.environmentScope"));
+    for method in ["secrets.list", "secrets.revoke", "secrets.audit"] {
+        let fixture = read_json(&fixtures_root().join(format!("v1/{method}.json")));
+        let handler = v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap()
+            .1;
+        let mut params = fixture["params"].clone();
+        params["scope"] = json!({"environment_id":"env-synthetic"});
+        handler.parse_params(&params).unwrap();
+        params["scope"]["unknown"] = json!(true);
+        assert!(handler.parse_params(&params).is_err());
+    }
+    for scope in [
+        json!({}),
+        json!({"environment_id":""}),
+        json!({"project_id":"p","environment_id":"e"}),
+        json!({"environment_id":"e","stage":{"owner_id":"o","conversation_id":"a","generation":"g","draft_id":null}}),
+    ] {
+        assert!(
+            serde_json::from_value::<SecretScope>(scope).map_or(true, |s| s.validate().is_err())
+        );
+    }
+    let parsed: ListParams =
+        serde_json::from_value(json!({"scope":{"environment_id":"env-synthetic"}})).unwrap();
+    assert!(parsed.scope.validate().is_ok());
+    let list = read_json(&fixtures_root().join("v1/secrets.list.json"));
+    let mut params = list["params"].clone();
+    let legacy: ListParams = serde_json::from_value(params.clone()).unwrap();
+    assert!(!legacy.include_environment);
+    assert!(serde_json::to_value(legacy)
+        .unwrap()
+        .get("include_environment")
+        .is_none());
+    params["include_environment"] = json!(true);
+    assert!(
+        serde_json::from_value::<ListParams>(params.clone())
+            .unwrap()
+            .include_environment
+    );
+    params["include_environment"] = json!("true");
+    assert!(serde_json::from_value::<ListParams>(params).is_err());
+    let fixture = read_json(&fixtures_root().join("v1/secrets.create.json"));
+    let mut params = fixture["params"].clone();
+    params["grant"] = json!({"scope":"environment","environment_id":"env-synthetic"});
+    let handler = v1::methods()
+        .iter()
+        .find(|(name, _)| *name == "secrets.create")
+        .unwrap()
+        .1;
+    handler.parse_params(&params).unwrap();
+    params["grant"]["project_id"] = json!("p");
+    assert!(handler.parse_params(&params).is_err());
 }

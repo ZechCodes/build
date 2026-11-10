@@ -2,6 +2,40 @@
 use super::*;
 
 impl ChangeBus {
+    /// Routing hints only; SQL revalidates authority independently on each read.
+    pub(crate) fn set_secret_project_environments(
+        &self,
+        projects: impl IntoIterator<Item = (String, String)>,
+    ) {
+        let mut environments = BTreeMap::<String, BTreeSet<String>>::new();
+        for (project, environment) in projects {
+            environments.entry(environment).or_default().insert(project);
+        }
+        *self.secret_environment_projects.lock().unwrap() = environments;
+    }
+
+    fn secret_payloads(&self, payload: Value) -> Vec<Value> {
+        let mut events = Vec::new();
+        if payload["scope"] == "environment" {
+            let environment = payload["environment_id"].as_str().unwrap_or("");
+            if let Some(projects) = self
+                .secret_environment_projects
+                .lock()
+                .unwrap()
+                .get(environment)
+            {
+                for project in projects {
+                    let mut hint = payload.clone();
+                    hint.as_object_mut().unwrap().remove("environment_id");
+                    hint["scope"] = json!("project");
+                    hint["project_id"] = json!(project);
+                    events.push(hint);
+                }
+            }
+        }
+        events.push(payload);
+        events
+    }
     pub fn note_secret_records(&self, records: &[crate::secrets::SecretRecord]) {
         for record in records {
             self.note_secret_change(payload(record));
@@ -9,10 +43,13 @@ impl ChangeBus {
     }
 
     pub(crate) fn note_secret_change(&self, payload: Value) {
+        let events = self.secret_payloads(payload);
         let now = Instant::now();
         let mut subscriptions = self.subscriptions.lock().unwrap();
         for sub in subscriptions.iter_mut() {
-            sub.note_secret_change(payload.clone(), now);
+            for event in &events {
+                sub.note_secret_change(event.clone(), now);
+            }
         }
         drop(subscriptions);
         self.wake.notify_one();
@@ -47,6 +84,10 @@ fn payload(record: &crate::secrets::SecretRecord) -> Value {
 }
 
 pub(super) fn covered(scope: &Scope, payload: &Value) -> bool {
+    if payload["scope"] == "environment" {
+        // Existing All/project subscribers receive the legacy project hints.
+        return matches!(scope,Scope::Environment(id) if payload["environment_id"].as_str()==Some(id.as_str()));
+    }
     payload["scope"] == "device" || scope.covers(route(payload))
 }
 

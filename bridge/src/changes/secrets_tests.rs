@@ -138,3 +138,44 @@ fn environment_secret_events_route_only_to_environment_and_all_subscriptions() {
     assert_eq!(frame["scope"], "environment");
     assert!(frame.get("name").is_none());
 }
+
+#[test]
+fn environment_secret_invalidations_reach_member_projects_in_legacy_shape() {
+    let bus = ChangeBus::new(Duration::ZERO);
+    bus.set_secret_project_environments([
+        (String::from("p-a"), String::from("env-a")),
+        (String::from("p-b"), String::from("env-a")),
+        (String::from("outside"), String::from("env-b")),
+    ]);
+    let (a, mut a_rx, a_key) = SessionSender::observable("a");
+    let (b, mut b_rx, b_key) = SessionSender::observable("b");
+    let (all, mut all_rx, all_key) = SessionSender::observable("all");
+    let (outside, mut outside_rx, _) = SessionSender::observable("outside");
+    let (env, mut env_rx, env_key) = SessionSender::observable("env");
+    bus.subscribe(&a, subscription(Scope::Entity("p-a".into())));
+    bus.subscribe(&b, subscription(Scope::Entity("p-b".into())));
+    bus.subscribe(&all, subscription(Scope::All));
+    bus.subscribe(&outside, subscription(Scope::Entity("outside".into())));
+    bus.subscribe(&env, subscription(Scope::Environment("env-a".into())));
+    for revision in 1..=4 {
+        bus.note_secret_change(json!({"type":"secrets.changed","scope":"environment","environment_id":"env-a","revision":revision,"secret_ids":["sec_synthetic"]}));
+        bus.flush();
+        for (rx, key, project) in [(&mut a_rx, &a_key, "p-a"), (&mut b_rx, &b_key, "p-b")] {
+            let event = SessionSender::decrypt_push(key, &rx.try_recv().unwrap());
+            assert_eq!(event["scope"], "project");
+            assert_eq!(event["project_id"], project);
+            assert_eq!(event["revision"], revision);
+            assert!(event.get("environment_id").is_none());
+        }
+        for _ in 0..2 {
+            let event = SessionSender::decrypt_push(&all_key, &all_rx.try_recv().unwrap());
+            assert_eq!(event["scope"], "project");
+        }
+        assert!(all_rx.try_recv().is_err());
+        assert!(outside_rx.try_recv().is_err());
+        assert_eq!(
+            SessionSender::decrypt_push(&env_key, &env_rx.try_recv().unwrap())["scope"],
+            "environment"
+        );
+    }
+}

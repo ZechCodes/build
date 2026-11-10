@@ -25,6 +25,7 @@ fn setup() -> (Fixture, SecretCaller) {
 }
 fn query(project: &str) -> ListParams {
     ListParams {
+        include_environment: true,
         scope: serde_json::from_value(json!({"project_id":project})).unwrap(),
         secret_ids: vec![],
         request_ids: vec![],
@@ -284,4 +285,90 @@ fn environment_delete_revokes_environment_scope() {
     assert!(record.revoked_at.is_some());
     assert!(f.release(&project.context.id).is_ok());
     assert_eq!(f.store.writer_for_test().query_row("SELECT COUNT(*) FROM secret_audit WHERE secret_id=?1 AND outcome='revoked' AND environment_id='env-a'",[&shared.context.id],|r|r.get::<_,i64>(0)).unwrap(),1);
+}
+
+#[test]
+fn old_secret_list_excludes_environment_without_opt_in_even_after_override_revoke() {
+    let (f, _) = setup();
+    let local = f.secret(
+        GrantScope::Project {
+            project_id: f.caller.project_id.clone(),
+        },
+        None,
+    );
+    let old_query: ListParams =
+        serde_json::from_value(json!({"scope":{"project_id":f.caller.project_id}})).unwrap();
+    let page = |q: &ListParams| {
+        f.store
+            .writer()
+            .secret_metadata_page(&f.caller.device_id, "synthetic-user", q)
+            .unwrap()
+    };
+    let old_bytes = serde_json::to_vec(&page(&old_query).secrets).unwrap();
+    let inherited = f.secret(grant(), None);
+    assert_eq!(
+        serde_json::to_vec(&page(&old_query).secrets).unwrap(),
+        old_bytes
+    );
+    f.service.revoke(&local.context.id).unwrap();
+    let legacy = page(&old_query);
+    let local = f
+        .store
+        .writer()
+        .secret_record(&local.context.id)
+        .unwrap()
+        .unwrap();
+    let expected = crate::api::v1::secrets::SecretMetadata::from_record(&local, legacy.server_now);
+    assert_eq!(
+        serde_json::to_vec(&legacy.secrets).unwrap(),
+        serde_json::to_vec(&vec![expected]).unwrap()
+    );
+    assert!(legacy.next.is_none());
+    let mut staged = old_query.clone();
+    staged.scope.stage = Some(local.context.stage.clone());
+    assert_eq!(
+        serde_json::to_vec(&page(&staged).secrets).unwrap(),
+        serde_json::to_vec(&legacy.secrets).unwrap()
+    );
+    let opted: ListParams = serde_json::from_value(
+        json!({"scope":{"project_id":f.caller.project_id},"include_environment":true}),
+    )
+    .unwrap();
+    assert!(page(&opted)
+        .secrets
+        .iter()
+        .any(|s| s.secret_id == inherited.context.id));
+    assert!(read(&f, &f.caller, &inherited.context.id).is_ok());
+}
+
+#[test]
+fn project_delete_preserves_environment_scope_for_sibling() {
+    let (f, sibling) = setup();
+    let shared = f.secret(grant(), None);
+    let local = f.secret(
+        GrantScope::Project {
+            project_id: f.caller.project_id.clone(),
+        },
+        None,
+    );
+    f.store
+        .writer()
+        .secrets_retire_project(&f.caller.project_id)
+        .unwrap();
+    assert!(f
+        .store
+        .writer()
+        .secret_record(&shared.context.id)
+        .unwrap()
+        .unwrap()
+        .revoked_at
+        .is_none());
+    assert_eq!(
+        read(&f, &sibling, &shared.context.id).unwrap().as_bytes(),
+        b"synthetic-value-only"
+    );
+    assert!(matches!(
+        f.release(&local.context.id),
+        Err(SecretError::Revoked)
+    ));
 }

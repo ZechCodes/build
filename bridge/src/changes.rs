@@ -1697,6 +1697,7 @@ pub struct ChangeBus {
     /// within one priority. A session whose push fails loses all of its
     /// subscriptions: a sender that cannot send has no connection left.
     subscriptions: Mutex<Vec<Subscription>>,
+    secret_environment_projects: Mutex<BTreeMap<String, BTreeSet<String>>>,
     /// Set whenever a subscription gains something to send, so the flusher
     /// wakes on the change rather than on a tick.
     wake: tokio::sync::Notify,
@@ -1748,6 +1749,7 @@ impl ChangeBus {
         Arc::new(ChangeBus {
             publication_clock: OnceLock::new(),
             subscriptions: Mutex::new(Vec::new()),
+            secret_environment_projects: Mutex::new(BTreeMap::new()),
             wake: tokio::sync::Notify::new(),
             window,
             board_revision: AtomicU64::new(0),

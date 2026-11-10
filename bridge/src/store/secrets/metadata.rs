@@ -150,8 +150,13 @@ struct Cursor {
     id: String,
 }
 fn query_hash(params: &ListParams) -> Result<String> {
-    let json = serde_json::to_vec(&(&params.scope, &params.secret_ids, &params.request_ids))
-        .map_err(|_| SecretError::Invalid)?;
+    let json = if params.include_environment {
+        serde_json::to_vec(&(&params.scope, &params.secret_ids, &params.request_ids, true))
+    } else {
+        // Preserve the original cursor basis for old-shaped requests.
+        serde_json::to_vec(&(&params.scope, &params.secret_ids, &params.request_ids))
+    }
+    .map_err(|_| SecretError::Invalid)?;
     Ok(format!("{:x}", Sha256::digest(json)))
 }
 fn position(params: &ListParams) -> Result<String> {
@@ -192,7 +197,7 @@ pub(super) fn list(
     let sql = format!("SELECT {} FROM secret_records WHERE device_id=?1 AND creator=?2 AND id>?3 AND (
         (grant_scope='project' AND grant_project_id=?4)
         OR (grant_scope='environment' AND (
-            grant_environment_id=?12 OR (grant_environment_id=(SELECT environment_id FROM secret_project_membership WHERE project_id=?4 AND archived=0)
+            grant_environment_id=?12 OR (?14=1 AND grant_environment_id=(SELECT environment_id FROM secret_project_membership WHERE project_id=?4 AND archived=0)
                 AND NOT EXISTS(SELECT 1 FROM secret_records p WHERE p.device_id=secret_records.device_id AND p.name=secret_records.name AND p.grant_scope='project' AND p.grant_project_id=?4 AND p.attached_at IS NOT NULL AND p.revoked_at IS NULL AND p.blob_present=1 AND (p.expires_at IS NULL OR p.expires_at>?13)))))
         OR (grant_scope='agent' AND ?5!='' AND ((stage_owner_id=?5 AND stage_conversation_id=?6 AND stage_generation=?7 AND stage_draft_id IS ?8)
             OR EXISTS(SELECT 1 FROM secret_final_bindings b WHERE b.secret_id=secret_records.id AND b.project_id=?4 AND b.owner_id=?5 AND b.conversation_id=?6 AND b.generation=?7))))
@@ -213,7 +218,8 @@ pub(super) fn list(
                 requests,
                 asked.limit as i64 + 1,
                 asked.scope.environment_id.as_deref().unwrap_or(""),
-                now()
+                now(),
+                asked.include_environment
             ],
             records::from_row,
         )?
@@ -284,6 +290,7 @@ fn audit(
         return Err(SecretError::Invalid);
     }
     let query = ListParams {
+        include_environment: true,
         scope: asked.scope.clone(),
         secret_ids: vec![asked.secret_id.clone()],
         request_ids: vec![],
@@ -325,6 +332,7 @@ mod tests {
 
     fn params() -> ListParams {
         ListParams {
+            include_environment: false,
             scope: SecretScope {
                 environment_id: None,
                 project_id: "project-a".into(),

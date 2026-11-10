@@ -76,10 +76,16 @@ pub fn default_limit() -> usize {
     100
 }
 
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListParams {
     pub scope: SecretScope,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_environment: bool,
     #[serde(default)]
     pub secret_ids: Vec<String>,
     #[serde(default)]

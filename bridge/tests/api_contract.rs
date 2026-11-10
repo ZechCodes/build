@@ -2720,6 +2720,22 @@ fn secrets_contract_includes_environment_scope() {
     let parsed: ListParams =
         serde_json::from_value(json!({"scope":{"environment_id":"env-synthetic"}})).unwrap();
     assert!(parsed.scope.validate().is_ok());
+    let list = read_json(&fixtures_root().join("v1/secrets.list.json"));
+    let mut params = list["params"].clone();
+    let legacy: ListParams = serde_json::from_value(params.clone()).unwrap();
+    assert!(!legacy.include_environment);
+    assert!(serde_json::to_value(legacy)
+        .unwrap()
+        .get("include_environment")
+        .is_none());
+    params["include_environment"] = json!(true);
+    assert!(
+        serde_json::from_value::<ListParams>(params.clone())
+            .unwrap()
+            .include_environment
+    );
+    params["include_environment"] = json!("true");
+    assert!(serde_json::from_value::<ListParams>(params).is_err());
     let fixture = read_json(&fixtures_root().join("v1/secrets.create.json"));
     let mut params = fixture["params"].clone();
     params["grant"] = json!({"scope":"environment","environment_id":"env-synthetic"});

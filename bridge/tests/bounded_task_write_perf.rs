@@ -96,7 +96,7 @@ fn completed_reopen_samples(
     for reopen_sample in 0..REOPEN_SAMPLES {
         let started = Instant::now();
         let cpu = thread_cpu_micros();
-        let store = Store::new(root).unwrap();
+        let store = Store::new_with_secret_config(root, &serde_json::json!({})).unwrap();
         println!(
             "{fixture} migrated_reopen_us={} migrated_reopen_cpu_us={} completed_reopen_sample={reopen_sample} reopen_hwm={}",
             started.elapsed().as_micros(),
@@ -129,7 +129,7 @@ fn completed_reopen_samples(
 fn identical_huge_history_write_fixture() {
     assert_api_version("huge_fixture");
     let root = tempfile::tempdir().unwrap();
-    let store = Store::new(root.path()).unwrap();
+    let store = Store::new_with_secret_config(root.path(), &serde_json::json!({})).unwrap();
     let mut task = Task::drafted("/summary", "huge history", Actor::User, NOW);
     task.id = "task-00000000000000000000000001".into();
     task.body = "body must never enter summary".repeat(100_000);
@@ -166,7 +166,7 @@ fn identical_huge_history_write_fixture() {
     println!("huge_fixture task_record_bytes={} history_record_bytes={history_record_bytes} append_record_bytes={}", serde_json::to_vec(&task).unwrap().len(), serde_json::to_vec(&comment(&task, 100_000, "a note".into())).unwrap().len());
     let started = Instant::now();
     let cpu = thread_cpu_micros();
-    let store = Store::new(root.path()).unwrap();
+    let store = Store::new_with_secret_config(root.path(), &serde_json::json!({})).unwrap();
     println!(
         "huge_fixture startup_us={} startup_cpu_us={} startup_hwm={}",
         started.elapsed().as_micros(),
@@ -194,7 +194,7 @@ fn identical_huge_history_write_fixture() {
 fn identical_small_task_write_fixture() {
     assert_api_version("small_fixture");
     let root = tempfile::tempdir().unwrap();
-    let store = Store::new(root.path()).unwrap();
+    let store = Store::new_with_secret_config(root.path(), &serde_json::json!({})).unwrap();
     let mut task = Task::drafted("/summary", "small task", Actor::User, NOW);
     task.id = "task-00000000000000000000000002".into();
     task.body = "a small task body".into();
@@ -220,7 +220,7 @@ fn identical_small_task_write_fixture() {
     );
     let started = Instant::now();
     let cpu = thread_cpu_micros();
-    let store = Store::new(root.path()).unwrap();
+    let store = Store::new_with_secret_config(root.path(), &serde_json::json!({})).unwrap();
     println!(
         "small_fixture startup_us={} startup_cpu_us={} startup_hwm={}",
         started.elapsed().as_micros(),
@@ -303,7 +303,7 @@ impl MetadataFixture {
         let setup = Instant::now();
         let cpu = thread_cpu_micros();
         let root = tempfile::tempdir().unwrap();
-        let store = Store::new(root.path()).unwrap();
+        let store = Store::new_with_secret_config(root.path(), &serde_json::json!({})).unwrap();
         let mut task = Task::drafted(
             "/summary",
             if huge { "huge history" } else { "small task" },
@@ -354,7 +354,7 @@ impl MetadataFixture {
         drop(insert);
         tx.commit().unwrap();
         drop(connection);
-        let store = Store::new(root.path()).unwrap();
+        let store = Store::new_with_secret_config(root.path(), &serde_json::json!({})).unwrap();
         let task = store.load_tracker_task(&task.id).unwrap().unwrap();
         println!(
             "{prefix} profile={} tasks=1 history_entries={initial_history} task_body_bytes={} history_body_bytes={history_body_bytes} total_body_bytes={} setup_us={} setup_cpu_us={} measured_writes=20",

@@ -332,6 +332,7 @@ pub struct AppState {
     isolation: Isolation,
     /// Where to persist the projects + settings, if persistence is enabled.
     config_path: Option<std::path::PathBuf>,
+    config_loaded_from_disk: bool,
     retention: crate::retention::RetentionConfig,
     #[cfg(test)]
     config_persist_failure: Option<ConfigPersistStep>,
@@ -737,6 +738,7 @@ impl AppState {
             agent_modes: AgentModes::from_legacy_default(DEFAULT_HARNESS),
             isolation: Isolation::default(),
             config_path: None,
+            config_loaded_from_disk: false,
             retention: crate::retention::RetentionConfig::default(),
             #[cfg(test)]
             config_persist_failure: None,
@@ -931,7 +933,7 @@ impl AppState {
             ));
         }
         let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
-        let stored = load_stored_tasks(dir, Some(&config))?;
+        let stored = load_stored_tasks(dir, self.config_loaded_from_disk.then_some(&config))?;
         self.restore_stored_tasks(stored)?;
         Ok(self)
     }

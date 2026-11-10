@@ -434,7 +434,7 @@ fn merge_admission_requires_exact_published_binding_vector() {
 #[test]
 fn upgrading_real_v14_shape_preserves_legacy_header_and_snapshot_bytes() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let task = store
         .create_tracker_task(Task::drafted("/repo", "legacy", Actor::User, NOW), &[])
         .unwrap();
@@ -461,7 +461,7 @@ fn upgrading_real_v14_shape_preserves_legacy_header_and_snapshot_bytes() {
         conn.execute_batch("DROP TABLE review_workspace_claims; DROP TABLE review_openings; DROP TABLE review_branch_bindings; DROP TABLE review_sync_observations; DROP TABLE review_merge_intents; UPDATE meta SET value = '14' WHERE key = 'schema_version';").unwrap();
     }
     drop(store);
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     assert_eq!(SCHEMA_VERSION, 27);
     let review = store.load_review(&task.id).unwrap().unwrap();
     assert_eq!(review.mode, ReviewMode::Snapshot);
@@ -1065,14 +1065,14 @@ fn sync_state_ignores_legacy_reviews_and_binds_latest_snapshot_to_task() {
 #[test]
 fn schema_fifteen_reopen_restores_additive_sync_candidate_table_without_rewriting_review() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let review = publish(&store);
     store
         .connection()
         .execute_batch("DROP TABLE review_sync_candidates; UPDATE meta SET value = '15' WHERE key = 'schema_version';")
         .unwrap();
     drop(store);
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     assert_eq!(store.load_review(&review.task_id).unwrap().unwrap(), review);
     assert_eq!(
         store.load_review_sync_candidate(&review.task_id).unwrap(),

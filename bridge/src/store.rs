@@ -178,6 +178,8 @@ pub enum StoreError {
     /// corrupt state that build does not understand, so boot refuses.
     #[error("store schema version {found} is newer than this bridge supports ({supported}) — update build-bridge")]
     SchemaTooNew { found: i64, supported: i64 },
+    #[error("store schema {found} requires successfully loaded authoritative config before upgrading to 27; restore the config and start the bridge first")]
+    SecretMigrationConfigRequired { found: i64 },
     /// The JSON records this store imported have been written to since. An
     /// older bridge was run against this directory, and the two halves of the
     /// user's work now live in different places.
@@ -351,11 +353,34 @@ impl Store {
         Self::open(dir.into(), true, None)
     }
 
-    pub(crate) fn new_with_secret_config(
+    /// Open with authoritative configuration successfully loaded by the caller.
+    /// Required to upgrade an existing pre-27 store; defaults are not authority.
+    pub fn new_with_secret_config(
         dir: impl Into<PathBuf>,
         config: &serde_json::Value,
     ) -> Result<Self, StoreError> {
         Self::open(dir.into(), false, Some(config))
+    }
+
+    fn validate_schema_authority(
+        stored: Option<i64>,
+        existing_database: bool,
+        secret_config: Option<&serde_json::Value>,
+    ) -> Result<(), StoreError> {
+        if let Some(found) = stored {
+            if found > SCHEMA_VERSION {
+                return Err(StoreError::SchemaTooNew {
+                    found,
+                    supported: SCHEMA_VERSION,
+                });
+            }
+        }
+        if existing_database && stored.unwrap_or(0) < 27 && secret_config.is_none() {
+            return Err(StoreError::SecretMigrationConfigRequired {
+                found: stored.unwrap_or(0),
+            });
+        }
+        Ok(())
     }
 
     fn open(
@@ -368,38 +393,51 @@ impl Store {
             cause: cause.to_string(),
         })?;
         let database_path = dir.join(DB_FILE);
+        let existing_database = database_path.exists();
+        // Probe through a read-only handle: refusal must not run a writable
+        // connection's close-time WAL checkpoint against the old store.
+        let stored = if existing_database {
+            let probe = Connection::open_with_flags(
+                &database_path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .map_err(|cause| StoreError::Unopenable {
+                path: database_path.clone(),
+                cause: cause.to_string(),
+            })?;
+            let stored: Option<i64> = probe
+                .query_row(
+                    "SELECT CAST(value AS INTEGER) FROM meta WHERE key='schema_version'",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .unwrap_or(None);
+            Self::validate_schema_authority(stored, true, secret_config)?;
+            stored
+        } else {
+            None
+        };
+        // Only a genuinely fresh database may use an empty initial authority.
+        let empty_config = serde_json::json!({});
+        let secret_config = secret_config.or_else(|| (!existing_database).then_some(&empty_config));
         let mut conn =
             Connection::open(&database_path).map_err(|cause| StoreError::Unopenable {
                 path: database_path,
                 cause: cause.to_string(),
             })?;
-        // Canonical and projection writes share this one connection. The bounded
-        // canonical, task and device
-        // publication programs together exceed 32 statements. Keep all hot
-        // programs resident instead of evicting the task card on each write.
+        // Keep the hot canonical, task and device publication programs resident.
         conn.set_prepared_statement_cache_capacity(128);
-        // Refuse BEFORE writing anything. A store written by a newer bridge
-        // must not receive this build's pragmas or DDL on the way to being
-        // rejected — the refusal exists to leave it untouched.
-        let stored: Option<i64> = conn
-            .query_row(
-                "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'schema_version'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .unwrap_or(None);
-        if let Some(found) = stored {
-            if found > SCHEMA_VERSION {
-                return Err(StoreError::SchemaTooNew {
-                    found,
-                    supported: SCHEMA_VERSION,
-                });
-            }
-        }
         // Refuse partial sync state before any migration, repair, pragma or
         // metadata update can modify the database we were asked to inspect.
         sync::validate_startup(&conn)?;
+        // Schema 26 already has all non-secret structures. Run the complete
+        // 27 transaction before any startup DDL or persistent pragma so a
+        // failed upgrade leaves even the database file bytes unchanged.
+        let secrets_upgraded = stored == Some(26);
+        if secrets_upgraded {
+            secrets::initialize_store(&conn, secret_config)?;
+        }
         // WAL is what makes an append cheap: the reader keeps reading while the
         // writer commits, and a commit appends to the log instead of rewriting
         // the page it touched. `synchronous = NORMAL` under WAL fsyncs at
@@ -452,7 +490,9 @@ impl Store {
         if stored.unwrap_or(0) < 6 {
             migrate_agents_to_v6(&mut conn)?;
         }
-        secrets::initialize_store(&conn, secret_config)?;
+        if !secrets_upgraded {
+            secrets::initialize_store(&conn, secret_config)?;
+        }
         tracker::initialize_list_key(&conn)?;
         let summaries_initialized = task_summaries::initialize(&mut conn)?;
         sync::initialize(&mut conn, &dir.join(DB_FILE), restored)?;

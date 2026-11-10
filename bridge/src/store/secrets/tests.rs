@@ -49,7 +49,7 @@ fn project_grant() -> GrantScope {
 #[test]
 fn metadata_survives_restart_and_migrates_existing_database_without_history_changes() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     store
         .writer_for_test()
         .execute("INSERT INTO meta VALUES ('synthetic-marker','kept')", [])
@@ -58,12 +58,12 @@ fn metadata_survives_restart_and_migrates_existing_database_without_history_chan
     let db = rusqlite::Connection::open(dir.path().join("build.db")).unwrap();
     db.execute_batch("DROP TABLE secret_records; DROP TABLE secret_clock; UPDATE meta SET value='23' WHERE key='schema_version';").unwrap();
     drop(db);
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     assert!(!store.writer().secrets_have_records().unwrap());
     let rec = record("synthetic-user", agent_grant());
     store.writer().secrets_stage(&rec).unwrap();
     drop(store);
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     assert_eq!(
         store.writer().secret_record(&rec.context.id).unwrap(),
         Some(rec)
@@ -612,7 +612,7 @@ fn schema_26_to_27_preserves_secret_rows_and_reopen_is_noop() {
         .collect();
     drop(connection);
     for _ in 0..2 {
-        let store = Store::new(dir.path()).unwrap();
+        let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
         let c = store.writer_for_test();
         assert_eq!(crate::store::SCHEMA_VERSION, 27);
         for ((table, cols), expected) in columns.iter().zip(&before) {
@@ -690,7 +690,17 @@ fn schema_27_failure_rolls_back_schema_indexes_version_and_projection() {
     c.execute_batch("INSERT INTO secret_records(id,device_id,creator,name,grant_scope,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,created_at,revision,upload_request_id,upload_digest,blob_present) VALUES('sec_00000000-0000-4000-8000-000000000001','device','creator','RETAINED','project','project-a','owner','conversation','generation',100,1,'00000000-0000-4000-8000-000000000002','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',1);").unwrap();
     let before = std::fs::read(&path).unwrap();
     let config = serde_json::json!({"environments":[{"id":"env-a"}],"projects":[{"id":"project-a","environment_id":"env-a","archived_at":null}]});
-    assert!(super::schema::initialize_store(&c, Some(&config)).is_err());
+    drop(c);
+    let error = Store::new_with_secret_config(dir.path(), &config)
+        .err()
+        .expect("injected publication must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("injected schema publication failure"),
+        "{error}"
+    );
+    let c = rusqlite::Connection::open(&path).unwrap();
     assert_eq!(
         std::fs::read(&path).unwrap(),
         before,
@@ -709,7 +719,9 @@ fn schema_27_failure_rolls_back_schema_indexes_version_and_projection() {
         "26"
     );
     c.execute_batch("DROP TRIGGER fail_schema_27").unwrap();
-    super::schema::initialize_store(&c, Some(&config)).unwrap();
+    drop(c);
+    let store = Store::new_with_secret_config(dir.path(), &config).unwrap();
+    let c = store.writer_for_test();
     assert_eq!(
         c.query_row(
             "SELECT value FROM meta WHERE key='schema_version'",
@@ -748,4 +760,66 @@ fn schema_26_startup_populates_membership_from_config_before_publication() {
             .unwrap()
     );
     assert!(!super::membership::current_project(&store.writer_for_test(), "project-b").unwrap());
+}
+
+#[test]
+fn schema_26_open_without_authoritative_config_refuses_without_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("build.db");
+    seed_schema_26(&path);
+    let before = std::fs::read(&path).unwrap();
+    let error = Store::new(dir.path())
+        .err()
+        .expect("existing store needs config");
+    assert!(
+        error.to_string().contains("authoritative config"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+fn seed_schema_26(path: &std::path::Path) {
+    let c = rusqlite::Connection::open(path).unwrap();
+    c.execute_batch(include_str!(
+        "../../../tests/fixtures/secrets-schema-26.sql"
+    ))
+    .unwrap();
+    c.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO meta VALUES('schema_version','26'); INSERT INTO secret_vault_state VALUES(1,'retained-key',NULL);INSERT INTO secret_records(id,device_id,creator,name,grant_scope,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,created_at,revision,upload_request_id,upload_digest,blob_present) VALUES('sec_00000000-0000-4000-8000-000000000001','device','creator','RETAINED','project','project-a','owner','conversation','generation',100,1,'00000000-0000-4000-8000-000000000002','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',1);").unwrap();
+}
+
+#[test]
+fn backup_schema_26_preserves_source_and_schema_without_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("build.db");
+    seed_schema_26(&path);
+    let before = std::fs::read(&path).unwrap();
+    let backup = dir.path().join("backup.db");
+    Store::backup_existing(dir.path(), &backup).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    let c = rusqlite::Connection::open(&backup).unwrap();
+    assert_eq!(
+        c.query_row(
+            "SELECT value FROM meta WHERE key='schema_version'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "26"
+    );
+    assert_eq!(
+        c.query_row("SELECT active_key_id FROM secret_vault_state", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        "retained-key"
+    );
+    assert_eq!(
+        c.query_row("SELECT name FROM secret_records", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "RETAINED"
+    );
+    assert!(c
+        .prepare("SELECT environment_id FROM secret_project_membership")
+        .is_err());
 }

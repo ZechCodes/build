@@ -695,7 +695,13 @@ fn rooted_on_a_v9_store(state_root: &std::path::Path) -> AppState {
     conn.execute_batch("INSERT INTO meta (key, value) VALUES ('schema_version', '9')")
         .unwrap();
     drop(conn);
-    rooted(state_root).with_task_store(dir).unwrap()
+    let config = state_root.join("config.json");
+    std::fs::write(&config, "{}").unwrap();
+    rooted(state_root)
+        .with_config(config)
+        .unwrap()
+        .with_task_store(dir)
+        .unwrap()
 }
 
 /// An agent brought back by the boot that ran the task rename (#190)

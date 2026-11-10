@@ -385,7 +385,7 @@ fn imported_unknown_event_notify_flag_does_not_create_a_canonical_ask() {
 fn old_event_ask_projection_rebuilds_all_derived_layers_without_editing_canonical_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let (task_id, event_id, canonical_task, canonical_event, basis) = {
-        let store = Store::new(dir.path()).unwrap();
+        let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
         let mut draft = Task::drafted("/attention", "pre-fix event", Actor::User, support::NOW);
         draft.watched = true;
         let task = store.create_tracker_task(draft, &[]).unwrap();
@@ -436,7 +436,7 @@ fn old_event_ask_projection_rebuilds_all_derived_layers_without_editing_canonica
             .unwrap();
         (task.id, created.id, canonical_task, canonical_event, basis)
     };
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     assert_attention(
         &store,
         &task_id,

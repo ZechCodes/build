@@ -990,7 +990,8 @@ fn a_v4_database_is_migrated_and_its_activity_classified() {
     let root = dir.path().join("tasks");
     let agent_id;
     {
-        let store = Store::new(&root).expect("store opens");
+        let store =
+            Store::new_with_secret_config(&root, &serde_json::json!({})).expect("store opens");
         let mut record = run_record("run-1", None, NOW);
         agent_id = record.agents[0].id.clone();
         record.agents[0].thread.post_user("said before", None, NOW);
@@ -1011,7 +1012,8 @@ fn a_v4_database_is_migrated_and_its_activity_classified() {
         store.save_run(&record).expect("the run saves");
         store.pretend_to_be_v4();
     }
-    let migrated = Store::new(&root).expect("a v4 store opens");
+    let migrated =
+        Store::new_with_secret_config(&root, &serde_json::json!({})).expect("a v4 store opens");
 
     assert_eq!(
         stored_activity_sequences(&migrated, &agent_id),
@@ -1359,7 +1361,8 @@ fn a_v2_database_is_migrated_and_its_messages_classified() {
     let root = dir.path().join("tasks");
     let agent_id;
     {
-        let store = Store::new(&root).expect("store opens");
+        let store =
+            Store::new_with_secret_config(&root, &serde_json::json!({})).expect("store opens");
         let mut record = run_record("run-1", None, NOW);
         agent_id = record.agents[0].id.clone();
         record.agents[0].thread.post_user("said before", None, NOW);
@@ -1373,7 +1376,8 @@ fn a_v2_database_is_migrated_and_its_messages_classified() {
         store.save_run(&record).expect("the run saves");
         store.pretend_to_be_v2();
     }
-    let migrated = Store::new(&root).expect("a v2 store opens");
+    let migrated =
+        Store::new_with_secret_config(&root, &serde_json::json!({})).expect("a v2 store opens");
 
     assert_eq!(
         sequences(
@@ -1395,7 +1399,8 @@ fn a_v6_database_is_migrated_and_its_hand_offs_classified() {
     let root = dir.path().join("tasks");
     let own_sequence;
     {
-        let store = Store::new(&root).expect("store opens");
+        let store =
+            Store::new_with_secret_config(&root, &serde_json::json!({})).expect("store opens");
         let mut record = run_record("run-1", None, NOW);
         let thread = &mut record.agents[0].thread;
         thread.post_agent("which name did you want?", None, NOW);
@@ -1412,7 +1417,8 @@ fn a_v6_database_is_migrated_and_its_hand_offs_classified() {
         store.pretend_to_be_v6();
     }
 
-    let migrated = Store::new(&root).expect("a v6 store opens");
+    let migrated =
+        Store::new_with_secret_config(&root, &serde_json::json!({})).expect("a v6 store opens");
 
     let loaded = reload_run(&migrated, "run-1");
     assert_eq!(

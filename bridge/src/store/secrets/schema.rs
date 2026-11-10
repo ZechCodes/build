@@ -185,8 +185,20 @@ pub(in crate::store) fn initialize(connection: &rusqlite::Connection) -> rusqlit
 pub(in crate::store) fn initialize_store(
     connection: &rusqlite::Connection,
     config: Option<&serde_json::Value>,
-) -> rusqlite::Result<()> {
-    initialize_atomic(connection, config, true)
+) -> Result<(), crate::store::StoreError> {
+    let stored: Option<i64> = connection
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM meta WHERE key='schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if config.is_none() && stored.unwrap_or(0) < 27 {
+        return Err(crate::store::StoreError::SecretMigrationConfigRequired {
+            found: stored.unwrap_or(0),
+        });
+    }
+    initialize_atomic(connection, config, true).map_err(Into::into)
 }
 
 fn initialize_atomic(

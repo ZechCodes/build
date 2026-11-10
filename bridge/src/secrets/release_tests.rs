@@ -783,7 +783,7 @@ fn schema_24_upgrade_adds_audit_without_changing_existing_metadata_or_value() {
     let connection = rusqlite::Connection::open(_dir.path().join("tasks/build.db")).unwrap();
     connection.execute_batch("DROP TABLE secret_audit; DROP TABLE secret_audit_summaries; DROP TABLE secret_unauthenticated_summary; UPDATE meta SET value='24' WHERE key='schema_version'").unwrap();
     drop(connection);
-    let store = Store::new(_dir.path().join("tasks")).unwrap();
+    let store = Store::new_with_secret_config(_dir.path().join("tasks"), &serde_json::json!({"environments":[{"id":"synthetic-environment"}],"projects":[{"id":caller.project_id,"environment_id":"synthetic-environment"}]})).unwrap();
     let service =
         SecretService::open_with_clock(_dir.path(), &caller.device_id, store.writer(), clock)
             .unwrap();

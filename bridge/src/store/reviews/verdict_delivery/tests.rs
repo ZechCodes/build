@@ -4,7 +4,7 @@ use crate::store::{Store, SCHEMA_VERSION};
 #[test]
 fn schema20_upgrade_creates_empty_verdict_journal_without_changing_tasks() {
     let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path()).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     let task = store
         .create_tracker_task(
             crate::tracker::Task::drafted(
@@ -18,7 +18,7 @@ fn schema20_upgrade_creates_empty_verdict_journal_without_changing_tasks() {
         .unwrap();
     store.connection().execute_batch("DROP TABLE review_verdict_deliveries; DROP TABLE review_revision_dispatches; UPDATE meta SET value='20' WHERE key='schema_version'").unwrap();
     drop(store);
-    let reopened = Store::new(dir.path()).unwrap();
+    let reopened = Store::new_with_secret_config(dir.path(), &serde_json::json!({})).unwrap();
     assert_eq!(SCHEMA_VERSION, 27);
     assert_eq!(reopened.load_tracker_task(&task.id).unwrap().unwrap(), task);
     assert!(reopened

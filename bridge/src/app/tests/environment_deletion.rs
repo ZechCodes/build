@@ -24,7 +24,11 @@ fn environment_delete_refused_while_projects_exist() {
         assert_eq!(refused["error_code"], "conflict", "{refused}");
         assert_eq!(
             refused["error"],
-            format!("Delete its {count} projects first")
+            if count == 1 {
+                "Delete its 1 project first".to_owned()
+            } else {
+                format!("Delete its {count} projects first")
+            }
         );
         if count == 2 {
             call(

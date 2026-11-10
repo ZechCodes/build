@@ -267,7 +267,7 @@ fn project_deletion_fences_rpc_mcp_and_registration_after_config_removal() {
         .iter()
         .any(|w| w["id"] == workspace.id));
     let environment = app.handle(req("environment.delete", json!({"environment_id":"env-1"})));
-    assert_eq!(environment["error"], "Delete its 1 projects first");
+    assert_eq!(environment["error"], "Delete its 1 project first");
     let key = app.project_deletion_fences[0].project_key.clone();
     assert!(app
         .refuse_deleting_identity(&project, "project:other")

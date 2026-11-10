@@ -1176,7 +1176,7 @@ pub struct ModelsListResult {
 /// codes, so the phrases are matched here rather than the sentences rewritten:
 /// a message is the wire's, and changing one to win a code would be a change
 /// to what every existing client shows its user.
-const CONFLICTS: [&str; 19] = [
+const CONFLICTS: [&str; 18] = [
     "a project must have at least one source",
     "an environment must have at least one source",
     " belongs to environment ",
@@ -1191,7 +1191,6 @@ const CONFLICTS: [&str; 19] = [
     "the router has not asked anything",
     "Wait for workspace provisioning",
     "Finish its workspaces before deleting tasks",
-    "Delete its ",
     "Stop running agents before deleting",
     "while its workers are working in them",
     "Cannot delete a workspace containing",
@@ -1228,6 +1227,11 @@ fn says(message: &str, phrases: &[&str]) -> bool {
     phrases.iter().any(|phrase| message.contains(phrase))
 }
 
+fn environment_deletion_conflict(message: &str) -> bool {
+    message.starts_with("Delete its ")
+        && (message.ends_with(" project first") || message.ends_with(" projects first"))
+}
+
 /// Name the refusal this family raised, where the sentence says what
 /// [`ApiError::classify`](crate::api::ApiError::classify) cannot read from
 /// its general rules. Anything unmatched keeps the code classify gave it.
@@ -1236,7 +1240,7 @@ pub(super) fn refine(error: ApiError) -> ApiError {
     if says(message, &UNAVAILABLE) {
         return ApiError::unavailable(message);
     }
-    if says(message, &CONFLICTS) {
+    if says(message, &CONFLICTS) || environment_deletion_conflict(message) {
         return ApiError::conflict(message, None);
     }
     if says(message, &INVALID) {
@@ -1579,6 +1583,22 @@ mod tests {
             params.wire(),
             serde_json::json!({ "agent_modes": null, "isolation": "worktree" })
         );
+    }
+
+    #[test]
+    fn environment_deletion_gate_refusal_requires_complete_phrase() {
+        for (message, code) in [
+            ("Delete its 1 project first", "conflict"),
+            ("Delete its 2 projects first", "conflict"),
+            ("Delete its backup first", "internal"),
+            ("Delete its 2 projects later", "internal"),
+            ("Delete its 2 projects first, then restart", "internal"),
+            ("Cannot continue: Delete its 2 projects first", "internal"),
+        ] {
+            let named = refine(ApiError::classify(message.to_owned()));
+            assert_eq!(named.code(), code, "{message}");
+            assert_eq!(named.message(), message);
+        }
     }
 
     #[test]

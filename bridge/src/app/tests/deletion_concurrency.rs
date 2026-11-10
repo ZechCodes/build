@@ -139,3 +139,63 @@ fn project_deletion_admission_is_sql_free_with_and_without_fences() {
         app = Arc::try_unwrap(shared).ok().unwrap().into_inner().unwrap();
     }
 }
+
+#[test]
+fn project_deletion_gate_releases_config_slot_after_claim_loss() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let sibling = app.add_environment_sibling_for_test(&project);
+    let config_path = root.path().join("config.json");
+    app.config_path = Some(config_path.clone());
+    app.persist();
+    let before = std::fs::read(&config_path).unwrap();
+    let (gate, paused) = OffLockGate::new();
+    app.config_persist_gate = Some(gate);
+    app.config_persist_failure = Some(ConfigPersistStep::Write);
+    let shared = app.shared();
+    let deleting = frame_on_a_thread(
+        &shared,
+        "claim-loss",
+        "project.delete",
+        json!({"project_id":project,"confirm":true}),
+    );
+    paused.wait_for_arrival();
+    {
+        let mut app = shared.lock().unwrap();
+        assert!(app.deletion_config_write);
+        assert!(app.project_deletion_operations.remove(&project).is_some());
+        app.config_persist_gate = None;
+        app.config_persist_failure = None;
+    }
+    paused.release();
+    let refused = deleting.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(
+        refused["error"].as_str().unwrap().contains("claim changed"),
+        "{refused}"
+    );
+    assert_eq!(std::fs::read(&config_path).unwrap(), before);
+    {
+        let app = shared.lock().unwrap();
+        assert!(app.project(&project).is_some());
+        assert!(
+            !app.deletion_config_write,
+            "lost claim left the global config slot reserved"
+        );
+    }
+    let renamed = frame_on_a_thread(
+        &shared,
+        "rename-after-claim-loss",
+        "project.rename",
+        json!({"project_id":sibling,"name":"Still writable"}),
+    )
+    .recv_timeout(Duration::from_secs(10))
+    .unwrap();
+    assert_eq!(renamed["ok"], true, "{renamed}");
+    let config: Value = serde_json::from_slice(&std::fs::read(config_path).unwrap()).unwrap();
+    assert!(config["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["id"] == sibling && p["name"] == "Still writable"));
+}

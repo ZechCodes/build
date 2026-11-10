@@ -56,8 +56,10 @@ impl DeferredGitWork for RemoveRegistration {
         Ok(Value::Null)
     }
     fn settle(&self, app: &mut AppState, _: Value) -> Result<Value, String> {
-        self.operation.check(app)?;
+        // This stage has finished its config IO even if its claim was lost.
+        // Release the global reservation before refusing stale publication.
         app.deletion_config_write = false;
+        self.operation.check(app)?;
         let outcome = self
             .outcome
             .lock()

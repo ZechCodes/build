@@ -32,7 +32,8 @@ impl AppState {
                 })
                 .count();
         if count != 0 {
-            return Err(format!("Delete its {count} projects first"));
+            let noun = if count == 1 { "project" } else { "projects" };
+            return Err(format!("Delete its {count} {noun} first"));
         }
         self.refuse_pending_environment_creation(environment_id)?;
         let mut config =

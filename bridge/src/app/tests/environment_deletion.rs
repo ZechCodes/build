@@ -339,3 +339,59 @@ fn environment_delete_revocation_failure_preserves_config() {
     );
     assert!(app.projects.environment("env-1").is_none());
 }
+
+#[test]
+fn project_delete_tasks_cleanup_failure_preserves_history_for_retry() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let sibling = app.add_environment_sibling_for_test(&project);
+    let own_task = filed(&mut app, &project, "Keep until deletion commits");
+    let sibling_task = filed(&mut app, &sibling, "Keep sibling history");
+    let config = root.path().join("config.json");
+    app.config_path = Some(config.clone());
+    let checkout = workspace(&mut app, &project, "Cleanup failure");
+    let mut finished = app.workspaces.get(&checkout).unwrap().clone();
+    finished.status = crate::workspace::WorkspaceStatus::Finished;
+    crate::workspace::persist_review_workspace(&finished).unwrap();
+    app.workspaces.reload().unwrap();
+    app.persist();
+    let before = std::fs::read(&config).unwrap();
+    let parked = root.path().join("parked-checkout");
+    std::fs::rename(&finished.root, &parked).unwrap();
+    std::fs::write(
+        &finished.root,
+        "inject cleanup failure: expected directory is a file",
+    )
+    .unwrap();
+    let params = json!({"project_id":project,"confirm":true,"tasks":"delete"});
+    let refused = app.handle(req("project.delete", params.clone()));
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(std::fs::read(&config).unwrap(), before);
+    assert!(app.projects.get(&project).is_some());
+    let store = app.store.as_ref().unwrap();
+    assert!(
+        store
+            .load_tracker_task(own_task["id"].as_str().unwrap())
+            .unwrap()
+            .is_some(),
+        "a refused deletion must preserve a registered project's history"
+    );
+    assert!(store
+        .load_tracker_task(sibling_task["id"].as_str().unwrap())
+        .unwrap()
+        .is_some());
+    std::fs::remove_file(&finished.root).unwrap();
+    std::fs::rename(parked, &finished.root).unwrap();
+    app.workspaces.reload().unwrap();
+    call(&mut app, "project.delete", params);
+    assert!(app.projects.get(&project).is_none());
+    let store = app.store.as_ref().unwrap();
+    assert!(store
+        .load_tracker_task(own_task["id"].as_str().unwrap())
+        .unwrap()
+        .is_none());
+    assert!(store
+        .load_tracker_task(sibling_task["id"].as_str().unwrap())
+        .unwrap()
+        .is_some());
+}

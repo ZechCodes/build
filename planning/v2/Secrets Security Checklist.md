@@ -114,3 +114,13 @@ replace the queried scope only after all pages succeed; failed reads retain
 rows, filtered lookups preserve unrelated rows, and admission/publication tokens
 fence immediate mutations and late incidental stage reads. The score remains
 100/100; no view computes time-derived availability.
+
+
+Review #1108 re-review qualification: acknowledged mutations now merge their
+metadata and invalidate outstanding reads in one transaction, without acquiring
+or checking a read admission token. Overlapping distinct acknowledgements and a
+refresh during publication cannot suppress either successful write. Every page's
+descriptors validate before snapshot publication; malformed later pages and
+filtered ID/request lookups reject without changing the retained metadata.
+`secretMetadataCache.test.js` reproduces all five cases before the fix and passes
+afterward. The expiry qualification remains unchanged; the score is 100/100.

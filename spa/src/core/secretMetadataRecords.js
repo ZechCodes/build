@@ -71,6 +71,14 @@ function nextRecord(held, entries, serverNow, replace, selection, observedNow) {
   return { secrets: reconciledEntries(held?.secrets, entries, replace, observation.clock_now, selection), ...observation };
 }
 
+// Acknowledged writes are unconditional revision-aware merges. The same
+// transaction invalidates outstanding reads; another admission cannot suppress
+// this write because mutations never depend on an admission token.
+export function mergeSecretWrite(address, entries, active) {
+  return mergeCachedRecordsTogether([orderAddress(address), address], held => active()
+    ? [{ token: randomToken() }, nextRecord(held[1]?.value, entries, undefined, false)] : null);
+}
+
 // Consume the primary token on publication too: a delayed incidental read that
 // captured it while this request was in flight cannot restore removed rows.
 const admittedPublication = (held, expected) => Boolean(expected && held[0]?.value?.token === expected);

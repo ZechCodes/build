@@ -1,7 +1,7 @@
 // Secret values never enter this module. It owns only the bridge's explicit
 // metadata DTO and writes every pull before a consumer paints it.
 import { readCached, subscribeCache } from "./localCache.js";
-import { admitSecretRead, publishSecretGroups, createSecretExpiry } from "./secretMetadataRecords.js";
+import { admitSecretRead, publishSecretGroups, mergeSecretWrite, createSecretExpiry } from "./secretMetadataRecords.js";
 import { onSecretsChanged } from "./secretMetadataEvents.js";
 
 const SECRET_METADATA_KIND = "secret-metadata";
@@ -204,21 +204,18 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
     if (!belongsTo(metadata, normalized)) invalidMetadata();
     const target = normalizedScope(entryScope(metadata, normalized));
     if (!current()) return null;
-    const groups = [{ address: secretMetadataAddress(deviceId, target), entries: [metadata], primary: true }];
-    const token = await admitSecretRead(groups.map(group => group.address), current);
-    await publishSecretGroups(groups, { token, replace: false, active: current, observe: expiry.now });
-    await watchGroups(groups);
+    const address = secretMetadataAddress(deviceId, target);
+    const committed = await mergeSecretWrite(address, [metadata], current);
+    if (!committed && current()) throw safeReadError();
+    await expiry.watch(address);
     return current() ? metadata : null;
   }
 
   function entriesOfPage(scope, page) {
     if (!page || !Array.isArray(page.secrets) || !Number.isSafeInteger(page.server_now)) throw safeReadError("invalid_metadata_page");
-    return page.secrets.flatMap(raw => {
-      try {
-        const metadata = secretMetadataOf(raw);
-        return belongsTo(metadata, scope) ? [metadata] : [];
-      } catch { return []; }
-    });
+    // Parse the entire page before filtering scope transitions. A malformed
+    // descriptor makes the snapshot incomplete and must not remove cached rows.
+    return page.secrets.map(secretMetadataOf).filter(metadata => belongsTo(metadata, scope));
   }
 
   async function readPage(scope, secretIds, requestIds, after) {

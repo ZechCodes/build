@@ -369,3 +369,60 @@ it("keeps elapsed bridge time when an equal-time page arrives late, including ac
     expect((await readCachedSecrets(options.deviceId, projectScope))[0].status).toBe("expired");
   } finally { first.dispose(); restarted?.dispose(); vi.useRealTimers(); }
 });
+
+const environmentMutation = (id, revision = 1, status = "available") => ({
+  ...metadata({ id, revision, status }), attached_at: 1800000000,
+  grant: { scope: "environment", environment_id: "env-write-races" },
+});
+const environmentWriteScope = { environmentId: "env-write-races" };
+const environmentCapabilities = () => ({ ...capabilities(), environmentScope: true });
+
+it("publishes both overlapping acknowledged environment mutations", async () => {
+  const cache = createSecretMetadataCache({ deviceId: "overlapping-secret-writes", capabilities: environmentCapabilities, call: vi.fn() }); caches.push(cache);
+  await cache.upsert(environmentMutation("sec_a"), environmentWriteScope);
+  await cache.upsert(environmentMutation("sec_b"), environmentWriteScope);
+  const acknowledgments = [environmentMutation("sec_a", 2, "revoked"), environmentMutation("sec_b", 2, "revoked")];
+  await expect(Promise.all(acknowledgments.map(row => cache.upsert(row, environmentWriteScope)))).resolves.toEqual(acknowledgments);
+  expect(await cache.read(environmentWriteScope)).toEqual(acknowledgments);
+});
+
+it("a refresh admitted while an acknowledged mutation is publishing cannot suppress that write", async () => {
+  let finishRead;
+  const call = vi.fn(() => new Promise(resolve => { finishRead = resolve; }));
+  const cache = createSecretMetadataCache({ deviceId: "refresh-between-secret-write", capabilities: environmentCapabilities, call }); caches.push(cache);
+  const original = environmentMutation("sec_a");
+  const revoked = environmentMutation("sec_a", 2, "revoked");
+  await cache.upsert(original, environmentWriteScope);
+  const mutation = cache.upsert(revoked, environmentWriteScope);
+  const refresh = cache.refresh(environmentWriteScope);
+  try {
+    await expect(mutation).resolves.toEqual(revoked);
+    expect(await cache.read(environmentWriteScope)).toEqual([revoked]);
+  } finally {
+    await vi.waitFor(() => expect(finishRead).toBeTypeOf("function"));
+    finishRead({ secrets: [original], server_now: 1800000000, next: null }); await refresh;
+  }
+  expect(await cache.read(environmentWriteScope)).toEqual([revoked]);
+});
+
+it("rejects an entire snapshot when a later page contains malformed metadata", async () => {
+  const original = [metadata(), { ...metadata(), secret_id: "sec_second" }];
+  const call = vi.fn().mockResolvedValueOnce({ secrets: original, server_now: 1800000000, next: null })
+    .mockResolvedValueOnce({ secrets: [{ ...original[0], name: "CHANGED", revision: 2 }], server_now: 1800000001, next: "page2" })
+    .mockResolvedValueOnce({ secrets: [{ ...original[1], expires_at: "malformed" }], server_now: 1800000001, next: null });
+  const cache = createSecretMetadataCache({ deviceId: "malformed-secret-page", capabilities, call }); caches.push(cache);
+  await cache.refresh(projectScope);
+  await expect(cache.refresh(projectScope)).rejects.toThrow();
+  expect(await cache.read(projectScope)).toEqual(original);
+});
+
+it.each(["secretIds", "requestIds"])("a malformed filtered %s lookup preserves all cached rows", async selector => {
+  const original = [metadata(), { ...metadata(), secret_id: "sec_other", request_id: "other-request" }];
+  const call = vi.fn().mockResolvedValueOnce({ secrets: original, server_now: 1800000000, next: null })
+    .mockResolvedValueOnce({ secrets: [{ ...original[0], grant: { scope: "project" } }], server_now: 1800000001, next: null });
+  const cache = createSecretMetadataCache({ deviceId: `malformed-secret-${selector}`, capabilities, call }); caches.push(cache);
+  await cache.refresh(projectScope);
+  const selected = selector === "secretIds" ? original[0].secret_id : original[0].request_id;
+  await expect(cache.refresh(projectScope, { [selector]: [selected] })).rejects.toThrow();
+  expect(await cache.read(projectScope)).toEqual(original.sort((a, b) => a.secret_id.localeCompare(b.secret_id)));
+});

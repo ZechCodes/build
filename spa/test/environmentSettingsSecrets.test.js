@@ -100,3 +100,18 @@ it("disables Add secret with a plain explanation when there are no active member
   expect(document.querySelector("[data-secret-add]").disabled).toBe(true);
   expect(document.querySelector("main").textContent).toContain("An environment secret is added from a project in this environment.");
 });
+
+it("refreshes cached environment membership when a task rail learns its project later", async () => {
+  const { watchSecretEnvironment } = await import("../src/core/secretEnvironmentContext.js");
+  await writeCached({ deviceId, entityId: "", kind: "environment-support" }, { secrets: true });
+  await writeCached({ deviceId, entityId: "", kind: "projects" }, [project]);
+  let projectId = null;
+  const changed = vi.fn();
+  const watcher = watchSecretEnvironment({ deviceId, projectId: () => projectId, onChange: changed });
+  try {
+    await watcher.refresh(); expect(changed).toHaveBeenLastCalledWith(null);
+    projectId = "p1"; await watcher.refresh(); expect(changed).toHaveBeenLastCalledWith(environmentId);
+    await writeCached({ deviceId, entityId: "", kind: "environment-support" }, { secrets: false });
+    await watcher.refresh(); expect(changed).toHaveBeenLastCalledWith(null);
+  } finally { watcher.dispose(); }
+});

@@ -23,7 +23,7 @@ function rowsHtml(entries, projects, projectEntries) {
     const overrides = projects.filter(project => (projectEntries.get(project.project_id) || [])
       .some(secret => secretOverridesEnvironment(secret, [entry])));
     return `<div class="ps-source"><p>${esc(secretChipLabel(entry))} · ${esc(entry.status)}</p>
-      ${overrides.map(project => `<p class="sub">${esc(project.name)} <span class="secret-override-chip">overrides environment</span></p>`).join("")}
+      ${overrides.map(project => `<p class="sub">${esc(project.name)} <span class="badge secret-override-chip">overrides environment</span></p>`).join("")}
       <div class="row">${canRevoke(entry) ? `<button class="btn" data-secret-revoke="${esc(entry.secret_id)}">Revoke</button>` : ""}
       <button class="btn" data-secret-audit="${esc(entry.secret_id)}">Audit</button></div></div>`;
   }).join("");
@@ -121,8 +121,7 @@ export function createEnvironmentSettingsSecrets({ deviceId, environmentId, call
     }));
     if (!active()) return;
     const events = answer.events.filter(row => row.secret_id === id).map(auditEntry);
-    const previous = after ? (await readCached(auditAddress(id)))?.value?.events || [] : [];
-    await writeCached(auditAddress(id), { events: [...previous, ...events], next: answer.next ?? null });
+    await writeCached(auditAddress(id), { events, next: answer.next ?? null });
     auditId = id;
   }
   const unsubscribe = subscribeCache({ deviceId }, address => {

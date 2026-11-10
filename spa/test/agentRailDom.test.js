@@ -8330,3 +8330,18 @@ describe("cached project worker notice labels", () => {
     expect(panel().querySelector('[data-task-notice="task-worker"]').textContent).not.toContain("Other");
   });
 });
+
+
+it("opens the settings environment-secret intent in the coordinator composer without staging or sending", async () => {
+  const { rememberSecretSupport } = await import("../src/core/secretSupport.js");
+  await rememberSecretSupport("dev-1", { secrets: { attachments: true, sealedUpload: true, metadataEvents: true } });
+  await writeCached({ deviceId: "dev-1", entityId: "", kind: "environment-support" }, { secrets: true });
+  await writeRailBoard({ projects: [{ project_id: "p1", environment_id: "env-rail", name: "build", entity_id: "run-3" }] });
+  payload = { kind: "project", project_id: "p1", entity_id: "run-3", agents: [agent({ thread_id: "thread-rail", conversation_id: "ag-1" })],
+    run: { run_id: "run-3", thread: { items: [], sessions: [] } } };
+  const cache = { upsert: vi.fn(), read: vi.fn(async () => []), subscribe: () => () => {}, track: () => () => {} };
+  await mount({ kind: "project", projectId: "p1", entityId: "run-3", openAgentId: "ag-1", panelOpen: true,
+    secretMetadataCache: cache, secretEnvironmentIntent: "env-rail" });
+  await vi.waitFor(() => expect(document.querySelector('[name="secret-scope"][value="environment"]')?.checked).toBe(true));
+  expect(callsTo("secrets.create")).toHaveLength(0); expect(callsTo("thread.post")).toHaveLength(0);
+});

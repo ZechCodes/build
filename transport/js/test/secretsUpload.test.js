@@ -81,7 +81,7 @@ test('environment grant is sealed with its exact selector and rejects mixed scop
   const plaintext = sodium.crypto_box_seal_open(sodium.from_base64(sealed, sodium.base64_variants.ORIGINAL_NO_PADDING), keys.publicKey, keys.privateKey);
   const size = new DataView(plaintext.buffer, plaintext.byteOffset).getUint32(0);
   assert.deepEqual(JSON.parse(sodium.to_string(plaintext.subarray(4, 4 + size))).context, environment);
-  for (const grant of [{ scope: 'environment' }, { scope: 'environment', environment_id: '' }, { ...environment.grant, project_id: 'foreign' }]) {
+  for (const grant of [{ scope: '__proto__' }, { scope: 'environment' }, { scope: 'environment', environment_id: '' }, { ...environment.grant, project_id: 'foreign' }]) {
     await assert.rejects(sealSecretUpload({ deviceTransportPublicKeyB64, context: { ...context, grant }, value: 'synthetic' }), /secret_invalid/);
   }
 });

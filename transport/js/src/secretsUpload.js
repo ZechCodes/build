@@ -16,11 +16,11 @@ function text(value) {
 }
 
 function validateGrant(grant) {
-  const fields = {
+  const fields = new Map(Object.entries({
     project: ['scope', 'project_id'],
     agent: ['scope', 'agent_id', 'conversation_id', 'generation'],
     environment: ['scope', 'environment_id'],
-  }[grant?.scope];
+  })).get(grant?.scope);
   if (!fields) invalid();
   objectFields(grant, fields);
   for (const key of fields) text(grant[key]);

@@ -722,7 +722,7 @@ function messageSecretsHtml(message, secretMetadata) {
     const metadata = secretMetadataById(secretMetadata, secretId);
     const label = secretChipLabel(metadata);
     const entries = secretMetadata instanceof Map ? [...secretMetadata.values()] : Object.values(secretMetadata || {});
-    const override = secretOverridesEnvironment(metadata, entries) ? ' <span class="secret-override-chip">overrides environment</span>' : "";
+    const override = secretOverridesEnvironment(metadata, entries) ? ' <span class="badge secret-override-chip">overrides environment</span>' : "";
     return label ? [`<span class="thread-secret-chip">${esc(label)}${override}</span>`] : [];
   });
   return chips.length ? `<div class="thread-secret-chips">${chips.join("")}</div>` : "";

@@ -49,17 +49,8 @@ export const secretChipsHtml = (entries = [], { removable = true } = {}) =>
 
 const selected = (held, wanted) => held === wanted ? " selected" : "";
 
-function secretModalBodyHtml({ scope = "agent", ttl = "none", busy = false, environmentAvailable = false }) {
-  return `<h3 id="secret-modal-title">Attach a secret</h3>
-    <p class="sub secret-modal-intro">The value is sealed to this device and is not included in the message.</p>
-    <label class="secret-field-label" for="secret-key">Name</label>
-    <input id="secret-key" name="secret-key" type="text" maxlength="64" placeholder="TEST_TOKEN" ${fieldTraits("identifier")} />
-    <label class="secret-field-label" for="secret-value">Value</label>
-    <div class="secret-value-field">
-      <input id="secret-value" name="secret-value" type="password" ${fieldTraits("identifier")} />
-      <button type="button" class="iconbtn secret-reveal" data-secret-reveal aria-label="Show secret" aria-pressed="false">${ICON_EYE}</button>
-    </div>
-    <fieldset class="secret-scope">
+function scopePickerHtml(scope, environmentAvailable) {
+  return `    <fieldset class="secret-scope">
       <legend>Scope</legend>
       <label><input type="radio" name="secret-scope" value="agent"${scope === "agent" ? " checked" : ""} />
         <span><strong>Agent</strong><small>Limited to this agent’s conversation.</small></span>
@@ -71,6 +62,20 @@ function secretModalBodyHtml({ scope = "agent", ttl = "none", busy = false, envi
         <span><strong>This environment</strong><small>Available to current agents in every project in this environment.</small></span>
       </label>` : ""}
     </fieldset>
+`;
+}
+
+function secretModalBodyHtml({ scope = "agent", ttl = "none", busy = false, environmentAvailable = false }) {
+  return `<h3 id="secret-modal-title">Attach a secret</h3>
+    <p class="sub secret-modal-intro">The value is sealed to this device and is not included in the message.</p>
+    <label class="secret-field-label" for="secret-key">Name</label>
+    <input id="secret-key" name="secret-key" type="text" maxlength="64" placeholder="TEST_TOKEN" ${fieldTraits("identifier")} />
+    <label class="secret-field-label" for="secret-value">Value</label>
+    <div class="secret-value-field">
+      <input id="secret-value" name="secret-value" type="password" ${fieldTraits("identifier")} />
+      <button type="button" class="iconbtn secret-reveal" data-secret-reveal aria-label="Show secret" aria-pressed="false">${ICON_EYE}</button>
+    </div>
+    ${scopePickerHtml(scope, environmentAvailable)}
     <label class="secret-field-label" for="secret-ttl">Expiry</label>
     <select id="secret-ttl" name="secret-ttl">
       <option value="none"${selected(ttl, "none")}>No expiry</option>

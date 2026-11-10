@@ -24,7 +24,7 @@ async function mountSecretComposer(page, basePath) {
       entries: () => entries,
       stage: async ({ name, scope, ttlSeconds }) => {
         const descriptor = { secret_id: `sec_${cache.length + 1}`, name, ttl_seconds: ttlSeconds,
-          grant: scope === "project" ? { scope, project_id: "p1" } : { scope, agent_id: "a1", conversation_id: "c1", generation: "g1" } };
+          grant: scope === "environment" ? { scope, environment_id: "env1" } : scope === "project" ? { scope, project_id: "p1" } : { scope, agent_id: "a1", conversation_id: "c1", generation: "g1" } };
         entries = [...entries, descriptor];
         cache.push(descriptor);
         return descriptor;
@@ -32,7 +32,7 @@ async function mountSecretComposer(page, basePath) {
       remove: async (id) => { entries = entries.filter((entry) => entry.secret_id !== id); },
     };
     let control;
-    const secrets = secretUi.createSecretComposer({ service, onChange: () => control?.refreshSecrets() });
+    const secrets = secretUi.createSecretComposer({ service, environmentAvailable: () => true, onChange: () => control?.refreshSecrets() });
     control = thread.wireThreadComposer(host, {
       ids: { input: "secret-chat", send: "secret-send", hint: "secret-hint" },
       readDraft: () => body,
@@ -126,5 +126,23 @@ it("opens the capability-gated attach menu and sends cache-rendered secret metad
     expect(await page.locator(".secret-chip-label").count()).toBe(0);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
     expect(overflow).toBeLessThanOrEqual(1);
+  }, { width: 390, height: 760 });
+});
+
+
+it("fits This environment scope and stages the user's choice as a metadata chip on mobile", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountSecretComposer(page, basePath);
+    await page.evaluate(() => window.__secretComposer.control.setSecretAttachable(true));
+    await page.locator(".composer-attach .caret").click();
+    await page.locator('[data-action="secret"]').click();
+    await page.locator('[name="secret-scope"][value="environment"]').check();
+    await page.locator("#secret-key").fill("ENV_TOKEN");
+    await page.locator("#secret-value").fill("synthetic environment browser value");
+    if (process.env.ENV_SECRET_SCREENSHOT) await page.screenshot({ path: process.env.ENV_SECRET_SCREENSHOT });
+    await page.locator("[data-secret-submit]").click();
+    expect((await page.locator(".secret-chip-label").textContent()).trim()).toBe("ENV_TOKEN · Environment · No expiry");
+    expect(await page.evaluate(() => JSON.stringify(window.__secretComposer.cache))).not.toContain("synthetic environment browser value");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
   }, { width: 390, height: 760 });
 });

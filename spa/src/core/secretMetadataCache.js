@@ -145,6 +145,16 @@ function belongsTo(metadata, scope) {
     && metadata.scope.draft_id === scope.draftId;
 }
 
+function hintMatches(hint, scope) {
+  switch (hint.scope) {
+    case "device": return true;
+    case "environment": return scope.environmentId === hint.environment_id;
+    case "project": return scope.projectId === hint.project_id && !scope.conversationId;
+    case "agent": return scope.ownerId === hint.entity_id && scope.conversationId === hint.conversation_id && scope.generation === hint.generation;
+    default: return false;
+  }
+}
+
 const byId = (left, right) => left.secret_id.localeCompare(right.secret_id);
 const trackedActive = (entry) => [...entry.registrations].some((registration) => registration.active());
 function mergeEntries(held = [], incoming = []) {
@@ -184,6 +194,7 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
   let disposed = false;
   const current = () => !disposed && active();
   const supported = () => current() && secretFeaturesAvailable(capabilities());
+  const scopeSupported = scope => !scope.environmentId || capabilities()?.environmentScope === true;
 
   async function upsert(raw, queryScope) {
     const metadata = secretMetadataOf(raw);
@@ -240,7 +251,7 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
   async function refresh(rawScope, { secretIds = [], requestIds = [] } = {}) {
     if (!supported()) return [];
     const scope = normalizedScope(rawScope);
-    if (scope.environmentId && capabilities()?.environmentScope !== true) return [];
+    if (!scopeSupported(scope)) return [];
     const entries = [];
     let after = null;
     do {
@@ -275,13 +286,7 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
 
   function onHint(hint) {
     if (!supported()) return;
-    const candidates = [...tracked.values()].filter((entry) => trackedActive(entry) && (
-      hint.scope === "device"
-      || (hint.scope === "environment" && entry.scope.environmentId === hint.environment_id)
-      || (hint.scope === "project" && entry.scope.projectId === hint.project_id && !entry.scope.conversationId)
-      || (hint.scope === "agent" && entry.scope.ownerId === hint.entity_id
-        && entry.scope.conversationId === hint.conversation_id && entry.scope.generation === hint.generation)
-    ));
+    const candidates = [...tracked.values()].filter(entry => trackedActive(entry) && hintMatches(hint, entry.scope));
     for (const entry of candidates) {
       const filters = hint.truncated ? {} : { secretIds: hint.secret_ids };
       void refresh(entry.scope, filters).catch(() => {});

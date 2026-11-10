@@ -181,3 +181,19 @@ describe("a task of the project", () => {
     expect(mountAgentRail).toHaveBeenCalledTimes(1);
   });
 });
+
+it("opens a fresh composer for a settings secret intent even on the already mounted project", async () => {
+  const { navigateToEnvironmentSecret } = await import("../src/core/environmentSecretNavigation.js");
+  const { notifyNavigationCommitted } = await import("../src/core/navigationLifetime.js");
+  await listProjects([{ project_id: "proj-1", name: "build", entity_id: "run-7" }]);
+  const target = { ...route, agent: "coordinator" };
+  standShell(target); await flush();
+  expect(mountAgentRail).toHaveBeenCalledTimes(1);
+  navigateToEnvironmentSecret({ deviceId: "dev-1", environmentId: "env-1",
+    project: { project_id: "proj-1", conversations: [{ conversation_id: "coordinator" }] },
+    navigate: (next, options) => { options.beforeCommit(); notifyNavigationCommitted(); standShell(next); },
+  });
+  await flush();
+  expect(mountAgentRail).toHaveBeenCalledTimes(2);
+  expect(mountAgentRail.mock.lastCall[1]).toMatchObject({ secretEnvironmentIntent: "env-1", autofocusComposer: true, openAgentId: "coordinator" });
+});

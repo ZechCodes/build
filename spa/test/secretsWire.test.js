@@ -86,3 +86,40 @@ it("advertises environment secrets independently and projects environment hints 
   secretsChangedOn("environment-wire", { scope: "environment", environment_id: "", revision: 4, secret_ids: ["sec_env"] });
   expect(hear).toHaveBeenCalledOnce(); stop();
 });
+
+it("binds the environment upload to StageContext, then lists and revokes by environment selector", async () => {
+  const { createSecretDraftService } = await import("../src/core/secretDrafts.js");
+  const { createSecretMetadataCache } = await import("../src/core/secretMetadataCache.js");
+  const flags = () => ({ attachments: true, sealedUpload: true, metadataEvents: true, environmentScope: true });
+  const descriptor = { secret_id: "sec_environment_wire", request_id: "557ab895-85e0-4c94-82ad-f16fcb0dd11c", name: "ENV_TOKEN", ttl_seconds: null,
+    grant: { scope: "environment", environment_id: "env-wire" },
+    scope: { owner_id: "owner-wire", conversation_id: "conversation-wire", generation: "thread-wire", draft_id: null },
+    created_at: 1800000000, attached_at: null, expires_at: null, revoked_at: null, revision: 1, status: "staged" };
+  const call = vi.fn(async (method, params) => {
+    if (method === "secrets.create") {
+      expect(params.scope).toEqual(descriptor.scope); expect(params.grant).toEqual(descriptor.grant);
+      expect(JSON.stringify(params)).not.toContain("synthetic environment wire value");
+      return descriptor;
+    }
+    if (method === "secrets.list") return { secrets: [descriptor], next: null, server_now: 1800000000 };
+    return { ...descriptor, status: "revoked", revoked_at: 1800000010, revision: 2 };
+  });
+  const cache = createSecretMetadataCache({ deviceId: "env-wire-device", capabilities: flags, call });
+  let entries = [];
+  const service = createSecretDraftService({ deviceId: "env-wire-device", creator: "device_user", projectId: "project-wire", environmentId: () => "env-wire",
+    recipient: () => ({ ownerId: "owner-wire", agentId: "agent-wire", conversationId: "conversation-wire", generation: "thread-wire" }),
+    capabilities: flags, deviceTransportPublicKey: () => "synthetic-device-public-key",
+    sealUpload: async input => {
+      expect(input.context.grant).toEqual(descriptor.grant); expect(input.context.stage).toEqual(descriptor.scope);
+      return "synthetic-sealed-upload";
+    },
+    call, metadata: cache, draft: { read: () => entries, write: next => { entries = next; } }, createRequestId: () => descriptor.request_id });
+  try {
+    await service.stage({ name: "ENV_TOKEN", value: "synthetic environment wire value", scope: "environment" });
+    await cache.refresh({ environmentId: "env-wire" });
+    expect(call).toHaveBeenCalledWith("secrets.list", expect.objectContaining({ scope: { environment_id: "env-wire" } }));
+    await service.remove(descriptor.secret_id);
+    expect(call).toHaveBeenCalledWith("secrets.revoke", expect.objectContaining({ scope: { environment_id: "env-wire" } }));
+    expect(call.mock.calls.some(([method]) => method === "thread.post")).toBe(false);
+  } finally { cache.dispose(); }
+});

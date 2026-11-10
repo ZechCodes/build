@@ -39,6 +39,9 @@ const queryScope = (projectId, recipient) => ({
   draftId: recipient.draftId ?? null,
 });
 
+const requestQueryScope = (projectId, request) => request.grant.scope === "environment"
+  ? { environmentId: request.grant.environment_id } : queryScope(projectId, request.addressed);
+
 function sameStage(metadata, context, grant, requestId, name) {
   return metadata.request_id === requestId && metadata.name === name
     && JSON.stringify(metadata.scope) === JSON.stringify(context)
@@ -120,7 +123,7 @@ export function createSecretDraftService(provided) {
       return answer;
     } catch {
       createSettled();
-      const scopeAddress = { ...queryScope(projectId, request.addressed), ...(request.grant.scope === "environment" ? { environmentId: request.grant.environment_id } : {}) };
+      const scopeAddress = requestQueryScope(projectId, request);
       try { await metadata.refresh(scopeAddress, { requestIds: [request.requestId] }); } catch { /* The lookup below decides. */ }
       const answer = await metadata.findRequest?.(scopeAddress, request.requestId);
       if (answer) return answer;
@@ -134,7 +137,7 @@ export function createSecretDraftService(provided) {
     if (!sameStage(descriptor, request.context, request.grant, request.requestId, request.name)) {
       throw safeError("stage_mismatch", "The secret upload returned different metadata");
     }
-    await metadata.upsert(descriptor, { ...queryScope(projectId, request.addressed), ...(request.grant.scope === "environment" ? { environmentId: request.grant.environment_id } : {}) });
+    await metadata.upsert(descriptor, requestQueryScope(projectId, request));
     if (!current()) throw safeError("stale_generation", "The recipient conversation changed");
     draft.write([...cloneEntries(draft.read()), descriptor]);
     return descriptor;

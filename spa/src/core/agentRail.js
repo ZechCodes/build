@@ -390,6 +390,11 @@ const railStandingPlace = (context) => {
   return { fromWorkspace, composerViewingContext: stampedViewingContext(store, fromWorkspace) };
 };
 
+function withEnvironmentSecretScope(scopes, environmentId) {
+  if (!environmentId) return scopes;
+  return [...scopes.map(scope => ({ ...scope, environmentId })), { environmentId }];
+}
+
 export function createRailChatOwnership(repository, key, entityOf, { metadataCache = null, projectId = null } = {}) {
   let provisional = null;
   const metadataScopes = new Map();
@@ -1379,7 +1384,7 @@ function mountRailOnContext(host, context, swap) {
   let composerSecrets = null;
   let secretMetadata = [];
   let secretEnvironmentId = null;
-  let secretEnvironmentIntent = context.secretEnvironmentIntent || null;
+  let secretEnvironmentIntent = context.secretEnvironmentIntent;
   let unsubscribeComposerController = null;
   let surfacesBlock = null;
   let observationBlock = null;
@@ -1417,6 +1422,7 @@ function mountRailOnContext(host, context, swap) {
 
   const bindSecretMetadata = (controller) => {
     releaseSecretMetadata();
+    void secretEnvironmentContext.refresh();
     const projectIdForSecrets = entity.projectId || projectOfRail(context, projectId);
     const identity = controller?.identity;
     if (!context.secretMetadataCache || typeof context.secretMetadataCache.read !== "function"
@@ -1426,15 +1432,10 @@ function mountRailOnContext(host, context, swap) {
       { projectId: projectIdForSecrets, ownerId: identity.entityId, agentId: identity.agentId,
         conversationId: identity.conversationId, generation: identity.threadId, draftId: identity.draftId || null },
     ];
-    if (secretEnvironmentId) {
-      scopes[0].environmentId = secretEnvironmentId;
-      scopes[1].environmentId = secretEnvironmentId;
-      scopes.push({ environmentId: secretEnvironmentId });
-    }
-    secretMetadataBinding.bind(scopes);
+    secretMetadataBinding.bind(withEnvironmentSecretScope(scopes, secretEnvironmentId));
   };
-  const stopSecretEnvironment = watchSecretEnvironment({ deviceId: context.deviceId,
-    projectId: entity.projectId || projectId,
+  const secretEnvironmentContext = watchSecretEnvironment({ deviceId: context.deviceId,
+    projectId: () => entity.projectId || projectId,
     onChange: environmentId => {
       if (environmentId === secretEnvironmentId) return;
       secretEnvironmentId = environmentId;
@@ -3570,6 +3571,7 @@ function mountRailOnContext(host, context, swap) {
     unsubscribeComposerController = controller.subscribe(syncComposer);
     mountSurfaces(panel);
     syncComposer();
+    openEnvironmentSecretIntent();
     syncSurfaces();
     disposeComposerClearance = mountComposerClearance(panel);
   };
@@ -4594,7 +4596,7 @@ function mountRailOnContext(host, context, swap) {
     unsubscribePending();
     unsubscribeFeed();
     unsubscribeReferenceIndex();
-    stopSecretEnvironment();
+    secretEnvironmentContext.dispose();
     unsubscribeComposerController?.();
     unsubscribeComposerController = null;
   };

@@ -177,7 +177,47 @@ CREATE TABLE IF NOT EXISTS secret_unauthenticated_summary (
 /// Schema 24 was unadvertised before key-loss recovery was revised. Upgrade
 /// those same-version databases too; an absent identity is never adopted while
 /// unretired grants remain.
+#[cfg(test)]
 pub(in crate::store) fn initialize(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
+    initialize_atomic(connection, None, false)
+}
+
+pub(in crate::store) fn initialize_store(
+    connection: &rusqlite::Connection,
+    config: Option<&serde_json::Value>,
+) -> rusqlite::Result<()> {
+    initialize_atomic(connection, config, true)
+}
+
+fn initialize_atomic(
+    connection: &rusqlite::Connection,
+    config: Option<&serde_json::Value>,
+    publish_version: bool,
+) -> rusqlite::Result<()> {
+    // SQLite requires FK enforcement disabled outside the table-rebuild
+    // transaction. The rebuild, all DDL/indexes, projection and schema fence
+    // commit together; any failure leaves the old store usable by its binary.
+    let foreign_keys: bool = connection.pragma_query_value(None, "foreign_keys", |r| r.get(0))?;
+    connection.pragma_update(None, "foreign_keys", false)?;
+    let result = (|| {
+        let tx = connection.unchecked_transaction()?;
+        initialize_in(&tx)?;
+        if let Some(config) = config {
+            super::membership::reconcile_config_in(&tx, config).map_err(|error| match error {
+                crate::secrets::SecretError::Database(error) => error,
+                _ => rusqlite::Error::InvalidQuery,
+            })?;
+        }
+        if publish_version {
+            tx.execute("INSERT INTO meta(key,value) VALUES('schema_version',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE value!=excluded.value",[crate::store::SCHEMA_VERSION.to_string()])?;
+        }
+        tx.commit()
+    })();
+    let restored = connection.pragma_update(None, "foreign_keys", foreign_keys);
+    result.and(restored)
+}
+
+fn initialize_in(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
     environment::upgrade(connection)?;
     connection.execute_batch(&SCHEMA)?;
     let columns = connection

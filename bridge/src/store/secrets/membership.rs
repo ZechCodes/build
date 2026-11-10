@@ -7,25 +7,27 @@ use serde_json::Value;
 
 impl StoreWriter {
     pub(crate) fn secrets_reconcile_config(&self, config: &Value) -> Result<()> {
-        super::writes::durable(self, |tx| {
-            tx.execute("DELETE FROM secret_project_membership", [])?;
-            tx.execute("DELETE FROM secret_environments", [])?;
-            for environment in config["environments"].as_array().into_iter().flatten() {
-                let id = environment["id"].as_str().ok_or(SecretError::Invalid)?;
-                tx.execute("INSERT INTO secret_environments VALUES (?1)", [id])?;
-            }
-            for project in config["projects"].as_array().into_iter().flatten() {
-                let id = project["id"].as_str().ok_or(SecretError::Invalid)?;
-                let environment = project["environment_id"]
-                    .as_str()
-                    .ok_or(SecretError::Invalid)?;
-                // Parked entries referencing a missing environment remain in
-                // config for recovery but cannot acquire environment authority.
-                tx.execute("INSERT INTO secret_project_membership SELECT ?1,?2,?3 WHERE EXISTS(SELECT 1 FROM secret_environments WHERE environment_id=?2)",params![id,environment,!project["archived_at"].is_null()])?;
-            }
-            Ok(())
-        })
+        super::writes::durable(self, |tx| reconcile_config_in(tx, config))
     }
+}
+
+pub(super) fn reconcile_config_in(tx: &rusqlite::Transaction<'_>, config: &Value) -> Result<()> {
+    tx.execute("DELETE FROM secret_project_membership", [])?;
+    tx.execute("DELETE FROM secret_environments", [])?;
+    for environment in config["environments"].as_array().into_iter().flatten() {
+        let id = environment["id"].as_str().ok_or(SecretError::Invalid)?;
+        tx.execute("INSERT INTO secret_environments VALUES (?1)", [id])?;
+    }
+    for project in config["projects"].as_array().into_iter().flatten() {
+        let id = project["id"].as_str().ok_or(SecretError::Invalid)?;
+        let environment = project["environment_id"]
+            .as_str()
+            .ok_or(SecretError::Invalid)?;
+        // Parked entries referencing a missing environment remain in
+        // config for recovery but cannot acquire environment authority.
+        tx.execute("INSERT INTO secret_project_membership SELECT ?1,?2,?3 WHERE EXISTS(SELECT 1 FROM secret_environments WHERE environment_id=?2)",params![id,environment,!project["archived_at"].is_null()])?;
+    }
+    Ok(())
 }
 
 pub(super) fn clean(connection: &Connection) -> Result<bool> {

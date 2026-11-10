@@ -930,7 +930,8 @@ impl AppState {
                 self.state_root.display()
             ));
         }
-        let stored = load_stored_tasks(dir)?;
+        let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
+        let stored = load_stored_tasks(dir, Some(&config))?;
         self.restore_stored_tasks(stored)?;
         Ok(self)
     }

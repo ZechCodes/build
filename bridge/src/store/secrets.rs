@@ -24,7 +24,7 @@ pub use attach::attach_in;
 pub(super) use retirement::{
     retire_agent_in, retire_conversation_in, retire_owner_in, retire_project_in,
 };
-pub(super) use schema::initialize;
+pub(super) use schema::initialize_store;
 
 pub(super) fn store_error(error: crate::secrets::SecretError) -> super::StoreError {
     match error {

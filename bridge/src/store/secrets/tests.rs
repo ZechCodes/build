@@ -644,11 +644,10 @@ fn schema_26_to_27_populates_membership_from_current_config_only() {
         "../../../tests/fixtures/secrets-schema-26.sql"
     ))
     .unwrap();
+    c.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);INSERT INTO meta VALUES('schema_version','26');").unwrap();
     drop(c);
-    let store = Store::new(dir.path()).unwrap();
     let config = serde_json::json!({"environments":[{"id":"env-a"},{"id":"env-b"}],"projects":[{"id":"project-a","environment_id":"env-a","archived_at":null},{"id":"project-b","environment_id":"env-a","archived_at":12}]});
-    let writer = store.writer();
-    writer.secrets_reconcile_config(&config).unwrap();
+    let store = Store::new_with_secret_config(dir.path(), &config).unwrap();
     assert!(
         super::membership::environment_allows(&store.writer_for_test(), "project-a", "env-a")
             .unwrap()
@@ -658,8 +657,7 @@ fn schema_26_to_27_populates_membership_from_current_config_only() {
             .unwrap()
     );
     drop(store);
-    let store = Store::new(dir.path()).unwrap();
-    store.writer().secrets_reconcile_config(&serde_json::json!({"environments":[{"id":"env-b"}],"projects":[{"id":"project-a","environment_id":"env-b","archived_at":null}]})).unwrap();
+    let store = Store::new_with_secret_config(dir.path(),&serde_json::json!({"environments":[{"id":"env-b"}],"projects":[{"id":"project-a","environment_id":"env-b","archived_at":null}]})).unwrap();
     assert!(
         !super::membership::environment_allows(&store.writer_for_test(), "project-a", "env-a")
             .unwrap()
@@ -677,4 +675,77 @@ fn schema_26_to_27_populates_membership_from_current_config_only() {
             .unwrap(),
         1
     );
+}
+
+#[test]
+fn schema_27_failure_rolls_back_schema_indexes_version_and_projection() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("build.db");
+    let c = rusqlite::Connection::open(&path).unwrap();
+    c.execute_batch(include_str!(
+        "../../../tests/fixtures/secrets-schema-26.sql"
+    ))
+    .unwrap();
+    c.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO meta VALUES('schema_version','26'); CREATE TRIGGER fail_schema_27 BEFORE UPDATE ON meta WHEN NEW.key='schema_version' AND NEW.value='27' BEGIN SELECT RAISE(ABORT,'injected schema publication failure'); END;").unwrap();
+    c.execute_batch("INSERT INTO secret_records(id,device_id,creator,name,grant_scope,grant_project_id,stage_owner_id,stage_conversation_id,stage_generation,created_at,revision,upload_request_id,upload_digest,blob_present) VALUES('sec_00000000-0000-4000-8000-000000000001','device','creator','RETAINED','project','project-a','owner','conversation','generation',100,1,'00000000-0000-4000-8000-000000000002','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',1);").unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let config = serde_json::json!({"environments":[{"id":"env-a"}],"projects":[{"id":"project-a","environment_id":"env-a","archived_at":null}]});
+    assert!(super::schema::initialize_store(&c, Some(&config)).is_err());
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        before,
+        "failed upgrade must leave the exact schema-26 database bytes"
+    );
+    assert!(c
+        .prepare("SELECT grant_environment_id FROM secret_records")
+        .is_err());
+    assert_eq!(
+        c.query_row(
+            "SELECT value FROM meta WHERE key='schema_version'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "26"
+    );
+    c.execute_batch("DROP TRIGGER fail_schema_27").unwrap();
+    super::schema::initialize_store(&c, Some(&config)).unwrap();
+    assert_eq!(
+        c.query_row(
+            "SELECT value FROM meta WHERE key='schema_version'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "27"
+    );
+    assert_eq!(
+        c.query_row(
+            "SELECT environment_id FROM secret_project_membership WHERE project_id='project-a'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "env-a"
+    );
+}
+
+#[test]
+fn schema_26_startup_populates_membership_from_config_before_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("build.db");
+    let c = rusqlite::Connection::open(&path).unwrap();
+    c.execute_batch(include_str!(
+        "../../../tests/fixtures/secrets-schema-26.sql"
+    ))
+    .unwrap();
+    c.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);INSERT INTO meta VALUES('schema_version','26');").unwrap();
+    drop(c);
+    let config = serde_json::json!({"environments":[{"id":"env-a"}],"projects":[{"id":"project-a","environment_id":"env-a","archived_at":null},{"id":"project-b","environment_id":"env-a","archived_at":10}]});
+    let store = Store::new_with_secret_config(dir.path(), &config).unwrap();
+    assert!(
+        super::membership::environment_allows(&store.writer_for_test(), "project-a", "env-a")
+            .unwrap()
+    );
+    assert!(!super::membership::current_project(&store.writer_for_test(), "project-b").unwrap());
 }

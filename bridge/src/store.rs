@@ -341,17 +341,28 @@ impl Store {
     /// Fails rather than degrading: a store that cannot be opened is a daemon
     /// that would silently orphan every worktree it cannot see.
     pub fn new(dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
-        Self::open(dir.into(), false)
+        Self::open(dir.into(), false, None)
     }
 
     /// Cold restore boundary. All handles to the previous database must be
     /// closed before restoring its files. Use this for in-place restores,
     /// which cannot be distinguished from an intact restart by file identity.
     pub fn new_after_restore(dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
-        Self::open(dir.into(), true)
+        Self::open(dir.into(), true, None)
     }
 
-    fn open(dir: PathBuf, restored: bool) -> Result<Self, StoreError> {
+    pub(crate) fn new_with_secret_config(
+        dir: impl Into<PathBuf>,
+        config: &serde_json::Value,
+    ) -> Result<Self, StoreError> {
+        Self::open(dir.into(), false, Some(config))
+    }
+
+    fn open(
+        dir: PathBuf,
+        restored: bool,
+        secret_config: Option<&serde_json::Value>,
+    ) -> Result<Self, StoreError> {
         std::fs::create_dir_all(&dir).map_err(|cause| StoreError::Unopenable {
             path: dir.clone(),
             cause: cause.to_string(),
@@ -423,7 +434,6 @@ impl Store {
         retention::upgrade_thread_retention_indexes(&conn)?;
         retention::upgrade_agent_conversation_index(&conn)?;
         conn.execute_batch(SCHEMA)?;
-        secrets::initialize(&conn)?;
         ensure_operation_receipt_columns(&conn)?;
         retention::ensure_upload_retention_columns(&conn)?;
         let journal_incarnation = mutations::initialize(&conn, stored.unwrap_or(0))?;
@@ -442,13 +452,7 @@ impl Store {
         if stored.unwrap_or(0) < 6 {
             migrate_agents_to_v6(&mut conn)?;
         }
-        if stored.unwrap_or(0) < SCHEMA_VERSION {
-            conn.execute(
-                "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
-                 ON CONFLICT(key) DO UPDATE SET value = ?1",
-                [SCHEMA_VERSION.to_string()],
-            )?;
-        }
+        secrets::initialize_store(&conn, secret_config)?;
         tracker::initialize_list_key(&conn)?;
         let summaries_initialized = task_summaries::initialize(&mut conn)?;
         sync::initialize(&mut conn, &dir.join(DB_FILE), restored)?;

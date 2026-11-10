@@ -55,6 +55,8 @@ impl AppState {
         run_ids: Vec<String>,
         session_roots: Vec<PathBuf>,
     ) -> Result<Value, String> {
+        #[cfg(test)]
+        if let Some(gate) = &self.off_lock_gate { gate.arrive(); }
         self.deletion_fail("record")?;
         let project = self.projects.get(project_id).ok_or("unknown project")?;
         let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);

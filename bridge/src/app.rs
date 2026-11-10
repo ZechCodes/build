@@ -335,6 +335,8 @@ pub struct AppState {
     retention: crate::retention::RetentionConfig,
     #[cfg(test)]
     config_persist_failure: Option<ConfigPersistStep>,
+    #[cfg(test)]
+    environment_secret_revocation_error: Option<String>,
     agent: Agent,
     harness: String,
     /// Project-scoped plans, keyed by `plan_id`.
@@ -740,6 +742,8 @@ impl AppState {
             retention: crate::retention::RetentionConfig::default(),
             #[cfg(test)]
             config_persist_failure: None,
+            #[cfg(test)]
+            environment_secret_revocation_error: None,
             agent,
             harness,
             plans: HashMap::new(),

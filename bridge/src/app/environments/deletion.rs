@@ -43,6 +43,10 @@ impl AppState {
         &self,
         _environment_id: &str,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        if let Some(error) = &self.environment_secret_revocation_error {
+            return Err(error.clone());
+        }
         Ok(())
     }
 }

@@ -2690,14 +2690,23 @@ fn project_archive_wire_is_strict_additive_and_advertised() {
 #[test]
 fn environment_and_project_delete_contracts_are_additive_and_strict() {
     assert_eq!(API_VERSION, "3.39.0");
-    for name in ["environments.delete", "projects.deleteTasks", "environment.delete"] {
+    for name in [
+        "environments.delete",
+        "projects.deleteTasks",
+        "environment.delete",
+    ] {
         assert!(!capabilities(false).contains(&name));
     }
     for method in ["environment.delete", "project.delete"] {
-        let (_, handler) = v1::methods().iter().find(|(name, _)| *name == method).unwrap();
+        let (_, handler) = v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap();
         let params = if method == "environment.delete" {
             serde_json::json!({"environment_id":"env-1"})
-        } else { serde_json::json!({"project_id":"proj-1","confirm":true,"tasks":"delete"}) };
+        } else {
+            serde_json::json!({"project_id":"proj-1","confirm":true,"tasks":"delete"})
+        };
         handler.parse_params(&params).unwrap();
         let mut invalid = params.clone();
         invalid["unexpected"] = serde_json::json!(true);

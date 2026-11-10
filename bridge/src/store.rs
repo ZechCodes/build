@@ -75,7 +75,7 @@ pub mod mutations;
 mod writer;
 pub use mutations::{
     MutationAdmission, MutationOutboxEntry, MutationOwner, MutationOwnerSequence, MutationRecord,
-    MutationRecovery, MutationResource,
+    MutationRecovery, MutationResource, ProjectDeletion, ProjectDeletionPlan,
 };
 pub use writer::StoreWriter;
 mod operations;

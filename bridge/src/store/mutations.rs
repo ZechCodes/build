@@ -9,7 +9,9 @@ use sha2::{Digest, Sha256};
 
 mod creation;
 mod execution;
+pub mod project_deletion;
 mod reads;
+pub use project_deletion::{ProjectDeletion, ProjectDeletionPlan};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MutationOwner {

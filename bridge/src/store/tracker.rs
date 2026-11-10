@@ -373,7 +373,24 @@ impl Store {
         project_path: &str,
         release: impl Fn(&crate::reviews::records::Review) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
-        self.in_waiting_on_transaction(|tx| {
+        self.delete_tracker_tasks_with_checkpoint(project_path, release, None)
+    }
+
+    pub(crate) fn delete_tracker_tasks_with_checkpoint(
+        &self,
+        project_path: &str,
+        release: impl Fn(&crate::reviews::records::Review) -> Result<(), StoreError>,
+        deletion: Option<&super::ProjectDeletion>,
+    ) -> Result<(), StoreError> {
+        self.in_waiting_on_transaction_with_durability(deletion.is_some(), |tx| {
+            if let Some(deletion)=deletion {
+                super::mutations::project_deletion::verify_history(tx,deletion)?;
+            }
+            if let Some(deletion) = deletion.filter(|d| !d.plan.delete_tasks) {
+                super::delivery_intents::cancel_project(tx, project_path)?;
+                super::mutations::project_deletion::checkpoint(tx, deletion)?;
+                return Ok(());
+            }
             // Capture endpoints before FK cascades remove their edge rows.
             let deleted = tx.prepare("SELECT id FROM tracker_tasks WHERE project_key=?1")?
                 .query_map([project_path], |row| row.get::<_, String>(0))?
@@ -441,6 +458,9 @@ impl Store {
             }
             for id in neighbors {
                 super::task_summaries::dependency_refresh(tx, &id)?;
+            }
+            if let Some(deletion) = deletion {
+                super::mutations::project_deletion::checkpoint(tx, deletion)?;
             }
             Ok(())
         })

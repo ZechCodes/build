@@ -53,14 +53,28 @@ pub fn snapshot(store: &Store, request: &SnapshotRequest) -> Result<Review, Stri
 /// from the registry. Call off the app lock; closing a task keeps its refs.
 pub fn delete_project_history(store: &Store, project_path: &str) -> Result<(), String> {
     store
-        .delete_tracker_tasks_of_project(project_path, |review| {
-            for snapshot in &review.snapshots {
-                cleanup_pins(&review.task_id, snapshot)
-                    .map_err(crate::store::StoreError::ReviewPinCleanup)?;
-            }
-            Ok(())
-        })
+        .delete_tracker_tasks_of_project(project_path, release_history_pins)
         .map_err(|error| error.to_string())
+}
+
+pub(crate) fn delete_project_history_checkpoint(
+    store: &Store,
+    project_path: &str,
+    deletion: Option<&crate::store::ProjectDeletion>,
+) -> Result<(), String> {
+    store
+        .delete_tracker_tasks_with_checkpoint(project_path, release_history_pins, deletion)
+        .map_err(|error| error.to_string())
+}
+
+fn release_history_pins(
+    review: &crate::reviews::records::Review,
+) -> Result<(), crate::store::StoreError> {
+    for snapshot in &review.snapshots {
+        cleanup_pins(&review.task_id, snapshot)
+            .map_err(crate::store::StoreError::ReviewPinCleanup)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

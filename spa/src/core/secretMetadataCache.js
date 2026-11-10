@@ -25,6 +25,9 @@ function stageMetadata(stage) {
 }
 
 function grantMetadata(grant) {
+  if (grant?.scope === "environment" && presentText(grant.environment_id)) {
+    return Object.freeze({ scope: "environment", environment_id: grant.environment_id });
+  }
   if (grant?.scope === "project" && presentText(grant.project_id)) {
     return Object.freeze({ scope: "project", project_id: grant.project_id });
   }
@@ -71,13 +74,15 @@ export const secretFeaturesAvailable = (features) => features?.attachments === t
   && features.sealedUpload === true && features.metadataEvents === true;
 
 function normalizedScope(scope) {
+  if (presentText(scope?.environmentId) && !scope.projectId) return Object.freeze({ environmentId: scope.environmentId });
   if (!presentText(scope?.projectId)) throw new Error("Secret metadata requires a project");
-  if (!scope.conversationId) return Object.freeze({ projectId: scope.projectId });
+  const project = { projectId: scope.projectId, ...(presentText(scope.environmentId) ? { environmentId: scope.environmentId } : {}) };
+  if (!scope.conversationId) return Object.freeze(project);
   if (![scope.ownerId, scope.agentId, scope.conversationId, scope.generation].every(presentText)) {
     throw new Error("Secret metadata requires an exact recipient generation");
   }
   return Object.freeze({
-    projectId: scope.projectId,
+    ...project,
     ownerId: scope.ownerId,
     agentId: scope.agentId,
     conversationId: scope.conversationId,
@@ -90,6 +95,7 @@ const scopeKey = (scope) => JSON.stringify(normalizedScope(scope));
 
 export function secretMetadataAddress(deviceId, rawScope) {
   const scope = normalizedScope(rawScope);
+  if (!scope.projectId) return { deviceId, entityId: scope.environmentId, kind: SECRET_METADATA_KIND, sub: "environment" };
   return scope.conversationId
     ? { deviceId, entityId: scope.conversationId, kind: SECRET_METADATA_KIND, sub: `${scope.ownerId}:${scope.agentId}:${scope.generation}` }
     : { deviceId, entityId: scope.projectId, kind: SECRET_METADATA_KIND, sub: "project" };
@@ -105,6 +111,7 @@ const stageOf = (scope) => scope.conversationId ? {
 
 function wireScope(rawScope) {
   const scope = normalizedScope(rawScope);
+  if (!scope.projectId) return { environment_id: scope.environmentId };
   return {
     project_id: scope.projectId,
     ...(scope.conversationId ? { stage: stageOf(scope) } : {}),
@@ -112,6 +119,7 @@ function wireScope(rawScope) {
 }
 
 function entryScope(metadata, queryScope) {
+  if (metadata.grant.scope === "environment") return { environmentId: metadata.grant.environment_id };
   if (metadata.grant.scope === "project") return projectScope(metadata.grant.project_id);
   const stage = metadata.scope;
   return {
@@ -125,6 +133,7 @@ function entryScope(metadata, queryScope) {
 }
 
 function belongsTo(metadata, scope) {
+  if (metadata.grant.scope === "environment") return metadata.grant.environment_id === scope.environmentId;
   if (metadata.grant.scope === "project") return metadata.grant.project_id === scope.projectId;
   return Boolean(scope.conversationId)
     && metadata.grant.agent_id === scope.agentId
@@ -212,7 +221,9 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
   async function readPage(scope, secretIds, requestIds, after) {
     try {
       return await call("secrets.list", {
-        scope: wireScope(scope), secret_ids: [...secretIds], request_ids: [...requestIds], after, limit: 100,
+        scope: wireScope(scope),
+        ...(scope.projectId && scope.environmentId && capabilities()?.environmentScope === true ? { include_environment: true } : {}),
+        secret_ids: [...secretIds], request_ids: [...requestIds], after, limit: 100,
       });
     } catch {
       throw safeReadError();
@@ -229,6 +240,7 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
   async function refresh(rawScope, { secretIds = [], requestIds = [] } = {}) {
     if (!supported()) return [];
     const scope = normalizedScope(rawScope);
+    if (scope.environmentId && capabilities()?.environmentScope !== true) return [];
     const entries = [];
     let after = null;
     do {
@@ -265,6 +277,7 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
     if (!supported()) return;
     const candidates = [...tracked.values()].filter((entry) => trackedActive(entry) && (
       hint.scope === "device"
+      || (hint.scope === "environment" && entry.scope.environmentId === hint.environment_id)
       || (hint.scope === "project" && entry.scope.projectId === hint.project_id && !entry.scope.conversationId)
       || (hint.scope === "agent" && entry.scope.ownerId === hint.entity_id
         && entry.scope.conversationId === hint.conversation_id && entry.scope.generation === hint.generation)
@@ -284,7 +297,9 @@ export function createSecretMetadataCache({ deviceId, call, capabilities, active
     read: (scope) => readCachedSecrets(deviceId, scope),
     async findRequest(rawScope, requestId) {
       const scope = normalizedScope(rawScope);
-      const scopes = scope.conversationId ? [scope, projectScope(scope.projectId)] : [scope];
+      const scopes = [scope];
+      if (scope.conversationId) scopes.push(projectScope(scope.projectId));
+      if (scope.projectId && scope.environmentId) scopes.push({ environmentId: scope.environmentId });
       const lists = await Promise.all(scopes.map((candidate) => readCachedSecrets(deviceId, candidate)));
       return lists.flat().find((entry) => entry.request_id === requestId) || null;
     },

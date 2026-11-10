@@ -10,8 +10,8 @@ it("resolves secret sealing and the original transport API through the package e
 });
 
 it("keeps secret features off until the current greeting names each one", () => {
-  expect(bridgeCapabilities("ungreeted-secrets").secrets).toEqual({ attachments: false, sealedUpload: false, metadataEvents: false });
-  expect(v1.capabilitiesOf({ api_version: "3.36.0", capabilities: [] }).secrets).toEqual({ attachments: false, sealedUpload: false, metadataEvents: false });
+  expect(bridgeCapabilities("ungreeted-secrets").secrets).toEqual({ attachments: false, sealedUpload: false, metadataEvents: false, environmentScope: false });
+  expect(v1.capabilitiesOf({ api_version: "3.36.0", capabilities: [] }).secrets).toEqual({ attachments: false, sealedUpload: false, metadataEvents: false, environmentScope: false });
   for (const feature of ["attachments", "sealedUpload", "metadataEvents"]) {
     const flags = v1.capabilitiesOf({ api_version: "3.36.0", capabilities: [`secrets.${feature}`] }).secrets;
     expect(flags[feature]).toBe(true);
@@ -20,7 +20,7 @@ it("keeps secret features off until the current greeting names each one", () => 
   expect(v1.capabilitiesOf({
     api_version: "3.34.0",
     capabilities: ["secrets.attachments", "secrets.sealedUpload", "secrets.metadataEvents"],
-  }).secrets).toEqual({ attachments: false, sealedUpload: false, metadataEvents: false });
+  }).secrets).toEqual({ attachments: false, sealedUpload: false, metadataEvents: false, environmentScope: false });
 });
 
 it("recognizes the metadata invalidation without treating it as a reply", () => {
@@ -73,4 +73,16 @@ it("turns a bounded device overflow hint into a full metadata refresh", () => {
   secretsChangedOn("overflow-device", { type: "secrets.changed", scope: "device", revision: 1001, secret_ids: [], truncated: true, name: "discarded", value: "discarded" });
   expect(hear).toHaveBeenCalledWith({ scope: "device", revision: 1001, secret_ids: [], truncated: true });
   dispose();
+});
+
+
+it("advertises environment secrets independently and projects environment hints without values", () => {
+  expect(v1.capabilitiesOf({ api_version: "3.40.0", capabilities: ["secrets.environmentScope"] }).environments.secrets).toBe(true);
+  expect(v1.capabilitiesOf({ api_version: "3.39.0", capabilities: [] }).environments.secrets).toBe(false);
+  const hear = vi.fn(), stop = onSecretsChanged("environment-wire", hear);
+  secretsChangedOn("environment-wire", { scope: "environment", environment_id: "env-wire", revision: 3,
+    secret_ids: ["sec_env"], value: "never forward", name: "never forward" });
+  expect(hear).toHaveBeenCalledWith({ scope: "environment", environment_id: "env-wire", revision: 3, secret_ids: ["sec_env"] });
+  secretsChangedOn("environment-wire", { scope: "environment", environment_id: "", revision: 4, secret_ids: ["sec_env"] });
+  expect(hear).toHaveBeenCalledOnce(); stop();
 });

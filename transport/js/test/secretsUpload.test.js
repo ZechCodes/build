@@ -71,3 +71,17 @@ test('Build package entry preserves every original transport export', () => {
   assert.deepEqual(Object.keys(publicApi).sort(), [...Object.keys(baselineApi), 'sealSecretUpload'].sort());
   for (const name of Object.keys(baselineApi)) assert.equal(publicApi[name], baselineApi[name]);
 });
+
+test('environment grant is sealed with its exact selector and rejects mixed scopes', async () => {
+  await sodium.ready;
+  const keys = sodium.crypto_box_keypair();
+  const deviceTransportPublicKeyB64 = sodium.to_base64(keys.publicKey, sodium.base64_variants.ORIGINAL_NO_PADDING);
+  const environment = { ...context, grant: { scope: 'environment', environment_id: 'env-test' } };
+  const sealed = await sealSecretUpload({ deviceTransportPublicKeyB64, context: environment, value: 'synthetic environment value' });
+  const plaintext = sodium.crypto_box_seal_open(sodium.from_base64(sealed, sodium.base64_variants.ORIGINAL_NO_PADDING), keys.publicKey, keys.privateKey);
+  const size = new DataView(plaintext.buffer, plaintext.byteOffset).getUint32(0);
+  assert.deepEqual(JSON.parse(sodium.to_string(plaintext.subarray(4, 4 + size))).context, environment);
+  for (const grant of [{ scope: 'environment' }, { scope: 'environment', environment_id: '' }, { ...environment.grant, project_id: 'foreign' }]) {
+    await assert.rejects(sealSecretUpload({ deviceTransportPublicKeyB64, context: { ...context, grant }, value: 'synthetic' }), /secret_invalid/);
+  }
+});

@@ -16,10 +16,13 @@ function text(value) {
 }
 
 function validateGrant(grant) {
-  const fields = grant?.scope === 'project'
-    ? ['scope', 'project_id'] : ['scope', 'agent_id', 'conversation_id', 'generation'];
+  const fields = {
+    project: ['scope', 'project_id'],
+    agent: ['scope', 'agent_id', 'conversation_id', 'generation'],
+    environment: ['scope', 'environment_id'],
+  }[grant?.scope];
+  if (!fields) invalid();
   objectFields(grant, fields);
-  if (!['project', 'agent'].includes(grant.scope)) invalid();
   for (const key of fields) text(grant[key]);
 }
 

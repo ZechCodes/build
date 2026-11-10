@@ -18,7 +18,8 @@ function stageContext(recipient) {
   };
 }
 
-function grantFor(scope, recipient, projectId) {
+function grantFor(scope, recipient, projectId, environmentId) {
+  if (scope === "environment" && environmentId) return { scope: "environment", environment_id: environmentId };
   if (scope === "project") return { scope: "project", project_id: projectId };
   if (scope === "agent") return {
     scope: "agent",
@@ -26,7 +27,7 @@ function grantFor(scope, recipient, projectId) {
     conversation_id: recipient.conversationId,
     generation: recipient.generation,
   };
-  throw safeError("invalid_scope", "Choose Agent or Project scope");
+  throw safeError("invalid_scope", "Choose an available secret scope");
 }
 
 const queryScope = (projectId, recipient) => ({
@@ -50,6 +51,7 @@ const DEFAULTS = Object.freeze({
   createOperationId: () => crypto.randomUUID(),
   active: () => true,
   cachedSupport: () => false,
+  environmentId: () => null,
 });
 
 function assertBindings({ recipient, capabilities, deviceTransportPublicKey, call, draft, metadata }) {
@@ -81,7 +83,9 @@ export function createSecretDraftService(provided) {
   function stageRequest({ name, value, scope = "agent", ttlSeconds = null }) {
     const addressed = recipient();
     const context = stageContext(addressed);
-    const grant = grantFor(scope, addressed, projectId);
+    const environmentId = options.environmentId();
+    if (scope === "environment" && capabilities()?.environmentScope !== true) throw safeError("invalid_scope", "Environment secrets are unavailable");
+    const grant = grantFor(scope, addressed, projectId, environmentId);
     return { addressed, context, grant, requestId: createRequestId(), name, value, ttlSeconds };
   }
 
@@ -116,7 +120,7 @@ export function createSecretDraftService(provided) {
       return answer;
     } catch {
       createSettled();
-      const scopeAddress = queryScope(projectId, request.addressed);
+      const scopeAddress = { ...queryScope(projectId, request.addressed), ...(request.grant.scope === "environment" ? { environmentId: request.grant.environment_id } : {}) };
       try { await metadata.refresh(scopeAddress, { requestIds: [request.requestId] }); } catch { /* The lookup below decides. */ }
       const answer = await metadata.findRequest?.(scopeAddress, request.requestId);
       if (answer) return answer;
@@ -130,7 +134,7 @@ export function createSecretDraftService(provided) {
     if (!sameStage(descriptor, request.context, request.grant, request.requestId, request.name)) {
       throw safeError("stage_mismatch", "The secret upload returned different metadata");
     }
-    await metadata.upsert(descriptor, queryScope(projectId, request.addressed));
+    await metadata.upsert(descriptor, { ...queryScope(projectId, request.addressed), ...(request.grant.scope === "environment" ? { environmentId: request.grant.environment_id } : {}) });
     if (!current()) throw safeError("stale_generation", "The recipient conversation changed");
     draft.write([...cloneEntries(draft.read()), descriptor]);
     return descriptor;
@@ -161,11 +165,12 @@ export function createSecretDraftService(provided) {
     if (!wireSupported()) throw safeError("revoke_unavailable", "The secret could not be revoked");
     const held = entries().find((entry) => entry.secret_id === secretId);
     if (!held) return null;
+    if (held.grant.scope === "environment" && capabilities()?.environmentScope !== true) throw safeError("revoke_unavailable", "The secret could not be revoked");
     const addressed = recipient();
     let answer;
     try {
       answer = await call("secrets.revoke", {
-        scope: {
+        scope: held.grant.scope === "environment" ? { environment_id: held.grant.environment_id } : {
           project_id: projectId,
           stage: stageContext(addressed),
         },
@@ -177,7 +182,7 @@ export function createSecretDraftService(provided) {
     }
     if (!current()) throw safeError("stale_generation", "The recipient conversation changed");
     const descriptor = secretMetadataOf(answer);
-    await metadata.upsert(descriptor, queryScope(projectId, addressed));
+    await metadata.upsert(descriptor, held.grant.scope === "environment" ? { environmentId: held.grant.environment_id } : queryScope(projectId, addressed));
     draft.write(entries().filter((entry) => entry.secret_id !== secretId));
     return descriptor;
   }

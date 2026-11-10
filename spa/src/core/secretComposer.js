@@ -49,7 +49,7 @@ export const secretChipsHtml = (entries = [], { removable = true } = {}) =>
 
 const selected = (held, wanted) => held === wanted ? " selected" : "";
 
-function secretModalBodyHtml({ scope = "agent", ttl = "none", busy = false }) {
+function secretModalBodyHtml({ scope = "agent", ttl = "none", busy = false, environmentAvailable = false }) {
   return `<h3 id="secret-modal-title">Attach a secret</h3>
     <p class="sub secret-modal-intro">The value is sealed to this device and is not included in the message.</p>
     <label class="secret-field-label" for="secret-key">Name</label>
@@ -67,6 +67,9 @@ function secretModalBodyHtml({ scope = "agent", ttl = "none", busy = false }) {
       <label><input type="radio" name="secret-scope" value="project"${scope === "project" ? " checked" : ""} />
         <span><strong>Project</strong><small>Available to current agents in this project.</small></span>
       </label>
+      ${environmentAvailable ? `<label><input type="radio" name="secret-scope" value="environment"${scope === "environment" ? " checked" : ""} />
+        <span><strong>This environment</strong><small>Available to current agents in every project in this environment.</small></span>
+      </label>` : ""}
     </fieldset>
     <label class="secret-field-label" for="secret-ttl">Expiry</label>
     <select id="secret-ttl" name="secret-ttl">
@@ -106,7 +109,7 @@ function modalSubmission(body, value, ttlField, customTtlField, clearValue) {
 }
 
 /** Open the only surface that handles a live secret value. */
-export function openSecretModal({ stage, onChange = () => {}, host = document.body } = {}) {
+export function openSecretModal({ stage, onChange = () => {}, host = document.body, environmentAvailable = false, scope = "agent" } = {}) {
   if (typeof stage !== "function") throw new Error("Secret modal requires a stage action");
   let busy = false;
   let dismissed = false;
@@ -128,7 +131,7 @@ export function openSecretModal({ stage, onChange = () => {}, host = document.bo
     wipeValue();
   };
   modal = openModal({
-    dialogHtml: secretModalHtml(),
+    dialogHtml: secretModalHtml({ environmentAvailable, scope: scope === "environment" && !environmentAvailable ? "agent" : scope }),
     scrimId: "secret-scrim",
     host,
     initialFocus: "#secret-key",
@@ -219,16 +222,18 @@ export function openSecretModal({ stage, onChange = () => {}, host = document.bo
 }
 
 /** Bind one conversation's metadata-only draft service to composer chrome. */
-export function createSecretComposer({ service, onChange = () => {}, onError = () => {}, host = document.body } = {}) {
+export function createSecretComposer({ service, onChange = () => {}, onError = () => {}, host = document.body, environmentAvailable = () => false } = {}) {
   if (!service || typeof service.stage !== "function" || typeof service.remove !== "function" || typeof service.entries !== "function") {
     throw new Error("Secret composer requires a draft service");
   }
   let modal = null;
   let disposed = false;
-  const open = () => {
+  const open = ({ scope = "agent" } = {}) => {
     if (disposed) return null;
     modal = openSecretModal({
       stage: (input) => service.stage(input),
+      environmentAvailable: environmentAvailable(),
+      scope,
       onChange,
       host,
     });

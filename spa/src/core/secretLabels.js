@@ -16,8 +16,16 @@ export function secretTtlLabel(ttlSeconds) {
 /** Exact visible chip copy from a validated cache descriptor. */
 export function secretChipLabel(metadata) {
   const name = metadata?.name;
-  const scope = { agent: "Agent", project: "Project" }[metadata?.grant?.scope];
+  const scope = { agent: "Agent", project: "Project", environment: "Environment" }[metadata?.grant?.scope];
   const ttl = secretTtlLabel(metadata?.ttl_seconds);
   if (![name, scope, ttl].every(Boolean)) return "";
   return `${name} · ${scope} · ${ttl}`;
+}
+
+
+/** Only live grants can shadow another live name. Staged uploads acquire
+ * authority when the user's own message is accepted. */
+export function secretOverridesEnvironment(secret, entries = []) {
+  return secret?.grant?.scope === "project" && secret.status === "available"
+    && entries.some(entry => entry.grant?.scope === "environment" && entry.status === "available" && entry.name === secret.name);
 }

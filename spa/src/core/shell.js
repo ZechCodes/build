@@ -1,3 +1,4 @@
+import { takeEnvironmentSecretNavigation } from "./environmentSecretNavigation.js";
 // The shell's own parts: the conversation rail and the console region.
 //
 // The shell is one thing, mounted once. index.html carries its regions and they
@@ -395,6 +396,7 @@ function standWhenListed(parts, context, mine) {
 }
 
 function mountRail(descriptor, context) {
+  const secretIntent = takeEnvironmentSecretNavigation(descriptor);
   return mountAgentRail($("#agent-rail"), {
     ...descriptor,
     // The device's caller, not the session's: the machine can drop and resume
@@ -408,7 +410,8 @@ function mountRail(descriptor, context) {
     // One-shot, set right before navigating to a branch just cut from the
     // toolbar's create form. Read here because the rail is mounted here now,
     // and cleared in the same breath so the next mount does not steal focus.
-    autofocusComposer: takeComposerFocus(),
+    autofocusComposer: takeComposerFocus() || Boolean(secretIntent),
+    secretEnvironmentIntent: secretIntent?.environmentId || null,
     ...adoptingSupplier(descriptor),
   });
 }

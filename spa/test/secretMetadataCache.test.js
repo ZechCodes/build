@@ -218,3 +218,33 @@ it("degrades silently when the complete capability family is absent", async () =
 function callsKey(value) {
   return Object.values(value).filter(Boolean).length;
 }
+
+
+it("keeps same-name environment and project grants apart and opts inherited reads in", async () => {
+  const environment = { ...metadata(), secret_id: "sec_environment", grant: { scope: "environment", environment_id: "env-cache" } };
+  const scope = { projectId: "project-cache", environmentId: "env-cache" };
+  const call = vi.fn(async () => ({ secrets: [metadata(), environment], server_now: 1800000000, next: null }));
+  const cache = createSecretMetadataCache({ deviceId: "environment-cache", call,
+    capabilities: () => ({ ...capabilities(), environmentScope: true }) });
+  caches.push(cache);
+  await cache.refresh(scope);
+  expect(call).toHaveBeenLastCalledWith("secrets.list", expect.objectContaining({ scope: { project_id: "project-cache" }, include_environment: true }));
+  expect(await cache.read(projectScope)).toEqual([metadata()]);
+  expect(await cache.read({ environmentId: "env-cache" })).toEqual([environment]);
+  expect(secretMetadataAddress("environment-cache", { environmentId: "env-cache" })).not.toEqual(secretMetadataAddress("environment-cache", { projectId: "env-cache" }));
+  call.mockClear(); cache.track({ environmentId: "env-cache" });
+  await vi.waitFor(() => expect(call).toHaveBeenCalled());
+  expect(call).toHaveBeenLastCalledWith("secrets.list", expect.objectContaining({ scope: { environment_id: "env-cache" } }));
+  call.mockClear(); secretsChangedOn("environment-cache", { scope: "environment", environment_id: "env-cache", revision: 2, secret_ids: ["sec_environment"] });
+  await vi.waitFor(() => expect(call).toHaveBeenCalledOnce());
+});
+
+it("does not clear a cached environment list when an inherited read is refused", async () => {
+  const environment = { ...metadata(), secret_id: "sec_environment", grant: { scope: "environment", environment_id: "env-refusal" } };
+  const cache = createSecretMetadataCache({ deviceId: "environment-refusal", call: vi.fn(async () => { throw new Error("membership uncertain"); }),
+    capabilities: () => ({ ...capabilities(), environmentScope: true }) });
+  caches.push(cache);
+  await cache.upsert(environment, { environmentId: "env-refusal" });
+  await expect(cache.refresh({ projectId: "project-cache", environmentId: "env-refusal" })).rejects.toThrow();
+  expect(await cache.read({ environmentId: "env-refusal" })).toEqual([environment]);
+});

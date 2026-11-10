@@ -75,3 +75,13 @@ describe("thread secret metadata chips", () => {
     expect(labels(second)).toEqual(["AFTER · Project · 1 hour after sending"]);
   });
 });
+
+
+it("marks an available project secret that overrides an available environment name", () => {
+  const project = { ...metadata({ id: "sec_project", name: "TOKEN", scope: "project", ttl: null }), status: "available" };
+  const inherited = { ...project, secret_id: "sec_environment", grant: { scope: "environment", environment_id: "env" } };
+  const render = entries => threadHtml({ items: [message(["sec_project", "sec_environment"])] }, { secretMetadata: entries });
+  expect(render([project, inherited])).toContain("overrides environment");
+  expect(render([project, { ...inherited, status: "revoked" }])).not.toContain("overrides environment");
+  expect(labels(render([project, inherited]))).toContain("TOKEN · Environment · No expiry");
+});

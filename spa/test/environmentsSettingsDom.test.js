@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 const state = vi.hoisted(() => ({ devices: [{ id: "laptop", name: "Laptop" }, { id: "desktop", name: "Desktop" }], support: new Map(), calls: new Map(), changes: new Set(), greetings: new Set(), deviceOwned: false }));
-vi.mock("../src/app.js", () => ({ App: { get devices() { return state.devices; } } }));
+vi.mock("../src/app.js", () => ({ go: vi.fn(), App: { get devices() { return state.devices; } } }));
 vi.mock("../src/devices.js", () => ({ readCachedDevices: async () => state.devices, onDevicesChanged: fn => { state.changes.add(fn); return () => state.changes.delete(fn); } }));
 vi.mock("../src/core/inboxDevices.js", () => ({ deviceCall: id => (...args) => state.calls.get(id)(...args) }));
 vi.mock("../src/core/createWorkspaceWizard.js", () => ({ openCreateWorkspaceWizard: vi.fn() }));

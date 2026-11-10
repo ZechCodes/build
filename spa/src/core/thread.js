@@ -36,7 +36,7 @@ import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { scrollWithin } from "./scrollWithin.js";
 import { buildNoticeSummary, noticeHasMore } from "./buildNoticeLine.js";
 import { attachMediaSource, createMediaBody, createMediaUrl } from "./mediaBlob.js";
-import { secretChipLabel } from "./secretLabels.js";
+import { secretChipLabel, secretOverridesEnvironment } from "./secretLabels.js";
 
 export { secretChipLabel, secretTtlLabel } from "./secretLabels.js";
 
@@ -719,8 +719,11 @@ const secretMetadataById = (source, secretId) => {
 function messageSecretsHtml(message, secretMetadata) {
   if (!Array.isArray(message.secret_ids)) return "";
   const chips = message.secret_ids.flatMap((secretId) => {
-    const label = secretChipLabel(secretMetadataById(secretMetadata, secretId));
-    return label ? [`<span class="thread-secret-chip">${esc(label)}</span>`] : [];
+    const metadata = secretMetadataById(secretMetadata, secretId);
+    const label = secretChipLabel(metadata);
+    const entries = secretMetadata instanceof Map ? [...secretMetadata.values()] : Object.values(secretMetadata || {});
+    const override = secretOverridesEnvironment(metadata, entries) ? ' <span class="secret-override-chip">overrides environment</span>' : "";
+    return label ? [`<span class="thread-secret-chip">${esc(label)}${override}</span>`] : [];
   });
   return chips.length ? `<div class="thread-secret-chips">${chips.join("")}</div>` : "";
 }

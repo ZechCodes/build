@@ -1438,6 +1438,7 @@ function mountRailOnContext(host, context, swap) {
     secretMetadataBinding.bind(withEnvironmentSecretScope(scopes, secretEnvironmentId));
   };
   const secretEnvironmentContext = watchSecretEnvironment({ deviceId: context.deviceId,
+    enabled: Boolean(context.secretMetadataCache),
     projectId: () => entity.projectId || projectId,
     onChange: environmentId => {
       if (environmentId === secretEnvironmentId) return;

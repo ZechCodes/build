@@ -380,6 +380,66 @@ afterEach(async () => {
   }, () => null)));
 });
 
+it("does not read environment-secret support when the rail has no metadata service", async () => {
+  const cache = await import("../src/core/localCache.js");
+  const reads = vi.spyOn(cache, "readCached");
+  try {
+    await mount();
+    expect(reads.mock.calls.filter(([address]) => address.kind === "environment-support")).toEqual([]);
+  } finally { reads.mockRestore(); }
+});
+
+it("paints cached conversation, pills and models while enabled environment-secret reads are pending", async () => {
+  await writeRailWorkItem(payload);
+  await writeRailThread("run-3", "ag-1", { items: [
+    { type: "message", data: { sequence: 1, role: "agent", body: "cached conversation" } },
+  ], has_more: false });
+  await writeCached(deviceModelsAddress("dev-1"), CATALOG);
+  await writeCached(surfacesCacheAddress({ deviceId: "dev-1", entityId: "run-3", agentId: "ag-1" }),
+    surfacesRecord({ shells: [{ id: "cached-shell", description: "cached shell", state: "running", tail: [] }] }, "surface-session-1"));
+  const { createSecretMetadataCache } = await import("../src/core/secretMetadataCache.js");
+  const metadata = createSecretMetadataCache({ deviceId: "dev-1",
+    capabilities: () => ({ attachments: true, sealedUpload: true, metadataEvents: true, environmentScope: true }),
+    call: async () => ({ secrets: [], server_now: 1800000000, next: null }),
+  });
+  const cache = await import("../src/core/localCache.js");
+  const read = cache.readCached;
+  const support = await import("../src/core/environmentSupport.js");
+  const held = [];
+  let observerProjectRead = false;
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const supportReads = vi.spyOn(support, "readEnvironmentSupport").mockImplementation(() => {
+    held.push("environment-support");
+    observerProjectRead = true;
+    return pending;
+  });
+  const reads = vi.spyOn(cache, "readCached").mockImplementation(address => {
+    // Hold the observer's paired read, while the rail's own row lookup can
+    // still read the cached project roster it needs to locate the branch.
+    if (observerProjectRead && address.kind === "projects") {
+      observerProjectRead = false;
+      held.push("projects");
+      return pending;
+    }
+    return read(address);
+  });
+  try {
+    rail = mountAgentRail(railHost(), railAddress({ secretMetadataCache: metadata }));
+    await vi.waitFor(() => {
+      expect(panel()?.textContent).toContain("cached conversation");
+      expect(railHost().querySelector('[data-surface-kind="shells"]')).toBeTruthy();
+      expect(menuItem("model:claude-opus-5")).toBeTruthy();
+    });
+    expect(held).toEqual(expect.arrayContaining(["environment-support", "projects"]));
+  } finally {
+    rail?.dispose(); rail = null;
+    metadata.dispose();
+    reads.mockRestore(); supportReads.mockRestore(); release();
+    await flush();
+  }
+});
+
 describe("shared mounted chat reader (#704)", () => {
   const subscriptions = [];
   const observeReader = (identity) => {

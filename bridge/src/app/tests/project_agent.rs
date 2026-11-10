@@ -2294,12 +2294,26 @@ fn a_project_agents_prompt_uses_plural_only_for_extra_effective_sources() {
         let plural = app.project_agent_prompt(&owner);
         let said = plural.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(said.contains("Read anything in them"), "{scope}: {said}");
-        assert!(said.contains(&format!("Its other sources are part of the base too: `Assets` at {}.", root.path().join("assets").display())), "{scope}: {said}");
-        assert!(said.contains("Use `list_project_sources` for current source ids and scope."), "{scope}: {said}");
+        assert!(
+            said.contains(&format!(
+                "Its other sources are part of the base too: `Assets` at {}.",
+                root.path().join("assets").display()
+            )),
+            "{scope}: {said}"
+        );
+        assert!(
+            said.contains("Use `list_project_sources` for current source ids and scope."),
+            "{scope}: {said}"
+        );
         assert!(!said.contains("{project_"), "{scope}: {said}");
-        app.agent_action(&owner, &agent, environment_source_action(json!({
-            "action":format!("remove_{scope}_source"), "source_id":added["sources"][1]["id"]
-        }))).unwrap();
+        app.agent_action(
+            &owner,
+            &agent,
+            environment_source_action(json!({
+                "action":format!("remove_{scope}_source"), "source_id":added["sources"][1]["id"]
+            })),
+        )
+        .unwrap();
     }
     let single = app.project_agent_prompt(&owner);
     assert!(single.contains("Read anything in it"), "{single}");

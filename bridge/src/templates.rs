@@ -12,6 +12,7 @@
 //! `{comments}`, `{base_branch}`, `{stage_id}`, `{stage_title}`, `{stage_path}`,
 //! `{stage_summary}`, `{next_stage_path}`, `{stage_start_sha}`, `{capture_text}`,
 //! `{project_name}`, `{project_base}`, `{project_sources}`, `{user_answer}`.
+//! `{project_source_pronoun}` is derived from whether `{project_sources}` is empty.
 //!
 //! What Build says to agents is under `bridge/templates/messages/`, filled by
 //! [`fill`]; each `MESSAGE_*` constant's doc names its own placeholders.
@@ -303,6 +304,9 @@ const ROUTER: &str = template!("router.md");
 
 const PROJECT_AGENT: &str = template!("project_agent.md");
 
+/// Extra effective sources, named only when the project has more than its home.
+pub(crate) const PROJECT_OTHER_SOURCES_NOTE: &str = template!("notes/project_other_sources.md");
+
 const PROJECT_WORKER: &str = template!("project_worker.md");
 
 /// What every code-changing phase adds about its completion message. Appended rather
@@ -480,6 +484,14 @@ pub struct Vars<'a> {
 /// Render a template by substituting every `{var}` placeholder.
 pub fn render(template: &str, vars: &Vars) -> String {
     template
+        .replace(
+            "{project_source_pronoun}",
+            if vars.project_sources.is_empty() {
+                "it"
+            } else {
+                "them"
+            },
+        )
         .replace("{goal}", vars.goal)
         .replace("{plan_path}", vars.plan_path)
         .replace("{docs_dir}", vars.docs_dir)

@@ -120,10 +120,11 @@ impl AppState {
         let sources = if others.is_empty() {
             String::new()
         } else {
-            format!(
-                " Its other sources are part of the base too: {}.",
-                others.join(", ")
-            )
+            let note = crate::templates::fill(
+                crate::templates::PROJECT_OTHER_SOURCES_NOTE,
+                &[("sources", &others.join(", "))],
+            );
+            format!(" {}", note.trim_end())
         };
         crate::templates::render(
             &crate::templates::Templates::default().project_agent,

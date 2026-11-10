@@ -279,3 +279,11 @@ Current source selection is proved by
 `a_project_agent_discovers_sources_added_after_a_workspace_was_cut`:
 `list_project_sources` stays caller-bound and labels environment references
 separately from this project's added references. Reading changes no config.
+
+The inventory uses the independent MCP snapshot read lane over one accepted
+producer root. `mcp_guardfree_project_sources_complete_with_app_and_both_writer_turns_held`,
+`mcp_guardfree_project_sources_enforce_surface_token_and_bound_project` and
+`mcp_guardfree_project_sources_follow_source_add_remove_commits` hold the app
+mutex and both writer permits, require socket replies within 100 ms, enforce
+Project purpose/token/binding scope and verify freshly committed environment
+and project-only additions/removals without manual publication.

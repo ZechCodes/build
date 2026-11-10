@@ -1,4 +1,8 @@
 //! Immutable producer snapshots for maintenance-shaped MCP list tools.
+#[path = "snapshot_json.rs"]
+mod json;
+#[path = "snapshot_sources.rs"]
+mod sources;
 #[path = "snapshot_work.rs"]
 mod work;
 use super::service::{Inputs, McpReadService};
@@ -11,7 +15,10 @@ use std::sync::Arc;
 pub(super) fn supports(action: &BridgeAction) -> bool {
     matches!(
         action,
-        BridgeAction::ListProjects | BridgeAction::ListWork | BridgeAction::ListWorkspaces
+        BridgeAction::ListProjects
+            | BridgeAction::ListWork
+            | BridgeAction::ListWorkspaces
+            | BridgeAction::ListProjectSources
     )
 }
 
@@ -22,6 +29,7 @@ pub(super) fn prepare(
     action: &BridgeAction,
 ) -> Option<Result<PreparedRead, String>> {
     match action {
+        BridgeAction::ListProjectSources => Some(sources::prepare(inputs, session)),
         BridgeAction::ListProjects | BridgeAction::ListWork | BridgeAction::ListWorkspaces => {
             Some(capture(inputs, session, action))
         }

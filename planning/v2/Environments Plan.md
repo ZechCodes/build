@@ -1279,7 +1279,10 @@ a migrated device:
 expose current source references: `list_workspaces` contains cut-time directory
 snapshots. The slice therefore adds Project-only `list_project_sources`, a
 read-only MCP tool returning current config ids, paths and environment/project
-scope. This is an MCP-only plan extension, with no RPC, schema, wire-version or
+scope from accepted immutable producer fragments through the independent MCP
+read lane. It takes neither writer permits nor the app mutex; real-socket
+regressions hold both and enforce a 100 ms response budget, including scope
+refusals and immediately committed source additions/removals. This is an MCP-only plan extension, with no RPC, schema, wire-version or
 capability change.
 
 ### Stage 3: polish (after dogfooding, informed by it)

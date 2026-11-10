@@ -3436,9 +3436,12 @@ Only the Project surface exposes `list_project_sources`, `add_environment_source
 `remove_project_source`. Environment tools resolve the calling agent's bound
 project and then its environment; they accept no project or environment
 selector. `list_project_sources` reads the environment references followed by
-this project's added references directly from current configuration, returning
+this project's added references from the accepted `environment.list` and
+`project.list` fragments in one immutable read view, returning
 id, path and scope for each. It works without workspaces and never derives its
 inventory from a workspace's cut-time directories or probes the filesystem.
+Its real MCP requests use the independent read lane, including session,
+purpose and bound-project validation, without writer permits or the app mutex.
 The add/remove tools reuse the client environment-source operations and their path,
 remote, membership and removal checks. Environment sources apply to every
 project in the environment; project source tools change only that project's

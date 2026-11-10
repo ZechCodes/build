@@ -102,7 +102,7 @@ impl AppState {
             gate: self.config_persist_gate.clone(),
         }
     }
-    pub(super) fn write_config_file(&self, path: &Path, config: &Value) -> Result<(), String> {
+    pub(in crate::app) fn write_config_file(&self, path: &Path, config: &Value) -> Result<(), String> {
         self.config_file_writer().write(path, config)
     }
 }

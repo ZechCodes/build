@@ -106,11 +106,11 @@ fn project_deletion_inventory_does_not_block_unrelated_requests() {
     let state = app.shared();
     let deleting = state.clone();
     let thread = std::thread::spawn(move || {
-        let (admitted, job) = deleting.lock().unwrap().dispatch_deferring("project.delete", &params(&project));
+        let (admitted, job) = deleting.lock().unwrap().dispatch_deferring("project.delete", &json!({"project_id":project,"confirm":true}));
         assert!(admitted.is_ok(), "{admitted:?}");
         let mut job = job.unwrap();
         loop { let done = job.run();
-            match deleting.lock().unwrap().apply_deferred_stage("project.delete", &params(&project), done) {
+            match deleting.lock().unwrap().apply_deferred_stage("project.delete", &json!({"project_id":project,"confirm":true}), done) {
                 crate::app::runtime::deferred::DeferredNext::Again(next) => job = next,
                 crate::app::runtime::deferred::DeferredNext::Answered(result) => return result,
             }

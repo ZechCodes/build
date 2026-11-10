@@ -261,3 +261,31 @@ async fn project_deletion_inventory_does_not_block_unrelated_requests() {
     paused.release();
     assert!(thread.join().unwrap().is_ok());
 }
+
+#[test]
+fn project_deletion_config_checkpoint_preserves_lock_markers_until_cleanup() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let task = filed(&mut app, &project, "Lock-marker ordering");
+    let w = finished(&mut app, &project);
+    let locks = app.workspaces.root().join(".locks");
+    std::fs::create_dir_all(&locks).unwrap();
+    let marker = locks.join(&w.id);
+    // Model a marker appearing after the cached manifest was observed. The
+    // durable record must capture it; config failure cannot unlink it.
+    std::fs::write(&marker, b"captured marker").unwrap();
+    let other = locks.join("another-workspace");
+    std::fs::write(&other, b"keep sibling marker").unwrap();
+    app.config_path = Some(root.path().join("config.json"));
+    app.persist();
+    fail_checkpoint(&app, "config_removed");
+    let failed = app.handle(req("project.delete", params(&project)));
+    assert_eq!(failed["ok"], false, "{failed}");
+    assert!(marker.exists(), "config checkpoint failure unlinked the marker");
+    assert!(w.root.exists());
+    assert!(app.store.as_ref().unwrap().load_tracker_task(task["id"].as_str().unwrap()).unwrap().is_some());
+    app.store.as_ref().unwrap().writer_for_test().execute_batch("DROP TRIGGER fail_phase").unwrap();
+    call(&mut app, "project.delete", params(&project));
+    assert!(!marker.exists());
+    assert_eq!(std::fs::read(other).unwrap(), b"keep sibling marker");
+}

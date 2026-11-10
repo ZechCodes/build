@@ -5746,7 +5746,14 @@ for deliberate syntax limits and regression evidence.
 Tokens are CSS custom properties in `spa/src/styles.css`: `:root` holds the light
 theme and `:root[data-theme="dark"]` the dark one. `spa/src/core/theme.js` is
 the only code that sets `data-theme`, and `spa/public/theme-boot.js` sets it
-before first paint.
+before first paint. Identity badge colors live only in `core/theme.js`:
+`applyTheme` installs the twelve `--badge-1` … `--badge-12` backgrounds and
+`--badge-ink` for the resolved theme. Cached device-qualified environment keys
+select a stable hue; row names supply the first two Unicode letters, each
+uppercased only when the result is one code point (otherwise the original
+letter is kept; `?` without letters). Badges retain the original 16px SVG slots.
+Their letters are CSS-generated inside an aria-hidden SVG foreignObject, so
+badges contribute no DOM text or accessible name to neighboring labels.
 
 - `--accent` is the foreground and affordance colour (text, icons, borders). It
   is `#006d43` in light and `#51ffb4` in dark.

@@ -1065,11 +1065,18 @@ Two layers, kept apart:
   circle, all 16 px, current foreground colour, `aria-hidden`), the **device
   label** (1.7), and the existing unread `.badge` pill (`styles.css:471`).
   No colour tokens, no hashing: nothing to design or theme before first try.
-- **Identity badges (Stage 2, recommendation 5B.3)**: hue from
-  `hash(deviceKey(device, environmentId)) mod 12` over tokens `--badge-1…12`
-  in both themes (`styles.css:164-237`; colours live only in `core/theme.js`),
-  glyph = first two letters of the row's name; siblings share hue, differ by
-  glyph. Replaces the kind glyph in the same slot, so no layout moves.
+- **Identity badges (Stage 2, S2.6)**: hue from a stable FNV-1a hash of
+  `deviceKey(device, environmentId)` modulo 12 over tokens `--badge-1…12`.
+  `core/theme.js` installs both themes' tokens and `--badge-ink`, and owns all
+  badge colour values. The glyph is the first two Unicode letters of the row's
+  name, each uppercased only if its uppercase form is one code point; expanding
+  letters keep their original form (`ßa` → `ßA`, `ß` → `ß`). One letter stays
+  one; no letters gives `?`. Siblings share hue and differ by glyph.
+  Replaces the kind glyph in its existing 16px SVG slot, so no layout moves.
+  Decorative letters use generated content inside the hidden SVG, contributing
+  no DOM text or accessible name to adjacent labels. A draft or legacy row
+  without an environment id uses its device-qualified row id; progress adopts the persisted environment
+  id as soon as it appears in the cached operation outcome.
 
 Placement (both layers): switcher rows, wizard rows and target summary,
 progress screen, crumb, inbox block heads (`projectHeadHtml`,

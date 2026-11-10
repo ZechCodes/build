@@ -1006,7 +1006,10 @@ describe("cached environment navigation", () => {
   it("paints E › P from cache and drops E when exactly one project remains", async () => {
     await enable();
     const crumb = bar().querySelector("[data-project-return]");
-    expect(crumb.querySelector('[data-kind="project"]').getAttribute("aria-hidden")).toBe("true");
+    expect(crumb.firstElementChild.matches('.identity-badge[data-kind="project"]')).toBe(true);
+    expect(crumb.firstElementChild.textContent).toBe("");
+    expect(crumb.firstElementChild.querySelector('[data-glyph]').dataset.glyph).toBe("RE");
+    expect(crumb.firstElementChild.getAttribute("aria-hidden")).toBe("true");
     expect(crumb.textContent).toContain("Shared environment › relaydb");
     feed = { ...feed, projects: feed.projects.filter(project => project.id === "p1") };
     await writeCached({ deviceId: "dev-1", entityId: "", kind: "environments" }, [{ environment_id: "env", name: "Shared environment", project_ids: ["p1"] }]);
@@ -1020,6 +1023,12 @@ describe("cached environment navigation", () => {
     const popup = await openJump("project");
     expect(popup.querySelectorAll('[data-environment-group="dev-1/env"]')).toHaveLength(1);
     expect(popup.querySelector('[data-environment-group]').tagName).toBe("DIV");
+    const head = popup.querySelector('[data-environment-group] > .identity-badge');
+    expect(head.textContent).toBe("");
+    expect(head.querySelector('[data-glyph]').dataset.glyph).toBe("SH");
+    const badges = [...popup.querySelectorAll('[data-project]:not([data-visit]) .identity-line > .identity-badge')];
+    expect(badges.map(badge => badge.querySelector("[data-glyph]").dataset.glyph)).toEqual(["MA", "RE"]);
+    expect(badges.every(badge => badge.dataset.hue === head.dataset.hue)).toBe(true);
     expect(labels("[data-project]")).toEqual(["mascot", "relaydb"]);
     expect(popup.querySelector('[data-project="dev-1/p1"]:not([data-visit])').textContent).toContain("+1 folders");
     expect(popup.querySelector("[data-workspace]")).toBeNull();
@@ -1032,6 +1041,10 @@ describe("cached environment navigation", () => {
     await standOnWorkspace();
     const popup = await openJump("workspace");
     expect(labels("[data-workspace]")).toEqual(["payment-work"]);
+    const badge = popup.querySelector('[data-workspace] .identity-line > .identity-badge');
+    expect(badge.textContent).toBe("");
+    expect(badge.querySelector('[data-glyph]').dataset.glyph).toBe("PA");
+    expect(badge.dataset.hue).toBe(bar().querySelector('.identity-badge').dataset.hue);
     expect(popup.querySelector("[data-finished-fold]").getAttribute("aria-expanded")).toBe("false");
     popup.querySelector("[data-finished-fold]").click();
     expect(labels("[data-workspace]")).toEqual(["payment-work", "Finished work"]);

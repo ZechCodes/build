@@ -1,7 +1,7 @@
 import { esc } from "./text.js";
 import { unreadBadgeHtml } from "./toolbarRender.js";
 import { destinationIdentity } from "./navigationPickerModel.js";
-import { kindGlyphHtml } from "./environmentIdentity.js";
+import { identityBadgeHtml } from "./environmentIdentity.js";
 import { dimDeviceHtml } from "./inbox.js";
 
 function destinationLabel(destination, group, shortcut) {
@@ -50,7 +50,7 @@ function environmentDestinationEntry(destination, group, shortcut = false) {
     groupKey: shortcut ? "visits" : group.key,
     html: `<a class="mi${destination.current ? " current" : ""}" data-destination-kind="${destination.kind}" data-destination="${esc(destination.key)}"
       data-${destination.kind}="${esc(destination.key)}"${shortcut ? " data-visit" : ""} href="${esc(destination.hash)}"${destination.current ? ' aria-current="page"' : ""}>
-      <span class="mi-line identity-line">${kindGlyphHtml(destination.kind)}<span class="mt">${esc(label)}</span><span class="dim">${esc(folders)}</span>${archived}${unreadBadgeHtml(destination.unreadCount, label)}</span>
+      <span class="mi-line identity-line">${identityBadgeHtml({ key: group.key, name: destination.name }, destination.kind)}<span class="mt">${esc(label)}</span><span class="dim">${esc(folders)}</span>${archived}${unreadBadgeHtml(destination.unreadCount, label)}</span>
       ${dimDeviceHtml(group.deviceLabel)}${destination.kind === "workspace" ? `<span class="md">${esc(destination.projectName)}</span>` : ""}</a>`,
   };
 }
@@ -74,6 +74,6 @@ function environmentPickerEntries(picker) {
 function environmentGroupEntries(group) {
   if (group.kind !== "environment") return globalPickerEntries({ groups: [group], lastVisited: [] });
   return [{ key: `environment:${group.key}`, groupKey: group.key,
-    html: `<div class="tb-group tb-environment-group identity-line" data-environment-group="${esc(group.key)}">${kindGlyphHtml("environment")}<span>${esc(group.name)}</span>${dimDeviceHtml(group.deviceLabel)}</div>` },
+    html: `<div class="tb-group tb-environment-group identity-line" data-environment-group="${esc(group.key)}">${identityBadgeHtml(group, "environment")}<span>${esc(group.name)}</span>${dimDeviceHtml(group.deviceLabel)}</div>` },
   ...group.destinations.map((row) => environmentDestinationEntry(row, group))];
 }

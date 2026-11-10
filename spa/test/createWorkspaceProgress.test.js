@@ -134,6 +134,8 @@ describe("workspace creation progress", () => {
     open(operation(), { target: { kind: "project", name: "Payments", summaryLabel: "Sources › Payments", deviceLabel: "Laptop", offline: true, taskText: "7 open tasks" } });
     const summary = document.querySelector(".create-target-summary");
     expect(summary.querySelector('.create-kind[aria-hidden="true"]')).not.toBeNull();
+    expect(summary.querySelector('.create-kind').textContent).toBe("");
+    expect(summary.textContent.trim().startsWith("Sources › Payments")).toBe(true);
     expect(summary.querySelector(".dim.inbox-device").textContent).toBe("Laptop");
     expect(summary.textContent).toContain("Offline");
     expect(document.body.textContent).toContain("Uses Payments's task board · 7 open tasks");
@@ -206,11 +208,10 @@ it("lists both landed resources when the workspace fails after environment and p
  expect(model.message).toContain("Environment Sources was created");expect(model.message).toContain("Project Payments was created");
 });
 
-it.each(['project','environment','new-environment'])('uses the shared identity SVG in progress for %s',async kind=>{
- const {kindGlyphHtml}=await import('../src/core/environmentIdentity.js');
- open(operation(),{target:{kind,name:'Target'}});
- const template=document.createElement('template');template.innerHTML=kindGlyphHtml(kind==='project'?'project':'environment');
- expect(document.querySelector('.create-target-summary .identity-kind')?.outerHTML).toBe(template.content.firstChild.outerHTML);
+it.each(['project','environment','new-environment'])('keeps the badge in the progress %s target slot',async kind=>{
+ const {identityBadgeHtml}=await import('../src/core/environmentIdentity.js');
+ open(operation(),{target:{kind,id:'env',environment_id:'env',deviceId:'d1',name:'Target'}});
+ expect(document.querySelector('.create-target-summary > .create-kind')?.innerHTML).toBe(identityBadgeHtml({key:'d1/env',name:'Target'},kind==='project'?'project':'environment'));
 });
 
 it.each([true,false])("holds failed actions neutral until cached support resolves (supported: %s)",async supported=>{
@@ -260,4 +261,18 @@ it.each(['close','outside','back-to-close','interaction-only'])("preserves user 
  await vi.advanceTimersByTimeAsync(1800);
  expect(onOpenWorkspace).not.toHaveBeenCalled();
  expect(document.activeElement).toBe(expected());
+});
+
+it.each(["succeeded", "failed"])("uses the persisted environment hue once a new target lands (%s)", async state => {
+  const { identityBadgeHtml } = await import("../src/core/environmentIdentity.js");
+  const target = { kind:"new-environment", id:"draft", deviceId:"laptop", name:"Sources" };
+  const initial = operation({ request:{method:"environment.create"} });
+  const { writeOperations } = open(initial, {target, autoOpenDelay:60_000});
+  const environment = {environment_id:"env-1", name:"Sources"};
+  const confirmation = state === "succeeded" ? {result:{environment, project, workspace}}
+    : {effect:"partial", error:{message:"checkout refused", details:{environment, project}}};
+  writeOperations.update({...initial, state, effect:"partial", confirmation});
+  expect(document.querySelector('.create-target-summary .identity-badge')?.outerHTML)
+    .toBe(identityBadgeHtml({key:"laptop/env-1", name:"Sources"}, "environment"));
+  expect(target.id).toBe("draft");
 });

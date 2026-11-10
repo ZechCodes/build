@@ -1,6 +1,7 @@
 import { beforeEach, expect, it } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { navigationCatalog } from "../src/core/navigationModel.js";
+import { identityBadgeHtml } from "../src/core/environmentIdentity.js";
 import { globalPickerEntries } from "../src/core/navigationPickerRender.js";
 import { globalNavigationPicker, reconcilePickerOrder } from "../src/core/navigationPickerModel.js";
 import { navigationVisitAddress, mountNavigationVisits, resetNavigationVisits } from "../src/core/navigationVisits.js";
@@ -117,6 +118,9 @@ it("environment grouping searches workspace names while default rows go to proje
   expect(searched.groups[0].kind).toBe("environment");
   expect(searched.groups[0].destinations.map(row => row.key)).toEqual(["one/w"]);
   expect(searched.lastVisited).toEqual([]);
+  const entries = globalPickerEntries(searched);
+  expect(entries[0].html).toContain(identityBadgeHtml({key:"one/e", name:"Environment"}, "environment"));
+  expect(entries[1].html).toContain(identityBadgeHtml({key:"one/e", name:"Café 文"}, "workspace"));
 });
 
 it.each([{}, { support: { two: true } }])("legacy switcher hides archived projects and recent visits until searched (%j)", options => {

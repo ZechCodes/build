@@ -158,3 +158,23 @@ describe("bindThemeControl", () => {
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
 });
+
+// Small badge lettering needs WCAG AA normal-text contrast (4.5:1).
+const luminance = hex => {
+  const channels = hex.slice(1).match(/../g).map(value => parseInt(value, 16) / 255)
+    .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+  return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+};
+it.each(["light", "dark"])("defines all twelve identity badge tokens with readable text in %s", theme => {
+  applyTheme(theme);
+  const tokens = document.documentElement.style;
+  const ink = tokens.getPropertyValue("--badge-ink").trim();
+  expect(ink).toMatch(/^#[0-9a-f]{6}$/i);
+  const palette = Array.from({ length: 12 }, (_, index) => tokens.getPropertyValue(`--badge-${index + 1}`).trim());
+  expect(new Set(palette).size).toBe(12);
+  for (const color of palette) {
+    expect(color).toMatch(/^#[0-9a-f]{6}$/i);
+    const [dark, light] = [luminance(color), luminance(ink)].sort((a, b) => a - b);
+    expect((light + 0.05) / (dark + 0.05)).toBeGreaterThanOrEqual(4.5);
+  }
+});

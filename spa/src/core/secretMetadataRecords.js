@@ -22,7 +22,7 @@ export function secretAtTime(entry, serverNow) {
 function newerEntry(previous, entry) {
   if (!previous) return entry;
   if (previous.revision > entry.revision) return previous;
-  if (previous.revision === entry.revision && terminal(previous)) return previous;
+  if (terminal(previous) && (!terminal(entry) || previous.revision === entry.revision)) return previous;
   return entry;
 }
 
@@ -60,8 +60,11 @@ function carriedObservation(held = {}) {
 }
 
 function nextObservation(held, serverNow, observedNow) {
-  if (!Number.isSafeInteger(serverNow) || serverNow < held?.server_now) return carriedObservation(held);
-  return { server_now: serverNow, clock_now: Math.max(serverNow, observedNow ?? held?.clock_now ?? serverNow), observed_at_ms: Date.now() };
+  if (!Number.isSafeInteger(serverNow)) return carriedObservation(held);
+  // A distinct accepted bridge sample may reflect a clock correction. Only an
+  // equal-time sample continues the existing elapsed-time anchor.
+  const clockNow = serverNow === held?.server_now ? Math.max(serverNow, observedNow ?? held?.clock_now ?? serverNow) : serverNow;
+  return { server_now: serverNow, clock_now: clockNow, observed_at_ms: Date.now() };
 }
 
 function nextRecord(held, entries, serverNow, replace, selection, observedNow) {
@@ -102,14 +105,16 @@ function estimatedServerNow(record) {
   return (record.clock_now ?? record.server_now) + elapsed;
 }
 
-async function expireRecord(address, serverNow, active) {
+const observationStamp = record => `${record.server_now}:${record.clock_now}:${record.observed_at_ms}`;
+
+async function expireRecord(address, serverNow, active, expectedObservation) {
   await mergeCachedRecordsTogether([address], ([held]) => {
-    if (!active() || !held?.value) return null;
+    if (!active() || !held?.value || observationStamp(held.value) !== expectedObservation) return null;
     const record = held.value;
-    const time = Math.max(record.server_now, serverNow);
+    const time = Math.max(record.clock_now ?? record.server_now, serverNow);
     const secrets = record.secrets.map(entry => secretAtTime(entry, time));
     if (secrets.every((entry, index) => entry === record.secrets[index])) return null;
-    return [{ ...record, secrets, server_now: Math.floor(time), clock_now: time, observed_at_ms: Date.now() }];
+    return [{ ...record, secrets, clock_now: time, observed_at_ms: Date.now() }];
   });
 }
 
@@ -120,12 +125,12 @@ function createAnchoredClock() {
       const monotonic = performance.now();
       const previous = anchors.get(key);
       const projected = previous ? previous.time + Math.max(0, monotonic - previous.monotonic) / 1000 : 0;
-      const stamp = `${record.server_now}:${record.clock_now}:${record.observed_at_ms}`;
+      const stamp = observationStamp(record);
       if (previous?.stamp === stamp) return projected;
       const observed = estimatedServerNow(record);
       if (observed === null) return null;
-      const time = Math.max(projected, observed);
-      anchors.set(key, { stamp, time, monotonic });
+      const time = previous?.serverNow === record.server_now ? Math.max(projected, observed) : observed;
+      anchors.set(key, { stamp, time, monotonic, serverNow: record.server_now });
       return time;
     },
     clear() { anchors.clear(); },
@@ -159,7 +164,7 @@ export function createSecretExpiry(active) {
     if (!owns(key, observation, record)) return;
     const now = clock.now(key, record);
     if (now === null) return;
-    await expireRecord(address, now, current);
+    await expireRecord(address, now, current, observationStamp(record));
     record = (await readCached(address))?.value;
     if (owns(key, observation, record)) schedule(address, record, observation, key);
   }

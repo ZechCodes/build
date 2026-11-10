@@ -54,29 +54,7 @@ impl AppState {
             configured && (deletion.phase != "prepared" || matching != Some(&plan.project_config));
         if readded || self.validate_deletion_plan(&deletion).is_err() {
             if !configured {
-                let mut config =
-                    self.config_value(&self.projects_dir, self.default_harness, self.isolation);
-                config["projects"]
-                    .as_array_mut()
-                    .expect("project array")
-                    .push(plan.project_config.clone());
-                if self
-                    .projects
-                    .environment(
-                        plan.environment_config["id"]
-                            .as_str()
-                            .ok_or("saved environment ID missing")?,
-                    )
-                    .is_none()
-                {
-                    config["environments"]
-                        .as_array_mut()
-                        .expect("environment array")
-                        .push(plan.environment_config.clone());
-                }
-                self.persist_config(&config)?;
-                self.projects.restore_environments(&config);
-                self.restore_configured_project(&plan.project_config);
+                self.restore_abandoned_registration(plan)?;
             }
             deletion.phase = "abandoned".into();
             deletion.tombstone = Some("abandoned".into());
@@ -96,6 +74,33 @@ impl AppState {
                 }
             );
         }
+        Ok(())
+    }
+
+    fn restore_abandoned_registration(&mut self, plan: &ProjectDeletionPlan) -> Result<(), String> {
+        let mut config =
+            self.config_value(&self.projects_dir, self.default_harness, self.isolation);
+        config["projects"]
+            .as_array_mut()
+            .expect("project array")
+            .push(plan.project_config.clone());
+        if self
+            .projects
+            .environment(
+                plan.environment_config["id"]
+                    .as_str()
+                    .ok_or("saved environment ID missing")?,
+            )
+            .is_none()
+        {
+            config["environments"]
+                .as_array_mut()
+                .expect("environment array")
+                .push(plan.environment_config.clone());
+        }
+        self.persist_config(&config)?;
+        self.projects.restore_environments(&config);
+        self.restore_configured_project(&plan.project_config);
         Ok(())
     }
 

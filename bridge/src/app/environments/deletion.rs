@@ -49,16 +49,18 @@ impl AppState {
         Ok(json!({}))
     }
 
-    /// S2.1 integration seam. Schema 26 has no environment-scoped secrets.
-    /// Replace this body with S2.1's durable revocation when the slices join;
-    /// propagate failure so the environment registration is never removed first.
-    fn revoke_environment_secrets_before_delete(
-        &self,
-        _environment_id: &str,
-    ) -> Result<(), String> {
+    /// Commit grant retirement before removing the external registration.
+    /// The writer owns its FULL transaction and notifies only after commit.
+    fn revoke_environment_secrets_before_delete(&self, environment_id: &str) -> Result<(), String> {
         #[cfg(test)]
         if let Some(error) = &self.environment_secret_revocation_error {
             return Err(error.clone());
+        }
+        if let Some(store) = &self.store {
+            store
+                .writer()
+                .secrets_retire_environment(environment_id)
+                .map_err(|error| error.to_string())?;
         }
         Ok(())
     }

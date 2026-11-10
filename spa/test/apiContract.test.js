@@ -29,7 +29,7 @@ const eventExamples = fixtures
 
 describe("the v1 adapter against fixtures/api/v1", () => {
   it("retains device roster and pooled directory session facts in the current wire release", () => {
-    expect(versions.current).toBe("3.39.0");
+    expect(versions.current).toBe("3.40.0");
     const snapshot = methodFixtures.find(({ body }) => body.method === "sync.snapshot").body;
     const example = snapshot.examples.find((entry) => entry.since === "3.34.0");
     expect(example.params.scope).toEqual({ kind: "device" });
@@ -535,4 +535,10 @@ it("preserves cold workspace legacy-review ownership from get and list", () => {
     expect(result).toEqual(fixture.legacy_reviews.result);
     expect((method === "workspace.get" ? result : result.workspaces[0]).legacy_review).toBe(true);
   }
+});
+
+it("advertises environment scope with the settings and composer consumer", () => {
+  const hello = readJson(fixtureDirectory + "session.hello.json").result;
+  expect(hello.capabilities).toContain("secrets.environmentScope");
+  expect(v1.capabilitiesOf(hello).environments.secrets).toBe(true);
 });

@@ -3431,11 +3431,15 @@ A project's agents below). Each action is a `BridgeAction` variant. The tool lis
 `add_workspace_agent`, `list_project_agents`, `add_project_agent`, …) and the
 tracker (`get_task`, `comment_task`, `move_task`, `label_task`, …).
 
-Only the Project surface exposes `add_environment_source` and
+Only the Project surface exposes `list_project_sources`, `add_environment_source` and
 `remove_environment_source`, alongside `add_project_source` and
 `remove_project_source`. Environment tools resolve the calling agent's bound
 project and then its environment; they accept no project or environment
-selector. They reuse the client environment-source operations and their path,
+selector. `list_project_sources` reads the environment references followed by
+this project's added references directly from current configuration, returning
+id, path and scope for each. It works without workspaces and never derives its
+inventory from a workspace's cut-time directories or probes the filesystem.
+The add/remove tools reuse the client environment-source operations and their path,
 remote, membership and removal checks. Environment sources apply to every
 project in the environment; project source tools change only that project's
 added folders and therefore its divergence. Existing workspace directories

@@ -2168,27 +2168,48 @@ fn a_project_agent_removes_folders_from_its_own_environment() {
     );
 }
 
-
 #[test]
 fn a_project_agent_discovers_current_sources_without_workspaces() {
     let root = tempfile::tempdir().unwrap();
     let (mut app, owner, agent) = environment_source_agent_fixture(root.path());
-    let added = app.agent_action(&owner, &agent, BridgeAction::AddProjectSource {
-        path: Some(root.path().join("assets").display().to_string()),
-        remote: None, name: None, base_branch: None,
-    }).unwrap();
+    let added = app
+        .agent_action(
+            &owner,
+            &agent,
+            BridgeAction::AddProjectSource {
+                path: Some(root.path().join("assets").display().to_string()),
+                remote: None,
+                name: None,
+                base_branch: None,
+            },
+        )
+        .unwrap();
     assert_eq!(added["sources"].as_array().unwrap().len(), 2);
-    let listed = app.agent_action(&owner, &agent, BridgeAction::ListWorkspaces).unwrap();
+    let listed = app
+        .agent_action(&owner, &agent, BridgeAction::ListWorkspaces)
+        .unwrap();
     assert_eq!(listed["workspaces"], json!([]));
     let config = std::fs::read(root.path().join("config.json")).unwrap();
-    let sources = app.agent_action(&owner, &agent, environment_source_action(json!({
-        "action":"list_project_sources", "project_id":"proj-3", "environment_id":"env-2"
-    }))).unwrap();
-    assert_eq!(sources, json!({"project_id":"proj-1","environment_id":"env-1","sources":[
-        {"id":"source-1","path":root.path().join("home"),"scope":"environment"},
-        {"id":"source-2","path":root.path().join("assets"),"scope":"project"}
-    ]}));
-    assert_eq!(std::fs::read(root.path().join("config.json")).unwrap(), config);
+    let sources = app
+        .agent_action(
+            &owner,
+            &agent,
+            environment_source_action(json!({
+                "action":"list_project_sources", "project_id":"proj-3", "environment_id":"env-2"
+            })),
+        )
+        .unwrap();
+    assert_eq!(
+        sources,
+        json!({"project_id":"proj-1","environment_id":"env-1","sources":[
+            {"id":"source-1","path":root.path().join("home"),"scope":"environment"},
+            {"id":"source-2","path":root.path().join("assets"),"scope":"project"}
+        ]})
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("config.json")).unwrap(),
+        config
+    );
 }
 
 #[test]
@@ -2196,31 +2217,64 @@ fn a_project_agent_discovers_sources_added_after_a_workspace_was_cut() {
     let root = tempfile::tempdir().unwrap();
     let (mut app, owner, agent) = environment_source_agent_fixture(root.path());
     let workspace_id = workspace(&mut app, "proj-1", "before-sources");
-    app.agent_action(&owner, &agent, environment_source_action(json!({
-        "action":"add_environment_source", "path":root.path().join("assets")
-    }))).unwrap();
+    app.agent_action(
+        &owner,
+        &agent,
+        environment_source_action(json!({
+            "action":"add_environment_source", "path":root.path().join("assets")
+        })),
+    )
+    .unwrap();
     let project_only = root.path().join("project-only");
     std::fs::create_dir(&project_only).unwrap();
-    app.agent_action(&owner, &agent, BridgeAction::AddProjectSource {
-        path: Some(project_only.display().to_string()), remote: None, name: None, base_branch: None,
-    }).unwrap();
+    app.agent_action(
+        &owner,
+        &agent,
+        BridgeAction::AddProjectSource {
+            path: Some(project_only.display().to_string()),
+            remote: None,
+            name: None,
+            base_branch: None,
+        },
+    )
+    .unwrap();
     let cut = app.workspaces.get(&workspace_id).unwrap();
     assert_eq!(cut.directories.len(), 1);
-    let listed = app.agent_action(&owner, &agent, environment_source_action(json!({
-        "action":"list_project_sources"
-    }))).unwrap();
-    assert_eq!(listed["sources"], json!([
-        {"id":"source-1","path":root.path().join("home"),"scope":"environment"},
-        {"id":"source-2","path":root.path().join("assets"),"scope":"environment"},
-        {"id":"source-3","path":project_only,"scope":"project"}
-    ]));
+    let listed = app
+        .agent_action(
+            &owner,
+            &agent,
+            environment_source_action(json!({
+                "action":"list_project_sources"
+            })),
+        )
+        .unwrap();
+    assert_eq!(
+        listed["sources"],
+        json!([
+            {"id":"source-1","path":root.path().join("home"),"scope":"environment"},
+            {"id":"source-2","path":root.path().join("assets"),"scope":"environment"},
+            {"id":"source-3","path":project_only,"scope":"project"}
+        ])
+    );
     let removable = &listed["sources"][1];
-    app.agent_action(&owner, &agent, environment_source_action(json!({
-        "action":"remove_environment_source", "source_id":removable["id"]
-    }))).unwrap();
-    let current = app.agent_action(&owner, &agent, environment_source_action(json!({
-        "action":"list_project_sources"
-    }))).unwrap();
+    app.agent_action(
+        &owner,
+        &agent,
+        environment_source_action(json!({
+            "action":"remove_environment_source", "source_id":removable["id"]
+        })),
+    )
+    .unwrap();
+    let current = app
+        .agent_action(
+            &owner,
+            &agent,
+            environment_source_action(json!({
+                "action":"list_project_sources"
+            })),
+        )
+        .unwrap();
     assert_eq!(current["sources"].as_array().unwrap().len(), 2);
     assert_eq!(current["sources"][1]["scope"], "project");
 }

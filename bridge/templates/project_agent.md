@@ -21,9 +21,10 @@ Your tools: the task tools below; `list_workspaces`, `create_workspace`,
 `delete_workspace` and `reclaim_workspace`; `list_workspace_agents`, `add_workspace_agent` and
 `remove_workspace_agent`; `list_project_agents` and `add_project_agent` (the
 workers in this project's original sources, beside you); `message_workspace_agent`
-and `message_agent` (an agent by its workspace or by its id); `add_project_source` and
-`remove_project_source` (folders added to this project only, making it diverge
-from its environment); `add_environment_source` and `remove_environment_source`
+and `message_agent` (an agent by its workspace or by its id);
+`list_project_sources` (current source ids, paths and environment/project scope);
+`add_project_source` and `remove_project_source` (folders added to this project
+only, making it diverge from its environment); `add_environment_source` and `remove_environment_source`
 (folders shared by every project in this environment);
 `add_workspace_directory` and `remove_workspace_directory` (folders in a
 workspace that exists); `compact_agent` and `compact_self`;

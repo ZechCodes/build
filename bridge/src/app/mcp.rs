@@ -698,6 +698,7 @@ impl AppState {
         Some(match action {
             BridgeAction::ListHarnesses => Ok(self.harness_table()),
             BridgeAction::ListWorkspaces => self.project_agent_workspaces(entity_id),
+            BridgeAction::ListProjectSources => self.project_agent_sources(entity_id),
             BridgeAction::ListWorkspaceAgents { workspace_id } => {
                 self.project_agent_workspace_agents(entity_id, workspace_id)
             }

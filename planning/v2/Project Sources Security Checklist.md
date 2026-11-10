@@ -270,6 +270,12 @@ remains **100/100** within its existing scope.
 
 | Control | Evidence |
 | --- | --- |
-| Tool arguments cannot select a different environment; Coding agents and project workers cannot mutate source membership. | `mcp_project_surface_lists_environment_source_tools`; `project_worker_tools_follow_persisted_purpose`; `a_project_agent_adds_folders_to_its_own_environment` ignores foreign scope arguments. |
+| Tool arguments cannot select a different environment; Coding agents and project workers cannot mutate source membership. | `mcp_project_surface_lists_environment_source_tools`; `project_worker_environment_source_refusals_preserve_configuration` uses valid add/remove inputs, compares config bytes and membership, and proves both succeed for the coordinator; `a_project_agent_adds_folders_to_its_own_environment` ignores foreign scope arguments. |
 | Adding a source applies the existing canonical-directory, containment, duplicate and remote validation; refused edits leave the config unchanged. | `project_agent_add_environment_source` delegates to `environment_add_source`; `a_project_agent_adds_folders_to_its_own_environment` compares missing, nested and duplicate path refusals with the underlying operation. |
 | Removing a source unlinks its environment reference without deleting files or changing another environment, and retains the last-source refusal. | `a_project_agent_removes_folders_from_its_own_environment` covers sibling projections, persistence, kept files, unknown source and last-source refusals. |
+
+Current source selection is proved by
+`a_project_agent_discovers_current_sources_without_workspaces` and
+`a_project_agent_discovers_sources_added_after_a_workspace_was_cut`:
+`list_project_sources` stays caller-bound and labels environment references
+separately from this project's added references. Reading changes no config.

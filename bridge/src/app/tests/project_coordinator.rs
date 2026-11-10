@@ -931,7 +931,6 @@ async fn archive_round_final_spawn_hold_requeues_without_start_error() {
         .is_none());
 }
 
-
 #[test]
 fn project_worker_environment_source_refusals_preserve_configuration() {
     let (_home, repo) = a_repo();
@@ -944,9 +943,16 @@ fn project_worker_environment_source_refusals_preserve_configuration() {
     let addable = root.join("addable");
     std::fs::create_dir(&linked).unwrap();
     std::fs::create_dir(&addable).unwrap();
-    let added = state.agent_action(&owner, &pin, serde_json::from_value(json!({
-        "action":"add_environment_source","path":linked
-    })).unwrap()).unwrap();
+    let added = state
+        .agent_action(
+            &owner,
+            &pin,
+            serde_json::from_value(json!({
+                "action":"add_environment_source","path":linked
+            }))
+            .unwrap(),
+        )
+        .unwrap();
     let source = added["sources"][1]["id"].as_str().unwrap().to_string();
     let worker = add_worker(&mut state, &owner, json!({}));
     for action in [
@@ -958,18 +964,38 @@ fn project_worker_environment_source_refusals_preserve_configuration() {
         let before_environment = state.environment_list();
         let action: BridgeAction = serde_json::from_value(action).unwrap();
         let refused = state.agent_action(&owner, &worker, action).unwrap_err();
-        assert!(refused.contains("this session is on the coding surface"), "{refused}");
-        assert_eq!(std::fs::read(root.join("config.json")).unwrap(), before_config);
+        assert!(
+            refused.contains("this session is on the coding surface"),
+            "{refused}"
+        );
+        assert_eq!(
+            std::fs::read(root.join("config.json")).unwrap(),
+            before_config
+        );
         assert_eq!(state.sources_for(&project).unwrap(), before_sources);
         assert_eq!(state.environment_list(), before_environment);
     }
     // The same inputs succeed for the coordinator, proving both were actionable.
-    state.agent_action(&owner, &pin, serde_json::from_value(json!({
-        "action":"add_environment_source","path":addable
-    })).unwrap()).unwrap();
-    state.agent_action(&owner, &pin, serde_json::from_value(json!({
-        "action":"remove_environment_source","source_id":source
-    })).unwrap()).unwrap();
+    state
+        .agent_action(
+            &owner,
+            &pin,
+            serde_json::from_value(json!({
+                "action":"add_environment_source","path":addable
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    state
+        .agent_action(
+            &owner,
+            &pin,
+            serde_json::from_value(json!({
+                "action":"remove_environment_source","source_id":source
+            }))
+            .unwrap(),
+        )
+        .unwrap();
     let sources = state.sources_for(&project).unwrap();
     assert!(sources.iter().any(|s| s.path == addable));
     assert!(!sources.iter().any(|s| s.path == linked));

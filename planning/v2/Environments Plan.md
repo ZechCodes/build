@@ -1270,10 +1270,17 @@ a migrated device:
 | --- | --- | --- | --- |
 | S2.1 | **Bridge: environment secrets** (`GrantScope::Environment`, planned schema 27 rebuild, membership revalidated per read incl. archived = not current, revoke on environment delete, name override, `secrets.*` scope, `secrets.changed` scope, `secrets.environmentScope`) | readable by agents of every project in the environment and none outside; project secret of the same name wins; a sibling never reads another project's secret; archived project's agents refused; deletion revokes | `environment_scoped_secret_readable_across_projects`; `project_secret_overrides_environment_name`; `sibling_project_cannot_read_project_scoped_secret` (one per mechanism: release, list, attach, audit); `archived_project_agent_not_current_for_secrets`; `environment_delete_revokes_environment_scope`; leak sweep row 14 rerun |
 | S2.2 | **Bridge: environment delete, project delete with tasks** (`environment.delete`, `project.delete {tasks}` accepted on archived projects too, parked-project unpark migration) | environment delete refused with "Delete its N projects first" while any project, archived or not, belongs to it; project delete refused while a workspace is unfinished, otherwise removes tasks, reviews and intents under its key only | `environment_delete_refused_while_projects_exist` (incl. archived); `project_delete_removes_its_tasks_only`; `archived_project_accepts_delete` |
-| S2.3 | **Bridge: MCP** (`add_environment_source`/`remove_environment_source`, reworded `add_project_source`, templates) | project agent can add a folder to its environment; a Coding-surface agent has no such tool | `mcp_project_surface_lists_environment_source_tools`; template snapshot |
+| S2.3 | **Bridge: MCP** (`add_environment_source`/`remove_environment_source`, `list_project_sources`, reworded `add_project_source`, templates) | project agent can add a folder to its environment and discover current source ids/scopes without a workspace or after a workspace cut; a Coding-surface agent has no such tool | `mcp_project_surface_lists_environment_source_tools`; `a_project_agent_discovers_current_sources_without_workspaces`; `a_project_agent_discovers_sources_added_after_a_workspace_was_cut`; `project_worker_environment_source_refusals_preserve_configuration`; template snapshot |
 | S2.4 | **SPA: secrets in environment settings + composer scope** (#1006 composer "This environment"; "overrides environment" chips) | create/list/revoke; old bridge hides the scope | `secretsWire.test.js`, `environmentSettingsSecrets.test.js` |
 | S2.5 | **SPA: environment delete and project delete in settings** | refusal reasons verbatim; confirm names task and workspace counts | `environmentsSettingsDom.test.js`, `projectSettings.test.js` |
 | S2.6 | **SPA: identity badges** (tokens, `identityBadgeHtml`, replaces kind glyphs in place) | identical hue across tabs; siblings share hue, differ by glyph; contrast in both themes | `identityBadge.test.js`, theme token test |
+
+**S2.3 review amendment (#1102):** the existing Project-surface reads do not
+expose current source references: `list_workspaces` contains cut-time directory
+snapshots. The slice therefore adds Project-only `list_project_sources`, a
+read-only MCP tool returning current config ids, paths and environment/project
+scope. This is an MCP-only plan extension, with no RPC, schema, wire-version or
+capability change.
 
 ### Stage 3: polish (after dogfooding, informed by it)
 

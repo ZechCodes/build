@@ -221,6 +221,9 @@ pub enum BridgeAction {
     /// The workspaces of the project this agent belongs to. Project only, and
     /// read-only: which project is asked about comes from the agent's owner.
     ListWorkspaces,
+    /// Current effective sources of the caller's project, including ownership
+    /// scope. Project only; neither selector comes from arguments.
+    ListProjectSources,
     /// The agents on one of this project's workspaces. Project only, and
     /// read-only.
     ListWorkspaceAgents {
@@ -573,6 +576,7 @@ impl BridgeAction {
             BridgeAction::AskUser { .. } => "ask_user",
             BridgeAction::RouterMessage { .. } => "post_thread_message",
             BridgeAction::ListWorkspaces => "list_workspaces",
+            BridgeAction::ListProjectSources => "list_project_sources",
             BridgeAction::ListWorkspaceAgents { .. } => "list_workspace_agents",
             BridgeAction::CreateWorkspace { .. } => "create_workspace",
             BridgeAction::AddWorkspaceAgent { .. } => "add_workspace_agent",
@@ -660,7 +664,8 @@ impl BridgeAction {
             // The folders a project is cut FROM stay with the project agent: an
             // agent in a checkout changes what its workspace holds, never what
             // the next workspace will be made of.
-            BridgeAction::AddProjectSource { .. }
+            BridgeAction::ListProjectSources
+            | BridgeAction::AddProjectSource { .. }
             | BridgeAction::RemoveProjectSource { .. }
             | BridgeAction::AddEnvironmentSource { .. }
             | BridgeAction::RemoveEnvironmentSource { .. }
@@ -1705,6 +1710,10 @@ impl DoneServer {
     fn project_tools() -> Value {
         let mut tools = Self::workspace_tools();
         tools.extend([json!({
+            "name": "list_project_sources",
+            "description": "Read this project's current sources from configuration, including sources added since any workspace was cut. Returns project_id, environment_id and sources with id, path and scope (environment or project). Use an environment-scoped id with remove_environment_source and a project-scoped id with remove_project_source. Works when the project has no workspaces. No files are changed and no filesystem discovery runs.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }), json!({
             "name": "add_project_source",
             "description": "Add a folder to this project only, making it diverge from its environment. New workspaces in this project include it; use add_workspace_directory to put the folder into a workspace that already exists. Name exactly one of path or remote.",
             "inputSchema": {
@@ -1722,7 +1731,7 @@ impl DoneServer {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "source_id": { "type": "string", "description": "From list_workspaces' project sources." }
+                    "source_id": { "type": "string", "description": "A source id with scope project from list_project_sources." }
                 },
                 "required": ["source_id"]
             }
@@ -1744,7 +1753,7 @@ impl DoneServer {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "source_id": { "type": "string", "description": "An environment source id from list_workspaces' project sources, excluding folders added to this project only." }
+                    "source_id": { "type": "string", "description": "A source id with scope environment from list_project_sources." }
                 },
                 "required": ["source_id"]
             }
@@ -1884,6 +1893,7 @@ impl DoneServer {
             return handled;
         }
         match name {
+            "list_project_sources" => acted(id, BridgeAction::ListProjectSources),
             "add_project_source" => acted(
                 id,
                 BridgeAction::AddProjectSource {
@@ -3915,6 +3925,7 @@ mod tests {
             [
                 &WORKSPACE_TOOLS[..],
                 &[
+                    "list_project_sources",
                     "add_project_source",
                     "remove_project_source",
                     "add_environment_source",
@@ -3937,6 +3948,7 @@ mod tests {
             }
         }
         for project_only in [
+            "list_project_sources",
             "add_project_source",
             "remove_project_source",
             "add_environment_source",

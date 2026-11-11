@@ -3,7 +3,8 @@ export { environmentWizardSupported } from "./writeOperationProgress.js";
 import { mergeCachedAtomically, readCached } from "./localCache.js";
 
 const FLAGS = ["list", "createProject", "create", "addedSources", "archive", "projectRename", "environmentRename", "secrets"];
-const supportOf = (capabilities) => Object.fromEntries(FLAGS.map((flag) => [flag, capabilities?.[flag] === true]));
+const DELETE_FLAGS = ["deleteEnvironment", "deleteProject"];
+const supportOf = (capabilities) => Object.fromEntries([...FLAGS, ...DELETE_FLAGS].map((flag) => [flag, capabilities?.[flag] === true]));
 
 export const environmentSupportAddress = (deviceId) => ({ deviceId, entityId: "", kind: "environment-support" });
 
@@ -24,6 +25,6 @@ export function rememberEnvironmentSupport(deviceId, capabilities, current = () 
 }
 
 export async function readEnvironmentSupport(deviceId) {
-  const held = deviceId ? await readEnvironmentSupportRecord(deviceId) : null;
+  const held = await readEnvironmentSupportRecord(deviceId);
   return supportOf(held);
 }

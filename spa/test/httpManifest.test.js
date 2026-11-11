@@ -10,9 +10,9 @@ describe("reviewed REST manifest consumption", () => {
     expect(createHash("sha256").update(bytes).digest("hex")).toBe("5f1fe9633d0dfca3cab3b0239f2adc2c5c80321706afc89193538569f26d6aea");
     expect(createHttpRoutes(manifest).operationIds()).toEqual(manifest.transport.operation_ids);
     expect(createHttpRoutes(manifest).operationIds()).toContain("tasks_review_retryDelivery");
-    // Creation, M3 settings and the private S2.2 delete route are mapped.
+    // S2.5 releases the existing environment-delete route; regeneration retains 172 routes and these exact bytes.
     expect(manifest.operations).toHaveLength(172);
-    for (const operation of ["project_rename", "environment_rename", "environment_add_source", "environment_remove_source", "environment_update_source", "environment_sync_source", "environment_set_isolation", "environment_create_project", "environment_create", "environment_discard_unused", "project_archive", "project_restore", "environment_list", "tasks_review_snapshot", "tasks_review_act", "tasks_review_complete", "sync_head", "sync_snapshot", "sync_changes", "secrets_create", "secrets_list", "secrets_revoke", "secrets_audit"]) {
+    for (const operation of ["environment_delete", "project_rename", "environment_rename", "environment_add_source", "environment_remove_source", "environment_update_source", "environment_sync_source", "environment_set_isolation", "environment_create_project", "environment_create", "environment_discard_unused", "project_archive", "project_restore", "environment_list", "tasks_review_snapshot", "tasks_review_act", "tasks_review_complete", "sync_head", "sync_snapshot", "sync_changes", "secrets_create", "secrets_list", "secrets_revoke", "secrets_audit"]) {
       expect(createHttpRoutes(manifest).operationIds()).toContain(operation);
     }
   });

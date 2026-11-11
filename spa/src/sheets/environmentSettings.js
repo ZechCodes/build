@@ -1,3 +1,5 @@
+import { confirmAction } from "../core/confirm.js";
+import { deleteFromSettings } from "../core/settingsDeletion.js";
 import { createEnvironmentSettingsSecrets } from "../core/environmentSettingsSecrets.js";
 import { readSourceSupport, SOURCE_EDIT_SUPPORT_KIND } from "../core/sourceEditSupport.js";
 import { $ } from "../dom.js";
@@ -29,6 +31,13 @@ function generalHtml(environment) {
     <div class="field"><label for="eshome">Home path</label><input id="eshome" ${fieldTraits("identifier")} value="${esc(environment.home_path)}" readonly></div></section>`;
 }
 
+function environmentDeletionHtml(support, action) {
+  if (!support.deleteEnvironment) return "";
+  return `<section class="ps-section ps-danger"><h4>Danger zone</h4><p class="sub">Remove this environment from Build. Source folders are kept.</p>
+    <button class="btn danger" id="esdelete"${action.pending ? " disabled" : ""}>Delete environment…</button>
+    <div class="adderr" id="esdeleteerr" role="alert">${esc(action.message)}</div></section>`;
+}
+
 function sharedSources(host, environment, projects) {
   host.querySelectorAll(".ps-source").forEach(card => {
     const source = environment.sources[Number(card.dataset.sourceIndex)];
@@ -47,6 +56,7 @@ export function openEnvironmentSettings(environmentId, { deviceId, callRpc }) {
   sheet.innerHTML = settingsSheetHtml({ title: "Environment settings", bodyHtml: '<p class="dim">loading…</p>' });
   const notices = {}, syncing = new Map(), inFlight = new Set();
   let syncsBase = false;
+  const deleteAction = { pending: false, message: "" };
   let frame = sheet.firstElementChild, painted = null, support = {}, projects = [], active = true;
   const current = () => active && sheet.firstElementChild === frame && scrim.classList.contains("show");
   const secrets = createEnvironmentSettingsSecrets({ deviceId, environmentId, callRpc, current });
@@ -91,10 +101,12 @@ export function openEnvironmentSettings(environmentId, { deviceId, callRpc }) {
       ${support.environmentRename ? '<div class="row"><button class="btn" id="esfolder">Add folder…</button><button class="btn" id="esremote">Add Git remote…</button></div><div id="esadd"></div>' : ""}</section>
       <section class="ps-section"><h4>Isolation</h4><select id="esisolation" aria-label="Work isolation">${isolationOptionsHtml(environment.isolation, null, { inheritLabel: "Inherit device setting" })}</select></section>
       <div data-environment-secrets-host></div>
+      ${environmentDeletionHtml(support, deleteAction)}
       <div class="adderr" id="eserror" role="alert"></div><button class="btn" id="esclose">Close</button>` });
     frame = sheet.firstElementChild; painted = environment;
     sheet.querySelector("#esdisplay").value = draftName;
     mountGeneral(environment);
+    mountDeletion(environment);
     secrets.mount(sheet.querySelector("[data-environment-secrets-host]"));
     const sourceRpc = (method, params) => {
       requireEnvironmentAction(deviceId, "environmentRename");
@@ -104,6 +116,22 @@ export function openEnvironmentSettings(environmentId, { deviceId, callRpc }) {
     mountSourceCards(sheet, owner, { editing, callRpc: sourceRpc, deviceId, write, syncInFlight: inFlight, saveDraft: () => {}, onSaved: (id, notice) => { notices[id] = notice; }, onSyncAccepted: source => syncing.set(source.id, source.sync?.last_attempt_ms ?? null), onSyncSettled: () => { void record.read(); } });
     restoreSourceEdits(sheet, owner, edits);
     sharedSources(sheet, environment, projects);
+  }
+  function mountDeletion(environment) {
+    const button = sheet.querySelector("#esdelete");
+    if (!button) return;
+    button.onclick = async () => {
+      if (deleteAction.pending) return;
+      deleteAction.pending = true; deleteAction.message = ""; button.disabled = true;
+      sheet.querySelector("#esdeleteerr").textContent = "";
+      try {
+        const confirmed = await confirmAction({ title: `Delete ${environment.name}?`, actions: ["Remove this environment from Build. Source folders are kept."], confirmLabel: "Delete environment", danger: true });
+        if (!confirmed || !current()) return;
+        await deleteFromSettings({ deviceId, method: "environment.delete", params: { environment_id: environmentId }, callRpc });
+        if (current()) close();
+      } catch (error) { deleteAction.message = error.message; }
+      finally { deleteAction.pending = false; if (current()) await record.read(); }
+    };
   }
   function mountGeneral(environment) {
     const error = sheet.querySelector("#eserror"), rename = sheet.querySelector("#esrename"), isolation = sheet.querySelector("#esisolation");

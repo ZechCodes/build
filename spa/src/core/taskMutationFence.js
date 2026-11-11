@@ -2,6 +2,7 @@
 // durable write journal. A pending or settled mutation invalidates old reads;
 // listeners request authoritative refreshes without changing cached totals.
 // secrets.* writes vault/conversation metadata and stays outside this task set.
+// environment.delete removes only an empty environment and is also non-task.
 const taskWrites = new Set([
   "tasks.assign", "tasks.attach", "tasks.close", "tasks.comment", "tasks.create",
   "tasks.read_through", "tasks.reopen", "tasks.unwatch", "tasks.update",

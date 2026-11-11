@@ -7,8 +7,8 @@ import { esc } from "../core/text.js";
 import { isolationFieldHtml, mountIsolation, projectIsolationTarget } from "../core/isolation.js";
 import { settingsSheetHtml } from "./settingsSheet.js";
 import { openBrowser } from "./browser.js";
-import { deviceSettingsAddress, projectSettingsAddress, removeProjectSetting, watchSettingsRecord, writeProjectSetting } from "../core/settingsRecords.js";
-import { deleteCached, mergeCachedAtomically, readCached, subscribeCache } from "../core/localCache.js";
+import { deviceSettingsAddress, projectSettingsAddress, watchSettingsRecord, writeProjectSetting } from "../core/settingsRecords.js";
+import { mergeCachedAtomically, readCached, subscribeCache } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
@@ -24,6 +24,7 @@ import { watchSheetLifetime } from "../core/sheetLifetime.js";
 
 import { projectGeneralHtml, projectArchiveHtml, mountProjectGeneral } from "./projectGeneral.js";
 import { openEnvironmentSettings } from "./environmentSettings.js";
+import { deleteFromSettings } from "../core/settingsDeletion.js";
 import { projectIsArchived } from "../core/environmentWrites.js";
 
 const isolationHtml = () => `<section class="ps-section" aria-labelledby="ps-isolation-h"><h4 id="ps-isolation-h">Isolation</h4>
@@ -32,8 +33,8 @@ const isolationHtml = () => `<section class="ps-section" aria-labelledby="ps-iso
 const environmentNameOf = (project, environments) =>
   environments.find(row => (row.environment_id || row.id) === project.environment_id)?.name;
 
-const dangerHtml = () => `<section class="ps-section ps-danger" aria-labelledby="ps-danger-h"><h4 id="ps-danger-h">Danger zone</h4>
-    <p class="sub">Delete this project and all of its workspaces from Build. Files and unsaved changes in Build-managed workspaces will be permanently removed. Original project folders and external checkouts are kept.</p>
+const dangerHtml = support => !support.deleteProject ? "" : `<section class="ps-section ps-danger" aria-labelledby="ps-danger-h"><h4 id="ps-danger-h">Danger zone</h4>
+    <p class="sub">Delete this project, its tasks and all of its workspaces from Build. Files and unsaved changes in Build-managed workspaces will be permanently removed. Original project folders and external checkouts are kept.</p>
     <button class="btn danger" id="psdelete">Delete project…</button>
     <div class="adderr" id="pserr" role="alert"></div></section>`;
 
@@ -137,6 +138,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   const notices = {};
   let actionSupport = {};
   const archiveAction = { pending: false, message: "" };
+  const deleteAction = { pending: false, message: "" };
   let cachedDraft = null;
   let displayedDraft = {};
   let draftRecord;
@@ -223,7 +225,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
       ${isolationHtml()}
       ${scopedCompactionEditorHtml({ scope: "project", prefix: "project-compaction" })}
       ${projectArchiveHtml(project, actionSupport, archiveAction)}
-      ${dangerHtml()}
+      ${dangerHtml(actionSupport)}
       <div class="row"><button class="btn" id="pscancel" style="margin-left:auto">Close</button></div>`,
     });
     frame = sheet.firstElementChild;
@@ -257,7 +259,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     });
     lockArchivedSettings(sheet, project);
     $("#pscancel").onclick = close;
-    $("#psdelete").onclick = () => deleteProject(project, { callRpc, onDeleted, close, deviceId });
+    mountProjectDeletion(sheet, project, { callRpc, onDeleted, close, deviceId, current, deleteAction, settled: record.read });
   };
   const record = watchSettingsRecord(projectSettingsAddress(deviceId, projectId), (project) => {
     if (project) paint(project);
@@ -415,53 +417,52 @@ async function browseForSource(project, { callRpc, deviceId, onFrameChange, onRe
   }
 }
 
-async function deleteProject(project, { callRpc, onDeleted, close, deviceId }) {
+function mountProjectDeletion(sheet, project, options) {
+  const button = sheet.querySelector("#psdelete");
+  if (!button) return;
+  if (options.deleteAction.pending) sheet.querySelectorAll("button, input, select").forEach(control => { control.disabled = true; });
+  button.disabled = options.deleteAction.pending;
+  sheet.querySelector("#pserr").textContent = options.deleteAction.message;
+  button.onclick = () => void deleteProject(project, options);
+}
+
+async function deleteProject(project, { callRpc, onDeleted, close, deviceId, current, deleteAction, settled }) {
+  if (deleteAction.pending) return;
+  deleteAction.pending = true; deleteAction.message = "";
   const button = $("#psdelete");
-  const sheet = button.closest("#sheet");
-  const errorMessage = sheet.querySelector("#pserr");
-  errorMessage.textContent = "";
   button.disabled = true;
-  const confirmed = await confirmAction({
-    title: `Delete ${project.name || "project"}?`,
-    warnings: ["This cannot be undone. Files and unsaved changes in Build-managed workspaces will be permanently removed."],
-    actions: ["Delete all workspaces belonging to this project.", "Remove the project from Build. Original project folders and external checkouts are kept."],
-    confirmLabel: "Delete project and workspaces",
-    danger: true,
-  });
-  if (!confirmed) {
-    button.disabled = false;
-    button.focus();
-    return;
-  }
-  button.textContent = "Deleting…";
-  const controls = [...sheet.querySelectorAll("button, input, select")];
-  const disabled = controls.map((control) => control.disabled);
-  controls.forEach((control) => { control.disabled = true; });
+  $("#sheet").querySelector("#pserr").textContent = "";
   try {
-    await callRpc("project.delete", { project_id: project.project_id, confirm: true });
-    await deleteCached([projectSettingsAddress(deviceId, project.project_id)]);
-    await removeProjectSetting(deviceId, project.project_id);
-    if (sheet.contains(button)) close();
+    const confirmed = await confirmAction({
+      title: `Delete ${project.name || "project"}?`,
+      intro: "Archive is recommended to keep this project's history. Cancel and choose Archive project in settings to keep it.",
+      warnings: ["This cannot be undone. Files and unsaved changes in Build-managed workspaces will be permanently removed."],
+      actions: [deleteCount(project.total_tasks, "tasks"), deleteCount(project.workspaces, "workspaces"), "Remove the project from Build. Original project folders and external checkouts are kept."],
+      confirmLabel: "Delete project, tasks and workspaces",
+      danger: true,
+    });
+    if (!confirmed || !current()) return;
+    $("#sheet").querySelectorAll("button, input, select").forEach(control => { control.disabled = true; });
+    await deleteFromSettings({ deviceId, method: "project.delete", params: { project_id: project.project_id, confirm: true, tasks: "delete" }, callRpc });
+    if (current()) close();
+    try { await onDeleted?.(project); }
+    catch (error) { notifyError("Project deleted, but refreshing the project list failed", error.message); }
   } catch (error) {
-    errorMessage.textContent = error.message;
-    controls.forEach((control, index) => { control.disabled = disabled[index]; });
-    button.disabled = false;
-    button.textContent = "Delete project…";
-    if (!sheet.contains(button) || !$("#scrim").classList.contains("show")) {
-      notifyError("Project deletion failed", error.message);
-    }
-    return;
-  }
-  try {
-    await onDeleted?.(project);
-  } catch (error) {
-    notifyError("Project deleted, but refreshing the project list failed", error.message);
+    deleteAction.message = error.message;
+    if (!current()) notifyError("Project deletion failed", error.message);
+  } finally {
+    deleteAction.pending = false;
+    settled();
   }
 }
 
+const deleteCount = (count, noun) => Number.isSafeInteger(count) && count >= 0
+  ? `Delete ${count} ${count === 1 ? noun.slice(0, -1) : noun} belonging to this project.`
+  : `Delete all ${noun} belonging to this project (count unavailable).`;
+
 function lockArchivedSettings(sheet, project) {
   if (!projectIsArchived(project)) return;
-  sheet.querySelectorAll("button:not(#psarchive):not(#pscancel), select, textarea, input:not([readonly])").forEach(control => { control.disabled = true; });
+  sheet.querySelectorAll("button:not(#psarchive):not(#pscancel):not(#psdelete), select, textarea, input:not([readonly])").forEach(control => { control.disabled = true; });
 }
 
 const namedIsolationTarget = (project, name) => projectIsolationTarget({ ...project, environment_name: name || project.environment_name });

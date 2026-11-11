@@ -9,7 +9,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const { bridgeCapabilities, greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { environmentSupportAddress, readEnvironmentSupport, rememberEnvironmentSupport, predatesEnvironments } = await import("../src/core/environmentSupport.js");
 const { readCached } = await import("../src/core/localCache.js");
-const unsupported = { list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false };
+const unsupported = { list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false, deleteEnvironment: false, deleteProject: false };
 const m1 = { ...unsupported, list: true, createProject: true };
 const greet = (capabilities, deviceId = "dev-1") => greetBridge(async (method) =>
   method === "session.hello" ? { ...greetingFixture.result, capabilities } : {}, { deviceId, strict: true });
@@ -83,4 +83,17 @@ it("does not treat the old shared rename flag as complete legacy ownership evide
     expect(predatesEnvironments({ ...old, rename })).toBe(false);
   }
   expect(predatesEnvironments(unsupported)).toBe(true);
+});
+
+it("releases independently named delete capabilities and persists them for settings", async () => {
+  await greet(["environments.delete", "projects.deleteTasks"]);
+  await vi.waitFor(async () => expect(await readEnvironmentSupport("dev-1")).toMatchObject({ deleteEnvironment: true, deleteProject: true }));
+  expect(capabilitiesOf({ api_version: "3.41.0", capabilities: ["project.delete", "environment.delete"] }).environments).toMatchObject({ deleteEnvironment: false, deleteProject: false });
+});
+
+it("keeps older complete legacy records usable, but a positive delete capability is environment evidence", () => {
+  const { deleteEnvironment: _environment, deleteProject: _project, ...older } = unsupported;
+  expect(predatesEnvironments(older)).toBe(true);
+  expect(predatesEnvironments({ ...older, deleteEnvironment: true })).toBe(false);
+  expect(predatesEnvironments({ ...older, deleteProject: true })).toBe(false);
 });

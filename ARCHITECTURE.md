@@ -865,7 +865,7 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
 
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.40.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.41.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   3.37.0 advertises `environments` for the M1 list, journaled project/first
   workspace creation, recovery and read-only environment settings. Creating
   environments or selecting extra folders in the creation wizard, archive,
@@ -892,6 +892,20 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
   and delivery remain in the off-app-lock flusher. Environment subscriptions receive environment hints;
   project and All subscribers receive compatible project invalidations for each
   member project. No standalone settings-create lifetime exists.
+  3.41.0 releases settings deletion with `environments.delete` and
+  `projects.deleteTasks`, and advertises the existing `environment.delete`
+  method. Project confirmation names cached task/workspace counts and recommends
+  archive; archived projects remain deletable. Missing counts are stated as
+  unavailable. Refusals retain the bridge's exact text.
+  Delete verbs use their existing synchronous result, not ack/confirm:
+  frame `write.operation_id` is rejected. `settingsDeletion.js` persists a
+  SPA-local operation ID and the original params in the UI store before sending;
+  retry and reopen reuse both, including the original `tasks` mode. The local ID
+  travels in caller options only. Project recovery uses the bridge's saved
+  project identity/mode; completed retries return `{project_id, deleted:true}`.
+  An absent environment returns `{}`. Both are successful cache-removal boundaries.
+  Project settings, project lists and the environment's membership projection
+  update together immediately; environment removal invalidates older list pulls.
   3.31.0 retires snapshot-mode creation and actions, removes legacy agent
   mutation tools and adds the compact `legacy_review` summary marker,
   independently announced by `tasks.review.snapshotRetired` (#974).

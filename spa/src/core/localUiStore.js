@@ -315,6 +315,27 @@ export function writeUiRecordIfUnwritten(address, captured, value) {
   });
 }
 
+/** Remove a completed interaction only if the captured record is still current.
+ * A newer attempt in another tab must survive an older completion. */
+export function deleteUiRecordIfUnwritten(address, captured) {
+  if (!captured) return Promise.resolve(false);
+  const key = recordKey(address);
+  let applied = false;
+  return database.write((store) => {
+    applied = false;
+    const current = store.get(key);
+    current.onsuccess = () => {
+      if (recordWriteOf(current.result) !== recordWriteOf(captured)) return;
+      store.delete(key);
+      applied = true;
+    };
+    return null;
+  }).then((committed) => {
+    if (committed && applied) announce(partsOfKey(key));
+    return Boolean(committed && applied);
+  });
+}
+
 /** Replay one page-exit edit only if it is still the newest edit. The get
  * and conditional put share a readwrite transaction, so another tab cannot
  * insert a newer record between the comparison and the write. A same-owner

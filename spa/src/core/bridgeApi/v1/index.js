@@ -248,6 +248,8 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       projectRename: names.has("projects.rename"),
       environmentRename: names.has("environments.rename"),
       secrets: names.has("secrets.environmentScope"),
+      deleteEnvironment: names.has("environments.delete"),
+      deleteProject: names.has("projects.deleteTasks"),
     },
     workspaces: { measureSizes: names.has("workspace.measure_sizes"), setLocked: names.has("workspace.set_locked") },
   };

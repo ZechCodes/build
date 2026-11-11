@@ -1,6 +1,6 @@
 {
-  "api_version": "3.39.0",
-  "commit": "d5801741",
+  "api_version": "3.40.0",
+  "commit": "b409dcf4",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -316,6 +316,7 @@
     "secrets.attachments",
     "secrets.audit",
     "secrets.create",
+    "secrets.environmentScope",
     "secrets.list",
     "secrets.metadataEvents",
     "secrets.revoke",

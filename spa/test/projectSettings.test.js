@@ -13,8 +13,9 @@ import { deviceProjectsAddress, projectSettingsAddress } from "../src/core/setti
 import { sourceEditSupportAddress } from "../src/core/sourceEditSupport.js";
 import { environmentSupportAddress, rememberEnvironmentSupport } from "../src/core/environmentSupport.js";
 import { environmentsAddress } from "../src/core/environmentCache.js";
+import { taskAddress, tasksAddress } from "../src/core/trackerCache.js";
 
-const actionCapabilities = vi.hoisted(() => ({ archive: true, projectRename: true, environmentRename: true }));
+const actionCapabilities = vi.hoisted(() => ({ archive: true, projectRename: true, environmentRename: true, deleteProject: true }));
 vi.mock("../src/core/changeEvents.js", async original => ({ ...await original(), bridgeCapabilities: () => ({ environments: actionCapabilities }) }));
 const sourceAuthority = vi.hoisted(() => ({ epoch: "legacy-epoch", greetingError: null, greetingWait: null, waiting: 0 }));
 vi.mock("../src/core/deviceContexts.js", async importOriginal => ({
@@ -64,14 +65,14 @@ beforeEach(async () => {
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
   await wipeCache();
   await wipeUiRecords();
-  actionCapabilities.archive = true; actionCapabilities.projectRename = true; actionCapabilities.environmentRename = true;
+  actionCapabilities.deleteProject = true; actionCapabilities.archive = true; actionCapabilities.projectRename = true; actionCapabilities.environmentRename = true;
   sourceAuthority.epoch = "legacy-epoch";
   sourceAuthority.greetingError = null;
   sourceAuthority.greetingWait = null;
   sourceAuthority.waiting = 0;
   // Legacy fixtures positively identify a device that predates environments.
   for (const deviceId of ["", "dev-1"]) await writeCached(environmentSupportAddress(deviceId), {
-    list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false, bridge_epoch: "legacy-epoch",
+    list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false, deleteProject: false, bridge_epoch: "legacy-epoch",
   });
   confirmAction.mockReset();
   openWizard.mockReset();
@@ -79,6 +80,7 @@ beforeEach(async () => {
 
 describe("openProjectSettings", () => {
   it("lays the sheet out as General, Sources, Isolation and Danger zone", async () => {
+    await writeCached(environmentSupportAddress(""), { deleteProject: true });
     const callRpc = vi.fn().mockResolvedValue({ projects: [PROJECT] });
     openProjectSettings("proj-1", { callRpc });
     await vi.waitFor(() => expect(document.querySelector("#psproject")?.value).toBe("build"));
@@ -429,6 +431,7 @@ describe("openProjectSettings", () => {
   });
 
   it("keeps the project's errors separate from the isolation's refusal", async () => {
+    await writeCached(environmentSupportAddress(""), { deleteProject: true });
     const row = { ...PROJECT, isolation: null, isolation_default: "worktree", isolation_available: { rift: true } };
     const callRpc = vi.fn().mockImplementation((method) =>
       method === "project.list"
@@ -467,6 +470,9 @@ describe("openProjectSettings", () => {
 });
 
 describe("project deletion", () => {
+  beforeEach(async () => {
+    for (const deviceId of ["", "dev-1"]) await writeCached(environmentSupportAddress(deviceId), { deleteProject: true });
+  });
   const caller = () => vi.fn(async (method) => method === "project.list" ? { projects: [PROJECT] } : {});
 
   it("requires confirmation and leaves the project untouched on cancel", async () => {
@@ -490,7 +496,7 @@ describe("project deletion", () => {
     await vi.waitFor(() => expect(document.querySelector("#psdelete")).toBeTruthy());
     document.querySelector("#psdelete").click();
     await vi.waitFor(() => expect(onDeleted).toHaveBeenCalledWith(PROJECT));
-    expect(callRpc).toHaveBeenCalledWith("project.delete", { project_id: PROJECT.project_id, confirm: true });
+    expect(callRpc).toHaveBeenCalledWith("project.delete", { project_id: PROJECT.project_id, confirm: true, tasks: "delete" }, { operationId: expect.any(String) });
     expect(onDeleted).toHaveBeenCalledWith(PROJECT);
     expect(document.querySelector("#scrim").classList.contains("show")).toBe(false);
   });
@@ -516,15 +522,34 @@ describe("project deletion", () => {
 
   it("shows deletion failures and allows retry without closing", async () => {
     confirmAction.mockResolvedValue(true);
+    const deviceId = "dev-1";
+    const project = { ...PROJECT, total_tasks: 1, open_tasks: 1, workspaces: 1 };
+    const task = { id: "task-refusal", project_id: PROJECT.project_id, title: "Keep this task", state: "open" };
+    const workspace = { id: "ws-refusal", project_id: PROJECT.project_id, name: "Unfinished work", state: "active" };
+    const seeded = [
+      [projectSettingsAddress(deviceId, PROJECT.project_id), project],
+      [deviceProjectsAddress(deviceId), [project]],
+      [{ deviceId, entityId: "", kind: "projects" }, [project]],
+      [{ deviceId, entityId: "", kind: "environment-settings-projects" }, [project]],
+      [tasksAddress(deviceId, PROJECT.project_id), { tasks: [task] }],
+      [taskAddress(deviceId, PROJECT.project_id, task.id), { task }],
+      [{ deviceId, entityId: "", kind: "workspaces" }, [workspace]],
+    ];
+    await Promise.all(seeded.map(([address, value]) => writeCached(address, value)));
     const callRpc = caller().mockImplementation(async (method) => {
-      if (method === "project.list") return { projects: [PROJECT] };
-      throw new Error("Workspace is busy");
+      if (method === "project.list") return { projects: [project] };
+      throw new Error("Finish its workspaces before deleting tasks");
     });
-    openProjectSettings(PROJECT.project_id, { callRpc });
+    openProjectSettings(PROJECT.project_id, { callRpc, deviceId });
     await vi.waitFor(() => expect(document.querySelector("#psdelete")).toBeTruthy());
     document.querySelector("#psdelete").click();
-    await vi.waitFor(() => expect(document.querySelector("#pserr").textContent).toBe("Workspace is busy"));
-    expect(document.querySelector("#pserr").textContent).toBe("Workspace is busy");
+    await vi.waitFor(() => expect(document.querySelector("#pserr").textContent).toBe("Finish its workspaces before deleting tasks"));
+    // A refusal must preserve every project, task and workspace projection.
+    expect(await Promise.all(seeded.map(async ([address]) => (await readCached(address))?.value)))
+      .toEqual(seeded.map(([, value]) => value));
+    expect((await readUiRecord({ deviceId, entityId: PROJECT.project_id, kind: "ui-settings-delete", sub: "project.delete" }))?.value)
+      .toMatchObject({ operationId: expect.any(String), params: { project_id: PROJECT.project_id, confirm: true, tasks: "delete" } });
+    expect(document.querySelector("#pserr").textContent).toBe("Finish its workspaces before deleting tasks");
     expect(document.querySelector("#psdelete").disabled).toBe(false);
     expect(document.querySelector("#scrim").classList.contains("show")).toBe(true);
   });
@@ -1333,4 +1358,118 @@ describe("M3 settings", () => {
     expect(callRpc.mock.calls.some(([method]) => method === "project.archive")).toBe(false);
   });
 
+});
+
+
+describe("S2.5 deletion", () => {
+  const ready = async (project = PROJECT, support = { deleteProject: true, archive: true }) => {
+    await writeCached(environmentSupportAddress("dev-1"), support);
+    await writeCached(projectSettingsAddress("dev-1", "proj-1"), project);
+    for (const kind of ["projects", "environment-settings-projects", "device-projects"])
+      await writeCached({ deviceId: "dev-1", entityId: "", kind }, [project, { project_id: "sibling" }]);
+  };
+  it("confirms task and workspace counts with archive recommended before deliberate deletion", async () => {
+    await ready({ ...PROJECT, total_tasks: 8, workspaces: 3 });
+    confirmAction.mockResolvedValue(false);
+    openProjectSettings("proj-1", { deviceId: "dev-1", callRpc: vi.fn(() => new Promise(() => {})) });
+    await vi.waitFor(() => expect(document.querySelector("#psdelete")).not.toBeNull());
+    document.querySelector("#psdelete").click();
+    await vi.waitFor(() => expect(confirmAction).toHaveBeenCalled());
+    expect(confirmAction.mock.calls[0][0]).toMatchObject({ intro: expect.stringMatching(/Archive.*recommended/), actions: expect.arrayContaining([expect.stringMatching(/8 tasks/), expect.stringMatching(/3 workspaces/)]), confirmLabel: "Delete project, tasks and workspaces" });
+  });
+  it("hides deletion without cached capability and rechecks live capability at dispatch", async () => {
+    await ready(PROJECT, {});
+    const callRpc = vi.fn(() => new Promise(() => {}));
+    openProjectSettings("proj-1", { deviceId: "dev-1", callRpc });
+    await vi.waitFor(() => expect(document.querySelector("#psproject")).not.toBeNull());
+    expect(document.querySelector("#psdelete")).toBeNull();
+    await writeCached(environmentSupportAddress("dev-1"), { deleteProject: true });
+    await vi.waitFor(() => expect(document.querySelector("#psdelete")).not.toBeNull());
+    actionCapabilities.deleteProject = false; confirmAction.mockResolvedValue(true);
+    document.querySelector("#psdelete").click();
+    await vi.waitFor(() => expect(document.querySelector("#pserr").textContent).toContain("Update Build"));
+    expect(callRpc.mock.calls.some(([method]) => method === "project.delete")).toBe(false);
+  });
+  it("retries lost reply after reopen with frozen mode and operation id, treating completed deletion as success", async () => {
+    const archived = { ...PROJECT, archived_at: 1, total_tasks: 8, workspaces: 3 };
+    await ready(archived);
+    confirmAction.mockResolvedValue(true);
+    let attempts = 0;
+    const callRpc = vi.fn(async method => {
+      if (method !== "project.delete") return new Promise(() => {});
+      if (++attempts === 1) throw new Error("Reply lost");
+      // Exact completed-tombstone response on b409dcf40.
+      return { project_id: "proj-1", deleted: true };
+    });
+    openProjectSettings("proj-1", { deviceId: "dev-1", callRpc });
+    await vi.waitFor(() => expect(document.querySelector("#psdelete")?.disabled).toBe(false));
+    document.querySelector("#psdelete").click();
+    await vi.waitFor(() => expect(document.querySelector("#pserr").textContent).toBe("Reply lost"));
+    const first = callRpc.mock.calls.find(([method]) => method === "project.delete");
+    document.querySelector("#pscancel").click();
+    // A different confirmation projection and capability state cannot change intent.
+    await ready({ ...archived, total_tasks: 0, workspaces: 0 }, { deleteProject: true, archive: false });
+    openProjectSettings("proj-1", { deviceId: "dev-1", callRpc });
+    await vi.waitFor(() => expect(document.querySelector("#psdelete")?.disabled).toBe(false));
+    document.querySelector("#psdelete").click();
+    await vi.waitFor(() => expect(document.querySelector("#scrim").classList.contains("show")).toBe(false));
+    const deletes = callRpc.mock.calls.filter(([method]) => method === "project.delete");
+    expect(deletes).toHaveLength(2); expect(deletes[1]).toEqual(first);
+    expect(first).toEqual(["project.delete", { project_id: "proj-1", confirm: true, tasks: "delete" }, { operationId: expect.any(String) }]);
+    for (const kind of ["projects", "environment-settings-projects", "device-projects"])
+      expect((await readCached({ deviceId: "dev-1", entityId: "", kind })).value).toEqual([{ project_id: "sibling" }]);
+    expect((await readCached(projectSettingsAddress("dev-1", "proj-1")))?.value).toBeFalsy();
+    expect(document.querySelector("#pserr")?.textContent || "").toBe("");
+  });
+});
+
+it("describes and retains the prior no-tasks mode when reopening a saved deletion", async () => {
+  const { deleteFromSettings } = await import("../src/core/settingsDeletion.js");
+  await writeCached(environmentSupportAddress("dev-1"), { deleteProject: true });
+  await writeCached(projectSettingsAddress("dev-1", "proj-1"), PROJECT);
+  let attempts = 0;
+  const callRpc = vi.fn(async method => {
+    if (method !== "project.delete") return new Promise(() => {});
+    if (++attempts === 1) throw new Error("Reply lost");
+    return { project_id: "proj-1", deleted: true };
+  });
+  await expect(deleteFromSettings({ deviceId: "dev-1", method: "project.delete", params: { project_id: "proj-1", confirm: true }, callRpc })).rejects.toThrow("Reply lost");
+  confirmAction.mockResolvedValue(true);
+  openProjectSettings("proj-1", { deviceId: "dev-1", callRpc });
+  await vi.waitFor(() => expect(document.querySelector("#psdelete")).not.toBeNull());
+  document.querySelector("#psdelete").click();
+  await vi.waitFor(() => expect(document.querySelector("#scrim").classList.contains("show")).toBe(false));
+  const confirmation = confirmAction.mock.calls[0][0];
+  expect(confirmation.confirmLabel).toBe("Delete project and workspaces");
+  expect(confirmation.actions.join(" ")).not.toMatch(/Delete[^.]*tasks/);
+  const requests = callRpc.mock.calls.filter(([method]) => method === "project.delete");
+  expect(requests).toHaveLength(2); expect(requests[1]).toEqual(requests[0]);
+  expect(requests[1][1]).toEqual({ project_id: "proj-1", confirm: true });
+  expect(document.querySelector("#pserr")?.textContent || "").toBe("");
+  expect(await readUiRecord({ deviceId: "dev-1", entityId: "proj-1", kind: "ui-settings-delete", sub: "project.delete" })).toBeUndefined();
+});
+
+
+it.each([
+  { archived_at: 123, archive: true, intro: "This project is already archived. Keep it to retain its history." },
+  { archived_at: null, archive: false, intro: "Keep this project to retain its history." },
+])("uses an available safe alternative in the delete intro: %j", async ({ archived_at, archive, intro }) => {
+  await writeCached(environmentSupportAddress("dev-1"), { deleteProject: true, archive });
+  await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), { ...PROJECT, archived_at });
+  confirmAction.mockResolvedValue(false);
+  openProjectSettings(PROJECT.project_id, { deviceId: "dev-1", callRpc: vi.fn(() => new Promise(() => {})) });
+  await vi.waitFor(() => expect(document.querySelector("#psdelete")?.disabled).toBe(false));
+  document.querySelector("#psdelete").click();
+  await vi.waitFor(() => expect(confirmAction).toHaveBeenCalled());
+  expect(confirmAction.mock.calls[0][0].intro).toBe(intro);
+});
+
+it("keeps Danger zone when archive is available but project deletion is not", async () => {
+  await writeCached(environmentSupportAddress("dev-1"), { archive: true, deleteProject: false });
+  await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), PROJECT);
+  openProjectSettings(PROJECT.project_id, { deviceId: "dev-1", callRpc: vi.fn(() => new Promise(() => {})) });
+  await vi.waitFor(() => expect(document.querySelector("#psarchive")).not.toBeNull());
+  expect(document.querySelector("#ps-danger-h")?.textContent).toBe("Danger zone");
+  expect(document.querySelector("#psarchive").textContent).toBe("Archive project");
+  expect(document.querySelector("#psdelete")).toBeNull();
 });

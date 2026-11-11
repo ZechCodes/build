@@ -340,3 +340,15 @@ and project-only additions/removals without manual publication.
 | ID | Round-6 control | Evidence |
 | --- | --- | --- |
 | ENV-S22-R6-1 | Final deletion reconciliation refreshes membership/device projections off-lock, rejects superseded config revisions inside the writer transaction, and clears fences only for current successful results. Projection failure refuses success; completion-tombstone retry repairs metadata without replaying owned cleanup. | `project_deletion_post_config_membership_failure_recovers_in_own_reconciliation` (real RPC, post-rename SQL abort, injected pause, recovery and newer sibling archive); `project_deletion_final_membership_failure_refuses_success_and_completed_retry_repairs_it` (persistent failure, fail-closed access and same-delete repair). |
+
+
+## #1100 — environment deletion settings (S2.5)
+
+| Control | Evidence |
+| --- | --- |
+| Environment deletion is hidden without `environments.delete`; the current greeting is rechecked before sending. The confirmation states source folders are kept and all names are escaped by the shared modal. | `environmentsSettingsDom.test.js`; `environmentSupportWiring.test.js`; existing confirmation escaping tests. |
+| A bridge refusal is shown verbatim. Retry/reopen preserves the local operation ID and exact environment selector, accepts `{}` for an already-absent environment, and removes only that environment at the successful reply. | `environmentsSettingsDom.test.js`: environment deletion/repaint/retry regression. |
+| Project deletion preserves sibling list entries and source ownership; its task-mode/identity are frozen across retries. The SPA adds no filesystem cleanup authority. | `projectSettings.test.js`: completed retry, sibling cache retention and no-tasks-mode reopening. |
+
+**S2.5 scoped score: 100/100.** Source cleanup and secret revocation continue
+to use the existing S2.2 bridge implementation and evidence.

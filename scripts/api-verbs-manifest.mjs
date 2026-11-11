@@ -53,15 +53,16 @@ if (!earlier(previousVersion, current)) {
 }
 
 const fixtureAt = (name) => JSON.parse(git("show", `${previous}:fixtures/api/v1/${name}`));
+const capabilities = [...fixtureAt("session.hello.json").result.capabilities].sort();
+// Private fixture registrations are not part of a published wire inventory.
+const advertised = new Set(capabilities);
 const verbs = git("ls-tree", "--name-only", `${previous}:fixtures/api/v1/`)
   .split("\n")
   .filter((name) => name.endsWith(".json"))
   .map(fixtureAt)
-  .filter((body) => typeof body.method === "string")
+  .filter((body) => typeof body.method === "string" && advertised.has(body.method))
   .map((body) => body.method)
   .sort();
-const capabilities = [...fixtureAt("session.hello.json").result.capabilities].sort();
-
 const manifest = {
   api_version: previousVersion,
   commit: git("rev-parse", "--short=8", previous).trim(),

@@ -840,3 +840,15 @@ S2.5 supplies the settings consumer. Schema 27 is inherited from S2.1; this slic
 | ID | Round-6 control | Evidence |
 | --- | --- | --- |
 | ENV-S22-R6-1 | Final deletion reconciliation refreshes membership/device projections off-lock, rejects superseded config revisions inside the writer transaction, and clears fences only for current successful results. Projection failure refuses success; completion-tombstone retry repairs metadata without replaying owned cleanup. | `project_deletion_post_config_membership_failure_recovers_in_own_reconciliation` (real RPC, post-rename SQL abort, injected pause, recovery and newer sibling archive); `project_deletion_final_membership_failure_refuses_success_and_completed_retry_repairs_it` (persistent failure, fail-closed access and same-delete repair). |
+
+
+## #1100 — settings deletion consumer (S2.5)
+
+| Control | Evidence |
+| --- | --- |
+| Destructive controls require cached capability, rechecked under the live greeting before dispatch. Confirmation names task/workspace counts and recommends archive; archived projects keep delete available. | `projectSettings.test.js`: S2.5 counts, hidden/control downgrade and archived lost-reply cases; `environmentSupportWiring.test.js`. |
+| Retry and reopened settings reuse the persisted local operation ID and exact original params, including the no-tasks mode. No unsupported frame write metadata or new bridge protocol is introduced. | `projectSettings.test.js`: lost reply/completed tombstone and no-tasks-mode reopen regressions. |
+| A successful final reply removes project projections immediately, preserving sibling rows. Refusals remain verbatim; already-completed replies clear the UI successfully. | `projectSettings.test.js`; `environmentsSettingsDom.test.js`; bridge `api_contract` and `http_resource_manifest`. |
+
+**S2.5 scoped score: 100/100.** Consumer controls above are covered by the
+named regressions; bridge deletion authority remains with S2.2's checklist.

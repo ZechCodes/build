@@ -471,13 +471,13 @@ their fixtures because `params.strict` refuses undeclared params
 | `projects.archive` | M3 (3.39.0) | `project.archive`, `project.restore`, `archived_at`, `project_archived` refusals |
 | `projects.rename`, `environments.rename` | M3 (3.39.0) | `project.rename`, `environment.rename`, `environment.*_source`, `environment.set_isolation` |
 | `secrets.environmentScope` | Stage 2 | `GrantScope::Environment` on `secrets.*` |
-| `projects.deleteTasks`, `environments.delete` | Stage 2 | `project.delete {tasks}`, `environment.delete` |
+| `projects.deleteTasks`, `environments.delete` | S2.5 (3.41.0) | `project.delete {tasks}`, `environment.delete` |
 
 SPA side: a persisted per-device support record `environment-support`
 written at greeting (pattern `spa/src/core/sourceEditSupport.js:15-34`, called
 from `publishGreeting`, `changeEvents.js:1017-1050`); `capabilitiesOf()`
 (`bridgeApi/v1/index.js:157`) gains `environments: {list, createProject,
-create, addedSources, archive, projectRename, environmentRename, secrets}`;
+create, addedSources, archive, projectRename, environmentRename, secrets, deleteEnvironment, deleteProject}`;
 `NO_CAPABILITIES` (`changeEvents.js:125`) the same shape, all false. Views read the record from
 cache, never the greeting. Each control appears only when its flag is true:
 the "New environment…" row (M2), the Advanced folders section (M2), archive
@@ -1047,7 +1047,18 @@ device from cache; per-device pulls via `pullDeviceProjection` (pattern
   disables it, with a single-flight latch surviving cache repaints. Blockers
   can clear without the client knowing, so the next click asks the bridge
   again. Danger zone retains the existing Delete project action; deletion
-  together with tasks is Stage 2.
+  together with tasks ships in S2.5 (wire 3.41.0). Both delete controls require
+  their cached named capability; dispatch rechecks the current greeting.
+  Project confirmation recommends Archive first, names cached task/workspace
+  counts (or says unavailable), and deliberately sends `tasks: "delete"`.
+  Archived projects allow deletion. Bridge refusals are shown verbatim.
+  **S2.5 protocol deviation (#1100):** delete verbs reject frame write metadata
+  and do not participate in ack/confirm. A local UI-store record retains the
+  original operation ID and exact params across retry/reopen, including a saved
+  mode without `tasks`. Caller options carry the local ID only. Successful
+  synchronous replies immediately remove rows from cache, without a timer.
+  Completed project deletion returns `{project_id, deleted:true}`; an already
+  absent environment returns `{}`. Both finish the UI action successfully.
 - States: cached list paints at once; "loading…" only when the cache is
   empty; an error replaces only a still-empty list (`deviceProjects.js:87-89`);
   empty shows "No environments on this device yet". Old bridge: projects

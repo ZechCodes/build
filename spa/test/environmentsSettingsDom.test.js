@@ -8,9 +8,12 @@ vi.mock("../src/core/inboxDevices.js", () => ({ deviceCall: id => (...args) => s
 vi.mock("../src/core/createWorkspaceWizard.js", () => ({ openCreateWorkspaceWizard: vi.fn() }));
 vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo: vi.fn() }));
 vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: vi.fn() }));
-vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: id => ({ environments: { list: state.support.get(id), archive: true, projectRename: true, environmentRename: true } }),
+vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: id => ({ environments: { list: state.support.get(id), archive: true, projectRename: true, environmentRename: true, deleteEnvironment: true } }),
   onBridgeGreeted: fn => { state.greetings.add(fn); return () => state.greetings.delete(fn); } }));
 vi.mock("../src/core/scopedSyncRuntime.js", () => ({ deviceScopedSyncOwns: () => state.deviceOwned, wakeScopedSync: vi.fn(async () => []) }));
+const confirmDelete = vi.hoisted(() => vi.fn());
+vi.mock("../src/core/confirm.js", () => ({ confirmAction: (...args) => confirmDelete(...args) }));
+import { readUiRecord, wipeUiRecords } from "../src/core/localUiStore.js";
 import { renderEnvironmentsSettings } from "../src/views/environmentsSettings.js";
 import { openProjectSettings } from "../src/sheets/projectSettings.js";
 import { readCached, writeCached, wipeCache } from "../src/core/localCache.js";
@@ -32,7 +35,7 @@ async function seed(id, environments = [environment()], projects = [project], su
 const mount = () => renderEnvironmentsSettings({ root: document.body, registerDispose: fn => { dispose = fn; } });
 beforeEach(async () => {
   globalThis.indexedDB = new IDBFactory(); globalThis.IDBKeyRange = IDBKeyRange;
-  await wipeCache();
+  await wipeCache(); await wipeUiRecords(); confirmDelete.mockResolvedValue(true);
   state.deviceOwned = false;
   document.body.innerHTML = ""; vi.clearAllMocks();
   for (const device of state.devices) state.calls.set(device.id, vi.fn(() => new Promise(() => {})));
@@ -421,3 +424,47 @@ it("environment isolation sends its exact nullable override", async () => {
 });
 
 vi.mock("../src/core/deviceContexts.js", async original => ({ ...await original(), whenGreeted: async (_context, send) => ({ sent: send() }) }));
+
+
+it("hides environment deletion on old bridges", async () => {
+  await mountEnvironmentSheet();
+  await vi.waitFor(() => expect(document.querySelector("#esdisplay")).not.toBeNull());
+  expect(document.querySelector("#esdelete")).toBeNull();
+});
+it("deletes an environment at successful reply and preserves refusal verbatim across repaint and retry", async () => {
+  let finish;
+  let attempts = 0;
+  const callRpc = vi.fn(method => {
+    if (method !== "environment.delete") return new Promise(() => {});
+    if (++attempts === 1) return Promise.reject(new Error("Delete its 2 projects first"));
+    return new Promise(resolve => { finish = resolve; });
+  });
+  state.calls.set("laptop", callRpc);
+  await mountEnvironmentSheet();
+  await writeCached(address("laptop", "environment-support"), { environmentRename: true, deleteEnvironment: true });
+  await vi.waitFor(() => expect(document.querySelector("#esdelete")).not.toBeNull());
+  const environmentsBefore = (await readCached(address("laptop", "environments"))).value;
+  document.querySelector("#esdelete").click();
+  await vi.waitFor(() => expect(document.querySelector("#esdeleteerr").textContent).toBe("Delete its 2 projects first"));
+  // Check the seeded projection before reopening, retrying or writing a repaint.
+  expect((await readCached(address("laptop", "environments")))?.value).toEqual(environmentsBefore);
+  const attemptAddress = { deviceId: "laptop", entityId: "env-1", kind: "ui-settings-delete", sub: "environment.delete" };
+  expect((await readUiRecord(attemptAddress))?.value).toMatchObject({ operationId: expect.any(String), params: { environment_id: "env-1" } });
+  document.querySelector("#esclose").click();
+  openEnvironmentSettings("env-1", { deviceId: "laptop", callRpc });
+  await vi.waitFor(() => expect(document.querySelector("#esdelete")).not.toBeNull());
+  document.querySelector("#esdelete").click();
+  await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+  await writeCached(address("laptop", "environments"), [{ ...environment(), name: "Repaint" }]);
+  await vi.waitFor(() => expect(document.querySelector("#esdisplay").value).toBe("Repaint"));
+  expect(document.querySelector("#esdelete").disabled).toBe(true);
+  expect((await readCached(address("laptop", "environments"))).value).toHaveLength(1);
+  finish({}); // Exact already-absent response on b409dcf40.
+  await vi.waitFor(async () => expect((await readCached(address("laptop", "environments"))).value).toEqual([]));
+  expect(document.querySelector("#scrim").classList.contains("show")).toBe(false);
+  expect(document.querySelector("#esdeleteerr")?.textContent || "").toBe("");
+  const deletes = callRpc.mock.calls.filter(([method]) => method === "environment.delete");
+  expect(deletes).toHaveLength(2); expect(deletes[1]).toEqual(deletes[0]);
+  expect(deletes[0]).toEqual(["environment.delete", { environment_id: "env-1" }, { operationId: expect.any(String) }]);
+  expect(await readUiRecord(attemptAddress)).toBeUndefined();
+});

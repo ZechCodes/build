@@ -5,6 +5,7 @@
 // "Workspace folders" legend sat off it), and each card's controls stay inside
 // that card rather than floating between sources.
 import { expect, it } from "vitest";
+import greetingFixture from "../../../fixtures/api/v1/session.hello.json";
 import { captureLayout, loadBrowserModules, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
 
 const PROJECT = {
@@ -43,21 +44,27 @@ for (const { label, width, height } of [
         environments: "src/core/environmentSupport.js",
         devices: "src/core/deviceContexts.js",
         epochs: "src/core/bridgeEpoch.js",
+        adapter: "src/core/bridgeApi/v1/index.js",
       }, basePath);
-      await page.evaluate(async (project) => {
-        const { sheet, cache, support, environments, devices, epochs } = window.__layoutModules;
+      await page.evaluate(async ({ project, version }) => {
+        const { sheet, cache, support, environments, devices, epochs, adapter } = window.__layoutModules;
+        // Negotiate the two wire features this layout exercises. Project-owned
+        // sources make their editing authority explicit on a current bridge.
+        const greeting = { api_version: version, capabilities: ["bridge.epoch", "projects.deleteTasks"],
+          bridge_epoch: "layout-epoch", journal_incarnation: "layout-journal" };
+        const capabilities = adapter.capabilitiesOf(greeting);
         const bridgeEpoch = epochs.createBridgeEpoch();
-        bridgeEpoch.acceptGreeting({ capabilities: ["bridge.epoch"], bridge_epoch: "layout-epoch", journal_incarnation: "layout-journal" });
+        bridgeEpoch.acceptGreeting(greeting);
         const context = devices.adoptDeviceSession({ deviceId: "laptop", call: async () => ({}), bridgeEpoch });
         const authority = devices.greetingInFlight(context);
-        devices.adoptBridgeSelection(context, {}, { capabilities: {} }, authority);
+        devices.adoptBridgeSelection(context, { version }, { capabilities }, authority);
         await cache.writeCached(support.sourceEditSupportAddress("laptop"), { editsSources: true });
-        await environments.rememberEnvironmentSupport("laptop", { environments: {} }, () => true, "layout-epoch");
+        await environments.rememberEnvironmentSupport("laptop", capabilities, () => true, "layout-epoch");
         sheet.openProjectSettings(project.project_id, {
           deviceId: "laptop",
           callRpc: async (method) => (method === "project.list" ? { projects: [project] } : project),
         });
-      }, PROJECT);
+      }, { project: { ...PROJECT, added_sources: PROJECT.sources }, version: greetingFixture.result.api_version });
       await page.waitForFunction(() =>
         document.querySelector('.ps-source[data-source-id="source-2"] input[data-field="name"]')?.readOnly === false);
 

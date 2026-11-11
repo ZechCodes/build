@@ -172,10 +172,10 @@ impl AppState {
                 )
             })
         }));
-        if self.config_path.is_some() {
+        if params["tasks"] == "delete" {
             return Err("project deletion needs a durable store".into());
         }
-        // Store-free, nonpersistent fixtures have no durable history.
+        // Store-free legacy projects retain their file-backed config lifecycle.
         // Fail before touching files if the configuration is not writable.
         self.preserve_project_task_identities(&project_id)?;
         let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);

@@ -9,6 +9,12 @@ use serde::{Deserialize, Serialize};
 
 pub fn methods() -> &'static [(&'static str, Handler)] {
     v1_methods![
+        v1_method!(
+            "environment.delete",
+            delete,
+            DeleteParams,
+            super::board::EmptyResult
+        ),
         v1_method!("environment.rename", rename, RenameParams, EnvironmentRow),
         v1_method!(
             "environment.add_source",
@@ -288,4 +294,18 @@ fn set_isolation(
     params: SetIsolationParams,
 ) -> Result<Answer<EnvironmentRow>, ApiError> {
     answer(app.environment_set_isolation(&params.wire())).map_err(super::board::refine)
+}
+
+/// Delete an empty environment registration, preserving its source folders.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeleteParams {
+    pub environment_id: String,
+}
+
+fn delete(
+    app: &mut AppState,
+    params: DeleteParams,
+) -> Result<Answer<super::board::EmptyResult>, ApiError> {
+    answer(app.environment_delete(&params.environment_id)).map_err(super::board::refine)
 }

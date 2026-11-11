@@ -46,6 +46,7 @@
       "environment_add_source",
       "environment_create",
       "environment_create_project",
+      "environment_delete",
       "environment_discard_unused",
       "environment_list",
       "environment_remove_source",
@@ -789,6 +790,26 @@
         "source": "bridge/src/api/v1/environment.rs",
         "params": "CreateProjectParams",
         "result": "CreateProjectResult"
+      }
+    },
+    {
+      "method": "environment.delete",
+      "operationId": "environment_delete",
+      "verb": "DELETE",
+      "path": "/v1/environments/{environment_id}",
+      "pathParams": [
+        "environment_id"
+      ],
+      "queryParams": [],
+      "body": "remaining",
+      "scope": "existing typed method authorization and source selectors",
+      "requestMaxBytes": 1048576,
+      "responseMaxBytes": 8388608,
+      "requires_events": false,
+      "contract": {
+        "source": "bridge/src/api/v1/environment.rs",
+        "params": "DeleteParams",
+        "result": "super::board::EmptyResult"
       }
     },
     {

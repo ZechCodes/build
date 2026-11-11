@@ -400,13 +400,18 @@ impl WorkspaceRegistry {
         Ok(workspace)
     }
 
-    /// Drop a removed workspace or a stale adopted checkout from the index.
-    /// Its private lock marker must go too, so re-adoption starts unlocked.
-    pub(crate) fn forget(&mut self, id: &str) {
+    /// Apply an externally completed cleanup to the index without filesystem IO.
+    /// The caller owns the durable plan for any private marker removal.
+    pub(crate) fn forget_memory(&mut self, id: &str) {
         self.name_requests.remove(id);
         if self.workspaces.remove(id).is_some() {
             self.observation_changes.mark(id.to_string());
         }
+    }
+
+    /// Drop the index row and its private marker, so re-adoption starts unlocked.
+    pub(crate) fn forget(&mut self, id: &str) {
+        self.forget_memory(id);
         if validate_segment("workspace id", id).is_err() {
             return;
         }

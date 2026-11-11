@@ -6,7 +6,7 @@ use serde_json::Value;
 
 mod compaction;
 mod compaction_wire;
-mod files;
+pub(in crate::app) mod files;
 mod persistence;
 mod settings;
 pub(in crate::app) use compaction::CompactionPolicies;

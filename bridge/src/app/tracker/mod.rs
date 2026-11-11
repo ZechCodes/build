@@ -492,6 +492,10 @@ impl AppState {
         let observations = std::iter::once(&publication.current).chain(publication.related.iter());
         let mut changed = Vec::new();
         for observation in observations {
+            self.task_admission_keys.borrow_mut().insert(
+                observation.task.id.clone(),
+                observation.task.project_path.clone(),
+            );
             changed.push(observation.task.id.clone());
             if let Some(parent) = observation
                 .review
@@ -725,6 +729,11 @@ impl AppState {
     /// Called after the write lands, never before: a subscriber told to refetch
     /// ahead of the commit would read the state the write is about to replace.
     pub(in crate::app) fn note_tasks_changed(&self, project_id: &str, task_id: &str) {
+        if let Some(project) = self.projects.get(project_id) {
+            self.task_admission_keys
+                .borrow_mut()
+                .insert(task_id.into(), project.project_key.clone());
+        }
         let counts_changed = self.refresh_project_list_counts(project_id);
         if self.snapshot_projection_initialized() {
             if let Err(error) = self.refresh_project_snapshot_task_observations(project_id) {

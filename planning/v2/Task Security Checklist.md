@@ -790,3 +790,53 @@ captures and build. Changed-file Semgrep, changed-tree and branch-history
 Gitleaks exit 0. The #704 handoff preserves earlier failed attempts and the
 independent main teardown error rather than treating focused reruns as full
 passes. **#704 scoped security score: 100/100.**
+
+
+## #1096 — environment and project deletion (S2.2)
+
+The existing controls retain their 100/100 score. These rows implement the
+Tasks delta from Environments Plan §7; #1096 records focused gate receipts.
+The bridge wire remains 3.39.0 and deletion capabilities stay withheld until
+S2.5 supplies the settings consumer. Schema 27 is inherited from S2.1; this slice adds no DDL.
+
+| ID | Control | Evidence |
+| --- | --- | --- |
+| ENV-S22-1 | Projects sharing an environment number/list tasks independently and cannot link a sibling workspace. | `sibling_projects_number_tasks_independently`; `link_workspace_of_sibling_project_refused` (existing ownership policy, exercised on shared-home siblings). |
+| ENV-S22-2 | Archived project mutations retain the shared refusal on RPC, MCP and agent paths, except restore and delete. Deleting with tasks also works while archived. | `archived_project_refuses_mutations_on_every_path`; `archived_project_accepts_delete`; `archived_project_accepts_restore_and_delete`. |
+| ENV-S22-3 | `project.delete {tasks:"delete"}` requires every workspace to be finished and removes task/review/intent rows only under its exact project key. Legacy deletion retains task history. Review pin cleanup and unfinished-review recovery guards are reused off the app lock. | `project_delete_removes_its_tasks_only` checks both legacy-key and UUID-key deletion with same-home siblings, an unfinished workspace refusal, review removal and surviving sibling review/intent state; `legacy_project_delete_preserves_task_history`; existing project-deletion and review-service regressions. |
+| ENV-S22-4 | A FULL writer deletion record captures exact ID/key/mode and an immutable owned cleanup plan before destructive effects. Config removal precedes history deletion; history deletion and phase checkpoint commit atomically. Every failure remains fenced/retryable across restart. | `project_deletion_journal_failure_restart_and_retry`; `project_deletion_record_write_failure_leaves_project_usable`; `project_deletion_history_and_phase_commit_atomically`; `project_delete_tasks_cleanup_failure_preserves_history_for_retry`. |
+| ENV-S22-5 | Pending RPC/MCP/assignment/workspace and task-read use is refused, including after config removal; same ID/key registration and mismatched-mode/identity retries cannot gain authority. Drained tombstones are bounded; pending records and undrained receipts are retained. | `project_deletion_fences_rpc_mcp_and_registration_after_config_removal`; `project_deletion_mismatched_identity_and_mode_leave_state_unchanged`; `deletion_tombstones_are_bounded_and_pending_records_survive_collection`. |
+| ENV-S22-6 | Older journal readers safely ignore the new internal states. Rollback may list orphan manifests/reattach not-yet-cleaned legacy history; return-trip startup abandons stale plans and preserves changed work, requiring fresh consent. Startup never resumes owned-file/history cleanup; committed pin receipts are drained independently. | `deletion_record_is_compatible_with_previous_journal_reader`; `rollback_pending_delete_old_reader_lists_orphan_checkouts`; `rollback_pending_delete_old_reader_reattaches_legacy_history`; `project_deletion_return_trip_abandons_readded_registration`; `project_deletion_return_trip_abandons_changed_history_and_workspace`. |
+
+| ID | Control | Evidence |
+| --- | --- | --- |
+| ENV-S22-R3-1 | Every first attempt/resume reconstructs and waits for recorded-scope sessions before config or cleanup, without retiring same-source siblings. Retirement failure preserves a pending plan and untouched files/history. | `project_deletion_retires_sessions_before_config_and_on_same_process_retry` (config write/checkpoint failures, awaited live sessions, same-process retries, shared-source sibling). |
+| ENV-S22-R3-2 | History/phase/exact ref receipts commit atomically without irreversible Git effects; ref release is an idempotent post-commit phase. | `project_deletion_history_checkpoint_rollback_preserves_real_review_pins` (actual pinned RPC review, SQL abort, post-commit release failure, missing-ref retry); store tracker and review-service groups. |
+| ENV-S22-R3-3 | In-memory provisional per-project fencing precedes off-lock inventory/hash/SQLite and retry validation; failures retain only durable fences. Startup evidence runs before the shared mutex exists. Unrelated reads/project requests progress. | `project_deletion_inventory_does_not_block_unrelated_requests` uses an injected gate; `project_deletion_config_checkpoint_preserves_lock_markers_until_cleanup` checks memory-only publication and exact marker cleanup; recovery and independent SQL/MCP fence groups. |
+
+**S2.2 scoped score: 100/100.** Approved in review round 7 (#1103), with passing real-RPC regressions for deletion-owned final membership refresh, fail-closed completion and current-config retry. Deletion/recovery (67), environment-secret RPC/scope (3/15), membership/races (2/5), lifecycle (32), configuration (171), workspace (176), archive (14) and API contract (1) groups, library clippy and fmt all exit 0. TDD red/green and command receipts are attached to the validation report on #1096.
+
+
+| ID | Round-4 control | Evidence |
+| --- | --- | --- |
+| ENV-S22-R4-1 | Committed pin receipts remain owed through abandonment/tombstones; recovery drains idempotently, persists clearing and collection excludes undrained receipts. A failed drain retains its receipt for next startup. | `project_deletion_return_trip_drains_committed_pin_receipts` uses real review/RPC, actual close/open, old-reader re-registration, ref-lock refusal, abandonment and another restart; `deletion_tombstone_collection_keeps_undrained_pin_receipts`. |
+| ENV-S22-R4-2 | Config reservation ends with the synchronous atomic config write. Project-fenced deletion stages leave sibling config and workspace operations available through long cleanup. | `project_deletion_cleanup_allows_sibling_rename_and_workspace_delete` pauses cleanup and exercises real frame rename, workspace delete/create and target refusal; recovery/config-persistence/workspace groups. |
+| ENV-S22-R4-3 | Deletion and archive admission use only memory ownership projections; no SQLite lookup under the app mutex; with no deletion active, its guard returns immediately from memory. | `project_deletion_admission_is_sql_free_with_and_without_fences` probes actual authority-query calls under the app lock; archive/refusal and independent-read regressions. |
+
+
+| ID | Round-5 control | Evidence |
+| --- | --- | --- |
+| ENV-S22-R5-1 | Admission claims own independent provisional plans until their checked owner publishes its journal or releases after failure; old terminal/abandoned records and sibling publication cannot remove a claim. | `project_deletion_provisional_claim_survives_sibling_publication_after_abandonment`: real startup abandonment, paused preparation, real sibling delete, task/source/owned-path refusals, success and record-failure cleanup. |
+| ENV-S22-R5-2 | Unavailable Git repositories never count as drained; known refs and exact deferred snapshot metadata stay owed, including on abandoned/completed tombstones, until opened and drained at startup. No unregistered-source discard. | `project_deletion_unavailable_pin_repository_retains_receipt_until_restart`; `history_pin_preflight_records_unavailable_repository_debt`; collection and returned-ref assertions. |
+| ENV-S22-R5-3 | An absent registered source with its checkout already removed still permits project/task deletion; unavailable pins retain a small receipt and protect the completion tombstone from collection. | `project_delete_missing_source_completes_with_owed_pin_receipts`: history removed, completion succeeds, receipt remains, sources return, actual restart drains refs. |
+
+
+| ID | S2.1/S2.2 join control | Evidence |
+| --- | --- | --- |
+| ENV-S22-JOIN-1 | The real environment-delete RPC commits grant retirement before config removal; writer failure rolls back grants and preserves config/registration for retry. | `environment_delete_rpc_retires_environment_secret_grant`; `environment_delete_rpc_retire_failure_preserves_config_and_grants_for_retry`; environment-secret group. |
+| ENV-S22-JOIN-2 | The short off-lock project config stage preserves S2.1 membership fencing/projection; deleted projects lose environment membership before long cleanup, siblings remain current and newer writes cannot be overwritten by final cleanup. | `project_delete_reconciles_environment_secret_membership`; existing secret-membership config-failure/race tests; deletion cleanup concurrency regression. |
+
+
+| ID | Round-6 control | Evidence |
+| --- | --- | --- |
+| ENV-S22-R6-1 | Final deletion reconciliation refreshes membership/device projections off-lock, rejects superseded config revisions inside the writer transaction, and clears fences only for current successful results. Projection failure refuses success; completion-tombstone retry repairs metadata without replaying owned cleanup. | `project_deletion_post_config_membership_failure_recovers_in_own_reconciliation` (real RPC, post-rename SQL abort, injected pause, recovery and newer sibling archive); `project_deletion_final_membership_failure_refuses_success_and_completed_retry_repairs_it` (persistent failure, fail-closed access and same-delete repair). |

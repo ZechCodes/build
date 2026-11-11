@@ -1,0 +1,8 @@
+{
+  "method": "environment.delete",
+  "since": "3.40.0",
+  "params": { "environment_id": "env-1" },
+  "result": {},
+  "errors": ["invalid_params", "not_found", "conflict", "unavailable", "internal"],
+  "note": "Private S2.2 bridge registration; capability release belongs to S2.5. Refuses while any live, archived or parked project belongs to it. Source folders are retained."
+}

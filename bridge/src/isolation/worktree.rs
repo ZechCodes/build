@@ -74,6 +74,60 @@ fn recorded_process_dead(git_dir: &Path) -> bool {
     }
 }
 
+impl WorktreeBackend {
+    /// A durable cleanup plan retains the registry name even after its workspace
+    /// manifest has disappeared. A reused name never authorizes another path.
+    pub(crate) fn verify_recorded(
+        &self,
+        project: &Path,
+        path: &Path,
+        name: &str,
+    ) -> Result<(), WorktreeError> {
+        let repo = git2::Repository::open(project)?;
+        match repo.find_worktree(name) {
+            Ok(record)
+                if crate::worktree::canonical_planned_path(record.path())
+                    != crate::worktree::canonical_planned_path(path) =>
+            {
+                Err(WorktreeError::Refused(
+                    "checkout registration now names another path".into(),
+                ))
+            }
+            Ok(_) => Ok(()),
+            Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+    pub(crate) fn remove_recorded(
+        &self,
+        project: &Path,
+        path: &Path,
+        name: &str,
+    ) -> Result<(), WorktreeError> {
+        self.verify_recorded(project, path, name)?;
+        // The project repo is opened before the directory goes: a teardown that
+        // cannot reach the registry would leave a record naming a directory it
+        // can no longer prune, so it refuses while there is still nothing lost.
+        let repo = git2::Repository::open(project)?;
+        if path.exists() {
+            std::fs::remove_dir_all(path)?;
+        }
+        // find_worktree on pruned bookkeeping surfaces as NotFound — sometimes
+        // via a baffling "could not find '.git/shallow' to stat" — and either
+        // spelling means the same thing: nothing left to prune.
+        match repo.find_worktree(name) {
+            Ok(registered) => {
+                let mut options = git2::WorktreePruneOptions::new();
+                options.valid(true).working_tree(true);
+                registered.prune(Some(&mut options))?;
+            }
+            Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+}
+
 impl IsolationBackend for WorktreeBackend {
     fn kind(&self) -> Isolation {
         Isolation::Worktree
@@ -128,27 +182,7 @@ impl IsolationBackend for WorktreeBackend {
     }
 
     fn remove(&self, project: &Path, path: &Path) -> Result<(), WorktreeError> {
-        let name = registered_name(path)?;
-        // The project repo is opened before the directory goes: a teardown that
-        // cannot reach the registry would leave a record naming a directory it
-        // can no longer prune, so it refuses while there is still nothing lost.
-        let repo = git2::Repository::open(project)?;
-        if path.exists() {
-            std::fs::remove_dir_all(path)?;
-        }
-        // find_worktree on pruned bookkeeping surfaces as NotFound — sometimes
-        // via a baffling "could not find '.git/shallow' to stat" — and either
-        // spelling means the same thing: nothing left to prune.
-        match repo.find_worktree(&name) {
-            Ok(registered) => {
-                let mut options = git2::WorktreePruneOptions::new();
-                options.valid(true).working_tree(true);
-                registered.prune(Some(&mut options))?;
-            }
-            Err(error) if error.code() == git2::ErrorCode::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        Ok(())
+        self.remove_recorded(project, path, &registered_name(path)?)
     }
 
     fn discover(

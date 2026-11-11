@@ -56,3 +56,5 @@ mod source_add_review_tests;
 
 #[cfg(test)]
 mod archive_edit_tests;
+
+mod deletion;

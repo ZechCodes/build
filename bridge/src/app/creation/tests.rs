@@ -537,7 +537,10 @@ fn unknown_project_creation_fences_other_provisioning() {
         .workspace_create(&json!({"project_id":"proj-2","name":"legacy retry"}))
         .is_err());
     assert!(app
-        .project_delete(&json!({"project_id":"proj-2","confirm":true}))
+        .dispatch(
+            "project.delete",
+            &json!({"project_id":"proj-2","confirm":true})
+        )
         .is_err());
     assert!(app.projects.get("proj-2").is_some());
 }

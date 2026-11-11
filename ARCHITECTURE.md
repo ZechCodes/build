@@ -1249,6 +1249,111 @@ and stay parked. When a home returns, a key equal to its stored path follows the
 canonical home; an opaque sibling key stays unchanged. Legacy path lookup prefers
 the project whose key equals that home over siblings registered there first.
 
+S2.2 privately registers `environment.delete` and the optional
+`project.delete {tasks:"delete"}` mode without a wire-version bump. Environment
+deletion counts live and parked projects, archived entries included, and refuses
+with `Delete its N projects first` until empty. It removes only the registration,
+preserving source folders. `revoke_environment_secrets_before_delete` is the
+S2.1 retirement seam: it calls `StoreWriter::secrets_retire_environment` in
+its own FULL writer transaction before config persistence. A retirement failure
+leaves config, registration and grants intact; retry is safe. The joined store
+uses S2.1's schema 27 without a deletion-owned migration.
+S2.5 owns capability release and the SPA consumer.
+Task-deleting project requests require every workspace to be finished. With a
+task store configured, both project deletion modes write an internal per-project
+plan into the existing `mutation_commands` JSON storage before removing config
+or touching files. Plain legacy deletion also retains its file-only lifecycle
+with persisted config and no task store; `tasks:"delete"` requires the store.
+The plan fixes exact ID/key, mode, owned paths and entity IDs, scoped history
+fingerprint and file evidence; retries cannot broaden that authority. Config
+removal precedes deferred filesystem cleanup. Every attempt first reconstructs
+and retires live sessions by recorded project/workspace/run IDs and owned paths,
+then waits for retirement before config removal or cleanup. Shared source paths
+do not authorize retiring sibling agents; failed retirement leaves deletion pending.
+The review history service runs off the app lock; its FULL writer transaction
+deletes task/review/intent rows, checkpoints the phase and persists exact pin
+release receipts together. No irreversible effect occurs inside that transaction.
+Ref/marker release is its own idempotent post-commit phase, repeated from the
+receipt after failure/crash; an already absent ref/marker is success. Legacy mode retains
+history and cancels delivery authority. Unfinished review recovery still refuses
+the history phase. Every intermediate failure remains explicitly retryable.
+
+Deletion admission only validates/captures memory and installs a per-project
+provisional fence under the app mutex. A separate claim map owns that provisional
+plan until its checked owner publishes a durable journal or releases the claim.
+Terminal/abandoned records and sibling publications cannot remove it.
+Chained deferred stages perform inventory,
+hashing, retry evidence, SQLite, config IO, cleanup, and final device-registry
+reconciliation off the lock. They check
+claim ownership before applying memory results. Private workspace marker paths are part of new immutable plans and are unlinked
+only in the off-lock file phase; index publication is memory-only. Older records
+default to no additional marker authority. The cached journal view and
+published task/MCP overlays carry fences without querying SQLite under the lock;
+an immutable task-ownership admission index is seeded during owned-store startup
+and updated with committed task publications. Neither deletion nor archive admission
+queries SQLite. With no deletion in flight, the deletion guard returns
+immediately from memory.
+Independent reads and unrelated project requests continue during inventory and cleanup.
+Failures drop provisional fences unless a durable pending record exists. Config
+persistence is reserved only for a separate synchronous config-write stage after
+evidence and retirement, with the latest config captured at that point. The
+short stage includes S2.1's durable membership veto and projection around the
+atomic file replacement, all off the app lock. A file failure restores the old
+projection; a projection failure after replacement keeps the veto and publishes
+the landed registration removal for deletion-owned final reconciliation. The reservation is released
+and config removal published before checkpoint/cleanup runs. Scoped deletion jobs do not claim the device-wide filesystem exclusion;
+sibling renames, config writes and workspace creation/deletion remain available. New source references overlapping the captured cleanup paths are
+refused without blocking sources elsewhere. Startup evidence is checked by the consuming task-store builder, before sharing AppState.
+
+Final deletion reconciliation refreshes secret membership as well as device
+registry rows, including after a post-file projection error and on completed
+journal retries. It captures config and a memory revision under app, waits for
+in-flight config commits off-lock, and checks the revision inside the writer
+transaction before applying membership. Superseded snapshots are recaptured;
+clear/publication happens only after the result still matches current app state.
+Persistent projection failure keeps both dirty flags and refuses RPC success;
+the same delete retries its own reconciliation without replaying file/history
+cleanup. The immediate generic under-lock reconciliation hook is suppressed on
+such a failure; a new lifecycle mutation or the explicit retry can recover it.
+
+Startup leaves unchanged pending records fenced and reports the ID and original
+`project.delete` retry parameters in the daemon log. Before config removal the
+project remains listed but refuses ordinary use; afterward it is absent from
+ordinary project lists. Captured project/entity/workspace addresses return a
+`deletion-pending` refusal on RPC/MCP; task SQL reads also check the durable
+record. The same ID or opaque key cannot be registered while pending. Success
+leaves a tombstone; collection at startup and completion bounds these internal
+drained tombstones to 256 and thirty days, never collecting pending authority
+or a record with undrained pin receipts. Recovery drains committed receipts
+regardless of plan fate, including abandoned/completed tombstones. Failed drains
+log the pending pin release and retain the exact receipt for the next startup;
+new project work remains usable after safe abandonment. Ref absence is accepted
+only in an actually opened repository. Unavailable repositories never erase
+receipts and do not block project/task deletion: deletion completes with pin
+debt retained on its tombstone. Preflight captures known refs plus exact deferred
+task/snapshot/directory metadata for unreadable target ownership markers; later
+startup resolves only those captured snapshot namespaces, never current config.
+There is no missing-and-unregistered discard shortcut. Even permanently removed
+repositories retain their small receipt until they can be opened.
+Environment deletion is harmless on repeated absent-ID requests across restart.
+
+Schema-compatible older journal readers ignore the internal deletion states.
+The original schema-26 proof now uses the schema-27 joined reader; a schema-26
+binary still refuses a newer database through the ordinary schema guard. Config
+removal before effects and atomic history deletion preserve rollback safety.
+An older binary cannot honor the new fence: between config removal and the
+tombstone it can list remaining manifests or reattach pending history when a
+legacy path is reopened. Those rollback-only residuals are accepted. On return
+to the new binary, a re-added registration or changed scoped history/remaining
+files abandons and tombstones stale file/history cleanup authority; owed committed
+pin releases are drained independently. When necessary it restores the captured registration so preserved work is usable.
+Preserved manifests keep their directory identity. A fresh explicit delete can
+capture their IDs through the abandoned record's exact project-key link, provided
+the old ID has not been taken by another project. It captures the changed state. Startup never removes workspace files or history;
+only committed pin refs and their captured ownership markers may be released.
+Restoring parked projects binds retained entities by exact key; returning a
+shared home cannot bind them to a sibling.
+
 The first migration saves the exact original bytes once beside the config in
 `config.json.pre-environments`. Atomic config replacement also retains one
 generation in `config.json.previous`. A failed migration leaves the current

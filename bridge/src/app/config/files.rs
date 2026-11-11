@@ -87,12 +87,31 @@ fn remove_temporary(path: &Path) -> Result<(), String> {
     }
 }
 
+pub(in crate::app) struct ConfigFileWrite {
+    #[cfg(test)]
+    failure: Option<crate::app::ConfigPersistStep>,
+    #[cfg(test)]
+    gate: Option<crate::app::OffLockGate>,
+}
 impl AppState {
+    pub(in crate::app) fn config_file_writer(&self) -> ConfigFileWrite {
+        ConfigFileWrite {
+            #[cfg(test)]
+            failure: self.config_persist_failure,
+            #[cfg(test)]
+            gate: self.config_persist_gate.clone(),
+        }
+    }
     pub(in crate::app) fn write_config_file(
         &self,
         path: &Path,
         config: &Value,
     ) -> Result<(), String> {
+        self.config_file_writer().write(path, config)
+    }
+}
+impl ConfigFileWrite {
+    pub(in crate::app) fn write(&self, path: &Path, config: &Value) -> Result<(), String> {
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -107,11 +126,11 @@ impl AppState {
             Err(error) => return Err(io_error(path, error)),
         };
         #[cfg(test)]
-        if let Some(gate) = &self.config_persist_gate {
+        if let Some(gate) = &self.gate {
             gate.arrive();
         }
         #[cfg(test)]
-        if self.config_persist_failure == Some(crate::app::ConfigPersistStep::Write) {
+        if self.failure == Some(crate::app::ConfigPersistStep::Write) {
             return Err(format!(
                 "write config {}: injected write failure",
                 path.display()
@@ -129,7 +148,7 @@ impl AppState {
         previous: Option<&[u8]>,
     ) -> Result<(), String> {
         #[cfg(test)]
-        if self.config_persist_failure == Some(crate::app::ConfigPersistStep::Rename) {
+        if self.failure == Some(crate::app::ConfigPersistStep::Rename) {
             return Err(format!(
                 "write config {}: injected rename failure",
                 path.display()

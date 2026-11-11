@@ -171,3 +171,4 @@ environment.remove_source	DELETE	/v1/environments/{environment_id}/sources/{sour
 environment.update_source	PATCH	/v1/environments/{environment_id}/sources/{source_id}
 environment.sync_source	POST	/v1/environments/{environment_id}/sources/{source_id}/syncs
 environment.set_isolation	PUT	/v1/environments/{environment_id}/isolation
+environment.delete	DELETE	/v1/environments/{environment_id}

@@ -367,6 +367,27 @@ impl SessionRegistry {
             .any(|hold| hold.project_id == project_id)
     }
 
+    /// Deletion uses immutable owner IDs, never a shared source-root match.
+    pub(in crate::app) fn project_deletion_keys(
+        &self,
+        plan: &crate::store::ProjectDeletionPlan,
+    ) -> Vec<TabKey> {
+        self.tab_keys()
+            .into_iter()
+            .filter(|key| {
+                if let Some((owner, _)) = self.tabs.get(key).and_then(|tab| tab.role.agent()) {
+                    return owner == plan.project_id
+                        || plan.run_ids.iter().any(|id| id == owner)
+                        || plan.workspace_ids.iter().any(|id| id == owner);
+                }
+                match self.tab_projects.get(key) {
+                    Some(project) => project == &plan.project_id,
+                    None => plan.roots.iter().any(|path| key.root.starts_with(path)),
+                }
+            })
+            .collect()
+    }
+
     pub(in crate::app) fn live_shell_for_project(&self, project_id: &str) -> bool {
         self.tab_projects.iter().any(|(key, project)| {
             project == project_id

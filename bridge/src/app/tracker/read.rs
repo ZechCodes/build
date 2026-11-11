@@ -15,6 +15,7 @@ pub(in crate::app) struct TaskReadContext {
     sync_project_paths: imbl::OrdMap<String, String>,
     pub(super) identities: super::read_identities::TaskIdentityContext,
     user_session: UserSession,
+    deleting: std::collections::HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -58,6 +59,7 @@ impl AppState {
             project_ids,
             identities: Default::default(),
             user_session: self.user_session,
+            deleting: self.deletion_pending_addresses(),
         }
     }
     /// Producer-only capture. Path aliases are resolved here, never by a read.
@@ -69,6 +71,7 @@ impl AppState {
             project_ids,
             identities: self.task_identity_context(),
             user_session: self.user_session,
+            deleting: self.deletion_pending_addresses(),
         }
     }
 }
@@ -88,6 +91,7 @@ impl TaskReadContext {
                 filters,
                 order,
             } => {
+                self.refuse_deletion_read(source, project_id)?;
                 let mut query = serde_json::to_value(filters.clone().unwrap_or_default())
                     .map_err(|error| error.to_string())?;
                 if let Some(order) = order {
@@ -126,6 +130,7 @@ impl TaskReadContext {
                         format!("unknown task_id: {task_id}"),
                     ));
                 };
+                self.refuse_deletion_read(source, &project_path)?;
                 let Some(project_id) = self.project_ids.get(&project_path).cloned() else {
                     return Ok(TaskSyncAdmission::Removed(
                         super::sync_scopes::TaskSyncScope::task(task_id, "", "")
@@ -217,6 +222,15 @@ impl TaskReadContext {
         method: &str,
         params: &Value,
     ) -> Result<TaskReadFence, String> {
+        let identity = match params["project_id"].as_str() {
+            Some(id) => id.to_string(),
+            None => source
+                .task_project_authority(params["task_id"].as_str().unwrap_or_default())
+                .stored()?
+                .map(|(key, _)| key)
+                .unwrap_or_default(),
+        };
+        self.refuse_deletion_read(source, &identity)?;
         let project_id = if matches!(
             method,
             "tasks.list" | "tasks.filterChoices" | "tasks.counts" | "tasks.lookup"
@@ -521,4 +535,17 @@ fn extend_assignment(
     row["deferred_assignment"] =
         json!({"id":intent.id,"target":intent.target,"state":state,"error":intent.error});
     Ok(())
+}
+
+impl TaskReadContext {
+    fn refuse_deletion_read(
+        &self,
+        source: &impl TaskReadSource,
+        identity: &str,
+    ) -> Result<(), String> {
+        if self.deleting.contains(identity) || source.project_deletion_pending(identity).stored()? {
+            return Err("Project is deletion-pending; retry project.delete with the original project_id and deletion mode".into());
+        }
+        Ok(())
+    }
 }

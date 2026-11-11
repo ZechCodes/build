@@ -327,3 +327,12 @@ mod tracker_query_choice_roundtrip;
 mod secret_session_authority;
 
 mod workspace_names;
+
+mod deletion_authority;
+mod deletion_concurrency;
+mod deletion_membership_recovery;
+mod deletion_phases;
+mod deletion_receipts;
+mod deletion_recovery;
+mod environment_deletion;
+mod environment_secret_deletion;

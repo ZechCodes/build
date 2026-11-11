@@ -209,8 +209,8 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
 
 /// Environment grants and their SPA consumer ship together in wire 3.40.0.
 pub const SECRETS_ENVIRONMENT_SCOPE_CAPABILITY: &str = "secrets.environmentScope";
-/// Known methods or features held out until their end-to-end surface ships.
-pub const UNADVERTISED_CAPABILITIES: &[&str] = &[];
+/// Environment deletion stays private until its SPA consumer ships in S2.5.
+pub const UNADVERTISED_CAPABILITIES: &[&str] = &["environment.delete"];
 
 /// Everything this bridge can serve on a session, as exact method names and
 /// explicit feature names. Sorting and deduplication make the greeting stable.
@@ -520,7 +520,8 @@ impl ApiError {
         if sentence == crate::app::NOT_GIT_SOURCE {
             return ApiError::invalid_params(message);
         }
-        if sentence.starts_with("stale thread_id")
+        if sentence.contains("deletion-pending")
+            || sentence.starts_with("stale thread_id")
             || sentence.starts_with("stale unversioned mutation")
             || sentence == crate::app::MOVED_SOURCE
             || sentence == crate::app::MOVED_GIT_SOURCE

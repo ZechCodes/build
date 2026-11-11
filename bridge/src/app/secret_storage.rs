@@ -5,6 +5,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+mod revision;
+pub(in crate::app) use revision::{MembershipRevision, MembershipWrite};
+
 impl AppState {
     /// Called before sharing AppState. Disk work never runs under its mutex.
     pub fn with_secret_vault(
@@ -83,6 +86,7 @@ impl AppState {
         path: Option<&Path>,
         config: &serde_json::Value,
     ) -> Result<(), String> {
+        let _revision = self.secret_membership_revision.begin()?;
         self.mark_secret_membership_dirty()?;
         if let Some(path) = path {
             if let Err(error) = self.write_config_file(path, config) {

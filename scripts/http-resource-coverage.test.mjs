@@ -1230,7 +1230,7 @@ test("secrets metadata routes are explicit and sealed uploads are bounded", asyn
 
 test("the generator inventories ordinary, required-context and optional-context methods", () => {
   const output = execFileSync(process.execPath, [fileURLToPath(new URL("scripts/http-resource-manifest.mjs", root)), "--check"], { encoding: "utf8" });
-  assert.match(output, /171 explicit resource routes; generated artifacts current/);
+  assert.match(output, /172 explicit resource routes; generated artifacts current/);
 });
 
 

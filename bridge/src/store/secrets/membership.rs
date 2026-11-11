@@ -15,6 +15,23 @@ impl StoreWriter {
             clear_fence_in(tx)
         })
     }
+    /// The epoch check is inside the writer lock. A later config writer marks
+    /// its veto through this same lock before changing its file; an older
+    /// captured config therefore cannot reopen authority after that commit.
+    pub(crate) fn secrets_reconcile_config_if_current(
+        &self,
+        config: &Value,
+        current: impl FnOnce() -> bool,
+    ) -> Result<bool> {
+        super::writes::durable(self, |tx| {
+            if !current() {
+                return Ok(false);
+            }
+            reconcile_config_in(tx, config)?;
+            clear_fence_in(tx)?;
+            Ok(true)
+        })
+    }
     pub(crate) fn secrets_cancel_membership_write(&self) -> Result<()> {
         super::writes::durable(self, clear_fence_in)
     }

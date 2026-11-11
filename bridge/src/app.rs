@@ -294,17 +294,29 @@ pub struct AppState {
     device_name: String,
     /// Prevent new mutations while project cleanup runs with the mutex released.
     project_deletion_in_progress: bool,
+    project_deletion_fences: Vec<crate::store::ProjectDeletionPlan>,
+    project_deletion_cache: Vec<crate::store::ProjectDeletion>,
+    project_deletion_operations: std::collections::HashMap<String, String>,
+    project_deletion_provisional:
+        std::collections::HashMap<String, crate::store::ProjectDeletionPlan>,
+    project_deletion_retirements: std::collections::HashMap<String, Vec<crate::reaper::Retirement>>,
+    deletion_config_write: bool,
+    /// Immutable task ownership for admission; seeded before sharing, published
+    /// with committed task observations. Never consult SQLite from a guard.
+    task_admission_keys: std::cell::RefCell<HashMap<String, String>>,
     read_context: read_context::ReadContextSlot,
     committed_entities: transactions::CommittedEntities,
     read_view: read_view::ReadViewSlot,
     snapshot_observations: snapshot_projection::SnapshotObservations,
     device_lifecycle_holds: usize,
     device_lifecycle_dirty: std::cell::Cell<bool>,
+    deletion_reconciliation_failed: std::cell::Cell<bool>,
     secret_membership_dirty: std::cell::Cell<bool>,
+    secret_membership_revision: secret_storage::MembershipRevision,
     /// Projects one of whose sources is moving; their workers wait (#533).
     source_moves: projects::SourceMoves,
     source_directory_claims: projects::SourceDirectoryClaims,
-    /// Deferred filesystem work claimed under the mutex and not yet applied.
+    /// Device-wide filesystem exclusions; project deletion uses scoped fences.
     active_deferred_filesystem_jobs: usize,
     /// Only jobs that can publish project/workspace registry changes fence sync.
     active_device_registry_jobs: usize,
@@ -340,6 +352,10 @@ pub struct AppState {
     retention: crate::retention::RetentionConfig,
     #[cfg(test)]
     config_persist_failure: Option<ConfigPersistStep>,
+    #[cfg(test)]
+    environment_secret_revocation_error: Option<String>,
+    #[cfg(test)]
+    project_deletion_failure: Option<&'static str>,
     #[cfg(test)]
     config_persist_gate: Option<OffLockGate>,
     agent: Agent,
@@ -408,6 +424,10 @@ pub struct AppState {
     /// Test seam: see [`OffLockGate`]. `None` in production.
     #[cfg(test)]
     off_lock_gate: Option<OffLockGate>,
+    #[cfg(test)]
+    deletion_cleanup_gate: Option<OffLockGate>,
+    #[cfg(test)]
+    deletion_reconciliation_gate: Option<OffLockGate>,
     /// Test-only pause after workspace OID preparation, before materialization.
     #[cfg(test)]
     off_lock_workspace_prepared_gate: Option<OffLockGate>,
@@ -725,13 +745,22 @@ impl AppState {
             projects: ProjectRegistry::new(),
             device_name: "bridge".into(),
             project_deletion_in_progress: false,
+            project_deletion_fences: Vec::new(),
+            project_deletion_cache: Vec::new(),
+            project_deletion_operations: Default::default(),
+            project_deletion_provisional: Default::default(),
+            project_deletion_retirements: Default::default(),
+            deletion_config_write: false,
+            task_admission_keys: Default::default(),
             read_context: Arc::new(arc_swap::ArcSwapOption::empty()),
             committed_entities: Default::default(),
             read_view: read_view::ReadViewSlot::default(),
             snapshot_observations: snapshot_projection::SnapshotObservations::default(),
             device_lifecycle_holds: 0,
             device_lifecycle_dirty: std::cell::Cell::new(false),
+            deletion_reconciliation_failed: std::cell::Cell::new(false),
             secret_membership_dirty: std::cell::Cell::new(false),
+            secret_membership_revision: Default::default(),
             source_moves: projects::SourceMoves::default(),
             source_directory_claims: projects::SourceDirectoryClaims::default(),
             active_deferred_filesystem_jobs: 0,
@@ -750,6 +779,10 @@ impl AppState {
             retention: crate::retention::RetentionConfig::default(),
             #[cfg(test)]
             config_persist_failure: None,
+            #[cfg(test)]
+            environment_secret_revocation_error: None,
+            #[cfg(test)]
+            project_deletion_failure: None,
             #[cfg(test)]
             config_persist_gate: None,
             agent,
@@ -780,6 +813,10 @@ impl AppState {
             diff_compute_observer: None,
             #[cfg(test)]
             off_lock_gate: None,
+            #[cfg(test)]
+            deletion_cleanup_gate: None,
+            #[cfg(test)]
+            deletion_reconciliation_gate: None,
             #[cfg(test)]
             off_lock_workspace_prepared_gate: None,
             #[cfg(test)]
@@ -945,6 +982,13 @@ impl AppState {
         let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
         let stored = load_stored_tasks(dir, self.config_loaded_from_disk.then_some(&config))?;
         self.restore_stored_tasks(stored)?;
+        self.task_admission_keys = std::cell::RefCell::new(
+            self.store
+                .as_ref()
+                .expect("attached store")
+                .task_admission_snapshot()
+                .map_err(|e| e.to_string())?,
+        );
         Ok(self)
     }
 

@@ -569,6 +569,7 @@ impl AppState {
             .workspaces
             .list(project_id)
             .into_iter()
+            .filter(|workspace| self.refuse_deleting_address(&workspace.project_id).is_ok())
             .filter(|workspace| !self.is_projects_own_checkout(workspace))
             .map(|workspace| self.workspace_list_snapshot_row(workspace))
             .collect::<Result<Vec<_>, String>>()?;

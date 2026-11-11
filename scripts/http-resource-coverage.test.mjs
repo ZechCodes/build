@@ -481,7 +481,8 @@ const sourceFingerprintParts = {
   // Source refusal notices survive cache repaints; existing RPC verbs and parameter producers are unchanged.
   // Retired-frame picker cleanup and committed navigation release only the project settings opening.
   // #1100 review: confirmation follows the saved delete mode and offers only available archive guidance.
-  "sheets/projectSettings.js": ["52a2c6e9", "841aab3c", "92e18916", "b18bd19c", "0c4442c1", "dccadbac", "c2cc0f6c", "6ea4f83f"],
+  // #1100 gate follow-up: retain Danger zone for archive-only devices while keeping delete hidden.
+  "sheets/projectSettings.js": ["90c82534", "d73216ee", "860c3264", "fb0f610a", "8ad16dfa", "e08d71d5", "3c3f174d", "09649725"],
   "sheets/projectSources.js": ["906116e8", "a4b91550", "79689d9c", "9b7d85f9", "727c70c7", "619b7e07", "8c9381e5", "cb04da48"],
   // #1065: sheet-owned in-flight state blocks duplicate Sync requests; the accepted callback, RPC method and selectors are unchanged.
   "sheets/sourceSyncControls.js": ["49045a5b", "1fd03d03", "c9e574df", "020f32ea", "5d64bdd0", "3ab970b7", "1c98dee9", "cb20c875"],
@@ -518,7 +519,8 @@ const sourceFingerprintParts = {
   // #1088: optionalProjectName derives the project label while the workspace draft name stays independent; RPC dispatch is unchanged.
   "core/createWorkspaceWizardModel.js": ["a6bae4bf", "19b319c0", "cea9955e", "a048bad4", "6311bfc4", "5c457eca", "e507fe7e", "ac704d74"],
   // #1100 review: read the saved mode for confirmation; clear only the completed local attempt after cache publication.
-  "core/settingsDeletion.js": ["d049b1d4", "f50de714", "cdeddf95", "63d4cadf", "3c029aee", "2ae9172a", "4752266e", "3a48445e"],
+  // #1100 gate follow-up: device caller preflight preserves away refusals on frozen params.
+  "core/settingsDeletion.js": ["fbeb1c59", "62e9281d", "38b24d73", "14b4040f", "ffb3d14c", "bf61ce72", "9c3ed0d1", "753f5ab7"],
 };
 const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintParts)
   .map(([file, parts]) => [file, parts.join("")]));

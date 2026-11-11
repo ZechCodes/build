@@ -23,6 +23,9 @@ export async function deleteFromSettings({ deviceId, method, params, callRpc }) 
   const retained = await readUiRecord(address);
   const attempt = retained?.value;
   if (!attempt) throw new Error("Could not save this deletion. Try again.");
+  // Preserve the device caller's action-specific refusal before a greeting
+  // wait can substitute a generic availability error. No RPC is dispatched.
+  callRpc.preflight?.(method, attempt.params);
   const flag = method === "project.delete" ? "deleteProject" : "deleteEnvironment";
   await environmentAction(deviceId, flag, () => callRpc(method, attempt.params, { operationId: attempt.operationId }));
   if (method === "project.delete") await removeDeletedProject(deviceId, attempt.params.project_id);

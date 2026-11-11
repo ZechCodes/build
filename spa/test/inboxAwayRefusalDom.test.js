@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import greetingFixture from "../../fixtures/api/v1/session.hello.json";
 import { task as wireTask, taskDetail } from "./trackerWireFixture.js";
 const task = (over = {}) => wireTask({ project_id: "proj-1", ...over });
 
@@ -210,11 +211,23 @@ describe("a press on a machine that is away", () => {
     });
 
     it("says why the project was not deleted", async () => {
+      // This case uses the named 3.41 delete capability; the other cases
+      // deliberately retain the legacy source-edit greeting they exercise.
+      const greeting = { ...GREETING, api_version: greetingFixture.result.api_version,
+        capabilities: [...GREETING.capabilities, "projects.deleteTasks"] };
+      call.mockImplementation(method => Promise.resolve(method === "session.hello" ? greeting : {}));
+      await connect();
+      await vi.waitFor(() => expect($("#psdelete")).not.toBe(null), WAIT);
+      modules.deviceContexts.setContextOffline(DEVICE, { offline: true });
+      call.mockClear();
       $("#psdelete").click();
       await vi.waitFor(() => expect($("[data-confirm-ok]")).not.toBe(null), WAIT);
       $("[data-confirm-ok]").click();
       await vi.waitFor(() => expect($("#pserr").textContent).not.toBe(""), WAIT);
       expect($("#pserr").textContent).toBe("Build cannot delete this project because this machine is away.");
+      const { readUiRecord } = await import("../src/core/localUiStore.js");
+      expect((await readUiRecord({ deviceId: DEVICE, entityId: PROJECT, kind: "ui-settings-delete", sub: "project.delete" }))?.value)
+        .toMatchObject({ operationId: expect.any(String), params: { project_id: PROJECT, confirm: true, tasks: "delete" } });
       expect(sentVerbs()).toEqual([]);
     });
   });

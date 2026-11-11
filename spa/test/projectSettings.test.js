@@ -1463,3 +1463,13 @@ it.each([
   await vi.waitFor(() => expect(confirmAction).toHaveBeenCalled());
   expect(confirmAction.mock.calls[0][0].intro).toBe(intro);
 });
+
+it("keeps Danger zone when archive is available but project deletion is not", async () => {
+  await writeCached(environmentSupportAddress("dev-1"), { archive: true, deleteProject: false });
+  await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), PROJECT);
+  openProjectSettings(PROJECT.project_id, { deviceId: "dev-1", callRpc: vi.fn(() => new Promise(() => {})) });
+  await vi.waitFor(() => expect(document.querySelector("#psarchive")).not.toBeNull());
+  expect(document.querySelector("#ps-danger-h")?.textContent).toBe("Danger zone");
+  expect(document.querySelector("#psarchive").textContent).toBe("Archive project");
+  expect(document.querySelector("#psdelete")).toBeNull();
+});

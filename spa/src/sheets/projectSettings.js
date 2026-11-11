@@ -33,10 +33,14 @@ const isolationHtml = () => `<section class="ps-section" aria-labelledby="ps-iso
 const environmentNameOf = (project, environments) =>
   environments.find(row => (row.environment_id || row.id) === project.environment_id)?.name;
 
-const dangerHtml = support => !support.deleteProject ? "" : `<section class="ps-section ps-danger" aria-labelledby="ps-danger-h"><h4 id="ps-danger-h">Danger zone</h4>
-    <p class="sub">Delete this project, its tasks and all of its workspaces from Build. Files and unsaved changes in Build-managed workspaces will be permanently removed. Original project folders and external checkouts are kept.</p>
-    <button class="btn danger" id="psdelete">Delete project…</button>
-    <div class="adderr" id="pserr" role="alert"></div></section>`;
+function dangerHtml(support) {
+  if (!support.deleteProject && !support.archive) return "";
+  const content = support.deleteProject
+    ? `<p class="sub">Delete this project, its tasks and all of its workspaces from Build. Files and unsaved changes in Build-managed workspaces will be permanently removed. Original project folders and external checkouts are kept.</p>
+      <button class="btn danger" id="psdelete">Delete project…</button><div class="adderr" id="pserr" role="alert"></div>`
+    : '<p class="sub">Archive keeps this project’s history. Permanent deletion is unavailable on this device.</p>';
+  return `<section class="ps-section ps-danger" aria-labelledby="ps-danger-h"><h4 id="ps-danger-h">Danger zone</h4>${content}</section>`;
+}
 
 /** Where to clone the remote from, and what to call the folder it lands in. A
  *  folder already on the device is picked in the browser instead. */

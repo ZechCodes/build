@@ -90,3 +90,10 @@ it("releases independently named delete capabilities and persists them for setti
   await vi.waitFor(async () => expect(await readEnvironmentSupport("dev-1")).toMatchObject({ deleteEnvironment: true, deleteProject: true }));
   expect(capabilitiesOf({ api_version: "3.41.0", capabilities: ["project.delete", "environment.delete"] }).environments).toMatchObject({ deleteEnvironment: false, deleteProject: false });
 });
+
+it("keeps older complete legacy records usable, but a positive delete capability is environment evidence", () => {
+  const { deleteEnvironment: _environment, deleteProject: _project, ...older } = unsupported;
+  expect(predatesEnvironments(older)).toBe(true);
+  expect(predatesEnvironments({ ...older, deleteEnvironment: true })).toBe(false);
+  expect(predatesEnvironments({ ...older, deleteProject: true })).toBe(false);
+});

@@ -10,7 +10,8 @@ export const environmentSupportAddress = (deviceId) => ({ deviceId, entityId: ""
 
 // Missing flags are not negative evidence: only a complete cached greeting
 // without any environment capability identifies a pre-environment device.
-export const predatesEnvironments = support => FLAGS.every(flag => support?.[flag] === false);
+export const predatesEnvironments = support => FLAGS.every(flag => support?.[flag] === false)
+  && DELETE_FLAGS.every(flag => support?.[flag] !== true);
 
 export async function readEnvironmentSupportRecord(deviceId = "") {
   return (await readCached(environmentSupportAddress(deviceId)))?.value ?? null;

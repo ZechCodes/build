@@ -71,7 +71,7 @@ beforeEach(async () => {
   sourceAuthority.waiting = 0;
   // Legacy fixtures positively identify a device that predates environments.
   for (const deviceId of ["", "dev-1"]) await writeCached(environmentSupportAddress(deviceId), {
-    list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false, deleteProject: true, bridge_epoch: "legacy-epoch",
+    list: false, createProject: false, create: false, addedSources: false, archive: false, projectRename: false, environmentRename: false, secrets: false, deleteProject: false, bridge_epoch: "legacy-epoch",
   });
   confirmAction.mockReset();
   openWizard.mockReset();
@@ -79,6 +79,7 @@ beforeEach(async () => {
 
 describe("openProjectSettings", () => {
   it("lays the sheet out as General, Sources, Isolation and Danger zone", async () => {
+    await writeCached(environmentSupportAddress(""), { deleteProject: true });
     const callRpc = vi.fn().mockResolvedValue({ projects: [PROJECT] });
     openProjectSettings("proj-1", { callRpc });
     await vi.waitFor(() => expect(document.querySelector("#psproject")?.value).toBe("build"));
@@ -429,6 +430,7 @@ describe("openProjectSettings", () => {
   });
 
   it("keeps the project's errors separate from the isolation's refusal", async () => {
+    await writeCached(environmentSupportAddress(""), { deleteProject: true });
     const row = { ...PROJECT, isolation: null, isolation_default: "worktree", isolation_available: { rift: true } };
     const callRpc = vi.fn().mockImplementation((method) =>
       method === "project.list"
@@ -467,6 +469,9 @@ describe("openProjectSettings", () => {
 });
 
 describe("project deletion", () => {
+  beforeEach(async () => {
+    for (const deviceId of ["", "dev-1"]) await writeCached(environmentSupportAddress(deviceId), { deleteProject: true });
+  });
   const caller = () => vi.fn(async (method) => method === "project.list" ? { projects: [PROJECT] } : {});
 
   it("requires confirmation and leaves the project untouched on cancel", async () => {

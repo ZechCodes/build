@@ -56,76 +56,63 @@ fn fail_checkpoint(app: &AppState, phase: &str) {
 #[test]
 fn project_deletion_retires_sessions_before_config_and_on_same_process_retry() {
     for phase in ["config", "config_removed"] {
-        let root = tempfile::tempdir().unwrap();
-        let (_repo, mut app, project) = tracked(root.path());
-        let sibling = app.add_environment_sibling_for_test(&project);
-        let task = filed(&mut app, &project, "Retirement boundary");
-        let w = finished(&mut app, &project);
-        let source = app.projects.get(&project).unwrap().repo_path.clone();
-        let (own, own_log) = live(&mut app, &source, &project, "delete-agent");
-        let (other, _) = live(&mut app, &source, &sibling, "sibling-agent");
-        let own_shell = shell(&mut app, &source, &project, "own-shell");
-        let other_shell = shell(&mut app, &source, &sibling, "sibling-shell");
-        app.config_path = Some(root.path().join("config.json"));
-        app.persist();
-        if phase == "config" {
-            app.project_deletion_failure = Some("config");
-        } else {
-            fail_checkpoint(&app, phase);
-        }
-        let failed = app.handle(req("project.delete", params(&project)));
-        assert_eq!(failed["ok"], false, "{failed}");
-        assert!(
-            !app.session_registry.contains(&own),
-            "retire before {phase}"
-        );
-        assert!(
-            app.session_registry.contains(&other),
-            "shared source sibling must survive"
-        );
-        assert!(!app.session_registry.contains(&own_shell));
-        assert!(app.session_registry.contains(&other_shell));
-        assert!(own_log.ended(), "retirement was awaited before {phase}");
-        assert!(w.root.exists());
-        assert!(app
-            .store
-            .as_ref()
-            .unwrap()
-            .load_tracker_task(task["id"].as_str().unwrap())
-            .unwrap()
-            .is_some());
-        app.project_deletion_failure = None;
-        if phase != "config" {
-            app.store
-                .as_ref()
-                .unwrap()
-                .writer_for_test()
-                .execute_batch("DROP TRIGGER fail_phase")
-                .unwrap();
-        }
-        // Retry must reconstruct live sessions, even after registration removal.
-        let (resumed, resumed_log) = live(&mut app, &w.root, &w.id, "retry-agent");
-        app.project_deletion_failure = Some("checkout");
-        let failed = app.handle(req("project.delete", params(&project)));
-        assert_eq!(failed["ok"], false, "{failed}");
-        assert!(
-            resumed_log.ended(),
-            "retry must wait before checkout cleanup"
-        );
-        assert!(w.root.exists());
-        assert!(app
-            .store
-            .as_ref()
-            .unwrap()
-            .load_tracker_task(task["id"].as_str().unwrap())
-            .unwrap()
-            .is_some());
-        assert!(!app.session_registry.contains(&resumed));
-        app.project_deletion_failure = None;
-        call(&mut app, "project.delete", params(&project));
-        assert!(app.session_registry.contains(&other));
-        assert!(!w.root.exists());
+        retirement_is_retried_after_phase_failure(phase);
     }
+}
+
+fn retirement_is_retried_after_phase_failure(phase: &'static str) {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let sibling = app.add_environment_sibling_for_test(&project);
+    let task = filed(&mut app, &project, "Retirement boundary");
+    let w = finished(&mut app, &project);
+    let source = app.projects.get(&project).unwrap().repo_path.clone();
+    let (own, own_log) = live(&mut app, &source, &project, "delete-agent");
+    let (other, _) = live(&mut app, &source, &sibling, "sibling-agent");
+    let own_shell = shell(&mut app, &source, &project, "own-shell");
+    let other_shell = shell(&mut app, &source, &sibling, "sibling-shell");
+    app.config_path = Some(root.path().join("config.json"));
+    app.persist();
+    fail_registration_phase(&mut app, phase);
+    let failed = app.handle(req("project.delete", params(&project)));
+    assert_eq!(failed["ok"], false, "{failed}");
+    assert!(
+        !app.session_registry.contains(&own),
+        "retire before {phase}"
+    );
+    assert!(
+        app.session_registry.contains(&other),
+        "shared source sibling must survive"
+    );
+    assert!(!app.session_registry.contains(&own_shell));
+    assert!(app.session_registry.contains(&other_shell));
+    assert!(own_log.ended(), "retirement was awaited before {phase}");
+    assert!(w.root.exists());
+    assert!(app
+        .store
+        .as_ref()
+        .unwrap()
+        .load_tracker_task(task["id"].as_str().unwrap())
+        .unwrap()
+        .is_some());
+    app.project_deletion_failure = None;
+    if phase != "config" {
+        app.store
+            .as_ref()
+            .unwrap()
+            .writer_for_test()
+            .execute_batch("DROP TRIGGER fail_phase")
+            .unwrap();
+    }
+    // Retry must reconstruct live sessions, even after registration removal.
+    let (resumed, resumed_log) = live(&mut app, &w.root, &w.id, "retry-agent");
+    app.project_deletion_failure = Some("checkout");
+    let failed = app.handle(req("project.delete", params(&project)));
+    assert_retry_retired_before_cleanup(&app, &failed, &resumed_log, &w, &task, resumed);
+    app.project_deletion_failure = None;
+    call(&mut app, "project.delete", params(&project));
+    assert!(app.session_registry.contains(&other));
+    assert!(!w.root.exists());
 }
 
 #[test]
@@ -302,4 +289,36 @@ fn project_deletion_config_checkpoint_preserves_lock_markers_until_cleanup() {
     call(&mut app, "project.delete", params(&project));
     assert!(!marker.exists());
     assert_eq!(std::fs::read(other).unwrap(), b"keep sibling marker");
+}
+
+fn fail_registration_phase(app: &mut AppState, phase: &str) {
+    if phase == "config" {
+        app.project_deletion_failure = Some("config");
+    } else {
+        fail_checkpoint(app, phase);
+    }
+}
+
+fn assert_retry_retired_before_cleanup(
+    app: &AppState,
+    failed: &Value,
+    resumed_log: &SessionLog,
+    w: &crate::workspace::Workspace,
+    task: &Value,
+    resumed: TabKey,
+) {
+    assert_eq!(failed["ok"], false, "{failed}");
+    assert!(
+        resumed_log.ended(),
+        "retry must wait before checkout cleanup"
+    );
+    assert!(w.root.exists());
+    assert!(app
+        .store
+        .as_ref()
+        .unwrap()
+        .load_tracker_task(task["id"].as_str().unwrap())
+        .unwrap()
+        .is_some());
+    assert!(!app.session_registry.contains(&resumed));
 }

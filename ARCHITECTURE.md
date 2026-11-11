@@ -1259,9 +1259,11 @@ its own FULL writer transaction before config persistence. A retirement failure
 leaves config, registration and grants intact; retry is safe. The joined store
 uses S2.1's schema 27 without a deletion-owned migration.
 S2.5 owns capability release and the SPA consumer.
-Task-deleting project requests require every workspace to be finished. Both
-project deletion modes write an internal per-project plan into the existing
-`mutation_commands` JSON storage before removing config or touching files.
+Task-deleting project requests require every workspace to be finished. With a
+task store configured, both project deletion modes write an internal per-project
+plan into the existing `mutation_commands` JSON storage before removing config
+or touching files. Plain legacy deletion also retains its file-only lifecycle
+with persisted config and no task store; `tasks:"delete"` requires the store.
 The plan fixes exact ID/key, mode, owned paths and entity IDs, scoped history
 fingerprint and file evidence; retries cannot broaden that authority. Config
 removal precedes deferred filesystem cleanup. Every attempt first reconstructs

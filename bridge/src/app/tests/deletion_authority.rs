@@ -269,102 +269,110 @@ fn history_pin_preflight_records_unavailable_repository_debt() {
 #[test]
 fn project_delete_missing_source_completes_with_owed_pin_receipts() {
     for placeholder in [false, true] {
-        let root = tempfile::tempdir().unwrap();
-        let (_repo, mut app, project) = tracked(root.path());
-        let (task, w) = pinned_review(&mut app, &project);
-        let review = app
-            .store
-            .as_ref()
-            .unwrap()
-            .load_review(&task)
-            .unwrap()
-            .unwrap();
-        let pins = crate::reviews::history_pins::plan(&review).unwrap();
-        assert!(!pins.refs.is_empty());
-        // The user has already removed the checkout; its review history remains.
-        call(&mut app, "workspace.delete", json!({"workspace_id":w.id}));
-        let home = app.project(&project).unwrap().home_path.clone();
-        app.config_path = Some(root.path().join("config.json"));
-        app.persist();
-        let saved_home = root.path().join("offline-source");
-        std::fs::rename(&home, &saved_home).unwrap();
-        let repositories: std::collections::BTreeSet<_> =
-            pins.refs.iter().map(|p| p.repository.clone()).collect();
-        let mut moved = vec![];
-        for (index, repository) in repositories.iter().enumerate() {
-            if !repository.starts_with(&home) {
-                let saved = root.path().join(format!("offline-receiver-{index}"));
-                std::fs::rename(repository, &saved).unwrap();
-                if placeholder {
-                    std::fs::create_dir(repository).unwrap();
-                }
-                moved.push((repository.clone(), saved));
+        missing_source_receipts_survive_recovery(placeholder);
+    }
+}
+
+fn missing_source_receipts_survive_recovery(placeholder: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let (task, w) = pinned_review(&mut app, &project);
+    let review = app
+        .store
+        .as_ref()
+        .unwrap()
+        .load_review(&task)
+        .unwrap()
+        .unwrap();
+    let pins = crate::reviews::history_pins::plan(&review).unwrap();
+    assert!(!pins.refs.is_empty());
+    // The user has already removed the checkout; its review history remains.
+    call(&mut app, "workspace.delete", json!({"workspace_id":w.id}));
+    let home = app.project(&project).unwrap().home_path.clone();
+    app.config_path = Some(root.path().join("config.json"));
+    app.persist();
+    let saved_home = root.path().join("offline-source");
+    std::fs::rename(&home, &saved_home).unwrap();
+    let repositories: std::collections::BTreeSet<_> =
+        pins.refs.iter().map(|p| p.repository.clone()).collect();
+    let mut moved = vec![];
+    for (index, repository) in repositories.iter().enumerate() {
+        if !repository.starts_with(&home) {
+            let saved = root.path().join(format!("offline-receiver-{index}"));
+            std::fs::rename(repository, &saved).unwrap();
+            if placeholder {
+                std::fs::create_dir(repository).unwrap();
             }
+            moved.push((repository.clone(), saved));
         }
-        assert!(!home.exists());
-        let reply = app.handle(req(
-            "project.delete",
-            json!({"project_id":project,"confirm":true,"tasks":"delete"}),
-        ));
+    }
+    assert!(!home.exists());
+    let reply = app.handle(req(
+        "project.delete",
+        json!({"project_id":project,"confirm":true,"tasks":"delete"}),
+    ));
+    assert_missing_source_deletion(&mut app, project.clone(), task, reply);
+    drop(app);
+    std::fs::rename(saved_home, home).unwrap();
+    for (repository, saved) in moved {
+        if placeholder {
+            std::fs::remove_dir(&repository).unwrap();
+        }
+        std::fs::rename(saved, repository).unwrap();
+    }
+    let app = restart(root.path());
+    assert!(app.project(&project).is_none());
+    assert!(app.project_deletion_records().unwrap()[0]
+        .pending_pins
+        .is_empty());
+    for pin in pins.refs {
+        let repository = git2::Repository::open_bare(&pin.repository).unwrap();
         assert_eq!(
-            reply["ok"], true,
-            "missing source must not block deletion: {reply}"
+            repository.find_reference(&pin.name).err().unwrap().code(),
+            git2::ErrorCode::NotFound
         );
-        assert!(app.project(&project).is_none());
-        assert!(app
-            .store
-            .as_ref()
-            .unwrap()
-            .load_tracker_task(&task)
-            .unwrap()
-            .is_none());
-        let record = app.project_deletion_records().unwrap().pop().unwrap();
-        assert_eq!(record.tombstone.as_deref(), Some("deleted"));
-        assert!(
-            !record.pending_pins.is_empty(),
-            "unavailable pins were discarded after successful deletion"
-        );
-        app.store
-            .as_ref()
-            .unwrap()
-            .writer_for_test()
-            .execute("UPDATE mutation_commands SET terminal_at=0", [])
-            .unwrap();
+    }
+}
+
+fn assert_missing_source_deletion(app: &mut AppState, project: String, task: String, reply: Value) {
+    assert_eq!(
+        reply["ok"], true,
+        "missing source must not block deletion: {reply}"
+    );
+    assert!(app.project(&project).is_none());
+    assert!(app
+        .store
+        .as_ref()
+        .unwrap()
+        .load_tracker_task(&task)
+        .unwrap()
+        .is_none());
+    let record = app.project_deletion_records().unwrap().pop().unwrap();
+    assert_eq!(record.tombstone.as_deref(), Some("deleted"));
+    assert!(
+        !record.pending_pins.is_empty(),
+        "unavailable pins were discarded after successful deletion"
+    );
+    app.store
+        .as_ref()
+        .unwrap()
+        .writer_for_test()
+        .execute("UPDATE mutation_commands SET terminal_at=0", [])
+        .unwrap();
+    app.store
+        .as_ref()
+        .unwrap()
+        .writer()
+        .collect_project_deletion_tombstones()
+        .unwrap();
+    assert_eq!(
         app.store
             .as_ref()
             .unwrap()
             .writer()
-            .collect_project_deletion_tombstones()
-            .unwrap();
-        assert_eq!(
-            app.store
-                .as_ref()
-                .unwrap()
-                .writer()
-                .project_deletions()
-                .unwrap()
-                .len(),
-            1
-        );
-        drop(app);
-        std::fs::rename(saved_home, home).unwrap();
-        for (repository, saved) in moved {
-            if placeholder {
-                std::fs::remove_dir(&repository).unwrap();
-            }
-            std::fs::rename(saved, repository).unwrap();
-        }
-        let app = restart(root.path());
-        assert!(app.project(&project).is_none());
-        assert!(app.project_deletion_records().unwrap()[0]
-            .pending_pins
-            .is_empty());
-        for pin in pins.refs {
-            let repository = git2::Repository::open_bare(&pin.repository).unwrap();
-            assert_eq!(
-                repository.find_reference(&pin.name).err().unwrap().code(),
-                git2::ErrorCode::NotFound
-            );
-        }
-    }
+            .project_deletions()
+            .unwrap()
+            .len(),
+        1
+    );
 }

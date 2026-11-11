@@ -109,84 +109,75 @@ fn rollback_pending_delete_old_reader_reattaches_legacy_history() {
 #[test]
 fn project_deletion_journal_failure_restart_and_retry() {
     for phase in ["record", "config", "checkout", "history"] {
-        let root = tempfile::tempdir().unwrap();
-        let (_repo, mut app, project) = tracked(root.path());
-        let sibling = app.add_environment_sibling_for_test(&project);
-        let own = filed(&mut app, &project, "Pending history");
-        let kept = filed(&mut app, &sibling, "Sibling history");
-        let checkout = workspace(&mut app, &project, "Pending checkout");
-        let mut finished = app.workspaces.get(&checkout).unwrap().clone();
-        finished.status = crate::workspace::WorkspaceStatus::Finished;
-        crate::workspace::persist_review_workspace(&finished).unwrap();
-        app.workspaces.reload().unwrap();
-        let config = root.path().join("config.json");
-        app.config_path = Some(config.clone());
-        app.persist();
-        let before = std::fs::read(&config).unwrap();
-        app.project_deletion_failure = Some(phase);
-        let params = json!({"project_id":project,"confirm":true,"tasks":"delete"});
-        let failed = app.handle(req("project.delete", params.clone()));
-        assert_eq!(failed["ok"], false, "phase={phase}: {failed}");
-        assert!(app
-            .store
-            .as_ref()
-            .unwrap()
-            .load_tracker_task(own["id"].as_str().unwrap())
-            .unwrap()
-            .is_some());
-        if matches!(phase, "record" | "config") {
-            assert_eq!(std::fs::read(&config).unwrap(), before);
-            assert!(app.project(&project).is_some());
-            assert!(finished.root.exists());
-        } else {
-            assert!(app.project(&project).is_none());
-            assert_ne!(std::fs::read(&config).unwrap(), before);
-        }
-        drop(app);
-        let mut app = super::project_agent::rooted(root.path())
-            .with_config(&config)
-            .unwrap()
-            .with_task_store(root.path().join("store"))
-            .unwrap();
-        if phase != "record" {
-            let refused = app.handle(req(
-                "tasks.create",
-                json!({"project_id":project,"title":"Fenced"}),
-            ));
-            assert_eq!(refused["ok"], false, "{refused}");
-            assert!(
-                refused["error"]
-                    .as_str()
-                    .unwrap()
-                    .contains("deletion-pending"),
-                "{refused}"
-            );
-        }
-        call(&mut app, "project.delete", params.clone());
-        assert!(app.project(&project).is_none());
-        assert!(!finished.root.exists());
-        assert!(app
-            .store
-            .as_ref()
-            .unwrap()
-            .load_tracker_task(own["id"].as_str().unwrap())
-            .unwrap()
-            .is_none());
-        assert!(app
-            .store
-            .as_ref()
-            .unwrap()
-            .load_tracker_task(kept["id"].as_str().unwrap())
-            .unwrap()
-            .is_some());
-        drop(app);
-        let mut app = super::project_agent::rooted(root.path())
-            .with_config(&config)
-            .unwrap()
-            .with_task_store(root.path().join("store"))
-            .unwrap();
-        call(&mut app, "project.delete", params);
+        journal_failure_is_recoverable(phase);
     }
+}
+
+fn journal_failure_is_recoverable(phase: &'static str) {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let sibling = app.add_environment_sibling_for_test(&project);
+    let own = filed(&mut app, &project, "Pending history");
+    let kept = filed(&mut app, &sibling, "Sibling history");
+    let checkout = workspace(&mut app, &project, "Pending checkout");
+    let mut finished = app.workspaces.get(&checkout).unwrap().clone();
+    finished.status = crate::workspace::WorkspaceStatus::Finished;
+    crate::workspace::persist_review_workspace(&finished).unwrap();
+    app.workspaces.reload().unwrap();
+    let config = root.path().join("config.json");
+    app.config_path = Some(config.clone());
+    app.persist();
+    let before = std::fs::read(&config).unwrap();
+    app.project_deletion_failure = Some(phase);
+    let params = json!({"project_id":project,"confirm":true,"tasks":"delete"});
+    let failed = app.handle(req("project.delete", params.clone()));
+    assert_eq!(failed["ok"], false, "phase={phase}: {failed}");
+    assert!(app
+        .store
+        .as_ref()
+        .unwrap()
+        .load_tracker_task(own["id"].as_str().unwrap())
+        .unwrap()
+        .is_some());
+    if matches!(phase, "record" | "config") {
+        assert_eq!(std::fs::read(&config).unwrap(), before);
+        assert!(app.project(&project).is_some());
+        assert!(finished.root.exists());
+    } else {
+        assert!(app.project(&project).is_none());
+        assert_ne!(std::fs::read(&config).unwrap(), before);
+    }
+    drop(app);
+    let mut app = super::project_agent::rooted(root.path())
+        .with_config(&config)
+        .unwrap()
+        .with_task_store(root.path().join("store"))
+        .unwrap();
+    assert_restart_refuses_pending_project(&mut app, phase, &project);
+    call(&mut app, "project.delete", params.clone());
+    assert!(app.project(&project).is_none());
+    assert!(!finished.root.exists());
+    assert!(app
+        .store
+        .as_ref()
+        .unwrap()
+        .load_tracker_task(own["id"].as_str().unwrap())
+        .unwrap()
+        .is_none());
+    assert!(app
+        .store
+        .as_ref()
+        .unwrap()
+        .load_tracker_task(kept["id"].as_str().unwrap())
+        .unwrap()
+        .is_some());
+    drop(app);
+    let mut app = super::project_agent::rooted(root.path())
+        .with_config(&config)
+        .unwrap()
+        .with_task_store(root.path().join("store"))
+        .unwrap();
+    call(&mut app, "project.delete", params);
 }
 
 fn pending(
@@ -750,5 +741,22 @@ fn project_deletion_checkpoint_failures_restart_and_retry() {
             .load_tracker_task(task["id"].as_str().unwrap())
             .unwrap()
             .is_none());
+    }
+}
+
+fn assert_restart_refuses_pending_project(app: &mut AppState, phase: &str, project: &str) {
+    if phase != "record" {
+        let refused = app.handle(req(
+            "tasks.create",
+            json!({"project_id":project,"title":"Fenced"}),
+        ));
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("deletion-pending"),
+            "{refused}"
+        );
     }
 }

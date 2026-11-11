@@ -17,8 +17,13 @@ export function onSecretsChanged(deviceId, listener) {
 
 function scopeOf(event) {
   if (event.scope === "device" && event.truncated === true && event.secret_ids.length === 0) return { scope: "device" };
+  if (event.scope === "environment" && identifier(event.environment_id)) return { scope: "environment", environment_id: event.environment_id };
   if (event.scope === "project" && identifier(event.project_id)) return { scope: "project", project_id: event.project_id };
   if (event.scope !== "agent") return null;
+  return agentScopeOf(event);
+}
+
+function agentScopeOf(event) {
   const keys = ["entity_id", "conversation_id", "thread_id", "generation"];
   if (!keys.every((key) => identifier(event[key]))) return null;
   if (event.thread_id !== event.generation) return null;

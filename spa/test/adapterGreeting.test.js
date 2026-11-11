@@ -23,7 +23,7 @@ const NONE = {
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
   tasks: { timelinePaged: false, attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
   compaction: { harnessThresholds: false },
-  secrets: { attachments: false, sealedUpload: false, metadataEvents: false },
+  secrets: { attachments: false, sealedUpload: false, metadataEvents: false, environmentScope: false },
   conversations: { settings: false, reset: false },
   github: { repos: false },
   messages: { context: false },
@@ -97,7 +97,7 @@ describe("the adapter a greeting selects", () => {
       // A greeting that names no task feature carries none of them.
       tasks: { timelinePaged: false, attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, listSummaries: false, filterChoices: false, counts: false, lookup: false, listWatched: false, listAttention: false, listLinkedWorkspace: false, listTracked: false, listReviewMode: false, listOrder: false, listReadiness: false, listExcludeAssignee: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
       compaction: { harnessThresholds: false },
-      secrets: { attachments: false, sealedUpload: false, metadataEvents: false },
+      secrets: { attachments: false, sealedUpload: false, metadataEvents: false, environmentScope: false },
       conversations: { settings: false, reset: false },
       github: { repos: false },
       messages: { context: false },

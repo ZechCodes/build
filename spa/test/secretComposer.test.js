@@ -217,3 +217,18 @@ describe("secret composer controller", () => {
     expect(document.querySelector('[data-secret-id="sec_cached"]')).toBeTruthy();
   });
 });
+
+
+it("offers This environment only with cached support and preselects it for settings navigation", async () => {
+  const stage = vi.fn(async () => ({ secret_id: "sec_environment" }));
+  openSecretModal({ stage });
+  expect(dialog().querySelector('[value="environment"]')).toBeNull();
+  document.body.innerHTML = "";
+  openSecretModal({ stage, environmentAvailable: true, scope: "environment" });
+  expect(dialog().textContent).toContain("This environment");
+  expect(dialog().querySelector('[value="environment"]').checked).toBe(true);
+  field("secret-key").value = "ENV_TOKEN"; field("secret-value").value = "synthetic environment value";
+  dialog().querySelector('[data-secret-submit]').click();
+  await vi.waitFor(() => expect(stage).toHaveBeenCalledOnce());
+  expect(stage.mock.calls[0][0]).toMatchObject({ scope: "environment", name: "ENV_TOKEN" });
+});

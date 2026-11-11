@@ -86,7 +86,9 @@ version-1 `build.secrets.upload` body to the device transport key supplied by
 authenticated device discovery. `context` contains `device_id`, `creator`, a
 canonical UUID `request_id`, `name`, nullable `ttl_seconds`, `grant` and `stage`.
 `grant` is `{ scope: 'project', project_id }` or
-`{ scope: 'agent', agent_id, conversation_id, generation }`; `stage` contains
+`{ scope: 'agent', agent_id, conversation_id, generation }` or
+`{ scope: 'environment', environment_id }` (wire 3.40.0, capability
+`secrets.environmentScope`); `stage` contains
 `owner_id`, `conversation_id`, `generation` and nullable `draft_id`.
 
 The plaintext frame is exactly 32 KiB: a four-byte big-endian JSON length,

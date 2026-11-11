@@ -243,3 +243,23 @@ it("refuses a stale generation before writing the returned descriptor", async ()
   await expect(pending).rejects.toMatchObject({ code: "stale_generation" });
   expect(sinks.entries()).toEqual([]);
 });
+
+
+it("seals and creates an environment grant with its conversation stage and revokes using only the environment selector", async () => {
+  const environment = { ...projectMetadata, grant: { scope: "environment", environment_id: "env-draft" } };
+  const call = vi.fn(async method => method === "secrets.create" ? environment : { ...environment, revision: 2, status: "revoked" });
+  const sinks = harness({ environmentId: () => "env-draft", capabilities: () => ({ ...capabilities(), environmentScope: true }),
+    call });
+  await sinks.service.stage({ name: "TEST_TOKEN", value: "synthetic environment value", scope: "environment" });
+  expect(sinks.sealUpload).toHaveBeenCalledWith(expect.objectContaining({ context: expect.objectContaining({ grant: environment.grant, stage: environment.scope }) }));
+  expect(call).toHaveBeenCalledWith("secrets.create", expect.objectContaining({ grant: environment.grant, scope: environment.scope }));
+  await sinks.service.remove(environment.secret_id);
+  expect(call).toHaveBeenCalledWith("secrets.revoke", expect.objectContaining({ scope: { environment_id: "env-draft" } }));
+});
+
+it("refuses an environment upload on an old bridge before sealing and wipes the value", async () => {
+  const sinks = harness({ environmentId: () => "env-draft" });
+  const input = { name: "TEST_TOKEN", value: "synthetic", scope: "environment" };
+  await expect(sinks.service.stage(input)).rejects.toThrow();
+  expect(sinks.sealUpload).not.toHaveBeenCalled(); expect(input.value).toBe("");
+});

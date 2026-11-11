@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.39.0",
+    "api_version": "3.40.0",
     "ack_confirm_methods": [
       "environment.create",
       "environment.create_project",
@@ -151,6 +151,7 @@
       "secrets.attachments",
       "secrets.audit",
       "secrets.create",
+      "secrets.environmentScope",
       "secrets.list",
       "secrets.metadataEvents",
       "secrets.revoke",
@@ -397,6 +398,12 @@
       "projects.archive",
       "projects.rename",
       "environments.rename"
+    ]
+  },
+  "environment_secrets": {
+    "since": "3.40.0",
+    "capabilities": [
+      "secrets.environmentScope"
     ]
   }
 }

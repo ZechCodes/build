@@ -24,7 +24,7 @@ ownership/setup is in [README.md](README.md).
 | --- | --- | --- |
 | `E2E-MVP.md` | `984ddc9c7582a6340b073274602d03f3e50a889d2ae8deb42de9f3b7d4e35c38` | `c606c628deff57f5b357292f157e9e5559a84b490838c0522e57e7b285a22574` |
 | `LICENSE.md` | `964cd7fcc4be51375162c2bbcf1b814e264d6477a24469530e73e1b113e616f2` | `964cd7fcc4be51375162c2bbcf1b814e264d6477a24469530e73e1b113e616f2` |
-| `README.md` | `4794e30bbf5b744b5b05f1186cdd804185cc6fc673f6ec3d8fd4804f39e6d54e` | `bc7a49dd0bd49fdc532f09221e7d11e07802e798eb9c3c7632fa8d079cf10eb3` |
+| `README.md` | `4794e30bbf5b744b5b05f1186cdd804185cc6fc673f6ec3d8fd4804f39e6d54e` | `761db05a9f01c4c862c36f2c5e42792a72a3c1e32b5698e358fc8674321c9a20` |
 | `js/README.md` | `5cc959b5d8fe9a31cb273a18eca62840debb441b4294680c0a878c955e0a75b1` | `5cc959b5d8fe9a31cb273a18eca62840debb441b4294680c0a878c955e0a75b1` |
 | `js/package-lock.json` | `fe06ddb52117f0767fba5e613167a446a13879ff07bfd5417a4c317dd3ebba5f` | `709c8ce1b4e4b13507a87cb8df4c5dba046f15122a530adaed73eda1bb074b21` |
 | `js/package.json` | `17ad3fb3cf0874c4c640295620113ad167741ce1d9a910f5d7519492c85a4208` | `1127b2e9fbcf1314c5908b9ce6d82c0f0394044c73d5dc9646926226b3984dd1` |
@@ -151,6 +151,15 @@ The import checker permits exactly four additional Build-owned files:
 runtime files byte-for-byte alongside the unchanged imported source and notices.
 No imported crypto source, language README, license, source digest or immutable
 amendment policy is repinned or broadened.
+
+## #1099 environment secret grant amendment
+
+`js/src/secretsUpload.js` accepts the strict environment grant variant alongside
+Agent/Project grants, with no change to the envelope, padding or upload version.
+Its Build-owned tests reject missing, empty and mixed scope selectors; the real
+Rust opener tests consume environment uploads produced by the JS helper.
+`README.md` documents that variant; only its current digest changes. No imported
+crypto source or Python reference changes are needed for this upload helper.
 
 ## Maintenance and future imports
 

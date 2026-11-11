@@ -73,3 +73,54 @@ and explicit environment selectors retain audit/revoke authority.
 Historical migration fixtures supply their synthetic authoritative config; the
 partial-migration regression asserts the injected malformed-JSON SQLite error.
 Task #1095 records the widened complete `store::` and `app::tests` results.
+
+
+## S2.4 — environment settings and composer consumer (#1099)
+
+The scoped score remains **100/100**. Wire 3.40.0 advertises
+`secrets.environmentScope` with its consumer. `secretsWire.test.js` and
+`secretDrafts.test.js` bind environment grants to the existing StageContext;
+`environmentSettingsSecrets.test.js` covers environment-selector list/revoke/audit,
+metadata-only audit projection, cached same-name overrides and one/several/no
+active-member navigation. Settings never uploads or posts a message: Add secret
+opens a member project's coordinator composer with This environment selected.
+`secretComposer.test.js` keeps the option absent without cached support;
+`agentRailDom.test.js` proves preselection without create/post calls.
+`secretMetadataCache.test.js` covers separate environment/project cache keys,
+explicit inherited-list opt-in, environment invalidations and retention on
+membership refusal. Existing revision/generation/account fences remain in use.
+
+The strict JS sealing helper accepts only the new environment selector shape;
+`transport/js/test/secretsUpload.test.js` rejects empty, missing and mixed scope
+fields. Rust `javascript_environment_grant_opens_exact_utf8_value` opens real
+JS-produced environment uploads, including a maximum-size value, through S2.1's
+real opener. Envelope/version/padding, storage and authority are unchanged.
+`secretComposerLayout.test.js` covers the mobile environment option and its
+metadata-only cache, alongside the existing full browser storage sweep. Provenance checks retain imported source
+hashes and update only the root transport README's current digest.
+
+Focused commands and final exit codes are recorded on #1099; the full suite and
+Semgrep remain the serial merge gate under the task's rules.
+
+
+Review #1108 qualification: `secretMetadataCache.test.js` and
+`environmentSettingsSecrets.test.js` reproduce expiry at the same revision for
+both project and environment grants, with availability and override-badge
+assertions. Server-time anchors and monotonic deadline timers publish expired
+status into the cache without a push or successful refresh, including a skewed
+local clock and a wall-clock rollback. Equal-revision terminal statuses and
+server-time/order fences refuse stale availability. Complete paginated lists
+replace the queried scope only after all pages succeed; failed reads retain
+rows, filtered lookups preserve unrelated rows, and admission/publication tokens
+fence immediate mutations and late incidental stage reads. The score remains
+100/100; no view computes time-derived availability.
+
+
+Review #1108 re-review qualification: acknowledged mutations now merge their
+metadata and invalidate outstanding reads in one transaction, without acquiring
+or checking a read admission token. Overlapping distinct acknowledgements and a
+refresh during publication cannot suppress either successful write. Every page's
+descriptors validate before snapshot publication; malformed later pages and
+filtered ID/request lookups reject without changing the retained metadata.
+`secretMetadataCache.test.js` reproduces all five cases before the fix and passes
+afterward. The expiry qualification remains unchanged; the score is 100/100.

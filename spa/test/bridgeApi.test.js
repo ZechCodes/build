@@ -127,7 +127,7 @@ describe("adapter selection", () => {
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
       tasks: { timelinePaged: false, attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, listSummaries: false, filterChoices: false, counts: false, lookup: false, listWatched: false, listAttention: false, listLinkedWorkspace: false, listTracked: false, listReviewMode: false, listOrder: false, listReadiness: false, listExcludeAssignee: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false },
       compaction: { harnessThresholds: false },
-      secrets: { attachments: false, sealedUpload: false, metadataEvents: false },
+      secrets: { attachments: false, sealedUpload: false, metadataEvents: false, environmentScope: false },
       conversations: { settings: true, reset: false },
       github: { repos: false },
       messages: { context: false },

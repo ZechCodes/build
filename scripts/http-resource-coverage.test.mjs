@@ -29,6 +29,8 @@ const metadataUses = {
     ["build.agentDefaults","const AGENT_DEFAULTS_KEY = [\"build.agentDefaults\"] ; const NO_PREFERENCE","0948c02e682985320b70eb74656594986171f9c647c57de29ba950da34507beb"],
   ],
   "core/bridgeApi/v1/index.js": [
+    // #1073 review: separate project/environment rename negotiation;
+    // all occurrences remain finite capability metadata, not method producers.
     ["term.output","[ \"changes\" , [\"term.output\"] , \"term.reset\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
     ["term.reset",", \"term.output\" , [\"term.reset\"] , \"term.closed\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
     ["term.closed",", \"term.reset\" , [\"term.closed\"] , \"rtc.ice\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
@@ -42,6 +44,7 @@ const metadataUses = {
     ["bridge.restarting",", \"writes.progress\" , [\"bridge.restarting\"] , ] )","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
     ["secrets.attachments",". has ( [\"secrets.attachments\"] ) , sealedUpload","7bb78ae88368517d4112053e77e2808e7e821ab9ff080f53624ae97b42fa3e7e"],
     ["secrets.sealedUpload",". has ( [\"secrets.sealedUpload\"] ) , metadataEvents","7bb78ae88368517d4112053e77e2808e7e821ab9ff080f53624ae97b42fa3e7e"],
+    // #1099: four finite secret feature lookups; these names never produce RPC methods.
     ["secrets.metadataEvents",". has ( [\"secrets.metadataEvents\"] ) , environmentScope","7bb78ae88368517d4112053e77e2808e7e821ab9ff080f53624ae97b42fa3e7e"],
     ["secrets.environmentScope",". has ( [\"secrets.environmentScope\"] ) , }","7bb78ae88368517d4112053e77e2808e7e821ab9ff080f53624ae97b42fa3e7e"],
     ["changes.subscriptions",". has ( [\"changes.subscriptions\"] ) ; const","20fb6a0c88c128a1254da272bc70614f9aba7dc095f927a02e0b67717a777c23"],
@@ -477,7 +480,8 @@ const sourceFingerprintParts = {
   // Opening teardown and atomic Sync adoption retain current project metadata; no RPC edge changes.
   // Source refusal notices survive cache repaints; existing RPC verbs and parameter producers are unchanged.
   // Retired-frame picker cleanup and committed navigation release only the project settings opening.
-  "sheets/projectSettings.js": ["f42bf394","0b09a16a","3c12597d","b08083ac","c536ae09","0992c9d8","72ecdc6c","5ff6f314"],
+  // #1100 review: confirmation follows the saved delete mode and offers only available archive guidance.
+  "sheets/projectSettings.js": ["52a2c6e9", "841aab3c", "92e18916", "b18bd19c", "0c4442c1", "dccadbac", "c2cc0f6c", "6ea4f83f"],
   "sheets/projectSources.js": ["906116e8", "a4b91550", "79689d9c", "9b7d85f9", "727c70c7", "619b7e07", "8c9381e5", "cb04da48"],
   // #1065: sheet-owned in-flight state blocks duplicate Sync requests; the accepted callback, RPC method and selectors are unchanged.
   "sheets/sourceSyncControls.js": ["49045a5b", "1fd03d03", "c9e574df", "020f32ea", "5d64bdd0", "3ab970b7", "1c98dee9", "cb20c875"],
@@ -513,7 +517,8 @@ const sourceFingerprintParts = {
   "core/writeOperationProgress.js": ["612c1fc7", "78d4b658", "fb001a3b", "01eb5aba", "a6a82b1a", "0389924d", "06c8355f", "bdae5355"],
   // #1088: optionalProjectName derives the project label while the workspace draft name stays independent; RPC dispatch is unchanged.
   "core/createWorkspaceWizardModel.js": ["a6bae4bf", "19b319c0", "cea9955e", "a048bad4", "6311bfc4", "5c457eca", "e507fe7e", "ac704d74"],
-  "core/settingsDeletion.js": ["ead8f972","c71a5def","74878c0e","cc0c77b1","d632d66d","548fb251","d074283f","1a86d8fb"],
+  // #1100 review: read the saved mode for confirmation; clear only the completed local attempt after cache publication.
+  "core/settingsDeletion.js": ["d049b1d4", "f50de714", "cdeddf95", "63d4cadf", "3c029aee", "2ae9172a", "4752266e", "3a48445e"],
 };
 const sourceFingerprints = Object.fromEntries(Object.entries(sourceFingerprintParts)
   .map(([file, parts]) => [file, parts.join("")]));

@@ -1,5 +1,5 @@
 import { pushFence, pushedSince } from "./pushFence.js";
-import { captureCachedRecord, mergeCached, mergeCachedRecordsTogether, readCached, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
+import { captureCachedRecord, mergeCachedRecordsTogether, readCached, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
 
 export const deviceSettingsAddress = (deviceId = "") => ({ deviceId, entityId: "", kind: "settings" });
 export const deviceModelsAddress = (deviceId = "") => ({ deviceId, entityId: "", kind: "models" });
@@ -42,11 +42,6 @@ function withProjectRow(projects, project) {
   return projects.some(row => row.project_id === project.project_id)
     ? projects.map(row => row.project_id === project.project_id ? project : row)
     : [...projects, project];
-}
-
-export async function removeProjectSetting(deviceId, projectId) {
-  await mergeCached(deviceProjectsAddress(deviceId), (projects) =>
-    Array.isArray(projects) ? projects.filter((item) => item.project_id !== projectId) : null);
 }
 
 /** One addressable record. The callback sees only re-reads after cache writes,

@@ -367,3 +367,23 @@ describe("drafts a build before the split left in the replica store", () => {
     expect(await rawRecords("build-cache")).toEqual({});
   });
 });
+
+
+it("deletes only the captured UI record and announces successful removal", async () => {
+  await store.writeUiRecord(FOLD, { operationId: "finished" });
+  const captured = await store.readUiRecord(FOLD);
+  const heard = vi.fn();
+  const stop = store.subscribeUiRecords(FOLD, heard);
+  expect(await store.deleteUiRecordIfUnwritten(FOLD, captured)).toBe(true);
+  expect(await store.readUiRecord(FOLD)).toBeUndefined();
+  expect(heard).toHaveBeenCalledTimes(1);
+  expect(await store.deleteUiRecordIfUnwritten(FOLD, captured)).toBe(false);
+  stop();
+});
+it("preserves a newer UI attempt when an older completion tries to remove it", async () => {
+  await store.writeUiRecord(FOLD, { operationId: "older" });
+  const captured = await store.readUiRecord(FOLD);
+  await store.writeUiRecord(FOLD, { operationId: "newer" });
+  expect(await store.deleteUiRecordIfUnwritten(FOLD, captured)).toBe(false);
+  expect((await store.readUiRecord(FOLD)).value).toEqual({ operationId: "newer" });
+});

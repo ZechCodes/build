@@ -13,6 +13,7 @@ import { deviceProjectsAddress, projectSettingsAddress } from "../src/core/setti
 import { sourceEditSupportAddress } from "../src/core/sourceEditSupport.js";
 import { environmentSupportAddress, rememberEnvironmentSupport } from "../src/core/environmentSupport.js";
 import { environmentsAddress } from "../src/core/environmentCache.js";
+import { taskAddress, tasksAddress } from "../src/core/trackerCache.js";
 
 const actionCapabilities = vi.hoisted(() => ({ archive: true, projectRename: true, environmentRename: true, deleteProject: true }));
 vi.mock("../src/core/changeEvents.js", async original => ({ ...await original(), bridgeCapabilities: () => ({ environments: actionCapabilities }) }));
@@ -521,14 +522,33 @@ describe("project deletion", () => {
 
   it("shows deletion failures and allows retry without closing", async () => {
     confirmAction.mockResolvedValue(true);
+    const deviceId = "dev-1";
+    const project = { ...PROJECT, total_tasks: 1, open_tasks: 1, workspaces: 1 };
+    const task = { id: "task-refusal", project_id: PROJECT.project_id, title: "Keep this task", state: "open" };
+    const workspace = { id: "ws-refusal", project_id: PROJECT.project_id, name: "Unfinished work", state: "active" };
+    const seeded = [
+      [projectSettingsAddress(deviceId, PROJECT.project_id), project],
+      [deviceProjectsAddress(deviceId), [project]],
+      [{ deviceId, entityId: "", kind: "projects" }, [project]],
+      [{ deviceId, entityId: "", kind: "environment-settings-projects" }, [project]],
+      [tasksAddress(deviceId, PROJECT.project_id), { tasks: [task] }],
+      [taskAddress(deviceId, PROJECT.project_id, task.id), { task }],
+      [{ deviceId, entityId: "", kind: "workspaces" }, [workspace]],
+    ];
+    await Promise.all(seeded.map(([address, value]) => writeCached(address, value)));
     const callRpc = caller().mockImplementation(async (method) => {
-      if (method === "project.list") return { projects: [PROJECT] };
+      if (method === "project.list") return { projects: [project] };
       throw new Error("Finish its workspaces before deleting tasks");
     });
-    openProjectSettings(PROJECT.project_id, { callRpc });
+    openProjectSettings(PROJECT.project_id, { callRpc, deviceId });
     await vi.waitFor(() => expect(document.querySelector("#psdelete")).toBeTruthy());
     document.querySelector("#psdelete").click();
     await vi.waitFor(() => expect(document.querySelector("#pserr").textContent).toBe("Finish its workspaces before deleting tasks"));
+    // A refusal must preserve every project, task and workspace projection.
+    expect(await Promise.all(seeded.map(async ([address]) => (await readCached(address))?.value)))
+      .toEqual(seeded.map(([, value]) => value));
+    expect((await readUiRecord({ deviceId, entityId: PROJECT.project_id, kind: "ui-settings-delete", sub: "project.delete" }))?.value)
+      .toMatchObject({ operationId: expect.any(String), params: { project_id: PROJECT.project_id, confirm: true, tasks: "delete" } });
     expect(document.querySelector("#pserr").textContent).toBe("Finish its workspaces before deleting tasks");
     expect(document.querySelector("#psdelete").disabled).toBe(false);
     expect(document.querySelector("#scrim").classList.contains("show")).toBe(true);
@@ -1403,7 +1423,7 @@ describe("S2.5 deletion", () => {
   });
 });
 
-it("retains a prior no-tasks deletion mode when reopened confirmation now offers task deletion", async () => {
+it("describes and retains the prior no-tasks mode when reopening a saved deletion", async () => {
   const { deleteFromSettings } = await import("../src/core/settingsDeletion.js");
   await writeCached(environmentSupportAddress("dev-1"), { deleteProject: true });
   await writeCached(projectSettingsAddress("dev-1", "proj-1"), PROJECT);
@@ -1419,9 +1439,27 @@ it("retains a prior no-tasks deletion mode when reopened confirmation now offers
   await vi.waitFor(() => expect(document.querySelector("#psdelete")).not.toBeNull());
   document.querySelector("#psdelete").click();
   await vi.waitFor(() => expect(document.querySelector("#scrim").classList.contains("show")).toBe(false));
-  expect(confirmAction.mock.calls[0][0].confirmLabel).toContain("tasks");
+  const confirmation = confirmAction.mock.calls[0][0];
+  expect(confirmation.confirmLabel).toBe("Delete project and workspaces");
+  expect(confirmation.actions.join(" ")).not.toMatch(/Delete[^.]*tasks/);
   const requests = callRpc.mock.calls.filter(([method]) => method === "project.delete");
   expect(requests).toHaveLength(2); expect(requests[1]).toEqual(requests[0]);
   expect(requests[1][1]).toEqual({ project_id: "proj-1", confirm: true });
   expect(document.querySelector("#pserr")?.textContent || "").toBe("");
+  expect(await readUiRecord({ deviceId: "dev-1", entityId: "proj-1", kind: "ui-settings-delete", sub: "project.delete" })).toBeUndefined();
+});
+
+
+it.each([
+  { archived_at: 123, archive: true, intro: "This project is already archived. Keep it to retain its history." },
+  { archived_at: null, archive: false, intro: "Keep this project to retain its history." },
+])("uses an available safe alternative in the delete intro: %j", async ({ archived_at, archive, intro }) => {
+  await writeCached(environmentSupportAddress("dev-1"), { deleteProject: true, archive });
+  await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), { ...PROJECT, archived_at });
+  confirmAction.mockResolvedValue(false);
+  openProjectSettings(PROJECT.project_id, { deviceId: "dev-1", callRpc: vi.fn(() => new Promise(() => {})) });
+  await vi.waitFor(() => expect(document.querySelector("#psdelete")?.disabled).toBe(false));
+  document.querySelector("#psdelete").click();
+  await vi.waitFor(() => expect(confirmAction).toHaveBeenCalled());
+  expect(confirmAction.mock.calls[0][0].intro).toBe(intro);
 });

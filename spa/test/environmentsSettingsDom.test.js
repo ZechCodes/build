@@ -13,7 +13,7 @@ vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: id => ({ env
 vi.mock("../src/core/scopedSyncRuntime.js", () => ({ deviceScopedSyncOwns: () => state.deviceOwned, wakeScopedSync: vi.fn(async () => []) }));
 const confirmDelete = vi.hoisted(() => vi.fn());
 vi.mock("../src/core/confirm.js", () => ({ confirmAction: (...args) => confirmDelete(...args) }));
-import { wipeUiRecords } from "../src/core/localUiStore.js";
+import { readUiRecord, wipeUiRecords } from "../src/core/localUiStore.js";
 import { renderEnvironmentsSettings } from "../src/views/environmentsSettings.js";
 import { openProjectSettings } from "../src/sheets/projectSettings.js";
 import { readCached, writeCached, wipeCache } from "../src/core/localCache.js";
@@ -443,8 +443,13 @@ it("deletes an environment at successful reply and preserves refusal verbatim ac
   await mountEnvironmentSheet();
   await writeCached(address("laptop", "environment-support"), { environmentRename: true, deleteEnvironment: true });
   await vi.waitFor(() => expect(document.querySelector("#esdelete")).not.toBeNull());
+  const environmentsBefore = (await readCached(address("laptop", "environments"))).value;
   document.querySelector("#esdelete").click();
   await vi.waitFor(() => expect(document.querySelector("#esdeleteerr").textContent).toBe("Delete its 2 projects first"));
+  // Check the seeded projection before reopening, retrying or writing a repaint.
+  expect((await readCached(address("laptop", "environments")))?.value).toEqual(environmentsBefore);
+  const attemptAddress = { deviceId: "laptop", entityId: "env-1", kind: "ui-settings-delete", sub: "environment.delete" };
+  expect((await readUiRecord(attemptAddress))?.value).toMatchObject({ operationId: expect.any(String), params: { environment_id: "env-1" } });
   document.querySelector("#esclose").click();
   openEnvironmentSettings("env-1", { deviceId: "laptop", callRpc });
   await vi.waitFor(() => expect(document.querySelector("#esdelete")).not.toBeNull());
@@ -461,4 +466,5 @@ it("deletes an environment at successful reply and preserves refusal verbatim ac
   const deletes = callRpc.mock.calls.filter(([method]) => method === "environment.delete");
   expect(deletes).toHaveLength(2); expect(deletes[1]).toEqual(deletes[0]);
   expect(deletes[0]).toEqual(["environment.delete", { environment_id: "env-1" }, { operationId: expect.any(String) }]);
+  expect(await readUiRecord(attemptAddress)).toBeUndefined();
 });

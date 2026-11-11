@@ -24,7 +24,7 @@ import { watchSheetLifetime } from "../core/sheetLifetime.js";
 
 import { projectGeneralHtml, projectArchiveHtml, mountProjectGeneral } from "./projectGeneral.js";
 import { openEnvironmentSettings } from "./environmentSettings.js";
-import { deleteFromSettings } from "../core/settingsDeletion.js";
+import { deleteFromSettings, settingsDeleteParams } from "../core/settingsDeletion.js";
 import { projectIsArchived } from "../core/environmentWrites.js";
 
 const isolationHtml = () => `<section class="ps-section" aria-labelledby="ps-isolation-h"><h4 id="ps-isolation-h">Isolation</h4>
@@ -259,7 +259,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     });
     lockArchivedSettings(sheet, project);
     $("#pscancel").onclick = close;
-    mountProjectDeletion(sheet, project, { callRpc, onDeleted, close, deviceId, current, deleteAction, settled: record.read });
+    mountProjectDeletion(sheet, project, { callRpc, onDeleted, close, deviceId, current, deleteAction, archiveAvailable: actionSupport.archive, settled: record.read });
   };
   const record = watchSettingsRecord(projectSettingsAddress(deviceId, projectId), (project) => {
     if (project) paint(project);
@@ -426,24 +426,19 @@ function mountProjectDeletion(sheet, project, options) {
   button.onclick = () => void deleteProject(project, options);
 }
 
-async function deleteProject(project, { callRpc, onDeleted, close, deviceId, current, deleteAction, settled }) {
+async function deleteProject(project, { callRpc, onDeleted, close, deviceId, current, deleteAction, archiveAvailable, settled }) {
   if (deleteAction.pending) return;
   deleteAction.pending = true; deleteAction.message = "";
   const button = $("#psdelete");
   button.disabled = true;
   $("#sheet").querySelector("#pserr").textContent = "";
   try {
-    const confirmed = await confirmAction({
-      title: `Delete ${project.name || "project"}?`,
-      intro: "Archive is recommended to keep this project's history. Cancel and choose Archive project in settings to keep it.",
-      warnings: ["This cannot be undone. Files and unsaved changes in Build-managed workspaces will be permanently removed."],
-      actions: [deleteCount(project.total_tasks, "tasks"), deleteCount(project.workspaces, "workspaces"), "Remove the project from Build. Original project folders and external checkouts are kept."],
-      confirmLabel: "Delete project, tasks and workspaces",
-      danger: true,
-    });
+    const params = await settingsDeleteParams(deviceId, "project.delete", { project_id: project.project_id, confirm: true, tasks: "delete" });
+    if (!current()) return;
+    const confirmed = await confirmAction(projectDeleteConfirmation(project, params, archiveAvailable));
     if (!confirmed || !current()) return;
     $("#sheet").querySelectorAll("button, input, select").forEach(control => { control.disabled = true; });
-    await deleteFromSettings({ deviceId, method: "project.delete", params: { project_id: project.project_id, confirm: true, tasks: "delete" }, callRpc });
+    await deleteFromSettings({ deviceId, method: "project.delete", params, callRpc });
     if (current()) close();
     try { await onDeleted?.(project); }
     catch (error) { notifyError("Project deleted, but refreshing the project list failed", error.message); }
@@ -454,6 +449,28 @@ async function deleteProject(project, { callRpc, onDeleted, close, deviceId, cur
     deleteAction.pending = false;
     settled();
   }
+}
+
+function projectDeleteConfirmation(project, params, archiveAvailable) {
+  const deletesTasks = params.tasks === "delete";
+  return {
+    title: `Delete ${project.name || "project"}?`,
+    intro: projectDeleteIntro(project, archiveAvailable),
+    warnings: ["This cannot be undone. Files and unsaved changes in Build-managed workspaces will be permanently removed."],
+    actions: [
+      ...(deletesTasks ? [deleteCount(project.total_tasks, "tasks")] : []),
+      deleteCount(project.workspaces, "workspaces"),
+      "Remove the project from Build. Original project folders and external checkouts are kept.",
+    ],
+    confirmLabel: deletesTasks ? "Delete project, tasks and workspaces" : "Delete project and workspaces",
+    danger: true,
+  };
+}
+
+function projectDeleteIntro(project, archiveAvailable) {
+  if (projectIsArchived(project)) return "This project is already archived. Keep it to retain its history.";
+  if (!archiveAvailable) return "Keep this project to retain its history.";
+  return "Archive is recommended to keep this project's history. Cancel and choose Archive project in settings to keep it.";
 }
 
 const deleteCount = (count, noun) => Number.isSafeInteger(count) && count >= 0

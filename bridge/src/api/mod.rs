@@ -79,7 +79,8 @@ use std::collections::BTreeSet;
 /// 3.38.0 exposes new-environment creation and project-only added folders.
 /// 3.39.0 advertises project archive/restore, project rename and environment settings edits.
 /// 3.40.0 releases environment-scoped secrets with the settings/composer consumer.
-pub const API_VERSION: &str = "3.40.0";
+/// 3.41.0 releases environment and project/task deletion in settings.
+pub const API_VERSION: &str = "3.41.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -108,9 +109,11 @@ pub const QA_METHODS: &[&str] = &["stream.events", "stream.start", "stream.state
 /// Cross-verb wire features whose availability cannot be expressed by a
 /// single method name. The SPA consumes a subset as shape and behavior gates.
 pub const FEATURE_CAPABILITIES: &[&str] = &[
+    "environments.delete", // Since 3.41.0: delete empty environments from settings.
+    "projects.deleteTasks", // Since 3.41.0: deliberate project and task deletion.
     SECRETS_ENVIRONMENT_SCOPE_CAPABILITY, // Since 3.40.0: environment secrets in settings/composer.
-    "projects.archive",                   // Since 3.39.0: retained archived projects and restore.
-    "projects.rename",                    // Since 3.39.0: project display-name edits.
+    "projects.archive",    // Since 3.39.0: retained archived projects and restore.
+    "projects.rename",     // Since 3.39.0: project display-name edits.
     "environments.rename", // Since 3.39.0: environment display-name and settings edits.
     "environments.create", // Since 3.38.0: new environments and unused-environment discard.
     "projects.addedSources", // Since 3.38.0: folders added to a project only.
@@ -209,8 +212,8 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
 
 /// Environment grants and their SPA consumer ship together in wire 3.40.0.
 pub const SECRETS_ENVIRONMENT_SCOPE_CAPABILITY: &str = "secrets.environmentScope";
-/// Environment deletion stays private until its SPA consumer ships in S2.5.
-pub const UNADVERTISED_CAPABILITIES: &[&str] = &["environment.delete"];
+/// Registered methods awaiting a matching SPA consumer.
+pub const UNADVERTISED_CAPABILITIES: &[&str] = &[];
 
 /// Everything this bridge can serve on a session, as exact method names and
 /// explicit feature names. Sorting and deduplication make the greeting stable.

@@ -518,13 +518,13 @@ describe("project deletion", () => {
     confirmAction.mockResolvedValue(true);
     const callRpc = caller().mockImplementation(async (method) => {
       if (method === "project.list") return { projects: [PROJECT] };
-      throw new Error("Workspace is busy");
+      throw new Error("Finish its workspaces before deleting tasks");
     });
     openProjectSettings(PROJECT.project_id, { callRpc });
     await vi.waitFor(() => expect(document.querySelector("#psdelete")).toBeTruthy());
     document.querySelector("#psdelete").click();
-    await vi.waitFor(() => expect(document.querySelector("#pserr").textContent).toBe("Workspace is busy"));
-    expect(document.querySelector("#pserr").textContent).toBe("Workspace is busy");
+    await vi.waitFor(() => expect(document.querySelector("#pserr").textContent).toBe("Finish its workspaces before deleting tasks"));
+    expect(document.querySelector("#pserr").textContent).toBe("Finish its workspaces before deleting tasks");
     expect(document.querySelector("#psdelete").disabled).toBe(false);
     expect(document.querySelector("#scrim").classList.contains("show")).toBe(true);
   });

@@ -15462,7 +15462,7 @@
                       "id": "example",
                       "ok": true,
                       "result": {
-                        "api_version": "3.40.0",
+                        "api_version": "3.41.0",
                         "ack_confirm_methods": [
                           "environment.create",
                           "environment.create_project",
@@ -15517,6 +15517,7 @@
                           "environment.add_source",
                           "environment.create",
                           "environment.create_project",
+                          "environment.delete",
                           "environment.discard_unused",
                           "environment.list",
                           "environment.remove_source",
@@ -15526,6 +15527,7 @@
                           "environment.update_source",
                           "environments",
                           "environments.create",
+                          "environments.delete",
                           "environments.rename",
                           "errors.codes",
                           "fs.createDirectory",
@@ -15590,6 +15592,7 @@
                           "project.update_source",
                           "projects.addedSources",
                           "projects.archive",
+                          "projects.deleteTasks",
                           "projects.rename",
                           "push.registerKey",
                           "push.revokeKey",

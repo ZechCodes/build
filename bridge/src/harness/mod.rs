@@ -47,6 +47,7 @@ pub mod compaction;
 mod identity_env_tests;
 pub mod installed;
 pub mod inventory;
+mod live_model;
 #[cfg(test)]
 mod mcp_surface_tests;
 pub(crate) mod pi;
@@ -63,6 +64,7 @@ pub(crate) mod transcript_activity;
 pub(crate) mod usage_limit;
 
 pub use cleanup::{ConversationArtifact, HarnessConversationCleanup};
+pub use live_model::{LiveModelChange, LiveModelChoice};
 pub(crate) use session::publish_context;
 pub use session::{
     ActivityReport, AgentActivity, AgentSession, AgentStatus, FrozenTurnChoice, HarnessError,
@@ -236,6 +238,12 @@ pub trait Harness: Send + Sync {
     /// reasoning effort in particular: a flag for one, a config override for
     /// another.
     fn model_args(&self, choice: &ModelChoice) -> Vec<String>;
+
+    /// Admit a model choice the live session can apply at a turn boundary.
+    /// The caller persists it for ordinary delivery after admission.
+    fn choose_live_model(&self, _change: LiveModelChange<'_>) -> Result<LiveModelChoice, String> {
+        Err(live_model::unsupported_model_change(self.label()))
+    }
 
     /// Whether `prompt` is a provider command that must be delivered without
     /// Build's native-delivery envelope or conversation instructions.

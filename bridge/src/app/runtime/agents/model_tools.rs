@@ -1,9 +1,6 @@
 use crate::app::{AgentSender, AppState, TabKey};
-use crate::harness::installed::{model_offer_from, Readings};
-use crate::harness::{harness_for, AgentStatus, TurnChoiceSupport};
-use crate::models::{AgentProvider, ModelChoice};
+use crate::harness::{harness_for, AgentStatus, LiveModelChange};
 use serde_json::{json, Value};
-use std::sync::Arc;
 
 impl AppState {
     /// Save the picker's next-turn choice, provided the exact live session
@@ -38,43 +35,23 @@ impl AppState {
         if matches!(status, AgentStatus::Ended { .. }) {
             return Err(no_session());
         }
-        let cannot_change = || {
-            format!(
-                "set_agent_model: {} cannot change model in place on this session.",
-                provider.label()
-            )
-        };
-        if !tab.session.accepts_turn_choice() {
-            return Err(cannot_change());
-        }
-
-        let existing_effort = if provider == AgentProvider::ClaudeAdk {
-            thread
-                .sessions
-                .iter()
-                .find(|session| session.id == instance.id)
-                .and_then(|session| session.effort.as_deref())
-        } else {
-            agent.choice.effort.as_deref()
-        };
-        let choice = offered_choice(&self.cli_readings, provider, model, effort, existing_effort)?;
-        if provider == AgentProvider::ClaudeAdk && effort.is_some() && effort != existing_effort {
-            return Err(format!(
-                "set_agent_model: Claude ADK keeps its launch effort ({}). Omit effort or specify that effort.",
-                existing_effort.unwrap_or("harness default")
-            ));
-        }
-        if tab.session.turn_choice_support(&choice) != TurnChoiceSupport::Native {
-            return Err(cannot_change());
-        }
-
-        let busy = match provider {
-            AgentProvider::ClaudeAdk => {
-                status == AgentStatus::Starting || tab.session.waits_for_turn_choice(&choice)
-            }
-            _ => status != AgentStatus::Waiting,
-        };
-        let deferred = busy || self.delivery_queue.agent_in_flight(&key);
+        let launch_effort = thread
+            .sessions
+            .iter()
+            .rev()
+            .find(|session| session.id == instance.id)
+            .and_then(|session| session.effort.as_deref());
+        let changed = harness_for(provider).choose_live_model(LiveModelChange {
+            readings: &self.cli_readings,
+            session: tab.session.as_ref(),
+            status,
+            model,
+            requested_effort: effort,
+            saved_effort: agent.choice.effort.as_deref(),
+            launch_effort,
+        })?;
+        let choice = changed.choice;
+        let deferred = changed.deferred || self.delivery_queue.agent_in_flight(&key);
         let choice_revision = self.set_agent_model_choice(&owner, agent_id, choice.clone())?;
         let message = if deferred {
             format!(
@@ -93,48 +70,4 @@ impl AppState {
             "message": message,
         }))
     }
-}
-
-fn offered_choice(
-    readings: &Arc<Readings>,
-    provider: AgentProvider,
-    model: &str,
-    requested_effort: Option<&str>,
-    existing_effort: Option<&str>,
-) -> Result<ModelChoice, String> {
-    let offer = model_offer_from(readings, provider);
-    let entry = offer
-        .models
-        .iter()
-        .find(|entry| entry.id == model)
-        .ok_or_else(|| {
-            offer
-                .refusal(model, harness_for(provider).cli_name())
-                .unwrap_or_else(|| {
-                    format!(
-                        "set_agent_model: {} does not offer model {model:?}.",
-                        provider.label()
-                    )
-                })
-        })?;
-    let effort = match requested_effort {
-        None if provider == AgentProvider::ClaudeAdk && entry.efforts.is_empty() => None,
-        _ => requested_effort.or(existing_effort),
-    };
-    if let Some(effort) = effort.filter(|effort| !entry.efforts.contains(effort)) {
-        let effort = match requested_effort {
-            Some(_) => format!("effort {effort}"),
-            None => format!("the agent's current effort {effort}"),
-        };
-        return Err(format!(
-            "set_agent_model: model {model} does not support {effort}."
-        ));
-    }
-    let choice = ModelChoice {
-        provider,
-        model: Some(model.to_owned()),
-        effort: effort.map(str::to_owned),
-    };
-    choice.validate()?;
-    Ok(choice)
 }

@@ -272,10 +272,10 @@ pub(in crate::app) struct ImplementationTarget {
 
 pub(in crate::app) enum DeliveryOutcome {
     Delivered(Option<(String, Spawned)>),
-    /// The exact destination still exists, but changing its frozen model
-    /// requires a restart and the current turn has not reached a safe boundary.
-    /// No provider call has happened; the durable intent is safe to queue.
+    /// No provider turn has started. The durable intent is safe to queue.
     Deferred,
+    /// A live model change must wait for this session's open turn to finish.
+    WaitingForTurnEnd,
     /// The agent's session was not running, and starting one was refused
     /// before anything started: the installed CLI cannot run its model. The
     /// sentence says so to the person who chose it. Certainly not delivered.
@@ -285,6 +285,7 @@ pub(in crate::app) enum DeliveryOutcome {
 pub(in crate::app) enum DeliveryPreflight {
     Proceed { force_fresh: bool },
     Deferred,
+    WaitingForTurnEnd,
     Declined,
 }
 

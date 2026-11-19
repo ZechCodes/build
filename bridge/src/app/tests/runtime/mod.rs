@@ -13,6 +13,7 @@ mod concurrency_timing;
 pub(in crate::app::tests) mod delivery;
 pub(in crate::app::tests) mod frame_locks;
 pub(in crate::app::tests) mod idle_sessions;
+mod model_tools;
 pub(in crate::app::tests) mod native_reads;
 mod observation_saturation;
 pub(in crate::app::tests) mod off_the_workers;

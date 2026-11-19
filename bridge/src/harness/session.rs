@@ -377,6 +377,13 @@ pub trait AgentSession: Send + Sync {
         TurnChoiceSupport::RestartRequired
     }
 
+    /// Whether delivering this choice now would change settings during an
+    /// open turn. An ordinary delivery can wait for the status pump to wake it
+    /// at the boundary. Carriers with per-turn settings can queue it directly.
+    fn waits_for_turn_choice(&self, _choice: &ModelChoice) -> bool {
+        false
+    }
+
     /// What the agent is doing right now.
     fn status(&self) -> AgentStatus;
 

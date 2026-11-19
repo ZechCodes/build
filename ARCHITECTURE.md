@@ -3603,9 +3603,11 @@ already admitted retain their frozen choice. The SPA reads the saved choice
 and the active model from the existing agent digest.
 
 Codex app-server applies model and effort on `turn/start`. Claude ADK sends
-`set_model` before the next prompt and keeps its launch effort. A changed ADK
-choice waits for the current turn boundary on non-interrupting delivery.
-Omitting effort keeps the selection, or the launch effort for Claude ADK.
+`set_model` before the next prompt. A non-interrupting delivery with a changed
+ADK choice waits for the open parent turn to close, even if it leaves background
+tasks running. Omitting effort keeps the selection. Claude ADK keeps the launch
+effort on models that use it and supports model-only changes to models without
+effort settings.
 Claude TUI, Codex TUI and Pi have no structured live model-change path in
 Build. The tool refuses stopped sessions and choices that would require
 reopening the live session, including an incompatible launch-time compaction
@@ -3687,8 +3689,9 @@ unwatched unless asked, stamped `created_by`), scoped to the caller's own
 project by its binding, so an agent in a named workspace can staff the project
 too (`bridge/src/app/projects/agent_tools.rs`, `agent_writes.rs`). Source
 administration, reclaim, `compact_agent` and `set_agent_model` stay the pin's.
-`assign_task` and `tasks.assign` take `{kind: "new_project_agent", agent_name, …}`.
-The new worker receives the task on its project owner with no workspace link
+`assign_task` and
+`tasks.assign` take `{kind: "new_project_agent", agent_name, …}`: a new worker
+on the task's project's owner, handed the task, linking no workspace
 (`bridge/src/app/tracker/dispatch.rs`). `tasks.assign` takes the client's
 `operation_id`; the delivery is queued under it, and asking again with the
 same id validates the saved assignment target, actor, sender and note and

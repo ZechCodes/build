@@ -502,7 +502,7 @@ impl AgentSession for AdkSession {
     fn waits_for_turn_choice(&self, choice: &ModelChoice) -> bool {
         let state = self.state.lock().unwrap();
         // set_model changes the session before the next prompt is written.
-        state.live_status() == AgentStatus::Working
+        state.turn_open
             && choice.model != state.requested_model
             && state.turn_choice_support(choice) == TurnChoiceSupport::Native
     }

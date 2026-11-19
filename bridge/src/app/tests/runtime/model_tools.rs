@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::app::tests::project_agent::{project_agent, workspace};
+use crate::harness::adk::AdkSession;
 use crate::harness::installed::{CliProbe, CliReading, ListedModel, Readings};
 use crate::harness::SessionStatusSnapshot;
 use crate::mcp::BridgeAction;
@@ -78,6 +79,47 @@ impl ModelTool {
         let instance = self.instance(&app);
         app.record_agent_active_model(&self.owner, &self.worker, active_model);
         instance
+    }
+
+    async fn open_adk(&self, initial: &ModelChoice) -> Arc<dyn AgentSession> {
+        let spec = HarnessSpec::new("sh").arg("-c").arg(r#"
+            printf '%s\n' '{"type":"system","subtype":"init","session_id":"adk-model-tools","model":"claude-opus-5"}'
+            IFS= read -r first || exit 0
+            printf '%s\n' '{"type":"system","subtype":"task_started","task_id":"monitor","description":"Persistent monitor"}'
+            while [ ! -e "$1/close-turn" ]; do sleep 0.02; done
+            printf '%s\n' '{"type":"result","subtype":"success","is_error":false}'
+            while IFS= read -r line; do
+                printf '%s\n' "$line" >> "$1/delivered"
+                case "$line" in
+                    *'"subtype":"set_model"'*)
+                        request=${line#*'"request_id":"'}
+                        request=${request%%\"*}
+                        printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s"}}\n' "$request"
+                        ;;
+                esac
+            done
+        "#).arg("adk-model-tools").arg(self.state_root.path().to_str().unwrap());
+        let (session, _activity) = AdkSession::spawn(&spec, None, initial).unwrap();
+        wait_for(Duration::from_secs(5), || {
+            (session.status() == AgentStatus::Waiting).then_some(())
+        })
+        .await
+        .expect("ADK fixture initialized");
+        let (key, worker, instance) = {
+            let mut app = self.app.lock().unwrap();
+            let root = AppState::canonical_root(&app.entity_agent_root(&self.owner).unwrap());
+            let key = insert_agent_tab(&mut app, &root, &self.owner, &self.worker, session);
+            let worker = Arc::clone(&app.session_registry.test_tab(&key).unwrap().session);
+            (key, worker, self.instance(&app))
+        };
+        spawn_status_pump(
+            &self.app,
+            key,
+            Arc::clone(&worker),
+            Some(instance),
+            worker.status_changed(),
+        );
+        worker
     }
 
     fn instance(&self, app: &AppState) -> crate::thread::SessionInstance {
@@ -230,6 +272,83 @@ async fn set_agent_model_releases_a_turn_that_ends_before_the_deferred_delivery_
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     assert_eq!(fixture.log.choices(), vec![Some(next)]);
+}
+
+#[tokio::test]
+async fn set_agent_model_adk_delivers_when_a_turn_closes_over_a_background_task() {
+    let provider = AgentProvider::ClaudeAdk;
+    let initial = choice(provider, "claude-opus-5", Some("high"));
+    let next = choice(provider, "claude-opus-5-5", Some("high"));
+    let fixture = ModelTool::new(initial.clone());
+    let session = fixture.open_adk(&initial).await;
+    session.send_turn(&Turn::new("start a monitor")).unwrap();
+
+    assert!(session.waits_for_turn_choice(&next));
+    assert!(!session.waits_for_turn_choice(&initial));
+    assert_eq!(
+        fixture.set("claude-opus-5-5", None).unwrap()["deferred"],
+        true
+    );
+    fixture.queue_next_turn();
+    fixture.drain();
+    wait_for(Duration::from_secs(5), || {
+        let app = fixture.app.lock().unwrap();
+        let held = app
+            .delivery_queue
+            .queued()
+            .any(|turn| turn.operation_id.as_deref() == Some("model-tool-next-turn"));
+        held.then_some(())
+    })
+    .await
+    .expect("the open turn holds the delivery");
+
+    std::fs::write(fixture.state_root.path().join("close-turn"), "").unwrap();
+    let delivered = wait_for(Duration::from_secs(5), || {
+        let written = std::fs::read_to_string(fixture.state_root.path().join("delivered")).ok()?;
+        (written.lines().count() >= 2).then_some(written)
+    })
+    .await
+    .expect("the real status pump wakes delivery even while the monitor remains active");
+
+    let lines: Vec<Value> = delivered
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        lines[0]["request"],
+        json!({"subtype":"set_model","model":"claude-opus-5-5"})
+    );
+    assert_eq!(lines[1]["type"], "user");
+    assert!(lines[1]["message"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Continue this conversation"));
+    wait_for(Duration::from_secs(5), || {
+        (session.active_model().as_deref() == next.model.as_deref()).then_some(())
+    })
+    .await
+    .expect("the real ADK session observes the acknowledged model change");
+    assert_eq!(session.status(), AgentStatus::Working);
+    session.end();
+}
+
+#[tokio::test]
+async fn set_agent_model_adk_omitted_effort_can_select_an_effortless_model() {
+    let provider = AgentProvider::ClaudeAdk;
+    let initial = choice(provider, "claude-opus-5", Some("high"));
+    let fixture = ModelTool::new(initial.clone());
+    let session = fixture.open_adk(&initial).await;
+
+    let response = fixture.set("claude-haiku-4-5", None).unwrap();
+
+    assert_eq!(response["model"], "claude-haiku-4-5");
+    assert!(response["effort"].is_null());
+    let next = choice(provider, "claude-haiku-4-5", None);
+    assert_eq!(
+        session.turn_choice_support(&next),
+        crate::harness::TurnChoiceSupport::Native
+    );
+    session.end();
 }
 
 struct CodexOffer;

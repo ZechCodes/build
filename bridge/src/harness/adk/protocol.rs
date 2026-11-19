@@ -1,5 +1,5 @@
 use crate::harness::surfaces::SurfaceLedger;
-use crate::harness::{AgentStatus, SessionStatusSnapshot, TurnChoiceSupport};
+use crate::harness::{harness_for, AgentStatus, SessionStatusSnapshot, TurnChoiceSupport};
 use crate::models::{AgentProvider, ModelChoice};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -237,13 +237,13 @@ impl ProtocolState {
     /// The codex rule, in claude's shape: the provider has to be this one,
     /// the model can move (`set_model` is a control request the child
     /// takes on the same pipe) but cannot be CLEARED back to the CLI's
-    /// default once one was named, and the effort cannot move at all — the
-    /// CLI takes it on argv and answers no control request for it (probed
-    /// against `update_settings`: refused for a session source).
+    /// default once one was named. Effort stays as set on argv and is ignored
+    /// by models without effort support.
     pub(super) fn turn_choice_support(&self, choice: &ModelChoice) -> TurnChoiceSupport {
         let native_provider = choice.provider == AgentProvider::ClaudeAdk;
         let model_supported = choice.model.is_some() || self.requested_model.is_none();
-        let effort_supported = choice.effort == self.requested_effort;
+        let effort_supported = choice.effort == self.requested_effort
+            || (native_provider && ignores_launch_effort(choice));
         if native_provider && model_supported && effort_supported {
             TurnChoiceSupport::Native
         } else {
@@ -252,13 +252,35 @@ impl ProtocolState {
     }
 }
 
+fn ignores_launch_effort(choice: &ModelChoice) -> bool {
+    choice.effort.is_none()
+        && choice.model.as_deref().is_some_and(|id| {
+            harness_for(AgentProvider::ClaudeAdk)
+                .models()
+                .iter()
+                .any(|entry| entry.id == id && entry.efforts.is_empty())
+        })
+}
+
 pub(super) fn publish_status(updates: &watch::Sender<SessionStatusSnapshot>, status: AgentStatus) {
+    publish_status_with_turn_end(updates, status, false);
+}
+
+pub(super) fn publish_status_with_turn_end(
+    updates: &watch::Sender<SessionStatusSnapshot>,
+    status: AgentStatus,
+    turn_ended: bool,
+) {
     updates.send_if_modified(|snapshot| {
-        let Some(next) = snapshot.transition(status) else {
-            return false;
-        };
-        *snapshot = next;
-        true
+        let next = snapshot.transition(status);
+        let changed = next.is_some();
+        if let Some(next) = next {
+            *snapshot = next;
+        }
+        if turn_ended {
+            snapshot.ended_turn_count = snapshot.ended_turn_count.saturating_add(1);
+        }
+        changed || turn_ended
     });
 }
 

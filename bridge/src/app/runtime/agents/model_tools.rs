@@ -57,13 +57,8 @@ impl AppState {
         } else {
             agent.choice.effort.as_deref()
         };
-        let choice = offered_choice(
-            &self.cli_readings,
-            provider,
-            model,
-            effort.or(existing_effort),
-        )?;
-        if provider == AgentProvider::ClaudeAdk && choice.effort.as_deref() != existing_effort {
+        let choice = offered_choice(&self.cli_readings, provider, model, effort, existing_effort)?;
+        if provider == AgentProvider::ClaudeAdk && effort.is_some() && effort != existing_effort {
             return Err(format!(
                 "set_agent_model: Claude ADK keeps its launch effort ({}). Omit effort or specify that effort.",
                 existing_effort.unwrap_or("harness default")
@@ -73,7 +68,13 @@ impl AppState {
             return Err(cannot_change());
         }
 
-        let deferred = status != AgentStatus::Waiting || self.delivery_queue.agent_in_flight(&key);
+        let busy = match provider {
+            AgentProvider::ClaudeAdk => {
+                status == AgentStatus::Starting || tab.session.waits_for_turn_choice(&choice)
+            }
+            _ => status != AgentStatus::Waiting,
+        };
+        let deferred = busy || self.delivery_queue.agent_in_flight(&key);
         let choice_revision = self.set_agent_model_choice(&owner, agent_id, choice.clone())?;
         let message = if deferred {
             format!(
@@ -98,7 +99,8 @@ fn offered_choice(
     readings: &Arc<Readings>,
     provider: AgentProvider,
     model: &str,
-    effort: Option<&str>,
+    requested_effort: Option<&str>,
+    existing_effort: Option<&str>,
 ) -> Result<ModelChoice, String> {
     let offer = model_offer_from(readings, provider);
     let entry = offer
@@ -115,10 +117,18 @@ fn offered_choice(
                     )
                 })
         })?;
-    if let Some(effort) = effort {
-        if !entry.efforts.contains(&effort) {
-            return Err(format!("model {model} does not support effort {effort}"));
-        }
+    let effort = match requested_effort {
+        None if provider == AgentProvider::ClaudeAdk && entry.efforts.is_empty() => None,
+        _ => requested_effort.or(existing_effort),
+    };
+    if let Some(effort) = effort.filter(|effort| !entry.efforts.contains(effort)) {
+        let effort = match requested_effort {
+            Some(_) => format!("effort {effort}"),
+            None => format!("the agent's current effort {effort}"),
+        };
+        return Err(format!(
+            "set_agent_model: model {model} does not support {effort}."
+        ));
     }
     let choice = ModelChoice {
         provider,

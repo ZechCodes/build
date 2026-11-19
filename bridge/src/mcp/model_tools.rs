@@ -10,7 +10,7 @@ pub(super) fn set_agent_model_tool() -> Value {
             "properties": {
                 "agent_id": { "type": "string", "description": "From list_project_agents or list_workspace_agents." },
                 "model": { "type": "string", "description": "Exact model ID for the agent's harness from list_harnesses." },
-                "effort": { "type": "string", "description": "A reasoning effort the model offers. Omit to keep the existing effort. Claude ADK requires the session's launch effort." }
+                "effort": { "type": "string", "description": "A reasoning effort the model offers. Omit to keep the existing effort. Claude ADK keeps the session's launch effort on models that use it." }
             },
             "required": ["agent_id", "model"]
         }

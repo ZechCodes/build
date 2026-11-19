@@ -90,6 +90,7 @@ pub(in crate::app) fn spawn_status_pump(
         recorded_context: None,
         recorded_context_reset_count: 0,
         recorded_completed_success_count: 0,
+        recorded_turn_end_count: 0,
         recorded_limit: super::usage_limits::UsageObservation::default(),
     };
     tokio::spawn(async move {
@@ -120,6 +121,7 @@ struct StatusPump {
     recorded_context: Option<crate::harness::TurnContext>,
     recorded_context_reset_count: u64,
     recorded_completed_success_count: u64,
+    recorded_turn_end_count: u64,
     recorded_limit: super::usage_limits::UsageObservation,
 }
 
@@ -178,9 +180,16 @@ impl StatusPump {
             if let Some(reason) = ended.then(|| session.start_refused()).flatten() {
                 app.record_agent_start_refused(owner, &instance.agent_id, &reason);
             }
+            let turn_ended = snapshot.ended_turn_count > self.recorded_turn_end_count;
+            self.recorded_turn_end_count = snapshot.ended_turn_count;
             let retry_deferred = usage_limit_moved
-                || !matches!(snapshot.status, AgentStatus::Working)
-                    && something_waits_for_the_turn(app, owner, &instance.agent_id);
+                || match snapshot.status {
+                    // ADK can keep reporting Working after the parent turn closes.
+                    AgentStatus::Working => {
+                        turn_ended && has_queued_delivery(app, owner, &instance.agent_id)
+                    }
+                    _ => something_waits_for_the_turn(app, owner, &instance.agent_id),
+                };
             #[cfg(test)]
             status_publication_probe::before_final_publication();
             if refresh_metadata {
@@ -262,11 +271,13 @@ fn compaction_recovery_keeps_a_successful_turn_until_normal_turn_completion() {
 /// queued turn, or a compaction it asked for mid-turn, which is ready now.
 fn something_waits_for_the_turn(app: &mut AppState, owner: &str, agent_id: &str) -> bool {
     let compaction_ready = app.compactions.turn_ended(owner, agent_id);
-    compaction_ready
-        || app
-            .delivery_queue
-            .queued()
-            .any(|turn| turn.owner == owner && turn.agent_id == agent_id)
+    compaction_ready || has_queued_delivery(app, owner, agent_id)
+}
+
+fn has_queued_delivery(app: &AppState, owner: &str, agent_id: &str) -> bool {
+    app.delivery_queue
+        .queued()
+        .any(|turn| turn.owner == owner && turn.agent_id == agent_id)
 }
 
 /// Record the turn context `snapshot` carries unless this pump already has.

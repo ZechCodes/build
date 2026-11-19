@@ -170,6 +170,8 @@ pub struct SessionStatusSnapshot {
     /// Successful terminal results for open turns, distinct from partial model
     /// responses. Carriers publish each completed turn at most once.
     pub successful_turn_count: u64,
+    /// Parent turns that have closed, regardless of outcome or background work.
+    pub ended_turn_count: u64,
     /// The newest turn context the harness reported, carried across status
     /// changes; `None` until it reports one.
     pub context: Option<TurnContext>,
@@ -198,6 +200,7 @@ impl SessionStatusSnapshot {
             usage_limit_count: 0,
             successful_response_count: 0,
             successful_turn_count: 0,
+            ended_turn_count: 0,
             context: None,
             context_reset_count: 0,
             usage_limit: None,
@@ -220,6 +223,7 @@ impl SessionStatusSnapshot {
                 usage_limit_count: self.usage_limit_count,
                 successful_response_count: self.successful_response_count,
                 successful_turn_count: self.successful_turn_count,
+                ended_turn_count: self.ended_turn_count,
                 context: self.context,
                 context_reset_count: self.context_reset_count,
                 usage_limit: self.usage_limit.clone(),
@@ -241,6 +245,7 @@ impl SessionStatusSnapshot {
             usage_limit_count: self.usage_limit_count.saturating_add(1),
             successful_response_count: self.successful_response_count,
             successful_turn_count: self.successful_turn_count,
+            ended_turn_count: self.ended_turn_count,
             context: self.context,
             context_reset_count: self.context_reset_count,
             usage_limit: Some(limit),
@@ -266,6 +271,7 @@ impl SessionStatusSnapshot {
             usage_limit_count: self.usage_limit_count,
             successful_response_count: self.successful_response_count.saturating_add(1),
             successful_turn_count: self.successful_turn_count,
+            ended_turn_count: self.ended_turn_count,
             context: self.context,
             context_reset_count: self.context_reset_count,
             usage_limit: None,

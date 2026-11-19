@@ -42,6 +42,7 @@ impl StatusPublicationProbe {
             recorded_context: None,
             recorded_context_reset_count: 0,
             recorded_completed_success_count: 0,
+            recorded_turn_end_count: 0,
             recorded_limit: super::super::usage_limits::UsageObservation::default(),
         };
         Self(pump, None)

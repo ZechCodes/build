@@ -4,9 +4,9 @@ pub(in crate::app) mod settlement_probe;
 
 use super::compaction::{send_compaction, CompactionSend};
 use crate::app::{
-    deliver, AppState, DeliveryOutcome, PendingTurns, TabKey, AGENT_START_DECLINED_SESSION_OVER,
+    deliver, AppState, DeliveryOutcome, PendingAgentTurn, PendingTurns,
+    AGENT_START_DECLINED_SESSION_OVER,
 };
-use crate::harness::AgentStatus;
 use crate::operation::OperationStatus;
 use crate::timing::FrameTimer;
 use crate::update::AdmissionLease;
@@ -278,7 +278,7 @@ impl DeliveryRunner {
                 Ok(DeliveryOutcome::Refused(why)) => s.record_agent_start_unrunnable(&turn, &why),
                 Ok(DeliveryOutcome::Deferred | DeliveryOutcome::WaitingForTurnEnd) => {
                     completed_delivery_freed_capacity |=
-                        waiting_for_turn_end && turn_end_observed(&s, &turn.tab_key());
+                        waiting_for_turn_end && turn_end_observed(&s, &turn);
                     s.delivery_queue.requeue(turn);
                 }
                 // The message stays durable with its delivery failure, so the
@@ -303,10 +303,10 @@ impl DeliveryRunner {
 }
 
 /// The pump can observe the boundary before this turn is back on the queue.
-fn turn_end_observed(app: &AppState, key: &TabKey) -> bool {
+fn turn_end_observed(app: &AppState, turn: &PendingAgentTurn) -> bool {
     app.session_registry
-        .agent_snapshot(key)
-        .is_none_or(|tab| !tab.live || tab.session.status() != AgentStatus::Working)
+        .agent_snapshot(&turn.tab_key())
+        .is_none_or(|tab| !tab.live || !tab.session.waits_for_turn_choice(&turn.model_choice))
 }
 
 /// Where a delivery's own time is charged. A spawn is not the frame that asked

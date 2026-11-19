@@ -696,6 +696,19 @@ impl AppState {
         action: &BridgeAction,
     ) -> Option<Result<Value, String>> {
         Some(match action {
+            BridgeAction::SetAgentModel {
+                agent_id: target,
+                model,
+                effort,
+            } => self.set_agent_model(
+                crate::app::AgentSender {
+                    entity_id,
+                    agent_id,
+                },
+                target,
+                model,
+                effort.as_deref(),
+            ),
             BridgeAction::ListHarnesses => Ok(self.harness_table()),
             BridgeAction::ListWorkspaces => self.project_agent_workspaces(entity_id),
             BridgeAction::ListProjectSources => self.project_agent_sources(entity_id),

@@ -236,6 +236,9 @@ pub(in crate::app) fn preflight_delivery(
                 force_fresh: !s.session_instance_uses_choice(instance, &turn.model_choice),
             };
         }
+        if !turn.interrupt && tab.session.waits_for_turn_choice(&turn.model_choice) {
+            return DeliveryPreflight::WaitingForTurnEnd;
+        }
         if s.session_instance_uses_choice(instance, &turn.model_choice)
             || tab.session.turn_choice_support(&turn.model_choice) == TurnChoiceSupport::Native
         {
@@ -338,6 +341,7 @@ pub(in crate::app) fn deliver(
     let force_fresh = match preflight_delivery(state, turn, timer) {
         DeliveryPreflight::Proceed { force_fresh } => force_fresh,
         DeliveryPreflight::Deferred => return Ok(DeliveryOutcome::Deferred),
+        DeliveryPreflight::WaitingForTurnEnd => return Ok(DeliveryOutcome::WaitingForTurnEnd),
         DeliveryPreflight::Declined => return Ok(DeliveryOutcome::Delivered(None)),
     };
     let opened = ensure_agent_tab(

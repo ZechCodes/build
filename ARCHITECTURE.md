@@ -3593,6 +3593,26 @@ A project's agents below). Each action is a `BridgeAction` variant. The tool lis
 `add_workspace_agent`, `list_project_agents`, `add_project_agent`, …) and the
 tracker (`get_task`, `comment_task`, `move_task`, `label_task`, …).
 
+The project coordinator can call `set_agent_model` with an `agent_id`, an exact
+model ID from that agent's installed harness catalogue, and optional `effort`.
+It reaches the same agents as `compact_agent` and saves with the same
+`set_agent_model_choice` path as the composer's model picker. The reply reports
+whether the session was between turns or the change is deferred. The next turn
+admitted with the saved choice applies it through ordinary delivery. Turns
+already admitted retain their frozen choice. The SPA reads the saved choice
+and the active model from the existing agent digest.
+
+Codex app-server applies model and effort on `turn/start`. Claude ADK sends
+`set_model` before the next prompt. A non-interrupting delivery with a changed
+ADK choice waits for the open parent turn to close, even if it leaves background
+tasks running. Omitting effort keeps the selection. Claude ADK keeps the launch
+effort on models that use it and supports model-only changes to models without
+effort settings.
+Claude TUI, Codex TUI and Pi have no structured live model-change path in
+Build. The tool refuses stopped sessions and choices that would require
+reopening the live session, including an incompatible launch-time compaction
+policy.
+
 Only the Project surface exposes `list_project_sources`, `add_environment_source` and
 `remove_environment_source`, alongside `add_project_source` and
 `remove_project_source`. Environment tools resolve the calling agent's bound
@@ -3668,7 +3688,7 @@ narrows, so a copied value grants nothing.
 unwatched unless asked, stamped `created_by`), scoped to the caller's own
 project by its binding, so an agent in a named workspace can staff the project
 too (`bridge/src/app/projects/agent_tools.rs`, `agent_writes.rs`). Source
-administration, reclaim and `compact_agent` stay the pin's. `assign_task` and
+administration, reclaim, `compact_agent` and `set_agent_model` stay the pin's. `assign_task` and
 `tasks.assign` take `{kind: "new_project_agent", agent_name, …}`: a new worker
 on the task's project's owner, handed the task, linking no workspace
 (`bridge/src/app/tracker/dispatch.rs`). `tasks.assign` takes the client's

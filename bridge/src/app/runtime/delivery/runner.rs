@@ -4,7 +4,8 @@ pub(in crate::app) mod settlement_probe;
 
 use super::compaction::{send_compaction, CompactionSend};
 use crate::app::{
-    deliver, AppState, DeliveryOutcome, PendingTurns, AGENT_START_DECLINED_SESSION_OVER,
+    deliver, AppState, DeliveryOutcome, PendingAgentTurn, PendingTurns,
+    AGENT_START_DECLINED_SESSION_OVER,
 };
 use crate::operation::OperationStatus;
 use crate::timing::FrameTimer;
@@ -234,13 +235,17 @@ impl DeliveryRunner {
                 }
             }
             let delivered = deliver(state, &turn, &timer);
-            let completed = !matches!(&delivered, Ok(DeliveryOutcome::Deferred));
+            let waiting_for_turn_end = matches!(&delivered, Ok(DeliveryOutcome::WaitingForTurnEnd));
+            let completed =
+                !waiting_for_turn_end && !matches!(&delivered, Ok(DeliveryOutcome::Deferred));
             #[cfg(test)]
             settlement_probe::before_settlement(state, turn.operation_id.as_deref());
             let mut s = timer.lock(state);
             if let Some(operation_id) = turn.operation_id.as_deref() {
                 let next = match &delivered {
-                    Ok(DeliveryOutcome::Deferred) => OperationStatus::Queued,
+                    Ok(DeliveryOutcome::Deferred | DeliveryOutcome::WaitingForTurnEnd) => {
+                        OperationStatus::Queued
+                    }
                     // Settled with its reason: a failure, and a certain one.
                     Ok(DeliveryOutcome::Delivered(_) | DeliveryOutcome::Refused(_)) => {
                         OperationStatus::Delivered
@@ -271,7 +276,9 @@ impl DeliveryRunner {
                 Ok(DeliveryOutcome::Delivered(None)) => s.record_agent_start_declined(&turn),
                 Ok(DeliveryOutcome::Delivered(Some(_))) => {}
                 Ok(DeliveryOutcome::Refused(why)) => s.record_agent_start_unrunnable(&turn, &why),
-                Ok(DeliveryOutcome::Deferred) => {
+                Ok(DeliveryOutcome::Deferred | DeliveryOutcome::WaitingForTurnEnd) => {
+                    completed_delivery_freed_capacity |=
+                        waiting_for_turn_end && turn_end_observed(&s, &turn);
                     s.delivery_queue.requeue(turn);
                 }
                 // The message stays durable with its delivery failure, so the
@@ -293,6 +300,13 @@ impl DeliveryRunner {
             DeliveryRunner::drain(state, &timer);
         }
     }
+}
+
+/// The pump can observe the boundary before this turn is back on the queue.
+fn turn_end_observed(app: &AppState, turn: &PendingAgentTurn) -> bool {
+    app.session_registry
+        .agent_snapshot(&turn.tab_key())
+        .is_none_or(|tab| !tab.live || !tab.session.waits_for_turn_choice(&turn.model_choice))
 }
 
 /// Where a delivery's own time is charged. A spawn is not the frame that asked

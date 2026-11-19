@@ -1,7 +1,8 @@
 use super::activity::{spawn_shell_tail_poller, ActivitySlot};
 use super::protocol::{
-    publish_completed_turn, publish_status, publish_successful_response, publish_usage_limit,
-    ProtocolState, RecordedCall, BUILD_MCP_TOOL_PREFIX, SURFACE_TASK_SUBTYPES,
+    publish_completed_turn, publish_status, publish_status_with_turn_end,
+    publish_successful_response, publish_usage_limit, ProtocolState, RecordedCall,
+    BUILD_MCP_TOOL_PREFIX, SURFACE_TASK_SUBTYPES,
 };
 use super::translation::{
     bounded_activity_text, ended_summary, result_error_text, spoken, task_description,
@@ -85,12 +86,12 @@ impl ProtocolReader {
             Some("rate_limit_event") => self.read_rate_limit_event(&event),
             _ => {}
         }
-        self.publish_live_status();
+        self.publish_live_status(false);
     }
 
-    fn publish_live_status(&self) {
+    fn publish_live_status(&self, turn_ended: bool) {
         let state = self.state.lock().unwrap();
-        publish_status(&self.status_updates, state.live_status());
+        publish_status_with_turn_end(&self.status_updates, state.live_status(), turn_ended);
     }
 
     pub(super) fn publish_status(&self, status: AgentStatus) {
@@ -622,7 +623,7 @@ impl ProtocolReader {
         } else if event["subtype"].as_str() == Some("success") {
             self.record_successful_result(was_open, interrupted);
         }
-        let failure = self.finish_result(event, failed, usage_refusal);
+        let (failure, turn_ended) = self.finish_result(event, failed, usage_refusal);
         self.context.cache_read_tokens += usage_tokens(&event["usage"], "cache_read_input_tokens");
         publish_context(&self.status_updates, self.context);
         // Outside the lock, because emitting is the broadcast channel's
@@ -634,7 +635,7 @@ impl ProtocolReader {
         if let Some(failure) = failure {
             self.report(failure, None);
         }
-        self.publish_live_status();
+        self.publish_live_status(turn_ended);
     }
 
     fn record_successful_result(&self, was_open: bool, interrupted: bool) {
@@ -649,7 +650,7 @@ impl ProtocolReader {
         event: &Value,
         failed: bool,
         usage_refusal: bool,
-    ) -> Option<AgentActivity> {
+    ) -> (Option<AgentActivity>, bool) {
         let said = self.assistant_error.take();
         let mut state = self.state.lock().unwrap();
         let was_open = state.turn_open;
@@ -663,6 +664,7 @@ impl ProtocolReader {
         } else {
             state.steered_operation_id = None;
         }
+        let turn_ended = was_open && !state.turn_open;
         if failed && !interrupted {
             let summary = said.unwrap_or_else(|| {
                 crate::harness::codex_app_server::sanitize_provider_error(&result_error_text(event))
@@ -671,16 +673,19 @@ impl ProtocolReader {
             // Usage limits have their own reset/attention contract. An old
             // limit does not suppress a different failure on a later turn.
             if was_open && !usage_refusal {
-                return Some(AgentActivity::TurnFailed {
-                    summary,
-                    operation_id,
-                    episode_id: None,
-                });
+                return (
+                    Some(AgentActivity::TurnFailed {
+                        summary,
+                        operation_id,
+                        episode_id: None,
+                    }),
+                    turn_ended,
+                );
             }
         } else if !state.closed {
             state.reported_error = None;
         }
-        None
+        (None, turn_ended)
     }
 
     /// One message's content blocks, minted in the order the child reported

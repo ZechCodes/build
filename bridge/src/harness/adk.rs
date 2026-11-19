@@ -3,8 +3,9 @@
 use crate::agent_message::{BuildTool, Framing, MessageKind, ToolLoading};
 use crate::harness::claude::ClaudeHarness;
 use crate::harness::{
-    installed, AgentSession, Harness, HarnessContext, HarnessError, OpenedSession, SessionLocator,
-    SessionOpenRequest, SessionOutput, DAEMON_IDENTITY_VARS, INHERITED_AGENT_MARKERS,
+    installed, AgentSession, AgentStatus, Harness, HarnessContext, HarnessError, LiveModelChange,
+    LiveModelChoice, OpenedSession, SessionLocator, SessionOpenRequest, SessionOutput,
+    DAEMON_IDENTITY_VARS, INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -87,6 +88,27 @@ impl Harness for AdkHarness {
 
     fn model_args(&self, choice: &ModelChoice) -> Vec<String> {
         ClaudeHarness.model_args(choice)
+    }
+
+    fn choose_live_model(&self, change: LiveModelChange<'_>) -> Result<LiveModelChoice, String> {
+        let model = change.offered_model(self)?;
+        let effort = match change.requested_effort {
+            None if model.efforts.is_empty() => None,
+            requested => requested.or(change.launch_effort),
+        };
+        let choice = change.choice(self, &model, effort)?;
+        if change.requested_effort.is_some() && change.requested_effort != change.launch_effort {
+            return Err(format!(
+                "set_agent_model: Claude ADK keeps its launch effort ({}). Omit effort or specify that effort.",
+                change.launch_effort.unwrap_or("harness default")
+            ));
+        }
+        change.require_native(self, &choice)?;
+        // A background task alone doesn't prevent the next prompt from
+        // carrying set_model. The session knows whether a parent turn is open.
+        let deferred =
+            change.status == AgentStatus::Starting || change.session.waits_for_turn_choice(&choice);
+        Ok(LiveModelChoice { choice, deferred })
     }
 
     fn requires_unadorned_command(&self, prompt: &str) -> bool {

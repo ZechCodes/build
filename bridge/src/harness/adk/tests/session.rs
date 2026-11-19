@@ -374,6 +374,10 @@ async fn a_started_task_mints_once_and_keeps_a_turnless_session_working() {
         AgentStatus::Working,
         "the work outlived the turn that started it"
     );
+    assert!(
+        !session.waits_for_turn_choice(&choosing(Some("claude-opus-5"), None)),
+        "the closed parent turn no longer holds a model change"
+    );
     session.end();
 }
 /// The roster is the source of truth, in both directions: a task it stops

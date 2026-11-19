@@ -51,6 +51,7 @@ pub(in crate::app::tests) struct DictatedSession {
     resume_name: Option<String>,
     native_choices: Vec<ModelChoice>,
     interruptible: bool,
+    applies_model_before_prompt: bool,
     start_refused: Option<String>,
     recovery_episode: Option<String>,
 }
@@ -71,6 +72,7 @@ impl DictatedSession {
             resume_name: None,
             native_choices: Vec::new(),
             interruptible: false,
+            applies_model_before_prompt: false,
             start_refused: None,
             recovery_episode: None,
         }
@@ -151,6 +153,11 @@ impl DictatedSession {
         self
     }
 
+    pub(in crate::app::tests) fn applying_model_before_prompt(mut self) -> Self {
+        self.applies_model_before_prompt = true;
+        self
+    }
+
     pub(in crate::app::tests) fn interruptible(mut self) -> Self {
         self.interruptible = true;
         self
@@ -193,6 +200,11 @@ impl AgentSession for DictatedSession {
         } else {
             TurnChoiceSupport::RestartRequired
         }
+    }
+    fn waits_for_turn_choice(&self, choice: &ModelChoice) -> bool {
+        self.applies_model_before_prompt
+            && self.status() == AgentStatus::Working
+            && choice.model != self.active_model
     }
     fn status(&self) -> AgentStatus {
         self.watched_status

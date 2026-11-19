@@ -74,6 +74,9 @@ impl AgentSession for PolicySession {
         }
         self.inner.turn_choice_support(choice)
     }
+    fn waits_for_turn_choice(&self, choice: &ModelChoice) -> bool {
+        self.inner.waits_for_turn_choice(choice)
+    }
     fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError> {
         let policy = self.compaction_policy().unwrap_or(&self.policy);
         if turn.text.split_whitespace().next() == Some(COMPACT_COMMAND)

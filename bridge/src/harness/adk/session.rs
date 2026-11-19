@@ -499,6 +499,14 @@ impl AgentSession for AdkSession {
         self.state.lock().unwrap().turn_choice_support(choice)
     }
 
+    fn waits_for_turn_choice(&self, choice: &ModelChoice) -> bool {
+        let state = self.state.lock().unwrap();
+        // set_model changes the session before the next prompt is written.
+        state.turn_open
+            && choice.model != state.requested_model
+            && state.turn_choice_support(choice) == TurnChoiceSupport::Native
+    }
+
     /// One `control_request` line on the same pipe the turns go down, and back.
     ///
     /// No wait for the ack — the contract is `send_turn`'s, for `send_turn`'s

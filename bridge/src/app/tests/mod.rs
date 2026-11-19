@@ -173,7 +173,9 @@ mod untimed {
         .and_then(|delivered| match delivered {
             DeliveryOutcome::Delivered(Some(delivered)) => Ok(delivered),
             DeliveryOutcome::Delivered(None) => panic!("the owner still has a session"),
-            DeliveryOutcome::Deferred => panic!("the test turn is immediately eligible"),
+            DeliveryOutcome::Deferred | DeliveryOutcome::WaitingForTurnEnd => {
+                panic!("the test turn is immediately eligible")
+            }
             DeliveryOutcome::Refused(why) => Err(why),
         })
     }

@@ -7,8 +7,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::harness::codex::{self, CodexHarness, CodexMcpConfig, EFFORT_LEVELS};
 use crate::harness::{
-    installed, AgentSession, Harness, HarnessContext, HarnessError, OpenedSession,
-    SessionOpenRequest, SessionOutput, DAEMON_IDENTITY_VARS, INHERITED_AGENT_MARKERS,
+    installed, AgentSession, AgentStatus, Harness, HarnessContext, HarnessError, LiveModelChange,
+    LiveModelChoice, OpenedSession, SessionOpenRequest, SessionOutput, DAEMON_IDENTITY_VARS,
+    INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -139,6 +140,16 @@ impl Harness for CodexAppServerHarness {
 
     fn model_args(&self, choice: &ModelChoice) -> Vec<String> {
         CodexHarness.model_args(choice)
+    }
+
+    fn choose_live_model(&self, change: LiveModelChange<'_>) -> Result<LiveModelChoice, String> {
+        let model = change.offered_model(self)?;
+        let effort = change.requested_effort.or(change.saved_effort);
+        let choice = change.choice(self, &model, effort)?;
+        change.require_native(self, &choice)?;
+        // Codex attaches the choice to its next turn/start request.
+        let deferred = change.status != AgentStatus::Waiting;
+        Ok(LiveModelChoice { choice, deferred })
     }
 
     /// `/compact` too: the session hands it to Codex as `thread/compact/start`,

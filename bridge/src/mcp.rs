@@ -39,6 +39,7 @@ const READABLE_BODIES: &[&str] = &[
 
 mod client;
 mod compaction;
+mod model_tools;
 mod reviews;
 mod waiting_on;
 
@@ -184,6 +185,13 @@ pub enum BridgeAction {
     CompactAgent {
         agent_id: String,
         instructions: String,
+    },
+    /// Change an existing agent's model on its live session. Project only.
+    SetAgentModel {
+        agent_id: String,
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
     },
     /// Every harness this bridge can run, with its models and efforts, and
     /// which of them are installed here. The lookup an agent asked for a model
@@ -568,6 +576,7 @@ impl BridgeAction {
             BridgeAction::SetWorkspaceName { .. } => "set_workspace_name",
             BridgeAction::CompactSelf { .. } => "compact_self",
             BridgeAction::CompactAgent { .. } => "compact_agent",
+            BridgeAction::SetAgentModel { .. } => "set_agent_model",
             BridgeAction::ListHarnesses => "list_harnesses",
             BridgeAction::ListProjects => "list_projects",
             BridgeAction::ListWork => "list_work",
@@ -670,9 +679,10 @@ impl BridgeAction {
             | BridgeAction::AddEnvironmentSource { .. }
             | BridgeAction::RemoveEnvironmentSource { .. }
             | BridgeAction::ReclaimWorkspace { .. } => &[McpSurface::Project],
-            // Compacting ANOTHER agent is staffing, which is the project
-            // agent's business; every agent compacts itself.
-            BridgeAction::CompactAgent { .. } => &[McpSurface::Project],
+            // Managing another agent's session belongs to the coordinator.
+            BridgeAction::CompactAgent { .. } | BridgeAction::SetAgentModel { .. } => {
+                &[McpSurface::Project]
+            }
             // The tracker is on every surface that WORKS a project: a coding
             // agent files and moves the tasks it is given, and a project
             // agent runs the board. The router has no project to be scoped to.
@@ -1767,7 +1777,7 @@ impl DoneServer {
                 },
                 "required": ["workspace_id"]
             }
-        }), compaction::compact_agent_tool(), json!({
+        }), compaction::compact_agent_tool(), model_tools::set_agent_model_tool(), json!({
             "name": "post_thread_message",
             "description": "Send a message in your thread with the user. In this thread it is the only way they see what you say. Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with comment_task. Comment on the task with comment_task when something changes what the reader should know: a decision or finding that changes the plan, a question (use mention_user only when it is the user's call), a handoff, or the final result with its evidence. The board already shows the task's column and assignee; do not comment to say you are still working. A question asked in your thread is answered in your thread, even when it is about a task. When the result is on a task the user is on, the Complete in your thread is one line that points to it. Use status=Complete for an outcome or an answer, Waiting when the next step is the user's call, Blocked when you cannot proceed without them, or Working only while a long read on their question is still going, never as a progress report.",
             "inputSchema": Self::project_message_input_schema()
@@ -1929,6 +1939,7 @@ impl DoneServer {
             "set_topic" => topic_action(id, params),
             "set_name" => name_action(id, params),
             "compact_agent" => compaction::compact_agent_action(id, params),
+            "set_agent_model" => model_tools::set_agent_model_action(id, params),
             "compact_self" => compaction::compact_self_action(id, params),
             "post_thread_message" => project_message(id, params),
             other => refused(id, unknown_tool(McpSurface::Project, other)),
@@ -3888,6 +3899,75 @@ mod tests {
     }
 
     #[test]
+    fn set_agent_model_has_the_same_surface_as_compact_agent() {
+        for server in [project(), server(), router()] {
+            let names = tool_names(&server);
+            let offered = names.iter().any(|name| name == "compact_agent");
+            assert_eq!(names.iter().any(|name| name == "set_agent_model"), offered);
+            let handled = server.handle_message(
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                "params":{"name":"set_agent_model","arguments":{
+                    "agent_id":"agent-2", "model":"gpt-6-astra", "effort":"high"
+                }}})
+                .to_string(),
+            );
+            if offered {
+                let action = handled.action.expect("project tool parses an action");
+                assert_eq!(action.tool_name(), "set_agent_model");
+                assert_eq!(action.surfaces(), &[McpSurface::Project]);
+                assert_eq!(
+                    serde_json::to_value(action).unwrap(),
+                    json!({"action":"set_agent_model", "agent_id":"agent-2",
+                           "model":"gpt-6-astra", "effort":"high"})
+                );
+            } else {
+                assert!(handled.action.is_none());
+                assert_eq!(parse(&handled.reply.unwrap())["result"]["isError"], true);
+            }
+        }
+    }
+
+    #[test]
+    fn set_agent_model_refuses_invalid_tool_arguments() {
+        for (arguments, error) in [
+            (json!({"model":"gpt-6-astra"}), "agent_id is required"),
+            (json!({"agent_id":"agent-2"}), "model is required"),
+            (
+                json!({"agent_id":"agent-2","model":"gpt-6-astra","effort":1}),
+                "invalid effort",
+            ),
+            (
+                json!({"agent_id":"agent-2","model":"gpt-6-astra","effort":{}}),
+                "invalid effort",
+            ),
+            (
+                json!({"agent_id":"agent-2","model":"gpt-6-astra","harness":"claude"}),
+                "locked to its harness",
+            ),
+            (
+                json!({"agent_id":"agent-2","model":"gpt-6-astra","provider":"claude"}),
+                "locked to its harness",
+            ),
+        ] {
+            let handled = project().handle_message(
+                &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":"set_agent_model","arguments":arguments}})
+                .to_string(),
+            );
+            assert!(handled.action.is_none());
+            let reply = parse(&handled.reply.unwrap());
+            assert_eq!(reply["result"]["isError"], true);
+            assert!(
+                reply["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains(error),
+                "{reply}"
+            );
+        }
+    }
+
+    #[test]
     fn every_surface_advertises_its_exact_tool_inventory() {
         assert_eq!(
             tool_names(&router()),
@@ -3931,7 +4011,8 @@ mod tests {
                     "add_environment_source",
                     "remove_environment_source",
                     "reclaim_workspace",
-                    "compact_agent"
+                    "compact_agent",
+                    "set_agent_model"
                 ][..],
                 &conversation[..],
                 &TASK_TOOLS[..],
@@ -3955,6 +4036,7 @@ mod tests {
             "remove_environment_source",
             "reclaim_workspace",
             "compact_agent",
+            "set_agent_model",
         ] {
             assert!(
                 !tool_names(&server()).contains(&project_only.to_string()),

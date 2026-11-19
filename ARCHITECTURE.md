@@ -3688,8 +3688,7 @@ narrows, so a copied value grants nothing.
 unwatched unless asked, stamped `created_by`), scoped to the caller's own
 project by its binding, so an agent in a named workspace can staff the project
 too (`bridge/src/app/projects/agent_tools.rs`, `agent_writes.rs`). Source
-administration, reclaim, `compact_agent` and `set_agent_model` stay the pin's.
-`assign_task` and
+administration, reclaim, `compact_agent` and `set_agent_model` stay the pin's. `assign_task` and
 `tasks.assign` take `{kind: "new_project_agent", agent_name, …}`: a new worker
 on the task's project's owner, handed the task, linking no workspace
 (`bridge/src/app/tracker/dispatch.rs`). `tasks.assign` takes the client's

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from datetime import timedelta
+import json
+from pathlib import Path
 import secrets
+from types import SimpleNamespace
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import pytest
@@ -72,22 +76,54 @@ def test_desktop_family_requires_verified_guard_identity():
         bridge_http_client_binding(request())
 
 
-def test_connect_policy_changes_only_connect_src_and_preserves_all_other_directives():
-    base = "default-src 'self'; script-src 'self' 'nonce-abc'; connect-src 'self' data: wss://relay.example; object-src 'none'"
-    policy = connect_policy(base, ["https://bridge.example", "https://bridge.example"])
-    assert policy == base.replace(
-        "wss://relay.example", "wss://relay.example https://bridge.example"
+@pytest.fixture()
+def terminal_endpoint():
+    fixture = (
+        Path(__file__).resolve().parents[2]
+        / "fixtures/api/http/terminal-websocket-v1.json"
     )
-    assert "connect-src https:" not in policy
+    return json.loads(fixture.read_text())["endpoint"]
+
+
+def test_connect_policy_changes_only_connect_src_and_preserves_all_other_directives(
+    terminal_endpoint,
+):
+    base = "default-src 'self'; script-src 'self' 'nonce-abc'; connect-src 'self' data: wss://relay.example; object-src 'none'"
+    origin = terminal_endpoint["bridge_https_origin"]
+    policy = connect_policy(
+        base,
+        [origin, origin],
+        hosted_hostname=urlsplit(terminal_endpoint["caller_origin"]).hostname,
+    )
+    assert policy == base.replace(
+        "wss://relay.example",
+        " ".join(["wss://relay.example", *terminal_endpoint["connect_src_sources"]]),
+    )
+
+
+def test_explicit_wss_sources_follow_the_host_only_cookie_boundary(terminal_endpoint):
+    # The bridge hostname must differ from the hosted app hostname.
+    hostname = urlsplit(terminal_endpoint["caller_origin"]).hostname
+    for case in terminal_endpoint["browser_host_cases"]:
+        origin = case["bridge_https_origin"]
+        policy = connect_policy(
+            "connect-src 'self'", [origin], hosted_hostname=hostname
+        )
+        sources = ["connect-src", "'self'", origin]
+        if case["allowed"]:
+            sources.append(origin.replace("https://", "wss://", 1))
+        assert policy.split() == sources, case["name"]
 
 
 def test_connect_policy_inherits_default_and_never_broadens_to_a_scheme():
     policy = connect_policy(
-        "default-src 'self'; object-src 'none'", ["https://bridge.example"]
+        "default-src 'self'; object-src 'none'",
+        ["https://bridge.example"],
+        hosted_hostname="app.example",
     )
     assert (
         policy
-        == "default-src 'self'; object-src 'none'; connect-src 'self' https://bridge.example"
+        == "default-src 'self'; object-src 'none'; connect-src 'self' https://bridge.example wss://bridge.example"
     )
 
 
@@ -118,6 +154,23 @@ async def seed_endpoint(db, user_id, origin, *, enabled=True, approved=True, epo
     return endpoint
 
 
+async def seed_challenge(db, user_id, binding, origin, expires_at):
+    from buildapp.models import BridgeHttpChallenge
+
+    challenge = BridgeHttpChallenge(
+        user_id=user_id,
+        client_binding=binding,
+        origin=origin,
+        purpose="discovery",
+        nonce="n",
+        nonce_hash="h",
+        expires_at=expires_at,
+    )
+    db.add(challenge)
+    await db.flush()
+    return challenge
+
+
 @pytest.mark.asyncio
 async def test_document_query_bounds_endpoints_and_rechecks_current_owner_and_epoch(db):
     from buildapp.bridge_http_policy import document_origins
@@ -132,9 +185,24 @@ async def test_document_query_bounds_endpoints_and_rechecks_current_owner_and_ep
     await seed_endpoint(db, user, "https://disabled.example", enabled=False)
     await seed_endpoint(db, user, "https://unapproved.example", approved=False)
     await seed_endpoint(db, user, "https://old-epoch.example", epoch=2)
-    assert len(await document_origins(db, user, "browser:one", None, utc_now())) == 16
-    origins = await document_origins(db, other, "browser:two", None, utc_now())
-    assert origins == ["https://other.example"]
+    now = utc_now()
+    expires_at = now + timedelta(seconds=30)
+    candidate = await seed_challenge(
+        db, user, "browser:one", "https://candidate.example:9443", expires_at
+    )
+    await seed_challenge(
+        db, user, "browser:one", "https://unselected.example", expires_at
+    )
+    registered = await document_origins(db, user, "browser:one", None, now)
+    assert len(registered) == 16
+    assert all(origin.startswith("https://bridge-") for origin in registered)
+    assert await document_origins(db, user, "browser:one", str(candidate.id), now) == [
+        *registered,
+        candidate.origin,
+    ]
+    assert await document_origins(db, other, "browser:two", str(candidate.id), now) == [
+        "https://other.example"
+    ]
 
 
 @pytest.mark.asyncio
@@ -142,27 +210,20 @@ async def test_document_query_bounds_endpoints_and_rechecks_current_owner_and_ep
     "change", ["user", "client", "expired", "consumed", "purpose", "invalid-origin"]
 )
 async def test_only_live_initiating_account_challenge_widens_the_document(db, change):
-    from datetime import timedelta
-
     from buildapp.bridge_http_policy import document_origins
     from buildapp.clock import utc_now
     from buildapp.db_test_support import add_account
-    from buildapp.models import BridgeHttpChallenge
 
     user = await add_account(db, "policy@example.com")
     other = await add_account(db, "other@example.com")
     now = utc_now()
-    challenge = BridgeHttpChallenge(
-        user_id=user,
-        client_binding="browser:one",
-        origin="https://candidate.example",
-        purpose="discovery",
-        nonce="n",
-        nonce_hash="h",
-        expires_at=now + timedelta(seconds=30),
+    challenge = await seed_challenge(
+        db,
+        user,
+        "browser:one",
+        "https://candidate.example",
+        now + timedelta(seconds=30),
     )
-    db.add(challenge)
-    await db.flush()
     assert await document_origins(db, user, "browser:one", str(challenge.id), now) == [
         "https://candidate.example"
     ]
@@ -204,11 +265,11 @@ def test_real_skrift_assembly_has_one_account_csp_keeps_nonce_and_nonapp_default
     skrift_app, tmp_path, monkeypatch
 ):
     import re
-    from datetime import timedelta
 
     from buildapp import controllers
     from buildapp.clock import utc_now
-    from buildapp.models import BridgeHttpChallenge
+    from buildapp.db_test_support import add_account
+    from buildapp.models import Device
     from buildapp.skrift_app_test_support import on_database
 
     (tmp_path / "index.html").write_text(
@@ -223,25 +284,29 @@ def test_real_skrift_assembly_has_one_account_csp_keeps_nonce_and_nonapp_default
         binding = client.get_session_data()["build_bridge_http_binding"]
 
         async def work(db):
-            await seed_endpoint(db, user, "https://owned.example")
-            from buildapp.db_test_support import add_account
-
+            await seed_endpoint(db, user, "https://owned.example:8443")
+            await seed_endpoint(db, user, "https://testserver.local:9443")
             other = await add_account(db, "other@example.com")
             await seed_endpoint(db, other, "https://other.example")
-            challenge = BridgeHttpChallenge(
-                user_id=user,
-                client_binding=binding,
-                origin="https://candidate.example",
-                purpose="discovery",
-                nonce="n",
-                nonce_hash="h",
-                expires_at=utc_now() + timedelta(seconds=30),
+            await seed_endpoint(db, user, "https://stale.example", epoch=2)
+            reassigned = await seed_endpoint(db, user, "https://reassigned.example")
+            device = await db.get(Device, reassigned.device_id)
+            device.owner_user_id = other
+            now = utc_now()
+            expired = await seed_challenge(
+                db, user, binding, "https://expired.example:9443", now
             )
-            db.add(challenge)
+            challenge = await seed_challenge(
+                db,
+                user,
+                binding,
+                "https://candidate.example:9443",
+                now + timedelta(seconds=30),
+            )
             await db.commit()
-            return challenge.id
+            return challenge.id, expired.id
 
-        challenge = on_database(client, work)
+        challenge, expired = on_database(client, work)
         response = client.get(
             f"/app/?bridge_discovery={challenge}&origin=https://untrusted.example"
         )
@@ -249,19 +314,30 @@ def test_real_skrift_assembly_has_one_account_csp_keeps_nonce_and_nonapp_default
         policies = response.headers.get_list("content-security-policy")
         assert len(policies) == 1
         policy = policies[0]
-        assert (
-            "https://owned.example" in policy and "https://candidate.example" in policy
-        )
-        assert "other.example" not in policy and "untrusted.example" not in policy
+        assert connect_sources(policy) == {
+            "'self'",
+            "data:",
+            "wss://relay.getbuild.ing",
+            "https://owned.example:8443",
+            "wss://owned.example:8443",
+            "https://candidate.example:9443",
+            "wss://candidate.example:9443",
+            "https://testserver.local:9443",
+        }
         assert re.search(r"script-src [^;]*'nonce-[^']+'", policy)
         assert (
             "object-src 'none'" in policy
             and "form-action 'self' getbuilding:" in policy
         )
-        assert "wss://relay.getbuild.ing" in policy
         assert response.headers["cache-control"] == "private, no-store"
         assert response.headers["referrer-policy"] == "no-referrer"
         assert response.headers["x-content-type-options"] == "nosniff"
+        stale = client.get(f"/app/?bridge_discovery={expired}")
+        assert stale.status_code == 200
+        assert connect_sources(stale.headers["content-security-policy"]) == (
+            connect_sources(policy)
+            - {"https://candidate.example:9443", "wss://candidate.example:9443"}
+        )
         login = client.get("/auth/logout")
         assert len(login.headers.get_list("content-security-policy")) == 1
         assert "owned.example" not in login.headers["content-security-policy"]
@@ -271,7 +347,21 @@ def test_real_skrift_assembly_has_one_account_csp_keeps_nonce_and_nonapp_default
             f"/app/?bridge_discovery={challenge}", follow_redirects=False
         )
         assert anonymous.status_code == 302
-        assert "candidate.example" not in anonymous.headers["content-security-policy"]
+        assert connect_sources(anonymous.headers["content-security-policy"]) == {
+            "'self'",
+            "data:",
+            "wss://relay.getbuild.ing",
+        }
+
+
+def connect_sources(policy):
+    return set(
+        next(
+            part.split()[1:]
+            for part in policy.split(";")
+            if part.strip().startswith("connect-src ")
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -360,8 +450,6 @@ def test_real_skrift_logout_revokes_only_current_family_after_valid_csrf(
 def test_real_skrift_desktop_csp_requires_exact_verified_access_token(
     skrift_app, tmp_path, monkeypatch
 ):
-    from datetime import timedelta
-
     from skrift.auth.tokens import create_signed_token, verify_signed_token
     from skrift.config import get_settings
 
@@ -404,10 +492,10 @@ def test_real_skrift_desktop_csp_requires_exact_verified_access_token(
         path = f"/app/desktop?bridge_discovery={challenge_id}"
         allowed = client.get(path, headers={"Authorization": f"Bearer {first}"})
         assert allowed.status_code == 200
-        assert (
-            "https://desktop-candidate.example"
-            in allowed.headers["content-security-policy"]
-        )
+        assert {
+            "https://desktop-candidate.example",
+            "wss://desktop-candidate.example",
+        } <= (connect_sources(allowed.headers["content-security-policy"]))
         other_token = client.get(path, headers={"Authorization": f"Bearer {second}"})
         assert other_token.status_code == 200
         assert (

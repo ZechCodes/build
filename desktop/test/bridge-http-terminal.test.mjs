@@ -15,6 +15,7 @@ const read = (path) => JSON.parse(readFileSync(new URL(path, import.meta.url)));
 const vectors = read("../../fixtures/api/http/terminal-websocket-v1.json");
 const manifest = read("../src/bridge-http-resources.json");
 const { endpoint, handshake, ticket, opening, messages, limits } = vectors;
+const v1Opening = opening.cases.find(({ name }) => name === "v1");
 const vectorBytes = (name) => Buffer.from(messages[name].utf8);
 const envelope = (name) => JSON.parse(messages[name].utf8);
 const bearer = "fixture-device-bearer";
@@ -53,11 +54,12 @@ function ticketBody() {
 async function recordHttp(request, response, received, respond) {
   const parts = [];
   for await (const part of request) parts.push(part);
-  received.push({
+  const recorded = {
     method: request.method, url: request.url, headers: request.headers,
     body: Buffer.concat(parts).toString("utf8"),
-  });
-  if (respond) respond(response);
+  };
+  received.push(recorded);
+  if (respond) respond(response, recorded);
   else if (request.url === ticket.path) issueTicket(response);
   else response.writeHead(404).end();
 }
@@ -105,15 +107,16 @@ function mint(origin, scope) {
 }
 
 async function desktop(t, origin, {
-  vector = opening.cases.find(({ name }) => name === "v1"),
+  vector = v1Opening,
   scope = "bridge:read bridge:write", fetchTicket = fetch,
+  getMint = () => mint(origin, scope),
 } = {}) {
   const auth = { accessToken: "fixture-hosted-bearer", generation: 1 };
   const adapter = createBridgeHttp({
     fetch(url, options) {
       if (url.startsWith(endpoint.caller_origin + "/api/"))
-        return new Response(JSON.stringify(mint(origin, scope)));
-      if (url === origin + "/v1/sessions")
+        return new Response(JSON.stringify(getMint()));
+      if (url === origin + "/v1/sessions" && options.method === "POST")
         return new Response(JSON.stringify(fakeOpening(vector)));
       return fetchTicket(url, options);
     },
@@ -131,11 +134,69 @@ async function desktop(t, origin, {
 async function connect(t, options, onEvent) {
   const remote = await peer(t, options);
   const local = await desktop(t, remote.origin);
+  return openConnection(local, remote, onEvent);
+}
+
+async function openConnection(local, remote, onEvent) {
   const connected = once(remote.wss, "connection");
   const delivery = [];
   const opened = await local.adapter.terminalOpen(owner, local.handle, onEvent ?? ((value) => delivery.push(value)));
   const [socket] = await connected;
   return { ...local, ...opened, remote, socket, delivery };
+}
+
+function controlRefreshTimer(t) {
+  let scheduled = Promise.withResolvers();
+  const schedule = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback, delay, ...args) => {
+    const timer = schedule(callback, delay, ...args);
+    // The 30 s Opening renews about 20 s in, beyond the network timers.
+    if (delay > 10_000 && delay <= 20_000) scheduled.resolve(() => {
+      clearTimeout(timer);
+      callback(...args);
+    });
+    return timer;
+  });
+  return async () => {
+    const run = await scheduled.promise;
+    scheduled = Promise.withResolvers();
+    return run;
+  };
+}
+
+async function renewableConnection(t, renewedBearer = bearer) {
+  const nextRefresh = controlRefreshTimer(t);
+  const patch = Promise.withResolvers();
+  const remote = await peer(t, {
+    respond(response, request) {
+      if (request.method === "PATCH") patch.resolve({ response, request });
+      else if (request.url === ticket.path) issueTicket(response);
+      else response.writeHead(404).end();
+    },
+  });
+  let mints = 0;
+  const scope = "bridge:read bridge:write";
+  const getMint = () => mints++ === 0
+    ? { ...mint(remote.origin, scope), expires_at: Math.floor(Date.now() / 1000) + 50 }
+    : { ...mint(remote.origin, scope), access_token: renewedBearer };
+  const local = await desktop(t, remote.origin, { getMint });
+  const ctx = await openConnection(local, remote);
+  const refresh = await nextRefresh();
+  return {
+    ...ctx,
+    async beginRenewal() {
+      refresh();
+      const { request } = await patch.promise;
+      assert.equal(request.url, "/v1/sessions/" + opening.base.session_id);
+      assert.equal(request.headers.authorization, "Bearer " + renewedBearer);
+    },
+    async finishRenewal(value = fakeOpening(v1Opening)) {
+      const { response } = await patch.promise;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(value));
+      await nextRefresh();
+    },
+  };
 }
 
 function call(ctx, vector, params = vector.params) {
@@ -539,4 +600,69 @@ test("a retired main-process receiver can fail delivery without escaping the soc
   const closed = once(ctx.socket, "close");
   ctx.socket.send(vectorBytes("output"));
   assert.equal((await closed)[0], 1006);
+});
+
+function expectRenewalClose(ctx, code) {
+  assert.deepEqual(ctx.delivery, [{
+    terminal: ctx.terminal, type: "close", code, closeCode: undefined,
+  }]);
+}
+
+const rotatedBearer = "fixture-rotated-device-bearer";
+
+test("renewal token rotation closes the socket and marks handed-off effects uncertain", { timeout: 5000 }, async (t) => {
+  const ctx = await renewableConnection(t, rotatedBearer);
+  const { result } = await readCall(ctx, "input");
+  void result.catch(() => {});
+  const closed = once(ctx.socket, "close");
+  await ctx.beginRenewal();
+  expectRenewalClose(ctx, "terminal_credentials_rotated");
+  await assert.rejects(result, { code: "terminal_credentials_rotated", uncertain: true });
+  assert.equal((await closed)[0], 1006);
+  await ctx.finishRenewal();
+});
+
+test("renewal refuses terminal open while the rotated credential awaits PATCH", { timeout: 5000 }, async (t) => {
+  const ctx = await renewableConnection(t, rotatedBearer);
+  await ctx.beginRenewal();
+  expectRenewalClose(ctx, "terminal_credentials_rotated");
+  await assert.rejects(openTerminal(ctx), { code: "terminal_busy" });
+  assert.equal(ctx.remote.requests.filter(({ url }) => url === ticket.path).length, 1);
+  await ctx.finishRenewal();
+  const next = await openTerminal(ctx);
+  assert.notEqual(next.terminal, ctx.terminal);
+  assert.equal(ctx.remote.requests.at(-1).headers.authorization, "Bearer " + rotatedBearer);
+});
+
+function changedEpoch() {
+  const value = fakeOpening(v1Opening);
+  value.greeting.bridge_epoch = vectors.epochs.find(({ name }) => name === "stale_matching_id").bridge_epoch;
+  return value;
+}
+
+for (const [name, changedOpening] of [
+  ["bridge epoch", changedEpoch],
+  ["terminal mode", () => fakeOpening(opening.cases.find(({ name }) => name === "old_bridge"))],
+]) {
+  test("renewal PATCH changing the " + name + " closes the socket", { timeout: 5000 }, async (t) => {
+    const ctx = await renewableConnection(t);
+    const closed = once(ctx.socket, "close");
+    await ctx.beginRenewal();
+    assert.deepEqual(ctx.delivery, []);
+    await ctx.finishRenewal(changedOpening());
+    expectRenewalClose(ctx, "terminal_binding_changed");
+    assert.equal((await closed)[0], 1006);
+  });
+}
+
+test("renewal with the same epoch and token keeps the same socket", { timeout: 5000 }, async (t) => {
+  const ctx = await renewableConnection(t);
+  await ctx.beginRenewal();
+  await ctx.finishRenewal();
+  const { result } = await readCall(ctx, "ping");
+  const response = reply(envelope("ping").id);
+  ctx.socket.send(response);
+  assert.deepEqual(await result, JSON.parse(response));
+  assert.deepEqual(ctx.delivery, []);
+  assert.equal(ctx.remote.upgrades.length, 1);
 });

@@ -258,6 +258,8 @@ function checkMessageSize(length, snapshot) {
 }
 
 function parseMessage(connection, data, binary) {
+  // ws maxPayload and this check bound decode cost to a 12 MiB aggregate message.
+  // As in the browser endpoint, the decoded envelope determines the receive budget.
   const length = data.length;
   if (length > MAX_SNAPSHOT_BYTES) throw oversized();
   const message = decode(data, binary);

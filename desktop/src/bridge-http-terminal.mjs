@@ -89,20 +89,22 @@ function refusal(status, fallback) {
   return Object.assign(transportError(REFUSALS.get(status) ?? fallback), { status });
 }
 
-async function issueTicket(device, connection, origin) {
+async function issueTicket(device, connection, origin, body) {
   try {
     return await device(connection.handle, "/v1/terminal-tickets", {
       method: "POST",
       headers: { Origin: origin },
-      body: { opening_generation: connection.generation },
+      body,
       maxBody: 1024,
       maxBytes: 1024,
       signal: connection.abort.signal,
       validateResponse: ticketResponse,
       preserveHandleOnUnauthorized: true,
+      preserveErrorCode: true,
     });
   } catch (error) {
-    if (error.code === "http_error") throw refusal(error.status, "terminal_ticket_refused");
+    if (error.code === "http_error" && error.retryable === undefined)
+      throw refusal(error.status, "terminal_ticket_refused");
     throw error;
   }
 }
@@ -227,7 +229,7 @@ function pushValid(message) {
     case "term.output": return output(message);
     case "term.reset": return reset(message);
     case "term.closed": return termId(message.term_id) && typeof message.reason === "string";
-    case "attachment_error": return wireId(message.attach_id) && message.reason === "snapshot_too_large";
+    case "attachment_error": return wireId(message.attach_id) && typeof message.reason === "string" && REQUEST_ID.test(message.reason);
     default: return false;
   }
 }
@@ -268,9 +270,10 @@ function parseMessage(connection, data, binary) {
   const request = connection.calls.get(message.id);
   const reply = Object.hasOwn(message, "id");
   const valid = reply ? replyValid(message, request) : pushValid(message);
-  checkMessageSize(length, valid ? snapshotLength(message, request, reply) : undefined);
+  const snapshot = valid ? snapshotLength(message, request, reply) : undefined;
+  checkMessageSize(length, snapshot);
   if (!valid || !withinDepth(message)) throw protocolError();
-  return { message, request, reply };
+  return { message, request, reply, delivery: { bytes: length, snapshot: snapshot !== undefined } };
 }
 
 function callFailure(error, pending) {
@@ -297,19 +300,20 @@ export function createBridgeTerminals({ handleFor, check, device, hostedOrigin }
 
   function notifyClose(connection, error) {
     if (!connection.opened || !observable(connection)) return;
-    const { code, closeCode } = error;
-    deliver(connection, { type: "close", code, closeCode });
+    const { code, closeCode, reason } = error;
+    deliver(connection, { type: "close", code, closeCode, ...(reason && { reason }) });
   }
 
   function settle(connection, error) {
     connection.done = true;
     terminals.delete(connection.id);
     connection.abort.abort();
+    connection.signal?.removeEventListener("abort", connection.cancel);
     clearTimeout(connection.handshakeTimer);
     for (const timer of connection.writes) clearTimeout(timer);
     connection.writes.clear();
     connection.connected?.reject(error);
-    for (const pending of connection.calls.values()) pending.reject(callFailure(error, pending));
+    for (const pending of connection.calls.values()) pending.reject?.(callFailure(error, pending));
     connection.calls.clear();
   }
 
@@ -324,6 +328,7 @@ export function createBridgeTerminals({ handleFor, check, device, hostedOrigin }
       socket?.terminate();
     }
     if (notify) notifyClose(connection, error);
+    connection.onEnd?.(error);
   }
 
   function clear(handle, code = "stale_owner", notify = false) {
@@ -353,9 +358,9 @@ export function createBridgeTerminals({ handleFor, check, device, hostedOrigin }
     }
   }
 
-  function deliver(connection, event) {
+  function deliver(connection, event, delivery) {
     try {
-      connection.onEvent({ terminal: connection.id, ...event });
+      connection.onEvent({ terminal: connection.id, ...event }, delivery);
     } catch {
       end(connection, transportError("terminal_delivery_failed"), { notify: false });
     }
@@ -372,13 +377,16 @@ export function createBridgeTerminals({ handleFor, check, device, hostedOrigin }
       return;
     }
     if (!currentForReceive(connection)) return;
-    const { message, request, reply } = parsed;
+    const { message, request, reply, delivery } = parsed;
     if (reply) {
+      if (!request) return;
       connection.calls.delete(message.id);
-      request?.resolve(message);
-    } else {
-      deliver(connection, { type: "message", data: message });
+      if (!connection.forwardReplies) {
+        request.resolve(message);
+        return;
+      }
     }
+    deliver(connection, { type: "message", data: message }, delivery);
   }
 
   function onCodecError(connection, code) {
@@ -388,6 +396,7 @@ export function createBridgeTerminals({ handleFor, check, device, hostedOrigin }
     // and let the peer receive the close within the bounded close handshake.
     settle(connection, error);
     notifyClose(connection, error);
+    connection.onEnd?.(error);
   }
 
   function onError(connection, error) {
@@ -423,14 +432,14 @@ export function createBridgeTerminals({ handleFor, check, device, hostedOrigin }
     socket.once("open", () => onOpen(connection, deadline));
     socket.on("message", (data, binary) => onMessage(connection, data, binary));
     socket.on("error", (error) => onError(connection, error));
-    socket.once("close", (closeCode) => {
+    socket.once("close", (closeCode, reason) => {
       unlink(connection);
-      end(connection, protocolError("terminal_closed", closeCode));
+      end(connection, Object.assign(protocolError("terminal_closed", closeCode), { reason: reason.toString() }));
     });
   }
 
-  async function connect(connection) {
-    const ticket = await issueTicket(device, connection, hostedOrigin);
+  async function connect(connection, ticketBody) {
+    const ticket = await issueTicket(device, connection, hostedOrigin, ticketBody);
     ensure(connection);
     const deadline = ticketDeadline(ticket, connection.generation);
     connection.socket = websocket(connection.handle.mint.origin, hostedOrigin, ticket.ticket, deadline);
@@ -445,7 +454,7 @@ export function createBridgeTerminals({ handleFor, check, device, hostedOrigin }
     return { terminal: connection.id };
   }
 
-  async function open(owner, id, onEvent) {
+  async function open(owner, id, onEvent, { signal, ticketBody, forwardReplies, onEnd } = {}) {
     const handle = handleFor(owner, id);
     const opening = handle.opening;
     if (!opening) fail("not_open");
@@ -453,16 +462,21 @@ export function createBridgeTerminals({ handleFor, check, device, hostedOrigin }
     if (mode !== "wss") fail(mode === "invalid" ? "terminal_protocol_error" : "terminal_unsupported");
     if (handle.mint.scope !== "bridge:read bridge:write") fail("terminal_forbidden");
     if (typeof onEvent !== "function") fail("invalid_params");
+    if (signal?.aborted) fail("canceled");
+    const body = ticketBody ?? { opening_generation: opening.opening_generation };
+    if (body.opening_generation !== opening.opening_generation) fail("binding_mismatch");
     if (handle.terminal || handle.terminalRenewing) fail("terminal_busy");
     const connection = {
-      id: randomUUID(), handle, onEvent, abort: new AbortController(),
+      id: randomUUID(), handle, onEvent, onEnd, forwardReplies, signal, abort: new AbortController(),
       generation: opening.opening_generation, bridgeEpoch: opening.greeting.bridge_epoch,
       calls: new Map(), writes: new Set(),
     };
     handle.terminal = connection;
     terminals.set(connection.id, connection);
+    connection.cancel = () => end(connection, transportError("canceled"), { notify: false });
+    signal?.addEventListener("abort", connection.cancel, { once: true });
     try {
-      return await connect(connection);
+      return await connect(connection, body);
     } catch (error) {
       end(connection, error, { notify: false });
       throw error;
@@ -505,10 +519,10 @@ export function createBridgeTerminals({ handleFor, check, device, hostedOrigin }
     if (connection.calls.has(id)) fail("duplicate_request");
     if (connection.calls.size >= MAX_CALLS) fail("busy");
     const bytes = encode({ id, method, params });
-    const pending = Promise.withResolvers();
+    const pending = connection.forwardReplies ? null : Promise.withResolvers();
     send(connection, bytes);
     connection.calls.set(id, { ...pending, method });
-    return pending.promise;
+    return pending?.promise;
   }
 
   function detach(owner, terminal, id) {

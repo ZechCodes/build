@@ -1,3 +1,4 @@
+import { createDesktopTerminalAccess } from "./httpDesktopTerminal.js";
 import { httpFailure } from "./httpEndpoint.js";
 import { httpRequest } from "./httpFetch.js";
 
@@ -21,10 +22,12 @@ export function createDesktopHttpEndpoint({ api, identity, isCurrent = () => tru
     return result;
   };
   const quiet = (name, ...args) => { try { void Promise.resolve(api[name](...args)).catch(() => {}); } catch { /* Native frame may already be gone. */ } };
+  const terminals = createDesktopTerminalAccess({ api, identity, current });
   const close = () => {
     if (closed) return;
     closed = true;
     subscription?.close();
+    terminals?.close();
     quiet("close", identity.handle);
   };
   const lose = () => { if (!closed) { close(); onLost(httpFailure("stream_reset")); } };
@@ -86,7 +89,12 @@ export function createDesktopHttpEndpoint({ api, identity, isCurrent = () => tru
 
   return {
     identity,
-    open: (apiRange) => invoke("open", identity.handle, apiRange),
+    async open(apiRange) {
+      const opening = await invoke("open", identity.handle, apiRange);
+      terminals?.bind(opening);
+      return opening;
+    },
+    ...(terminals && { openTerminal: terminals.open }),
     onLost: (listener) => { onLost = listener; },
     async request(_opening, route, options) {
       const requestId = options.requestId || crypto.randomUUID();

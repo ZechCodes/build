@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
@@ -10,6 +10,8 @@ import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import test, { after, before } from "node:test";
 import { WebSocketServer } from "ws";
 import { createBridgeHttp } from "../src/bridge-http.mjs";
+import { installBridgeHttpIpc } from "../src/bridge-http-ipc.mjs";
+import { APP_URL, installNavigationPolicy } from "../src/security-policy.mjs";
 
 const read = (path) => JSON.parse(readFileSync(new URL(path, import.meta.url)));
 const vectors = read("../../fixtures/api/http/terminal-websocket-v1.json");
@@ -666,3 +668,346 @@ test("renewal with the same epoch and token keeps the same socket", { timeout: 5
   assert.deepEqual(ctx.delivery, []);
   assert.equal(ctx.remote.upgrades.length, 1);
 });
+
+async function terminalIpc(t, remote) {
+  const contents = new EventEmitter();
+  const events = [];
+  const deliveries = new EventEmitter();
+  const frame = { url: APP_URL, send(channel, event) {
+    events.push({ channel, ...event });
+    deliveries.emit("event");
+  } };
+  contents.mainFrame = frame;
+  contents.send = frame.send;
+  let handler;
+  let auth = { accessToken: "fixture-hosted-bearer", generation: 1 };
+  let loading = false;
+  contents.isLoadingMainFrame = () => loading;
+  contents.isWaitingForResponse = () => loading;
+  contents.setWindowOpenHandler = () => {};
+  const ipc = installBridgeHttpIpc({
+    ipcMain: { handle(_channel, callback) { handler = callback; } },
+    getAuth: () => auth,
+    getWindow: () => ({ webContents: contents }),
+    manifest,
+    fetch(url, options) {
+      if (url.startsWith(new URL(APP_URL).origin + "/api/"))
+        return new Response(JSON.stringify({ ...mint(remote.origin, "bridge:read bridge:write"), issuer: new URL(APP_URL).origin }));
+      if (url === remote.origin + "/v1/sessions")
+        return new Response(JSON.stringify(fakeOpening(v1Opening)));
+      return fetch(url, options);
+    },
+  });
+  ipc.attach(contents);
+  t.after(() => ipc.clear());
+  const invoke = (method, args, senderFrame = contents.mainFrame) =>
+    handler({ sender: contents, senderFrame }, method, args);
+  const resume = () => invoke("resume", [{
+    deviceId: "device", endpointEpoch: "epoch", familyId: "family", origin: remote.origin,
+  }]);
+  const resumed = await resume();
+  assert.equal(resumed.ok, true, JSON.stringify(resumed));
+  const { handle } = resumed.value;
+  const opened = await invoke("open", [handle, "1"]);
+  assert.equal(opened.ok, true);
+  const ticketBody = { opening_generation: opened.value.opening_generation };
+  return {
+    contents, frame, events, invoke, resume, handle, ticketBody,
+    rotateAccount() { auth.generation++; },
+    signOut() { auth = null; },
+    startNavigation(url = APP_URL) {
+      loading = true;
+      contents.emit("did-start-navigation", { url, isMainFrame: true, isSameDocument: false, frame });
+    },
+    stopNavigation() { loading = false; },
+    async waitForEvents(count) {
+      while (events.length < count) await once(deliveries, "event");
+    },
+    open(requestId, body = ticketBody) { return invoke("terminalOpen", [handle, requestId, body]); },
+  };
+}
+
+const ipcAttempt = "00000000-0000-4000-8000-000000000011";
+const secondIpcAttempt = "00000000-0000-4000-8000-000000000012";
+
+async function openIpc(t) {
+  const remote = await peer(t);
+  const h = await terminalIpc(t, remote);
+  const connected = once(remote.wss, "connection");
+  const result = await h.open(ipcAttempt);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const [socket] = await connected;
+  return { ...h, socket, terminal: result.value.terminal, remote };
+}
+
+async function ipcCall(h, method, params, id) {
+  const next = once(h.socket, "message");
+  assert.equal((await h.invoke("terminalCall", [h.terminal, method, params, id])).ok, true);
+  const [data, binary] = await next;
+  assert.equal(binary, true);
+  return JSON.parse(data.toString());
+}
+
+test("hosted IPC carries a shell and agent on one socket and rejects reuse of a settled attach ID", async (t) => {
+  const h = await openIpc(t);
+  const attach = envelope("attach");
+  const agent = envelope("agent_attach");
+  assert.equal((await h.invoke("terminalCall", [h.terminal, "ping", new Map(), "1"])).error.code, "invalid_params");
+  assert.equal((await h.invoke("terminalCall", [h.terminal, "term.attach", {}, "1"])).error.code, "invalid_params");
+  assert.deepEqual(await ipcCall(h, attach.method, attach.params, "1"), { ...attach, id: "1" });
+  h.socket.send(Buffer.from(JSON.stringify({ ...envelope("attach_ok"), id: "1" })));
+  await h.waitForEvents(1);
+  const [first] = h.events;
+  assert.equal(first.data.id, "1");
+  assert.equal(first.requestId, ipcAttempt);
+  assert.equal(first.terminal, h.terminal);
+  assert.equal(first.channel, "build:bridge-http-terminal-event");
+  assert.equal((await h.invoke("terminalConsume", [h.terminal, first.sequence])).ok, true);
+  assert.equal((await h.invoke("terminalCall", [h.terminal, agent.method, agent.params, "1"])).error.code, "invalid_params");
+  assert.deepEqual(await ipcCall(h, agent.method, agent.params, "2"), { ...agent, id: "2" });
+  h.socket.send(Buffer.from(JSON.stringify({ ...envelope("agent_attach_ok"), id: "2" })));
+  await h.waitForEvents(2);
+  const reply = h.events.at(-1);
+  assert.equal(reply.data.id, "2");
+  assert.equal(reply.data.result.term_id, envelope("agent_attach_ok").result.term_id);
+  assert.equal(h.remote.upgrades.length, 1);
+  const input = envelope("input");
+  const resize = envelope("resize");
+  const detach = once(h.socket, "message");
+  assert.equal((await h.invoke("terminalDetach", [h.terminal, "1"])).ok, true);
+  assert.deepEqual(JSON.parse((await detach)[0]), { type: "detach", attach_id: "1" });
+  assert.deepEqual(await ipcCall(h, input.method, input.params, "3"), { ...input, id: "3" });
+  assert.deepEqual(await ipcCall(h, resize.method, resize.params, "4"), { ...resize, id: "4" });
+});
+
+test("hosted IPC preserves D2 ticket status, retry body, pane controls and close codes", async (t) => {
+  const remote = await peer(t, { respond(response, request) {
+    if (!JSON.parse(request.body).retry) {
+      issueTicket(response, { error: "snapshot_write_timeout", error_code: "snapshot_write_timeout", retryable: false }, 409);
+      return;
+    }
+    issueTicket(response);
+  } });
+  const h = await terminalIpc(t, remote);
+  const refused = await h.open(ipcAttempt);
+  assert.equal(refused.error.code, "snapshot_write_timeout");
+  assert.equal(refused.error.status, 409);
+  assert.equal(refused.error.retryable, false);
+  const connected = once(remote.wss, "connection");
+  const body = { ...h.ticketBody, retry: true };
+  const result = await h.open(secondIpcAttempt, body);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const [socket] = await connected;
+  assert.deepEqual(remote.requests.map(({ body }) => JSON.parse(body)), [h.ticketBody, body]);
+  const terminal = result.value.terminal;
+  const attach = envelope("attach");
+  await ipcCall({ ...h, terminal, socket }, attach.method, attach.params, "1");
+  socket.send(Buffer.from(JSON.stringify({
+    id: "1", ok: false, error: "Terminal snapshot is busy",
+    error_code: "snapshot_busy", retryable: true, bridge_epoch: opening.base.greeting.bridge_epoch,
+  })));
+  const message = { ...envelope("attachment_error"), reason: "snapshot_busy", attach_id: "1" };
+  socket.send(Buffer.from(JSON.stringify(message)));
+  await h.waitForEvents(2);
+  assert.equal(h.events[0].data.error_code, "snapshot_busy");
+  assert.equal(h.events[0].data.retryable, true);
+  assert.deepEqual(h.events[1].data, message);
+  socket.close(4008, "snapshot_write_timeout");
+  await h.waitForEvents(3);
+  assert.deepEqual(h.events.at(-1), {
+    channel: "build:bridge-http-terminal-event", terminal, requestId: secondIpcAttempt,
+    type: "close", code: "terminal_closed", closeCode: 4008, reason: "snapshot_write_timeout",
+  });
+});
+
+test("terminal IPC delivery window bounds unconsumed frames independently of emulator ACK", async (t) => {
+  const h = await openIpc(t);
+  const reset = { ...envelope("reset"), data: Buffer.alloc(2 * 1024 * 1024).toString("base64") };
+  h.socket.send(Buffer.from(JSON.stringify(reset)));
+  h.socket.send(Buffer.from(JSON.stringify(envelope("output"))));
+  await h.waitForEvents(2);
+  assert.equal(h.events[0].data.data, reset.data);
+  assert.equal(h.events[1].sequence, 2);
+  assert.equal((await h.invoke("terminalConsume", [h.terminal, 2])).error.code, "invalid_params");
+  assert.equal((await h.invoke("terminalConsume", [h.terminal, 1])).ok, true);
+  assert.equal((await h.invoke("terminalConsume", [h.terminal, 2])).ok, true);
+  const closed = once(h.socket, "close");
+  for (let i = 0; i < 129; i += 1) h.socket.send(Buffer.from(messages.output.utf8));
+  await closed;
+  assert.equal(h.events.filter(({ type }) => type === "message").length, 130);
+  assert.equal(h.events.at(-1).code, "terminal_delivery_overflow");
+});
+
+test("hosted IPC retires exact-frame handles and drops late terminal events on navigation", async (t) => {
+  const h = await openIpc(t);
+  const subframe = { url: APP_URL };
+  assert.equal((await h.invoke("terminalConsume", [h.terminal, 1], subframe)).error.code, "untrusted_caller");
+  assert.equal((await h.invoke("terminalClose", ["00000000-0000-4000-8000-000000000099"])).error.code, "invalid_terminal_handle");
+  const closed = once(h.socket, "close");
+  h.startNavigation();
+  const stale = await h.invoke("terminalCall", [h.terminal, "ping", {}, "1"], h.frame);
+  assert.equal(stale.error.code, "untrusted_caller");
+  h.contents.mainFrame = { ...h.frame };
+  h.stopNavigation();
+  h.contents.emit("did-navigate", {}, APP_URL);
+  assert.equal((await h.invoke("terminalClose", [h.terminal])).error.code, "invalid_terminal_handle");
+  await closed;
+  assert.deepEqual(h.events, []);
+});
+
+test("retiring a frame cancels the ticket request before any upgrade can outlive it", async (t) => {
+  const ticketHeld = Promise.withResolvers();
+  const remote = await peer(t, { respond(response) { ticketHeld.resolve(response); } });
+  const h = await terminalIpc(t, remote);
+  assert.equal((await h.open(ipcAttempt, { ...h.ticketBody, retry: true, origin: "https://foreign.test" })).error.code, "invalid_params");
+  const pending = h.open(ipcAttempt);
+  const response = await ticketHeld.promise;
+  h.contents.emit("did-start-navigation", {}, APP_URL, false, true);
+  issueTicket(response);
+  assert.equal((await pending).ok, false);
+  assert.equal(remote.upgrades.length, 0);
+  assert.deepEqual(h.events, []);
+});
+
+test("native ticket errors carry new structured error codes without a code registry", async (t) => {
+  const remote = await peer(t, { respond(response) {
+    issueTicket(response, { error: "Peer text", error_code: "later_ticket_code", retryable: true }, 503);
+  } });
+  const { adapter, handle } = await desktop(t, remote.origin);
+  await assert.rejects(adapter.terminalOpen(owner, handle, () => {}), {
+    code: "later_ticket_code", status: 503, retryable: true,
+  });
+  assert.equal(remote.upgrades.length, 0);
+});
+
+test("ordinary terminal IPC deliveries consume byte credit even below the item limit", async (t) => {
+  const h = await openIpc(t);
+  const data = Buffer.alloc(600 * 1024).toString("base64");
+  const frame = Buffer.from(JSON.stringify({ ...envelope("output"), data, cursor: 600 * 1024 }));
+  const closed = once(h.socket, "close");
+  for (let i = 0; i < 3; i += 1) h.socket.send(frame);
+  await closed;
+  assert.deepEqual(h.events.map(({ type, code }) => [type, code]), [
+    ["message", undefined], ["message", undefined], ["close", "terminal_delivery_overflow"],
+  ]);
+});
+
+test("a late terminal frame cannot move from the document that opened it to a replacement frame", async (t) => {
+  const h = await openIpc(t);
+  const closed = once(h.socket, "close");
+  h.contents.mainFrame = { url: APP_URL, send() { assert.fail("terminal leaked across document replacement"); } };
+  h.socket.send(Buffer.from(messages.output.utf8));
+  await closed;
+  assert.deepEqual(h.events, []);
+});
+
+const nextMainTurn = () => new Promise(setImmediate);
+
+async function reopenSameFrame(h) {
+  assert.equal(h.contents.mainFrame, h.frame);
+  const resumed = await h.resume();
+  assert.equal(resumed.ok, true, JSON.stringify(resumed));
+  const { handle } = resumed.value;
+  const opened = await h.invoke("open", [handle, "1"]);
+  assert.equal(opened.ok, true, JSON.stringify(opened));
+  const connected = once(h.remote.wss, "connection");
+  const result = await h.invoke("terminalOpen", [handle, secondIpcAttempt, h.ticketBody]);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  await connected;
+}
+
+for (const [name, url, finish] of [
+  ["denied", "file:///opt/denied", (h, url) => cancelByPolicy(h, url, false)],
+  ["external", "https://example.test/", (h, url) => cancelByPolicy(h, url, true)],
+  ["failed", APP_URL, (h, url) => {
+    h.contents.emit("did-fail-provisional-load", {}, -105, "ERR_NAME_NOT_RESOLVED", url, true);
+    h.contents.emit("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", url, true);
+  }],
+  ["aborted", APP_URL, (h, url) => {
+    h.contents.emit("did-fail-provisional-load", {}, -3, "ERR_ABORTED", url, true);
+  }],
+  ["204 response", APP_URL, (h) => h.contents.emit("did-stop-loading")],
+  ["download", APP_URL, (h) => h.contents.emit("did-stop-loading")],
+]) {
+  test(`terminal IPC recovers on the same frame after a ${name} navigation`, async (t) => {
+    const h = await openIpc(t);
+    const closed = once(h.socket, "close");
+    h.startNavigation(url);
+    const fenced = await h.invoke("terminalCall", [h.terminal, "ping", {}, "1"]);
+    assert.equal(fenced.error.code, "untrusted_caller");
+    h.stopNavigation();
+    finish(h, url);
+    await nextMainTurn();
+    await closed;
+    await reopenSameFrame(h);
+  });
+}
+
+function cancelByPolicy(h, url, external, event = "will-navigate") {
+  const opened = [];
+  let prevented = false;
+  installNavigationPolicy(h.contents, { openExternal: (target) => opened.push(target) });
+  h.contents.emit(event, { preventDefault() { prevented = true; } }, url);
+  assert.equal(prevented, true);
+  assert.deepEqual(opened, external ? [url] : []);
+}
+
+test("terminal IPC recovers from an external redirect after the navigation has started loading", async (t) => {
+  const h = await openIpc(t);
+  const closed = once(h.socket, "close");
+  h.startNavigation();
+  await nextMainTurn();
+  cancelByPolicy(h, "https://example.test/", true, "will-redirect");
+  h.stopNavigation();
+  await reopenSameFrame(h);
+  await closed;
+});
+
+test("a late finish from a superseded navigation cannot clear the newer same-URL fence", async (t) => {
+  const h = await openIpc(t);
+  h.startNavigation();
+  await nextMainTurn();
+  h.contents.emit("did-fail-provisional-load", {}, -3, "ERR_ABORTED", APP_URL, true);
+  h.startNavigation();
+  h.contents.emit("did-stop-loading");
+  h.contents.emit("did-navigate", {}, APP_URL);
+  await nextMainTurn();
+  const fenced = await h.invoke("terminalCall", [h.terminal, "ping", {}, "1"]);
+  assert.equal(fenced.error.code, "untrusted_caller");
+  h.contents.mainFrame = { ...h.frame };
+  h.stopNavigation();
+  h.contents.emit("did-navigate", {}, APP_URL);
+  assert.equal((await h.invoke("terminalClose", [h.terminal])).error.code, "invalid_terminal_handle");
+});
+
+test("a committed navigation retires provisional HTTP handles even if Electron reuses the frame", async (t) => {
+  const h = await openIpc(t);
+  h.startNavigation();
+  const provisional = await h.resume();
+  assert.equal(provisional.ok, true, JSON.stringify(provisional));
+  const { handle } = provisional.value;
+  assert.equal((await h.invoke("open", [handle, "1"])).ok, true);
+  h.stopNavigation();
+  h.contents.emit("did-navigate", {}, APP_URL);
+  assert.equal(h.contents.mainFrame, h.frame);
+  const rejected = await h.invoke("terminalOpen", [handle, secondIpcAttempt, h.ticketBody]);
+  assert.equal(rejected.error.code, "invalid_handle");
+  await reopenSameFrame(h);
+});
+
+for (const [name, change, method, args] of [
+  ["account-generation change", (h) => h.rotateAccount(), "terminalCall", ["ping", {}, "1"]],
+  ["sign-out", (h) => h.signOut(), "terminalConsume", [1]],
+]) {
+  test(`a live terminal handle is refused and its socket closed after ${name}`, async (t) => {
+    const h = await openIpc(t);
+    const closed = once(h.socket, "close");
+    change(h);
+    const rejected = await h.invoke(method, [h.terminal, ...args]);
+    assert.equal(rejected.error.code, "stale_owner");
+    h.socket.send(Buffer.from(messages.output.utf8));
+    await closed;
+    assert.equal((await h.invoke("terminalClose", [h.terminal])).error.code, "invalid_terminal_handle");
+    assert.deepEqual(h.events, []);
+  });
+}

@@ -208,3 +208,167 @@ function heldSubscription() {
     emit: (message) => listener({ requestId: api.subscribe.mock.calls[0]?.[2]?.requestId, ...message }),
     accept: () => resolve({ ok: true, value: { stream: "stream" } }) };
 }
+
+const v1Opening = { session_id: "session", opening_generation: "opening", greeting: { bridge_epoch: "epoch" } };
+
+function desktopTerminal() {
+  const success = (value) => ({ ok: true, value });
+  const listeners = new Set();
+  const api = {
+    open: vi.fn().mockResolvedValue(success(v1Opening)),
+    terminalOpen: vi.fn().mockResolvedValue(success({ terminal: "native-terminal" })),
+    terminalCall: vi.fn().mockResolvedValue(success()),
+    terminalDetach: vi.fn().mockResolvedValue(success()),
+    terminalConsume: vi.fn().mockResolvedValue(success()),
+    terminalClose: vi.fn().mockResolvedValue(success()),
+    onTerminalEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    close: vi.fn().mockResolvedValue(success()),
+  };
+  const endpoint = createDesktopHttpEndpoint({ api, identity: { handle: "http-handle" } });
+  const emit = (event) => {
+    const requestId = api.terminalOpen.mock.lastCall[1];
+    for (const listener of listeners) listener({ requestId, terminal: "native-terminal", ...event });
+  };
+  return { api, endpoint, emit, listeners };
+}
+
+describe("desktop endpoint terminal carrier", () => {
+  it("requires the complete facade before advertising an open method", () => {
+    const { api } = desktopTerminal();
+    for (const name of Object.keys(api).filter((name) => /terminal/i.test(name))) {
+      const endpoint = createDesktopHttpEndpoint({ api: { ...api, [name]: undefined }, identity: { handle: "h" } });
+      expect(endpoint.openTerminal).toBeUndefined();
+    }
+  });
+
+  it("passes only an explicit retry flag and preserves ticket refusal status", async () => {
+    const { api, endpoint } = desktopTerminal();
+    api.terminalOpen.mockResolvedValueOnce({
+      ok: false, error: { code: "snapshot_write_timeout", status: 409, retryable: false },
+    });
+    const opening = await endpoint.open("range");
+    await expect(endpoint.openTerminal(opening, { retry: false })).rejects.toMatchObject({
+      code: "snapshot_write_timeout", httpStatus: 409, retryable: false,
+    });
+    expect(api.terminalOpen.mock.calls[0][2]).toEqual({ opening_generation: "opening" });
+    const carrier = await endpoint.openTerminal(opening, { retry: true });
+    expect(api.terminalOpen.mock.calls[1][2]).toEqual({ opening_generation: "opening", retry: true });
+    carrier.close();
+  });
+
+  it("delivers native pushes and replies, ACKs receipt while paint is pending, and preserves close codes", async () => {
+    const { api, endpoint, emit } = desktopTerminal();
+    const opening = await endpoint.open("range");
+    const carrier = await endpoint.openTerminal(opening);
+    const onPush = vi.fn(() => new Promise(() => {}));
+    const onClose = vi.fn();
+    carrier.onPush(onPush);
+    carrier.onClose(onClose);
+    const attachId = vi.fn();
+    const attached = carrier.call("agent.attach", { agent_id: "agent" }, { onAttachId: attachId });
+    const [, , , id] = api.terminalCall.mock.lastCall;
+    expect(attachId).toHaveBeenCalledWith(id);
+    const frame = { id, ok: true, result: { term_id: "term" }, bridge_epoch: "epoch" };
+    emit({ requestId: retiredRequestId, sequence: 1, type: "message", data: frame });
+    emit({ sequence: 1, type: "message", data: frame });
+    expect(await attached).toEqual(frame.result);
+    const push = { type: "attachment_error", attach_id: id, reason: "snapshot_busy", bridge_epoch: "epoch" };
+    emit({ sequence: 2, type: "message", data: push });
+    expect(onPush).toHaveBeenCalledExactlyOnceWith(push);
+    expect(api.terminalConsume.mock.calls).toEqual([["native-terminal", 1], ["native-terminal", 2]]);
+    carrier.detach(id);
+    expect(api.terminalDetach).toHaveBeenCalledWith("native-terminal", id);
+    emit({ type: "close", code: "terminal_closed", closeCode: 4008, reason: "snapshot_write_timeout" });
+    expect(onClose).toHaveBeenCalledWith(expect.objectContaining({ closeCode: 4008, reason: "snapshot_write_timeout", retryable: false }));
+    emit({ type: "message", sequence: 3, data: push });
+    expect(onPush).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a pending open and closes a late native result", async () => {
+    const { api, endpoint, listeners } = desktopTerminal();
+    const result = Promise.withResolvers();
+    api.terminalOpen.mockReturnValueOnce(result.promise);
+    const opening = await endpoint.open("range");
+    const controller = new AbortController();
+    const pending = endpoint.openTerminal(opening, { signal: controller.signal });
+    const [, attempt] = api.terminalOpen.mock.lastCall;
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: "scope_ended" });
+    expect(api.terminalClose).toHaveBeenCalledWith(attempt);
+    expect(listeners.size).toBe(0);
+    result.resolve({ ok: true, value: { terminal: "late-terminal" } });
+    await vi.waitFor(() => expect(api.terminalClose).toHaveBeenCalledWith("late-terminal"));
+  });
+});
+
+it("sends paste chunks in order while resize and sibling input remain immediate", async () => {
+  const { api, endpoint, emit } = desktopTerminal();
+  const carrier = await endpoint.openTerminal(await endpoint.open("range"));
+  const paste = carrier.call("term.input", { term_id: "shell", data: btoa("x".repeat(65536) + "end") });
+  const later = carrier.call("term.input", { term_id: "shell", data: btoa("later") });
+  const resize = carrier.call("term.resize", { term_id: "shell", cols: 90, rows: 24 });
+  const sibling = carrier.call("term.input", { term_id: "agent", data: btoa("sibling") });
+  const sent = () => api.terminalCall.mock.calls.map(([, method, params, id]) => [method, params.term_id, id]);
+  expect(sent()).toEqual([["term.input", "shell", "1"], ["term.resize", "shell", "2"], ["term.input", "agent", "3"]]);
+  expect(atob(api.terminalCall.mock.calls[0][2].data)).toHaveLength(65536);
+  const reply = (id, sequence) => emit({ type: "message", sequence, data: { id, ok: true, result: {}, bridge_epoch: "epoch" } });
+  reply("2", 1);
+  reply("3", 2);
+  reply("1", 3);
+  await vi.waitFor(() => expect(atob(api.terminalCall.mock.lastCall[2].data)).toBe("end"));
+  reply("4", 4);
+  await vi.waitFor(() => expect(atob(api.terminalCall.mock.lastCall[2].data)).toBe("later"));
+  reply("5", 5);
+  await Promise.all([paste, later, resize, sibling]);
+  carrier.close();
+});
+
+it("consumes only early pushes for the selected terminal and fences retired effects", async () => {
+  const { api, endpoint, emit } = desktopTerminal();
+  const result = Promise.withResolvers();
+  api.terminalOpen.mockReturnValueOnce(result.promise);
+  const opening = await endpoint.open("range");
+  const pending = endpoint.openTerminal(opening);
+  const data = { type: "term.output", bridge_epoch: "epoch", data: "eA==", cursor: 1 };
+  emit({ terminal: "foreign", type: "message", data, sequence: 99 });
+  emit({ type: "message", data, sequence: 1 });
+  expect(api.terminalConsume).not.toHaveBeenCalled();
+  result.resolve({ ok: true, value: { terminal: "native-terminal" } });
+  const carrier = await pending;
+  const pushed = vi.fn();
+  carrier.onPush(pushed);
+  expect(pushed).toHaveBeenCalledExactlyOnceWith(data);
+  const input = carrier.call("term.input", { term_id: "shell", data: "eA==" });
+  endpoint.close();
+  await expect(input).rejects.toMatchObject({ code: "uncertain_delivery", uncertain: true });
+  expect(api.terminalCall).toHaveBeenCalledOnce();
+  emit({ type: "message", data, sequence: 2 });
+  expect(pushed).toHaveBeenCalledOnce();
+});
+
+it("joins the same open attempt only when the retry intent also matches", async () => {
+  const { api, endpoint } = desktopTerminal();
+  const opening = await endpoint.open("range");
+  const response = Promise.withResolvers();
+  api.terminalOpen.mockReturnValueOnce(response.promise);
+  const { signal } = new AbortController();
+  const pending = endpoint.openTerminal(opening, { signal });
+  const joined = endpoint.openTerminal(opening, { signal, retry: false });
+  const conflict = endpoint.openTerminal(opening, { signal, retry: true }).then(() => null, (error) => error);
+  response.resolve({ ok: true, value: { terminal: "native-terminal" } });
+  expect(await pending).toBe(await joined);
+  expect(await conflict).toMatchObject({ code: "busy" });
+  expect(api.terminalOpen).toHaveBeenCalledOnce();
+  endpoint.close();
+});
+
+it.each([
+  [401, "invalid_credential", "Bridge authorization expired or was refused. Verify this device with your account again."],
+  [403, "forbidden_scope", "This device grant does not allow terminal access."],
+  [403, "terminal_forbidden", "This device grant does not allow terminal access."],
+])("uses the terminal authorization message for %s %s and preserves the code", async (status, code, message) => {
+  const { api, endpoint } = desktopTerminal();
+  const opening = await endpoint.open("range");
+  api.terminalOpen.mockResolvedValueOnce({ ok: false, error: { status, code, retryable: false } });
+  await expect(endpoint.openTerminal(opening)).rejects.toMatchObject({ httpStatus: status, code, message, retryable: false });
+});

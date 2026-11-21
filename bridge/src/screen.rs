@@ -21,7 +21,9 @@ use serde_json::{json, Value};
 
 use crate::carrier::SessionSender;
 use crate::encoding::b64encode;
-use crate::execution::session::TerminalSnapshotReservation;
+use crate::execution::session::{
+    SnapshotBusy, SnapshotWaitError, TerminalSnapshotLane, TerminalSnapshotReservation,
+};
 use crate::harness::{AgentSession, TerminalView};
 
 /// Authoritative server-side screen: vt100 model + attach list + coalescing
@@ -162,10 +164,13 @@ fn packed_size(cols: u16, rows: u16) -> u32 {
     (u32::from(cols) << 16) | u32::from(rows)
 }
 
-fn is_wss(sender: &SessionSender) -> bool {
-    sender
-        .terminal_interest()
-        .is_some_and(|interest| interest.snapshots.is_some())
+fn wss_lane(sender: &SessionSender) -> Option<&TerminalSnapshotLane> {
+    sender.terminal_interest()?.snapshots.as_ref()
+}
+
+fn attach_is_live(sender: &SessionSender) -> bool {
+    sender.events_are_live()
+        && wss_lane(sender).is_none_or(|lane| !lane.is_stopped() && lane.expired_now().is_none())
 }
 
 impl TermScreen {
@@ -266,7 +271,7 @@ impl TermScreen {
             sent_cursor: self.total,
             sent_ack: false,
             paused: false,
-            wss: is_wss(sender).then(WssCredit::default),
+            wss: wss_lane(sender).map(|_| WssCredit::default()),
         });
     }
 
@@ -496,7 +501,7 @@ struct DeferredReset {
 }
 
 impl DeferredReset {
-    fn capture(self, reservation: Arc<TerminalSnapshotReservation>) {
+    fn finish(self, attempt: Result<Arc<TerminalSnapshotReservation>, SnapshotBusy>) {
         let Some(screen) = self.screen.upgrade() else {
             return;
         };
@@ -505,9 +510,21 @@ impl DeferredReset {
             return;
         };
         let client = &screen.attached[index];
-        if !client.sender.events_are_live() || !self.is_pending(client) {
+        if !client.sender.events_are_live()
+            || wss_lane(&client.sender).is_none_or(TerminalSnapshotLane::is_stopped)
+            || !self.is_pending(client)
+        {
             return;
         }
+        let reservation = match attempt {
+            Ok(reservation) if !reservation.is_expired() => reservation,
+            Ok(_) => return,
+            Err(_ordering) => {
+                client.sender.push(json!({"type":"attachment_error","reason":crate::api::ApiError::SnapshotBusy.code()}));
+                screen.attached.remove(index);
+                return;
+            }
+        };
         let total = screen.total;
         let snapshot = screen.wss_snapshot();
         let client = &mut screen.attached[index];
@@ -625,7 +642,7 @@ impl ScreenHandle {
         viewport: Option<(u16, u16)>,
     ) -> Result<AttachSnapshot, SnapshotTooLarge> {
         let _attachment = self.attachment_gate.lock().unwrap();
-        if !sender.events_are_live() {
+        if !attach_is_live(sender) {
             return Ok(Self::inactive_reading(&self.screen.lock().unwrap(), sender));
         }
         self.attach_inner(sender, viewport)
@@ -651,7 +668,7 @@ impl ScreenHandle {
                     None => {
                         // Registration is admitted at this check under the model
                         // lock. A later replacement retires its delivery proof.
-                        if !sender.events_are_live() {
+                        if !attach_is_live(sender) {
                             return Ok(Self::inactive_reading(&screen, sender));
                         }
                         if let Some((cols, rows)) = viewport {
@@ -673,7 +690,7 @@ impl ScreenHandle {
         term_id: &str,
         sender: &SessionSender,
     ) -> Result<AttachSnapshot, SnapshotTooLarge> {
-        if !is_wss(sender) {
+        if wss_lane(sender).is_none() {
             screen.register(term_id, sender);
             return Ok(Self::reading(screen));
         }
@@ -683,7 +700,7 @@ impl ScreenHandle {
     }
 
     fn inactive_reading(screen: &TermScreen, sender: &SessionSender) -> AttachSnapshot {
-        if is_wss(sender) {
+        if wss_lane(sender).is_some() {
             return Self::reading_with(screen, String::new());
         }
         Self::reading(screen)
@@ -793,12 +810,15 @@ impl ScreenHandle {
                 if let Some(delay) = delay.filter(|delay| !delay.is_zero()) {
                     tokio::time::sleep(delay).await;
                 }
-                if let Some(reservation) = lane.reserve(&interest).await {
-                    let _ = lane
-                        .runtime
-                        .spawn_blocking(move || reset.capture(reservation))
-                        .await;
-                }
+                let attempt = match lane.reserve(&interest).await {
+                    Ok(reservation) => Ok(reservation),
+                    Err(SnapshotWaitError::Busy(ordering)) => Err(ordering),
+                    Err(SnapshotWaitError::Cancelled) => return,
+                };
+                let _ = lane
+                    .runtime
+                    .spawn_blocking(move || reset.finish(attempt))
+                    .await;
             });
             credit.pending = Some(PendingReset {
                 marker,
@@ -1041,7 +1061,7 @@ impl TerminalHandle {
         let _attachment = self.screen.attachment_gate.lock().unwrap();
         // This check admits the resize. If replacement wins first, it cannot
         // start; replacement after admission does not cancel an in-flight ioctl.
-        if !sender.events_are_live() {
+        if !attach_is_live(sender) {
             return Ok(ScreenHandle::inactive_reading(
                 &self.screen.screen.lock().unwrap(),
                 sender,

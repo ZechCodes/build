@@ -30,6 +30,7 @@
     ]
   },
   "ticket": {
+    "snapshot_timeout": {"automatic_refusal": {"status": 409, "headers": {"cache-control": "no-store"}, "body": {"error": "snapshot_write_timeout", "error_code": "snapshot_write_timeout", "retryable": false}}, "explicit_retry_body": {"opening_generation": "00000000-0000-4000-8000-000000000002", "retry": true}},
     "method": "POST",
     "path": "/v1/terminal-tickets",
     "request": {
@@ -134,6 +135,7 @@
     ]
   },
   "handshake": {
+    "snapshot_timeout_close": {"code": 4008, "reason": "snapshot_write_timeout"},
     "method": "GET",
     "path": "/v1/terminal",
     "http_version": "HTTP/1.1",
@@ -318,6 +320,8 @@
     ]
   },
   "messages": {
+    "snapshot_busy_attach": {"from": "bridge", "opcode": 2, "utf8": "{\"bridge_epoch\":\"00000000-0000-4000-8000-000000000004\",\"error\":\"Terminal snapshot is busy\",\"error_code\":\"snapshot_busy\",\"id\":\"attach-5\",\"ok\":false,\"retryable\":true}"},
+    "snapshot_busy_reset": {"from": "bridge", "opcode": 2, "utf8": "{\"attach_id\":\"attach-1\",\"bridge_epoch\":\"00000000-0000-4000-8000-000000000004\",\"reason\":\"snapshot_busy\",\"type\":\"attachment_error\"}"},
     "create": {
       "from": "client",
       "opcode": 2,
@@ -454,6 +458,7 @@
     {"name": "roster_over_socket", "opcode": 2, "utf8": "{\"id\":\"list-1\",\"method\":\"term.list\",\"params\":{\"project_id\":\"project-1\"}}", "reply": "rejected_method"}
   ],
   "limits": {
+    "snapshot_deadlines": {"slot_wait_ms": 10000, "write_floor_ms": 30000, "write_ceiling_ms": 192000, "write_bytes_per_second": 65536},
     "message_bytes": {
       "client": 131072,
       "ordinary": 1048576,

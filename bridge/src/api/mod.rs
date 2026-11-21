@@ -306,6 +306,8 @@ pub enum ApiError {
     },
     /// The WSS terminal snapshot exceeds the supported grid or message size.
     SnapshotTooLarge,
+    /// No WSS snapshot slot was available during the admission window.
+    SnapshotBusy,
     /// A refusal the handler could not name more precisely.
     Internal {
         message: String,
@@ -315,7 +317,7 @@ pub enum ApiError {
 
 impl ApiError {
     /// Every code, as a fixture may cite it.
-    pub const CODES: [&'static str; 14] = [
+    pub const CODES: [&'static str; 15] = [
         "unknown_method",
         "invalid_params",
         "not_found",
@@ -329,6 +331,7 @@ impl ApiError {
         "busy",
         "unsupported_version",
         "snapshot_too_large",
+        "snapshot_busy",
         "internal",
     ];
 
@@ -425,6 +428,7 @@ impl ApiError {
             ApiError::Busy { .. } => "busy",
             ApiError::UnsupportedVersion { .. } => "unsupported_version",
             ApiError::SnapshotTooLarge => "snapshot_too_large",
+            ApiError::SnapshotBusy => "snapshot_busy",
             ApiError::Internal { .. } => "internal",
         }
     }
@@ -433,13 +437,14 @@ impl ApiError {
     pub fn retryable(&self) -> bool {
         matches!(
             self,
-            ApiError::Busy { .. } | ApiError::RetryableUnavailable { .. }
+            ApiError::Busy { .. } | ApiError::SnapshotBusy | ApiError::RetryableUnavailable { .. }
         )
     }
 
     fn parts(&self) -> (&str, Option<&Value>) {
         match self {
             ApiError::SnapshotTooLarge => ("This screen is too large to display", None),
+            ApiError::SnapshotBusy => ("Terminal snapshot is busy", None),
             ApiError::UnknownMethod { message, details }
             | ApiError::InvalidParams { message, details }
             | ApiError::NotFound { message, details }
@@ -660,7 +665,7 @@ mod tests {
     }
 
     #[test]
-    fn every_code_is_snake_case_and_only_busy_is_retryable() {
+    fn error_codes_are_snake_case_and_busy_is_retryable() {
         let errors = [
             ApiError::unknown_method("x"),
             ApiError::invalid_params("m"),
@@ -684,12 +689,13 @@ mod tests {
             ApiError::busy("m"),
             ApiError::unsupported_version("m"),
             ApiError::SnapshotTooLarge,
+            ApiError::SnapshotBusy,
             ApiError::internal("m"),
         ];
         assert_eq!(errors.len(), ApiError::CODES.len());
         for (error, code) in errors.iter().zip(ApiError::CODES) {
             assert_eq!(error.code(), code);
-            assert_eq!(error.retryable(), code == "busy");
+            assert_eq!(error.retryable(), matches!(code, "busy" | "snapshot_busy"));
         }
     }
 

@@ -8,6 +8,7 @@ use std::{
 
 use axum::http::{header, HeaderMap};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use futures_util::SinkExt;
 use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -101,7 +102,7 @@ impl GrantVerifier for Verifier {
                 + if writer {
                     self.proof_lifetime
                 } else {
-                    TIMEOUT * 6
+                    self.proof_lifetime.max(TIMEOUT * 6)
                 },
             live: Arc::new(move || !writer || !revoked.load(Ordering::Acquire)),
             scopes: vec!["bridge:read".into(), "bridge:write".into()].into(),

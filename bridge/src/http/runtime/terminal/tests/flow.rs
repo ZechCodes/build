@@ -441,13 +441,13 @@ async fn mounted_tls_detach_cancels_a_paused_panes_deferred_reset() {
 
     let pool = server.state.execution.sessions().terminal_snapshot_pool();
     let held: Vec<_> = (0..pool.available_permits())
-        .map(|_| pool.clone().try_acquire_owned().unwrap())
+        .map(|_| pool.hold_for_test())
         .collect();
     assert_eq!(held.len(), 2);
-    let opening_slot = server.state.openings.lock().unwrap()[case_text(&opening["session_id"])]
+    let opening_id = server.state.openings.lock().unwrap()[case_text(&opening["session_id"])]
         .session
         .opening()
-        .terminal_snapshot_slot();
+        .diagnostic_id();
     hidden.feed(&vec![b'x'; 128 * 1024 + 1]);
     hidden.flush();
     let acknowledged = call(
@@ -462,7 +462,7 @@ async fn mounted_tls_detach_cancels_a_paused_panes_deferred_reset() {
         .pending_wss_reset()
         .expect("paused pane has a deferred reset");
     timeout(TIMEOUT, async {
-        while opening_slot.available_permits() != 0 {
+        while pool.waiting(opening_id) == 0 {
             tokio::task::yield_now().await;
         }
     })
@@ -483,7 +483,8 @@ async fn mounted_tls_detach_cancels_a_paused_panes_deferred_reset() {
     })
     .await
     .expect("detached reset task exits while the bridge slots are still held");
-    assert_eq!(opening_slot.available_permits(), 1);
+    assert_eq!(pool.waiting(opening_id), 0);
+    assert!(!pool.holds(opening_id));
     assert_eq!(hidden.attached(), 0);
 
     drop(held);
@@ -493,4 +494,185 @@ async fn mounted_tls_detach_cancels_a_paused_panes_deferred_reset() {
     assert_eq!(server.ticket_requests.load(Ordering::Relaxed), 1);
     assert_eq!(server.upgrades.load(Ordering::Relaxed), 1);
     server.stop().await;
+}
+
+#[tokio::test]
+async fn mounted_tls_snapshot_waiters_expire_without_closing_siblings() {
+    let paused = ScreenHandle::new("paused", 80, 24);
+    let sibling = ScreenHandle::new("sibling", 80, 24);
+    let server = Server::start(screen_handler(vec![
+        ("paused", paused.clone()),
+        ("sibling", sibling),
+        ("waiting", ScreenHandle::new("waiting", 80, 24)),
+    ]))
+    .await;
+    let opening = server.opening().await;
+    let mut socket = server.socket(&server.ticket(&opening).await).await;
+    attach(&mut socket, "attach-paused", "paused", 80, 24).await;
+    attach(&mut socket, "attach-sibling", "sibling", 80, 24).await;
+
+    let pool = server.state.execution.sessions().terminal_snapshot_pool();
+    let held: Vec<_> = (0..2).map(|_| pool.hold_for_test()).collect();
+    send(
+        &mut socket,
+        "wait",
+        "term.attach",
+        json!({"term_id":"waiting"}),
+    )
+    .await;
+    paused.feed(&vec![b'x'; 128 * 1024 + 1]);
+    paused.flush();
+    let acked = call(
+        &mut socket,
+        "ack-paused",
+        "term.ack",
+        json!({"term_id":"paused","cursor":0}),
+    )
+    .await;
+    assert_eq!(acked["ok"], true);
+    assert!(paused.pending_wss_reset().is_some());
+
+    let opening_id = server.state.openings.lock().unwrap()[case_text(&opening["session_id"])]
+        .session
+        .opening()
+        .diagnostic_id();
+    timeout(TIMEOUT, async {
+        while pool.waiting(opening_id) != 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!pool.holds(opening_id));
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(9)).await;
+    assert_eq!(pool.waiting(opening_id), 2);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::time::resume();
+    let mut messages = Vec::new();
+    for _ in 0..2 {
+        messages.push(object(&mut socket).await);
+    }
+    assert_snapshot_busy(&messages);
+    assert_eq!(pool.waiting(opening_id), 0);
+    assert!(!pool.holds(opening_id));
+    assert_echo(&mut socket, "sibling", b"before-release").await;
+    drop(held);
+    attach(&mut socket, "fresh", "waiting", 80, 24).await;
+    assert_echo(&mut socket, "sibling", b"after-release").await;
+    assert_eq!(server.upgrades.load(Ordering::Relaxed), 1);
+    server.stop().await;
+}
+
+fn assert_snapshot_busy(messages: &[Value]) {
+    let reply = messages
+        .iter()
+        .find(|message| message["id"] == "wait")
+        .unwrap();
+    assert_eq!(reply["error_code"], "snapshot_busy");
+    assert_eq!(reply["retryable"], true);
+    let reset = messages
+        .iter()
+        .find(|message| message["type"] == "attachment_error")
+        .unwrap();
+    assert_eq!(reset["reason"], "snapshot_busy");
+    assert_eq!(reset["attach_id"], "attach-paused");
+}
+
+#[tokio::test]
+async fn mounted_tls_snapshot_hard_ceiling_latches_until_explicit_ticket_retry() {
+    let entered = Arc::new(Notify::new());
+    let (release, parked) = std::sync::mpsc::channel();
+    let parked = Mutex::new(parked);
+    let server = Server::start_with(
+        greeting(FrameHandler::new(FrameClock::new(), {
+            let entered = entered.clone();
+            move |_, frame, _| {
+                entered.notify_one();
+                let _ = parked.lock().unwrap().recv();
+                success(&frame, json!({"term_id":"held","snapshot":"","cursor":0}))
+            }
+        })),
+        Duration::from_secs(360),
+    )
+    .await;
+    let opening = server.opening().await;
+    let mut socket = server.socket(&server.ticket(&opening).await).await;
+    let pool = server.state.execution.sessions().terminal_snapshot_pool();
+    send(
+        &mut socket,
+        "hold",
+        "term.attach",
+        json!({"term_id":"held"}),
+    )
+    .await;
+    timeout(TIMEOUT, entered.notified()).await.unwrap();
+    assert_eq!(pool.available_permits(), 1);
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(185)).await;
+    tokio::time::resume();
+    assert_eq!(pool.available_permits(), 1);
+    // This ticket is still live at expiry, so redemption must check the latch.
+    let preissued = server.ticket(&opening).await;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(8)).await;
+    tokio::time::resume();
+    let close = next(&mut socket).await;
+    let Message::Close(Some(close)) = close else {
+        panic!("expected timeout Close, got {close:?}")
+    };
+    let expected = &fixture()["handshake"]["snapshot_timeout_close"];
+    assert_eq!(
+        u16::from(close.code),
+        expected["code"].as_u64().unwrap() as u16
+    );
+    assert_eq!(close.reason.as_ref(), case_text(&expected["reason"]));
+    assert_eq!(
+        pool.available_permits(),
+        2,
+        "release even while handler is blocked"
+    );
+    assert_ticket_timeout(&server, &opening).await;
+    let (head, _) = server.upgrade(&server.handshake(&preissued)).await;
+    assert_eq!(
+        status(&head),
+        401,
+        "a preissued ticket cannot bypass the latch"
+    );
+    let wrong_generation = server
+        .json(
+            "POST",
+            terminal_tickets::PATH,
+            "writer",
+            case_text(&opening["session_id"]),
+            json!({"opening_generation":"wrong","retry":true}),
+        )
+        .await;
+    assert_eq!(wrong_generation.0, 401);
+    assert_ticket_timeout(&server, &opening).await;
+    let independent = server.opening().await;
+    assert_eq!(server.issue(&independent).await.0, 201);
+    let mut retry_body = fixture()["ticket"]["snapshot_timeout"]["explicit_retry_body"].clone();
+    retry_body["opening_generation"] = opening["opening_generation"].clone();
+    let retry = server
+        .json(
+            "POST",
+            terminal_tickets::PATH,
+            "writer",
+            case_text(&opening["session_id"]),
+            retry_body,
+        )
+        .await;
+    assert_eq!(retry.0, 201, "{:?}", retry.1);
+    assert_eq!(server.issue(&opening).await.0, 201);
+    release.send(()).unwrap();
+    server.stop().await;
+}
+
+async fn assert_ticket_timeout(server: &Server, opening: &Value) {
+    let (status, body) = server.issue(opening).await;
+    let expected = &fixture()["ticket"]["snapshot_timeout"]["automatic_refusal"];
+    assert_eq!(status, expected["status"].as_u64().unwrap());
+    assert_eq!(body, expected["body"]);
 }

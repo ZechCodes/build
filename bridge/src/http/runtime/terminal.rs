@@ -6,9 +6,12 @@ use axum::{
     extract::{Request, State},
     response::{IntoResponse, Response},
 };
-use futures_util::{future::BoxFuture, stream::FuturesUnordered, SinkExt, StreamExt};
+use futures_util::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use serde_json::Value;
-use tokio::sync::{mpsc, watch};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinSet,
+};
 use tokio_tungstenite::tungstenite::{
     error::CapacityError, protocol::frame::coding::CloseCode, Error, Message,
 };
@@ -17,7 +20,8 @@ use crate::{
     api::{self, ApiError},
     execution::{
         session::{
-            RequestContext, SessionError, TerminalInterest, TerminalSnapshotLane, VerifiedCaller,
+            RequestContext, SessionError, SnapshotBusy, SnapshotWaitError, TerminalInterest,
+            TerminalSnapshotLane, VerifiedCaller,
         },
         Call, ExecutionService, Invocation,
     },
@@ -67,12 +71,11 @@ fn admit(state: HttpState, mut request: Request) -> HttpResult<Response> {
         |family| upgrade.reserve(family).map_err(refusal),
     )?);
     let (stop_snapshots, stopped) = watch::channel(false);
-    let snapshots = TerminalSnapshotLane {
-        opening: admission.session().opening().terminal_snapshot_slot(),
-        bridge: state.execution.sessions().terminal_snapshot_pool(),
-        runtime: tokio::runtime::Handle::current(),
+    let snapshots = TerminalSnapshotLane::new(
+        admission.session().opening().diagnostic_id(),
+        state.execution.sessions().terminal_snapshot_pool(),
         stopped,
-    };
+    );
     let writer = WriterFence::default();
     let connection = Connection {
         admission: admission.clone(),
@@ -143,10 +146,20 @@ async fn next_io(socket: &mut TerminalSocket, receive: &mut mpsc::Receiver<Outbo
 impl Connection {
     async fn run(mut self, socket: &mut TerminalSocket) {
         let admission = self.admission.clone();
-        tokio::select! {
+        let snapshots = self.snapshots.clone();
+        let expired = tokio::select! {
             biased;
-            _ = admission.ended() => {},
-            _ = self.drive(socket) => {},
+            _ = admission.ended() => None,
+            expired = snapshots.timed_out() => Some(expired),
+            _ = self.drive(socket) => None,
+        };
+        if let Some(expired) = expired.or_else(|| snapshots.expired_now()) {
+            self.stop_snapshots.send_replace(true);
+            expired.release();
+            let current = admission.record_snapshot_timeout();
+            if current {
+                self.writer.snapshot_timeout(socket);
+            }
         }
     }
 
@@ -155,7 +168,7 @@ impl Connection {
         self.calls = Calls::default();
         if let End::Close(code) = end {
             if self.admission.is_live() {
-                writer::close(socket, code).await;
+                self.writer.close(socket, code, "").await;
             }
         }
     }
@@ -165,7 +178,8 @@ impl Connection {
             tokio::select! {
                 biased;
                 code = self.sink.failed() => return End::Close(code),
-                Some(ready) = self.calls.attaching.next(), if !self.calls.attaching.is_empty() => {
+                Some(ready) = self.calls.attaching.join_next(), if !self.calls.attaching.is_empty() => {
+                    let Ok(ready) = ready else { return End::Drop };
                     if let Err(end) = self.dispatch_attach(socket, ready).await {
                         return end;
                     }
@@ -222,10 +236,10 @@ impl Connection {
                 }
             }
             Some(Ok(Message::Text(_))) => Err(End::Close(CloseCode::Unsupported)),
-            Some(Ok(Message::Ping(_))) => socket.flush().await.map_err(|_| End::Drop),
+            Some(Ok(Message::Ping(_))) => self.writer.flush(socket).await.map_err(|_| End::Drop),
             Some(Ok(Message::Pong(_))) => Ok(()),
             Some(Ok(Message::Close(_))) => {
-                let _ = socket.flush().await;
+                let _ = self.writer.flush(socket).await;
                 Err(End::Drop)
             }
             Some(Err(Error::Capacity(CapacityError::MessageTooLong { .. }))) => {
@@ -250,29 +264,32 @@ impl Connection {
             return Err(End::Close(CloseCode::Protocol));
         }
         if self.calls.entries.len() == MAX_CALLS {
-            return reply_error(socket, &id, busy()).await;
+            return reply_error(&self.writer, socket, &id, busy()).await;
         }
         let (method, invocation) = match request.decode() {
             Ok(call) => call,
-            Err(error) => return reply_error(socket, &id, error).await,
+            Err(error) => return reply_error(&self.writer, socket, &id, error).await,
         };
         let (request, reply, interest) = match self.prepare(&id, method, &invocation) {
             Ok(prepared) => prepared,
-            Err(error) => return reply_error(socket, &id, error).await,
+            Err(error) => return reply_error(&self.writer, socket, &id, error).await,
         };
         if let Some(interest) = interest.filter(|_| method.is_attach()) {
             let lane = self.snapshots.clone();
+            let waiter = lane.queue();
             self.calls.entries.insert(id.clone(), CallState::default());
-            self.calls.attaching.push(Box::pin(async move {
+            self.calls.attaching.spawn(async move {
                 let outcome = tokio::select! {
                     biased;
-                    slot = lane.reserve(&interest) => match slot {
-                        Some(reservation) if request.is_live() => {
+                    slot = lane.reserve_queued(&interest, waiter) => match slot {
+                        Ok(reservation) if request.is_live() => {
                             reply.reserve_snapshot(reservation);
                             AttachOutcome::Ready
                         }
-                        Some(_) => AttachOutcome::Expired,
-                        None => AttachOutcome::Cancelled,
+                        Ok(_) => AttachOutcome::Expired,
+                        Err(SnapshotWaitError::Busy(waiter)) if request.is_live() => AttachOutcome::Busy(waiter),
+                        Err(SnapshotWaitError::Busy(_)) => AttachOutcome::Expired,
+                        Err(SnapshotWaitError::Cancelled) => AttachOutcome::Cancelled,
                     },
                     _ = request.cancelled() => {
                         if interest.is_live() { AttachOutcome::Expired } else { AttachOutcome::Cancelled }
@@ -285,7 +302,7 @@ impl Connection {
                     request,
                     invocation,
                 }
-            }));
+            });
             return Ok(());
         }
         self.submit(socket, id, method, request, invocation).await
@@ -311,12 +328,33 @@ impl Connection {
                 self.calls.entries.remove(&ready.id);
                 Ok(())
             }
-            AttachOutcome::Expired => {
-                self.calls.entries.remove(&ready.id);
-                self.release(&ready.id);
-                reply_error(socket, &ready.id, ended()).await
+            AttachOutcome::Expired => self.refuse_attach(socket, ready.id, ended()).await,
+            AttachOutcome::Busy(_ordering) => {
+                if ready
+                    .request
+                    .terminal_interest
+                    .as_ref()
+                    .is_some_and(|interest| interest.is_live())
+                {
+                    self.refuse_attach(socket, ready.id, ApiError::SnapshotBusy)
+                        .await
+                } else {
+                    self.calls.entries.remove(&ready.id);
+                    Ok(())
+                }
             }
         }
+    }
+
+    async fn refuse_attach(
+        &mut self,
+        socket: &mut TerminalSocket,
+        id: Arc<str>,
+        error: ApiError,
+    ) -> Result<(), End> {
+        self.calls.entries.remove(&id);
+        self.release(&id);
+        reply_error(&self.writer, socket, &id, error).await
     }
 
     async fn submit(
@@ -342,7 +380,7 @@ impl Connection {
                 if method.is_attach() {
                     self.release(&id);
                 }
-                reply_error(socket, &id, error).await
+                reply_error(&self.writer, socket, &id, error).await
             }
         }
     }
@@ -457,12 +495,18 @@ impl Drop for Connection {
     }
 }
 
-async fn reply_error(socket: &mut TerminalSocket, id: &str, error: ApiError) -> Result<(), End> {
+async fn reply_error(
+    writer: &WriterFence,
+    socket: &mut TerminalSocket,
+    id: &str,
+    error: ApiError,
+) -> Result<(), End> {
     let bytes = refusal_bytes(id, error);
     if bytes.len() > sink::MAX_ORDINARY {
         return Err(End::Close(CloseCode::Size));
     }
-    writer::write_message(socket, &bytes)
+    writer
+        .write_message(socket, &bytes)
         .await
         .map_err(|_| End::Drop)
 }
@@ -502,6 +546,7 @@ enum AttachOutcome {
     Ready,
     Cancelled,
     Expired,
+    Busy(SnapshotBusy),
 }
 
 // A completion and its queued response can arrive in either order. Retain the
@@ -509,7 +554,7 @@ enum AttachOutcome {
 #[derive(Default)]
 struct Calls {
     entries: HashMap<Arc<str>, CallState>,
-    attaching: FuturesUnordered<BoxFuture<'static, ReadyAttach>>,
+    attaching: JoinSet<ReadyAttach>,
     settling: FuturesUnordered<BoxFuture<'static, Settled>>,
 }
 

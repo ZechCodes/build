@@ -9,8 +9,8 @@ async fn mounted_tls_snapshot_slots_wait_for_flush_or_drop_and_drain() {
     *server.state.output_observer.lock().unwrap() = Some(Arc::new(move |authority| {
         let _ = observe.send(authority);
     }));
-    let first = stall_snapshot(&server, &mut observed, "first", false).await;
-    let second = stall_snapshot(&server, &mut observed, "second", true).await;
+    let first = stall_snapshot(&server, &mut observed, "first").await;
+    let second = stall_snapshot(&server, &mut observed, "second").await;
     let pool = pool.get().unwrap();
     assert_eq!(pool.available_permits(), 0);
 
@@ -36,12 +36,8 @@ async fn mounted_tls_snapshot_slots_wait_for_flush_or_drop_and_drain() {
     let baseline = flood.len();
     screen.feed(&flood);
 
-    // The first socket uses the production ten-second BoundedIo timer. The
-    // second uses the manual stall cut so the test can inspect recovery of
-    // exactly one physical writer before draining the listener.
-    tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(11)).await;
-    tokio::time::resume();
+    // Release one physical writer before the independent admission timeout.
+    first.cut.notify_one();
     let reply = object(&mut fast).await;
     assert_eq!(reply["id"], "waiting");
     assert_eq!(reply["ok"], true);
@@ -69,21 +65,21 @@ async fn mounted_tls_snapshot_slots_wait_for_flush_or_drop_and_drain() {
     )
     .await;
     assert_eq!(ack["ok"], true);
-    let third = stall_snapshot(&server, &mut observed, "third", true).await;
+    let third = stall_snapshot(&server, &mut observed, "third").await;
     assert_eq!(pool.available_permits(), 0);
     screen.feed(&flood);
     screen.flush();
     screen.feed(b"coalesced");
     screen.flush();
     assert_ping(&mut fast).await;
-    second.cut.as_ref().unwrap().notify_one();
+    second.cut.notify_one();
     let reset = object(&mut fast).await;
     assert_eq!(reset["type"], "term.reset");
     assert_eq!(reset["cursor"], cursor + flood.len() + b"coalesced".len());
     assert_ping(&mut fast).await;
     assert_eq!(pool.available_permits(), 1);
 
-    let fourth = stall_snapshot(&server, &mut observed, "fourth", true).await;
+    let fourth = stall_snapshot(&server, &mut observed, "fourth").await;
     assert_eq!(pool.available_permits(), 0);
     send(
         &mut fast,
@@ -107,17 +103,16 @@ async fn mounted_tls_snapshot_slots_wait_for_flush_or_drop_and_drain() {
 
 struct StalledSnapshot {
     _socket: Client,
-    cut: Option<Arc<Notify>>,
+    cut: Arc<Notify>,
 }
 
 async fn stall_snapshot(
     server: &Server,
     observed: &mut mpsc::UnboundedReceiver<OutputAuthority>,
     id: &str,
-    manual_stall: bool,
 ) -> StalledSnapshot {
-    let cut = manual_stall.then(|| Arc::new(Notify::new()));
-    *server.state.stall_cut.lock().unwrap() = cut.clone();
+    let cut = Arc::new(Notify::new());
+    *server.state.stall_cut.lock().unwrap() = Some(cut.clone());
     let opening = server.opening().await;
     let mut socket = server
         .socket_with_reader(&server.ticket(&opening).await, true)
@@ -146,7 +141,7 @@ async fn assert_ping(socket: &mut Client) {
 
 fn snapshot_handler(
     screen: crate::screen::ScreenHandle,
-    pool: Arc<OnceLock<Arc<tokio::sync::Semaphore>>>,
+    pool: Arc<OnceLock<Arc<crate::execution::session::SnapshotPool>>>,
 ) -> FrameHandler {
     greeting(FrameHandler::new(
         FrameClock::new(),
@@ -158,7 +153,7 @@ fn snapshot_handler(
                 .snapshots
                 .as_ref()
                 .unwrap();
-            pool.get_or_init(|| lane.bridge.clone());
+            pool.get_or_init(|| lane.pool());
             if frame.payload["method"] == "term.ack" {
                 screen.ack(
                     sender.terminal_client_id(),

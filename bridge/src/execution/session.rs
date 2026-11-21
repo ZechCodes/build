@@ -8,13 +8,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde_json::Value;
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::Notify;
 use tokio::time::Instant;
 
 const MAX_REQUESTS: usize = 32;
-// Two 80 MiB slots across the bridge, held through physical flush. With
-// sixteen four-MiB socket reservations, WSS reserves 224 MiB in total.
-const TERMINAL_SNAPSHOT_SLOTS: usize = 2;
+mod snapshots;
+pub(crate) use snapshots::{
+    SnapshotBusy, SnapshotPool, SnapshotWaitError, TerminalSnapshotLane,
+    TerminalSnapshotReservation,
+};
 
 pub(crate) fn next_request_order() -> u64 {
     static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
@@ -32,7 +34,7 @@ struct OpeningState {
     diagnostic_key: std::collections::hash_map::RandomState,
     closed: Notify,
     output_gate: Mutex<()>,
-    terminal_snapshot: OnceLock<Arc<Semaphore>>,
+    terminal_snapshot_timed_out: AtomicBool,
 }
 
 impl Opening {
@@ -45,7 +47,7 @@ impl Opening {
             diagnostic_key: std::collections::hash_map::RandomState::new(),
             closed: Notify::new(),
             output_gate: Mutex::new(()),
-            terminal_snapshot: OnceLock::new(),
+            terminal_snapshot_timed_out: AtomicBool::new(false),
         }))
     }
 
@@ -54,11 +56,15 @@ impl Opening {
         Self::new()
     }
 
-    pub(crate) fn terminal_snapshot_slot(&self) -> Arc<Semaphore> {
+    pub(crate) fn terminal_snapshot_timed_out(&self) -> bool {
+        self.0.terminal_snapshot_timed_out.load(Ordering::Acquire)
+    }
+
+    /// The caller holds the Opening output gate.
+    pub(crate) fn set_terminal_snapshot_timeout(&self, timed_out: bool) {
         self.0
-            .terminal_snapshot
-            .get_or_init(|| Arc::new(Semaphore::new(1)))
-            .clone()
+            .terminal_snapshot_timed_out
+            .store(timed_out, Ordering::Release);
     }
 
     pub fn is_open(&self) -> bool {
@@ -345,44 +351,6 @@ impl EncodedEvent {
     }
 }
 
-/// A snapshot is serialized only after acquiring both FIFO slots.
-#[derive(Clone)]
-pub(crate) struct TerminalSnapshotLane {
-    pub(crate) opening: Arc<Semaphore>,
-    pub(crate) bridge: Arc<Semaphore>,
-    pub(crate) runtime: tokio::runtime::Handle,
-    pub(crate) stopped: tokio::sync::watch::Receiver<bool>,
-}
-
-pub(crate) struct TerminalSnapshotReservation {
-    _opening: OwnedSemaphorePermit,
-    _bridge: OwnedSemaphorePermit,
-}
-
-impl TerminalSnapshotLane {
-    pub(crate) async fn reserve(
-        &self,
-        interest: &TerminalInterest,
-    ) -> Option<Arc<TerminalSnapshotReservation>> {
-        let mut stopped = self.stopped.clone();
-        tokio::select! {
-            biased;
-            _ = stopped.wait_for(|stopped| *stopped) => None,
-            _ = interest.ended() => None,
-            reservation = self.acquire() => reservation,
-        }
-    }
-
-    async fn acquire(&self) -> Option<Arc<TerminalSnapshotReservation>> {
-        let opening = self.opening.clone().acquire_owned().await.ok()?;
-        let bridge = self.bridge.clone().acquire_owned().await.ok()?;
-        Some(Arc::new(TerminalSnapshotReservation {
-            _opening: opening,
-            _bridge: bridge,
-        }))
-    }
-}
-
 /// Trusted screen registration identity, separate from both the Opening
 /// and the client-chosen attach request ID.
 pub(crate) struct TerminalInterest {
@@ -555,7 +523,7 @@ type AdmissionHook = Arc<dyn Fn() + Send + Sync>;
 pub struct ClientSessions {
     epoch: Arc<str>,
     sessions: Mutex<HashMap<String, SessionLease>>,
-    terminal_snapshots: OnceLock<Arc<Semaphore>>,
+    terminal_snapshots: OnceLock<Arc<SnapshotPool>>,
     cleanup_hook: Mutex<Option<CleanupHook>>,
     #[cfg(test)]
     admission_hook: Mutex<Option<AdmissionHook>>,
@@ -576,10 +544,8 @@ impl ClientSessions {
             admission_hook: Mutex::new(None),
         }
     }
-    pub(crate) fn terminal_snapshot_pool(&self) -> Arc<Semaphore> {
-        self.terminal_snapshots
-            .get_or_init(|| Arc::new(Semaphore::new(TERMINAL_SNAPSHOT_SLOTS)))
-            .clone()
+    pub(crate) fn terminal_snapshot_pool(&self) -> Arc<SnapshotPool> {
+        self.terminal_snapshots.get_or_init(Arc::default).clone()
     }
 
     pub fn open(&self, caller: VerifiedCaller) -> Result<SessionLease, SessionError> {

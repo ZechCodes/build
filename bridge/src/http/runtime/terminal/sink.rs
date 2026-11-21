@@ -47,7 +47,15 @@ pub(super) struct Outbound {
 pub(super) struct Reservation {
     _bytes: Option<OwnedSemaphorePermit>,
     _item: Option<OwnedSemaphorePermit>,
-    _snapshot: Option<Arc<TerminalSnapshotReservation>>,
+    snapshot: Option<Arc<TerminalSnapshotReservation>>,
+}
+
+impl Reservation {
+    pub(super) fn snapshot_expired(&self) -> bool {
+        self.snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.is_expired())
+    }
 }
 
 pub(super) struct DeliveredCursor {
@@ -166,7 +174,7 @@ impl SocketSink {
         Some(Reservation {
             _bytes: bytes,
             _item: Some(item),
-            _snapshot: snapshot,
+            snapshot,
         })
     }
 
@@ -180,11 +188,14 @@ impl SocketSink {
         Some(Reservation {
             _bytes: Some(bytes),
             _item: Some(item),
-            _snapshot: None,
+            snapshot: None,
         })
     }
 
     fn enqueue(&self, output: QueuedMessage) -> Result<(), DeliveryError> {
+        if let Some(snapshot) = &output.snapshot {
+            snapshot.encoded(output.bytes.len());
+        }
         let Some(reservation) =
             self.reserve_output(output.bytes.len(), output.control, output.snapshot)
         else {
@@ -213,6 +224,7 @@ impl SocketSink {
         interests: &mut Interests,
         interest: &Arc<TerminalInterest>,
         fence: OutputFence,
+        error: ApiError,
     ) -> Result<(), DeliveryError> {
         let Some(id) = interests.remove_failed(interest) else {
             return Ok(());
@@ -220,7 +232,7 @@ impl SocketSink {
         let bytes = serde_json::to_vec(&json!({
             "type": "attachment_error",
             "attach_id": id,
-            "reason": ApiError::SnapshotTooLarge.code(),
+            "reason": error.code(),
             "bridge_epoch": crate::bridge_epoch::current(),
         }))
         .expect("attachment control serializes");
@@ -282,7 +294,12 @@ impl EventSink for SocketSink {
         };
         let mut interests = self.interests.lock().unwrap();
         if payload["type"] == "attachment_error" {
-            return self.attachment_error(&mut interests, &interest, event.into_wire().1);
+            let error = if payload["reason"] == ApiError::SnapshotBusy.code() {
+                ApiError::SnapshotBusy
+            } else {
+                ApiError::SnapshotTooLarge
+            };
+            return self.attachment_error(&mut interests, &interest, event.into_wire().1, error);
         }
         let Some("term.output" | "term.reset" | "term.closed") = payload["type"].as_str() else {
             return Ok(());
@@ -314,7 +331,12 @@ impl SocketSink {
         match payload_class(bytes.len(), data) {
             None if data.is_some() => {
                 drop(bytes);
-                return self.attachment_error(interests, interest, fence);
+                return self.attachment_error(
+                    interests,
+                    interest,
+                    fence,
+                    ApiError::SnapshotTooLarge,
+                );
             }
             None => {
                 self.fail(CloseCode::Size);

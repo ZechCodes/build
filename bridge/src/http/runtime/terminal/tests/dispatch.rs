@@ -96,6 +96,10 @@ async fn exercise_shell(socket: &mut Client, term: &str, project: &str) {
     )
     .await;
     assert_eq!(acked["ok"], true, "{acked:?}");
+    close_shell(socket, term, project).await;
+}
+
+async fn close_shell(socket: &mut Client, term: &str, project: &str) {
     send(
         socket,
         "close",

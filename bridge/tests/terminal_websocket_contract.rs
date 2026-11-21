@@ -202,6 +202,11 @@ fn upgrade_offers_have_one_protocol_and_one_canonical_ticket() {
         assert_eq!(case["status"], status, "{}", case["name"]);
         assert_eq!(case["accepted"], status == 101, "{}", case["name"]);
     }
+}
+
+#[test]
+fn ticket_post_issues_a_canonical_ticket_with_a_proof_bounded_lifetime() {
+    let contract = fixture();
     let issue = &contract["ticket"];
     assert_eq!(issue["path"], "/v1/terminal-tickets");
     assert_eq!(issue["response"]["status"], 201);
@@ -256,6 +261,12 @@ fn ticket_post_requires_one_explicit_allowed_origin() {
             assert_eq!(case["refusal"], "origin_forbidden");
         }
     }
+}
+
+#[test]
+fn ticket_post_and_upgrade_share_http_policy_refusals() {
+    let contract = fixture();
+    let ticket = &contract["ticket"];
     let policy = &contract["endpoint"]["policy_refusals"];
     for (code, status) in [("origin_forbidden", 403), ("authority_mismatch", 421)] {
         let refusal = &policy[code];
@@ -679,11 +690,30 @@ fn check_recovery_styles(screen: &vt100::Screen, recipe: &Value) {
     }
 }
 
-#[test]
-fn maximal_sgr_recipe_round_trips_through_the_real_screen_formatter() {
-    let contract = fixture();
-    let recovery = &contract["recovery"];
-    let bound = &contract["limits"]["snapshot_bound"];
+fn check_recovery_grid(actual: &vt100::Screen, expected: &vt100::Screen, cols: u16, rows: u16) {
+    for row in 0..rows {
+        for col in 0..cols {
+            assert_eq!(
+                actual.cell(row, col),
+                expected.cell(row, col),
+                "cell at {row},{col}"
+            );
+        }
+    }
+}
+
+fn check_recovery_witness_cells(screen: &vt100::Screen, recovery: &Value) {
+    for witness in recovery["witness_cells"].as_array().unwrap() {
+        let row = u16::try_from(number(&witness["row"])).unwrap();
+        let col = u16::try_from(number(&witness["col"])).unwrap();
+        assert_eq!(
+            screen.cell(row, col).unwrap().contents(),
+            string(&witness["text"])
+        );
+    }
+}
+
+fn check_recovery_text_widths(recovery: &Value, bound: &Value) {
     for cell in recovery["cells"].as_array().unwrap() {
         let text = string(&cell["text"]);
         assert_eq!(text.len() as u64, number(&bound["utf8_bytes_per_cell"]));
@@ -693,6 +723,14 @@ fn maximal_sgr_recipe_round_trips_through_the_real_screen_formatter() {
         );
         assert!(text.chars().all(|scalar| scalar.len_utf8() == 4));
     }
+}
+
+#[test]
+fn maximal_sgr_recipe_round_trips_through_the_real_screen_formatter() {
+    let contract = fixture();
+    let recovery = &contract["recovery"];
+    let bound = &contract["limits"]["snapshot_bound"];
+    check_recovery_text_widths(recovery, bound);
     let cols = u16::try_from(number(&recovery["cols"])).unwrap();
     let rows = u16::try_from(number(&recovery["rows"])).unwrap();
     let pty = paint(recovery, cols, rows);
@@ -708,26 +746,11 @@ fn maximal_sgr_recipe_round_trips_through_the_real_screen_formatter() {
     check_recovery_styles(actual.screen(), &recovery["cells"]);
     let mut expected = vt100::Parser::new(rows, cols, 0);
     expected.process(&pty);
-    for row in 0..rows {
-        for col in 0..cols {
-            assert_eq!(
-                actual.screen().cell(row, col),
-                expected.screen().cell(row, col),
-                "cell at {row},{col}"
-            );
-        }
-    }
+    check_recovery_grid(actual.screen(), expected.screen(), cols, rows);
     let cursor = &recovery["cursor_zero_based"];
     let position = actual.screen().cursor_position();
     assert_eq!(json!([position.0, position.1]), *cursor);
-    for witness in recovery["witness_cells"].as_array().unwrap() {
-        let row = u16::try_from(number(&witness["row"])).unwrap();
-        let col = u16::try_from(number(&witness["col"])).unwrap();
-        assert_eq!(
-            actual.screen().cell(row, col).unwrap().contents(),
-            string(&witness["text"])
-        );
-    }
+    check_recovery_witness_cells(actual.screen(), recovery);
 
     let mut attach = wire(&contract["messages"]["attach_ok"]);
     attach["result"]["cols"] = json!(cols);

@@ -613,6 +613,7 @@ impl ScreenHandle {
     /// that has none, under the same acquisition that asked — which is the
     /// acquisition a carry takes to drain it, so an attach is on one screen or
     /// the other and never between them. One lock at a time, all the way down.
+    #[cfg(test)]
     pub fn attach(&self, sender: &SessionSender, viewport: Option<(u16, u16)>) -> AttachSnapshot {
         self.attach_checked(sender, viewport).unwrap()
     }
@@ -1026,6 +1027,7 @@ impl TerminalHandle {
     /// looking at, register it for live output, and hand back what it should
     /// render. `viewport` is `None` for a dead tab, whose retained screen is
     /// the last thing its agent painted.
+    #[cfg(test)]
     pub fn attach(&self, sender: &SessionSender, viewport: Option<(u16, u16)>) -> AttachSnapshot {
         self.attach_checked(sender, viewport).unwrap()
     }

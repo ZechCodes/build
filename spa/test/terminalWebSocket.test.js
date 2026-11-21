@@ -46,7 +46,7 @@ class FakePeer extends EventTarget {
 }
 
 const endpoints = [];
-function harness({ origin = policy.bridge_https_origin, answer = () => json(ticket.response.body, 201), greeting = opening.base.greeting, renewToken } = {}) {
+function harness({ origin = policy.bridge_https_origin, answer = () => json(ticket.response.body, 201), greeting = opening.base.greeting, renewToken, callerOrigin = policy.caller_origin, clockSkew = 0 } = {}) {
   const peers = [];
   const heldOpening = { ...opening.base, greeting };
   let token = "device-bearer";
@@ -58,10 +58,10 @@ function harness({ origin = policy.bridge_https_origin, answer = () => json(tick
   });
   const endpoint = createBrowserHttpEndpoint({
     grant: {
-      identity: { origin }, token: () => token, expiresAt: () => now + 30000,
+      identity: { origin }, token: () => token, expiresAt: () => now + clockSkew + 30000,
       renew: async () => { if (renewToken) token = renewToken; }, close: vi.fn(),
     },
-    fetchImpl, now: () => now, isCurrent: () => current, callerOrigin: policy.caller_origin,
+    fetchImpl, now: () => now + clockSkew, isCurrent: () => current, callerOrigin,
     createWebSocket: (url, protocols) => {
       const peer = new FakePeer(url, protocols);
       peers.push(peer);
@@ -152,6 +152,21 @@ describe("browser terminal admission", () => {
     h.peers[0].open(browser_protocol);
     await outcome;
     expect(h.peers[0].close).toHaveBeenCalledTimes(accepted ? 0 : 1);
+  });
+
+  it("lets the bridge decide expiry when the browser clock runs ahead", async () => {
+    const { peer } = await connected(harness({ clockSkew: 16000 }));
+    expect(peer.readyState).toBe(1);
+  });
+
+  it("explains that a non-HTTPS caller origin requires HTTPS", async () => {
+    const h = harness({ callerOrigin: "http://localhost:5173" });
+    const held = await h.endpoint.open("range");
+    await expect(h.endpoint.openTerminal(held)).rejects.toMatchObject({
+      error_code: "origin_forbidden",
+      message: "Browser terminals require an HTTPS app origin.",
+    });
+    expect(h.fetchImpl).toHaveBeenCalledOnce();
   });
 
   it("rejects negotiated extensions even with the expected subprotocol", async () => {

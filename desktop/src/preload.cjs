@@ -1,6 +1,12 @@
 const { contextBridge, ipcRenderer } = require("electron");
 const invoke = (method, args) =>
   ipcRenderer.invoke("build:bridge-http", method, args);
+function on(channel, listener) {
+  if (typeof listener !== "function") throw new TypeError("Expected an event listener");
+  const receive = (_event, payload) => listener(payload);
+  ipcRenderer.on(channel, receive);
+  return () => ipcRenderer.removeListener(channel, receive);
+}
 const facade = {
   discover: (origin) => invoke("discover", [origin]),
   resume: (identity) => invoke("resume", [identity]),
@@ -13,12 +19,12 @@ const facade = {
   unsubscribe: (stream) => invoke("unsubscribe", [stream]),
   cancel: (requestId) => invoke("cancel", [requestId]),
   close: (handle) => invoke("close", [handle]),
-  onEvent: (listener) => {
-    if (typeof listener !== "function")
-      throw new TypeError("Expected an event listener");
-    const receive = (_event, payload) => listener(payload);
-    ipcRenderer.on("build:bridge-http-event", receive);
-    return () => ipcRenderer.removeListener("build:bridge-http-event", receive);
-  },
+  terminalOpen: (handle, requestId, body) => invoke("terminalOpen", [handle, requestId, body]),
+  terminalCall: (terminal, method, params, id) => invoke("terminalCall", [terminal, method, params, id]),
+  terminalConsume: (terminal, sequence) => invoke("terminalConsume", [terminal, sequence]),
+  terminalDetach: (terminal, attachId) => invoke("terminalDetach", [terminal, attachId]),
+  terminalClose: (terminal) => invoke("terminalClose", [terminal]),
+  onEvent: (listener) => on("build:bridge-http-event", listener),
+  onTerminalEvent: (listener) => on("build:bridge-http-terminal-event", listener),
 };
 contextBridge.exposeInMainWorld("buildBridgeHttp", Object.freeze(facade));

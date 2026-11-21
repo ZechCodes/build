@@ -151,6 +151,25 @@ test("sandbox preload exposes only typed functions, strips Electron event and re
     invocations[1][2][2].requestId,
     "00000000-0000-4000-8000-000000000001",
   );
+  await facade.terminalOpen("h", "request", { opening_generation: "generation", retry: true });
+  await facade.terminalCall("terminal", "ping", {}, "1");
+  await facade.terminalConsume("terminal", 1);
+  await facade.terminalDetach("terminal", "1");
+  await facade.terminalClose("terminal");
+  assert.deepEqual(JSON.parse(JSON.stringify(invocations.slice(2).map(([, name, args]) => [name, args]))), [
+    ["terminalOpen", ["h", "request", { opening_generation: "generation", retry: true }]],
+    ["terminalCall", ["terminal", "ping", {}, "1"]],
+    ["terminalConsume", ["terminal", 1]],
+    ["terminalDetach", ["terminal", "1"]],
+    ["terminalClose", ["terminal"]],
+  ]);
+  const terminalEvent = { terminal: "t", requestId: "request", type: "close", closeCode: 4008 };
+  let close;
+  const stopTerminal = facade.onTerminalEvent((value) => { close = value; });
+  events.emit("build:bridge-http-terminal-event", { secret: true }, terminalEvent);
+  assert.deepEqual(close, terminalEvent);
+  stopTerminal();
+  assert.equal(events.listenerCount("build:bridge-http-terminal-event"), 0);
   let event;
   const off = facade.onEvent((value) => {
     event = value;

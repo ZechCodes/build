@@ -146,7 +146,24 @@ function domainError(value) {
     typeof value.retryable === "boolean"
   );
 }
+async function readRefusal(response, options, signal) {
+  const { status } = response;
+  const fallback = transportError(status === 401 ? "unauthorized" : "http_error");
+  let value;
+  try {
+    value = await boundedJson(response, options.maxBytes, signal);
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw Object.assign(fallback, { status });
+  }
+  if (!domainError(value) || !/^[A-Za-z0-9_-]{1,128}$/u.test(value.error_code))
+    throw Object.assign(fallback, { status });
+  throw Object.assign(transportError(value.error_code), {
+    status, retryable: value.retryable,
+  });
+}
 async function jsonResponse(response, options, signal) {
+  if (!response.ok && options.preserveErrorCode) return readRefusal(response, options, signal);
   if (response.status === 401) {
     void response.body?.cancel();
     refuse("unauthorized", response.status);

@@ -210,3 +210,68 @@ export function compatibleTransport(manifest, transport) {
   if (manifest.operations.some((route) => !supported.has(route.operationId)))
     fail("incompatible_transport");
 }
+
+// These handles belong to a native Opening or an IPC attempt. Wire request IDs
+// use monotonically increasing decimal strings within each IPC terminal.
+const terminalHandle = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
+function checkTerminalHandle(handle) {
+  if (typeof handle !== "string" || !terminalHandle.test(handle)) fail("invalid_params");
+}
+
+export function deliverySequence(sequence) {
+  if (!Number.isSafeInteger(sequence) || sequence < 1) fail("invalid_params");
+  return sequence;
+}
+
+export function terminalRequestSequence(id) {
+  if (typeof id !== "string" || !/^[1-9][0-9]{0,15}$/u.test(id)) fail("invalid_params");
+  return deliverySequence(Number(id));
+}
+
+function terminalObject(value) {
+  object(value);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) fail("invalid_params");
+  return value;
+}
+
+const methodsWithTermId = new Set(["term.attach", "term.input", "term.resize", "term.ack", "term.close"]);
+const stringTerminalParams = new Set([
+  "workspace_id", "run_id", "project_id", "worktree_id", "source_id", "source_path",
+  "kind", "id", "agent_id", "conversation_id",
+]);
+
+function terminalCallParams(method, params) {
+  identifier(method);
+  terminalObject(params);
+  if (methodsWithTermId.has(method)) {
+    const id = params.term_id;
+    if (typeof id !== "string" || !id.length || id.length > 4096) fail("invalid_params");
+  }
+  for (const [key, value] of Object.entries(params))
+    if (stringTerminalParams.has(key) && value != null && typeof value !== "string") fail("invalid_params");
+}
+
+export function terminalIpcArguments(method, args) {
+  checkTerminalHandle(args[0]);
+  switch (method) {
+    case "terminalOpen": {
+      checkTerminalHandle(args[1]);
+      const body = exact(terminalObject(args[2]), ["opening_generation", "retry"]);
+      identifier(body.opening_generation);
+      if (Object.hasOwn(body, "retry") && body.retry !== true) fail("invalid_params");
+      break;
+    }
+    case "terminalCall":
+      terminalCallParams(args[1], args[2]);
+      terminalRequestSequence(args[3]);
+      break;
+    case "terminalConsume":
+      deliverySequence(args[1]);
+      break;
+    case "terminalDetach":
+      terminalRequestSequence(args[1]);
+      break;
+  }
+}

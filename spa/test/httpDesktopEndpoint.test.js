@@ -300,3 +300,48 @@ describe("desktop endpoint terminal carrier", () => {
     await vi.waitFor(() => expect(api.terminalClose).toHaveBeenCalledWith("late-terminal"));
   });
 });
+
+it("sends paste chunks in order while resize and sibling input remain immediate", async () => {
+  const { api, endpoint, emit } = desktopTerminal();
+  const carrier = await endpoint.openTerminal(await endpoint.open("range"));
+  const paste = carrier.call("term.input", { term_id: "shell", data: btoa("x".repeat(65536) + "end") });
+  const later = carrier.call("term.input", { term_id: "shell", data: btoa("later") });
+  const resize = carrier.call("term.resize", { term_id: "shell", cols: 90, rows: 24 });
+  const sibling = carrier.call("term.input", { term_id: "agent", data: btoa("sibling") });
+  const sent = () => api.terminalCall.mock.calls.map(([, method, params, id]) => [method, params.term_id, id]);
+  expect(sent()).toEqual([["term.input", "shell", "1"], ["term.resize", "shell", "2"], ["term.input", "agent", "3"]]);
+  expect(atob(api.terminalCall.mock.calls[0][2].data)).toHaveLength(65536);
+  const reply = (id, sequence) => emit({ type: "message", sequence, data: { id, ok: true, result: {}, bridge_epoch: "epoch" } });
+  reply("2", 1);
+  reply("3", 2);
+  reply("1", 3);
+  await vi.waitFor(() => expect(atob(api.terminalCall.mock.lastCall[2].data)).toBe("end"));
+  reply("4", 4);
+  await vi.waitFor(() => expect(atob(api.terminalCall.mock.lastCall[2].data)).toBe("later"));
+  reply("5", 5);
+  await Promise.all([paste, later, resize, sibling]);
+  carrier.close();
+});
+
+it("consumes only early pushes for the selected terminal and fences retired effects", async () => {
+  const { api, endpoint, emit } = desktopTerminal();
+  const result = Promise.withResolvers();
+  api.terminalOpen.mockReturnValueOnce(result.promise);
+  const opening = await endpoint.open("range");
+  const pending = endpoint.openTerminal(opening);
+  const data = { type: "term.output", bridge_epoch: "epoch", data: "eA==", cursor: 1 };
+  emit({ terminal: "foreign", type: "message", data, sequence: 99 });
+  emit({ type: "message", data, sequence: 1 });
+  expect(api.terminalConsume).not.toHaveBeenCalled();
+  result.resolve({ ok: true, value: { terminal: "native-terminal" } });
+  const carrier = await pending;
+  const pushed = vi.fn();
+  carrier.onPush(pushed);
+  expect(pushed).toHaveBeenCalledExactlyOnceWith(data);
+  const input = carrier.call("term.input", { term_id: "shell", data: "eA==" });
+  endpoint.close();
+  await expect(input).rejects.toMatchObject({ code: "uncertain_delivery", uncertain: true });
+  expect(api.terminalCall).toHaveBeenCalledOnce();
+  emit({ type: "message", data, sequence: 2 });
+  expect(pushed).toHaveBeenCalledOnce();
+});

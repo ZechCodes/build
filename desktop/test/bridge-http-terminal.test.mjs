@@ -672,7 +672,11 @@ test("renewal with the same epoch and token keeps the same socket", { timeout: 5
 async function terminalIpc(t, remote) {
   const contents = new EventEmitter();
   const events = [];
-  const frame = { url: APP_URL, send: (channel, event) => events.push({ channel, ...event }) };
+  const deliveries = new EventEmitter();
+  const frame = { url: APP_URL, send(channel, event) {
+    events.push({ channel, ...event });
+    deliveries.emit("event");
+  } };
   contents.mainFrame = frame;
   contents.send = frame.send;
   let handler;
@@ -704,6 +708,9 @@ async function terminalIpc(t, remote) {
   const ticketBody = { opening_generation: opened.value.opening_generation };
   return {
     contents, frame, events, auth, invoke, handle, ticketBody,
+    async waitForEvents(count) {
+      while (events.length < count) await once(deliveries, "event");
+    },
     open(requestId, body = ticketBody) { return invoke("terminalOpen", [handle, requestId, body]); },
   };
 }
@@ -729,15 +736,15 @@ async function ipcCall(h, method, params, id) {
   return JSON.parse(data.toString());
 }
 
-const flushIpc = () => new Promise((resolve) => setTimeout(resolve, 20));
-
 test("hosted IPC carries a shell and agent on one socket and rejects reuse of a settled attach ID", async (t) => {
   const h = await openIpc(t);
   const attach = envelope("attach");
   const agent = envelope("agent_attach");
+  assert.equal((await h.invoke("terminalCall", [h.terminal, "ping", new Map(), "1"])).error.code, "invalid_params");
+  assert.equal((await h.invoke("terminalCall", [h.terminal, "term.attach", {}, "1"])).error.code, "invalid_params");
   assert.deepEqual(await ipcCall(h, attach.method, attach.params, "1"), { ...attach, id: "1" });
   h.socket.send(Buffer.from(JSON.stringify({ ...envelope("attach_ok"), id: "1" })));
-  await flushIpc();
+  await h.waitForEvents(1);
   const [first] = h.events;
   assert.equal(first.data.id, "1");
   assert.equal(first.requestId, ipcAttempt);
@@ -747,7 +754,7 @@ test("hosted IPC carries a shell and agent on one socket and rejects reuse of a 
   assert.equal((await h.invoke("terminalCall", [h.terminal, agent.method, agent.params, "1"])).error.code, "invalid_params");
   assert.deepEqual(await ipcCall(h, agent.method, agent.params, "2"), { ...agent, id: "2" });
   h.socket.send(Buffer.from(JSON.stringify({ ...envelope("agent_attach_ok"), id: "2" })));
-  await flushIpc();
+  await h.waitForEvents(2);
   const reply = h.events.at(-1);
   assert.equal(reply.data.id, "2");
   assert.equal(reply.data.result.term_id, envelope("agent_attach_ok").result.term_id);
@@ -789,12 +796,12 @@ test("hosted IPC preserves D2 ticket status, retry body, pane controls and close
   })));
   const message = { ...envelope("attachment_error"), reason: "snapshot_busy", attach_id: "1" };
   socket.send(Buffer.from(JSON.stringify(message)));
-  await flushIpc();
+  await h.waitForEvents(2);
   assert.equal(h.events[0].data.error_code, "snapshot_busy");
   assert.equal(h.events[0].data.retryable, true);
   assert.deepEqual(h.events[1].data, message);
   socket.close(4008, "snapshot_write_timeout");
-  await flushIpc();
+  await h.waitForEvents(3);
   assert.deepEqual(h.events.at(-1), {
     channel: "build:bridge-http-terminal-event", terminal, requestId: secondIpcAttempt,
     type: "close", code: "terminal_closed", closeCode: 4008, reason: "snapshot_write_timeout",
@@ -806,7 +813,7 @@ test("terminal IPC delivery window bounds unconsumed frames independently of emu
   const reset = { ...envelope("reset"), data: Buffer.alloc(2 * 1024 * 1024).toString("base64") };
   h.socket.send(Buffer.from(JSON.stringify(reset)));
   h.socket.send(Buffer.from(JSON.stringify(envelope("output"))));
-  await flushIpc();
+  await h.waitForEvents(2);
   assert.equal(h.events[0].data.data, reset.data);
   assert.equal(h.events[1].sequence, 2);
   assert.equal((await h.invoke("terminalConsume", [h.terminal, 2])).error.code, "invalid_params");
@@ -825,12 +832,58 @@ test("hosted IPC retires exact-frame handles and drops late terminal events on n
   assert.equal((await h.invoke("terminalConsume", [h.terminal, 1], subframe)).error.code, "untrusted_caller");
   assert.equal((await h.invoke("terminalClose", ["00000000-0000-4000-8000-000000000099"])).error.code, "invalid_terminal_handle");
   const closed = once(h.socket, "close");
-  h.contents.emit("did-start-navigation", {}, APP_URL, false, true);
+  h.contents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
   const stale = await h.invoke("terminalCall", [h.terminal, "ping", {}, "1"], h.frame);
   assert.equal(stale.error.code, "untrusted_caller");
   h.contents.mainFrame = { ...h.frame };
   h.contents.emit("did-navigate", {}, APP_URL);
   assert.equal((await h.invoke("terminalClose", [h.terminal])).error.code, "invalid_terminal_handle");
+  await closed;
+  assert.deepEqual(h.events, []);
+});
+
+test("retiring a frame cancels the ticket request before any upgrade can outlive it", async (t) => {
+  const ticketHeld = Promise.withResolvers();
+  const remote = await peer(t, { respond(response) { ticketHeld.resolve(response); } });
+  const h = await terminalIpc(t, remote);
+  assert.equal((await h.open(ipcAttempt, { ...h.ticketBody, retry: true, origin: "https://foreign.test" })).error.code, "invalid_params");
+  const pending = h.open(ipcAttempt);
+  const response = await ticketHeld.promise;
+  h.contents.emit("did-start-navigation", {}, APP_URL, false, true);
+  issueTicket(response);
+  assert.equal((await pending).ok, false);
+  assert.equal(remote.upgrades.length, 0);
+  assert.deepEqual(h.events, []);
+});
+
+test("native ticket errors carry new structured error codes without a code registry", async (t) => {
+  const remote = await peer(t, { respond(response) {
+    issueTicket(response, { error: "Peer text", error_code: "later_ticket_code", retryable: true }, 503);
+  } });
+  const { adapter, handle } = await desktop(t, remote.origin);
+  await assert.rejects(adapter.terminalOpen(owner, handle, () => {}), {
+    code: "later_ticket_code", status: 503, retryable: true,
+  });
+  assert.equal(remote.upgrades.length, 0);
+});
+
+test("ordinary terminal IPC deliveries consume byte credit even below the item limit", async (t) => {
+  const h = await openIpc(t);
+  const data = Buffer.alloc(600 * 1024).toString("base64");
+  const frame = Buffer.from(JSON.stringify({ ...envelope("output"), data, cursor: 600 * 1024 }));
+  const closed = once(h.socket, "close");
+  for (let i = 0; i < 3; i += 1) h.socket.send(frame);
+  await closed;
+  assert.deepEqual(h.events.map(({ type, code }) => [type, code]), [
+    ["message", undefined], ["message", undefined], ["close", "terminal_delivery_overflow"],
+  ]);
+});
+
+test("a late terminal frame cannot move from the document that opened it to a replacement frame", async (t) => {
+  const h = await openIpc(t);
+  const closed = once(h.socket, "close");
+  h.contents.mainFrame = { url: APP_URL, send() { assert.fail("terminal leaked across document replacement"); } };
+  h.socket.send(Buffer.from(messages.output.utf8));
   await closed;
   assert.deepEqual(h.events, []);
 });

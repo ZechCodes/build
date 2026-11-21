@@ -456,7 +456,7 @@ async fn tls_malformed_upgrades_and_wrong_host_never_reach_admission() {
     let server = Server::start(Mode::Echo).await;
     let fixture = contract();
     for case in fixture["handshake"]["invalid_requests"].as_array().unwrap() {
-        if case["header"] == "origin" || case.get("ticket_state").is_some() {
+        if case.get("ticket_state").is_some() {
             continue;
         }
         let mut headers = server.handshake();

@@ -345,3 +345,30 @@ it("consumes only early pushes for the selected terminal and fences retired effe
   emit({ type: "message", data, sequence: 2 });
   expect(pushed).toHaveBeenCalledOnce();
 });
+
+it("joins the same open attempt only when the retry intent also matches", async () => {
+  const { api, endpoint } = desktopTerminal();
+  const opening = await endpoint.open("range");
+  const response = Promise.withResolvers();
+  api.terminalOpen.mockReturnValueOnce(response.promise);
+  const { signal } = new AbortController();
+  const pending = endpoint.openTerminal(opening, { signal });
+  const joined = endpoint.openTerminal(opening, { signal, retry: false });
+  const conflict = endpoint.openTerminal(opening, { signal, retry: true }).then(() => null, (error) => error);
+  response.resolve({ ok: true, value: { terminal: "native-terminal" } });
+  expect(await pending).toBe(await joined);
+  expect(await conflict).toMatchObject({ code: "busy" });
+  expect(api.terminalOpen).toHaveBeenCalledOnce();
+  endpoint.close();
+});
+
+it.each([
+  [401, "invalid_credential", "Bridge authorization expired or was refused. Verify this device with your account again."],
+  [403, "forbidden_scope", "This device grant does not allow terminal access."],
+  [403, "terminal_forbidden", "This device grant does not allow terminal access."],
+])("uses the terminal authorization message for %s %s and preserves the code", async (status, code, message) => {
+  const { api, endpoint } = desktopTerminal();
+  const opening = await endpoint.open("range");
+  api.terminalOpen.mockResolvedValueOnce({ ok: false, error: { status, code, retryable: false } });
+  await expect(endpoint.openTerminal(opening)).rejects.toMatchObject({ httpStatus: status, code, message, retryable: false });
+});

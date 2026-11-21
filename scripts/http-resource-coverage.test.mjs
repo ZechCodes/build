@@ -385,7 +385,7 @@ const sourceFingerprintParts = {
   "core/environmentSettingsProjects.js": ["c9ca19e3", "8688e54f", "6e1b3396", "11a2c633", "08562858", "7da1d02a", "558a00e3", "84b1ebf8"],
   "core/githubRepos.js": ["4526fb16", "bfe42e0f", "57b963ea", "fe623873", "0fe9ccce", "521ecc83", "b9117e59", "af64462f"],
   "core/gitPane.js": ["3b9c66d1", "186e1669", "3ecc46b0", "0afe28d8", "10e87dd3", "55dfbb00", "44fa79f8", "88d71409"],
-  "core/httpDesktopEndpoint.js": ["ba0c017f", "c524f219", "9a9a9905", "9b1af3f9", "373bc252", "a1eb9301", "8fcd55da", "486982cc"],
+  "core/httpDesktopTerminal.js": ["277a35a7", "2bdcd770", "0e5542b3", "72b60d3d", "ef6ada3b", "02b9d77e", "44ca1e00", "adab6cfc"],
   "core/httpSession.js": ["d2d24aff", "7b5b1459", "d28fe426", "be959694", "f33589c3", "920bd1fe", "7d85adf9", "3eadcc6f"],
   "core/inboxCaptures.js": ["48a7f5fb", "b2132a83", "5901fb31", "4fb0c5ae", "97005297", "2d0b9db6", "be2c3e6d", "1271b663"],
   "core/inboxDevices.js": ["cd1cfdd5", "9a9734e7", "ac73df50", "cac3383d", "9b6b0229", "b72936f1", "4b2d5657", "a8586421"],
@@ -670,7 +670,7 @@ const dynamicSites = {
     "readCheckoutRecord ( kind )",
     "syncActionRpc ( optionId )"
   ],
-  "core/httpDesktopEndpoint.js": [
+  "core/httpDesktopTerminal.js": [
     // The finite native terminal IPC forwards the WSS v1 methods, including
     // ping. The terminal methods retain their existing REST exclusions.
     "call ( method )"

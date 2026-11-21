@@ -42,6 +42,7 @@ use crate::http::{
 };
 
 pub(super) const PATH: &str = "/v1/terminal-tickets";
+pub(super) const SNAPSHOT_TIMEOUT_CODE: &str = "snapshot_write_timeout";
 const TOKEN_BYTES: usize = 32;
 const MAX_AGE: Duration = Duration::from_millis(15_000);
 const MAX_PENDING_FAMILY: usize = 8;
@@ -228,6 +229,8 @@ impl TerminalTickets {
 #[serde(deny_unknown_fields)]
 struct IssueRequest {
     opening_generation: String,
+    #[serde(default)]
+    retry: bool,
 }
 
 pub(super) async fn create(State(state): State<HttpState>, request: Request<Body>) -> Response {
@@ -277,7 +280,15 @@ async fn issue_response(state: &HttpState, request: Request<Body>) -> HttpResult
     if opening.generation != body.opening_generation {
         return Err(invalid());
     }
-    mint(state, opening, authority, caller_origin, output, upgrade)
+    mint(
+        state,
+        opening,
+        authority,
+        caller_origin,
+        output,
+        upgrade,
+        body.retry,
+    )
 }
 
 fn mint(
@@ -287,12 +298,12 @@ fn mint(
     caller_origin: String,
     output: OutputAuthority,
     upgrade: TerminalUpgrade,
+    explicit_retry: bool,
 ) -> HttpResult<Response> {
     let tickets = state.terminal_tickets.as_ref().ok_or_else(invalid)?;
     let mut registry = tickets.registry.lock().unwrap();
-    let (token, expires) = opening
-        .session
-        .opening()
+    let allocation = opening.session.opening();
+    let (token, expires) = allocation
         .while_open(|| {
             let now = Instant::now();
             let ticket = PendingTicket::new(
@@ -305,11 +316,18 @@ fn mint(
             if !state.accepting.load(Ordering::SeqCst) || !ticket.is_live(now) {
                 return Err(invalid());
             }
+            if allocation.terminal_snapshot_timed_out() && !explicit_retry {
+                return Err(snapshot_timed_out());
+            }
             upgrade
                 .check_capacity(&ticket.authority.identity.family_id)
                 .map_err(|error| Box::new(error.into_response()))?;
             let expires = ticket.expires;
-            Ok::<_, Box<Response>>((registry.issue(ticket, now)?, expires))
+            let token = registry.issue(ticket, now)?;
+            if explicit_retry {
+                allocation.set_terminal_snapshot_timeout(false);
+            }
+            Ok::<_, Box<Response>>((token, expires))
         })
         .ok_or_else(invalid)??;
     drop(registry);
@@ -434,7 +452,10 @@ fn bind(
                 sink: Arc::downgrade(&sink),
             }),
             || {
-                if !state.accepting.load(Ordering::SeqCst) || !ticket.is_live(Instant::now()) {
+                if !state.accepting.load(Ordering::SeqCst)
+                    || !ticket.is_live(Instant::now())
+                    || ticket.session.opening().terminal_snapshot_timed_out()
+                {
                     return false;
                 }
                 if let Some(prior) = prior {
@@ -457,6 +478,14 @@ fn bind(
 
 fn invalid() -> Box<Response> {
     refusal(StatusCode::UNAUTHORIZED, "invalid_credential").into()
+}
+
+fn snapshot_timed_out() -> Box<Response> {
+    let mut response = refusal(StatusCode::CONFLICT, SNAPSHOT_TIMEOUT_CODE);
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Box::new(response)
 }
 
 fn overloaded() -> Box<Response> {
@@ -558,6 +587,20 @@ pub(super) struct TerminalAdmission {
 impl TerminalAdmission {
     pub(super) fn session(&self) -> &SessionLease {
         &self.session
+    }
+
+    /// Fence the refusal to the same Opening and socket that missed its deadline.
+    pub(super) fn record_snapshot_timeout(&self) -> bool {
+        let opening = self.session.opening();
+        opening
+            .while_open(|| {
+                if !self.is_live() {
+                    return false;
+                }
+                opening.set_terminal_snapshot_timeout(true);
+                true
+            })
+            .unwrap_or(false)
     }
 
     pub(super) fn retire(&self) {

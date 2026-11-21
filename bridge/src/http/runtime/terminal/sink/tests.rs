@@ -67,7 +67,7 @@ fn queued_attach_is_replaced_with_a_correlated_refusal() {
                 .interests
                 .lock()
                 .unwrap()
-                .begin(id.into(), Method::Attach)
+                .begin(id.into(), Method::Attach, None)
                 .unwrap();
             let request = sessions
                 .request_for_stream(
@@ -117,16 +117,94 @@ fn full_interest_map_keeps_existing_attachment() {
         .unwrap();
     for index in 0..cap {
         let id = format!("attach-{index}");
-        interests.begin(id.clone(), Method::Attach).unwrap();
+        interests.begin(id.clone(), Method::Attach, None).unwrap();
         interests.attach_reply(&id, Some(&format!("term-{index}")));
     }
     let original = interests.for_effect("term-0").unwrap();
     assert!(interests
-        .begin("replacement".into(), Method::Attach)
+        .begin("replacement".into(), Method::Attach, None)
         .is_none());
     assert!(Arc::ptr_eq(
         &original,
         &interests.for_effect("term-0").unwrap()
     ));
     assert!(original.is_live());
+}
+
+#[test]
+fn control_item_limit_falls_back_to_the_ordinary_lane() {
+    let sessions = ClientSessions::new(crate::bridge_epoch::current());
+    let session = sessions
+        .open(VerifiedCaller::verified_relay("device", Opening::new()))
+        .unwrap();
+    let (socket, mut receive) = SocketSink::new();
+    let binding = sessions
+        .bind_events(&session, StreamClass::Terminal, socket.clone())
+        .unwrap();
+    let interest = socket
+        .interests
+        .lock()
+        .unwrap()
+        .begin("attach".into(), Method::Attach, None)
+        .unwrap();
+
+    let send = |kind| {
+        binding
+            .events()
+            .push_with_interest(
+                json!({"type":kind,"term_id":"shell"}),
+                Some(interest.clone()),
+            )
+            .unwrap();
+    };
+    for _ in 0..QUEUE_ITEMS - CONTROL_ITEMS - 1 {
+        send("term.output");
+    }
+    for _ in 0..=CONTROL_ITEMS {
+        send("term.closed");
+    }
+    // The ninth control filled the final ordinary slot. All 128 messages
+    // fit and the socket stayed live.
+    assert_eq!(socket.items.available_permits(), 0);
+    assert_eq!(*socket.failure.borrow(), None);
+    assert_eq!(
+        std::iter::from_fn(|| receive.try_recv().ok()).count(),
+        QUEUE_ITEMS
+    );
+}
+
+#[test]
+fn attach_error_text_does_not_override_its_code() {
+    let sessions = ClientSessions::new(crate::bridge_epoch::current());
+    let session = sessions
+        .open(VerifiedCaller::verified_relay("device", Opening::new()))
+        .unwrap();
+    let (socket, mut receive) = SocketSink::new();
+    let binding = sessions
+        .bind_events(&session, StreamClass::Terminal, socket.clone())
+        .unwrap();
+    socket
+        .interests
+        .lock()
+        .unwrap()
+        .begin("attach".into(), Method::Attach, None)
+        .unwrap();
+    let request = sessions
+        .request_for_stream(
+            &session,
+            StreamClass::Terminal,
+            socket.reply("attach".into(), Method::Attach),
+            Some(&binding),
+        )
+        .unwrap();
+
+    let reply = crate::api::reply(
+        json!("attach"),
+        Err(ApiError::invalid_params(
+            "This screen is too large to display",
+        )),
+    );
+    request.reply().send(reply).unwrap();
+    let reply: Value = serde_json::from_slice(&receive.try_recv().unwrap().bytes).unwrap();
+    assert_eq!(reply["error_code"], "invalid_params");
 }

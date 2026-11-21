@@ -6,9 +6,12 @@ use axum::{
     extract::{Request, State},
     response::{IntoResponse, Response},
 };
-use futures_util::{future::BoxFuture, stream::FuturesUnordered, SinkExt, StreamExt};
+use futures_util::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinSet,
+};
 use tokio_tungstenite::tungstenite::{
     error::CapacityError, protocol::frame::coding::CloseCode, Error, Message,
 };
@@ -16,7 +19,10 @@ use tokio_tungstenite::tungstenite::{
 use crate::{
     api::{self, ApiError},
     execution::{
-        session::{SessionError, TerminalInterest, VerifiedCaller},
+        session::{
+            RequestContext, SessionError, SnapshotBusy, SnapshotWaitError, TerminalInterest,
+            TerminalSnapshotLane, VerifiedCaller,
+        },
         Call, ExecutionService, Invocation,
     },
     http::{
@@ -32,7 +38,7 @@ use super::{
     terminal_tickets::{self, TerminalAdmission},
     HttpResult, HttpState,
 };
-use sink::{Outbound, SocketSink};
+use sink::{CallSink, Outbound, SocketSink};
 use wire::{Control, Incoming, Method};
 use writer::WriterFence;
 
@@ -64,14 +70,22 @@ fn admit(state: HttpState, mut request: Request) -> HttpResult<Response> {
         sink.clone(),
         |family| upgrade.reserve(family).map_err(refusal),
     )?);
+    let (stop_snapshots, stopped) = watch::channel(false);
+    let snapshots = TerminalSnapshotLane::new(
+        admission.session().opening().diagnostic_id(),
+        state.execution.sessions().terminal_snapshot_pool(),
+        stopped,
+    );
     let writer = WriterFence::default();
     let connection = Connection {
         admission: admission.clone(),
-        execution: state.execution,
+        execution: state.execution.clone(),
         sink,
         writer: writer.clone(),
         receive,
         calls: Calls::default(),
+        snapshots,
+        stop_snapshots,
     };
     let response = upgrade
         .accept(
@@ -81,6 +95,7 @@ fn admit(state: HttpState, mut request: Request) -> HttpResult<Response> {
             move |socket| Box::pin(connection.run(socket)),
         )
         .map_err(refusal)?;
+    super::observe_output(&state, &output);
     writer.install(output, admission);
     Ok(response)
 }
@@ -104,6 +119,8 @@ struct Connection {
     writer: WriterFence,
     receive: mpsc::Receiver<Outbound>,
     calls: Calls,
+    snapshots: TerminalSnapshotLane,
+    stop_snapshots: watch::Sender<bool>,
 }
 
 enum End {
@@ -129,10 +146,20 @@ async fn next_io(socket: &mut TerminalSocket, receive: &mut mpsc::Receiver<Outbo
 impl Connection {
     async fn run(mut self, socket: &mut TerminalSocket) {
         let admission = self.admission.clone();
-        tokio::select! {
+        let snapshots = self.snapshots.clone();
+        let expired = tokio::select! {
             biased;
-            _ = admission.ended() => {},
-            _ = self.drive(socket) => {},
+            _ = admission.ended() => None,
+            expired = snapshots.timed_out() => Some(expired),
+            _ = self.drive(socket) => None,
+        };
+        if let Some(expired) = expired.or_else(|| snapshots.expired_now()) {
+            self.stop_snapshots.send_replace(true);
+            expired.release();
+            let current = admission.record_snapshot_timeout();
+            if current {
+                self.writer.snapshot_timeout(socket);
+            }
         }
     }
 
@@ -141,7 +168,7 @@ impl Connection {
         self.calls = Calls::default();
         if let End::Close(code) = end {
             if self.admission.is_live() {
-                writer::close(socket, code).await;
+                self.writer.close(socket, code, "").await;
             }
         }
     }
@@ -151,17 +178,19 @@ impl Connection {
             tokio::select! {
                 biased;
                 code = self.sink.failed() => return End::Close(code),
+                Some(ready) = self.calls.attaching.join_next(), if !self.calls.attaching.is_empty() => {
+                    let Ok(ready) = ready else { return End::Drop };
+                    if let Err(end) = self.dispatch_attach(socket, ready).await {
+                        return end;
+                    }
+                }
                 Some(settled) = self.calls.settling.next(), if !self.calls.settling.is_empty() => {
                     self.settle(settled);
                 }
                 io = next_io(socket, &mut self.receive) => match io {
                     Io::Write(outbound) => {
-                        let id = outbound.id.clone();
-                        if self.writer.write(socket, outbound).await.is_err() {
-                            return End::Drop;
-                        }
-                        if let Some(id) = id {
-                            self.calls.flushed(&id);
+                        if let Err(end) = self.deliver(socket, outbound).await {
+                            return end;
                         }
                     }
                     Io::Read(message) => {
@@ -172,6 +201,26 @@ impl Connection {
                 }
             }
         }
+    }
+
+    async fn deliver(
+        &mut self,
+        socket: &mut TerminalSocket,
+        outbound: Outbound,
+    ) -> Result<(), End> {
+        let id = outbound.id.clone();
+        if let Some(cursor) = self
+            .writer
+            .write(socket, outbound)
+            .await
+            .map_err(|_| End::Drop)?
+        {
+            self.sink.record_delivery(cursor);
+        }
+        if let Some(id) = id {
+            self.calls.flushed(&id);
+        }
+        Ok(())
     }
 
     async fn receive_message(
@@ -187,10 +236,10 @@ impl Connection {
                 }
             }
             Some(Ok(Message::Text(_))) => Err(End::Close(CloseCode::Unsupported)),
-            Some(Ok(Message::Ping(_))) => socket.flush().await.map_err(|_| End::Drop),
+            Some(Ok(Message::Ping(_))) => self.writer.flush(socket).await.map_err(|_| End::Drop),
             Some(Ok(Message::Pong(_))) => Ok(()),
             Some(Ok(Message::Close(_))) => {
-                let _ = socket.flush().await;
+                let _ = self.writer.flush(socket).await;
                 Err(End::Drop)
             }
             Some(Err(Error::Capacity(CapacityError::MessageTooLong { .. }))) => {
@@ -215,53 +264,155 @@ impl Connection {
             return Err(End::Close(CloseCode::Protocol));
         }
         if self.calls.entries.len() == MAX_CALLS {
-            return reply_error(socket, &id, busy()).await;
+            return reply_error(&self.writer, socket, &id, busy()).await;
         }
         let (method, invocation) = match request.decode() {
             Ok(call) => call,
-            Err(error) => return reply_error(socket, &id, error).await,
+            Err(error) => return reply_error(&self.writer, socket, &id, error).await,
         };
-        let result = self.submit(&id, method, invocation).await;
-        match result {
+        let (request, reply, interest) = match self.prepare(&id, method, &invocation) {
+            Ok(prepared) => prepared,
+            Err(error) => return reply_error(&self.writer, socket, &id, error).await,
+        };
+        if let Some(interest) = interest.filter(|_| method.is_attach()) {
+            let lane = self.snapshots.clone();
+            let waiter = lane.queue();
+            self.calls.entries.insert(id.clone(), CallState::default());
+            self.calls.attaching.spawn(async move {
+                let outcome = tokio::select! {
+                    biased;
+                    slot = lane.reserve_queued(&interest, waiter) => match slot {
+                        Ok(reservation) if request.is_live() => {
+                            reply.reserve_snapshot(reservation);
+                            AttachOutcome::Ready
+                        }
+                        Ok(_) => AttachOutcome::Expired,
+                        Err(SnapshotWaitError::Busy(waiter)) if request.is_live() => AttachOutcome::Busy(waiter),
+                        Err(SnapshotWaitError::Busy(_)) => AttachOutcome::Expired,
+                        Err(SnapshotWaitError::Cancelled) => AttachOutcome::Cancelled,
+                    },
+                    _ = request.cancelled() => {
+                        if interest.is_live() { AttachOutcome::Expired } else { AttachOutcome::Cancelled }
+                    }
+                };
+                ReadyAttach {
+                    id,
+                    method,
+                    outcome,
+                    request,
+                    invocation,
+                }
+            });
+            return Ok(());
+        }
+        self.submit(socket, id, method, request, invocation).await
+    }
+
+    async fn dispatch_attach(
+        &mut self,
+        socket: &mut TerminalSocket,
+        ready: ReadyAttach,
+    ) -> Result<(), End> {
+        match ready.outcome {
+            AttachOutcome::Ready => {
+                self.submit(
+                    socket,
+                    ready.id,
+                    ready.method,
+                    ready.request,
+                    ready.invocation,
+                )
+                .await
+            }
+            AttachOutcome::Cancelled => {
+                self.calls.entries.remove(&ready.id);
+                Ok(())
+            }
+            AttachOutcome::Expired => self.refuse_attach(socket, ready.id, ended()).await,
+            AttachOutcome::Busy(_ordering) => {
+                if ready
+                    .request
+                    .terminal_interest
+                    .as_ref()
+                    .is_some_and(|interest| interest.is_live())
+                {
+                    self.refuse_attach(socket, ready.id, ApiError::SnapshotBusy)
+                        .await
+                } else {
+                    self.calls.entries.remove(&ready.id);
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    async fn refuse_attach(
+        &mut self,
+        socket: &mut TerminalSocket,
+        id: Arc<str>,
+        error: ApiError,
+    ) -> Result<(), End> {
+        self.calls.entries.remove(&id);
+        self.release(&id);
+        reply_error(&self.writer, socket, &id, error).await
+    }
+
+    async fn submit(
+        &mut self,
+        socket: &mut TerminalSocket,
+        id: Arc<str>,
+        method: Method,
+        request: RequestContext,
+        invocation: Invocation,
+    ) -> Result<(), End> {
+        match self
+            .execution
+            .submit(request, invocation)
+            .await
+            .map_err(session_error)
+        {
             Ok(call) => {
                 self.calls.track(id, method, call);
                 Ok(())
             }
             Err(error) => {
+                self.calls.entries.remove(&id);
                 if method.is_attach() {
                     self.release(&id);
                 }
-                reply_error(socket, &id, error).await
+                reply_error(&self.writer, socket, &id, error).await
             }
         }
     }
 
-    async fn submit(
-        &mut self,
+    fn prepare(
+        &self,
         id: &Arc<str>,
         method: Method,
-        invocation: Invocation,
-    ) -> Result<Call, ApiError> {
+        invocation: &Invocation,
+    ) -> Result<PreparedCall, ApiError> {
         let (caller, interest) = self
             .admission
             .session()
             .opening()
-            .while_open(|| self.capture(id, method, &invocation))
+            .while_open(|| self.capture(id, method, invocation))
             .ok_or_else(ended)??;
-        let request = self
-            .execution
-            .sessions()
-            .request_terminal(
-                self.admission.binding(),
-                caller,
-                self.sink.reply(id.clone(), method),
-                interest,
-            )
-            .map_err(session_error)?;
-        self.execution
-            .submit(request, invocation)
-            .await
-            .map_err(session_error)
+        let reply = self.sink.reply(id.clone(), method);
+        let request = self.execution.sessions().request_terminal(
+            self.admission.binding(),
+            caller,
+            reply.clone(),
+            interest.clone(),
+        );
+        match request {
+            Ok(request) => Ok((request, reply, interest)),
+            Err(error) => {
+                if method.is_attach() {
+                    self.release(id);
+                }
+                Err(session_error(error))
+            }
+        }
     }
 
     fn capture(
@@ -276,13 +427,23 @@ impl Connection {
         let interest = if method.is_attach() {
             Some(
                 interests
-                    .begin(id.into(), method)
+                    .begin(id.into(), method, Some(self.snapshots.clone()))
                     .ok_or_else(|| ApiError::invalid_params("Terminal attachment limit reached"))?,
             )
         } else if method.requires_attachment() {
             let interest = term_id
                 .and_then(|term_id| interests.for_effect(term_id))
                 .ok_or_else(|| ApiError::invalid_params("Terminal is not attached"))?;
+            if method == Method::Ack {
+                let cursor = invocation.params()["cursor"]
+                    .as_u64()
+                    .expect("validated cursor");
+                if !interests.permits_ack(&interest, cursor) {
+                    return Err(ApiError::invalid_params(
+                        "Terminal cursor exceeds delivered output",
+                    ));
+                }
+            }
             caller = caller.for_terminal_effect(&interest);
             Some(interest)
         } else {
@@ -328,17 +489,24 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
+        self.stop_snapshots.send_replace(true);
         self.admission.retire();
         self.execution.reap_expired();
     }
 }
 
-async fn reply_error(socket: &mut TerminalSocket, id: &str, error: ApiError) -> Result<(), End> {
+async fn reply_error(
+    writer: &WriterFence,
+    socket: &mut TerminalSocket,
+    id: &str,
+    error: ApiError,
+) -> Result<(), End> {
     let bytes = refusal_bytes(id, error);
     if bytes.len() > sink::MAX_ORDINARY {
         return Err(End::Close(CloseCode::Size));
     }
-    writer::write_message(socket, &bytes)
+    writer
+        .write_message(socket, &bytes)
         .await
         .map_err(|_| End::Drop)
 }
@@ -364,11 +532,29 @@ fn ended() -> ApiError {
     ApiError::unavailable("Terminal authorization has ended")
 }
 
+type PreparedCall = (RequestContext, Arc<CallSink>, Option<Arc<TerminalInterest>>);
+
+struct ReadyAttach {
+    id: Arc<str>,
+    method: Method,
+    outcome: AttachOutcome,
+    request: RequestContext,
+    invocation: Invocation,
+}
+
+enum AttachOutcome {
+    Ready,
+    Cancelled,
+    Expired,
+    Busy(SnapshotBusy),
+}
+
 // A completion and its queued response can arrive in either order. Retain the
 // Call (and its exact authorization and shared request permit) through both.
 #[derive(Default)]
 struct Calls {
     entries: HashMap<Arc<str>, CallState>,
+    attaching: JoinSet<ReadyAttach>,
     settling: FuturesUnordered<BoxFuture<'static, Settled>>,
 }
 

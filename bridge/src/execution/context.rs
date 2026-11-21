@@ -1,7 +1,7 @@
 //! Application caller/output compatibility while producers migrate to events.
 //! No carrier framing, session key or transport codec enters this boundary.
 
-use super::session::{Opening, RequestContext, TerminalInterest};
+use super::session::{Opening, RequestContext, TerminalInterest, TerminalSnapshotReservation};
 use serde_json::{json, Value};
 use std::{
     borrow::Cow,
@@ -9,6 +9,8 @@ use std::{
 };
 
 type Output = Arc<dyn Fn(Value) -> bool + Send + Sync>;
+type EventOutput =
+    Arc<dyn Fn(Value, Option<Arc<TerminalSnapshotReservation>>) -> bool + Send + Sync>;
 type Liveness = Arc<dyn Fn() -> bool + Send + Sync>;
 
 #[derive(Clone)]
@@ -16,7 +18,7 @@ pub struct CallContext {
     session_id: String,
     bridge_epoch: Arc<str>,
     opening: Opening,
-    events: Output,
+    events: EventOutput,
     reply: Output,
     session_live: Liveness,
     reply_live: Liveness,
@@ -126,11 +128,12 @@ impl CallContext {
     }
 
     pub(crate) fn legacy(session_id: &str, opening: Opening, send: Output) -> Self {
+        let event = send.clone();
         Self {
             session_id: session_id.into(),
             bridge_epoch: crate::bridge_epoch::current().into(),
             opening,
-            events: send.clone(),
+            events: Arc::new(move |payload, _| event(payload)),
             reply: send,
             session_live: Arc::new(|| true),
             reply_live: Arc::new(|| true),
@@ -166,9 +169,11 @@ impl CallContext {
             terminal_interest: interest.clone(),
             terminal_producer: false,
             request_order: request.request_order(),
-            events: Arc::new(move |payload| {
+            events: Arc::new(move |payload, snapshot| {
                 events.as_ref().is_some_and(|events| {
-                    events.push_with_interest(payload, interest.clone()).is_ok()
+                    events
+                        .push_terminal(payload, interest.clone(), snapshot)
+                        .is_ok()
                 })
             }),
             reply: Arc::new(move |payload| reply.send(payload).is_ok()),
@@ -188,6 +193,19 @@ impl CallContext {
 
     pub(crate) fn terminal_effect_is_live(&self) -> bool {
         self.terminal_interest.is_none() || self.execution_is_live()
+    }
+
+    pub(crate) fn terminal_interest(&self) -> Option<&Arc<TerminalInterest>> {
+        self.terminal_interest.as_ref()
+    }
+
+    pub(crate) fn push_terminal_snapshot(
+        &self,
+        payload: Value,
+        reservation: Arc<TerminalSnapshotReservation>,
+    ) -> bool {
+        self.seal(payload)
+            .is_some_and(|prepared| self.send_event(prepared, Some(reservation)))
     }
 
     pub(crate) fn terminal_client_id(&self) -> &str {
@@ -235,11 +253,19 @@ impl CallContext {
         Some(PreparedOutput(payload))
     }
     pub(crate) fn send_sealed(&self, prepared: PreparedOutput) -> bool {
+        self.send_event(prepared, None)
+    }
+
+    fn send_event(
+        &self,
+        prepared: PreparedOutput,
+        snapshot: Option<Arc<TerminalSnapshotReservation>>,
+    ) -> bool {
         let _gate = self.gate.lock().unwrap();
         if !self.session_is_open() || !(self.event_live)() {
             return false;
         }
-        (self.events)(prepared.0)
+        (self.events)(prepared.0, snapshot)
     }
     pub(crate) fn push_reply(&self, payload: Value) -> bool {
         let Some(prepared) = self.seal(payload) else {

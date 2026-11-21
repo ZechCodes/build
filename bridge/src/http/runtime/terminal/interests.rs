@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use crate::execution::session::TerminalInterest;
+use crate::execution::session::{TerminalInterest, TerminalSnapshotLane};
 
 use super::wire::Method;
 
@@ -20,6 +20,7 @@ struct Attachment {
     method: Method,
     active: bool,
     term_id: Option<String>,
+    delivered_cursor: Option<u64>,
 }
 
 impl Interests {
@@ -31,11 +32,16 @@ impl Interests {
         self.entries.get(id).map(|entry| entry.interest.clone())
     }
 
-    pub(super) fn begin(&mut self, id: String, method: Method) -> Option<Arc<TerminalInterest>> {
+    pub(super) fn begin(
+        &mut self,
+        id: String,
+        method: Method,
+        snapshots: Option<TerminalSnapshotLane>,
+    ) -> Option<Arc<TerminalInterest>> {
         if self.entries.len() >= MAX_INTERESTS {
             return None;
         }
-        let interest = TerminalInterest::new();
+        let interest = TerminalInterest::new(snapshots);
         let order = self.next_order;
         self.next_order += 1;
         self.entries.insert(
@@ -46,6 +52,7 @@ impl Interests {
                 order,
                 active: false,
                 term_id: None,
+                delivered_cursor: None,
             },
         );
         Some(interest)
@@ -68,9 +75,13 @@ impl Interests {
         else {
             return false;
         };
+        if entry.term_id.is_none() && entry.method == Method::Attach {
+            entry.term_id = Some(term_id.into());
+        }
         if entry.method == Method::AgentAttach && entry.term_id.as_deref() != Some(term_id) {
             entry.interest.rekey();
             entry.term_id = Some(term_id.into());
+            entry.delivered_cursor = None;
             if entry.active {
                 let id = id.clone();
                 return self.replace_older(&id, term_id);
@@ -109,6 +120,43 @@ impl Interests {
             !retired
         });
         self.entries.contains_key(id)
+    }
+
+    pub(super) fn permits_ack(&self, interest: &Arc<TerminalInterest>, cursor: u64) -> bool {
+        self.entries.values().any(|entry| {
+            Arc::ptr_eq(&entry.interest, interest)
+                && entry
+                    .delivered_cursor
+                    .is_some_and(|delivered| cursor <= delivered)
+        })
+    }
+
+    pub(super) fn record_delivery(
+        &mut self,
+        interest: &Arc<TerminalInterest>,
+        term_id: &str,
+        cursor: u64,
+    ) {
+        if let Some(entry) = self.entries.values_mut().find(|entry| {
+            Arc::ptr_eq(&entry.interest, interest) && entry.term_id.as_deref() == Some(term_id)
+        }) {
+            entry.delivered_cursor = Some(
+                entry
+                    .delivered_cursor
+                    .map_or(cursor, |previous| previous.max(cursor)),
+            );
+        }
+    }
+
+    pub(super) fn remove_failed(&mut self, interest: &Arc<TerminalInterest>) -> Option<String> {
+        let id = self
+            .entries
+            .iter()
+            .find(|(_, entry)| entry.active && Arc::ptr_eq(&entry.interest, interest))?
+            .0
+            .clone();
+        self.remove(&id);
+        Some(id)
     }
 
     pub(super) fn remove(&mut self, id: &str) -> bool {

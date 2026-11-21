@@ -1,5 +1,6 @@
 use crate::api::{self, ApiError, API_VERSION};
 use crate::app::runtime::agents::endpoints::ScopedEndpointError;
+use crate::app::runtime::terminals::TerminalAttachError;
 use crate::app::{
     agent_attach, agent_interrupt, agent_start, rtc_close, rtc_ice, rtc_offer, session_hello,
     stream_start, term_ack, term_attach, term_create, term_input, term_resize, AppState,
@@ -261,6 +262,13 @@ fn scoped_session_refusal(method: &str, params: &Value, error: String) -> ApiErr
     }
 }
 
+fn terminal_attach_refusal(method: &str, params: &Value, error: TerminalAttachError) -> ApiError {
+    match error {
+        TerminalAttachError::Domain(error) => scoped_session_refusal(method, params, error),
+        TerminalAttachError::SnapshotTooLarge => ApiError::SnapshotTooLarge,
+    }
+}
+
 fn scoped_endpoint_refusal(method: &str, params: &Value, error: ScopedEndpointError) -> ApiError {
     match error {
         ScopedEndpointError::Ended => ApiError::unavailable("request authorization has ended"),
@@ -435,7 +443,12 @@ fn session_scoped(
             pause_terminal_create_after_admission(state, timer);
             term_create(state, Some(sender), params, timer)
         }
-        "term.attach" => term_attach(state, sender, params, timer),
+        "term.attach" => {
+            return Some(
+                term_attach(state, sender, params, timer)
+                    .map_err(|error| terminal_attach_refusal(method, params, error)),
+            )
+        }
         // A write to a child's pty blocks while the child is not draining, so
         // both of these take the handle under the lock and write with it
         // released.
@@ -444,7 +457,12 @@ fn session_scoped(
         // Needs the caller's own session: an ack speaks for one client's
         // receive queue, not for the screen.
         "term.ack" => term_ack(state, sender, params, timer),
-        "agent.attach" => agent_attach(state, sender, params, timer),
+        "agent.attach" => {
+            return Some(
+                agent_attach(state, sender, params, timer)
+                    .map_err(|error| terminal_attach_refusal(method, params, error)),
+            )
+        }
         // Bypasses `dispatch` because it hands its queued turn to
         // `DeliveryRunner`, which needs the shared handle `dispatch` does not
         // have.

@@ -126,6 +126,16 @@ fn binary_rpc_and_terminal_events_use_the_existing_envelopes() {
         json!({"id":"attach-3","ok":false,"error":"This screen is too large to display",
                "error_code":"snapshot_too_large","retryable":false}),
     );
+    assert_wire(
+        &messages["snapshot_busy_attach"],
+        epoch,
+        reply(json!("attach-5"), Err(ApiError::SnapshotBusy)),
+    );
+    assert_wire(
+        &messages["snapshot_busy_reset"],
+        epoch,
+        json!({"attach_id":"attach-1","reason":"snapshot_busy","type":"attachment_error"}),
+    );
     assert_eq!(wire(&messages["attachment_error"])["attach_id"], "attach-1");
     assert_eq!(
         wire(&messages["attachment_error"])["reason"],

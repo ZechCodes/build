@@ -183,7 +183,7 @@ async fn mounted_tls_invalid_grid_dimensions_never_reach_execution() {
 }
 
 #[tokio::test]
-async fn mounted_tls_reset_uses_snapshot_budget_and_closes_on_overflow() {
+async fn mounted_tls_reset_uses_snapshot_budget_and_refuses_only_its_interest() {
     let producer = Arc::new(OnceLock::new());
     let server = Server::start(reset_handler(producer.clone())).await;
     let opening = server.opening().await;
@@ -205,13 +205,24 @@ async fn mounted_tls_reset_uses_snapshot_budget_and_closes_on_overflow() {
 
     // The base64 alone exceeds the ordinary cap. This also witnesses the
     // mounted EventSink's successful reset classification before the overflow.
-    assert!(producer.push(reset_payload(ordinary + 4)));
+    let interest = producer.terminal_interest().unwrap();
+    let lane = interest.snapshots.as_ref().unwrap();
+    let slot = lane.reserve(interest).await.unwrap();
+    assert!(producer.push_terminal_snapshot(reset_payload(ordinary + 4), slot));
     let accepted = object(&mut socket).await;
     assert_eq!(accepted["type"], "term.reset");
     assert_eq!(case_text(&accepted["data"]).len(), ordinary + 4);
 
-    assert!(producer.push(reset_payload(snapshot)));
-    assert_closed(&mut socket, Some(1009)).await;
+    let slot = lane.reserve(interest).await.unwrap();
+    assert!(producer.push_terminal_snapshot(reset_payload(snapshot), slot));
+    let failure = object(&mut socket).await;
+    assert_eq!(failure["type"], "attachment_error");
+    assert_eq!(failure["attach_id"], "attach");
+    assert_eq!(failure["reason"], "snapshot_too_large");
+    assert_eq!(
+        call(&mut socket, "ping", "ping", json!({})).await["ok"],
+        true
+    );
     server.stop().await;
 }
 

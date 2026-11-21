@@ -11,6 +11,7 @@
 //! monotonic byte cursor, never on a byte replay, so one model serves a shell
 //! and an agent alike.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -20,6 +21,9 @@ use serde_json::{json, Value};
 
 use crate::carrier::SessionSender;
 use crate::encoding::b64encode;
+use crate::execution::session::{
+    SnapshotBusy, SnapshotWaitError, TerminalSnapshotLane, TerminalSnapshotReservation,
+};
 use crate::harness::{AgentSession, TerminalView};
 
 /// Authoritative server-side screen: vt100 model + attach list + coalescing
@@ -30,7 +34,7 @@ struct TermScreen {
     attached: Vec<AttachedClient>,
     /// Output coalescing buffer: PTY bytes accumulate here and flush on a timer,
     /// so a repaint becomes one frame instead of ten.
-    pending: Vec<u8>,
+    pending: VecDeque<u8>,
     /// Total output bytes processed — the live-tail cursor.
     total: u64,
     /// When the last flood-collapse snapshot went out, or `None` if this screen
@@ -78,15 +82,32 @@ struct AttachedClient {
     /// the live cursor runs ahead of this, and this — not the live cursor — is
     /// the most its acks can ever reach, so the resume is measured against it.
     sent_cursor: u64,
-    /// Whether this client has ever acknowledged anything. A client that has
-    /// not is exempt from flow control — an older SPA sends no acks, and
-    /// measuring it by a cursor it never reports would stall it forever.
+    /// RTC reports whether it has ever sent any ACK, leaving legacy clients
+    /// exempt. WSS reports whether it applied the current snapshot baseline.
     sent_ack: bool,
     /// Set once the client fell past [`TERM_UNACKED_BUDGET_BYTES`]. It receives
     /// nothing until it has acked everything it was sent (`sent_cursor`), and
     /// comes back on a snapshot because the frames it missed left a hole in
     /// its byte stream.
     paused: bool,
+    wss: Option<WssCredit>,
+}
+
+#[derive(Default)]
+struct WssCredit {
+    pending: Option<PendingReset>,
+    last_reset: Option<std::time::Instant>,
+}
+
+struct PendingReset {
+    marker: Arc<()>,
+    task: tokio::task::AbortHandle,
+}
+
+impl Drop for PendingReset {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 impl AttachedClient {
@@ -123,9 +144,33 @@ const TERM_SNAPSHOT_THRESHOLD: usize = 128 * 1024;
 /// without it a 10 ms flush cadence would push up to 100 full screens/sec
 /// through the relay and starve every other frame behind them.
 const TERM_SNAPSHOT_MIN_INTERVAL_MS: u64 = 100;
+const WSS_MAX_COLS: u64 = 512;
+const WSS_MAX_ROWS: u64 = 256;
+const WSS_MAX_CELLS: usize = 65_536;
+// vt100 0.15.2: cell contents, SGR and positioning, plus row/screen overhead.
+const WSS_MAX_RAW_SNAPSHOT: usize = 128 * WSS_MAX_CELLS + 2048 * WSS_MAX_ROWS as usize + 4096;
+#[derive(Debug)]
+pub(crate) struct SnapshotTooLarge;
+
+pub(crate) fn wss_grid_supported(cols: u64, rows: u64) -> bool {
+    (1..=WSS_MAX_COLS).contains(&cols)
+        && (1..=WSS_MAX_ROWS).contains(&rows)
+        && cols
+            .checked_mul(rows)
+            .is_some_and(|cells| cells <= WSS_MAX_CELLS as u64)
+}
 
 fn packed_size(cols: u16, rows: u16) -> u32 {
     (u32::from(cols) << 16) | u32::from(rows)
+}
+
+fn wss_lane(sender: &SessionSender) -> Option<&TerminalSnapshotLane> {
+    sender.terminal_interest()?.snapshots.as_ref()
+}
+
+fn attach_is_live(sender: &SessionSender) -> bool {
+    sender.events_are_live()
+        && wss_lane(sender).is_none_or(|lane| !lane.is_stopped() && lane.expired_now().is_none())
 }
 
 impl TermScreen {
@@ -133,7 +178,7 @@ impl TermScreen {
         TermScreen {
             parser: vt100::Parser::new(rows, cols, 2000),
             attached: Vec::new(),
-            pending: Vec::new(),
+            pending: VecDeque::new(),
             total: 0,
             last_flood_snapshot_at: None,
             snapshot_min_interval: Duration::from_millis(TERM_SNAPSHOT_MIN_INTERVAL_MS),
@@ -164,6 +209,18 @@ impl TermScreen {
         b64encode(&self.parser.screen().contents_formatted())
     }
 
+    fn wss_snapshot(&self) -> Result<String, SnapshotTooLarge> {
+        let (rows, cols) = self.parser.screen().size();
+        if !wss_grid_supported(cols.into(), rows.into()) {
+            return Err(SnapshotTooLarge);
+        }
+        let raw = self.parser.screen().contents_formatted();
+        if raw.len() > WSS_MAX_RAW_SNAPSHOT {
+            return Err(SnapshotTooLarge);
+        }
+        Ok(b64encode(&raw))
+    }
+
     fn set_size(&mut self, cols: u16, rows: u16) {
         self.parser.set_size(rows, cols);
         self.cols = cols;
@@ -177,7 +234,14 @@ impl TermScreen {
     fn process(&mut self, chunk: &[u8]) {
         self.parser.process(chunk);
         self.total += chunk.len() as u64;
-        self.pending.extend_from_slice(chunk);
+        // Keep only the most recent flush window. The extra byte records a
+        // flood for RTC. WSS can still send a short tail after a snapshot
+        // captured part of this window before the flush.
+        let limit = TERM_SNAPSHOT_THRESHOLD + 1;
+        let chunk = &chunk[chunk.len().saturating_sub(limit)..];
+        let discard = (self.pending.len() + chunk.len()).saturating_sub(limit);
+        self.pending.drain(..discard);
+        self.pending.extend(chunk);
     }
 
     /// Register a client for live output, dropping any prior sender with the
@@ -207,6 +271,7 @@ impl TermScreen {
             sent_cursor: self.total,
             sent_ack: false,
             paused: false,
+            wss: wss_lane(sender).map(|_| WssCredit::default()),
         });
     }
 
@@ -225,6 +290,13 @@ impl TermScreen {
             return;
         };
         let client = &mut self.attached[index];
+        if client.wss.is_some() {
+            if (client.acked_cursor..=client.sent_cursor).contains(&cursor) {
+                client.sent_ack = true;
+                client.acked_cursor = cursor;
+            }
+            return;
+        }
         client.sent_ack = true;
         // A cursor past what the bridge has produced acknowledges nothing real;
         // clamping keeps a confused client measurable rather than exempt.
@@ -278,6 +350,9 @@ impl TermScreen {
     fn push_to_keeping_up(&mut self, payload: Value) {
         let total = self.total;
         self.attached.retain_mut(|client| {
+            if client.wss.is_some() {
+                return true;
+            }
             if client.falling_behind(total) {
                 client.paused = true;
             }
@@ -293,6 +368,54 @@ impl TermScreen {
         });
     }
 
+    fn flush_wss(&mut self, term_id: &str) {
+        let total = self.total;
+        let backlog = self.pending.make_contiguous();
+        self.attached.retain_mut(|client| {
+            if client.wss.is_none() {
+                return true;
+            }
+            if !client.sender.events_are_live() {
+                return false;
+            }
+            if backlog.is_empty() || total <= client.sent_cursor || client.paused {
+                return true;
+            }
+            let fresh = total - client.sent_cursor;
+            if fresh > TERM_SNAPSHOT_THRESHOLD as u64
+                || fresh > backlog.len() as u64
+                || client.lag(total) > TERM_UNACKED_BUDGET_BYTES
+            {
+                client.paused = true;
+                return true;
+            }
+            // An attach or reset can capture after feed but before flush.
+            let fresh = fresh as usize;
+            let data = b64encode(&backlog[backlog.len() - fresh..]);
+            client.sent_cursor = total;
+            client
+                .sender
+                .push(json!({"type":"term.output","term_id":term_id,"data":data,"cursor":total}))
+        });
+    }
+
+    fn pause_wss_for_restart(&mut self) {
+        for client in self
+            .attached
+            .iter_mut()
+            .filter(|client| client.wss.is_some())
+        {
+            client.paused = true;
+        }
+    }
+
+    fn reset_rtc(&mut self, term_id: &str) {
+        if self.attached.iter().any(|client| client.wss.is_none()) {
+            let payload = json!({ "type": "term.reset", "term_id": term_id, "data": self.snapshot(), "cursor": self.total });
+            self.push_to_keeping_up(payload);
+        }
+    }
+
     /// Flush pending bytes as one keyed push to every attached client — raw
     /// output, or a screen snapshot when the backlog crosses the collapse
     /// threshold. Senders whose connection is gone are dropped.
@@ -305,14 +428,17 @@ impl TermScreen {
     /// exactly right. While the debt stands nothing raw may go out — those bytes
     /// would land on a client whose stream now has a hole in it.
     fn flush(&mut self, term_id: &str) {
+        self.flush_wss(term_id);
         let collapsing = self.snapshot_due || self.pending.len() > TERM_SNAPSHOT_THRESHOLD;
         if !collapsing {
             if self.pending.is_empty() {
                 return;
             }
-            let payload = json!({ "type": "term.output", "term_id": term_id, "data": b64encode(&self.pending), "cursor": self.total });
+            if self.attached.iter().any(|client| client.wss.is_none()) {
+                let payload = json!({ "type": "term.output", "term_id": term_id, "data": b64encode(self.pending.make_contiguous()), "cursor": self.total });
+                self.push_to_keeping_up(payload);
+            }
             self.pending.clear();
-            self.push_to_keeping_up(payload);
             return;
         }
 
@@ -327,8 +453,7 @@ impl TermScreen {
         }
         self.snapshot_due = false;
         self.last_flood_snapshot_at = Some(std::time::Instant::now());
-        let payload = json!({ "type": "term.reset", "term_id": term_id, "data": self.snapshot(), "cursor": self.total });
-        self.push_to_keeping_up(payload);
+        self.reset_rtc(term_id);
     }
 
     /// Tell every attached client this terminal ended, and why. A paused client
@@ -367,6 +492,72 @@ fn closed_payload(term_id: &str, reason: &str) -> Value {
 /// screen waiting for its first spawn, so the chain is one link long; this is
 /// the stop for a cycle that would otherwise be an unbounded walk.
 const MAX_SUPERSESSIONS_FOLLOWED: usize = 8;
+
+struct DeferredReset {
+    screen: Weak<Mutex<TermScreen>>,
+    term_id: Arc<str>,
+    marker: Arc<()>,
+    client_id: String,
+}
+
+impl DeferredReset {
+    fn finish(self, attempt: Result<Arc<TerminalSnapshotReservation>, SnapshotBusy>) {
+        let Some(screen) = self.screen.upgrade() else {
+            return;
+        };
+        let mut screen = screen.lock().unwrap();
+        let Some(index) = screen.index_of_session(&self.client_id) else {
+            return;
+        };
+        let client = &screen.attached[index];
+        if !client.sender.events_are_live()
+            || wss_lane(&client.sender).is_none_or(TerminalSnapshotLane::is_stopped)
+            || !self.is_pending(client)
+        {
+            return;
+        }
+        let reservation = match attempt {
+            Ok(reservation) if !reservation.is_expired() => reservation,
+            Ok(_) => return,
+            Err(_ordering) => {
+                client.sender.push(json!({"type":"attachment_error","reason":crate::api::ApiError::SnapshotBusy.code()}));
+                screen.attached.remove(index);
+                return;
+            }
+        };
+        let total = screen.total;
+        let snapshot = screen.wss_snapshot();
+        let client = &mut screen.attached[index];
+        let Ok(data) = snapshot else {
+            // The WSS sink supplies the original attach ID and the wire reason.
+            client.sender.push(json!({"type":"attachment_error"}));
+            screen.attached.remove(index);
+            return;
+        };
+        if !client.sender.push_terminal_snapshot(
+            json!({"type":"term.reset","term_id":&*self.term_id,"data":data,"cursor":total}),
+            reservation,
+        ) {
+            screen.attached.remove(index);
+            return;
+        }
+        client.sent_cursor = total;
+        client.acked_cursor = total;
+        client.sent_ack = false;
+        client.paused = false;
+        let credit = client.wss.as_mut().expect("WSS reset");
+        credit.last_reset = Some(std::time::Instant::now());
+        credit.pending = None;
+    }
+
+    fn is_pending(&self, client: &AttachedClient) -> bool {
+        client
+            .wss
+            .as_ref()
+            .and_then(|credit| credit.pending.as_ref())
+            .is_some_and(|pending| Arc::ptr_eq(&pending.marker, &self.marker))
+    }
+}
 
 /// One tab's screen, shared by everything that reads or writes it.
 ///
@@ -440,17 +631,30 @@ impl ScreenHandle {
     /// that has none, under the same acquisition that asked — which is the
     /// acquisition a carry takes to drain it, so an attach is on one screen or
     /// the other and never between them. One lock at a time, all the way down.
+    #[cfg(test)]
     pub fn attach(&self, sender: &SessionSender, viewport: Option<(u16, u16)>) -> AttachSnapshot {
+        self.attach_checked(sender, viewport).unwrap()
+    }
+
+    pub(crate) fn attach_checked(
+        &self,
+        sender: &SessionSender,
+        viewport: Option<(u16, u16)>,
+    ) -> Result<AttachSnapshot, SnapshotTooLarge> {
         let _attachment = self.attachment_gate.lock().unwrap();
-        if !sender.events_are_live() {
-            return self.snapshot();
+        if !attach_is_live(sender) {
+            return Ok(Self::inactive_reading(&self.screen.lock().unwrap(), sender));
         }
         self.attach_inner(sender, viewport)
     }
 
     // The caller owns attachment_gate; terminal child I/O happens before this
     // method acquires the screen model lock.
-    fn attach_inner(&self, sender: &SessionSender, viewport: Option<(u16, u16)>) -> AttachSnapshot {
+    fn attach_inner(
+        &self,
+        sender: &SessionSender,
+        viewport: Option<(u16, u16)>,
+    ) -> Result<AttachSnapshot, SnapshotTooLarge> {
         let mut here = self.clone();
         let mut followed = 0;
         loop {
@@ -464,16 +668,15 @@ impl ScreenHandle {
                     None => {
                         // Registration is admitted at this check under the model
                         // lock. A later replacement retires its delivery proof.
-                        if !sender.events_are_live() {
-                            return Self::reading(&screen);
+                        if !attach_is_live(sender) {
+                            return Ok(Self::inactive_reading(&screen, sender));
                         }
                         if let Some((cols, rows)) = viewport {
                             if (screen.cols, screen.rows) != (cols, rows) {
                                 screen.set_size(cols, rows);
                             }
                         }
-                        screen.register(&here.term_id, sender);
-                        return Self::reading(&screen);
+                        return Self::capture_attachment(&mut screen, &here.term_id, sender);
                     }
                 }
             };
@@ -482,14 +685,39 @@ impl ScreenHandle {
         }
     }
 
+    fn capture_attachment(
+        screen: &mut TermScreen,
+        term_id: &str,
+        sender: &SessionSender,
+    ) -> Result<AttachSnapshot, SnapshotTooLarge> {
+        if wss_lane(sender).is_none() {
+            screen.register(term_id, sender);
+            return Ok(Self::reading(screen));
+        }
+        let snapshot = screen.wss_snapshot()?;
+        screen.register(term_id, sender);
+        Ok(Self::reading_with(screen, snapshot))
+    }
+
+    fn inactive_reading(screen: &TermScreen, sender: &SessionSender) -> AttachSnapshot {
+        if wss_lane(sender).is_some() {
+            return Self::reading_with(screen, String::new());
+        }
+        Self::reading(screen)
+    }
+
     /// The screen as it stands, for a client that is not attaching to it.
     pub fn snapshot(&self) -> AttachSnapshot {
         Self::reading(&self.screen.lock().unwrap())
     }
 
     fn reading(screen: &TermScreen) -> AttachSnapshot {
+        Self::reading_with(screen, screen.snapshot())
+    }
+
+    fn reading_with(screen: &TermScreen, snapshot: String) -> AttachSnapshot {
         AttachSnapshot {
-            snapshot: screen.snapshot(),
+            snapshot,
             cursor: screen.total,
             cols: screen.cols,
             rows: screen.rows,
@@ -505,10 +733,9 @@ impl ScreenHandle {
 
     /// Record how far a client has applied, resyncing it if it has drained.
     pub fn ack(&self, session_id: &str, cursor: u64) {
-        self.screen
-            .lock()
-            .unwrap()
-            .ack(&self.term_id, session_id, cursor);
+        let mut screen = self.screen.lock().unwrap();
+        screen.ack(&self.term_id, session_id, cursor);
+        self.queue_wss_resets(&mut screen);
     }
 
     /// Drop a client from this screen.
@@ -544,7 +771,60 @@ impl ScreenHandle {
     pub fn flush(&self) -> bool {
         let mut screen = self.screen.lock().unwrap();
         screen.flush(&self.term_id);
+        self.queue_wss_resets(&mut screen);
         screen.is_open()
+    }
+
+    fn queue_wss_resets(&self, screen: &mut TermScreen) {
+        for client in &mut screen.attached {
+            if !client.paused || !client.sent_ack || client.acked_cursor < client.sent_cursor {
+                continue;
+            }
+            let Some(credit) = &mut client.wss else {
+                continue;
+            };
+            if credit.pending.is_some() {
+                continue;
+            }
+            let interest = client
+                .sender
+                .terminal_interest()
+                .expect("WSS interest")
+                .clone();
+            let lane = interest
+                .snapshots
+                .as_ref()
+                .expect("WSS snapshot lane")
+                .clone();
+            let marker = Arc::new(());
+            let reset = DeferredReset {
+                screen: Arc::downgrade(&self.screen),
+                term_id: self.term_id.clone(),
+                marker: marker.clone(),
+                client_id: client.sender.session_id().into(),
+            };
+            let delay = credit.last_reset.map(|last| {
+                Duration::from_millis(TERM_SNAPSHOT_MIN_INTERVAL_MS).saturating_sub(last.elapsed())
+            });
+            let task = lane.runtime.clone().spawn(async move {
+                if let Some(delay) = delay.filter(|delay| !delay.is_zero()) {
+                    tokio::time::sleep(delay).await;
+                }
+                let attempt = match lane.reserve(&interest).await {
+                    Ok(reservation) => Ok(reservation),
+                    Err(SnapshotWaitError::Busy(ordering)) => Err(ordering),
+                    Err(SnapshotWaitError::Cancelled) => return,
+                };
+                let _ = lane
+                    .runtime
+                    .spawn_blocking(move || reset.finish(attempt))
+                    .await;
+            });
+            credit.pending = Some(PendingReset {
+                marker,
+                task: task.abort_handle(),
+            });
+        }
     }
 
     /// A new session is painting here: blank the parser and resync every
@@ -557,13 +837,9 @@ impl ScreenHandle {
         // This reset resyncs every attached client, so a snapshot a previous
         // session's flood left owing is already paid.
         screen.snapshot_due = false;
-        let payload = json!({
-            "type": "term.reset",
-            "term_id": &*self.term_id,
-            "data": screen.snapshot(),
-            "cursor": screen.total,
-        });
-        screen.push_to_keeping_up(payload);
+        screen.reset_rtc(&self.term_id);
+        screen.pause_wss_for_restart();
+        self.queue_wss_resets(&mut screen);
     }
 
     /// Take the clients waiting on `waiting` — and the viewport they are
@@ -588,6 +864,12 @@ impl ScreenHandle {
         screen.set_size(cols, rows);
         for client in &carried {
             screen.register(&self.term_id, &client.sender);
+            if client.wss.is_some() {
+                if let Some(index) = screen.index_of_session(client.sender.session_id()) {
+                    // The agent's new stream has no inherited output debt.
+                    screen.attached[index].sent_ack = true;
+                }
+            }
         }
         true
     }
@@ -642,6 +924,16 @@ impl ScreenHandle {
     #[cfg(test)]
     pub fn attached(&self) -> usize {
         self.screen.lock().unwrap().attached.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_wss_reset(&self) -> Option<tokio::task::AbortHandle> {
+        let screen = self.screen.lock().unwrap();
+        screen
+            .attached
+            .iter()
+            .filter(|client| client.paused)
+            .find_map(|client| Some(client.wss.as_ref()?.pending.as_ref()?.task.clone()))
     }
 
     /// Hold this screen's lock until the returned guard is dropped. Tests
@@ -756,12 +1048,24 @@ impl TerminalHandle {
     /// looking at, register it for live output, and hand back what it should
     /// render. `viewport` is `None` for a dead tab, whose retained screen is
     /// the last thing its agent painted.
+    #[cfg(test)]
     pub fn attach(&self, sender: &SessionSender, viewport: Option<(u16, u16)>) -> AttachSnapshot {
+        self.attach_checked(sender, viewport).unwrap()
+    }
+
+    pub(crate) fn attach_checked(
+        &self,
+        sender: &SessionSender,
+        viewport: Option<(u16, u16)>,
+    ) -> Result<AttachSnapshot, SnapshotTooLarge> {
         let _attachment = self.screen.attachment_gate.lock().unwrap();
         // This check admits the resize. If replacement wins first, it cannot
         // start; replacement after admission does not cancel an in-flight ioctl.
-        if !sender.events_are_live() {
-            return self.screen.snapshot();
+        if !attach_is_live(sender) {
+            return Ok(ScreenHandle::inactive_reading(
+                &self.screen.screen.lock().unwrap(),
+                sender,
+            ));
         }
         if let Some((cols, rows)) = viewport {
             if self.screen.size() != (cols, rows) {

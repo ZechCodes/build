@@ -1,4 +1,4 @@
-use crate::app::runtime::terminals::terminal_scope_root;
+use crate::app::runtime::terminals::{terminal_scope_root, TerminalAttachError};
 use crate::app::{
     agent_tab_id, attach_to_tab, attach_view, optional_nonempty_string, require_str,
     working_time_json, AddressedSession, AppState, DeliveryRunner, LifecycleDiagnostic,
@@ -97,7 +97,7 @@ pub(in crate::app) fn agent_attach(
     sender: &SessionSender,
     params: &Value,
     timer: &FrameTimer,
-) -> Result<Value, String> {
+) -> Result<Value, TerminalAttachError> {
     // Grid defaults = the orchestrator's agent PTY size (40 rows × 120 cols).
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(120) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(40) as u16;
@@ -136,14 +136,15 @@ pub(in crate::app) fn agent_attach(
     if let Some(expected) = optional_nonempty_string(params, "conversation_id")? {
         let entity_id = entity_id
             .as_deref()
-            .ok_or("conversation_id requires an entity id")?;
+            .ok_or_else(|| "conversation_id requires an entity id".to_owned())?;
         let actual = s
             .resolve_conversation_address(entity_id, Some(&agent_id))?
             .conversation_id;
         if expected != actual {
             return Err(format!(
                 "stale conversation_id {expected}; agent {agent_id} is bound to {actual}"
-            ));
+            )
+            .into());
         }
     }
     let key = TabKey::agent(&root, &agent_id);
@@ -163,7 +164,7 @@ pub(in crate::app) fn agent_attach(
             s.session_registry
                 .waiting_screen_for_attach(key.clone(), &term_id, cols, rows);
         drop(guard);
-        let reading = screen.attach(&sender.for_terminal_screen(), Some((cols, rows)));
+        let reading = screen.attach_checked(&sender.for_terminal_screen(), Some((cols, rows)))?;
         // A screen with no session behind it is dead by definition, and names
         // no harness: nothing has ever run here to name one.
         return Ok(attach_view(
@@ -177,7 +178,7 @@ pub(in crate::app) fn agent_attach(
     }
     let attachment = s.attachment(&key)?;
     drop(guard);
-    Ok(attach_to_tab(attachment, sender, cols, rows))
+    attach_to_tab(attachment, sender, cols, rows)
 }
 
 /// Open a worktree's agent with nothing to say to it — the surface's "Start

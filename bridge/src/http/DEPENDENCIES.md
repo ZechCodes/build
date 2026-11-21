@@ -63,3 +63,17 @@ These synchronous filesystem APIs must run in blocking work, with any caller
 retry bounded there; there is no retry or wait inside lock acquisition. The
 production lifecycle caller remains held with the shared wiring, so its actual
 off-executor behavior is a later integration requirement.
+
+Terminal WSS uses the existing Hyper 1.10.1 HTTP/1 server upgrade and
+tokio-tungstenite 0.24.0. The codec and handshake helper use the existing
+`connect`, `handshake` and `rustls-tls-webpki-roots` feature set. The server
+starts the codec on Hyper's upgraded, guarded TLS I/O. The HTTPS listener
+terminates inbound TLS, and the server disables compression. The manifest
+and lockfile already pin this dependency graph.
+
+The codec requires masked client frames and limits a complete inbound message
+to 128 KiB across its fragments. Tungstenite retains its write staging after
+flush. Its 512 KiB buffered-wire limit leaves headroom within the 1 MiB
+codec reservation for retained allocation growth. The terminal sender must
+fragment larger envelopes into a single binary message and retain the
+application reservation through the final flush.

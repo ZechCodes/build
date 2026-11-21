@@ -424,3 +424,73 @@ async fn take_reset(socket: &mut Client, term: &str, ack_id: Option<&str>) -> Va
     }
     reset.unwrap()
 }
+
+#[tokio::test]
+async fn mounted_tls_detach_cancels_a_paused_panes_deferred_reset() {
+    let hidden = ScreenHandle::new("hidden", 80, 24);
+    let sibling = ScreenHandle::new("sibling", 80, 24);
+    let server = Server::start(screen_handler(vec![
+        ("hidden", hidden.clone()),
+        ("sibling", sibling.clone()),
+    ]))
+    .await;
+    let opening = server.opening().await;
+    let mut socket = server.socket(&server.ticket(&opening).await).await;
+    attach(&mut socket, "attach-hidden", "hidden", 80, 24).await;
+    attach(&mut socket, "attach-sibling", "sibling", 80, 24).await;
+
+    let pool = server.state.execution.sessions().terminal_snapshot_pool();
+    let held: Vec<_> = (0..pool.available_permits())
+        .map(|_| pool.clone().try_acquire_owned().unwrap())
+        .collect();
+    assert_eq!(held.len(), 2);
+    let opening_slot = server.state.openings.lock().unwrap()[case_text(&opening["session_id"])]
+        .session
+        .opening()
+        .terminal_snapshot_slot();
+    hidden.feed(&vec![b'x'; 128 * 1024 + 1]);
+    hidden.flush();
+    let acknowledged = call(
+        &mut socket,
+        "ack-hidden",
+        "term.ack",
+        json!({"term_id":"hidden","cursor":0}),
+    )
+    .await;
+    assert_eq!(acknowledged["ok"], true);
+    let task = hidden
+        .pending_wss_reset()
+        .expect("paused pane has a deferred reset");
+    timeout(TIMEOUT, async {
+        while opening_slot.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reset is waiting for the bridge slot");
+    assert!(!task.is_finished());
+
+    super::dispatch::detach(&mut socket, "attach-hidden").await;
+    assert_eq!(
+        call(&mut socket, "after-detach", "ping", json!({})).await["ok"],
+        true
+    );
+    hidden.flush();
+    timeout(TIMEOUT, async {
+        while !task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("detached reset task exits while the bridge slots are still held");
+    assert_eq!(opening_slot.available_permits(), 1);
+    assert_eq!(hidden.attached(), 0);
+
+    drop(held);
+    assert_eq!(pool.available_permits(), 2);
+    assert_echo(&mut socket, "sibling", b"s").await;
+    assert_eq!(sibling.attached(), 1);
+    assert_eq!(server.ticket_requests.load(Ordering::Relaxed), 1);
+    assert_eq!(server.upgrades.load(Ordering::Relaxed), 1);
+    server.stop().await;
+}

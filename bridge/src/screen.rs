@@ -904,6 +904,16 @@ impl ScreenHandle {
         self.screen.lock().unwrap().attached.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn pending_wss_reset(&self) -> Option<tokio::task::AbortHandle> {
+        let screen = self.screen.lock().unwrap();
+        screen
+            .attached
+            .iter()
+            .filter(|client| client.paused)
+            .find_map(|client| Some(client.wss.as_ref()?.pending.as_ref()?.task.clone()))
+    }
+
     /// Hold this screen's lock until the returned guard is dropped. Tests
     /// only: it is how a test parks a screen where a flooding pump would park
     /// it and proves the rest of the daemon answers anyway.

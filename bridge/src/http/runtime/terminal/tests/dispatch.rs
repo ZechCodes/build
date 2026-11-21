@@ -221,7 +221,7 @@ async fn mounted_tls_agent_rekey_preserves_detach_handle_and_sibling() {
     server.stop().await;
 }
 
-async fn detach(socket: &mut Client, attach: &str) {
+pub(super) async fn detach(socket: &mut Client, attach: &str) {
     socket
         .send(Message::Binary(
             json!({"type":"detach","attach_id":attach})

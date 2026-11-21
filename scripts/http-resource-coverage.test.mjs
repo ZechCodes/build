@@ -467,7 +467,7 @@ const sourceFingerprintParts = {
   "core/taskView.js": ["547b447a", "1b089702", "8da986a0", "97cbffed", "86cd8be0", "dfabf680", "23671d54", "6ac7ef11"],
   "core/taskWaitingOnActions.js": ["576156a7", "454cbd39", "333d8645", "9f62ff9e", "00e96c90", "55eb5f60", "441927a5", "f6cf4597"],
   "core/taskWaitingOnPage.js": ["b5a78897", "c7cfc8dc", "8a1ad2e0", "c77cad0a", "874280e0", "1b394697", "37da2547", "7a1c3636"],
-  "core/terminalWebSocket.js": ["deb66dff", "0687e963", "0d69f11b", "528c0db8", "2daa57d0", "298182d6", "02d1dd73", "2b1b0878"],
+  "core/terminalWebSocket.js": ["ae7de772", "076b18f4", "3fd28fa1", "b650f51c", "7ac99cf6", "298765fe", "3266a351", "5e678702"],
   "core/theme.js": ["dcf76f3b", "8ab07b95", "96946c96", "79e73d55", "8deb90bc", "251b94d6", "5dd0aaaf", "d1e0a71f"],
   "core/threadAttachmentPages.js": ["df0b246c", "a850af5a", "c612aeac", "414feaa5", "03db6170", "9511cd9c", "372279a6", "9c417822"],
   "core/threadSync.js": ["bf280ad8", "20d158b6", "aaa4f7b9", "695d3816", "1d0200e6", "cf6756bd", "bc0e1372", "2e452737"],

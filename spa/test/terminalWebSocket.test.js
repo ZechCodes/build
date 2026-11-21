@@ -350,6 +350,47 @@ describe("browser terminal wire", () => {
     await next;
   });
 
+  it("retires a silently dead idle carrier without user action", async () => {
+    vi.useFakeTimers();
+    const { peer, carrier } = await connected();
+    const close = vi.fn();
+    carrier.onClose(close);
+
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(peer.calls()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(peer.calls()).toEqual([{ ...payload("ping"), id: expect.any(String) }]);
+    await vi.advanceTimersByTimeAsync(23999);
+    expect(close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(close).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      error_code: "terminal_disconnected", retryable: true,
+    }));
+    expect(peer.close).toHaveBeenCalledOnce();
+  });
+
+  it("waits for held calls to settle before starting a fresh idle interval", async () => {
+    vi.useFakeTimers();
+    const { peer, carrier } = await connected();
+
+    await vi.advanceTimersByTimeAsync(4000);
+    const attach = request(carrier, "attach");
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(peer.calls().map(({ method }) => method)).toEqual(["term.attach"]);
+    expect(peer.close).not.toHaveBeenCalled();
+    fixtureReply(peer, "attach_ok");
+    await attach;
+
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(peer.calls()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(peer.calls().at(-1)).toEqual({ ...payload("ping"), id: expect.any(String) });
+
+    peer.reply({ ...payload("attach_ok"), result: {} });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(peer.calls().map(({ method }) => method)).toEqual(["term.attach", "ping", "ping"]);
+  });
+
   it("extends the receive watchdog on pushes and late correlated replies", async () => {
     vi.useFakeTimers();
     const { peer, carrier } = await connected();
@@ -390,13 +431,16 @@ describe("browser terminal wire", () => {
   it("retires a physically stalled send without treating absent screen ACK as a stall", async () => {
     vi.useFakeTimers();
     const { peer, carrier } = await connected();
-    const originalSend = peer.send.bind(peer);
-    peer.send = (bytes) => { originalSend(bytes); peer.bufferedAmount += bytes.length; };
     const close = vi.fn();
     carrier.onClose(close);
     peer.receive(messages.output.utf8);
-    await vi.advanceTimersByTimeAsync(limits.sockets.physical_stall_ms);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(peer.calls().map(({ method }) => method)).toEqual(["ping"]);
+    peer.reply({ ...payload("attach_ok"), result: {} });
     expect(close).not.toHaveBeenCalled();
+
+    const originalSend = peer.send.bind(peer);
+    peer.send = (bytes) => { originalSend(bytes); peer.bufferedAmount += bytes.length; };
     const pending = request(carrier, "input");
     const lost = expect(pending).rejects.toMatchObject({ uncertain: true });
     await vi.advanceTimersByTimeAsync(limits.sockets.physical_stall_ms - 1);

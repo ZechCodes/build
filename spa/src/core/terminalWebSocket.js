@@ -13,6 +13,7 @@ const SEND_STALL_MS = 10000;
 // A caller deadline leaves its wire slot held. Allow room for slow snapshots
 // while bounding how long work can occupy slots without any inbound progress.
 const RECEIVE_STALL_MS = 24000;
+const IDLE_PROBE_MS = 5000;
 const CALL_LIMIT = 8;
 const QUEUE_ITEMS = 128;
 const MAX_DEPTH = 16;
@@ -204,7 +205,7 @@ function createCarrier({ socket, epoch, signal, isCurrent, retiredError, onEnd }
   let terminalError;
   let requestId = 0;
   let stallTimer;
-  let receiveTimer;
+  let livenessTimer;
   let lastBuffered = 0;
   const current = () => !terminalError && !signal.aborted && isCurrent();
 
@@ -213,7 +214,7 @@ function createCarrier({ socket, epoch, signal, isCurrent, retiredError, onEnd }
     terminalError = error;
     clearTimeout(openTimer);
     clearTimeout(stallTimer);
-    clearTimeout(receiveTimer);
+    clearTimeout(livenessTimer);
     signal.removeEventListener("abort", retire);
     socket.removeEventListener("open", opened);
     socket.removeEventListener("message", message);
@@ -274,11 +275,17 @@ function createCarrier({ socket, epoch, signal, isCurrent, retiredError, onEnd }
     else lastBuffered = after;
   };
 
-  function watchReceiveProgress() {
-    clearTimeout(receiveTimer);
-    if (held.size > 0) receiveTimer = setTimeout(() => {
-      stop(current() ? transportError() : retiredError());
-    }, RECEIVE_STALL_MS);
+  function watchLiveness() {
+    clearTimeout(livenessTimer);
+    livenessTimer = held.size
+      ? setTimeout(() => stop(current() ? transportError() : retiredError()), RECEIVE_STALL_MS)
+      : setTimeout(probeIdle, IDLE_PROBE_MS);
+  }
+
+  function probeIdle() {
+    if (held.size !== 0) return;
+    // The probe uses ordinary wire credit and the same receive watchdog.
+    void carrier.call("ping").catch(() => {});
   }
 
   const sendCall = (method, params, options = {}) => {
@@ -291,7 +298,7 @@ function createCarrier({ socket, epoch, signal, isCurrent, retiredError, onEnd }
     const reply = Promise.withResolvers();
     send({ id, method, params });
     held.set(id, { ...reply, method });
-    if (held.size === 1) watchReceiveProgress();
+    if (held.size === 1) watchLiveness();
     const result = callerResult(reply.promise, method, options);
     if (onAttachId && attachMethods.has(method)) {
       try { onAttachId(id); } catch (error) { void result.catch(() => {}); throw error; }
@@ -325,6 +332,7 @@ function createCarrier({ socket, epoch, signal, isCurrent, retiredError, onEnd }
     if (!current()) { retire(); return; }
     if (socket.protocol !== TERMINAL_PROTOCOL || socket.extensions) { stop(protocolError()); return; }
     clearTimeout(openTimer);
+    watchLiveness();
     ready.resolve(carrier);
   }
   function message({ data }) {
@@ -338,7 +346,7 @@ function createCarrier({ socket, epoch, signal, isCurrent, retiredError, onEnd }
       admitFrame(frame, data.byteLength, call?.method);
     } catch (error) { stop(error); return; }
     if (call) held.delete(frame.id);
-    watchReceiveProgress();
+    watchLiveness();
     if (!Object.hasOwn(frame, "id")) { emit(pushes, frame); return; }
     if (call) {
       if (frame.ok) call.resolve(frame.result);

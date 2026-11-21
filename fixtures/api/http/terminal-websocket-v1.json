@@ -1,0 +1,600 @@
+{
+  "version": 1,
+  "endpoint": {
+    "bridge_https_origin": "https://bridge.app.test:8443",
+    "caller_origin": "https://app.test",
+    "websocket_url": "wss://bridge.app.test:8443/v1/terminal",
+    "connect_src_sources": ["https://bridge.app.test:8443", "wss://bridge.app.test:8443"],
+    "browser_host_cases": [
+      {"name": "sibling_hostname", "bridge_https_origin": "https://bridge.app.test:8443", "allowed": true},
+      {"name": "same_hostname_different_port", "bridge_https_origin": "https://app.test:8443", "allowed": false}
+    ],
+    "rules": [
+      "Use the verified HTTPS authority and its effective port on both routes. Validate TLS using the platform trust store and reject redirects.",
+      "Both routes require exactly one explicit allowed HTTPS Origin. Redemption requires the identical Origin saved during issuance. Cookies and forwarded headers confer no authority.",
+      "The paths are fixed and query-free. Browser and native clients offer the same pair of subprotocol tokens. Native main supplies the trusted hosted document Origin."
+    ]
+  },
+  "ticket": {
+    "method": "POST",
+    "path": "/v1/terminal-tickets",
+    "request": {
+      "headers": {
+        "authorization": "Bearer {{device_bearer}}",
+        "content-type": "application/json",
+        "origin": "https://app.test",
+        "x-build-session": "00000000-0000-4000-8000-000000000001"
+      },
+      "body": {
+        "opening_generation": "00000000-0000-4000-8000-000000000002"
+      },
+      "utf8": "{\"opening_generation\":\"00000000-0000-4000-8000-000000000002\"}"
+    },
+    "response": {
+      "status": 201,
+      "headers": {
+        "cache-control": "no-store",
+        "content-type": "application/json"
+      },
+      "body": {
+        "ticket": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "expires_at": "2030-01-01T00:00:15Z",
+        "opening_generation": "00000000-0000-4000-8000-000000000002"
+      }
+    },
+    "token_bytes": 32,
+    "token_encoding": "canonical base64url without padding",
+    "expires_at_format": "RFC3339 UTC",
+    "required_scopes": ["bridge:read", "bridge:write"],
+    "bound_state": [
+      "issuer", "account", "device", "credential_family", "bridge_https_origin",
+      "endpoint_epoch", "authorization_epoch", "verified_scopes", "grant_evidence",
+      "caller_origin", "opening", "opening_generation", "terminal_predecessor"
+    ],
+    "lifetime_cases": [
+      {"issued_at": "2030-01-01T00:00:00Z", "proof_deadline": "2030-01-01T00:00:30Z", "expires_at": "2030-01-01T00:00:15Z"},
+      {"issued_at": "2030-01-01T00:00:00Z", "proof_deadline": "2030-01-01T00:00:04Z", "expires_at": "2030-01-01T00:00:04Z"}
+    ],
+    "rules": [
+      "The example token encodes 32 zero bytes. Issue fresh 32-byte randomness and retain only its lookup digest and bound state.",
+      "The request body contains only opening_generation. Derive authority from the verified owner bearer and exact X-Build-Session Opening. Enforce the required scopes plus any entitlement selected by the plan's owner consent decision.",
+      "Expire when now reaches the earlier of the proof deadline and issued_at + max_age_ms. One pending ticket per Opening; a new issue supersedes the previous ticket.",
+      "Bind the caller Origin separately from verified bridge authority. Atomically spend once and compare-and-replace the exact terminal predecessor, including its tombstone.",
+      "Check capacity at issue and again at redemption. A refused or failed upgrade releases reservations; a consumed ticket requires a fresh issue after a failed connection."
+    ],
+    "refusals": {
+      "invalid_credential": {
+        "status": 401,
+        "body": {
+          "error": "invalid_credential",
+          "error_code": "invalid_credential",
+          "retryable": false
+        }
+      },
+      "forbidden_scope": {
+        "status": 403,
+        "body": {
+          "error": "forbidden_scope",
+          "error_code": "forbidden_scope",
+          "retryable": false
+        }
+      },
+      "overloaded": {
+        "status": 429,
+        "body": {
+          "error": "overloaded",
+          "error_code": "overloaded",
+          "retryable": true
+        }
+      }
+    },
+    "invalid_requests": [
+      {"name": "missing_bearer", "header": "authorization", "values": [], "refusal": "invalid_credential"},
+      {"name": "missing_session", "header": "x-build-session", "values": [], "refusal": "invalid_credential"},
+      {"name": "wrong_generation", "body": {"opening_generation": "00000000-0000-4000-8000-000000000099"}, "refusal": "invalid_credential"},
+      {"name": "read_only", "verified_scopes": ["bridge:read"], "refusal": "forbidden_scope"},
+      {"name": "family_socket_limit", "held_family_sockets": 8, "refusal": "overloaded"}
+    ]
+  },
+  "handshake": {
+    "method": "GET",
+    "path": "/v1/terminal",
+    "http_version": "HTTP/1.1",
+    "websocket_version": "13",
+    "protocol": "build.term.v1",
+    "selected": "build.term.v1",
+    "request": {
+      "headers": {
+        "host": "bridge.app.test:8443",
+        "origin": "https://app.test",
+        "connection": "Upgrade",
+        "upgrade": "websocket",
+        "sec-websocket-version": "13",
+        "sec-websocket-key": "AAAAAAAAAAAAAAAAAAAAAA==",
+        "sec-websocket-protocol": "build.term.v1, ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      }
+    },
+    "response": {
+      "status": 101,
+      "headers": {
+        "connection": "Upgrade",
+        "upgrade": "websocket",
+        "sec-websocket-accept": "ICX+Yqv66kxgM0FcWaLWlFLwTAI=",
+        "sec-websocket-protocol": "build.term.v1"
+      }
+    },
+    "rules": [
+      "Offer exactly one subprotocol field containing the two case-sensitive tokens. Either order and optional HTTP space or tab around the comma are accepted.",
+      "Select and echo only build.term.v1 in a single response field. Decline all offered extensions and require the response to contain no negotiated extensions.",
+      "Require singleton Host, Origin, Upgrade, Sec-WebSocket-Version, Sec-WebSocket-Key and Sec-WebSocket-Protocol request fields. Connection uses HTTP token-list matching for Upgrade.",
+      "The example WebSocket key encodes 16 zero bytes for a deterministic handshake vector. Live clients generate fresh keys through their WebSocket library.",
+      "Ignore ambient cookies. The ticket is the only upgrade credential. Keep it out of URLs, diagnostics, replies and close reasons.",
+      "A missing or unusable ticket gets the generic invalid_credential refusal. Other malformed handshake syntax gets 400. Origin and authority refusals use the listener's existing 403 and 421 policy."
+    ],
+    "offers": [
+      {"name": "v1_and_ticket", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": true},
+      {"name": "reverse_order", "tokens": ["ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "build.term.v1"], "accepted": true},
+      {"name": "missing_ticket", "tokens": ["build.term.v1"], "accepted": false},
+      {"name": "missing_v1", "tokens": ["ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": false},
+      {"name": "wrong_case", "tokens": ["Build.Term.V1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": false},
+      {"name": "duplicate_v1", "tokens": ["build.term.v1", "build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": false},
+      {"name": "two_tickets", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": false},
+      {"name": "third_protocol", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "build.term.v2"], "accepted": false},
+      {"name": "padded_ticket", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="], "accepted": false},
+      {"name": "empty_token", "tokens": ["build.term.v1", "ticket."], "accepted": false},
+      {"name": "noncanonical_pad_bits", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB"], "accepted": false},
+      {"name": "bad_alphabet", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+"], "accepted": false},
+      {"name": "empty_list_member", "tokens": ["build.term.v1", "", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": false}
+    ],
+    "selections": [
+      {"name": "v1_only", "header_values": ["build.term.v1"], "browser_protocol": "build.term.v1", "accepted": true},
+      {"name": "missing", "header_values": [], "browser_protocol": "", "accepted": false},
+      {"name": "ticket_selected", "header_values": ["ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "browser_protocol": "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "accepted": false},
+      {"name": "both", "header_values": ["build.term.v1, ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "browser_protocol": "build.term.v1, ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "accepted": false},
+      {"name": "duplicate_header", "header_values": ["build.term.v1", "build.term.v1"], "browser_protocol": "build.term.v1, build.term.v1", "accepted": false},
+      {"name": "wrong_case", "header_values": ["Build.Term.V1"], "browser_protocol": "Build.Term.V1", "accepted": false},
+      {"name": "future_protocol", "header_values": ["build.term.v2"], "browser_protocol": "build.term.v2", "accepted": false}
+    ],
+    "invalid_requests": [
+      {"name": "no_origin", "header": "origin", "values": [], "status": 403},
+      {"name": "null_origin", "header": "origin", "values": ["null"], "status": 403},
+      {"name": "duplicate_origin", "header": "origin", "values": ["https://app.test", "https://app.test"], "status": 403},
+      {"name": "other_allowed_origin", "header": "origin", "values": ["https://other.app.test"], "status": 403},
+      {"name": "wrong_port", "header": "host", "values": ["bridge.app.test"], "status": 421},
+      {"name": "wrong_version", "header": "sec-websocket-version", "values": ["12"], "status": 400},
+      {"name": "missing_key", "header": "sec-websocket-key", "values": [], "status": 400},
+      {"name": "wrong_key_length", "header": "sec-websocket-key", "values": ["YQ=="], "status": 400},
+      {"name": "no_upgrade_token", "header": "connection", "values": ["keep-alive"], "status": 400},
+      {"name": "missing_ticket", "header": "sec-websocket-protocol", "values": ["build.term.v1"], "status": 401},
+      {"name": "duplicate_protocol_field", "header": "sec-websocket-protocol", "values": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "status": 400},
+      {"name": "query", "path": "/v1/terminal?", "status": 400},
+      {"name": "expired_ticket", "ticket_state": "expired", "status": 401},
+      {"name": "spent_ticket", "ticket_state": "spent", "status": 401},
+      {"name": "replaced_predecessor", "ticket_state": "stale_predecessor", "status": 401},
+      {"name": "capacity", "ticket_state": "over_capacity", "status": 429}
+    ],
+    "invalid_responses": [
+      {"name": "redirect", "status": 307, "headers": {"location": "https://other.app.test/v1/terminal"}},
+      {"name": "extension_negotiated", "status": 101, "headers": {"sec-websocket-extensions": "permessage-deflate"}},
+      {"name": "wrong_key_accept", "status": 101, "headers": {"sec-websocket-accept": "AAAAAAAAAAAAAAAAAAAAAAAAAAA="}}
+    ]
+  },
+  "opening": {
+    "base": {
+      "session_id": "00000000-0000-4000-8000-000000000001",
+      "opening_generation": "00000000-0000-4000-8000-000000000002",
+      "grant_expires_at": "2030-01-01T00:00:30Z",
+      "greeting": {
+        "api_version": "3.41.0",
+        "bridge_epoch": "00000000-0000-4000-8000-000000000004",
+        "capabilities": ["bridge.epoch"],
+        "journal_incarnation": "00000000-0000-4000-8000-000000000003"
+      },
+      "transport": {
+        "resource_manifest_version": 1,
+        "terminal": "webrtc",
+        "durable_events": false
+      }
+    },
+    "operation_ids_from": {
+      "fixture": "resource-manifest.json",
+      "field": "operations[].operationId"
+    },
+    "descriptor_field": "terminal_websocket",
+    "capability": "term.websocket",
+    "descriptor": {
+      "version": 1,
+      "protocol": "build.term.v1"
+    },
+    "rules": [
+      "Materialize each case by copying base, filling transport.operation_ids from the referenced fixture, copying descriptor to transport.terminal_websocket when present and appending the capability when true.",
+      "POST and PATCH use the same descriptor. Keep the declared WebRTC fallback and the resource manifest version. The base greeting's 3.41.0 is historical; H chooses the next dev minor.",
+      "An omitted descriptor or a well-formed future version selects the declared fallback. A future descriptor has an integer version greater than one and a nonempty HTTP token other than build.term.v1.",
+      "A claimed v1 requires the exact case-sensitive protocol and term.websocket capability. A null, malformed or contradictory descriptor is a terminal protocol error.",
+      "Desktop requires the complete terminal IPC surface for a valid v1. Once WSS is selected, refusals and transport loss never switch transport; recover using the current Opening and a fresh ticket."
+    ],
+    "cases": [
+      {"name": "old_bridge", "capability": false, "native_terminal_ipc": "complete", "browser": "webrtc", "desktop": "webrtc"},
+      {"name": "capability_only", "capability": true, "native_terminal_ipc": "complete", "browser": "webrtc", "desktop": "webrtc"},
+      {"name": "v1", "capability": true, "descriptor": {"version": 1, "protocol": "build.term.v1"}, "native_terminal_ipc": "complete", "browser": "wss", "desktop": "wss"},
+      {"name": "old_native_main", "capability": true, "descriptor": {"version": 1, "protocol": "build.term.v1"}, "native_terminal_ipc": "absent", "browser": "wss", "desktop": "webrtc"},
+      {"name": "partial_native_ipc", "capability": true, "descriptor": {"version": 1, "protocol": "build.term.v1"}, "native_terminal_ipc": "partial", "browser": "wss", "desktop": "webrtc"},
+      {"name": "future_version", "capability": true, "descriptor": {"version": 2, "protocol": "build.term.v2"}, "native_terminal_ipc": "complete", "browser": "webrtc", "desktop": "webrtc"},
+      {"name": "future_unfamiliar_token", "capability": true, "descriptor": {"version": 3, "protocol": "build.future.term-v3"}, "native_terminal_ipc": "complete", "browser": "webrtc", "desktop": "webrtc"},
+      {"name": "invalid_future_token", "capability": true, "descriptor": {"version": 3, "protocol": "invalid token"}, "native_terminal_ipc": "complete", "browser": "protocol_error", "desktop": "protocol_error"},
+      {"name": "future_version_claiming_v1_protocol", "capability": true, "descriptor": {"version": 2, "protocol": "build.term.v1"}, "native_terminal_ipc": "complete", "browser": "protocol_error", "desktop": "protocol_error"},
+      {"name": "claimed_v1_missing_capability", "capability": false, "descriptor": {"version": 1, "protocol": "build.term.v1"}, "native_terminal_ipc": "complete", "browser": "protocol_error", "desktop": "protocol_error"},
+      {"name": "wrong_v1_protocol", "capability": true, "descriptor": {"version": 1, "protocol": "Build.Term.V1"}, "native_terminal_ipc": "complete", "browser": "protocol_error", "desktop": "protocol_error"},
+      {"name": "missing_v1_protocol", "capability": true, "descriptor": {"version": 1}, "native_terminal_ipc": "complete", "browser": "protocol_error", "desktop": "protocol_error"},
+      {"name": "string_version", "capability": true, "descriptor": {"version": "1", "protocol": "build.term.v1"}, "native_terminal_ipc": "complete", "browser": "protocol_error", "desktop": "protocol_error"},
+      {"name": "null_descriptor", "capability": true, "descriptor": null, "native_terminal_ipc": "complete", "browser": "protocol_error", "desktop": "protocol_error"}
+    ],
+    "selected_wss_failures": [
+      {"cause": "forbidden_scope", "transport": "wss", "automatic_retry": false},
+      {"cause": "tls_or_csp", "transport": "wss", "fallback": false},
+      {"cause": "capacity", "transport": "wss", "http_status": 429, "pane_message": "Terminal connection limit reached"},
+      {"cause": "transport_loss", "transport": "wss", "fresh_ticket": true, "replay_effects": false}
+    ]
+  },
+  "wire": {
+    "binary_opcode": 2,
+    "encoding": "UTF-8 JSON",
+    "pty_bytes": "standard padded base64",
+    "request_id_pattern": "^[A-Za-z0-9_-]{1,128}$",
+    "methods": ["term.create", "term.attach", "term.input", "term.resize", "term.ack", "term.close", "agent.attach", "ping"],
+    "bridge_pushes": ["term.output", "term.reset", "term.closed"],
+    "rules": [
+      "One complete JSON object per binary WebSocket message. Require client masking. Fragmentation may carry the same message within its aggregate limit. Binary wire vectors give exact message payload bytes in utf8, before WebSocket framing and masking.",
+      "Example JSON is compact with lexically sorted keys and no trailing newline. Readers accept other whitespace and key order. UTF-8 must be valid and the message has no BOM.",
+      "Client RPC contains exactly id, method and object-valued params. Validate the method allowlist before Invocation::decode. Reject caller authority or delivery metadata in params as well as in the envelope. Legitimate terminal, agent and workspace selectors still go through shared domain validation.",
+      "IDs are case-sensitive and unique through settlement. Clients never reuse an attach ID during the lifetime of its socket; the bridge also rejects IDs still held by pending or active interests.",
+      "The two controls are detach (client) and attachment_error (bridge). detach has only type and attach_id, uses the original attach request ID, is idempotent for unknown or stale interests and has no reply.",
+      "Every bridge envelope, including attachment_error, carries bridge_epoch. Check exact current Opening epoch and socket ownership before resolving an ID or delivering an event. An epoch mismatch retires that terminal socket and never updates the trusted greeting.",
+      "Successful attach replies preserve the shared result, including provider and the server-issued term_id. An equal-cursor reset is valid; output starts at cursor minus decoded data length. Accept the contiguous live tail after applying a snapshot.",
+      "Cursor fields are nonnegative integral byte counts represented as safe JSON integers. A WSS ACK above the highest sent cursor is refused and earns no credit.",
+      "Unknown methods or invalid method parameters with a well-formed envelope receive a correlated refusal. Text, malformed envelopes, duplicate outstanding IDs and aggregate overflow terminate the socket before the offending message reaches dispatch.",
+      "Use close code 1002 for malformed protocol, 1003 for text, 1007 for invalid UTF-8 and 1009 for a message above its applicable byte cap. If the authority fence has already ended, drop the socket without attempting a final write."
+    ],
+    "attachment_rules": [
+      "Require a current interest on this binding before input, resize or ACK. A domain-scoped explicit close can still target a rostered shell and ends the shell.",
+      "Detach releases just the named current or pending interest. When the last consumer leaves, retire the socket and retain its shells. Release interests by exact binding identity on disconnect and replacement.",
+      "Reserve pending agent interests by the attach ID and follow server-issued term_id changes. Detach still uses the original attach ID after an agent rekey.",
+      "For unsupported capture at attach time, reply snapshot_too_large before establishing the interest. For unsupported reset, emit attachment_error and release only that established interest. Preserve sibling panes and remember the refusal across automatic owner recovery."
+    ],
+    "credit_rules": [
+      "Start WSS attachment credit at the snapshot cursor. ACK after the emulator applies the snapshot. ACKs may coalesce and an ACK above the highest delivered cursor earns no credit.",
+      "A stalled renderer pauses only its attachment. Acknowledging the last delivered cursor schedules a fresh reset. Keep close events deliverable during pause. Native IPC delivery ACKs release IPC staging independently of emulator credit.",
+      "Split input above the decoded byte limit into ordered byte chunks. On socket loss, cancel unsent input and never replay handed-off input, create or close."
+    ]
+  },
+  "messages": {
+    "create": {
+      "from": "client",
+      "opcode": 2,
+      "utf8": "{\"id\":\"create-1\",\"method\":\"term.create\",\"params\":{\"kind\":\"shell\",\"project_id\":\"project-1\"}}"
+    },
+    "attach": {
+      "from": "client",
+      "opcode": 2,
+      "utf8": "{\"id\":\"attach-1\",\"method\":\"term.attach\",\"params\":{\"cols\":80,\"rows\":24,\"term_id\":\"term-1\"}}"
+    },
+    "agent_attach": {
+      "from": "client",
+      "opcode": 2,
+      "utf8": "{\"id\":\"attach-2\",\"method\":\"agent.attach\",\"params\":{\"project_id\":\"project-1\"}}"
+    },
+    "input": {
+      "from": "client",
+      "opcode": 2,
+      "utf8": "{\"id\":\"input-1\",\"method\":\"term.input\",\"params\":{\"data\":\"AP9hCg==\",\"term_id\":\"term-1\"}}"
+    },
+    "resize": {
+      "from": "client",
+      "opcode": 2,
+      "utf8": "{\"id\":\"resize-1\",\"method\":\"term.resize\",\"params\":{\"cols\":100,\"rows\":30,\"term_id\":\"term-1\"}}"
+    },
+    "ack": {
+      "from": "client",
+      "opcode": 2,
+      "utf8": "{\"id\":\"ack-1\",\"method\":\"term.ack\",\"params\":{\"cursor\":9,\"term_id\":\"term-1\"}}"
+    },
+    "close": {
+      "from": "client",
+      "opcode": 2,
+      "utf8": "{\"id\":\"close-1\",\"method\":\"term.close\",\"params\":{\"project_id\":\"project-1\",\"term_id\":\"term-1\"}}"
+    },
+    "ping": {
+      "from": "client",
+      "opcode": 2,
+      "utf8": "{\"id\":\"ping-1\",\"method\":\"ping\",\"params\":{}}"
+    },
+    "attach_ok": {
+      "from": "bridge",
+      "opcode": 2,
+      "utf8": "{\"bridge_epoch\":\"00000000-0000-4000-8000-000000000004\",\"id\":\"attach-1\",\"ok\":true,\"result\":{\"cols\":80,\"cursor\":9,\"live\":true,\"provider\":null,\"rows\":24,\"snapshot\":\"G1syShtbSEhp\",\"term_id\":\"term-1\"}}"
+    },
+    "agent_attach_ok": {
+      "from": "bridge",
+      "opcode": 2,
+      "utf8": "{\"bridge_epoch\":\"00000000-0000-4000-8000-000000000004\",\"id\":\"attach-2\",\"ok\":true,\"result\":{\"cols\":120,\"cursor\":9,\"live\":true,\"provider\":\"codex\",\"rows\":40,\"snapshot\":\"G1syShtbSEhp\",\"term_id\":\"agent:agent-1\"}}"
+    },
+    "output": {
+      "from": "bridge",
+      "opcode": 2,
+      "utf8": "{\"bridge_epoch\":\"00000000-0000-4000-8000-000000000004\",\"cursor\":12,\"data\":\"DQpY\",\"term_id\":\"term-1\",\"type\":\"term.output\"}"
+    },
+    "reset": {
+      "from": "bridge",
+      "opcode": 2,
+      "utf8": "{\"bridge_epoch\":\"00000000-0000-4000-8000-000000000004\",\"cursor\":12,\"data\":\"G1syShtbSEhpDQpY\",\"term_id\":\"term-1\",\"type\":\"term.reset\"}"
+    },
+    "closed": {
+      "from": "bridge",
+      "opcode": 2,
+      "utf8": "{\"bridge_epoch\":\"00000000-0000-4000-8000-000000000004\",\"reason\":\"closed\",\"term_id\":\"term-1\",\"type\":\"term.closed\"}"
+    },
+    "agent_session_ended": {
+      "from": "bridge",
+      "opcode": 2,
+      "utf8": "{\"bridge_epoch\":\"00000000-0000-4000-8000-000000000004\",\"reason\":\"agent_session_ended\",\"term_id\":\"agent:agent-1\",\"type\":\"term.closed\"}"
+    },
+    "invalid_input": {
+      "from": "bridge",
+      "opcode": 2,
+      "utf8": "{\"bridge_epoch\":\"00000000-0000-4000-8000-000000000004\",\"error\":\"Invalid terminal input\",\"error_code\":\"invalid_params\",\"id\":\"input-2\",\"ok\":false,\"retryable\":false}"
+    },
+    "rejected_method": {
+      "from": "bridge",
+      "opcode": 2,
+      "utf8": "{\"bridge_epoch\":\"00000000-0000-4000-8000-000000000004\",\"details\":{\"method\":\"term.list\"},\"error\":\"unknown method: term.list\",\"error_code\":\"unknown_method\",\"id\":\"list-1\",\"ok\":false,\"retryable\":false}"
+    },
+    "busy": {
+      "from": "bridge",
+      "opcode": 2,
+      "utf8": "{\"bridge_epoch\":\"00000000-0000-4000-8000-000000000004\",\"error\":\"Terminal request limit reached\",\"error_code\":\"busy\",\"id\":\"ping-2\",\"ok\":false,\"retryable\":true}"
+    },
+    "oversized_attach": {
+      "from": "bridge",
+      "opcode": 2,
+      "utf8": "{\"bridge_epoch\":\"00000000-0000-4000-8000-000000000004\",\"error\":\"This screen is too large to display\",\"error_code\":\"snapshot_too_large\",\"id\":\"attach-3\",\"ok\":false,\"retryable\":false}"
+    },
+    "attachment_error": {
+      "from": "bridge",
+      "opcode": 2,
+      "utf8": "{\"attach_id\":\"attach-1\",\"bridge_epoch\":\"00000000-0000-4000-8000-000000000004\",\"reason\":\"snapshot_too_large\",\"type\":\"attachment_error\"}"
+    },
+    "detach": {
+      "from": "client",
+      "opcode": 2,
+      "utf8": "{\"attach_id\":\"attach-1\",\"type\":\"detach\"}"
+    }
+  },
+  "epochs": [
+    {"name": "current_reply", "message": "attach_ok", "bridge_epoch": "00000000-0000-4000-8000-000000000004", "accepted": true},
+    {"name": "stale_matching_id", "message": "attach_ok", "bridge_epoch": "00000000-0000-4000-8000-000000000005", "accepted": false},
+    {"name": "missing_reply_epoch", "message": "invalid_input", "bridge_epoch": null, "accepted": false},
+    {"name": "stale_push", "message": "output", "bridge_epoch": "00000000-0000-4000-8000-000000000005", "accepted": false},
+    {"name": "current_attachment_error", "message": "attachment_error", "bridge_epoch": "00000000-0000-4000-8000-000000000004", "accepted": true},
+    {"name": "stale_attachment_error", "message": "attachment_error", "bridge_epoch": "00000000-0000-4000-8000-000000000005", "accepted": false}
+  ],
+  "invalid_messages": [
+    {"from": "client", "opcode": 1, "utf8": "{\"id\":\"input-1\",\"method\":\"term.input\",\"params\":{\"data\":\"AP9hCg==\",\"term_id\":\"term-1\"}}", "name": "text_frame", "close_code": 1003},
+    {"name": "invalid_utf8", "opcode": 2, "hex": "7b2278223a22ff227d", "close_code": 1007},
+    {"name": "utf8_bom", "opcode": 2, "utf8": "\ufeff{\"id\":\"bom\",\"method\":\"ping\",\"params\":{}}", "close_code": 1002},
+    {"name": "invalid_json", "opcode": 2, "utf8": "{\"id\":", "close_code": 1002},
+    {"name": "non_object_envelope", "opcode": 2, "utf8": "[]", "close_code": 1002},
+    {"name": "non_object_params", "opcode": 2, "utf8": "{\"id\":\"bad\",\"method\":\"ping\",\"params\":null}", "close_code": 1002},
+    {"name": "numeric_id", "opcode": 2, "utf8": "{\"id\":1,\"method\":\"ping\",\"params\":{}}", "close_code": 1002},
+    {"name": "empty_id", "opcode": 2, "utf8": "{\"id\":\"\",\"method\":\"ping\",\"params\":{}}", "close_code": 1002},
+    {"name": "unicode_id", "opcode": 2, "utf8": "{\"id\":\"é\",\"method\":\"ping\",\"params\":{}}", "close_code": 1002},
+    {"name": "oversized_id", "opcode": 2, "utf8": "{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"method\":\"ping\",\"params\":{}}", "close_code": 1002},
+    {"name": "caller_authority", "opcode": 2, "utf8": "{\"id\":\"bad\",\"method\":\"ping\",\"params\":{},\"session_id\":\"other\"}", "close_code": 1002},
+    {"name": "priority", "opcode": 2, "utf8": "{\"id\":\"bad\",\"method\":\"ping\",\"params\":{},\"priority\":\"foreground\"}", "close_code": 1002},
+    {"name": "durable_write", "opcode": 2, "utf8": "{\"id\":\"bad\",\"method\":\"ping\",\"params\":{},\"write\":{\"operation_id\":\"00000000-0000-4000-8000-000000000001\"}}", "close_code": 1002},
+    {"name": "excess_nesting", "opcode": 2, "utf8": "{\"id\":\"bad\",\"method\":\"ping\",\"params\":{\"x\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":[{\"k\":null}]}}}}}}}}}}}}}}}", "close_code": 1002},
+    {"name": "duplicate_outstanding_id", "opcode": 2, "utf8": "{\"id\":\"input-1\",\"method\":\"term.input\",\"params\":{\"data\":\"AP9hCg==\",\"term_id\":\"term-1\"}}", "outstanding_ids": ["input-1"], "close_code": 1002},
+    {"name": "client_push", "opcode": 2, "utf8": "{\"type\":\"term.output\"}", "close_code": 1002},
+    {"name": "invalid_input_base64", "opcode": 2, "utf8": "{\"id\":\"input-2\",\"method\":\"term.input\",\"params\":{\"data\":\"bytes?\",\"term_id\":\"term-1\"}}", "reply": "invalid_input"},
+    {"name": "roster_over_socket", "opcode": 2, "utf8": "{\"id\":\"list-1\",\"method\":\"term.list\",\"params\":{\"project_id\":\"project-1\"}}", "reply": "rejected_method"}
+  ],
+  "limits": {
+    "message_bytes": {
+      "client": 131072,
+      "ordinary": 1048576,
+      "snapshot": 12582912
+    },
+    "snapshot_eligible": {
+      "successful_reply_to": ["term.attach", "agent.attach"],
+      "push": "term.reset"
+    },
+    "message_cases": [
+      {"name": "client_exact", "budget": "client", "bytes": 131072, "accepted": true, "fragments": [65536, 65536]},
+      {"name": "client_aggregate_overflow", "budget": "client", "bytes": 131073, "accepted": false, "fragments": [65536, 65536, 1], "close_code": 1009},
+      {"name": "output_exact", "budget": "ordinary", "bytes": 1048576, "accepted": true, "push": "term.output"},
+      {"name": "output_overflow", "budget": "ordinary", "bytes": 1048577, "accepted": false, "push": "term.output", "close_code": 1009},
+      {"name": "large_shell_attach", "budget": "snapshot", "bytes": 1048577, "accepted": true, "reply_to": "term.attach", "ok": true},
+      {"name": "large_agent_attach", "budget": "snapshot", "bytes": 1048577, "accepted": true, "reply_to": "agent.attach", "ok": true},
+      {"name": "attach_exact", "budget": "snapshot", "bytes": 12582912, "accepted": true, "reply_to": "term.attach", "ok": true},
+      {"name": "reset_exact", "budget": "snapshot", "bytes": 12582912, "accepted": true, "push": "term.reset"},
+      {"name": "reset_overflow", "budget": "snapshot", "bytes": 12582913, "accepted": false, "push": "term.reset", "close_code": 1009},
+      {"name": "non_attach_reply", "budget": "ordinary", "bytes": 1048577, "accepted": false, "reply_to": "term.create", "ok": true, "close_code": 1009},
+      {"name": "uncorrelated_reply", "budget": "ordinary", "bytes": 1048577, "accepted": false, "reply_to": null, "ok": true, "close_code": 1009},
+      {"name": "attach_refusal", "budget": "ordinary", "bytes": 1048577, "accepted": false, "reply_to": "term.attach", "ok": false, "close_code": 1009},
+      {"name": "attachment_control", "budget": "ordinary", "bytes": 1048577, "accepted": false, "push": "attachment_error", "close_code": 1009}
+    ],
+    "decoded_input_bytes": 65536,
+    "decoded_input_cases": [
+      {"bytes": 65535, "accepted": true},
+      {"bytes": 65536, "accepted": true},
+      {"bytes": 65537, "accepted": false}
+    ],
+    "max_json_container_depth": 16,
+    "max_cursor": 9007199254740991,
+    "grid": {
+      "max_cols": 512,
+      "max_rows": 256,
+      "max_cells": 65536,
+      "defaults": {
+        "term.create": {
+          "cols": 80,
+          "rows": 24
+        },
+        "term.attach": {
+          "cols": 80,
+          "rows": 24
+        },
+        "term.resize": {
+          "cols": 80,
+          "rows": 24
+        },
+        "agent.attach": {
+          "cols": 120,
+          "rows": 40
+        }
+      },
+      "cases": [
+        {"name": "default_create", "method": "term.create", "params": {}, "accepted": true},
+        {"name": "default_attach", "method": "term.attach", "params": {}, "accepted": true},
+        {"name": "default_agent_attach", "method": "agent.attach", "params": {}, "accepted": true},
+        {"name": "default_resize", "method": "term.resize", "params": {}, "accepted": true},
+        {"name": "independent_default", "method": "agent.attach", "params": {"rows": 32}, "accepted": true},
+        {"name": "cell_ceiling_tall", "method": "term.attach", "params": {"cols": 256, "rows": 256}, "accepted": true},
+        {"name": "cell_ceiling_wide", "method": "term.create", "params": {"cols": 512, "rows": 128}, "accepted": true},
+        {"name": "zero", "method": "term.create", "params": {"cols": 0, "rows": 24}, "accepted": false},
+        {"name": "integer_before_narrowing_create", "method": "term.create", "params": {"cols": 65537, "rows": 24}, "accepted": false},
+        {"name": "integer_before_narrowing_attach", "method": "term.attach", "params": {"cols": 65537, "rows": 24}, "accepted": false},
+        {"name": "integer_before_narrowing_agent", "method": "agent.attach", "params": {"cols": 120, "rows": 65537}, "accepted": false},
+        {"name": "integer_before_narrowing_resize", "method": "term.resize", "params": {"cols": 80, "rows": 65537}, "accepted": false},
+        {"name": "valid_axes_too_many_cells", "method": "term.resize", "params": {"cols": 512, "rows": 129}, "accepted": false},
+        {"name": "too_many_cols", "method": "term.attach", "params": {"cols": 513, "rows": 1}, "accepted": false},
+        {"name": "too_many_rows", "method": "agent.attach", "params": {"cols": 1, "rows": 257}, "accepted": false},
+        {"name": "null_is_not_omitted", "method": "term.create", "params": {"cols": null, "rows": 24}, "accepted": false},
+        {"name": "string", "method": "agent.attach", "params": {"cols": "80", "rows": 24}, "accepted": false},
+        {"name": "fractional", "method": "term.resize", "params": {"cols": 80.5, "rows": 24}, "accepted": false},
+        {"name": "negative", "method": "term.attach", "params": {"cols": 80, "rows": -1}, "accepted": false}
+      ]
+    },
+    "snapshot_bound": {
+      "vt100_version": "0.15.2",
+      "max_code_points_per_cell": 6,
+      "utf8_bytes_per_cell": 24,
+      "sgr_bytes_per_cell": 64,
+      "positioning_erase_bytes_per_cell": 40,
+      "raw_bytes_per_cell": 128,
+      "raw_bytes_per_row": 2048,
+      "raw_bytes_per_screen": 4096,
+      "raw_bytes": 8916992,
+      "json_metadata_bytes": 65536,
+      "encoded_bytes": 11954860
+    },
+    "sockets": {
+      "held_listener": 16,
+      "held_family": 8,
+      "current_opening": 1,
+      "http_listener_total": 128,
+      "family_http_openings": 16,
+      "family_sse_streams": 8,
+      "physical_stall_ms": 10000,
+      "teardown_ms": 5000,
+      "superseded_counts_until_io_drop": true
+    },
+    "socket_cases": [
+      {"name": "eighth_family_socket", "held_family": 7, "held_listener": 7, "admit": true},
+      {"name": "ninth_family_socket", "held_family": 8, "held_listener": 8, "admit": false, "status": 429},
+      {"name": "superseded_still_counts", "held_family": 8, "held_listener": 8, "superseded_held_family": 1, "admit": false, "status": 429},
+      {"name": "sixteenth_listener_socket", "held_family": 0, "held_listener": 15, "admit": true},
+      {"name": "seventeenth_listener_socket", "held_family": 0, "held_listener": 16, "admit": false, "status": 429}
+    ],
+    "tickets": {
+      "pending_opening": 1,
+      "pending_family": 8,
+      "pending_global": 128,
+      "max_age_ms": 15000,
+      "issue_burst_per_family": 8,
+      "issue_refill_interval_ms": 1000,
+      "issue_refill_count": 1
+    },
+    "outstanding_calls": {
+      "socket": 8,
+      "opening_shared": 32
+    },
+    "attachment_interests_per_socket": 64,
+    "queue_items_per_queue": 128,
+    "snapshot_slots": {
+      "bridge": 2,
+      "opening": 1,
+      "pending_markers_per_interest": 1,
+      "undrained_per_interest": 1
+    },
+    "bridge_reservations_bytes": {
+      "inbound_per_socket": 1048576,
+      "ordinary_outbound_per_socket": 2097152,
+      "ordinary_codec_per_socket": 1048576,
+      "ordinary_total": 67108864,
+      "snapshot_slot": 83886080,
+      "total": 234881024
+    },
+    "credit": {
+      "unacked_bytes": 1048576,
+      "snapshot_burst_bytes": 131072,
+      "flush_interval_ms": 10,
+      "reset_min_interval_ms": 100,
+      "applied_ack_coalesce_ms": 250,
+      "ack_pause_socket_timeout_ms": null
+    },
+    "rules": [
+      "All byte and count caps are inclusive. Count UTF-8 bytes of the complete message before decoding, and decoded bytes for input. Count the root object as depth one and each nested object or array as one additional level.",
+      "The large-message exception applies to a current successful correlated attach or a well-formed term.reset, including while staging for render or IPC. Failures and unknown reply IDs use the ordinary limit.",
+      "Count snapshot metadata as the whole encoded envelope minus its base64 payload bytes. The snapshot metadata ceiling applies in addition to the whole-message ceiling.",
+      "The named message boundary cases give byte lengths by receive class. To exercise a large snapshotted payload, use the recovery recipe or grow its base64 field in four-byte groups and use at most three ASCII spaces to reach an exact boundary.",
+      "Validate original JSON integer dimensions and product before narrowing. Fractions, exponents and null are invalid dimensions. Apply defaults only for absent axes and check actual retained screen dimensions under the lock at capture.",
+      "Reserve snapshot slots before capture, share them fairly, bound ordinary queues separately and hold reservations through flush or drop. An ACK pause holds its interest without a timeout; a physical write stall is a socket failure.",
+      "The bound charges erase runs to blank cells. Raw bytes are max_cells times raw_bytes_per_cell plus max_rows times raw_bytes_per_row plus raw_bytes_per_screen. Encoded bytes are 4 times ceil(raw_bytes / 3) plus json_metadata_bytes."
+    ]
+  },
+  "recovery": {
+    "cols": 256,
+    "rows": 256,
+    "scrollback_lines": 2000,
+    "recipe": "Write prefix, then each cell's SGR and text in row-major zero-based order using (row + col) modulo 2. Let natural wrapping advance lines. Write suffix once after the grid. Every value in prefix, sgr, text, suffix and next_output is literal UTF-8.",
+    "prefix": "\u001b[?7h\u001b[H",
+    "cells": [
+      {"sgr": "\u001b[0;1;3;4;7;38;2;255;254;253;48;2;252;251;250m", "text": "Á̂̃̄̈", "fg_rgb": [255, 254, 253], "bg_rgb": [252, 251, 250], "styles": ["bold", "italic", "underline", "inverse"]},
+      {"sgr": "\u001b[0;38;2;249;248;247;48;2;246;245;244m", "text": "B̀̂̃̄̈", "fg_rgb": [249, 248, 247], "bg_rgb": [246, 245, 244], "styles": []}
+    ],
+    "suffix": "\u001b[0m\u001b[2;2H\u001b[4X\u001b[128;129H",
+    "cursor_zero_based": [127, 128],
+    "witness_cells": [
+      {"row": 0, "col": 255, "text": "B̀̂̃̄̈"},
+      {"row": 1, "col": 0, "text": "B̀̂̃̄̈"},
+      {"row": 1, "col": 1, "text": ""},
+      {"row": 1, "col": 4, "text": ""},
+      {"row": 1, "col": 5, "text": "Á̂̃̄̈"},
+      {"row": 255, "col": 255, "text": "Á̂̃̄̈"}
+    ],
+    "next_output": "Z",
+    "next_input_base64": "eA==",
+    "witness": {
+      "attaches": 1,
+      "flood_resets": 1,
+      "reconnects": 0,
+      "additional_tickets": 0
+    },
+    "unsupported": {
+      "requested_grid": {
+        "cols": 80,
+        "rows": 24
+      },
+      "retained_grid": {
+        "cols": 512,
+        "rows": 129
+      },
+      "forced_over_limit_message_bytes": 12582913,
+      "attach_reply": "oversized_attach",
+      "live_attachment_control": "attachment_error",
+      "automatic_reattaches_including_owner_reconnect": 0,
+      "retry": "manual_after_resize_or_content_change",
+      "pane_message": "This screen is too large to display"
+    }
+  }
+}

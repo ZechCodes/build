@@ -15,10 +15,10 @@ const saved = vi.hoisted(() => {
     },
   };
 });
-vi.mock("../src/core/terminalPeerLinks.js", async (importOriginal) => ({
+vi.mock("../src/core/httpConnections.js", async (importOriginal) => ({
   ...(await importOriginal()),
   cachedTerminalTransport: (deviceId) => saved.selected.get(deviceId),
-  onTerminalTransportChanged: (listener) => {
+  onHttpPreferencesChanged: (listener) => {
     saved.listeners.add(listener);
     return () => saved.listeners.delete(listener);
   },

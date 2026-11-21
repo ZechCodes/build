@@ -1,7 +1,11 @@
 import { httpFailure } from "../core/httpEndpoint.js";
 
 const RETRY_DELAYS = [250, 500, 1000, 2000, 4000, 8000];
-const PROBE_INTERVAL = 5000;
+
+export function terminalRetryDelay(retries) {
+  const delay = RETRY_DELAYS[Math.min(retries, RETRY_DELAYS.length - 1)];
+  return Math.round(delay * (0.8 + Math.random() * 0.2));
+}
 const CALL_TIMEOUT = 12000;
 const ignore = () => {};
 
@@ -16,7 +20,6 @@ export function createWebSocketBinding({ owner, hasPanes, onReady, onLoss, onPus
   function release(attempt) {
     if (held !== attempt) return false;
     held = null;
-    clearTimeout(attempt.probe);
     attempt.stopPush?.();
     attempt.stopClose?.();
     attempt.abort.abort();
@@ -33,26 +36,10 @@ export function createWebSocketBinding({ owner, hasPanes, onReady, onLoss, onPus
 
   function scheduleRetry() {
     if (retryTimer !== undefined) return;
-    const delay = RETRY_DELAYS[Math.min(retries++, RETRY_DELAYS.length - 1)];
     retryTimer = setTimeout(() => {
       retryTimer = undefined;
       if (hasPanes()) void ensure().catch(ignore);
-    }, Math.round(delay * (0.8 + Math.random() * 0.2)));
-  }
-
-  function probeLater(attempt, misses = 0) {
-    if (held !== attempt) return;
-    attempt.probe = setTimeout(async () => {
-      try {
-        await attempt.carrier.call("ping", {}, { timeoutMs: 3000 });
-        probeLater(attempt);
-      } catch (error) {
-        if (held !== attempt) return;
-        if (!["busy", "timeout"].includes(error.error_code)) failed(attempt, error);
-        else if (misses === 0) probeLater(attempt, 1);
-        else failed(attempt, Object.assign(error, { retryable: true }));
-      }
-    }, PROBE_INTERVAL);
+    }, terminalRetryDelay(retries++));
   }
 
   function accept(attempt, carrier) {
@@ -68,7 +55,6 @@ export function createWebSocketBinding({ owner, hasPanes, onReady, onLoss, onPus
     if (held !== attempt) throw failure;
     failure = undefined;
     retries = 0;
-    probeLater(attempt);
     onReady(carrier);
     return carrier;
   }

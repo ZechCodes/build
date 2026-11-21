@@ -17,7 +17,7 @@
 // terminal id.
 
 import { assertAttachmentCurrent, withAttachmentCancellation } from "./attachmentLifetime.js";
-import { createWebSocketBinding } from "./webSocketBinding.js";
+import { createWebSocketBinding, terminalRetryDelay } from "./webSocketBinding.js";
 import { createWebSocketFrameQueue } from "./webSocketRender.js";
 import { httpFailure } from "../core/httpEndpoint.js";
 import { createSessionRpc } from "../core/sessionRpc.js";
@@ -410,6 +410,7 @@ export class TerminalSocket {
 
   _applyWebSocketAttach(entry, attempt, result) {
     entry.failure = null;
+    entry.reattachFailures = 0;
     entry.attached = true;
     attempt.initial = { reset: true, data: result.snapshot, cursor: result.cursor };
     entry.onFailure(null);
@@ -427,8 +428,14 @@ export class TerminalSocket {
     }
     entry.permanentFailure = !error.retryable;
     this._showWebSocketFailure(entry, error);
-    if (error.retryable) entry.reattachTimer = setTimeout(() => this._retryWebSocketEntry(entry), 500);
+    if (error.retryable) this._scheduleWebSocketReattach(entry);
     this._webSocket?.idle();
+  }
+
+  _scheduleWebSocketReattach(entry) {
+    const failures = entry.reattachFailures ?? 0;
+    entry.reattachFailures = failures + 1;
+    entry.reattachTimer = setTimeout(() => this._retryWebSocketEntry(entry), terminalRetryDelay(failures));
   }
 
   _releaseWebSocketEntry(entry) {
@@ -450,6 +457,7 @@ export class TerminalSocket {
     const binding = this._webSocket;
     if (!binding) return;
     entry.permanentFailure = false;
+    if (manual) entry.reattachFailures = 0;
     try {
       const carrier = await binding.ensure({ manual });
       this._assertWebSocketPane(entry, binding);

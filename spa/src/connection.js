@@ -24,7 +24,7 @@ import { createDeviceRecoverySupervisor } from "./core/deviceRecovery.js";
 import { openSession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
 import { openRtcTerminalLink } from "./core/rtcTerminalLink.js";
-import { clearTerminalPeerLinks, configureTerminalPeerLinks, rememberTerminalTransport, terminalPeerLink } from "./core/terminalPeerLinks.js";
+import { clearTerminalPeerLinks, configureTerminalPeerLinks, terminalPeerLink } from "./core/terminalPeerLinks.js";
 import { connectionDiagnosticReport, recordConnectionDiagnostic } from "./core/connectionDiagnostics.js";
 import { dialFailureDetail } from "./core/dialFailureDetail.js";
 import { cacheHealth } from "./core/localCache.js";
@@ -455,19 +455,12 @@ async function connectOnce(deviceId, attempt) {
   return connectOverChannels(deviceId, attempt);
 }
 
-function adoptHttpTerminals(context) {
-  rememberTerminalTransport(context);
-  joinFeed(context);
-  syncHome(context);
-  followTerminalsIfTheirs(context, { freshSession: true });
-}
-
 async function connectOverHttp(deviceId, attempt) {
   try {
     return await openHttpDeviceConnection(deviceId, attempt, {
       greet: greetLiveBridge,
       onLost: (lifetime, error) => loseHttpConnection(deviceId, lifetime, error),
-      onAdopt: adoptHttpTerminals,
+      onAdopt: (context) => { joinFeed(context); syncHome(context); followTerminalsIfTheirs(context, { freshSession: true }); },
       onDetached: () => followTerminalsIfTheirs({ deviceId }),
     });
   } catch (error) {
@@ -965,7 +958,6 @@ async function landSession(session, link, releaseInitialLease, attempt, authorit
   // A device the feed is not polling yet — the account's first session, one a
   // late device just opened — gets its own board watcher and reads it as soon
   // as its greeting is in.
-  rememberTerminalTransport(context);
   joinFeed(context);
   syncHome(context);
   followTerminalsIfTheirs(context, { freshSession: true });

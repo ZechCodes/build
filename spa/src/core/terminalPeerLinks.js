@@ -1,23 +1,6 @@
 import { httpFailure } from "./httpEndpoint.js";
 
 // One terminal owner for each HTTP Opening in this tab.
-const presentation = new Map();
-const presentationListeners = new Set();
-
-export const cachedTerminalTransport = (deviceId) => presentation.get(deviceId);
-export function onTerminalTransportChanged(listener) {
-  presentationListeners.add(listener);
-  return () => presentationListeners.delete(listener);
-}
-
-export function rememberTerminalTransport(context) {
-  const session = context?.session;
-  if (!session) return;
-  const mode = session.transport === "http" ? session.terminalTransport || "webrtc" : null;
-  if (presentation.get(context.deviceId) === mode) return;
-  presentation.set(context.deviceId, mode);
-  for (const listener of presentationListeners) listener(context.deviceId);
-}
 const owners = new Map();
 const retired = new WeakSet();
 let configuration = { open: async () => { throw new Error("terminal RTC is unavailable"); }, isCurrent: () => false, onChanged: () => {} };
@@ -66,11 +49,6 @@ export function releaseTerminalPeerLink(session) {
 
 export function clearTerminalPeerLinks() {
   for (const session of [...owners.keys()]) releaseTerminalPeerLink(session);
-  const devices = [...presentation.keys()];
-  presentation.clear();
-  for (const deviceId of devices) {
-    for (const listener of presentationListeners) listener(deviceId);
-  }
 }
 
 function createWebSocketOwner(context, session, config) {

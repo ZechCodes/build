@@ -281,6 +281,58 @@ describe("URL terminal panes", () => {
     expect(sockets).toHaveLength(0);
   });
 
+  it("keeps eight slow attaches alive without using a call slot for a probe", async () => {
+    vi.useFakeTimers();
+    await urlDevice("A");
+    select("A");
+    const manager = terminalManager();
+    const count = fixture.limits.outstanding_calls.socket;
+    const panes = Array.from({ length: count }, (_, i) =>
+      manager.attachTerminal(`term-${i + 1}`).catch((error) => error));
+    const peer = await openPeer();
+    await vi.waitFor(() => expect(peer.take("term.attach")).toHaveLength(count));
+    await vi.advanceTimersByTimeAsync(5000);
+    peer.receive(frame("output"));
+    await vi.advanceTimersByTimeAsync(5000);
+    peer.receive(frame("reset"));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(peer.close).not.toHaveBeenCalled();
+    expect(peer.take("ping")).toEqual([]);
+    expect(peer.take("term.attach")).toHaveLength(count);
+    for (const call of peer.take("term.attach")) {
+      const result = { ...frame("attach_ok").result, term_id: call.params.term_id };
+      peer.reply(call, { ...frame("attach_ok"), result });
+    }
+    expect(await Promise.all(panes)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ term_id: "term-1" }),
+      expect.objectContaining({ term_id: "term-8" }),
+    ]));
+  });
+
+  it("backs off retryable pane refusals with capped jittered delays", async () => {
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    try {
+      await urlDevice("A");
+      select("A");
+      const mounting = terminalManager().attachTerminal("term-1");
+      const peer = await openPeer();
+      await vi.waitFor(() => expect(peer.take("term.attach")).toHaveLength(1));
+      peer.reply(peer.take("term.attach")[0], frame("busy"));
+      await mounting;
+      for (const [index, delay] of [225, 450, 900, 1800, 3600, 7200, 7200].entries()) {
+        await vi.advanceTimersByTimeAsync(delay - 1);
+        expect(peer.take("term.attach")).toHaveLength(index + 1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(peer.take("term.attach")).toHaveLength(index + 2);
+        peer.reply(peer.take("term.attach").at(-1), frame("busy"));
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      expect(peer.close).not.toHaveBeenCalled();
+      expect(random).toHaveBeenCalled();
+    } finally { random.mockRestore(); }
+  });
+
   it("retires a carrier held open by a bridge that leaves every call slot busy", async () => {
     vi.useFakeTimers();
     await urlDevice("A");
@@ -295,9 +347,9 @@ describe("URL terminal panes", () => {
       manager.resize("term-1", 80 + i, 24).catch((error) => error));
     expect(first.take("term.resize")).toHaveLength(8);
 
-    await vi.advanceTimersByTimeAsync(9000);
+    await vi.advanceTimersByTimeAsync(20000);
     expect(first.close).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1250);
+    await vi.advanceTimersByTimeAsync(4500);
     expect(first.close).toHaveBeenCalledOnce();
     expect(await Promise.all(effects)).toEqual(Array(8).fill(expect.objectContaining({ uncertain: true })));
     const second = await openPeer(1);

@@ -5,9 +5,9 @@ import { captureLayout, loadBrowserModules, mountLayout, openLayoutSession } fro
 // reconnecting chip and the negotiated transport label — mounted by their own
 // modules. Only the stored mode and the socket's status are stand-ins.
 const FAKES = {
-  "/src/core/terminalPeerLinks.js": `
+  "/src/core/httpConnections.js": `
     export const cachedTerminalTransport = (deviceId) => deviceId === "dev-http" ? "webrtc" : null;
-    export const onTerminalTransportChanged = () => () => {};`,
+    export const onHttpPreferencesChanged = () => () => {};`,
   "/src/terminal/manager.js": `
     export const subscribeTerminalStatus = (fn) => { fn(window.__status || "connected"); return () => {}; };
     export const terminalDeviceId = () => "dev-http";

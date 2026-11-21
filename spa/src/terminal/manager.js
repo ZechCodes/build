@@ -12,7 +12,7 @@ import { isProjectTerminalScope, projectTerminalRpc } from "../core/projectTermi
 import { directoryCacheId } from "../core/directoryScope.js";
 import { mergeCachedRecordsTogether, readCached, recordWriteOf } from "../core/localCache.js";
 import { createStatusHub } from "./statusHub.js";
-import { rememberTerminalTransport, terminalPeerLink, terminalWebSocketOwner } from "../core/terminalPeerLinks.js";
+import { terminalPeerLink, terminalWebSocketOwner } from "../core/terminalPeerLinks.js";
 
 let socket = null;
 let followController = null;
@@ -176,7 +176,6 @@ export function followTerminalDevice({ freshSession = false } = {}) {
   const deviceId = terminalDeviceId();
   const context = contextFor(deviceId);
   const answerable = canAnswer(context);
-  rememberTerminalTransport(context);
   if (!socket) return answerable;
   if (followWebSocket(context, deviceId)) return answerable;
   const peerLink = terminalPeerLink(context);

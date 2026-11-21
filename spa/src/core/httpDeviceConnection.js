@@ -1,7 +1,7 @@
 import {
   adoptDeviceConnection, blockDeviceConnection, closeQuietly, deviceContextEra, deviceContextIdentity,
 } from "./deviceContexts.js";
-import { httpEndpointFor, httpResourceRoutes } from "./httpConnections.js";
+import { httpEndpointFor, httpResourceRoutes, rememberHttpTerminalMode } from "./httpConnections.js";
 import { openHttpSession } from "./httpSession.js";
 import { dispatchChangeEvent } from "./changeEvents.js";
 
@@ -27,6 +27,7 @@ export async function openHttpDeviceConnection(deviceId, attempt, { greet, onLos
   try {
     await greet(adopted.context, { suppressFailure: false, isAuthoritative: current, lifetime });
     if (!current()) throw new Error("HTTP attempt superseded");
+    void rememberHttpTerminalMode(deviceId, session.terminalTransport, current).catch(() => {});
     onAdopt(adopted.context);
     attempt.release(lifetime);
     return adopted.context;

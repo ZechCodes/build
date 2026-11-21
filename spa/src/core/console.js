@@ -25,7 +25,7 @@ import {
   takeConsoleTerminal,
   toggledConsoleSize,
 } from "./consoleModel.js";
-import { cachedTerminalTransport } from "./terminalPeerLinks.js";
+import { cachedTerminalTransport } from "./httpConnections.js";
 import { RECONNECTING_MESSAGE, attachConnectionOverlay, attachTransportLabel, whenTerminalReconnects } from "./surfaceTabs.js";
 import { el } from "../dom.js";
 import { esc } from "./text.js";

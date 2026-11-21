@@ -56,7 +56,7 @@ vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(
 const { consoleBranchRow, consoleCacheScope, emptyConsoleWorld, seedConsoleTerminals, seedConsoleWorld } =
   await import("./consoleWorld.js");
 const { App } = await import("../src/app.js");
-const { clearTerminalPeerLinks, rememberTerminalTransport } = await import("../src/core/terminalPeerLinks.js");
+const { resetHttpConnections, restoreHttpConnections, selectHttpConnection } = await import("../src/core/httpConnections.js");
 const { mountConsole, resetConsoleMemory } = await import("../src/core/console.js");
 const { consoleKey, markConsoleTerminal, takeConsoleTerminal } = await import("../src/core/consoleModel.js");
 const { readUiRecord, wipeUiRecords, writeUiRecord } = await import("../src/core/localUiStore.js");
@@ -116,7 +116,7 @@ beforeEach(async () => {
   takeConsoleTerminal();
   calls = [];
   panes.length = 0;
-  clearTerminalPeerLinks();
+  resetHttpConnections();
   await emptyConsoleWorld();
   await wipeUiRecords();
   branchRow = consoleBranchRow();
@@ -236,10 +236,17 @@ describe("opening it", () => {
 
 describe("the transport label", () => {
   it("names WebRTC on the open terminal of the console's own HTTPS device", async () => {
-    rememberTerminalTransport({ deviceId: "dev-1", session: { transport: "http", terminalTransport: "webrtc" } });
-    await mountOver(["term-1"]);
-    await open();
-    expect(region().querySelector(".console-pane .term-transport")?.textContent).toBe("Terminal over WebRTC");
+    const identity = document.createElement("meta");
+    identity.name = "build-account-id";
+    identity.content = "10000000-0000-4000-8000-000000000001";
+    document.head.append(identity);
+    try {
+      await restoreHttpConnections();
+      await selectHttpConnection({ deviceId: "dev-1", origin: "https://bridge.example", endpointEpoch: "epoch", familyId: "family" });
+      await mountOver(["term-1"]);
+      await open();
+      expect(region().querySelector(".console-pane .term-transport")?.textContent).toBe("Terminal over WebRTC");
+    } finally { identity.remove(); }
   });
 });
 

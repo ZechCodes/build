@@ -10,7 +10,7 @@
 import { terminalDeviceId, terminalManager, subscribeTerminalStatus } from "../terminal/manager.js";
 import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
-import { cachedTerminalTransport, onTerminalTransportChanged } from "./terminalPeerLinks.js";
+import { cachedTerminalTransport, onHttpPreferencesChanged } from "./httpConnections.js";
 
 /** What every surface says while the machine is out of reach. One sentence, in
  *  the chip over a live pane and in the place of a pane that could not attach. */
@@ -75,7 +75,7 @@ export function attachConnectionOverlay(host, deviceId = terminalDeviceId()) {
     host.classList.toggle("term-offline", offline);
   };
   const unsubscribe = subscribeTerminalStatus((next) => { status = next; paint(); });
-  const stopTransport = onTerminalTransportChanged(paint);
+  const stopTransport = onHttpPreferencesChanged(paint);
   return {
     dispose() {
       unsubscribe();
@@ -102,7 +102,7 @@ export function attachTransportLabel(host, deviceId) {
     else label.remove();
   };
   render();
-  const stop = onTerminalTransportChanged(render);
+  const stop = onHttpPreferencesChanged(render);
   return {
     dispose() {
       stop();

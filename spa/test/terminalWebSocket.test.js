@@ -350,6 +350,26 @@ describe("browser terminal wire", () => {
     await next;
   });
 
+  it("extends the receive watchdog on pushes and late correlated replies", async () => {
+    vi.useFakeTimers();
+    const { peer, carrier } = await connected();
+    const pending = request(carrier, "attach", { timeoutMs: 12000 });
+    const timedOut = expect(pending).rejects.toMatchObject({ error_code: "timeout", retryable: true });
+    const another = request(carrier, "attach");
+    const firstId = peer.calls()[0].id;
+
+    await vi.advanceTimersByTimeAsync(10000);
+    peer.receive(messages.reset.utf8);
+    await vi.advanceTimersByTimeAsync(12000);
+    await timedOut;
+    peer.reply(payload("attach_ok"), firstId);
+    await vi.advanceTimersByTimeAsync(13000);
+    expect(peer.close).not.toHaveBeenCalled();
+    expect(peer.calls()).toHaveLength(2);
+    peer.reply(payload("attach_ok"));
+    await another;
+  });
+
   it("admits only the pinned methods and original grid dimensions", async () => {
     const { peer, carrier } = await connected();
     for (const { name, method, params, accepted } of limits.grid.cases) {

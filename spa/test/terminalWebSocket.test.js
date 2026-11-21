@@ -46,16 +46,21 @@ class FakePeer extends EventTarget {
 }
 
 const endpoints = [];
-function harness({ origin = policy.bridge_https_origin, answer = () => json(ticket.response.body, 201) } = {}) {
+function harness({ origin = policy.bridge_https_origin, answer = () => json(ticket.response.body, 201), greeting = opening.base.greeting, renewToken } = {}) {
   const peers = [];
+  const heldOpening = { ...opening.base, greeting };
+  let token = "device-bearer";
   let current = true;
   const fetchImpl = vi.fn(async (url) => {
     if (url.endsWith(ticket.path)) return answer();
-    if (url.endsWith("/v1/sessions")) return json(opening.base);
+    if (url.includes("/v1/sessions")) return json({ ...heldOpening, grant_expires_at: new Date(now + 60000).toISOString() });
     return new Response(null, { status: 204 });
   });
   const endpoint = createBrowserHttpEndpoint({
-    grant: { identity: { origin }, token: () => "device-bearer", expiresAt: () => now + 30000, close: vi.fn() },
+    grant: {
+      identity: { origin }, token: () => token, expiresAt: () => now + 30000,
+      renew: async () => { if (renewToken) token = renewToken; }, close: vi.fn(),
+    },
     fetchImpl, now: () => now, isCurrent: () => current, callerOrigin: policy.caller_origin,
     createWebSocket: (url, protocols) => {
       const peer = new FakePeer(url, protocols);
@@ -131,6 +136,13 @@ describe("browser terminal admission", () => {
     }
   });
 
+  it("requires an Opening epoch before requesting a ticket", async () => {
+    const h = harness({ greeting: {} });
+    const held = await h.endpoint.open("range");
+    await expect(h.endpoint.openTerminal(held)).rejects.toMatchObject({ error_code: "protocol" });
+    expect(h.fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it.each(handshake.selections)("checks exact selected subprotocol for $name", async ({ browser_protocol, accepted }) => {
     const h = harness();
     const held = await h.endpoint.open("range");
@@ -140,6 +152,24 @@ describe("browser terminal admission", () => {
     h.peers[0].open(browser_protocol);
     await outcome;
     expect(h.peers[0].close).toHaveBeenCalledTimes(accepted ? 0 : 1);
+  });
+
+  it("rejects negotiated extensions even with the expected subprotocol", async () => {
+    const h = harness();
+    const held = await h.endpoint.open("range");
+    const outcome = expect(h.endpoint.openTerminal(held)).rejects.toMatchObject({ error_code: "protocol" });
+    await vi.waitFor(() => expect(h.peers).toHaveLength(1));
+    h.peers[0].extensions = Object.values(handshake.invalid_responses.find(({ name }) => name === "extension_negotiated").headers)[0];
+    h.peers[0].open();
+    await outcome;
+    expect(h.peers[0].close).toHaveBeenCalledOnce();
+  });
+
+  it("reports a network ticket failure as retryable before sending any terminal effect", async () => {
+    const h = harness({ answer: () => { throw new TypeError("internal fetch diagnostics"); } });
+    const held = await h.endpoint.open("range");
+    await expect(h.endpoint.openTerminal(held)).rejects.toMatchObject({ error_code: "network", retryable: true, uncertain: false });
+    expect(h.peers).toHaveLength(0);
   });
 
   it.each(Object.values(ticket.refusals))("reports a $status ticket POST refusal while REST stays usable", async ({ status, body }) => {
@@ -155,6 +185,19 @@ describe("browser terminal admission", () => {
     expect(h.peers).toHaveLength(0);
     h.fetchImpl.mockResolvedValueOnce(json({ ok: true }));
     await expect(h.endpoint.request(held, { path: "/v1/health", method: "GET" }, {})).resolves.toEqual({ ok: true });
+  });
+
+  it("retires the old socket after credential rotation and mints with the new bearer", async () => {
+    vi.useFakeTimers();
+    const { carrier, peer, ...h } = await connected(harness({ renewToken: "renewed-bearer" }));
+    const close = vi.fn();
+    carrier.onClose(close);
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(close).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ error_code: "credentials_rotated", retryable: true }));
+    expect(peer.close).toHaveBeenCalledOnce();
+    await connected(h);
+    const posts = h.fetchImpl.mock.calls.filter(([url]) => url.endsWith(ticket.path));
+    expect(new Headers(posts.at(-1)[1].headers).get("authorization")).toBe("Bearer renewed-bearer");
   });
 
   it("abandons a pending ticket on owner retirement, including a late fetch response", async () => {
@@ -235,6 +278,81 @@ describe("browser terminal wire", () => {
     await next;
   });
 
+  it("caps outstanding calls through settlement and can still detach a pending interest", async () => {
+    const { peer, carrier } = await connected();
+    const calls = Array.from({ length: limits.outstanding_calls.socket }, () => request(carrier, "ping"));
+    for (const call of calls) void call.catch(() => {});
+    await expect(request(carrier, "resize")).rejects.toMatchObject({ error_code: "busy", uncertain: false });
+    expect(peer.sent).toHaveLength(limits.outstanding_calls.socket);
+    peer.reply({ ...payload("attach_ok"), result: {} }, peer.calls()[0].id);
+    await calls[0];
+    const controller = new AbortController();
+    const attach = request(carrier, "attach", { signal: controller.signal });
+    const attachId = peer.calls().at(-1).id;
+    controller.abort();
+    await expect(attach).rejects.toMatchObject({ uncertain: true });
+    carrier.detach(attachId);
+    expect(peer.calls().at(-1)).toEqual({ type: "detach", attach_id: attachId });
+    await expect(request(carrier, "ping")).rejects.toMatchObject({ error_code: "busy" });
+    peer.reply(payload("oversized_attach"), attachId);
+    const next = request(carrier, "ping");
+    peer.reply({ ...payload("attach_ok"), result: {} });
+    await next;
+  });
+
+  it("honors a liveness deadline without releasing unsettled wire credit", async () => {
+    vi.useFakeTimers();
+    const { peer, carrier } = await connected();
+    const pending = request(carrier, "ping", { timeoutMs: 3000 });
+    const expired = expect(pending).rejects.toMatchObject({ error_code: "timeout", timedOut: true, uncertain: true });
+    expect(peer.sent).toHaveLength(1);
+    const active = Array.from({ length: limits.outstanding_calls.socket - 1 }, () => request(carrier, "ping"));
+    for (const call of active) void call.catch(() => {});
+    await vi.advanceTimersByTimeAsync(3000);
+    await expired;
+    await expect(request(carrier, "ping")).rejects.toMatchObject({ error_code: "busy" });
+    peer.reply({ ...payload("attach_ok"), result: {} }, peer.calls()[0].id);
+    const next = request(carrier, "ping");
+    peer.reply({ ...payload("attach_ok"), result: {} });
+    await next;
+  });
+
+  it("admits only the pinned methods and original grid dimensions", async () => {
+    const { peer, carrier } = await connected();
+    for (const { name, method, params, accepted } of limits.grid.cases) {
+      const call = carrier.call(method, params);
+      if (accepted) {
+        const reply = method === "agent.attach" ? "agent_attach_ok" : "attach_ok";
+        peer.reply(payload(reply));
+        await call;
+      } else {
+        await expect(call, name).rejects.toMatchObject({ error_code: "invalid_params", uncertain: false });
+      }
+    }
+    expect(peer.sent).toHaveLength(limits.grid.cases.filter(({ accepted }) => accepted).length);
+    await expect(carrier.call("term.list", {})).rejects.toMatchObject({ error_code: "unknown_method" });
+    await expect(carrier.call("term.attach", { session_id: "other" })).rejects.toMatchObject({ error_code: "invalid_params" });
+  });
+
+  it("retires a physically stalled send without treating absent screen ACK as a stall", async () => {
+    vi.useFakeTimers();
+    const { peer, carrier } = await connected();
+    const originalSend = peer.send.bind(peer);
+    peer.send = (bytes) => { originalSend(bytes); peer.bufferedAmount += bytes.length; };
+    const close = vi.fn();
+    carrier.onClose(close);
+    peer.receive(messages.output.utf8);
+    await vi.advanceTimersByTimeAsync(limits.sockets.physical_stall_ms);
+    expect(close).not.toHaveBeenCalled();
+    const pending = request(carrier, "input");
+    const lost = expect(pending).rejects.toMatchObject({ uncertain: true });
+    await vi.advanceTimersByTimeAsync(limits.sockets.physical_stall_ms - 1);
+    expect(close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(close).toHaveBeenCalledOnce();
+    await lost;
+  });
+
   it("marks handed-off input uncertain and drops unsent chunks on an opaque loss, then mints again", async () => {
     const { peer, carrier, ...h } = await connected();
     const paste = carrier.call("term.input", { term_id: "term-1", data: btoa("x".repeat(limits.decoded_input_bytes + 1)) });
@@ -307,6 +425,29 @@ describe("terminal receive budgets", () => {
       expect(push).toHaveBeenCalledOnce();
       expect(close).not.toHaveBeenCalled();
     }
+  });
+
+  it("bounds snapshot metadata by its encoded byte length even below the ordinary limit", async () => {
+    const { peer, carrier } = await connected();
+    const closed = vi.fn();
+    carrier.onClose(closed);
+    const reset = { ...payload("reset"), extra: "é".repeat(limits.snapshot_bound.json_metadata_bytes / 2) };
+    const encoded = JSON.stringify(reset);
+    expect(encoded.length).toBeLessThan(limits.snapshot_bound.json_metadata_bytes);
+    peer.receive(encoded);
+    expect(closed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ closeCode: 1009 }));
+  });
+
+  it.each(fixture.invalid_messages.filter(({ name }) => [
+    "text_frame", "invalid_utf8", "utf8_bom", "invalid_json", "non_object_envelope", "excess_nesting",
+  ].includes(name)))("classifies malformed content for $name", async (vector) => {
+    const { peer, carrier } = await connected();
+    const closed = vi.fn();
+    carrier.onClose(closed);
+    if (vector.opcode === 1) peer.receiveRaw(vector.utf8);
+    else if (vector.hex) peer.receiveRaw(Uint8Array.from(Buffer.from(vector.hex, "hex")).buffer);
+    else peer.receive(vector.utf8);
+    expect(closed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ closeCode: vector.close_code }));
   });
 
   it.each(fixture.epochs)("checks epoch before correlation or delivery for $name", async (vector) => {

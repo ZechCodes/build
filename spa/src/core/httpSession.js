@@ -2,6 +2,7 @@ import { SPA_API_RANGE } from "./bridgeApi/index.js";
 import { createBridgeEpoch, endedOpeningError } from "./bridgeEpoch.js";
 import { httpFailure } from "./httpEndpoint.js";
 import { httpRequest } from "./httpFetch.js";
+import { TERMINAL_PROTOCOL } from "./terminalWebSocket.js";
 
 const optionsOf = (options) => typeof options === "number" || options === null ? { timeoutMs: options } : options;
 const handle = (value) => typeof value === "string" && value.length > 0 && value.length <= 128;
@@ -14,6 +15,42 @@ export function validateHttpOpening(opening, routes) {
 function validateTransport(transport, routes) {
   if (transport?.resource_manifest_version !== 1 || transport.terminal !== "webrtc" || transport.durable_events !== false) throw httpFailure("unsupported");
   if (!Array.isArray(transport.operation_ids) || !routes.operationIds().every((id) => transport.operation_ids.includes(id))) throw httpFailure("unsupported");
+}
+
+const protocolToken = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u;
+
+export function terminalWebSocketMode(opening) {
+  if (!Object.hasOwn(opening.transport, "terminal_websocket")) return "webrtc";
+  const descriptor = opening.transport.terminal_websocket;
+  if (!validTerminalDescriptor(descriptor)) return "protocol_error";
+  if (descriptor.version > 1) return descriptor.protocol === TERMINAL_PROTOCOL ? "protocol_error" : "webrtc";
+  return supportsTerminalV1(opening.greeting, descriptor.protocol) ? "wss" : "protocol_error";
+}
+
+function validTerminalDescriptor(descriptor) {
+  return Number.isSafeInteger(descriptor?.version) && descriptor.version >= 1
+    && typeof descriptor.protocol === "string" && protocolToken.test(descriptor.protocol);
+}
+
+function supportsTerminalV1(greeting, protocol) {
+  return protocol === TERMINAL_PROTOCOL && Array.isArray(greeting?.capabilities) && greeting.capabilities.includes("term.websocket");
+}
+
+function terminalAccess({ endpoint, opening, bridgeEpoch, current, closeListeners }) {
+  const advertised = terminalWebSocketMode(opening);
+  const terminalTransport = advertised === "wss" && typeof endpoint.openTerminal !== "function" ? "webrtc" : advertised;
+  const terminal = new AbortController();
+  const retire = () => terminal.abort(httpFailure("scope_ended"));
+  const stopWatching = bridgeEpoch.onChange(retire);
+  closeListeners.add(() => { stopWatching(); retire(); });
+  return {
+    terminalTransport,
+    async openTerminal({ signal } = {}) {
+      if (!current() || terminal.signal.aborted) throw httpFailure("scope_ended");
+      if (terminalTransport !== "wss") throw httpFailure(terminalTransport === "protocol_error" ? "protocol" : "unsupported");
+      return endpoint.openTerminal(opening, { signal: signal ? AbortSignal.any([terminal.signal, signal]) : terminal.signal });
+    },
+  };
 }
 
 const validHello = (data, opening) => data?.durable === false && data.recovery === "current_state_refresh"
@@ -145,7 +182,8 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
   };
 
   return {
-    deviceId: endpoint.identity.deviceId, sessionId: opening.session_id, transport: "http", terminalTransport: "webrtc",
+    deviceId: endpoint.identity.deviceId, sessionId: opening.session_id, transport: "http",
+    ...terminalAccess({ endpoint, opening, bridgeEpoch, current, closeListeners }),
     bridgeEpoch, rawCall,
     allowRefresh: refreshRelease,
     onClose(fn) { if (closed) fn(); else closeListeners.add(fn); return () => closeListeners.delete(fn); },

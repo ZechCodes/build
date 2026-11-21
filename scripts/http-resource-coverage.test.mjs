@@ -250,19 +250,25 @@ const metadataUses = {
   "push.js": [
     ["build.push.open","const PUSH_OPEN_MESSAGE = [\"build.push.open\"] ; const APP_PATH","775dbce78b514f4ccd8decfa36d864808fefb900917354d36bef33db28eaca43"],
   ],
-  "terminal/session.js": [
-    // Push types consumed by the shared RTC and WSS terminal panes.
-    ["term.reset",". type === [\"term.reset\"] ) ; const","dc09584635c1047f054ad6cc510c13e5f0ffd909239488c288e645a9834bedf7"],
-    ["term.reset",". type === [\"term.reset\"] ? 0 :","2940578e82dbf97376c6c68895a43159cb35ff0dcd0fa3dfabb0981a57ca7f81"],
-    ["term.reset",". type === [\"term.reset\"] ? resets :","9de3d07719f5d094e3a07349462f2aca8e6cb3baa98fa21111b2837aa54701bc"],
-    ["term.reset",". type === [\"term.reset\"] , data :","229f24afbd15efb19f09730a3a3e6bbba7d3e41e57972966e82bb139fbe6cab5"],
+  "terminal/paneSession.js": [
+    // Shared terminal push demultiplexing and agent rekeying.
     ["term.reset",". type !== [\"term.reset\"] || ! String","acb5b711da517a30b3c58819241e4b7fefc6e9d142028279c693847679d2b0d9"],
     ["term.output",". type !== [\"term.output\"] && p .","b7ac576602b69e7788b3d349fd7c88e92346daa2fb481d0058be97d6ca8008a5"],
     ["term.reset",". type !== [\"term.reset\"] ) return ;","b7ac576602b69e7788b3d349fd7c88e92346daa2fb481d0058be97d6ca8008a5"],
     ["term.output",". type === [\"term.output\"] || p .","f4876e4363a4c0a5fbffd167f2dd0daa9177bba4ec417a59fc96309aa33bace6"],
     ["term.reset",". type === [\"term.reset\"] ) { this","f4876e4363a4c0a5fbffd167f2dd0daa9177bba4ec417a59fc96309aa33bace6"],
     ["term.closed",". type === [\"term.closed\"] ) { if","0bd0e815159a22798b5a7c99442bf8e7596f328b4d9443124b96dd5dc3be6ba9"],
+  ],
+  "terminal/session.js": [
+    // RTC terminal output is a push; terminal RPCs use the encrypted session.
     ["term.output",". type === [\"term.output\"] ) { if","9aa1852b013ca56082b3454c84b3560ff2558175c47ce2ee121d718508278425"],
+  ],
+  "terminal/webSocketSession.js": [
+    // WSS reset frames are admitted separately from ordinary output.
+    ["term.reset",". type === [\"term.reset\"] ) ; const","dc09584635c1047f054ad6cc510c13e5f0ffd909239488c288e645a9834bedf7"],
+    ["term.reset",". type === [\"term.reset\"] ? 0 :","2940578e82dbf97376c6c68895a43159cb35ff0dcd0fa3dfabb0981a57ca7f81"],
+    ["term.reset",". type === [\"term.reset\"] ? resets :","9de3d07719f5d094e3a07349462f2aca8e6cb3baa98fa21111b2837aa54701bc"],
+    ["term.reset",". type === [\"term.reset\"] , data :","0990afb19f0e23edb40e9af1cce667ec6168443b4ffd00524c25bf02f39c0b8c"],
   ],
   "core/writeOperationProgress.js": [
     // Exact capability lookup; this literal is never a method producer.
@@ -505,9 +511,11 @@ const sourceFingerprintParts = {
   "sheets/sourceSyncControls.js": ["49045a5b", "1fd03d03", "c9e574df", "020f32ea", "5d64bdd0", "3ab970b7", "1c98dee9", "cb20c875"],
   // #997 workspaceSettings.js:292: the existing project.list catalog loader delegates to owned device recovery.
   "sheets/workspaceSettings.js": ["5cc470f0", "7f95fc28", "02c7bfb0", "478c4510", "e33b5183", "1e6be057", "6928f74b", "82185347"],
-  "terminal/manager.js": ["1d91577b", "cda3c208", "0da5a71d", "bcddfd3d", "027b54b9", "b5c7b84c", "b24fdebf", "c04a751b"],
-  "terminal/session.js": ["a374f1e7", "d94bd259", "5f9cadff", "eccb065a", "bcc9ad58", "6ad2481f", "03f2c811", "6b1014ef"],
+  "terminal/manager.js": ["7a1131c9", "bcdc852d", "85b2e194", "bfafdea3", "f7860398", "5791771b", "7cd93d1f", "75544a65"],
+  "terminal/paneSession.js": ["9032c84e", "4ff6e373", "b12e41d2", "5784c3a5", "1de237ef", "dcd353c8", "1a82439c", "269a6bbb"],
+  "terminal/session.js": ["9243910d", "807bb2d7", "f42ae6b3", "8d16a483", "056ccbea", "7717cf1b", "1211a1f7", "2a85b224"],
   "terminal/webSocketBinding.js": ["9f2b52e4", "9cf296e0", "326f3cd5", "47f88071", "d9b7806f", "5009609e", "089b584f", "bb4e1f73"],
+  "terminal/webSocketSession.js": ["074e74a8", "681ae969", "c069af3a", "7cc04944", "971a214a", "46caabc6", "114be171", "75cf97df"],
   "views/archive.js": ["6f4a7962", "88f34292", "73eafead", "5dc6229b", "5b040b7a", "09baf137", "8cbbce83", "6c83d400"],
   "views/branchView.js": ["70c29ffd", "bb5b3d73", "5e035b0d", "db7630f9", "db5f60e3", "05e6694e", "84d8115f", "5eb5b72c"],
   // #997 deviceProjects.js:82: the existing project.list loader delegates to owned device recovery.
@@ -834,27 +842,33 @@ const dynamicSites = {
     "context . rpc ( method )",
     "projectTerminalRpc ( method )"
   ],
+  "terminal/paneSession.js": [
+    // The terminal manager supplies the scoped call adapter.
+    "call ( method )"
+  ],
   "terminal/session.js": [
-    // RTC keeps its terminal RPC. WSS effects and attach calls use the frozen terminal allowlist.
+    // RTC uses the encrypted terminal RPC session.
     "_call ( method )",
     "_userCall ( method )",
-    "_webSocket . call ( attempt . carrier )",
-    "_webSocket ?. call ( attempt . carrier )",
-    "binding . call ( attempt . carrier )",
-    "binding . call ( carrier )",
-    "call ( method )",
     "createSessionRpc ( { transport : this . transport , sessionId , sessionKeyB64 , deviceId , bridgeEpoch , noCarrier : ( ) => new TerminalSocketLost ( this . _closed ? \"closed\" : \"disconnected\" ) , } )",
     "rpc . call ( method )",
     "this . _call ( verb )",
-    "this . _userTerminalRpc ( deviceId )",
-    "this . _userTerminalRpc ( deviceId )",
-    "this . _userTerminalRpc ( entry . deviceId )",
     "this . _userTerminalRpc ( this . deviceId )"
   ],
   "terminal/webSocketBinding.js": [
     // The carrier validates the WSS method allowlist.
     "call ( carrier )",
     "carrier . call ( method )"
+  ],
+  "terminal/webSocketSession.js": [
+    // Interactive calls use the WSS allowlist. The pane roster uses REST.
+    "_binding . call ( attempt . carrier )",
+    "_binding ?. call ( attempt . carrier )",
+    "binding . call ( attempt . carrier )",
+    "binding . call ( carrier )",
+    "this . _userTerminalRpc ( deviceId )",
+    "this . _userTerminalRpc ( deviceId )",
+    "this . _userTerminalRpc ( entry . deviceId )"
   ],
   "views/deviceProjects.js": [
     "creationCall ( chosenId )"

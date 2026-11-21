@@ -83,7 +83,8 @@ const settle = async () => {
 /** The one socket the manager owns, as if its session were already on
  *  `deviceId`, with its records cleared. */
 function socketOn() {
-  const socket = terminalManager();
+  terminalManager();
+  const socket = sockets.at(-1);
   socket.adopted.length = 0;
   socket.adoptedWith.length = 0;
   socket.carriers.length = 0;

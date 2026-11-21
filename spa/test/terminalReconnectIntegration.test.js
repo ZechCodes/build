@@ -128,6 +128,43 @@ describe("terminal session handoff after a bridge restart", () => {
     } finally { stop(); clearTerminalPeerLinks(); resetTerminalManager(); }
   });
 
+  it("transfers a mounted pane and its disposer when the selected device changes from RTC to WSS", async () => {
+    const rtc = answeringCarrier("rtc", {
+      resultFor: (method) => method === "term.attach" ? { snapshot: btoa("rtc"), cursor: 3 } : {},
+    });
+    const context = { deviceId: "dev-a", call: async () => ({}), peerLink: { term: rtc } };
+    contexts.set(context.deviceId, context);
+    configureTerminalPeerLinks({ isCurrent: (value) => contexts.get(value.deviceId) === value });
+    provideTerminalSessions(async (deviceId) => ({
+      deviceId, sessionId: "rtc", bridgeEpoch: transportEpoch(), sessionKeyB64: "rtc-key",
+    }));
+    const socket = terminalManager();
+    const screen = vi.fn();
+    const registered = vi.fn();
+    try {
+      await socket.attachTerminal("term", { onSnapshot: screen, onRegistered: registered });
+      const carrier = {
+        call: vi.fn(async (method, params, options) => {
+          if (method !== "term.attach") return {};
+          options.onAttachId("attach-id");
+          return { term_id: params.term_id, snapshot: btoa("wss"), cursor: 3 };
+        }),
+        onPush: () => () => {}, onClose: () => () => {},
+        close: vi.fn(), detach: vi.fn(),
+      };
+      context.session = { transport: "http", terminalTransport: "wss", openTerminal: async () => carrier };
+      followTerminalDevice();
+      await vi.waitFor(() => expect(screen).toHaveBeenCalledTimes(2));
+      expect(terminalManager()).toBe(socket);
+
+      await socket.input("term", "x");
+      expect(carrier.call).toHaveBeenCalledWith("term.input", { term_id: "term", data: "eA==" }, expect.any(Object));
+      registered.mock.calls[0][0]();
+      expect(carrier.detach).toHaveBeenCalledExactlyOnceWith("attach-id");
+      expect(carrier.close).toHaveBeenCalledOnce();
+    } finally { resetTerminalManager(); clearTerminalPeerLinks(); }
+  });
+
   it("automatically remints and reattaches after an authoritative epoch change on the same channel", async () => {
     vi.useFakeTimers();
     const epoch = createBridgeEpoch();
@@ -594,7 +631,7 @@ it("guards project source reattach against a downgraded app greeting on the repl
     context.terminalSupport = false;
     registry.adoptBridgeSelection(context, { version: "3.20.0" }, {});
     followTerminalDevice({ freshSession: true });
-    await vi.waitFor(() => expect(socket._connected).toBe(true));
+    await socket.whenConnected();
     expect(replacement.sent.filter((frame) => frame.frameFields.payload.method === "term.attach")).toEqual([]);
     expect(appSession.call).not.toHaveBeenCalled();
   } finally {

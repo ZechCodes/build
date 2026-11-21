@@ -8,15 +8,14 @@ import { homeDeviceId } from "../core/devicePolicy.js";
 import { canAnswer, contextFor } from "../core/deviceContexts.js";
 import { createTerminalFollowController } from "./followController.js";
 import { TerminalSocket } from "./session.js";
+import { WebSocketTerminalSession } from "./webSocketSession.js";
 import { isProjectTerminalScope, projectTerminalRpc } from "../core/projectTerminalRpc.js";
 import { directoryCacheId } from "../core/directoryScope.js";
 import { mergeCachedRecordsTogether, readCached, recordWriteOf } from "../core/localCache.js";
 import { createStatusHub } from "./statusHub.js";
 import { terminalPeerLink, terminalWebSocketOwner } from "../core/terminalPeerLinks.js";
 
-let socket = null;
-let followController = null;
-let webSocketDevice = null;
+let manager = null;
 
 /** How a terminal session is minted on one device — through that device's
  *  rendezvous, which the connection layer owns. Until it is provided, nothing
@@ -88,50 +87,90 @@ async function refreshTerminalRoster(deviceId, scope, entityId = directoryCacheI
     stands() && recordWriteOf(record) === before ? [{ tabs: result.terminals || [] }] : null);
 }
 
-export function terminalManager() {
-  if (!socket) {
-    // A terminal session that stopped answering on a wire the peer is still
-    // carrying is a session to re-establish, not a connection to tear down:
-    // the shells come back on the same channel, and the app session beside
-    // them never hears about it.
-    const created = new TerminalSocket({
-      transport,
-      userTerminalDevice: terminalDeviceId,
-      userTerminalRpc: scopedTerminalCall,
-      rosterCall: (deviceId, method, params) => contextFor(deviceId).rpc(method, params),
-      onUncertainRoster: refreshTerminalRoster,
-      onTermUnresponsive: () => followTerminalDevice({ freshSession: true }),
-    });
-    socket = created;
-    created.onStatus((status) => {
-      if (socket === created) statusHub.set(status);
-    });
-    followController = createFollowController(created);
-    // A session on the device the shells are to type at, and the channel that
-    // device's peer link is already carrying, if it has one. Until both are
-    // there the panes are shown connecting, which is what they are.
-    followTerminalDevice();
-  }
-  return socket;
+// Panes retain this interface while the manager follows a different transport.
+function terminalActions(session) {
+  return {
+    get deviceId() { return session().deviceId; },
+    whenConnected: (...args) => session().whenConnected(...args),
+    listTerminals: (...args) => session().listTerminals(...args),
+    createTerminal: (...args) => session().createTerminal(...args),
+    closeTerminal: (...args) => session().closeTerminal(...args),
+    attachTerminal: (...args) => session().attachTerminal(...args),
+    attachAgent: (...args) => session().attachAgent(...args),
+    detach: (...args) => session().detach(...args),
+    input: (...args) => session().input(...args),
+    resize: (...args) => session().resize(...args),
+  };
 }
 
-/**
- * Ride this device's `term` channel from now on, or `null` for "there is no
- * wire". The device's peer link owns both channels, so this is how the terminal
- * stream learns that its half is open — and, when the peer path goes, that
- * there is nothing left to type down (rule 2: no relay fallback).
- *
- * `session` is that same device's freshly minted terminal session when the wire
- * comes with one, which is what a move to another machine is. The two go over
- * together on purpose: a socket given the session and left to pick its own wire
- * picks the one it is already riding, which is the machine the shells just
- * left.
- *
- * Nothing is watched here. "The two channels are one connection and go
- * together" is written in `connection.js`, which hears each channel's close and
- * hands both streams back at once; a second listener on the same carrier would
- * run that fallback twice, through two owners of one fact.
- */
+function createTerminalManager() {
+  const rtc = new TerminalSocket({
+    transport,
+    userTerminalDevice: terminalDeviceId,
+    userTerminalRpc: scopedTerminalCall,
+    onTermUnresponsive: () => followTerminalDevice({ freshSession: true }),
+  });
+  const rtcFollow = createFollowController(rtc);
+  let active = rtc;
+
+  function observe(session) {
+    session.onStatus((status) => {
+      if (manager === owned && active === session) statusHub.set(status);
+    });
+  }
+
+  function followWithWebSocket(context, deviceId) {
+    const owner = terminalWebSocketOwner(context);
+    const retain = active !== rtc && active.deviceId === deviceId && !context?.session;
+    if (!owner && !retain) return false;
+    if (active === rtc) {
+      rtcFollow.reset();
+      active = new WebSocketTerminalSession({
+        userTerminalDevice: terminalDeviceId,
+        userTerminalRpc: scopedTerminalCall,
+        rosterCall: (id, method, params) => contextFor(id).rpc(method, params),
+        onUncertainRoster: refreshTerminalRoster,
+        panes: rtc.takePanesForDevice(deviceId),
+      });
+      observe(active);
+    }
+    active.follow(deviceId, owner);
+    return true;
+  }
+
+  function followWithRtc(target) {
+    if (active !== rtc) {
+      active.close();
+      active = rtc;
+    }
+    return rtcFollow.request(target);
+  }
+
+  const owned = {
+    terminals: terminalActions(() => active),
+    followWithWebSocket,
+    followWithRtc,
+    close() {
+      try {
+        rtcFollow.reset();
+        if (active !== rtc) active.close();
+      } finally {
+        rtc.close();
+      }
+    },
+  };
+  observe(rtc);
+  return owned;
+}
+
+export function terminalManager() {
+  if (!manager) {
+    manager = createTerminalManager();
+    followTerminalDevice();
+  }
+  return manager.terminals;
+}
+
 /** The exact terminal peer owner for this machine. HTTP app sessions acquire
  * their independent RTC parent lazily; ordinary RTC sessions reuse their peer. */
 const peerLinkOf = (deviceId) => terminalPeerLink(contextFor(deviceId));
@@ -176,10 +215,10 @@ export function followTerminalDevice({ freshSession = false } = {}) {
   const deviceId = terminalDeviceId();
   const context = contextFor(deviceId);
   const answerable = canAnswer(context);
-  if (!socket) return answerable;
-  if (followWebSocket(context, deviceId)) return answerable;
+  if (!manager) return answerable;
+  if (manager.followWithWebSocket(context, deviceId)) return answerable;
   const peerLink = terminalPeerLink(context);
-  return followController.request({
+  return manager.followWithRtc({
     deviceId,
     context,
     peerLink,
@@ -190,32 +229,10 @@ export function followTerminalDevice({ freshSession = false } = {}) {
   });
 }
 
-function followWebSocket(context, deviceId) {
-  const owner = terminalWebSocketOwner(context);
-  if (owner || (webSocketDevice && webSocketDevice === deviceId && !context?.session)) {
-    if (!webSocketDevice) followController.reset();
-    webSocketDevice = deviceId;
-    socket.followWebSocket(deviceId, owner);
-    return true;
-  }
-  if (webSocketDevice) {
-    webSocketDevice = null;
-    socket.followWebSocket(null, null);
-  }
-  return false;
-}
-
 /** Invalidate the old account before its device teardown can re-enter follow. */
 export function resetTerminalManager() {
-  const previousController = followController;
-  const previous = socket;
-  socket = null;
-  followController = null;
-  webSocketDevice = null;
+  const previous = manager;
+  manager = null;
   statusHub.clear();
-  try {
-    previousController?.reset();
-  } finally {
-    previous?.close();
-  }
+  previous?.close();
 }

@@ -6,7 +6,10 @@ const status = vi.hoisted(() => ({ current: "disconnected", listener: null }));
 vi.mock("../src/terminal/manager.js", () => ({
   terminalDeviceId: () => "device",
   terminalManager: () => ({}),
-  subscribeTerminalStatus(listener) {
+  followTerminalDevice: () => {},
+  resetTerminalManager: () => {},
+  provideTerminalSessions: () => {},
+  subscribeTerminalStatus: (listener) => {
     status.listener = listener;
     listener(status.current);
     return () => { status.listener = null; };

@@ -515,6 +515,7 @@ impl DeferredReset {
         let snapshot = screen.wss_snapshot();
         let client = &mut screen.attached[index];
         let Ok(data) = snapshot else {
+            // The WSS sink supplies the original attach ID and the wire reason.
             client.sender.push(json!({"type":"attachment_error"}));
             screen.attached.remove(index);
             return;

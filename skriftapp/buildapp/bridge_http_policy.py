@@ -7,6 +7,7 @@ header. Origins are permission to attempt discovery, never device authority.
 from __future__ import annotations
 
 from datetime import datetime
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from litestar import Request
@@ -26,22 +27,32 @@ MAX_DOCUMENT_ENDPOINTS = 16
 DOCUMENT_PATHS = frozenset({"/app/", "/app", "/app/desktop"})
 
 
-def connect_policy(base: str, origins: list[str]) -> str:
-    """Append concrete origins while retaining every unrelated directive."""
+def connect_policy(base: str, origins: list[str], *, hosted_hostname: str | None) -> str:
+    """Append selected canonical HTTPS origins and explicit terminal WSS sources."""
+    # The bridge hostname must differ from the hosted app hostname for browser
+    # terminals. Host-only cookies are scoped by hostname regardless of port.
+    terminal_sources = [
+        f"wss://{endpoint.netloc}"
+        for endpoint in map(urlsplit, origins)
+        if hosted_hostname and endpoint.hostname != hosted_hostname
+    ]
+    added_sources = [*origins, *terminal_sources]
     directives = [part.strip() for part in base.split(";") if part.strip()]
     for index, directive in enumerate(directives):
         tokens = directive.split()
         if tokens[0].lower() == "connect-src":
             sources = tokens[1:]
             # 'none' only works as a sole source and cannot accompany origins.
-            if origins:
+            if added_sources:
                 sources = [source for source in sources if source != "'none'"]
-            directives[index] = " ".join([tokens[0], *dict.fromkeys([*sources, *origins])])
+            directives[index] = " ".join(
+                [tokens[0], *dict.fromkeys([*sources, *added_sources])]
+            )
             return "; ".join(directives)
     default = next((part.split()[1:] for part in directives if part.split()[0].lower() == "default-src"), ["'self'"])
-    if origins:
+    if added_sources:
         default = [source for source in default if source != "'none'"]
-    directives.append(" ".join(["connect-src", *dict.fromkeys([*default, *origins])]))
+    directives.append(" ".join(["connect-src", *dict.fromkeys([*default, *added_sources])]))
     return "; ".join(directives)
 
 
@@ -134,7 +145,8 @@ class BuildBridgeCSPMiddleware:
             if not existing and nonce:
                 base = apply_csp_nonce(base, nonce)
             headers = [(name, value) for name, value in headers if name.lower() != b"content-security-policy"]
-            headers.append((b"content-security-policy", connect_policy(base, origins).encode()))
+            policy = connect_policy(base, origins, hosted_hostname=request.url.hostname)
+            headers.append((b"content-security-policy", policy.encode()))
         headers = [(name, value) for name, value in headers if name.lower() not in {b"cache-control", b"referrer-policy"}]
         headers.extend([(b"cache-control", b"private, no-store"), (b"referrer-policy", b"no-referrer")])
         message["headers"] = headers

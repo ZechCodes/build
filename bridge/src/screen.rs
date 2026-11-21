@@ -165,6 +165,12 @@ fn packed_size(cols: u16, rows: u16) -> u32 {
     (u32::from(cols) << 16) | u32::from(rows)
 }
 
+fn is_wss(sender: &SessionSender) -> bool {
+    sender
+        .terminal_interest()
+        .is_some_and(|interest| interest.snapshots.is_some())
+}
+
 impl TermScreen {
     fn new(cols: u16, rows: u16) -> TermScreen {
         TermScreen {
@@ -263,10 +269,7 @@ impl TermScreen {
             sent_cursor: self.total,
             sent_ack: false,
             paused: false,
-            wss: sender
-                .terminal_interest()
-                .filter(|interest| interest.snapshots.is_some())
-                .map(|_| WssCredit::default()),
+            wss: is_wss(sender).then(WssCredit::default),
         });
     }
 
@@ -672,7 +675,7 @@ impl ScreenHandle {
         term_id: &str,
         sender: &SessionSender,
     ) -> Result<AttachSnapshot, SnapshotTooLarge> {
-        if sender.terminal_interest().is_none() {
+        if !is_wss(sender) {
             screen.register(term_id, sender);
             return Ok(Self::reading(screen));
         }
@@ -682,7 +685,7 @@ impl ScreenHandle {
     }
 
     fn inactive_reading(screen: &TermScreen, sender: &SessionSender) -> AttachSnapshot {
-        if sender.terminal_interest().is_some() {
+        if is_wss(sender) {
             return Self::reading_with(screen, String::new());
         }
         Self::reading(screen)

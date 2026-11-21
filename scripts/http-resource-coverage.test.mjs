@@ -178,6 +178,9 @@ const metadataUses = {
     ["build.navigation.previous","const TAB_KEY = [\"build.navigation.previous\"] ; const trackers","3206e95b6e23daf65fdc6baad67c4da1b71cd4755605050775f71e498dbdbc37"],
   ],
   "core/httpSession.js": [
+    // The Opening capability selects the terminal WSS carrier described by
+    // fixtures/api/http/terminal-websocket-v1.json.
+    ["term.websocket",". includes ( [\"term.websocket\"] ) ; }","88a2e77a5a62769a89df54e5122fa1a3c83cbd08554a2c96afe7e333d4c4ec05"],
     ["writes.confirmed","( ! [ [\"writes.confirmed\"] , \"writes.progress\" ]","f18c0c901618e0fa60c5b764429dc17bfe9267b2b04576dce46159b37451e991"],
     ["writes.progress","[ \"writes.confirmed\" , [\"writes.progress\"] ] . includes","f18c0c901618e0fa60c5b764429dc17bfe9267b2b04576dce46159b37451e991"],
   ],
@@ -214,6 +217,14 @@ const metadataUses = {
     ["files.hints","deviceId ) === [\"files.hints\"] ) { const","e1a8c5fdf46a4e625590ae2fb4e03799d5dd878b7f652502adc904229b07e8ad"],
     ["files.hints","deviceId ) !== [\"files.hints\"] ) return legacyLiveChanges","710cab5b81667a384a13f72b7d79a77d4543a5885ac47cb09183e57c2b6f8fe8"],
     ["files.hints","deviceId ) === [\"files.hints\"] ; const target","8b39c2ece19ccd6b906b88a1b2d51c6af5dde27e9d81e44392cf41cb7ebc5e49"],
+  ],
+  "core/terminalWebSocket.js": [
+    // Slice A's terminal-websocket-v1.json defines this handshake subprotocol
+    // and the three incoming terminal frame names. These uses are WSS metadata.
+    ["build.term.v1","const TERMINAL_PROTOCOL = [\"build.term.v1\"] ; const CLIENT_BYTES","5ed0baf885c80a3267047d648e7f9eb25715013e30c888266b325f65dc277aa6"],
+    ["term.output",") { case [\"term.output\"] : return validOutput","e62cedfaa6ee046ff220631a5fe19f2de7571eb0f12f14b20e655cf0e8ad0568"],
+    ["term.closed",") ; case [\"term.closed\"] : return text","facf8bbdb3882847df9165e44982914f1eb0577cbf48e742b4b594bbd71bf08c"],
+    ["term.reset",". type === [\"term.reset\"] && ! Object","a4922f24d94cb170b852e1297ea1d7a52fb7013efd8ccc7e7ccd1d03c62f8183"],
   ],
   "core/theme.js": [
     ["build.theme","const THEME_KEY = [\"build.theme\"] ; export const","b0731e85abede6f4d672fc6c2cfb60a58b3581f4a5d5f0a562805caf4fae7f29"],
@@ -363,7 +374,7 @@ const sourceFingerprintParts = {
   "core/environmentSettingsProjects.js": ["c9ca19e3", "8688e54f", "6e1b3396", "11a2c633", "08562858", "7da1d02a", "558a00e3", "84b1ebf8"],
   "core/githubRepos.js": ["4526fb16", "bfe42e0f", "57b963ea", "fe623873", "0fe9ccce", "521ecc83", "b9117e59", "af64462f"],
   "core/gitPane.js": ["3b9c66d1", "186e1669", "3ecc46b0", "0afe28d8", "10e87dd3", "55dfbb00", "44fa79f8", "88d71409"],
-  "core/httpSession.js": ["0b7b82e7", "b8028927", "c780566d", "761fc9fc", "12ca2faa", "7e626b1a", "c51ecf85", "3e85059a"],
+  "core/httpSession.js": ["d2d24aff", "7b5b1459", "d28fe426", "be959694", "f33589c3", "920bd1fe", "7d85adf9", "3eadcc6f"],
   "core/inboxCaptures.js": ["48a7f5fb", "b2132a83", "5901fb31", "4fb0c5ae", "97005297", "2d0b9db6", "be2c3e6d", "1271b663"],
   "core/inboxDevices.js": ["cd1cfdd5", "9a9734e7", "ac73df50", "cac3383d", "9b6b0229", "b72936f1", "4b2d5657", "a8586421"],
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
@@ -445,6 +456,7 @@ const sourceFingerprintParts = {
   "core/taskView.js": ["547b447a", "1b089702", "8da986a0", "97cbffed", "86cd8be0", "dfabf680", "23671d54", "6ac7ef11"],
   "core/taskWaitingOnActions.js": ["576156a7", "454cbd39", "333d8645", "9f62ff9e", "00e96c90", "55eb5f60", "441927a5", "f6cf4597"],
   "core/taskWaitingOnPage.js": ["b5a78897", "c7cfc8dc", "8a1ad2e0", "c77cad0a", "874280e0", "1b394697", "37da2547", "7a1c3636"],
+  "core/terminalWebSocket.js": ["a200d5bd", "8b792cfb", "4b43a2fb", "47c49f1c", "dc151484", "c21b92c4", "26019999", "6d7afbe2"],
   "core/theme.js": ["dcf76f3b", "8ab07b95", "96946c96", "79e73d55", "8deb90bc", "251b94d6", "5dd0aaaf", "d1e0a71f"],
   "core/threadAttachmentPages.js": ["df0b246c", "a850af5a", "c612aeac", "414feaa5", "03db6170", "9511cd9c", "372279a6", "9c417822"],
   "core/threadSync.js": ["bf280ad8", "20d158b6", "aaa4f7b9", "695d3816", "1d0200e6", "cf6756bd", "bc0e1372", "2e452737"],
@@ -768,6 +780,15 @@ const dynamicSites = {
   ],
   "core/taskWaitingOnActions.js": [
     "call ( method )"
+  ],
+  "core/terminalWebSocket.js": [
+    // Slice A's terminal-websocket-v1.json pins the exact WSS call allowlist:
+    // term.create, term.attach, term.input, term.resize, term.ack, term.close,
+    // agent.attach, and ping. The manifest already excludes the seven terminal
+    // methods and maps REST ping to GET /v1/health.
+    "call ( method )",
+    // Ticket subprotocol offer for the WSS handshake. It produces no RPC method.
+    "producer `ticket.${ticket.token}`"
   ],
   "core/trackerPages.js": [
     "ask ( asked )"

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createBridgeEpoch } from "../src/core/bridgeEpoch.js";
-import { validateHttpOpening } from "../src/core/httpSession.js";
+import { terminalWebSocketMode, validateHttpOpening } from "../src/core/httpSession.js";
 
 function readFixture(name) {
   return JSON.parse(readFileSync(new URL(`../../fixtures/api/http/${name}.json`, import.meta.url), "utf8"));
@@ -24,6 +24,7 @@ describe("terminal WebSocket v1 browser vectors", () => {
       if (Object.hasOwn(vector, "descriptor")) opening.transport.terminal_websocket = vector.descriptor;
       if (vector.capability) opening.greeting.capabilities.push(capability);
       expect(() => validateHttpOpening(opening, routes), vector.name).not.toThrow();
+      expect(terminalWebSocketMode(opening), vector.name).toBe(vector.browser);
     }
     expect(base.transport.terminal).toBe("webrtc");
     expect(cases.find(({ name }) => name === "old_bridge").browser).toBe("webrtc");

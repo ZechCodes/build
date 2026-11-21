@@ -56,6 +56,37 @@ describe("HTTP session adapter and fences", () => {
     }
   });
 
+  it("exposes lazy terminal access and fences it when the trusted epoch changes", async () => {
+    const { endpoint } = make({
+      open: vi.fn().mockResolvedValue(terminalOpening("build.term.v1")),
+      openTerminal: vi.fn().mockResolvedValue({ call: vi.fn() }),
+    });
+    const session = await open(endpoint);
+    expect(session.terminalTransport).toBe("wss");
+    expect(endpoint.openTerminal).not.toHaveBeenCalled();
+    await session.openTerminal();
+    const [held, { signal }] = endpoint.openTerminal.mock.calls[0];
+    expect(held.opening_generation).toBe(opening.opening_generation);
+    session.acceptGreeting({ ...greeting, bridge_epoch: "new-epoch" });
+    expect(signal.aborted).toBe(true);
+    await expect(session.openTerminal()).rejects.toMatchObject({ error_code: "scope_ended" });
+    session.close();
+  });
+
+  it("keeps REST available on a terminal protocol error or on an older native endpoint", async () => {
+    for (const [protocol, mode, code] of [
+      ["build.term.v1", "webrtc", "unsupported"],
+      ["Build.Term.V1", "protocol_error", "protocol"],
+    ]) {
+      const { endpoint } = make({ open: vi.fn().mockResolvedValue(terminalOpening(protocol)) });
+      const session = await open(endpoint);
+      expect(session.terminalTransport).toBe(mode);
+      await expect(session.openTerminal()).rejects.toMatchObject({ error_code: code });
+      await expect(session.rawCall("ping")).resolves.toEqual({});
+      session.close();
+    }
+  });
+
   it("waits for the stream hello, then supplies the greeting and explicit resource calls", async () => {
     const { endpoint } = make();
     const session = await open(endpoint); session.allowRefresh();
@@ -153,3 +184,10 @@ describe("HTTP session adapter and fences", () => {
     expect(endpoint.request).not.toHaveBeenCalled();
   });
 });
+
+function terminalOpening(protocol) {
+  return {
+    ...opening, greeting: { ...greeting, capabilities: [...greeting.capabilities, "term.websocket"] },
+    transport: { ...opening.transport, terminal_websocket: { version: 1, protocol } },
+  };
+}

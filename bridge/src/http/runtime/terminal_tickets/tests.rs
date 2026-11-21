@@ -75,6 +75,7 @@ async fn json_response(response: Response) -> (StatusCode, Value) {
 struct Auth {
     revoked: Arc<AtomicBool>,
     proof_age: Duration,
+    proof_ages: HashMap<&'static str, Duration>,
 }
 
 impl Auth {
@@ -97,7 +98,12 @@ impl Auth {
                 endpoint_epoch: "endpoint".into(),
                 authorization_epoch: 1,
             },
-            deadline: Instant::now() + self.proof_age,
+            deadline: Instant::now()
+                + self
+                    .proof_ages
+                    .get(bearer)
+                    .copied()
+                    .unwrap_or(self.proof_age),
             live: Arc::new(move || !follows_revocation || !live.load(Ordering::Acquire)),
             scopes: scopes.into(),
             credential_digest: Sha256::digest(bearer.as_bytes()).into(),
@@ -125,6 +131,13 @@ struct Harness {
 
 impl Harness {
     async fn new(proof_age: Duration) -> Self {
+        Self::with_proof_ages(proof_age, HashMap::new()).await
+    }
+
+    async fn with_proof_ages(
+        proof_age: Duration,
+        proof_ages: HashMap<&'static str, Duration>,
+    ) -> Self {
         let endpoint = &fixture()["endpoint"];
         let policy = HttpPolicy::new(
             string(&endpoint["bridge_https_origin"]),
@@ -141,6 +154,7 @@ impl Harness {
         let auth = Arc::new(Auth {
             revoked: Arc::default(),
             proof_age,
+            proof_ages,
         });
         let mut runtime = super::super::runtime_with(execution, auth.clone());
         runtime.state.terminal_tickets = Some(Arc::default());
@@ -196,6 +210,37 @@ impl Harness {
         .await;
         assert_eq!(status, StatusCode::CREATED);
         string(&body["ticket"]).to_owned()
+    }
+
+    async fn admit_with_pending_ticket(&self) -> (TerminalAdmission, String) {
+        let live = self.redeem(&self.issue().await, origin()).ok().unwrap();
+        let pending = self.issue().await;
+        self.assert_registry_entries(1, 1);
+        (live, pending)
+    }
+
+    fn registry(&self) -> std::sync::MutexGuard<'_, Registry> {
+        self.state()
+            .terminal_tickets
+            .as_ref()
+            .unwrap()
+            .registry
+            .lock()
+            .unwrap()
+    }
+
+    fn assert_registry_entries(&self, pending: usize, last: usize) {
+        let registry = self.registry();
+        assert_eq!(
+            registry.pending.len(),
+            pending,
+            "pending tickets in registry"
+        );
+        assert_eq!(
+            registry.last.len(),
+            last,
+            "terminal predecessors in registry"
+        );
     }
 
     async fn patch(&self, credential: &str) {
@@ -366,14 +411,13 @@ fn terminal_ticket_held_socket_cap_matches_fixture() {
 #[tokio::test]
 async fn terminal_ticket_default_gate_and_shutdown_refuse_old_tickets() {
     let mut harness = Harness::new(Duration::from_secs(30)).await;
-    let token = harness.issue().await;
-    let live = harness.redeem(&token, origin()).ok().unwrap();
-    let pending = harness.issue().await;
+    let (live, pending) = harness.admit_with_pending_ticket().await;
     assert_eq!(harness.runtime.shutdown(), 1);
     assert!(!live.is_live());
-    let restarted = Harness::new(Duration::from_secs(30)).await;
+    harness.assert_registry_entries(0, 0);
+    assert!(harness.registry().full_at.is_empty());
     assert_eq!(
-        restarted.redeem(&pending, origin()).err().unwrap().status(),
+        harness.redeem(&pending, origin()).err().unwrap().status(),
         StatusCode::UNAUTHORIZED
     );
 
@@ -737,16 +781,42 @@ async fn terminal_ticket_observed_revocation_fences_pending_and_live() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn terminal_ticket_live_admission_expires_before_its_opening() {
+    let harness = Harness::with_proof_ages(
+        Duration::from_secs(30),
+        HashMap::from([("writer", Duration::from_secs(4))]),
+    )
+    .await;
+    let live = harness
+        .redeem(&harness.issue().await, origin())
+        .ok()
+        .unwrap();
+    let lifecycle = harness.session().authorization();
+    let proof_deadline = live.deadline();
+    assert!(proof_deadline < lifecycle.deadline().unwrap());
+    assert!(live.is_live());
+    tokio::time::advance(proof_deadline.duration_since(Instant::now())).await;
+    assert!(lifecycle.is_valid());
+    assert!(live.binding().is_current());
+    assert!(
+        !live.is_live(),
+        "terminal authority must end at its own proof deadline"
+    );
+}
+
 #[tokio::test]
 async fn terminal_ticket_fully_retired_opening_requires_a_new_opening() {
     let harness = Harness::new(Duration::from_secs(30)).await;
-    let ticket = harness.issue().await;
+    let (live, ticket) = harness.admit_with_pending_ticket().await;
     let path = format!("/v1/sessions/{}", harness.session_id());
     let request = json_request("DELETE", &path, Value::Null);
     assert_eq!(
         harness.app.clone().oneshot(request).await.unwrap().status(),
         StatusCode::NO_CONTENT
     );
+    harness.assert_registry_entries(0, 0);
+    assert!(!live.is_live());
     assert_eq!(
         harness.redeem(&ticket, origin()).err().unwrap().status(),
         StatusCode::UNAUTHORIZED
@@ -758,4 +828,15 @@ async fn terminal_ticket_fully_retired_opening_requires_a_new_opening() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test(start_paused = true)]
+async fn terminal_ticket_reaped_opening_releases_registry_entries() {
+    let opening_age = Duration::from_secs(30);
+    let harness = Harness::new(opening_age).await;
+    let (live, _pending) = harness.admit_with_pending_ticket().await;
+    tokio::time::advance(opening_age).await;
+    assert_eq!(harness.state().reap_ended(), 1);
+    harness.assert_registry_entries(0, 0);
+    assert!(!live.is_live());
 }

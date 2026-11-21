@@ -72,7 +72,10 @@ async fn mounted_tls_family_budget_is_shared_with_issue_and_redemption() {
     }
     // A replenished issue bucket can no longer mask a broken listener quota.
     tokio::time::sleep(Duration::from_millis(refill)).await;
-    assert_eq!(server.issue(&extra).await.0, 429);
+    let (status_code, refusal) = server.issue(&extra).await;
+    assert_eq!(status_code, 429);
+    assert_eq!(refusal["error_code"], "overloaded");
+    assert_eq!(refusal["retryable"], true);
     let headers = server.handshake(&pending);
     assert_eq!(status(&server.upgrade(&headers).await.0), 429);
     drop(held);

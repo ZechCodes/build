@@ -28,6 +28,14 @@ async fn mounted_tls_delayed_ack_pauses_only_its_pane() {
     // Between feed and flush, the old RTC policy credits the live model
     // cursor even though the last delivered cursor is only five.
     hidden.ack(rtc.session_id(), u64::MAX);
+    let refused = call(
+        &mut socket,
+        "over-ack",
+        "term.ack",
+        json!({"term_id":"hidden","cursor":5 + flood.len()}),
+    )
+    .await;
+    assert_eq!(refused["error_code"], "invalid_params");
     hidden.flush();
     {
         let rtc_events = rtc_pushes.lock().unwrap();
@@ -48,14 +56,6 @@ async fn mounted_tls_delayed_ack_pauses_only_its_pane() {
         .unwrap();
     assert_eq!(app_pushes.load(Ordering::Relaxed), 1);
     assert_echo(&mut socket, "sibling", b"x").await;
-    let refused = call(
-        &mut socket,
-        "over-ack",
-        "term.ack",
-        json!({"term_id":"hidden","cursor":5 + flood.len()}),
-    )
-    .await;
-    assert_eq!(refused["error_code"], "invalid_params");
     send(
         &mut socket,
         "applied",
@@ -74,6 +74,47 @@ async fn mounted_tls_delayed_ack_pauses_only_its_pane() {
     assert_eq!(closed["type"], "term.closed");
     assert_eq!(closed["term_id"], "hidden");
     assert_echo(&mut socket, "sibling", b"w").await;
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn mounted_tls_wss_credit_applies_before_the_first_ack() {
+    let screen = ScreenHandle::new("credit", 80, 24);
+    let (rtc, rtc_pushes) = rtc_client();
+    screen.attach(&rtc, None);
+    let server = Server::start(screen_handler(vec![("credit", screen.clone())])).await;
+    let opening = server.opening().await;
+    let mut socket = server.socket(&server.ticket(&opening).await).await;
+    attach(&mut socket, "credit", "credit", 80, 24).await;
+
+    let chunk = vec![b'C'; 64 * 1024];
+    for index in 1..=16 {
+        screen.feed(&chunk);
+        screen.flush();
+        let output = object(&mut socket).await;
+        assert_eq!(output["type"], "term.output");
+        assert_eq!(output["cursor"], index * chunk.len());
+    }
+
+    screen.feed(&chunk);
+    screen.flush();
+    assert_eq!(
+        rtc_pushes.lock().unwrap().len(),
+        17,
+        "legacy RTC never ACKed"
+    );
+    send(&mut socket, "ping", "ping", json!({})).await;
+    assert_eq!(object(&mut socket).await["id"], "ping");
+
+    send(
+        &mut socket,
+        "resume",
+        "term.ack",
+        json!({"term_id":"credit","cursor":16 * chunk.len()}),
+    )
+    .await;
+    let reset = take_reset(&mut socket, "credit", Some("resume")).await;
+    assert_eq!(reset["cursor"], 17 * chunk.len());
     server.stop().await;
 }
 

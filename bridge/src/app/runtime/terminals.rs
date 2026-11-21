@@ -9,7 +9,7 @@ use crate::encoding::b64decode;
 use crate::execution::CallContext as SessionSender;
 use crate::models::AgentProvider;
 use crate::pty::HarnessSpec;
-use crate::screen::{AttachSnapshot, TerminalHandle};
+use crate::screen::{AttachSnapshot, SnapshotTooLarge, TerminalHandle};
 use crate::timing::FrameTimer;
 use portable_pty::PtySize;
 use serde_json::{json, Value};
@@ -33,6 +33,24 @@ pub(in crate::app) fn terminal_scope_root(
 pub(in crate::app) use scope::source_scope_requested;
 pub(in crate::app) use scope::{TermScope, TerminalScope};
 pub(crate) use scope::{MOVED_TERMINAL_SOURCE, SOURCE_SHELLS_LIVE, SOURCE_TERMINAL_BUSY};
+
+#[derive(Debug)]
+pub(in crate::app) enum TerminalAttachError {
+    Domain(String),
+    SnapshotTooLarge,
+}
+
+impl From<String> for TerminalAttachError {
+    fn from(error: String) -> Self {
+        Self::Domain(error)
+    }
+}
+
+impl From<SnapshotTooLarge> for TerminalAttachError {
+    fn from(_: SnapshotTooLarge) -> Self {
+        Self::SnapshotTooLarge
+    }
+}
 
 /// What a client is told about the tab it just attached to.
 pub(in crate::app) struct TabFacts {
@@ -259,7 +277,7 @@ pub(in crate::app) fn term_attach(
     sender: &SessionSender,
     params: &Value,
     timer: &FrameTimer,
-) -> Result<Value, String> {
+) -> Result<Value, TerminalAttachError> {
     let term_id = require_str(params, "term_id")?;
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
@@ -413,12 +431,11 @@ pub(in crate::app) fn attach_to_tab(
     sender: &SessionSender,
     cols: u16,
     rows: u16,
-) -> Result<Value, String> {
+) -> Result<Value, TerminalAttachError> {
     let viewport = attachment.facts.live.then_some((cols, rows));
     let reading = attachment
         .terminal
-        .attach_checked(&sender.for_terminal_screen(), viewport)
-        .map_err(|error| error.to_string())?;
+        .attach_checked(&sender.for_terminal_screen(), viewport)?;
     Ok(attach_view(attachment.facts, reading))
 }
 

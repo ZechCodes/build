@@ -342,10 +342,10 @@ fn screen_handler(screens: Vec<(&'static str, ScreenHandle)>) -> FrameHandler {
                 "term.attach" => {
                     let reading = match screen.attach_checked(&sender.for_terminal_screen(), None) {
                         Ok(reading) => reading,
-                        Err(error) => {
+                        Err(crate::screen::SnapshotTooLarge) => {
                             return api::reply(
                                 frame.payload["id"].clone(),
-                                Err(ApiError::from(error.to_string())),
+                                Err(ApiError::SnapshotTooLarge),
                             )
                         }
                     };

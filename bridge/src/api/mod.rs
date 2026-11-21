@@ -304,6 +304,8 @@ pub enum ApiError {
         message: String,
         details: Option<Value>,
     },
+    /// The WSS terminal snapshot exceeds the supported grid or message size.
+    SnapshotTooLarge,
     /// A refusal the handler could not name more precisely.
     Internal {
         message: String,
@@ -313,7 +315,7 @@ pub enum ApiError {
 
 impl ApiError {
     /// Every code, as a fixture may cite it.
-    pub const CODES: [&'static str; 13] = [
+    pub const CODES: [&'static str; 14] = [
         "unknown_method",
         "invalid_params",
         "not_found",
@@ -326,6 +328,7 @@ impl ApiError {
         "unavailable",
         "busy",
         "unsupported_version",
+        "snapshot_too_large",
         "internal",
     ];
 
@@ -421,6 +424,7 @@ impl ApiError {
             ApiError::Unavailable { .. } | ApiError::RetryableUnavailable { .. } => "unavailable",
             ApiError::Busy { .. } => "busy",
             ApiError::UnsupportedVersion { .. } => "unsupported_version",
+            ApiError::SnapshotTooLarge => "snapshot_too_large",
             ApiError::Internal { .. } => "internal",
         }
     }
@@ -435,6 +439,7 @@ impl ApiError {
 
     fn parts(&self) -> (&str, Option<&Value>) {
         match self {
+            ApiError::SnapshotTooLarge => ("This screen is too large to display", None),
             ApiError::UnknownMethod { message, details }
             | ApiError::InvalidParams { message, details }
             | ApiError::NotFound { message, details }
@@ -678,6 +683,7 @@ mod tests {
             ApiError::unavailable("m"),
             ApiError::busy("m"),
             ApiError::unsupported_version("m"),
+            ApiError::SnapshotTooLarge,
             ApiError::internal("m"),
         ];
         assert_eq!(errors.len(), ApiError::CODES.len());

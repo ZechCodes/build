@@ -172,3 +172,39 @@ fn control_item_limit_falls_back_to_the_ordinary_lane() {
         QUEUE_ITEMS
     );
 }
+
+#[test]
+fn attach_error_text_does_not_override_its_code() {
+    let sessions = ClientSessions::new(crate::bridge_epoch::current());
+    let session = sessions
+        .open(VerifiedCaller::verified_relay("device", Opening::new()))
+        .unwrap();
+    let (socket, mut receive) = SocketSink::new();
+    let binding = sessions
+        .bind_events(&session, StreamClass::Terminal, socket.clone())
+        .unwrap();
+    socket
+        .interests
+        .lock()
+        .unwrap()
+        .begin("attach".into(), Method::Attach, None)
+        .unwrap();
+    let request = sessions
+        .request_for_stream(
+            &session,
+            StreamClass::Terminal,
+            socket.reply("attach".into(), Method::Attach),
+            Some(&binding),
+        )
+        .unwrap();
+
+    let reply = crate::api::reply(
+        json!("attach"),
+        Err(ApiError::invalid_params(
+            "This screen is too large to display",
+        )),
+    );
+    request.reply().send(reply).unwrap();
+    let reply: Value = serde_json::from_slice(&receive.try_recv().unwrap().bytes).unwrap();
+    assert_eq!(reply["error_code"], "invalid_params");
+}

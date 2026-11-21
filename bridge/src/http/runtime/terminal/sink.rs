@@ -13,7 +13,6 @@ use crate::{
         DeliveryError, EncodedEvent, EventSink, OutputFence, ReplySink, TerminalInterest,
         TerminalInterestState, TerminalSnapshotReservation,
     },
-    screen::SNAPSHOT_TOO_LARGE_MESSAGE,
 };
 
 use super::{interests::Interests, refusal_bytes, wire::Method};
@@ -25,7 +24,6 @@ const ORDINARY_QUEUE_BYTES: usize = 2 * 1024 * 1024;
 const QUEUE_ITEMS: usize = 128;
 const CONTROL_BYTES: usize = 8 * 1024;
 const CONTROL_ITEMS: usize = 8;
-const SNAPSHOT_TOO_LARGE: &str = "snapshot_too_large";
 
 pub(super) struct SocketSink {
     queue: mpsc::Sender<Outbound>,
@@ -88,19 +86,6 @@ impl Outbound {
 
 fn superseded_refusal(id: &str) -> Arc<[u8]> {
     refusal_bytes(id, ApiError::busy("Terminal attachment was superseded")).into()
-}
-
-fn snapshot_refusal(id: &str) -> Arc<[u8]> {
-    serde_json::to_vec(&json!({
-        "id": id,
-        "ok": false,
-        "error": SNAPSHOT_TOO_LARGE_MESSAGE,
-        "error_code": SNAPSHOT_TOO_LARGE,
-        "retryable": false,
-        "bridge_epoch": crate::bridge_epoch::current(),
-    }))
-    .expect("terminal refusal serializes")
-    .into()
 }
 
 impl SocketSink {
@@ -235,7 +220,7 @@ impl SocketSink {
         let bytes = serde_json::to_vec(&json!({
             "type": "attachment_error",
             "attach_id": id,
-            "reason": SNAPSHOT_TOO_LARGE,
+            "reason": ApiError::SnapshotTooLarge.code(),
             "bridge_epoch": crate::bridge_epoch::current(),
         }))
         .expect("attachment control serializes");
@@ -396,8 +381,7 @@ impl CallSink {
         let payload = event.payload();
         let data = snapshot_data_bytes(payload, Some(self.method));
         let class = payload_class(event.bytes().len(), data);
-        let too_large =
-            (data.is_some() && class.is_none()) || payload["error"] == SNAPSHOT_TOO_LARGE_MESSAGE;
+        let too_large = data.is_some() && class.is_none();
         if class.is_none() && !too_large {
             self.socket.fail(CloseCode::Size);
             return Ok(());
@@ -415,7 +399,7 @@ impl CallSink {
         let control = attachment.is_none();
         if control {
             if too_large {
-                bytes = snapshot_refusal(&self.id);
+                bytes = refusal_bytes(&self.id, ApiError::SnapshotTooLarge).into();
             }
             snapshot = None;
         }

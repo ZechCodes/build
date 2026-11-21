@@ -147,10 +147,7 @@ const WSS_MAX_ROWS: u64 = 256;
 const WSS_MAX_CELLS: usize = 65_536;
 // vt100 0.15.2: cell contents, SGR and positioning, plus row/screen overhead.
 const WSS_MAX_RAW_SNAPSHOT: usize = 128 * WSS_MAX_CELLS + 2048 * WSS_MAX_ROWS as usize + 4096;
-pub(crate) const SNAPSHOT_TOO_LARGE_MESSAGE: &str = "This screen is too large to display";
-
-#[derive(Debug, thiserror::Error)]
-#[error("{SNAPSHOT_TOO_LARGE_MESSAGE}")]
+#[derive(Debug)]
 pub(crate) struct SnapshotTooLarge;
 
 pub(crate) fn wss_grid_supported(cols: u64, rows: u64) -> bool {

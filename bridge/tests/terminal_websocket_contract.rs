@@ -54,6 +54,14 @@ fn binary_rpc_and_terminal_events_use_the_existing_envelopes() {
         }
         if let Some(method) = payload["method"].as_str() {
             assert!(allowed.contains(&json!(method)));
+            let fields = contract["wire"]["params_fields"][method]
+                .as_array()
+                .unwrap();
+            assert!(payload["params"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .all(|key| fields.contains(&json!(key))));
             Invocation::decode(method, &payload["params"]).unwrap();
         }
     }
@@ -67,12 +75,25 @@ fn binary_rpc_and_terminal_events_use_the_existing_envelopes() {
     );
     assert_wire(&messages["attach_ok"], epoch, expected);
     let expected = reply(
+        json!("attach-2"),
+        Ok(json!({
+            "term_id":"agent:agent-1","live":true,"provider":"codex","snapshot":STANDARD.encode(b"\x1b[2J\x1b[HHi"),
+            "cursor":9,"cols":120,"rows":40
+        })),
+    );
+    assert_wire(&messages["agent_attach_ok"], epoch, expected);
+    let expected = reply(
         json!("input-2"),
         Err(ApiError::invalid_params("Invalid terminal input")),
     );
     assert_wire(&messages["invalid_input"], epoch, expected);
     let expected = reply(json!("list-1"), Err(ApiError::unknown_method("term.list")));
     assert_wire(&messages["rejected_method"], epoch, expected);
+    let expected = reply(
+        json!("ping-2"),
+        Err(ApiError::busy("Terminal request limit reached")),
+    );
+    assert_wire(&messages["busy"], epoch, expected);
     assert_wire(
         &messages["output"],
         epoch,
@@ -94,7 +115,17 @@ fn binary_rpc_and_terminal_events_use_the_existing_envelopes() {
             "term_id": "term-1", "type": "term.closed", "reason": "closed"
         }),
     );
-    assert_eq!(wire(&messages["oversized_attach"])["retryable"], false);
+    assert_wire(
+        &messages["agent_session_ended"],
+        epoch,
+        json!({"term_id":"agent:agent-1","type":"term.closed","reason":"agent_session_ended"}),
+    );
+    assert_wire(
+        &messages["oversized_attach"],
+        epoch,
+        json!({"id":"attach-3","ok":false,"error":"This screen is too large to display",
+               "error_code":"snapshot_too_large","retryable":false}),
+    );
     assert_eq!(wire(&messages["attachment_error"])["attach_id"], "attach-1");
     assert_eq!(
         wire(&messages["attachment_error"])["reason"],
@@ -119,6 +150,23 @@ fn ticket_token(token: &str) -> bool {
         && URL_SAFE_NO_PAD
             .decode(token)
             .is_ok_and(|raw| raw.len() == 32 && URL_SAFE_NO_PAD.encode(raw) == token)
+}
+
+fn offer_status(tokens: &[&str], protocol: &str) -> u16 {
+    match tokens {
+        [only] if *only == protocol => 401,
+        [first, second] if *first == protocol => ticket_offer_status(second),
+        [first, second] if *second == protocol => ticket_offer_status(first),
+        _ => 400,
+    }
+}
+
+fn ticket_offer_status(token: &str) -> u16 {
+    match token.strip_prefix("ticket.") {
+        Some(suffix) if ticket_token(suffix) => 101,
+        Some(_) => 401,
+        None => 400,
+    }
 }
 
 #[test]
@@ -150,13 +198,9 @@ fn upgrade_offers_have_one_protocol_and_one_canonical_ticket() {
             .iter()
             .map(string)
             .collect();
-        let tickets = tokens
-            .iter()
-            .filter_map(|token| token.strip_prefix("ticket."));
-        let accepted = tokens.len() == 2
-            && tokens.contains(&protocol)
-            && tickets.filter(|token| ticket_token(token)).count() == 1;
-        assert_eq!(case["accepted"], accepted, "{}", case["name"]);
+        let status = offer_status(&tokens, protocol);
+        assert_eq!(case["status"], status, "{}", case["name"]);
+        assert_eq!(case["accepted"], status == 101, "{}", case["name"]);
     }
     let issue = &contract["ticket"];
     assert_eq!(issue["path"], "/v1/terminal-tickets");
@@ -183,6 +227,101 @@ fn upgrade_offers_have_one_protocol_and_one_canonical_ticket() {
             ticket_deadline.min(parse(&case["proof_deadline"]))
         );
     }
+}
+
+#[test]
+fn ticket_post_requires_one_explicit_allowed_origin() {
+    let contract = fixture();
+    let ticket = &contract["ticket"];
+    let allowed = contract["endpoint"]["allowed_caller_origins"]
+        .as_array()
+        .unwrap();
+    assert!(allowed.contains(&ticket["request"]["headers"]["origin"]));
+    for (name, status) in [
+        ("no_origin", 403),
+        ("null_origin", 403),
+        ("duplicate_origin", 403),
+        ("mismatched_origin", 403),
+        ("exact_origin", 201),
+        ("other_allowed_origin", 201),
+    ] {
+        let case = named(&ticket["origin_cases"], name);
+        let values = case["values"].as_array().unwrap();
+        let accepted = matches!(values.as_slice(), [origin] if allowed.contains(origin));
+        assert_eq!(case["status"], status, "{name}");
+        assert_eq!(accepted, status == 201, "{name}");
+        if accepted {
+            assert_eq!(case["bound_origin"], values[0]);
+        } else {
+            assert_eq!(case["refusal"], "origin_forbidden");
+        }
+    }
+    let policy = &contract["endpoint"]["policy_refusals"];
+    for (code, status) in [("origin_forbidden", 403), ("authority_mismatch", 421)] {
+        let refusal = &policy[code];
+        assert_eq!(refusal["status"], status);
+        assert_eq!(
+            refusal["body"],
+            json!({
+                "error":"HTTP request policy refused","error_code":code,"retryable":false,
+                "request_id":"{{request_id}}"
+            })
+        );
+    }
+    let upgrade_cases = &contract["handshake"]["invalid_requests"];
+    for case in [
+        "no_origin",
+        "null_origin",
+        "duplicate_origin",
+        "other_allowed_origin",
+    ] {
+        let refused = named(upgrade_cases, case);
+        assert_eq!(refused["refusal"], "origin_forbidden");
+        assert_eq!(refused["status"], policy["origin_forbidden"]["status"]);
+    }
+    assert_eq!(
+        named(upgrade_cases, "wrong_port")["refusal"],
+        "authority_mismatch"
+    );
+    assert_eq!(
+        named(&ticket["invalid_requests"], "wrong_port")["refusal"],
+        "authority_mismatch"
+    );
+}
+
+#[test]
+fn ticket_issue_cases_distinguish_pending_capacity_replacement_and_rate() {
+    let contract = fixture();
+    let limits = &contract["limits"]["tickets"];
+    assert_eq!(limits["pending_opening"], 1);
+    for case in contract["ticket"]["issue_cases"].as_array().unwrap() {
+        let supersedes = case["pending_opening"] == 1;
+        let room = supersedes
+            || (number(&case["pending_family"]) < number(&limits["pending_family"])
+                && number(&case["pending_global"]) < number(&limits["pending_global"]));
+        let refills = number(&case["elapsed_ms"]) / number(&limits["issue_refill_interval_ms"]);
+        let has_credit = number(&case["prior_issues"])
+            < number(&limits["issue_burst_per_family"])
+                + refills * number(&limits["issue_refill_count"]);
+        let admitted = room && has_credit;
+        assert_eq!(
+            case["status"],
+            if admitted { 201 } else { 429 },
+            "{}",
+            case["name"]
+        );
+        assert_eq!(
+            case["superseded_previous"],
+            admitted && supersedes,
+            "{}",
+            case["name"]
+        );
+    }
+    let replaced = named(
+        &contract["ticket"]["issue_cases"],
+        "replace_at_pending_caps",
+    );
+    assert_eq!(replaced["previous_ticket_redemption_status"], 401);
 }
 
 fn http_token(value: &Value) -> bool {
@@ -307,6 +446,33 @@ fn invalid_binary_vectors_cover_parser_and_admission_boundaries() {
 }
 
 #[test]
+fn authority_in_params_is_a_correlated_refusal_without_socket_close() {
+    let contract = fixture();
+    let invalid = &contract["invalid_messages"];
+    let case = named(invalid, "caller_authority_in_params");
+    let request = wire(case);
+    let fields = contract["wire"]["params_fields"]["term.attach"]
+        .as_array()
+        .unwrap();
+    assert!(fields.contains(&json!("term_id")));
+    assert!(!fields.contains(&json!("session_id")));
+    assert!(request["params"]["session_id"].is_string());
+    assert_eq!(case["dispatch"], false);
+    assert_eq!(case["socket_open"], true);
+    assert!(case.get("close_code").is_none());
+    assert_eq!(named(invalid, "caller_authority")["close_code"], 1002);
+    let expected = reply(
+        request["id"].clone(),
+        Err(ApiError::invalid_params("Unexpected terminal parameter")),
+    );
+    assert_wire(
+        &contract["messages"][string(&case["reply"])],
+        &contract["opening"]["base"]["greeting"]["bridge_epoch"],
+        expected,
+    );
+}
+
+#[test]
 fn only_attaches_and_resets_get_the_large_message_budget() {
     let contract = fixture();
     let limits = &contract["limits"];
@@ -395,11 +561,6 @@ fn dimensions_and_reservations_match_the_plan() {
         ),
         (16, 8, 1)
     );
-    for case in limits["socket_cases"].as_array().unwrap() {
-        let admitted = number(&case["held_family"]) < number(&sockets["held_family"])
-            && number(&case["held_listener"]) < number(&sockets["held_listener"]);
-        assert_eq!(case["admit"], admitted, "{}", case["name"]);
-    }
     let memory = &limits["bridge_reservations_bytes"];
     let ordinary = (number(&memory["inbound_per_socket"])
         + number(&memory["ordinary_outbound_per_socket"])
@@ -411,6 +572,35 @@ fn dimensions_and_reservations_match_the_plan() {
         ordinary + number(&memory["snapshot_slot"]) * number(&limits["snapshot_slots"]["bridge"])
     );
     assert_eq!(memory["total"], 224 * 1024 * 1024);
+}
+
+#[test]
+fn superseded_sockets_keep_family_and_listener_capacity_until_io_drops() {
+    let contract = fixture();
+    let sockets = &contract["limits"]["sockets"];
+    let cases = &contract["limits"]["socket_cases"];
+    let family_full = named(cases, "superseded_still_counts");
+    assert_eq!(family_full["held_family"], 7);
+    assert_eq!(family_full["held_listener"], 7);
+    assert_eq!(family_full["superseded_held_family"], 1);
+    assert_eq!(family_full["admit"], false);
+    for case in cases.as_array().unwrap() {
+        let family =
+            number(&case["held_family"]) + case["superseded_held_family"].as_u64().unwrap_or(0);
+        let listener =
+            number(&case["held_listener"]) + case["superseded_held_listener"].as_u64().unwrap_or(0);
+        let admitted = family < number(&sockets["held_family"])
+            && listener < number(&sockets["held_listener"]);
+        assert_eq!(case["admit"], admitted, "{}", case["name"]);
+        if !admitted {
+            assert_eq!(case["status"], 429);
+        }
+    }
+    assert_eq!(
+        named(cases, "superseded_listener_still_counts")["admit"],
+        false
+    );
+    assert_eq!(named(cases, "superseded_io_dropped")["admit"], true);
 }
 
 #[test]
@@ -493,6 +683,16 @@ fn check_recovery_styles(screen: &vt100::Screen, recipe: &Value) {
 fn maximal_sgr_recipe_round_trips_through_the_real_screen_formatter() {
     let contract = fixture();
     let recovery = &contract["recovery"];
+    let bound = &contract["limits"]["snapshot_bound"];
+    for cell in recovery["cells"].as_array().unwrap() {
+        let text = string(&cell["text"]);
+        assert_eq!(text.len() as u64, number(&bound["utf8_bytes_per_cell"]));
+        assert_eq!(
+            text.chars().count() as u64,
+            number(&bound["max_code_points_per_cell"])
+        );
+        assert!(text.chars().all(|scalar| scalar.len_utf8() == 4));
+    }
     let cols = u16::try_from(number(&recovery["cols"])).unwrap();
     let rows = u16::try_from(number(&recovery["rows"])).unwrap();
     let pty = paint(recovery, cols, rows);
@@ -502,6 +702,7 @@ fn maximal_sgr_recipe_round_trips_through_the_real_screen_formatter() {
     assert_eq!(snapshot.cursor, pty.len() as u64);
     assert_eq!((snapshot.cols, snapshot.rows), (cols, rows));
     let raw = STANDARD.decode(&snapshot.snapshot).unwrap();
+    assert!(raw.len() as u64 <= number(&bound["raw_bytes"]));
     let mut actual = vt100::Parser::new(rows, cols, 0);
     actual.process(&raw);
     check_recovery_styles(actual.screen(), &recovery["cells"]);
@@ -539,6 +740,7 @@ fn maximal_sgr_recipe_round_trips_through_the_real_screen_formatter() {
     for envelope in [attach, reset] {
         let len = serde_json::to_vec(&envelope).unwrap().len() as u64;
         assert!(len > number(&contract["limits"]["message_bytes"]["ordinary"]));
+        assert!(len <= number(&bound["encoded_bytes"]));
         assert!(len <= number(&contract["limits"]["message_bytes"]["snapshot"]));
     }
     let tail = string(&recovery["next_output"]);

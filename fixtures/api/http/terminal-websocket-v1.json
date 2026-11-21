@@ -3,16 +3,30 @@
   "endpoint": {
     "bridge_https_origin": "https://bridge.app.test:8443",
     "caller_origin": "https://app.test",
+    "allowed_caller_origins": ["https://app.test", "https://other.app.test"],
     "websocket_url": "wss://bridge.app.test:8443/v1/terminal",
     "connect_src_sources": ["https://bridge.app.test:8443", "wss://bridge.app.test:8443"],
     "browser_host_cases": [
-      {"name": "sibling_hostname", "bridge_https_origin": "https://bridge.app.test:8443", "allowed": true},
+      {"name": "subdomain_of_app_host", "bridge_https_origin": "https://bridge.app.test:8443", "allowed": true},
+      {"name": "sibling_hostname", "bridge_https_origin": "https://bridge.test:8443", "allowed": true},
       {"name": "same_hostname_different_port", "bridge_https_origin": "https://app.test:8443", "allowed": false}
     ],
+    "policy_refusals": {
+      "origin_forbidden": {
+        "status": 403,
+        "body": {"error": "HTTP request policy refused", "error_code": "origin_forbidden", "retryable": false, "request_id": "{{request_id}}"}
+      },
+      "authority_mismatch": {
+        "status": 421,
+        "body": {"error": "HTTP request policy refused", "error_code": "authority_mismatch", "retryable": false, "request_id": "{{request_id}}"}
+      }
+    },
     "rules": [
       "Use the verified HTTPS authority and its effective port on both routes. Validate TLS using the platform trust store and reject redirects.",
       "Both routes require exactly one explicit allowed HTTPS Origin. Redemption requires the identical Origin saved during issuance. Cookies and forwarded headers confer no authority.",
-      "The paths are fixed and query-free. Browser and native clients offer the same pair of subprotocol tokens. Native main supplies the trusted hosted document Origin."
+      "The paths are fixed and query-free. Browser and native clients offer the same pair of subprotocol tokens. Native main supplies the trusted hosted document Origin.",
+      "Both routes use the policy refusal bodies above for Origin and Host checks. Substitute a fresh diagnostic request ID.",
+      "A bridge subdomain is eligible under the hosted app's host-only cookie boundary. A bridge on the exact app hostname remains ineligible even on a different port."
     ]
   },
   "ticket": {
@@ -60,7 +74,10 @@
       "The request body contains only opening_generation. Derive authority from the verified owner bearer and exact X-Build-Session Opening. Enforce the required scopes plus any entitlement selected by the plan's owner consent decision.",
       "Expire when now reaches the earlier of the proof deadline and issued_at + max_age_ms. One pending ticket per Opening; a new issue supersedes the previous ticket.",
       "Bind the caller Origin separately from verified bridge authority. Atomically spend once and compare-and-replace the exact terminal predecessor, including its tombstone.",
-      "Check capacity at issue and again at redemption. A refused or failed upgrade releases reservations; a consumed ticket requires a fresh issue after a failed connection."
+      "Check capacity at issue and again at redemption. A refused or failed upgrade releases reservations; a consumed ticket requires a fresh issue after a failed connection.",
+      "Issue accepts any exact configured Origin and saves it on the ticket. Redemption requires that saved Origin even when a different Origin is also configured.",
+      "Pending counts include the ticket for this Opening, when present. Replacing that ticket retains its pending slot and still spends one issue from the family rate bucket.",
+      "Each issue case starts at time zero with a full rate bucket. prior_issues counts successful issues at time zero, and elapsed_ms is when the next issue is attempted. Pending counts are supplied independently of the rate bucket."
     ],
     "refusals": {
       "invalid_credential": {
@@ -93,7 +110,27 @@
       {"name": "missing_session", "header": "x-build-session", "values": [], "refusal": "invalid_credential"},
       {"name": "wrong_generation", "body": {"opening_generation": "00000000-0000-4000-8000-000000000099"}, "refusal": "invalid_credential"},
       {"name": "read_only", "verified_scopes": ["bridge:read"], "refusal": "forbidden_scope"},
-      {"name": "family_socket_limit", "held_family_sockets": 8, "refusal": "overloaded"}
+      {"name": "family_socket_limit", "held_family_sockets": 8, "refusal": "overloaded"},
+      {"name": "wrong_port", "header": "host", "values": ["bridge.app.test"], "refusal": "authority_mismatch"}
+    ],
+    "origin_cases": [
+      {"name": "no_origin", "values": [], "status": 403, "refusal": "origin_forbidden"},
+      {"name": "null_origin", "values": ["null"], "status": 403, "refusal": "origin_forbidden"},
+      {"name": "duplicate_origin", "values": ["https://app.test", "https://app.test"], "status": 403, "refusal": "origin_forbidden"},
+      {"name": "mismatched_origin", "values": ["https://unlisted.test"], "status": 403, "refusal": "origin_forbidden"},
+      {"name": "exact_origin", "values": ["https://app.test"], "status": 201, "bound_origin": "https://app.test"},
+      {"name": "other_allowed_origin", "values": ["https://other.app.test"], "status": 201, "bound_origin": "https://other.app.test"}
+    ],
+    "issue_cases": [
+      {"name": "eighth_pending_family", "pending_opening": 0, "pending_family": 7, "pending_global": 7, "prior_issues": 0, "elapsed_ms": 0, "status": 201, "superseded_previous": false},
+      {"name": "ninth_pending_family", "pending_opening": 0, "pending_family": 8, "pending_global": 8, "prior_issues": 0, "elapsed_ms": 0, "status": 429, "superseded_previous": false},
+      {"name": "last_global_pending_slot", "pending_opening": 0, "pending_family": 7, "pending_global": 127, "prior_issues": 0, "elapsed_ms": 0, "status": 201, "superseded_previous": false},
+      {"name": "global_pending_full", "pending_opening": 0, "pending_family": 7, "pending_global": 128, "prior_issues": 0, "elapsed_ms": 0, "status": 429, "superseded_previous": false},
+      {"name": "replace_at_pending_caps", "pending_opening": 1, "pending_family": 8, "pending_global": 128, "prior_issues": 0, "elapsed_ms": 0, "status": 201, "superseded_previous": true, "previous_ticket_redemption_status": 401},
+      {"name": "last_burst_credit", "pending_opening": 0, "pending_family": 0, "pending_global": 0, "prior_issues": 7, "elapsed_ms": 0, "status": 201, "superseded_previous": false},
+      {"name": "ninth_issue_before_refill", "pending_opening": 0, "pending_family": 0, "pending_global": 0, "prior_issues": 8, "elapsed_ms": 999, "status": 429, "superseded_previous": false},
+      {"name": "refilled_at_one_second", "pending_opening": 0, "pending_family": 0, "pending_global": 0, "prior_issues": 8, "elapsed_ms": 1000, "status": 201, "superseded_previous": false},
+      {"name": "replacement_still_needs_rate_credit", "pending_opening": 1, "pending_family": 1, "pending_global": 1, "prior_issues": 8, "elapsed_ms": 999, "status": 429, "superseded_previous": false}
     ]
   },
   "handshake": {
@@ -129,22 +166,23 @@
       "Require singleton Host, Origin, Upgrade, Sec-WebSocket-Version, Sec-WebSocket-Key and Sec-WebSocket-Protocol request fields. Connection uses HTTP token-list matching for Upgrade.",
       "The example WebSocket key encodes 16 zero bytes for a deterministic handshake vector. Live clients generate fresh keys through their WebSocket library.",
       "Ignore ambient cookies. The ticket is the only upgrade credential. Keep it out of URLs, diagnostics, replies and close reasons.",
-      "A missing or unusable ticket gets the generic invalid_credential refusal. Other malformed handshake syntax gets 400. Origin and authority refusals use the listener's existing 403 and 421 policy."
+      "Reject invalid offer list shape with 400 first, including a missing v1 protocol, unknown members, duplicate members or extra tokens. With a valid v1 offer and at most one ticket. member, a missing ticket or invalid ticket suffix gets the generic 401 invalid_credential refusal.",
+      "Origin and authority refusals use the shared 403 origin_forbidden and 421 authority_mismatch policy bodies."
     ],
     "offers": [
-      {"name": "v1_and_ticket", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": true},
-      {"name": "reverse_order", "tokens": ["ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "build.term.v1"], "accepted": true},
-      {"name": "missing_ticket", "tokens": ["build.term.v1"], "accepted": false},
-      {"name": "missing_v1", "tokens": ["ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": false},
-      {"name": "wrong_case", "tokens": ["Build.Term.V1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": false},
-      {"name": "duplicate_v1", "tokens": ["build.term.v1", "build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": false},
-      {"name": "two_tickets", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": false},
-      {"name": "third_protocol", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "build.term.v2"], "accepted": false},
-      {"name": "padded_ticket", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="], "accepted": false},
-      {"name": "empty_token", "tokens": ["build.term.v1", "ticket."], "accepted": false},
-      {"name": "noncanonical_pad_bits", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB"], "accepted": false},
-      {"name": "bad_alphabet", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+"], "accepted": false},
-      {"name": "empty_list_member", "tokens": ["build.term.v1", "", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": false}
+      {"name": "v1_and_ticket", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": true, "status": 101},
+      {"name": "reverse_order", "tokens": ["ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "build.term.v1"], "accepted": true, "status": 101},
+      {"name": "missing_ticket", "tokens": ["build.term.v1"], "accepted": false, "status": 401},
+      {"name": "missing_v1", "tokens": ["ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": false, "status": 400},
+      {"name": "wrong_case", "tokens": ["Build.Term.V1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": false, "status": 400},
+      {"name": "duplicate_v1", "tokens": ["build.term.v1", "build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": false, "status": 400},
+      {"name": "two_tickets", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": false, "status": 400},
+      {"name": "third_protocol", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "build.term.v2"], "accepted": false, "status": 400},
+      {"name": "padded_ticket", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="], "accepted": false, "status": 401},
+      {"name": "empty_token", "tokens": ["build.term.v1", "ticket."], "accepted": false, "status": 401},
+      {"name": "noncanonical_pad_bits", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB"], "accepted": false, "status": 401},
+      {"name": "bad_alphabet", "tokens": ["build.term.v1", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+"], "accepted": false, "status": 401},
+      {"name": "empty_list_member", "tokens": ["build.term.v1", "", "ticket.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "accepted": false, "status": 400}
     ],
     "selections": [
       {"name": "v1_only", "header_values": ["build.term.v1"], "browser_protocol": "build.term.v1", "accepted": true},
@@ -156,11 +194,11 @@
       {"name": "future_protocol", "header_values": ["build.term.v2"], "browser_protocol": "build.term.v2", "accepted": false}
     ],
     "invalid_requests": [
-      {"name": "no_origin", "header": "origin", "values": [], "status": 403},
-      {"name": "null_origin", "header": "origin", "values": ["null"], "status": 403},
-      {"name": "duplicate_origin", "header": "origin", "values": ["https://app.test", "https://app.test"], "status": 403},
-      {"name": "other_allowed_origin", "header": "origin", "values": ["https://other.app.test"], "status": 403},
-      {"name": "wrong_port", "header": "host", "values": ["bridge.app.test"], "status": 421},
+      {"name": "no_origin", "header": "origin", "values": [], "status": 403, "refusal": "origin_forbidden"},
+      {"name": "null_origin", "header": "origin", "values": ["null"], "status": 403, "refusal": "origin_forbidden"},
+      {"name": "duplicate_origin", "header": "origin", "values": ["https://app.test", "https://app.test"], "status": 403, "refusal": "origin_forbidden"},
+      {"name": "other_allowed_origin", "header": "origin", "values": ["https://other.app.test"], "status": 403, "refusal": "origin_forbidden"},
+      {"name": "wrong_port", "header": "host", "values": ["bridge.app.test"], "status": 421, "refusal": "authority_mismatch"},
       {"name": "wrong_version", "header": "sec-websocket-version", "values": ["12"], "status": 400},
       {"name": "missing_key", "header": "sec-websocket-key", "values": [], "status": 400},
       {"name": "wrong_key_length", "header": "sec-websocket-key", "values": ["YQ=="], "status": 400},
@@ -232,7 +270,8 @@
     "selected_wss_failures": [
       {"cause": "forbidden_scope", "transport": "wss", "automatic_retry": false},
       {"cause": "tls_or_csp", "transport": "wss", "fallback": false},
-      {"cause": "capacity", "transport": "wss", "http_status": 429, "pane_message": "Terminal connection limit reached"},
+      {"cause": "capacity", "transport": "wss", "source": "ticket_post", "http_status": 429, "pane_message": "Terminal connection limit reached"},
+      {"cause": "opaque_browser_upgrade_failure", "transport": "wss", "http_status_visible": false, "close_code": 1006, "fresh_ticket": true, "backoff": "bounded_jitter"},
       {"cause": "transport_loss", "transport": "wss", "fresh_ticket": true, "replay_effects": false}
     ]
   },
@@ -242,11 +281,22 @@
     "pty_bytes": "standard padded base64",
     "request_id_pattern": "^[A-Za-z0-9_-]{1,128}$",
     "methods": ["term.create", "term.attach", "term.input", "term.resize", "term.ack", "term.close", "agent.attach", "ping"],
+    "params_fields": {
+      "term.create": ["kind", "cols", "rows", "workspace_id", "run_id", "project_id", "worktree_id", "source_id", "source_path"],
+      "term.attach": ["term_id", "cols", "rows", "workspace_id", "run_id", "project_id", "worktree_id", "source_id", "source_path"],
+      "term.input": ["term_id", "data"],
+      "term.resize": ["term_id", "cols", "rows"],
+      "term.ack": ["term_id", "cursor"],
+      "term.close": ["term_id", "workspace_id", "run_id", "project_id", "worktree_id", "source_id", "source_path"],
+      "agent.attach": ["id", "agent_id", "conversation_id", "cols", "rows", "workspace_id", "run_id", "project_id", "worktree_id", "source_id", "source_path"],
+      "ping": []
+    },
     "bridge_pushes": ["term.output", "term.reset", "term.closed"],
     "rules": [
       "One complete JSON object per binary WebSocket message. Require client masking. Fragmentation may carry the same message within its aggregate limit. Binary wire vectors give exact message payload bytes in utf8, before WebSocket framing and masking.",
       "Example JSON is compact with lexically sorted keys and no trailing newline. Readers accept other whitespace and key order. UTF-8 must be valid and the message has no BOM.",
-      "Client RPC contains exactly id, method and object-valued params. Validate the method allowlist before Invocation::decode. Reject caller authority or delivery metadata in params as well as in the envelope. Legitimate terminal, agent and workspace selectors still go through shared domain validation.",
+      "Client RPC contains exactly id, method and object-valued params. Extra envelope members are malformed and close with 1002. Validate the method allowlist before Invocation::decode.",
+      "Each supported method accepts only keys listed in params_fields. Any other key in a well-formed request, including caller authority or delivery metadata, gets a correlated non-retryable invalid_params before dispatch. The socket stays open. Shared domain validation still determines required fields, types and valid selector combinations.",
       "IDs are case-sensitive and unique through settlement. Clients never reuse an attach ID during the lifetime of its socket; the bridge also rejects IDs still held by pending or active interests.",
       "The two controls are detach (client) and attachment_error (bridge). detach has only type and attach_id, uses the original attach request ID, is idempotent for unknown or stale interests and has no reply.",
       "Every bridge envelope, including attachment_error, carries bridge_epoch. Check exact current Opening epoch and socket ownership before resolving an ID or delivering an event. An epoch mismatch retires that terminal socket and never updates the trusted greeting.",
@@ -343,6 +393,11 @@
       "opcode": 2,
       "utf8": "{\"bridge_epoch\":\"00000000-0000-4000-8000-000000000004\",\"error\":\"Invalid terminal input\",\"error_code\":\"invalid_params\",\"id\":\"input-2\",\"ok\":false,\"retryable\":false}"
     },
+    "unexpected_param": {
+      "from": "bridge",
+      "opcode": 2,
+      "utf8": "{\"bridge_epoch\":\"00000000-0000-4000-8000-000000000004\",\"error\":\"Unexpected terminal parameter\",\"error_code\":\"invalid_params\",\"id\":\"attach-4\",\"ok\":false,\"retryable\":false}"
+    },
     "rejected_method": {
       "from": "bridge",
       "opcode": 2,
@@ -389,6 +444,7 @@
     {"name": "unicode_id", "opcode": 2, "utf8": "{\"id\":\"é\",\"method\":\"ping\",\"params\":{}}", "close_code": 1002},
     {"name": "oversized_id", "opcode": 2, "utf8": "{\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"method\":\"ping\",\"params\":{}}", "close_code": 1002},
     {"name": "caller_authority", "opcode": 2, "utf8": "{\"id\":\"bad\",\"method\":\"ping\",\"params\":{},\"session_id\":\"other\"}", "close_code": 1002},
+    {"name": "caller_authority_in_params", "opcode": 2, "utf8": "{\"id\":\"attach-4\",\"method\":\"term.attach\",\"params\":{\"session_id\":\"other\",\"term_id\":\"term-1\"}}", "reply": "unexpected_param", "dispatch": false, "socket_open": true},
     {"name": "priority", "opcode": 2, "utf8": "{\"id\":\"bad\",\"method\":\"ping\",\"params\":{},\"priority\":\"foreground\"}", "close_code": 1002},
     {"name": "durable_write", "opcode": 2, "utf8": "{\"id\":\"bad\",\"method\":\"ping\",\"params\":{},\"write\":{\"operation_id\":\"00000000-0000-4000-8000-000000000001\"}}", "close_code": 1002},
     {"name": "excess_nesting", "opcode": 2, "utf8": "{\"id\":\"bad\",\"method\":\"ping\",\"params\":{\"x\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":{\"p\":[{\"k\":null}]}}}}}}}}}}}}}}}", "close_code": 1002},
@@ -501,9 +557,11 @@
     "socket_cases": [
       {"name": "eighth_family_socket", "held_family": 7, "held_listener": 7, "admit": true},
       {"name": "ninth_family_socket", "held_family": 8, "held_listener": 8, "admit": false, "status": 429},
-      {"name": "superseded_still_counts", "held_family": 8, "held_listener": 8, "superseded_held_family": 1, "admit": false, "status": 429},
+      {"name": "superseded_still_counts", "held_family": 7, "held_listener": 7, "superseded_held_family": 1, "superseded_held_listener": 1, "admit": false, "status": 429},
+      {"name": "superseded_io_dropped", "held_family": 7, "held_listener": 7, "superseded_held_family": 0, "superseded_held_listener": 0, "admit": true},
       {"name": "sixteenth_listener_socket", "held_family": 0, "held_listener": 15, "admit": true},
-      {"name": "seventeenth_listener_socket", "held_family": 0, "held_listener": 16, "admit": false, "status": 429}
+      {"name": "seventeenth_listener_socket", "held_family": 0, "held_listener": 16, "admit": false, "status": 429},
+      {"name": "superseded_listener_still_counts", "held_family": 0, "held_listener": 15, "superseded_held_family": 0, "superseded_held_listener": 1, "admit": false, "status": 429}
     ],
     "tickets": {
       "pending_opening": 1,
@@ -549,6 +607,7 @@
       "The named message boundary cases give byte lengths by receive class. To exercise a large snapshotted payload, use the recovery recipe or grow its base64 field in four-byte groups and use at most three ASCII spaces to reach an exact boundary.",
       "Validate original JSON integer dimensions and product before narrowing. Fractions, exponents and null are invalid dimensions. Apply defaults only for absent axes and check actual retained screen dimensions under the lock at capture.",
       "Reserve snapshot slots before capture, share them fairly, bound ordinary queues separately and hold reservations through flush or drop. An ACK pause holds its interest without a timeout; a physical write stall is a socket failure.",
+      "In socket_cases, held_family and held_listener count current bindings only. Add the corresponding superseded_held count until physical I/O drops; an omitted superseded count is zero.",
       "The bound charges erase runs to blank cells. Raw bytes are max_cells times raw_bytes_per_cell plus max_rows times raw_bytes_per_row plus raw_bytes_per_screen. Encoded bytes are 4 times ceil(raw_bytes / 3) plus json_metadata_bytes."
     ]
   },
@@ -556,21 +615,21 @@
     "cols": 256,
     "rows": 256,
     "scrollback_lines": 2000,
-    "recipe": "Write prefix, then each cell's SGR and text in row-major zero-based order using (row + col) modulo 2. Let natural wrapping advance lines. Write suffix once after the grid. Every value in prefix, sgr, text, suffix and next_output is literal UTF-8.",
+    "recipe": "Write prefix, then each cell's SGR and text in row-major zero-based order using (row + col) modulo 2. Let natural wrapping advance lines. Write suffix once after the grid. Encode decoded JSON string values as UTF-8. Each painted cell starts with a narrow mathematical letter U+1D400 or U+1D401 followed by five nonspacing variation selectors U+E0100 through U+E0104, for six code points and 24 UTF-8 bytes per cell before the erase.",
     "prefix": "\u001b[?7h\u001b[H",
     "cells": [
-      {"sgr": "\u001b[0;1;3;4;7;38;2;255;254;253;48;2;252;251;250m", "text": "Á̂̃̄̈", "fg_rgb": [255, 254, 253], "bg_rgb": [252, 251, 250], "styles": ["bold", "italic", "underline", "inverse"]},
-      {"sgr": "\u001b[0;38;2;249;248;247;48;2;246;245;244m", "text": "B̀̂̃̄̈", "fg_rgb": [249, 248, 247], "bg_rgb": [246, 245, 244], "styles": []}
+      {"sgr": "\u001b[0;1;3;4;7;38;2;255;254;253;48;2;252;251;250m", "text": "\ud835\udc00\udb40\udd00\udb40\udd01\udb40\udd02\udb40\udd03\udb40\udd04", "fg_rgb": [255, 254, 253], "bg_rgb": [252, 251, 250], "styles": ["bold", "italic", "underline", "inverse"]},
+      {"sgr": "\u001b[0;38;2;249;248;247;48;2;246;245;244m", "text": "\ud835\udc01\udb40\udd00\udb40\udd01\udb40\udd02\udb40\udd03\udb40\udd04", "fg_rgb": [249, 248, 247], "bg_rgb": [246, 245, 244], "styles": []}
     ],
     "suffix": "\u001b[0m\u001b[2;2H\u001b[4X\u001b[128;129H",
     "cursor_zero_based": [127, 128],
     "witness_cells": [
-      {"row": 0, "col": 255, "text": "B̀̂̃̄̈"},
-      {"row": 1, "col": 0, "text": "B̀̂̃̄̈"},
+      {"row": 0, "col": 255, "text": "\ud835\udc01\udb40\udd00\udb40\udd01\udb40\udd02\udb40\udd03\udb40\udd04"},
+      {"row": 1, "col": 0, "text": "\ud835\udc01\udb40\udd00\udb40\udd01\udb40\udd02\udb40\udd03\udb40\udd04"},
       {"row": 1, "col": 1, "text": ""},
       {"row": 1, "col": 4, "text": ""},
-      {"row": 1, "col": 5, "text": "Á̂̃̄̈"},
-      {"row": 255, "col": 255, "text": "Á̂̃̄̈"}
+      {"row": 1, "col": 5, "text": "\ud835\udc00\udb40\udd00\udb40\udd01\udb40\udd02\udb40\udd03\udb40\udd04"},
+      {"row": 255, "col": 255, "text": "\ud835\udc00\udb40\udd00\udb40\udd01\udb40\udd02\udb40\udd03\udb40\udd04"}
     ],
     "next_output": "Z",
     "next_input_base64": "eA==",

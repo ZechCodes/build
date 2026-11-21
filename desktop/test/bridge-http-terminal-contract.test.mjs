@@ -34,6 +34,14 @@ test("native uses the exact trusted Origin and only accepts one selected protoco
   assert.equal(new URL(endpoint.websocket_url).pathname, handshake.path);
   assert.equal(ticket.request.headers.origin, endpoint.caller_origin);
   assert.equal(handshake.request.headers.origin, endpoint.caller_origin);
+  const exact = ticket.origin_cases.find(({ name }) => name === "exact_origin");
+  assert.deepEqual(exact.values, [ticket.request.headers.origin]);
+  assert.equal(exact.status, 201);
+  for (const name of ["no_origin", "null_origin", "duplicate_origin", "mismatched_origin"]) {
+    const { status, refusal } = ticket.origin_cases.find((vector) => vector.name === name);
+    assert.equal(status, 403, name);
+    assert.equal(refusal, "origin_forbidden", name);
+  }
   assert.equal(handshake.response.status, 101);
   const key = handshake.request.headers["sec-websocket-key"];
   const accept = createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
@@ -85,4 +93,9 @@ test("native has separate bounded receive classes and byte-level invalid vectors
   assert.throws(() => payload(malformed.utf8_bom), SyntaxError);
   assert.equal(malformed.text_frame.opcode, 1);
   assert.equal(malformed.text_frame.close_code, 1003);
+  const authority = malformed.caller_authority_in_params;
+  const refusal = payload(contract.messages[authority.reply]);
+  assert.equal(refusal.id, payload(authority).id);
+  assert.equal(refusal.error_code, "invalid_params");
+  assert.equal(authority.socket_open, true);
 });

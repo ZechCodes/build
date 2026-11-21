@@ -39,6 +39,10 @@ describe("terminal WebSocket v1 browser vectors", () => {
     for (const { bridge_https_origin: bridge, allowed } of endpoint.browser_host_cases) {
       expect(new URL(bridge).hostname !== new URL(endpoint.caller_origin).hostname).toBe(allowed);
     }
+    const app = new URL(endpoint.caller_origin).hostname;
+    const hostCase = (name) => new URL(endpoint.browser_host_cases.find((vector) => vector.name === name).bridge_https_origin).hostname;
+    expect(hostCase("subdomain_of_app_host").endsWith(`.${app}`)).toBe(true);
+    expect(hostCase("sibling_hostname").split(".").slice(1)).toEqual(app.split(".").slice(1));
     expect(handshake.offers[0].tokens).toEqual(["build.term.v1", `ticket.${ticket.response.body.ticket}`]);
     for (const { browser_protocol: selected, accepted } of handshake.selections) {
       expect(selected === handshake.protocol).toBe(accepted);
@@ -50,6 +54,26 @@ describe("terminal WebSocket v1 browser vectors", () => {
       const deadline = Math.min(Date.parse(sample.proof_deadline), Date.parse(sample.issued_at) + contract.limits.tickets.max_age_ms);
       expect(Date.parse(sample.expires_at)).toBe(deadline);
     }
+  });
+
+  it("keeps opaque browser upgrade failures on WSS and reports capacity from ticket POST", () => {
+    const failures = contract.opening.selected_wss_failures;
+    expect(failures.find(({ cause }) => cause === "opaque_browser_upgrade_failure")).toMatchObject({
+      transport: "wss", http_status_visible: false, close_code: 1006, fresh_ticket: true, backoff: "bounded_jitter",
+    });
+    expect(failures.find(({ cause }) => cause === "capacity")).toMatchObject({
+      transport: "wss", source: "ticket_post", http_status: 429, pane_message: "Terminal connection limit reached",
+    });
+  });
+
+  it("reads an authority field in params as a refusal to the original call", () => {
+    const vector = contract.invalid_messages.find(({ name }) => name === "caller_authority_in_params");
+    const request = payload(vector);
+    expect(request.params.session_id).toBe("other");
+    expect(vector).toMatchObject({ dispatch: false, socket_open: true });
+    expect(payload(contract.messages[vector.reply])).toMatchObject({
+      id: request.id, ok: false, error_code: "invalid_params", retryable: false,
+    });
   });
 
   it("keeps exact binary input bytes, ordered reply/push fixtures and pane-local controls", () => {

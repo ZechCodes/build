@@ -1,0 +1,388 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { once } from "node:events";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:https";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { getCACertificates, setDefaultCACertificates } from "node:tls";
+import test, { after, before } from "node:test";
+import { WebSocketServer } from "ws";
+import { createBridgeHttp } from "../src/bridge-http.mjs";
+
+const read = (path) => JSON.parse(readFileSync(new URL(path, import.meta.url)));
+const vectors = read("../../fixtures/api/http/terminal-websocket-v1.json");
+const manifest = read("../src/bridge-http-resources.json");
+const { endpoint, handshake, ticket, opening, messages, limits } = vectors;
+const vectorBytes = (name) => Buffer.from(messages[name].utf8);
+const envelope = (name) => JSON.parse(messages[name].utf8);
+const bearer = "fixture-device-bearer";
+const owner = { id: 1 };
+let tls;
+
+before(() => {
+  const directory = mkdtempSync(join(tmpdir(), "desktop-terminal-tls-"));
+  try {
+    const key = join(directory, "key.pem");
+    const cert = join(directory, "cert.pem");
+    execFileSync("openssl", [
+      "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key,
+      "-out", cert, "-days", "1", "-subj", "/CN=localhost",
+      "-addext", "subjectAltName=DNS:localhost",
+    ], { stdio: "ignore" });
+    tls = { key: readFileSync(key), cert: readFileSync(cert, "utf8") };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+  const original = getCACertificates("default");
+  setDefaultCACertificates([...original, tls.cert]);
+  after(() => setDefaultCACertificates(original));
+});
+
+function issueTicket(response, body = ticketBody(), status = ticket.response.status) {
+  response.writeHead(status, ticket.response.headers);
+  response.end(JSON.stringify(body));
+}
+
+function ticketBody() {
+  return { ...ticket.response.body, expires_at: new Date(Date.now() + 10_000).toISOString() };
+}
+
+async function recordHttp(request, response, received, respond) {
+  const parts = [];
+  for await (const part of request) parts.push(part);
+  received.push({
+    method: request.method, url: request.url, headers: request.headers,
+    body: Buffer.concat(parts).toString("utf8"),
+  });
+  if (respond) respond(response);
+  else if (request.url === ticket.path) issueTicket(response);
+  else response.writeHead(404).end();
+}
+
+async function peer(t, { respond, upgrade } = {}) {
+  const requests = [];
+  const upgrades = [];
+  const server = createServer(tls, (req, res) => void recordHttp(req, res, requests, respond));
+  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+  const sockets = new Set();
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  });
+  server.on("upgrade", (request, socket, head) => {
+    upgrades.push({ url: request.url, headers: request.headers, rawHeaders: request.rawHeaders });
+    if (upgrade) upgrade(request, socket);
+    else wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => {
+    for (const socket of sockets) socket.destroy();
+    server.close();
+    wss.close();
+  });
+  return { origin: "https://localhost:" + server.address().port, requests, upgrades, wss };
+}
+
+function fakeOpening(vector) {
+  const result = structuredClone(opening.base);
+  result.transport.operation_ids = manifest.operations.map(({ operationId }) => operationId);
+  if (Object.hasOwn(vector, "descriptor")) result.transport.terminal_websocket = vector.descriptor;
+  if (vector.capability) result.greeting.capabilities.push(opening.capability);
+  result.grant_expires_at = new Date(Date.now() + 30_000).toISOString();
+  return result;
+}
+
+function mint(origin, scope) {
+  return {
+    origin, issuer: endpoint.caller_origin, account_id: "account", device_id: "device",
+    endpoint_epoch: "epoch", family_id: "family", access_token: bearer,
+    expires_at: Math.floor(Date.now() / 1000) + 300, scope,
+  };
+}
+
+async function desktop(t, origin, {
+  vector = opening.cases.find(({ name }) => name === "v1"),
+  scope = "bridge:read bridge:write", fetchTicket = fetch,
+} = {}) {
+  const auth = { accessToken: "fixture-hosted-bearer", generation: 1 };
+  const adapter = createBridgeHttp({
+    fetch(url, options) {
+      if (url.startsWith(endpoint.caller_origin + "/api/"))
+        return new Response(JSON.stringify(mint(origin, scope)));
+      if (url === origin + "/v1/sessions")
+        return new Response(JSON.stringify(fakeOpening(vector)));
+      return fetchTicket(url, options);
+    },
+    getAuth: () => auth, isOwnerCurrent: (value) => value === owner,
+    manifest, hostedOrigin: endpoint.caller_origin,
+  });
+  t.after(() => adapter.clear());
+  const { handle } = await adapter.resume(owner, {
+    deviceId: "device", endpointEpoch: "epoch", familyId: "family", origin,
+  });
+  await adapter.open(owner, handle, "1");
+  return { adapter, handle, auth };
+}
+
+async function connect(t, options) {
+  const remote = await peer(t, options);
+  const local = await desktop(t, remote.origin);
+  const connected = once(remote.wss, "connection");
+  const delivery = [];
+  const opened = await local.adapter.terminalOpen(owner, local.handle, (value) => delivery.push(value));
+  const [socket] = await connected;
+  return { ...local, ...opened, remote, socket, delivery };
+}
+
+function call(ctx, vector, params = vector.params) {
+  return ctx.adapter.terminalCall(owner, ctx.terminal, vector.method, params, vector.id);
+}
+
+async function readCall(ctx, name) {
+  const received = once(ctx.socket, "message");
+  const result = call(ctx, envelope(name));
+  const [bytes, binary] = await received;
+  assert.equal(binary, true);
+  assert.deepEqual(bytes, vectorBytes(name));
+  return { result };
+}
+
+function checkTicket(request) {
+  assert.equal(request.method, ticket.method);
+  assert.equal(request.url, ticket.path);
+  assert.equal(request.body, ticket.request.utf8);
+  assert.deepEqual({
+    authorization: request.headers.authorization,
+    origin: request.headers.origin,
+    session: request.headers["x-build-session"],
+    cookie: request.headers.cookie,
+  }, {
+    authorization: "Bearer " + bearer, origin: endpoint.caller_origin,
+    session: ticket.request.headers["x-build-session"], cookie: undefined,
+  });
+}
+
+function checkUpgrade(remote) {
+  const [upgrade] = remote.upgrades;
+  const { headers, rawHeaders } = upgrade;
+  assert.equal(upgrade.url, handshake.path);
+  assert.equal(headers.host, new URL(remote.origin).host);
+  assert.equal(headers.origin, endpoint.caller_origin);
+  assert.equal(headers["sec-websocket-protocol"], handshake.request.headers["sec-websocket-protocol"]);
+  assert.equal(rawHeaders.filter((value) => /^sec-websocket-protocol$/i.test(value)).length, 1);
+  for (const name of ["authorization", "cookie", "x-build-session", "sec-websocket-extensions"])
+    assert.equal(headers[name], undefined, name);
+}
+
+test("desktop mints in main and sends only the fixed WSS upgrade and binary envelopes", async (t) => {
+  const ctx = await connect(t);
+  checkTicket(ctx.remote.requests[0]);
+  checkUpgrade(ctx.remote);
+  const { result } = await readCall(ctx, "attach");
+  ctx.socket.send(vectorBytes("attach_ok"));
+  assert.deepEqual(await result, envelope("attach_ok"));
+  const detach = once(ctx.socket, "message");
+  ctx.adapter.terminalDetach(owner, ctx.terminal, envelope("attach").id);
+  assert.deepEqual(await detach, [vectorBytes("detach"), true]);
+});
+
+function answerUpgrade(request, socket, { protocols = [handshake.protocol], headers = {} } = {}) {
+  const accept = createHash("sha1")
+    .update(request.headers["sec-websocket-key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
+    .digest("base64");
+  const response = {
+    Upgrade: "websocket", Connection: "Upgrade", "Sec-WebSocket-Accept": accept, ...headers,
+  };
+  const fields = Object.entries(response).map(([name, value]) => name + ": " + value);
+  fields.push(...protocols.map((value) => "Sec-WebSocket-Protocol: " + value));
+  socket.write(["HTTP/1.1 101 Switching Protocols", ...fields, "", ""].join("\r\n"));
+}
+
+function openTerminal(local) {
+  return local.adapter.terminalOpen(owner, local.handle, () => {});
+}
+
+for (const selection of handshake.selections.filter(({ accepted }) => !accepted)) {
+  test("native refuses selected protocol " + selection.name, async (t) => {
+    const remote = await peer(t, {
+      upgrade: (request, socket) => answerUpgrade(request, socket, { protocols: selection.header_values }),
+    });
+    const local = await desktop(t, remote.origin);
+    await assert.rejects(openTerminal(local), { code: "terminal_protocol_error" });
+  });
+}
+
+for (const { name, headers } of handshake.invalid_responses.filter(({ status }) => status === 101)) {
+  test("native refuses invalid HTTP 101 " + name, async (t) => {
+    const remote = await peer(t, { upgrade: (request, socket) => answerUpgrade(request, socket, { headers }) });
+    await assert.rejects(openTerminal(await desktop(t, remote.origin)), { code: "terminal_protocol_error" });
+  });
+}
+
+test("native verifies the WSS certificate hostname", async (t) => {
+  const remote = await peer(t);
+  const local = await desktop(t, remote.origin.replace("localhost", "127.0.0.1"), {
+    fetchTicket: async () => new Response(JSON.stringify(ticketBody()), {
+      status: ticket.response.status, headers: ticket.response.headers,
+    }),
+  });
+  await assert.rejects(openTerminal(local), { code: "terminal_network_error" });
+  assert.deepEqual(remote.upgrades, []);
+});
+
+test("native refuses the WSS redirect without a second request", async (t) => {
+  const remote = await peer(t, { upgrade: (_request, socket) => socket.end(
+    "HTTP/1.1 307 Temporary Redirect\r\nLocation: /redirected\r\nContent-Length: 0\r\n\r\n",
+  ) });
+  await assert.rejects(openTerminal(await desktop(t, remote.origin)), { code: "terminal_upgrade_refused", status: 307 });
+  assert.deepEqual(remote.upgrades.map(({ url }) => url), [handshake.path]);
+  assert.deepEqual(remote.requests.map(({ url }) => url), [ticket.path]);
+});
+
+test("native refuses a ticket redirect before trying WSS", async (t) => {
+  const remote = await peer(t, {
+    respond: (response) => response.writeHead(307, { Location: "/redirected" }).end(),
+  });
+  await assert.rejects(openTerminal(await desktop(t, remote.origin)), { code: "network_error" });
+  assert.deepEqual(remote.upgrades, []);
+  assert.deepEqual(remote.requests.map(({ url }) => url), [ticket.path]);
+});
+
+for (const [name, alter, status] of [
+  ["noncanonical", (body) => { body.ticket = body.ticket.slice(0, -1) + "B"; }],
+  ["wrong generation", (body) => { body.opening_generation = "different"; }],
+  ["expired", (body) => { body.expires_at = new Date(0).toISOString(); }],
+  ["unexpected status", () => {}, 200],
+]) {
+  test("native refuses a " + name + " ticket before trying WSS", async (t) => {
+    const remote = await peer(t, { respond(response) {
+      const body = ticketBody();
+      alter(body);
+      issueTicket(response, body, status);
+    } });
+    await assert.rejects(openTerminal(await desktop(t, remote.origin)), { code: "invalid_response" });
+    assert.deepEqual(remote.upgrades, []);
+  });
+}
+
+for (const vector of opening.cases.filter(({ desktop, native_terminal_ipc }) =>
+  desktop !== "wss" && native_terminal_ipc === "complete")) {
+  test("native keeps the HTTP Opening and handles " + vector.name + " without a ticket", async (t) => {
+    const remote = await peer(t);
+    const local = await desktop(t, remote.origin, { vector });
+    const code = vector.desktop === "webrtc" ? "terminal_unsupported" : "terminal_protocol_error";
+    await assert.rejects(openTerminal(local), { code });
+    assert.deepEqual(remote.requests, []);
+  });
+}
+
+function payloadOfSize(value, bytes, target, key) {
+  const space = bytes - Buffer.byteLength(JSON.stringify(value));
+  if (!target) return Buffer.from(JSON.stringify(value) + " ".repeat(space));
+  const grow = Math.floor(space / 4) * 4;
+  target[key] += "A".repeat(grow);
+  const padded = JSON.stringify(value) + " ".repeat(space - grow);
+  assert.equal(Buffer.byteLength(padded), bytes);
+  return Buffer.from(padded);
+}
+
+function sizedReply(vector) {
+  let value;
+  if (vector.ok && /attach$/.test(vector.reply_to ?? "")) {
+    value = envelope(vector.reply_to === "term.attach" ? "attach_ok" : "agent_attach_ok");
+    return payloadOfSize(value, vector.bytes, value.result, "snapshot");
+  }
+  value = vector.ok ? { ...envelope("attach_ok"), result: {} } : envelope("oversized_attach");
+  return payloadOfSize(value, vector.bytes);
+}
+
+function sizedPush(vector) {
+  if (vector.push === "attachment_error") return payloadOfSize(envelope(vector.push), vector.bytes);
+  const value = envelope(vector.push.slice(5));
+  value.data = "";
+  if (value.type === "term.output") value.cursor = vector.bytes;
+  return payloadOfSize(value, vector.bytes, value, "data");
+}
+
+async function requestForVector(ctx, vector, id) {
+  if (!vector.reply_to) return;
+  const received = once(ctx.socket, "message");
+  const result = call(ctx, { id, method: vector.reply_to, params: {} });
+  void result.catch(() => {});
+  await received;
+  return { result };
+}
+
+function sendFragments(socket, bytes) {
+  const split = Math.floor(bytes.length / 2);
+  socket.send(bytes.subarray(0, split), { fin: false });
+  socket.send(bytes.subarray(split));
+}
+
+async function verifySize(ctx, vector) {
+  const bytes = vector.push ? sizedPush(vector) : sizedReply(vector);
+  const id = vector.push ? undefined : JSON.parse(bytes).id;
+  const request = await requestForVector(ctx, vector, id);
+  const closed = once(ctx.socket, "close");
+  sendFragments(ctx.socket, bytes);
+  if (!vector.accepted) {
+    assert.equal((await closed)[0], vector.close_code);
+    if (request) await assert.rejects(request.result, { code: "terminal_message_too_large" });
+    return;
+  }
+  if (request) assert.deepEqual(await request.result, JSON.parse(bytes));
+  else await waitForDelivery(ctx, JSON.parse(bytes));
+}
+
+async function waitForDelivery(ctx, expected) {
+  // A correlated barrier proves the preceding push was delivered in wire order.
+  const { result } = await readCall(ctx, "ping");
+  ctx.socket.send(Buffer.from(JSON.stringify({
+    bridge_epoch: opening.base.greeting.bridge_epoch, ok: true, id: envelope("ping").id, result: {},
+  })));
+  await result;
+  assert.deepEqual(ctx.delivery, [{ terminal: ctx.terminal, type: "message", data: expected }]);
+}
+
+for (const vector of limits.message_cases.filter(({ budget }) => budget !== "client")) {
+  test("native applies the frozen receive budget to " + vector.name, async (t) => {
+    await verifySize(await connect(t), vector);
+  });
+}
+
+for (const name of ["invalid_utf8", "utf8_bom", "invalid_json", "non_object_envelope", "text_frame"]) {
+  test("native rejects " + name + " at the wire boundary", async (t) => {
+    const invalid = vectors.invalid_messages.find((item) => item.name === name);
+    const ctx = await connect(t);
+    const closed = once(ctx.socket, "close");
+    const bytes = invalid.hex ? Buffer.from(invalid.hex, "hex") : Buffer.from(invalid.utf8);
+    ctx.socket.send(bytes, { binary: invalid.opcode === vectors.wire.binary_opcode });
+    assert.equal((await closed)[0], invalid.close_code);
+  });
+}
+
+test("owner teardown drops the socket and fences outstanding effects", async (t) => {
+  const ctx = await connect(t);
+  const { result } = await readCall(ctx, "input");
+  const closed = once(ctx.socket, "close");
+  ctx.adapter.clear(owner);
+  await assert.rejects(result, { code: "stale_owner", uncertain: true });
+  assert.equal((await closed)[0], 1006);
+  assert.deepEqual(ctx.delivery, []);
+  await assert.rejects(call(ctx, envelope("input")), { code: "invalid_terminal_handle" });
+});
+
+test("a stale reply with a current ID retires the socket before correlation", async (t) => {
+  const ctx = await connect(t);
+  const { result } = await readCall(ctx, "attach");
+  const stale = vectors.epochs.find(({ name }) => name === "stale_matching_id");
+  const closed = once(ctx.socket, "close");
+  ctx.socket.send(Buffer.from(JSON.stringify({
+    ...envelope(stale.message), bridge_epoch: stale.bridge_epoch,
+  })));
+  await assert.rejects(result, { code: "terminal_epoch_mismatch" });
+  assert.equal((await closed)[0], 1002);
+});

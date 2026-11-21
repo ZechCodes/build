@@ -120,12 +120,12 @@ describe("browser terminal admission", () => {
     expect(headers.has("origin")).toBe(false); // Supplied by the browser.
   });
 
-  it("fences the Opening and validates the returned generation, token and expiry before constructing WSS", async () => {
+  it("fences the Opening and validates the returned generation, token and expiry format before constructing WSS", async () => {
     const good = ticket.response.body;
     for (const body of [
       { ...good, opening_generation: "other" },
       { ...good, ticket: handshake.offers.find(({ name }) => name === "noncanonical_pad_bits").tokens[1].slice(7) },
-      { ...good, expires_at: ticket.lifetime_cases[0].issued_at },
+      { ...good, expires_at: "not a timestamp" },
     ]) {
       const h = harness({ answer: () => json(body, 201) });
       const held = await h.endpoint.open("range");
@@ -213,6 +213,24 @@ describe("browser terminal admission", () => {
     await connected(h);
     const posts = h.fetchImpl.mock.calls.filter(([url]) => url.endsWith(ticket.path));
     expect(new Headers(posts.at(-1)[1].headers).get("authorization")).toBe("Bearer renewed-bearer");
+  });
+
+  it("fences the socket to one owner signal per Opening", async () => {
+    const h = harness();
+    const held = await h.endpoint.open("range");
+    const first = new AbortController();
+    const second = new AbortController();
+    const opening = h.endpoint.openTerminal(held, { signal: first.signal });
+    const joining = h.endpoint.openTerminal(held, { signal: first.signal });
+    await expect(h.endpoint.openTerminal(held, { signal: second.signal })).rejects.toMatchObject({ error_code: "busy" });
+    await vi.waitFor(() => expect(h.peers).toHaveLength(1));
+    h.peers[0].open();
+    const [carrier, joined] = await Promise.all([opening, joining]);
+    expect(joined).toBe(carrier);
+    second.abort();
+    expect(h.peers[0].close).not.toHaveBeenCalled();
+    first.abort();
+    expect(h.peers[0].close).toHaveBeenCalledOnce();
   });
 
   it("abandons a pending ticket on owner retirement, including a late fetch response", async () => {

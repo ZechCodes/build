@@ -33,6 +33,39 @@ function createPaneCleanup() {
   };
 }
 
+function mountTerminalFailure(host) {
+  const notice = document.createElement("div");
+  notice.className = "term-conn";
+  notice.setAttribute("role", "status");
+  const message = document.createElement("span");
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.textContent = "Retry";
+  notice.append(message, retry);
+  return {
+    paint(failure) {
+      if (!failure) { notice.remove(); return; }
+      message.textContent = failure.message;
+      retry.hidden = !failure.retry;
+      retry.onclick = failure.retry;
+      host.append(notice);
+    },
+    dispose() { retry.onclick = null; notice.remove(); },
+  };
+}
+
+function terminalPaneCallbacks(term, failure, onExit) {
+  return {
+    cols: term.cols,
+    rows: term.rows,
+    afterRender: true,
+    onSnapshot: (bytes, applied) => { term.reset(); term.write(bytes, applied); },
+    onOutput: (bytes, applied) => term.write(bytes, applied),
+    onClosed: (reason) => onExit?.(reason),
+    onFailure: failure.paint,
+  };
+}
+
 /**
  * mountTerminalPane(host, { attach, input, resize, onExit }) → { dispose, fit, terminal }
  *   attach — (opts) => attach promise: the manager's attachTerminal/attachAgent,
@@ -163,13 +196,9 @@ export async function mountTerminalPane(host, { attach, input, resize, onExit, o
     claim();
     listen(screen, "focusin", claim);
 
-    await attach({
-      cols: term.cols,
-      rows: term.rows,
-      onSnapshot: (bytes) => { term.reset(); term.write(bytes); },
-      onOutput: (bytes) => term.write(bytes),
-      onClosed: (reason) => onExit && onExit(reason),
-    });
+    const failure = mountTerminalFailure(host);
+    cleanup.add(failure.dispose);
+    await attach(terminalPaneCallbacks(term, failure, onExit));
 
     const resizeObserver = new ResizeObserver(() => fit());
     cleanup.add(() => resizeObserver.disconnect());

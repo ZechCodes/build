@@ -50,19 +50,13 @@ vi.mock("../src/terminal/pane.js", () => ({
   },
 }));
 
-// The devices whose saved transport is HTTPS; empty unless a case says so.
-const httpDevices = new Set();
-vi.mock("../src/core/httpConnections.js", async (importOriginal) => ({
-  ...(await importOriginal()),
-  usesHttp: (deviceId) => httpDevices.has(deviceId),
-}));
-
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notifySuccess: () => {} }));
 
 const { consoleBranchRow, consoleCacheScope, emptyConsoleWorld, seedConsoleTerminals, seedConsoleWorld } =
   await import("./consoleWorld.js");
 const { App } = await import("../src/app.js");
+const { clearTerminalPeerLinks, rememberTerminalTransport } = await import("../src/core/terminalPeerLinks.js");
 const { mountConsole, resetConsoleMemory } = await import("../src/core/console.js");
 const { consoleKey, markConsoleTerminal, takeConsoleTerminal } = await import("../src/core/consoleModel.js");
 const { readUiRecord, wipeUiRecords, writeUiRecord } = await import("../src/core/localUiStore.js");
@@ -122,7 +116,7 @@ beforeEach(async () => {
   takeConsoleTerminal();
   calls = [];
   panes.length = 0;
-  httpDevices.clear();
+  clearTerminalPeerLinks();
   await emptyConsoleWorld();
   await wipeUiRecords();
   branchRow = consoleBranchRow();
@@ -242,7 +236,7 @@ describe("opening it", () => {
 
 describe("the transport label", () => {
   it("names WebRTC on the open terminal of the console's own HTTPS device", async () => {
-    httpDevices.add("dev-1");
+    rememberTerminalTransport({ deviceId: "dev-1", session: { transport: "http", terminalTransport: "webrtc" } });
     await mountOver(["term-1"]);
     await open();
     expect(region().querySelector(".console-pane .term-transport")?.textContent).toBe("Terminal over WebRTC");

@@ -1,12 +1,6 @@
-// The per-browser-tab terminal socket owner. ONE TerminalSocket multiplexes
-// every terminal tab (user shells + agent screens) by term_id, kept off the app
-// RPC session so PTY floods never head-of-line-block RPCs. Created lazily on the
-// first terminal/agent tab mount — users who never open one pay no session.
-//
-// It owns no socket of its own (spec rule 5): the terminals ride the `term`
-// DataChannel of the device they follow, on a session minted through that
-// device's rendezvous. Minting one is the connection layer's — it owns the
-// rendezvous — and is handed to this module as `mintTerminalSession`.
+// One terminal session follows the browser tab's selected device. A capable
+// HTTP Opening supplies WSS on demand. The RTC path requests its existing
+// independently authenticated mint and rides the device's terminal channel.
 
 import * as transport from "@build/secure-transport";
 import { App } from "../app.js";
@@ -15,11 +9,14 @@ import { canAnswer, contextFor } from "../core/deviceContexts.js";
 import { createTerminalFollowController } from "./followController.js";
 import { TerminalSocket } from "./session.js";
 import { isProjectTerminalScope, projectTerminalRpc } from "../core/projectTerminalRpc.js";
+import { directoryCacheId } from "../core/directoryScope.js";
+import { mergeCachedRecordsTogether, readCached, recordWriteOf } from "../core/localCache.js";
 import { createStatusHub } from "./statusHub.js";
-import { terminalPeerLink } from "../core/terminalPeerLinks.js";
+import { rememberTerminalTransport, terminalPeerLink, terminalWebSocketOwner } from "../core/terminalPeerLinks.js";
 
 let socket = null;
 let followController = null;
+let webSocketDevice = null;
 
 /** How a terminal session is minted on one device — through that device's
  *  rendezvous, which the connection layer owns. Until it is provided, nothing
@@ -71,6 +68,26 @@ export function subscribeTerminalStatus(fn) {
   return statusHub.subscribe(fn);
 }
 
+function scopedTerminalCall(deviceId, method, params, call) {
+  return isProjectTerminalScope(params)
+    ? projectTerminalRpc(contextFor(deviceId), method, params, call) : call(method, params);
+}
+
+async function refreshTerminalRoster(deviceId, scope, entityId = directoryCacheId(scope)) {
+  const context = contextFor(deviceId);
+  const session = context?.session;
+  if (!session || !entityId) return;
+  const address = { deviceId, entityId, kind: "terminals" };
+  const before = recordWriteOf(await readCached(address));
+  const stands = () => contextFor(deviceId) === context && context.session === session;
+  const result = await scopedTerminalCall(deviceId, "term.list", scope, (method, params) => {
+    if (!stands()) throw new Error("The terminal device changed before refreshing its roster.");
+    return context.rpc(method, params);
+  });
+  await mergeCachedRecordsTogether([address], ([record]) =>
+    stands() && recordWriteOf(record) === before ? [{ tabs: result.terminals || [] }] : null);
+}
+
 export function terminalManager() {
   if (!socket) {
     // A terminal session that stopped answering on a wire the peer is still
@@ -80,8 +97,9 @@ export function terminalManager() {
     const created = new TerminalSocket({
       transport,
       userTerminalDevice: terminalDeviceId,
-      userTerminalRpc: (deviceId, method, params, call) => isProjectTerminalScope(params)
-        ? projectTerminalRpc(contextFor(deviceId), method, params, call) : call(method, params),
+      userTerminalRpc: scopedTerminalCall,
+      rosterCall: (deviceId, method, params) => contextFor(deviceId).rpc(method, params),
+      onUncertainRoster: refreshTerminalRoster,
       onTermUnresponsive: () => followTerminalDevice({ freshSession: true }),
     });
     socket = created;
@@ -158,7 +176,9 @@ export function followTerminalDevice({ freshSession = false } = {}) {
   const deviceId = terminalDeviceId();
   const context = contextFor(deviceId);
   const answerable = canAnswer(context);
+  rememberTerminalTransport(context);
   if (!socket) return answerable;
+  if (followWebSocket(context, deviceId)) return answerable;
   const peerLink = terminalPeerLink(context);
   return followController.request({
     deviceId,
@@ -171,12 +191,28 @@ export function followTerminalDevice({ freshSession = false } = {}) {
   });
 }
 
+function followWebSocket(context, deviceId) {
+  const owner = terminalWebSocketOwner(context);
+  if (owner || (webSocketDevice && webSocketDevice === deviceId && !context?.session)) {
+    if (!webSocketDevice) followController.reset();
+    webSocketDevice = deviceId;
+    socket.followWebSocket(deviceId, owner);
+    return true;
+  }
+  if (webSocketDevice) {
+    webSocketDevice = null;
+    socket.followWebSocket(null, null);
+  }
+  return false;
+}
+
 /** Invalidate the old account before its device teardown can re-enter follow. */
 export function resetTerminalManager() {
   const previousController = followController;
   const previous = socket;
   socket = null;
   followController = null;
+  webSocketDevice = null;
   statusHub.clear();
   try {
     previousController?.reset();

@@ -251,13 +251,18 @@ const metadataUses = {
     ["build.push.open","const PUSH_OPEN_MESSAGE = [\"build.push.open\"] ; const APP_PATH","775dbce78b514f4ccd8decfa36d864808fefb900917354d36bef33db28eaca43"],
   ],
   "terminal/session.js": [
+    // Push types consumed by the shared RTC and WSS terminal panes.
+    ["term.reset",". type === [\"term.reset\"] ) ; const","dc09584635c1047f054ad6cc510c13e5f0ffd909239488c288e645a9834bedf7"],
+    ["term.reset",". type === [\"term.reset\"] ? 0 :","2940578e82dbf97376c6c68895a43159cb35ff0dcd0fa3dfabb0981a57ca7f81"],
+    ["term.reset",". type === [\"term.reset\"] ? resets :","9de3d07719f5d094e3a07349462f2aca8e6cb3baa98fa21111b2837aa54701bc"],
+    ["term.reset",". type === [\"term.reset\"] , data :","229f24afbd15efb19f09730a3a3e6bbba7d3e41e57972966e82bb139fbe6cab5"],
     ["term.reset",". type !== [\"term.reset\"] || ! String","acb5b711da517a30b3c58819241e4b7fefc6e9d142028279c693847679d2b0d9"],
     ["term.output",". type !== [\"term.output\"] && p .","b7ac576602b69e7788b3d349fd7c88e92346daa2fb481d0058be97d6ca8008a5"],
     ["term.reset",". type !== [\"term.reset\"] ) return ;","b7ac576602b69e7788b3d349fd7c88e92346daa2fb481d0058be97d6ca8008a5"],
-    ["term.output",". type === [\"term.output\"] || p .","064660193f5c3a35f359d2ea0424be626bd0386acf1611364b348b161c48993c"],
-    ["term.reset",". type === [\"term.reset\"] ) { if","064660193f5c3a35f359d2ea0424be626bd0386acf1611364b348b161c48993c"],
+    ["term.output",". type === [\"term.output\"] || p .","f4876e4363a4c0a5fbffd167f2dd0daa9177bba4ec417a59fc96309aa33bace6"],
+    ["term.reset",". type === [\"term.reset\"] ) { this","f4876e4363a4c0a5fbffd167f2dd0daa9177bba4ec417a59fc96309aa33bace6"],
     ["term.closed",". type === [\"term.closed\"] ) { if","0bd0e815159a22798b5a7c99442bf8e7596f328b4d9443124b96dd5dc3be6ba9"],
-    ["term.output",". type === [\"term.output\"] ) { if","c359dc975880f6018fbadcb07010dee4f9c53b00da269d93fd6d01936f15a50d"],
+    ["term.output",". type === [\"term.output\"] ) { if","9aa1852b013ca56082b3454c84b3560ff2558175c47ce2ee121d718508278425"],
   ],
   "core/writeOperationProgress.js": [
     // Exact capability lookup; this literal is never a method producer.
@@ -313,7 +318,7 @@ const sourceFingerprintParts = {
   // #1065: accepted navigation notifies only opted-in project settings; RPC edges are unchanged.
   "app.js": ["8e043a81", "cc1d5abd", "0e312435", "52018876", "d56a6883", "8c9587f5", "e34aa31b", "25b32265"],
   "appState.js": ["d24d9edc", "6e4988f0", "8a5289ee", "6c449b3f", "91bdbe42", "7cd43ada", "7a9df6a4", "acd39971"],
-  "connection.js": ["009f7235", "cbcbf300", "43c93b7c", "bcfb2243", "e17e2797", "d809e8af", "5e60cb14", "d0fe86f7"],
+  "connection.js": ["70482301", "91a490b2", "fb368346", "8d6aa45d", "ba03da34", "37fa6464", "a6eab326", "da02ca99"],
   "core/activityRuns.js": ["2bd80d81", "ad2ddde9", "da2fc194", "95b7b7ba", "4d0a86f4", "29a52906", "009b6fc5", "5221d710"],
   "core/adoption.js": ["350b90d5", "9e535f4b", "15adf2ef", "7eacd8c0", "fb946020", "b6130cb8", "ce729fed", "bb90597e"],
   "core/agentDefaults.js": ["f856d23d", "2c446c14", "c6e4d78e", "e11e737d", "75e1fbc1", "fa79564d", "2ef20a2b", "1cdbbcb0"],
@@ -456,7 +461,7 @@ const sourceFingerprintParts = {
   "core/taskView.js": ["547b447a", "1b089702", "8da986a0", "97cbffed", "86cd8be0", "dfabf680", "23671d54", "6ac7ef11"],
   "core/taskWaitingOnActions.js": ["576156a7", "454cbd39", "333d8645", "9f62ff9e", "00e96c90", "55eb5f60", "441927a5", "f6cf4597"],
   "core/taskWaitingOnPage.js": ["b5a78897", "c7cfc8dc", "8a1ad2e0", "c77cad0a", "874280e0", "1b394697", "37da2547", "7a1c3636"],
-  "core/terminalWebSocket.js": ["a200d5bd", "8b792cfb", "4b43a2fb", "47c49f1c", "dc151484", "c21b92c4", "26019999", "6d7afbe2"],
+  "core/terminalWebSocket.js": ["15fd2eb9", "3c1c6f53", "984d6719", "7b7945c6", "00874a3f", "81700a7b", "9564b07f", "57c2c397"],
   "core/theme.js": ["dcf76f3b", "8ab07b95", "96946c96", "79e73d55", "8deb90bc", "251b94d6", "5dd0aaaf", "d1e0a71f"],
   "core/threadAttachmentPages.js": ["df0b246c", "a850af5a", "c612aeac", "414feaa5", "03db6170", "9511cd9c", "372279a6", "9c417822"],
   "core/threadSync.js": ["bf280ad8", "20d158b6", "aaa4f7b9", "695d3816", "1d0200e6", "cf6756bd", "bc0e1372", "2e452737"],
@@ -500,8 +505,9 @@ const sourceFingerprintParts = {
   "sheets/sourceSyncControls.js": ["49045a5b", "1fd03d03", "c9e574df", "020f32ea", "5d64bdd0", "3ab970b7", "1c98dee9", "cb20c875"],
   // #997 workspaceSettings.js:292: the existing project.list catalog loader delegates to owned device recovery.
   "sheets/workspaceSettings.js": ["5cc470f0", "7f95fc28", "02c7bfb0", "478c4510", "e33b5183", "1e6be057", "6928f74b", "82185347"],
-  "terminal/manager.js": ["4027a8b0", "af931af9", "3d71d687", "c930e06b", "bd55b938", "ad0db4da", "e20dc150", "60ed795b"],
-  "terminal/session.js": ["ce4e3036", "ac5b84b3", "ae7583e9", "2b940e62", "4dfe75b7", "d77a06e7", "dfda65ca", "8c8ede4e"],
+  "terminal/manager.js": ["6efa58e6", "42df1fed", "56039193", "8ec04fb0", "cc898c28", "553a949f", "bf091ac6", "50538064"],
+  "terminal/session.js": ["c4960c3e", "c214a191", "be364234", "6f98e337", "f68f65d6", "962d051f", "28f507ea", "535956b8"],
+  "terminal/webSocketBinding.js": ["2164eebd", "11160945", "742b0261", "d96b9b2b", "f79b001b", "90c2f9e0", "6e4249ca", "a272a155"],
   "views/archive.js": ["6f4a7962", "88f34292", "73eafead", "5dc6229b", "5b040b7a", "09baf137", "8cbbce83", "6c83d400"],
   "views/branchView.js": ["70c29ffd", "bb5b3d73", "5e035b0d", "db7630f9", "db5f60e3", "05e6694e", "84d8115f", "5eb5b72c"],
   // #997 deviceProjects.js:82: the existing project.list loader delegates to owned device recovery.
@@ -822,17 +828,33 @@ const dynamicSites = {
     "callRpc ( method )"
   ],
   "terminal/manager.js": [
+    // Source guards forward only the pane verb. Roster reads use the REST term.list route.
+    ") . rpc ( method )",
     "call ( method )",
+    "context . rpc ( method )",
     "projectTerminalRpc ( method )"
   ],
   "terminal/session.js": [
+    // RTC keeps its terminal RPC. WSS effects and attach calls use the frozen terminal allowlist.
     "_call ( method )",
     "_userCall ( method )",
+    "_webSocket . call ( attempt . carrier )",
+    "_webSocket ?. call ( attempt . carrier )",
+    "binding . call ( attempt . carrier )",
+    "binding . call ( carrier )",
     "call ( method )",
     "createSessionRpc ( { transport : this . transport , sessionId , sessionKeyB64 , deviceId , bridgeEpoch , noCarrier : ( ) => new TerminalSocketLost ( this . _closed ? \"closed\" : \"disconnected\" ) , } )",
     "rpc . call ( method )",
     "this . _call ( verb )",
+    "this . _userTerminalRpc ( deviceId )",
+    "this . _userTerminalRpc ( deviceId )",
+    "this . _userTerminalRpc ( entry . deviceId )",
     "this . _userTerminalRpc ( this . deviceId )"
+  ],
+  "terminal/webSocketBinding.js": [
+    // The carrier validates the WSS method allowlist. The liveness probe uses ping.
+    "call ( carrier )",
+    "carrier . call ( method )"
   ],
   "views/deviceProjects.js": [
     "creationCall ( chosenId )"

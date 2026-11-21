@@ -176,7 +176,7 @@ function terminalTimeout() {
   });
 }
 
-export async function openTerminalWebSocket({ url, issueTicket, createWebSocket, epoch, signal, isCurrent, retiredError, now, onEnd }) {
+export async function openTerminalWebSocket({ url, issueTicket, createWebSocket, epoch, signal, isCurrent, retiredError, onEnd }) {
   let ticket;
   try { ticket = await issueTicket(signal); } catch (error) {
     if (signal.aborted || !isCurrent()) throw retiredError();
@@ -190,10 +190,10 @@ export async function openTerminalWebSocket({ url, issueTicket, createWebSocket,
   let socket;
   try { socket = createWebSocket(url, [TERMINAL_PROTOCOL, `ticket.${ticket.token}`]); }
   catch { throw transportError(); }
-  return createCarrier({ socket, epoch, signal, isCurrent, retiredError, onEnd, openTimeout: Math.min(SEND_STALL_MS, ticket.expiresAt - now()) });
+  return createCarrier({ socket, epoch, signal, isCurrent, retiredError, onEnd });
 }
 
-function createCarrier({ socket, epoch, signal, isCurrent, retiredError, onEnd, openTimeout }) {
+function createCarrier({ socket, epoch, signal, isCurrent, retiredError, onEnd }) {
   const held = new Map();
   const pushes = new Set();
   const closes = new Set();
@@ -227,7 +227,7 @@ function createCarrier({ socket, epoch, signal, isCurrent, retiredError, onEnd, 
   };
   const retire = () => stop(retiredError());
   const lost = ({ code }) => stop(current() ? transportError(code) : retiredError());
-  const openTimer = setTimeout(() => stop(current() ? transportError() : retiredError()), openTimeout);
+  const openTimer = setTimeout(() => stop(current() ? transportError() : retiredError()), SEND_STALL_MS);
   const openSocket = () => {
     if (!current()) {
       retire();

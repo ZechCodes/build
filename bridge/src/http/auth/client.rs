@@ -69,12 +69,13 @@ impl VerifierInner {
         }
         let response: IntrospectionResponse =
             serde_json::from_slice(&body).map_err(|_| AuthError::Unavailable)?;
-        self.validate(response, state, started, wall)
+        self.validate(response, digest, state, started, wall)
     }
 
     fn validate(
         &self,
         response: IntrospectionResponse,
+        digest: TokenDigest,
         state: Arc<TokenState>,
         started: Instant,
         wall: Duration,
@@ -101,6 +102,7 @@ impl VerifierInner {
         }
         Ok(Arc::new(Evidence {
             binding,
+            credential_digest: digest,
             deadline,
             refresh_at: (started + self.freshness.refresh_after).min(deadline),
             token_state: state,

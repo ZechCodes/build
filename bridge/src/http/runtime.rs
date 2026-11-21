@@ -36,6 +36,7 @@ use crate::execution::{
 mod discovery;
 mod renewal;
 mod subscriptions;
+mod terminal_tickets;
 
 const LIFECYCLE_BYTES: usize = 64 * 1024;
 const MAX_FAMILY_OPENINGS: usize = 16;
@@ -47,6 +48,7 @@ struct VerifiedAuthority {
     deadline: Instant,
     live: Arc<dyn Fn() -> bool + Send + Sync>,
     scopes: Arc<[String]>,
+    credential_digest: [u8; 32],
 }
 
 impl VerifiedAuthority {
@@ -63,6 +65,7 @@ impl VerifiedAuthority {
         };
         let scopes = binding.scopes().to_vec().into();
         let deadline = grant.deadline();
+        let credential_digest = grant.credential_digest();
         let retained = grant.clone();
         let live = Arc::new(move || retained.check().is_ok());
         Self {
@@ -70,11 +73,20 @@ impl VerifiedAuthority {
             deadline,
             live,
             scopes,
+            credential_digest,
         }
     }
 
+    fn is_live(&self) -> bool {
+        (self.live)() && Instant::now() < self.deadline
+    }
+
+    fn caller(&self) -> VerifiedCaller {
+        VerifiedCaller::verified_http(self.identity.clone(), self.deadline, self.live.clone())
+    }
+
     fn ensure_scope(&self, required: &str) -> Result<(), AuthError> {
-        if !(self.live)() || Instant::now() >= self.deadline {
+        if !self.is_live() {
             return Err(AuthError::Expired);
         }
         self.scopes
@@ -119,6 +131,7 @@ struct HttpState {
     accepting: Arc<AtomicBool>,
     buffers: Arc<super::limits::BufferBudget>,
     discovery: Option<Arc<discovery::Discovery>>,
+    terminal_tickets: Option<Arc<terminal_tickets::TerminalTickets>>,
     #[cfg(test)]
     output_observer: Arc<Mutex<Option<OutputObserver>>>,
     #[cfg(test)]
@@ -203,9 +216,19 @@ impl HttpState {
         // Binding retirement can wake body cleanup, which may reap again.
         // Never retain the openings registry lock across that handoff.
         for opening in removed {
-            opening.streams.close();
+            self.retire_mounted(opening);
+        }
+        if let Some(tickets) = &self.terminal_tickets {
+            tickets.reap();
         }
         count
+    }
+
+    fn retire_mounted(&self, opening: MountedOpening) {
+        opening.streams.close();
+        if let Some(tickets) = &self.terminal_tickets {
+            tickets.retire(&opening.session);
+        }
     }
 
     fn retire_all(&self) -> usize {
@@ -220,6 +243,9 @@ impl HttpState {
         for opening in removed {
             opening.streams.close();
             self.execution.sessions().close(&opening.session);
+        }
+        if let Some(tickets) = &self.terminal_tickets {
+            tickets.clear();
         }
         count
     }
@@ -257,7 +283,13 @@ impl HttpRuntime {
             .route(
                 "/v1/subscriptions/{subscription_id}/events",
                 get(subscriptions::events),
-            )
+            );
+        let router = if self.state.terminal_tickets.is_some() {
+            router.route(terminal_tickets::PATH, post(terminal_tickets::create))
+        } else {
+            router
+        };
+        let router = router
             .fallback(resource_request)
             .with_state(self.state.clone());
         #[cfg(test)]
@@ -289,6 +321,8 @@ fn runtime_with(execution: Arc<ExecutionService>, verifier: Arc<dyn GrantVerifie
             accepting: Arc::new(AtomicBool::new(true)),
             buffers: Arc::new(super::limits::BufferBudget::default()),
             discovery: None,
+            // The internal mount gate stays off until terminal WSS qualifies.
+            terminal_tickets: None,
             #[cfg(test)]
             output_observer: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -468,11 +502,7 @@ fn resource_opening(
             opening.generation.clone(),
         )
     };
-    let caller = VerifiedCaller::verified_http(
-        authority.identity.clone(),
-        authority.deadline,
-        authority.live.clone(),
-    );
+    let caller = authority.caller();
     let (resumed, request_authorization) = state
         .execution
         .sessions()
@@ -653,14 +683,15 @@ async fn close_session(
         return refusal(StatusCode::NOT_FOUND, "not_found");
     };
     state.execution.sessions().close(&session);
-    let mut openings = state.openings.lock().unwrap();
-    let exact = openings
-        .get(&session_id)
-        .is_some_and(|current| current.session.opening().is(session.opening()));
-    if exact {
-        if let Some(opening) = openings.remove(&session_id) {
-            opening.streams.close();
-        }
+    let removed = {
+        let mut openings = state.openings.lock().unwrap();
+        let exact = openings
+            .get(&session_id)
+            .is_some_and(|current| current.session.opening().is(session.opening()));
+        exact.then(|| openings.remove(&session_id)).flatten()
+    };
+    if let Some(opening) = removed {
+        state.retire_mounted(opening);
     }
     StatusCode::NO_CONTENT.into_response()
 }
@@ -1210,6 +1241,7 @@ mod tests {
             deadline: Instant::now() + lifetime,
             live: Arc::new(move || live.load(Ordering::SeqCst)),
             scopes: vec!["bridge:read".into(), "bridge:write".into()].into(),
+            credential_digest: [0; 32],
         }
     }
 

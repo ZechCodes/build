@@ -1,4 +1,4 @@
-use super::AuthError;
+use super::{AuthError, TokenDigest};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::time::Instant;
@@ -57,6 +57,7 @@ pub(super) struct Lease {
 
 pub(super) struct Evidence {
     pub(super) binding: HttpGrantBinding,
+    pub(super) credential_digest: TokenDigest,
     pub(super) deadline: Instant,
     pub(super) refresh_at: Instant,
     pub(super) token_state: Arc<TokenState>,
@@ -136,6 +137,11 @@ impl VerifiedHttpGrant {
             .lock()
             .map(|e| e.deadline)
             .unwrap_or_else(|_| Instant::now())
+    }
+
+    /// Private credential identity for exact-proof renewal in HTTP adapters.
+    pub(in crate::http) fn credential_digest(&self) -> TokenDigest {
+        self.lease.evidence.lock().unwrap().credential_digest
     }
 
     pub fn refresh_at(&self) -> Instant {

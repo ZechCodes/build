@@ -539,6 +539,19 @@ impl ClientSessions {
         expected: Option<&EventBinding>,
         sink: Arc<dyn EventSink>,
     ) -> Result<EventBinding, SessionError> {
+        self.replace_events_if(session, class, expected, sink, || true)
+    }
+
+    /// Compare the exact predecessor and check adapter-specific authority under
+    /// the same Opening gate before the new binding can carry any output.
+    pub(crate) fn replace_events_if(
+        &self,
+        session: &SessionLease,
+        class: StreamClass,
+        expected: Option<&EventBinding>,
+        sink: Arc<dyn EventSink>,
+        authorized: impl FnOnce() -> bool,
+    ) -> Result<EventBinding, SessionError> {
         let _output = session.opening().0.output_gate.lock().unwrap();
         let mut state = session.0.state.lock().unwrap();
         Self::authorize(session)?;
@@ -554,6 +567,9 @@ impl ClientSessions {
         };
         if !matches_last {
             return Err(SessionError::StaleBinding);
+        }
+        if !authorized() {
+            return Err(SessionError::Unauthorized);
         }
         // Legacy carrier IDs occupy the low half; application bindings have a
         // disjoint namespace while both output paths coexist during extraction.
@@ -779,7 +795,10 @@ impl EventBinding {
         SessionEvents(self.clone())
     }
     pub fn is_live(&self) -> bool {
-        self.binding.live.load(Ordering::SeqCst) && self.session.is_live()
+        self.is_current() && self.session.is_live()
+    }
+    pub(crate) fn is_current(&self) -> bool {
+        self.binding.live.load(Ordering::SeqCst)
     }
     pub fn close(&self) {
         let _output = self.session.opening().0.output_gate.lock().unwrap();

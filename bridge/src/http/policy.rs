@@ -160,10 +160,76 @@ impl HttpPolicy {
     }
 }
 
-async fn guard(State(policy): State<HttpPolicy>, request: Request, next: Next) -> Response {
+/// Terminal credentials require one explicit configured caller Origin in
+/// addition to the listener's verified bridge authority.
+pub(super) struct TerminalOrigin<'a> {
+    caller: &'a str,
+    policy: &'a HttpPolicy,
+}
+
+impl TerminalOrigin<'_> {
+    pub(super) fn caller(&self) -> &str {
+        self.caller
+    }
+
+    pub(super) fn matches_bridge(&self, origin: &str) -> bool {
+        origin
+            .strip_prefix("https://")
+            .and_then(|authority| authority.parse().ok())
+            .is_some_and(|authority| self.policy.matches_authority(&authority))
+    }
+}
+
+pub(super) fn terminal_origin(request: &Request) -> Result<TerminalOrigin<'_>, Box<Response>> {
+    let forbidden = || Box::new(origin_forbidden());
+    let policy = request
+        .extensions()
+        .get::<HttpPolicy>()
+        .ok_or_else(forbidden)?;
+    let headers = request.headers();
+    if headers.get_all(header::HOST).iter().count() != 1 {
+        return Err(authority_mismatch().into());
+    }
+    let mut origins = headers.get_all(header::ORIGIN).iter();
+    let value = origins.next().ok_or_else(forbidden)?;
+    let caller = value.to_str().map_err(|_| forbidden())?;
+    if origins.next().is_some()
+        || !caller.starts_with("https://")
+        || !policy.origins.contains(value)
+    {
+        return Err(forbidden());
+    }
+    Ok(TerminalOrigin { caller, policy })
+}
+
+pub(super) fn origin_forbidden() -> Response {
+    policy_refusal(StatusCode::FORBIDDEN, "origin_forbidden")
+}
+
+pub(super) fn authority_mismatch() -> Response {
+    policy_refusal(StatusCode::MISDIRECTED_REQUEST, "authority_mismatch")
+}
+
+fn policy_refusal(status: StatusCode, code: &'static str) -> Response {
+    (
+        status,
+        Json(serde_json::json!({
+            "error": "HTTP request policy refused",
+            "error_code": code,
+            "retryable": false,
+            "request_id": uuid::Uuid::new_v4().to_string(),
+        })),
+    )
+        .into_response()
+}
+
+async fn guard(State(policy): State<HttpPolicy>, mut request: Request, next: Next) -> Response {
     let mut response = match policy.check(&request) {
-        Ok(()) => next.run(request).await,
-        Err((status,code)) => (status,Json(serde_json::json!({"error":"HTTP request policy refused","error_code":code,"retryable":false,"request_id":uuid::Uuid::new_v4().to_string()}))).into_response(),
+        Ok(()) => {
+            request.extensions_mut().insert(policy);
+            next.run(request).await
+        }
+        Err((status, code)) => policy_refusal(status, code),
     };
     response
         .headers_mut()

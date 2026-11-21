@@ -181,3 +181,51 @@ async fn mounted_tls_invalid_grid_dimensions_never_reach_execution() {
     );
     server.stop().await;
 }
+
+#[tokio::test]
+async fn mounted_tls_reset_uses_snapshot_budget_and_closes_on_overflow() {
+    let producer = Arc::new(OnceLock::new());
+    let server = Server::start(reset_handler(producer.clone())).await;
+    let opening = server.opening().await;
+    let mut socket = server.socket(&server.ticket(&opening).await).await;
+    assert_eq!(
+        call(
+            &mut socket,
+            "attach",
+            "term.attach",
+            json!({"term_id":"shell"})
+        )
+        .await["ok"],
+        true
+    );
+    let caps = &fixture()["limits"]["message_bytes"];
+    let ordinary = caps["ordinary"].as_u64().unwrap() as usize;
+    let snapshot = caps["snapshot"].as_u64().unwrap() as usize;
+    let producer = producer.get().unwrap();
+
+    // The base64 alone exceeds the ordinary cap. This also witnesses the
+    // mounted EventSink's successful reset classification before the overflow.
+    assert!(producer.push(reset_payload(ordinary + 4)));
+    let accepted = object(&mut socket).await;
+    assert_eq!(accepted["type"], "term.reset");
+    assert_eq!(case_text(&accepted["data"]).len(), ordinary + 4);
+
+    assert!(producer.push(reset_payload(snapshot)));
+    assert_closed(&mut socket, Some(1009)).await;
+    server.stop().await;
+}
+
+fn reset_handler(producer: Arc<OnceLock<crate::execution::CallContext>>) -> FrameHandler {
+    greeting(FrameHandler::new(
+        FrameClock::new(),
+        move |sender, frame, _| {
+            assert_eq!(frame.payload["method"], "term.attach");
+            assert!(producer.set(sender.event_context()).is_ok());
+            success(&frame, json!({"term_id":"shell","snapshot":""}))
+        },
+    ))
+}
+
+fn reset_payload(bytes: usize) -> Value {
+    json!({"type":"term.reset", "term_id":"shell", "cursor":0, "data":"A".repeat(bytes)})
+}

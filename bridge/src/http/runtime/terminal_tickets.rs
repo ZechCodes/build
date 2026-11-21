@@ -35,8 +35,6 @@ use crate::execution::session::{
     AuthorizationLease, DeliveryError, EncodedEvent, EventBinding, EventSink, SessionLease,
     StreamClass, VerifiedCaller,
 };
-#[cfg(test)]
-use crate::http::limits::TerminalSocketBudget;
 use crate::http::{
     limits::TerminalSocketReservation,
     listener::{terminal_upgrade::TerminalUpgrade, OutputAuthority},
@@ -45,8 +43,6 @@ use crate::http::{
 
 pub(super) const PATH: &str = "/v1/terminal-tickets";
 const TOKEN_BYTES: usize = 32;
-#[cfg(test)]
-const TOKEN_ENCODED_BYTES: usize = (TOKEN_BYTES * 8).div_ceil(6);
 const MAX_AGE: Duration = Duration::from_millis(15_000);
 const MAX_PENDING_FAMILY: usize = 8;
 const MAX_PENDING_GLOBAL: usize = 128;
@@ -70,8 +66,6 @@ impl VerifiedAuthority {
 #[derive(Default)]
 pub(super) struct TerminalTickets {
     registry: Mutex<Registry>,
-    #[cfg(test)]
-    sockets: TerminalSocketBudget,
 }
 
 #[derive(Default)]
@@ -227,11 +221,6 @@ impl TerminalTickets {
             })
             .ok_or_else(invalid)?;
         Ok(session)
-    }
-
-    #[cfg(test)]
-    fn reserve_socket(&self, family: &str) -> HttpResult<TerminalSocketReservation> {
-        self.sockets.reserve(family).map_err(|_| overloaded())
     }
 }
 
@@ -464,17 +453,6 @@ fn bind(
         accepting: state.accepting.clone(),
         held: Arc::new(held),
     })
-}
-
-#[cfg(test)]
-fn digest_token(token: &str) -> Option<TicketDigest> {
-    if token.len() != TOKEN_ENCODED_BYTES {
-        return None;
-    }
-    // The base64 engine rejects padding and nonzero trailing pad bits.
-    let mut raw = [0; TOKEN_BYTES];
-    let decoded = URL_SAFE_NO_PAD.decode_slice(token, &mut raw).ok()?;
-    (decoded == TOKEN_BYTES).then(|| Sha256::digest(raw).into())
 }
 
 fn invalid() -> Box<Response> {

@@ -16,7 +16,7 @@ use tokio_tungstenite::tungstenite::{
 };
 
 use crate::{
-    execution::session::{OutputFence, TerminalInterest},
+    execution::session::OutputFence,
     http::listener::{terminal_upgrade::TerminalSocket, OutputAuthority},
 };
 
@@ -32,7 +32,6 @@ pub(super) struct WriterFence(Arc<Mutex<Option<ActiveWrite>>>);
 struct ActiveWrite {
     fence: OutputFence,
     _reservation: OwnedSemaphorePermit,
-    attachment: Option<Arc<TerminalInterest>>,
 }
 
 impl WriterFence {
@@ -51,7 +50,7 @@ impl WriterFence {
                         .lock()
                         .unwrap()
                         .as_ref()
-                        .is_none_or(ActiveWrite::is_live)
+                        .is_none_or(|write| write.fence.check().is_ok())
             }),
             Arc::new(move || {
                 let limit = deadline.deadline();
@@ -72,34 +71,21 @@ impl WriterFence {
         socket: &mut TerminalSocket,
         output: Outbound,
     ) -> Result<(), WriteFailed> {
-        if !output.fence.is_live()
-            || output
-                .attachment
-                .as_ref()
-                .is_some_and(|interest| !interest.is_live())
-        {
+        if !output.fence.is_live() {
             return Ok(());
         }
+        let Some(output) = output.into_write() else {
+            return Ok(());
+        };
         *self.0.lock().unwrap() = Some(ActiveWrite {
             fence: output.fence,
             _reservation: output.reservation,
-            attachment: output.attachment,
         });
         write_message(socket, &output.bytes).await?;
         // Failure or cancellation keeps the permit in the I/O authority
         // until the physical socket releases the staged fragment.
         *self.0.lock().unwrap() = None;
         Ok(())
-    }
-}
-
-impl ActiveWrite {
-    fn is_live(&self) -> bool {
-        self.fence.check().is_ok()
-            && self
-                .attachment
-                .as_ref()
-                .is_none_or(|interest| interest.is_live())
     }
 }
 

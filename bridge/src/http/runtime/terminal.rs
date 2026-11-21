@@ -276,7 +276,7 @@ impl Connection {
         let interest = if method.is_attach() {
             Some(
                 interests
-                    .begin(id.into(), method, term_id)
+                    .begin(id.into(), method)
                     .ok_or_else(|| ApiError::invalid_params("Terminal attachment limit reached"))?,
             )
         } else if method.requires_attachment() {
@@ -334,15 +334,19 @@ impl Drop for Connection {
 }
 
 async fn reply_error(socket: &mut TerminalSocket, id: &str, error: ApiError) -> Result<(), End> {
-    let mut reply = api::reply(Value::String(id.into()), Err(error));
-    reply["bridge_epoch"] = Value::String(crate::bridge_epoch::current().into());
-    let bytes = serde_json::to_vec(&reply).expect("terminal refusal serializes");
+    let bytes = refusal_bytes(id, error);
     if bytes.len() > sink::MAX_ORDINARY {
         return Err(End::Close(CloseCode::Size));
     }
     writer::write_message(socket, &bytes)
         .await
         .map_err(|_| End::Drop)
+}
+
+fn refusal_bytes(id: &str, error: ApiError) -> Vec<u8> {
+    let mut reply = api::reply(Value::String(id.into()), Err(error));
+    reply["bridge_epoch"] = Value::String(crate::bridge_epoch::current().into());
+    serde_json::to_vec(&reply).expect("terminal refusal serializes")
 }
 
 fn session_error(error: SessionError) -> ApiError {

@@ -4,7 +4,7 @@
 //! `EncodedEvent::is_live` immediately before writing queued output.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde_json::Value;
@@ -329,7 +329,7 @@ impl EncodedEvent {
 /// and the client-chosen attach request ID.
 pub(crate) struct TerminalInterest {
     id: String,
-    live: AtomicBool,
+    state: AtomicU8,
     revision: AtomicU64,
 }
 
@@ -337,7 +337,7 @@ impl TerminalInterest {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
             id: uuid::Uuid::new_v4().to_string(),
-            live: AtomicBool::new(true),
+            state: AtomicU8::new(TerminalInterestState::Live as u8),
             revision: AtomicU64::new(0),
         })
     }
@@ -347,7 +347,16 @@ impl TerminalInterest {
     }
 
     pub(crate) fn is_live(&self) -> bool {
-        self.live.load(Ordering::Acquire)
+        self.state() == TerminalInterestState::Live
+    }
+
+    pub(crate) fn state(&self) -> TerminalInterestState {
+        match self.state.load(Ordering::Acquire) {
+            0 => TerminalInterestState::Live,
+            1 => TerminalInterestState::Detached,
+            2 => TerminalInterestState::Superseded,
+            _ => unreachable!("terminal interest state"),
+        }
     }
 
     /// The caller holds the Opening output gate.
@@ -357,8 +366,23 @@ impl TerminalInterest {
 
     /// The caller holds the Opening output gate.
     pub(crate) fn retire(&self) {
-        self.live.store(false, Ordering::Release);
+        self.state
+            .store(TerminalInterestState::Detached as u8, Ordering::Release);
     }
+
+    /// The caller holds the Opening output gate.
+    pub(crate) fn supersede(&self) {
+        self.state
+            .store(TerminalInterestState::Superseded as u8, Ordering::Release);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum TerminalInterestState {
+    Live = 0,
+    Detached = 1,
+    Superseded = 2,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -50,7 +50,7 @@ type ClientIo = TlsStream<TcpStream>;
 type Client = WebSocketStream<ClientIo>;
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-fn fixture() -> &'static Value {
+pub(super) fn fixture() -> &'static Value {
     static FIXTURE: OnceLock<Value> = OnceLock::new();
     FIXTURE.get_or_init(|| {
         serde_json::from_str(include_str!(

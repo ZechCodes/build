@@ -31,20 +31,9 @@ impl Interests {
         self.entries.get(id).map(|entry| entry.interest.clone())
     }
 
-    pub(super) fn begin(
-        &mut self,
-        id: String,
-        method: Method,
-        requested_term: Option<&str>,
-    ) -> Option<Arc<TerminalInterest>> {
+    pub(super) fn begin(&mut self, id: String, method: Method) -> Option<Arc<TerminalInterest>> {
         if self.entries.len() >= MAX_INTERESTS {
-            // Reuse an existing slot when an explicit shell ID is being
-            // replaced. Agent targets may resolve or rekey inside the handler.
-            let term = requested_term.filter(|_| method == Method::Attach)?;
-            let old = self.entries.iter().find_map(|(id, entry)| {
-                (entry.active && entry.term_id.as_deref() == Some(term)).then(|| id.clone())
-            })?;
-            self.remove(&old);
+            return None;
         }
         let interest = TerminalInterest::new();
         let order = self.next_order;
@@ -115,7 +104,7 @@ impl Interests {
                 && entry.term_id.as_deref() == Some(term_id)
                 && Some(entry.order) != latest;
             if retired {
-                entry.interest.retire();
+                entry.interest.supersede();
             }
             !retired
         });

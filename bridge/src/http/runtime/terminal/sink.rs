@@ -7,11 +7,15 @@ use serde_json::Value;
 use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
-use crate::execution::session::{
-    DeliveryError, EncodedEvent, EventSink, OutputFence, ReplySink, TerminalInterest,
+use crate::{
+    api::ApiError,
+    execution::session::{
+        DeliveryError, EncodedEvent, EventSink, OutputFence, ReplySink, TerminalInterest,
+        TerminalInterestState,
+    },
 };
 
-use super::{interests::Interests, wire::Method};
+use super::{interests::Interests, refusal_bytes, wire::Method};
 
 pub(super) const MAX_ORDINARY: usize = 1024 * 1024;
 const MAX_SNAPSHOT: usize = 12 * 1024 * 1024;
@@ -34,7 +38,28 @@ pub(super) struct Outbound {
     pub(super) bytes: Arc<[u8]>,
     pub(super) fence: OutputFence,
     pub(super) reservation: OwnedSemaphorePermit,
-    pub(super) attachment: Option<Arc<TerminalInterest>>,
+    attachment: Option<Arc<TerminalInterest>>,
+}
+
+impl Outbound {
+    /// Select the reply as it leaves the queue. After selection, the writer
+    /// finishes this message before it can send the replacement's reply.
+    pub(super) fn into_write(mut self) -> Option<Self> {
+        if let Some(interest) = self.attachment.take() {
+            match interest.state() {
+                TerminalInterestState::Live => {}
+                TerminalInterestState::Detached => return None,
+                TerminalInterestState::Superseded => {
+                    self.bytes = superseded_refusal(self.id.as_deref().expect("attach reply ID"));
+                }
+            }
+        }
+        Some(self)
+    }
+}
+
+fn superseded_refusal(id: &str) -> Arc<[u8]> {
+    refusal_bytes(id, ApiError::busy("Terminal attachment was superseded")).into()
 }
 
 impl SocketSink {
@@ -86,7 +111,20 @@ impl SocketSink {
         snapshot_data: Option<usize>,
         attachment: Option<Arc<TerminalInterest>>,
     ) -> Result<(), DeliveryError> {
-        let size = event.bytes().len();
+        let (bytes, fence) = event.into_wire();
+        let (bytes, snapshot_data, attachment) = if attachment
+            .as_ref()
+            .is_some_and(|interest| interest.state() == TerminalInterestState::Superseded)
+        {
+            (
+                superseded_refusal(id.as_deref().expect("attach reply ID")),
+                None,
+                None,
+            )
+        } else {
+            (bytes, snapshot_data, attachment)
+        };
+        let size = bytes.len();
         let class = payload_class(size, snapshot_data);
         let reservation = match class {
             Some(Class::Ordinary) => self.ordinary.clone().try_acquire_many_owned(size as u32),
@@ -100,7 +138,6 @@ impl SocketSink {
             self.fail(CloseCode::Error);
             return Ok(());
         };
-        let (bytes, fence) = event.into_wire();
         match self.queue.try_send(Outbound {
             id,
             bytes,
@@ -136,6 +173,16 @@ fn payload_class(size: usize, snapshot_data: Option<usize>) -> Option<Class> {
     (size <= MAX_ORDINARY).then_some(Class::Ordinary)
 }
 
+fn snapshot_data_bytes(payload: &Value, reply_to: Option<Method>) -> Option<usize> {
+    match reply_to {
+        Some(method) if method.is_attach() && payload["ok"] == true => {
+            payload["result"]["snapshot"].as_str().map(str::len)
+        }
+        None if payload["type"] == "term.reset" => payload["data"].as_str().map(str::len),
+        _ => None,
+    }
+}
+
 impl EventSink for SocketSink {
     fn try_send(&self, event: EncodedEvent) -> Result<(), DeliveryError> {
         let payload = event.payload();
@@ -151,9 +198,7 @@ impl EventSink for SocketSink {
         if !interests.observe_push(interest, term_id) {
             return Ok(());
         }
-        let snapshot = (kind == Some("term.reset"))
-            .then(|| payload["data"].as_str().map(str::len))
-            .flatten();
+        let snapshot = snapshot_data_bytes(payload, None);
         self.enqueue(event, None, snapshot, None)
     }
 }
@@ -177,9 +222,7 @@ impl ReplySink for CallSink {
         } else {
             None
         };
-        let snapshot = (attach && payload["ok"] == true)
-            .then(|| payload["result"]["snapshot"].as_str().map(str::len))
-            .flatten();
+        let snapshot = snapshot_data_bytes(payload, Some(self.method));
         self.socket
             .enqueue(event, Some(self.id.clone()), snapshot, attachment)
     }
@@ -198,3 +241,7 @@ impl CallSink {
         Ok(term_id.map(|_| registration))
     }
 }
+
+#[cfg(test)]
+#[path = "sink/tests.rs"]
+mod tests;

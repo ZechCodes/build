@@ -8,6 +8,19 @@ use crate::execution::{session::HttpIdentity, ExecutionService, FrameHandler};
 use crate::http::{listener::OutputAuthority, policy::HttpPolicy};
 use crate::timing::FrameClock;
 
+use crate::http::limits::TerminalSocketBudget;
+
+const TOKEN_ENCODED_BYTES: usize = (TOKEN_BYTES * 8).div_ceil(6);
+
+fn decode_ticket(token: &str) -> Option<[u8; TOKEN_BYTES]> {
+    if token.len() != TOKEN_ENCODED_BYTES {
+        return None;
+    }
+    let mut raw = [0; TOKEN_BYTES];
+    let decoded = URL_SAFE_NO_PAD.decode_slice(token, &mut raw).ok()?;
+    (decoded == TOKEN_BYTES).then_some(raw)
+}
+
 fn fixture() -> &'static Value {
     static FIXTURE: OnceLock<Value> = OnceLock::new();
     FIXTURE.get_or_init(|| {
@@ -127,6 +140,7 @@ struct Harness {
     runtime: super::super::HttpRuntime,
     app: axum::Router,
     auth: Arc<Auth>,
+    upgrade: TerminalUpgrade,
     opening: Value,
 }
 
@@ -162,28 +176,12 @@ impl Harness {
         let upgrades = axum::Router::new()
             .route(upgrade_path(), axum::routing::get(upgrade))
             .with_state(runtime.state.clone());
-        let sockets = runtime
-            .state
-            .terminal_tickets
-            .as_ref()
-            .unwrap()
-            .sockets
-            .clone();
+        let upgrade = TerminalUpgrade::for_test(TerminalSocketBudget::default());
         let app = policy.apply(
             runtime
                 .router()
                 .merge(upgrades)
-                .layer(axum::middleware::from_fn(
-                    move |mut request: Request<Body>, next: axum::middleware::Next| {
-                        let sockets = sockets.clone();
-                        async move {
-                            request
-                                .extensions_mut()
-                                .insert(TerminalUpgrade::for_test(sockets));
-                            next.run(request).await
-                        }
-                    },
-                )),
+                .layer(axum::Extension(upgrade.clone())),
         );
         let mut request = json_request("POST", "/v1/sessions", json!({"api_range":">=3 <4"}));
         request
@@ -195,6 +193,7 @@ impl Harness {
             runtime,
             app,
             auth,
+            upgrade,
             opening,
         }
     }
@@ -295,27 +294,21 @@ impl Harness {
         .unwrap();
         request.extensions_mut().insert(policy);
         let origin = policy::terminal_origin(&request)?;
-        redeem_test(self.state(), token, origin)
+        redeem_test(self.state(), &self.upgrade, token, origin)
     }
 }
 
 fn redeem_test(
     state: &HttpState,
+    upgrade: &TerminalUpgrade,
     token: &str,
     origin: TerminalOrigin<'_>,
 ) -> HttpResult<TerminalAdmission> {
-    let mut decoded = [0; TOKEN_BYTES];
-    if token.len() != TOKEN_ENCODED_BYTES
-        || URL_SAFE_NO_PAD.decode_slice(token, &mut decoded) != Ok(TOKEN_BYTES)
-    {
-        return Err(invalid());
-    }
+    let decoded = decode_ticket(token).ok_or_else(invalid)?;
     redeem(state, &decoded, origin, Arc::new(Sink), |family| {
-        state
-            .terminal_tickets
-            .as_ref()
-            .unwrap()
-            .reserve_socket(family)
+        upgrade
+            .reserve(family)
+            .map_err(|error| Box::new(error.into_response()))
     })
 }
 
@@ -329,14 +322,18 @@ impl EventSink for Sink {
 #[derive(Clone)]
 struct Race(Arc<tokio::sync::Barrier>);
 
-async fn upgrade(State(state): State<HttpState>, request: Request<Body>) -> Response {
+async fn upgrade(
+    State(state): State<HttpState>,
+    axum::Extension(upgrade): axum::Extension<TerminalUpgrade>,
+    request: Request<Body>,
+) -> Response {
     let origin = policy::terminal_origin(&request).unwrap();
     let offer = request.headers()["sec-websocket-protocol"]
         .to_str()
         .unwrap();
     let token = offer.split_once("ticket.").unwrap().1;
     request.extensions().get::<Race>().unwrap().0.wait().await;
-    match redeem_test(&state, token, origin) {
+    match redeem_test(&state, &upgrade, token, origin) {
         Ok(admission) => {
             let mut response = StatusCode::SWITCHING_PROTOCOLS.into_response();
             response.extensions_mut().insert(Arc::new(admission));
@@ -421,7 +418,7 @@ fn terminal_ticket_decoder_accepts_only_canonical_fixture_tokens() {
             .iter()
             .find_map(|part| string(part).strip_prefix("ticket."));
         assert_eq!(
-            token.and_then(digest_token).is_some(),
+            token.and_then(decode_ticket).is_some(),
             status == 101,
             "{}",
             offer["name"]
@@ -435,15 +432,15 @@ fn terminal_ticket_held_socket_cap_matches_fixture() {
         let held = |key: &str| case[key].as_u64().unwrap_or_default();
         let family = held("held_family") + held("superseded_held_family");
         let listener = held("held_listener") + held("superseded_held_listener");
-        let tickets = TerminalTickets::default();
+        let slots = TerminalSocketBudget::default();
         let _family: Vec<_> = (0..family)
-            .map(|_| tickets.reserve_socket("current-family").unwrap())
+            .map(|_| slots.reserve("current-family").unwrap())
             .collect();
         let _others: Vec<_> = (family..listener)
-            .map(|number| tickets.reserve_socket(&format!("family-{number}")).unwrap())
+            .map(|number| slots.reserve(&format!("family-{number}")).unwrap())
             .collect();
         assert_eq!(
-            tickets.reserve_socket("current-family").is_ok(),
+            slots.reserve("current-family").is_ok(),
             case["admit"].as_bool().unwrap(),
             "{}",
             case["name"],
@@ -560,11 +557,10 @@ async fn terminal_ticket_supersedes_pending_and_rechecks_socket_capacity() {
         harness.redeem(&first, origin()).err().unwrap().status(),
         StatusCode::UNAUTHORIZED
     );
-    let tickets = harness.state().terminal_tickets.as_ref().unwrap();
     let family = &harness.auth.authority("writer").identity.family_id;
     let limit = number(&fixture()["limits"]["sockets"]["held_family"]);
     let mut held: Vec<_> = (0..limit)
-        .map(|_| tickets.reserve_socket(family).unwrap())
+        .map(|_| harness.upgrade.reserve(family).unwrap())
         .collect();
     assert_eq!(
         harness.redeem(&second, origin()).err().unwrap().status(),
@@ -671,10 +667,9 @@ async fn terminal_ticket_post_refuses_invalid_requests() {
     let harness = Harness::new(Duration::from_secs(30)).await;
     for case in cases("invalid_requests") {
         let held = case["held_family_sockets"].as_u64().unwrap_or_default();
-        let registry = harness.state().terminal_tickets.as_ref().unwrap();
         let family = &harness.auth.authority("writer").identity.family_id;
         let _held: Vec<_> = (0..held)
-            .map(|_| registry.reserve_socket(family).unwrap())
+            .map(|_| harness.upgrade.reserve(family).unwrap())
             .collect();
         let response = harness
             .app

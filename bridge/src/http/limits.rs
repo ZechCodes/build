@@ -29,6 +29,10 @@ pub const MAX_HEADER_BYTES: usize = 16 * 1024;
 pub const MAX_LIFECYCLE_BYTES: usize = 64 * 1024;
 pub const MAX_DISCOVERY_BYTES: usize = 16 * 1024;
 pub const MAX_SOCKETS: usize = 128;
+pub const MAX_TERMINAL_SOCKETS: usize = 16;
+pub const MAX_FAMILY_TERMINAL_SOCKETS: usize = 8;
+pub const MAX_TERMINAL_CLIENT_BYTES: usize = 128 * 1024;
+pub const TERMINAL_CODEC_BYTES: usize = 1024 * 1024;
 pub const MAX_FAMILY_OPENINGS: usize = 16;
 /// Live streams one family may hold. The pool holds 32 streams, so no family
 /// can fill more than a quarter of it. A replaced stream counts until its
@@ -41,6 +45,61 @@ pub const SOCKET_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuotaExceeded;
+
+/// Physical terminal sockets per listener. A retiring binding continues to
+/// count until its socket is dropped.
+#[derive(Clone)]
+pub(super) struct TerminalSocketBudget {
+    sockets: Arc<Semaphore>,
+    families: Arc<Mutex<HashMap<String, usize>>>,
+}
+
+pub struct TerminalSocketReservation {
+    _family: FamilyReservation,
+    _socket: OwnedSemaphorePermit,
+}
+
+impl Default for TerminalSocketBudget {
+    fn default() -> Self {
+        Self {
+            sockets: Arc::new(Semaphore::new(MAX_TERMINAL_SOCKETS)),
+            families: Arc::default(),
+        }
+    }
+}
+
+impl TerminalSocketBudget {
+    pub(super) fn has_capacity(&self, family: &str) -> bool {
+        let families = self.families.lock().unwrap();
+        families.get(family).copied().unwrap_or(0) < MAX_FAMILY_TERMINAL_SOCKETS
+            && self.sockets.available_permits() > 0
+    }
+
+    pub(super) fn reserve(&self, family: &str) -> Result<TerminalSocketReservation, QuotaExceeded> {
+        let mut families = self.families.lock().unwrap();
+        let held = families.get(family).copied().unwrap_or(0);
+        if held >= MAX_FAMILY_TERMINAL_SOCKETS {
+            return Err(QuotaExceeded);
+        }
+        let socket = acquire(&self.sockets, 1)?;
+        families.insert(family.to_owned(), held + 1);
+        Ok(TerminalSocketReservation {
+            _family: FamilyReservation {
+                families: self.families.clone(),
+                family: family.to_owned(),
+                amount: 1,
+                #[cfg(test)]
+                drop_started: None,
+            },
+            _socket: socket,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn available(&self) -> usize {
+        self.sockets.available_permits()
+    }
+}
 
 pub struct BufferBudget {
     bytes: Arc<Semaphore>,

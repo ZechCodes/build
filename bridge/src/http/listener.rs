@@ -24,6 +24,11 @@ use tokio_rustls::TlsAcceptor;
 use super::{limits, sse::STALLED_WRITE_TIMEOUT};
 use crate::execution::session::Opening;
 
+#[path = "terminal_upgrade.rs"]
+pub mod terminal_upgrade;
+
+use terminal_upgrade::{wait_for_stop, TerminalUpgrade};
+
 pub const AUTHORITY_RECHECK: std::time::Duration = std::time::Duration::from_millis(25);
 
 #[derive(Clone, Copy)]
@@ -335,9 +340,27 @@ pub async fn serve(
     listener: TcpListener,
     tls: Arc<rustls::ServerConfig>,
     router: Router,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
 ) -> io::Result<()> {
-    let sockets = Arc::new(Semaphore::new(limits::MAX_SOCKETS));
+    serve_connections(
+        listener,
+        tls,
+        router,
+        shutdown,
+        Arc::new(Semaphore::new(limits::MAX_SOCKETS)),
+        limits::TerminalSocketBudget::default(),
+    )
+    .await
+}
+
+async fn serve_connections(
+    listener: TcpListener,
+    tls: Arc<rustls::ServerConfig>,
+    router: Router,
+    mut shutdown: watch::Receiver<bool>,
+    sockets: Arc<Semaphore>,
+    terminal_sockets: limits::TerminalSocketBudget,
+) -> io::Result<()> {
     let (stop, stopped) = watch::channel(false);
     let acceptor = TlsAcceptor::from(tls);
     let mut connections = JoinSet::new();
@@ -359,9 +382,12 @@ pub async fn serve(
                 let service = router.clone();
                 let acceptor = acceptor.clone();
                 let stop = stopped.clone();
+                let terminal_sockets = terminal_sockets.clone();
                 connections.spawn(async move {
+                    // The HTTP driver can return while the upgraded I/O is still
+                    // live. Keep this socket and its permit in the same join task.
                     let _permit = permit;
-                    let _ = connection(socket, peer.ip(), acceptor, service, stop).await;
+                    let _ = connection(socket, peer.ip(), acceptor, service, stop, terminal_sockets).await;
                 });
             }
             _ = connections.join_next(), if !connections.is_empty() => {}
@@ -389,6 +415,7 @@ async fn connection(
     acceptor: TlsAcceptor,
     router: Router,
     mut stop: watch::Receiver<bool>,
+    terminal_sockets: limits::TerminalSocketBudget,
 ) -> io::Result<()> {
     socket.set_nodelay(true)?;
     let stream = tokio::select! {
@@ -397,12 +424,34 @@ async fn connection(
         }
         _ = stop.changed() => return Ok(()),
     };
+    let (upgrade, mut job) = TerminalUpgrade::new(terminal_sockets, stop.clone());
+    drive_http(stream, peer, router, stop.clone(), upgrade).await?;
+    if let Ok(job) = job.try_recv() {
+        tokio::select! {
+            biased;
+            _ = wait_for_stop(&mut stop) => {}
+            _ = job.run() => {}
+        }
+    }
+    Ok(())
+}
+
+async fn drive_http(
+    stream: tokio_rustls::server::TlsStream<TcpStream>,
+    peer: IpAddr,
+    router: Router,
+    mut stop: watch::Receiver<bool>,
+    upgrade: TerminalUpgrade,
+) -> io::Result<()> {
     let authority = OutputAuthority::default();
-    let io = TokioIo::new(BoundedIo::new(stream, authority.clone()));
+    let mut io = BoundedIo::new(stream, authority.clone());
+    io.stop = Some(stop.clone());
+    let io = TokioIo::new(io);
     let service = TowerToHyperService::new(
         router
             .layer(Extension(PeerAddress(peer)))
-            .layer(Extension(authority.clone())),
+            .layer(Extension(authority.clone()))
+            .layer(Extension(upgrade)),
     );
     let mut builder = http1::Builder::new();
     builder
@@ -411,16 +460,17 @@ async fn connection(
         .max_buf_size(limits::MAX_HEADER_BYTES)
         .max_headers(64)
         .writev(false);
-    let connection = builder.serve_connection(io, service);
+    let connection = builder.serve_connection(io, service).with_upgrades();
     tokio::pin!(connection);
     tokio::select! {
-        result = &mut connection => result.map_err(io::Error::other),
-        _ = stop.changed() => {
+        biased;
+        _ = wait_for_stop(&mut stop) => {
             authority.set(Some(Arc::new(|| false)));
             connection.as_mut().graceful_shutdown();
             let _ = timeout(limits::SOCKET_TEARDOWN_TIMEOUT, connection).await;
             Ok(())
         }
+        result = &mut connection => result.map_err(io::Error::other),
     }
 }
 
@@ -428,6 +478,7 @@ async fn connection(
 pub struct BoundedIo<T> {
     inner: T,
     authority: OutputAuthority,
+    stop: Option<watch::Receiver<bool>>,
     write_deadline: Option<StalledWriteDeadline>,
     authority_deadline: Option<Pin<Box<Sleep>>>,
     authority_recheck: Option<Pin<Box<Sleep>>>,
@@ -438,6 +489,7 @@ impl<T> BoundedIo<T> {
         Self {
             inner,
             authority,
+            stop: None,
             write_deadline: None,
             authority_deadline: None,
             authority_recheck: None,
@@ -470,15 +522,31 @@ impl<T> BoundedIo<T> {
         let _ = recheck.as_mut().poll(cx);
     }
 
-    fn authority_error<R>(&mut self, error: io::Error) -> Poll<io::Result<R>> {
-        self.authority
-            .0
-            .pending_write
-            .store(false, Ordering::Release);
-        self.write_deadline = None;
-        self.authority_deadline = None;
-        self.authority_recheck = None;
-        Poll::Ready(Err(error))
+    fn poll_output<R>(
+        &mut self,
+        cx: &mut Context<'_>,
+        mut poll: impl FnMut(&mut T, &mut Context<'_>) -> Poll<io::Result<R>>,
+    ) -> Poll<io::Result<R>> {
+        let (inner, stop) = (&mut self.inner, &self.stop);
+        let result = self.authority.poll_authorized(&cx.waker().clone(), || {
+            // Serialize signaling shutdown with the actual TLS poll. The same
+            // guard applies to HTTP headers and to writes after the upgrade.
+            let stopped = stop.as_ref().map(watch::Receiver::borrow);
+            if stopped.as_deref() == Some(&true) {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "HTTP listener stopped",
+                )));
+            }
+            poll(inner, cx)
+        });
+        match result {
+            Ok((result, deadline)) => {
+                self.arm_authority_wakes(cx, deadline);
+                self.checked_write(cx, result)
+            }
+            Err(error) => self.checked_write(cx, Poll::Ready(Err(error))),
+        }
     }
 
     fn checked_write<R>(
@@ -541,43 +609,17 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for BoundedIo<T> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let authority = self.authority.clone();
-        let waker = cx.waker().clone();
-        let (result, deadline) = match authority
-            .poll_authorized(&waker, || Pin::new(&mut self.inner).poll_write(cx, buf))
-        {
-            Ok(result) => result,
-            Err(error) => return self.authority_error(error),
-        };
-        self.arm_authority_wakes(cx, deadline);
-        self.checked_write(cx, result)
+        self.poll_output(cx, |inner, cx| Pin::new(inner).poll_write(cx, buf))
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let authority = self.authority.clone();
-        let waker = cx.waker().clone();
-        let (result, deadline) =
-            match authority.poll_authorized(&waker, || Pin::new(&mut self.inner).poll_flush(cx)) {
-                Ok(result) => result,
-                Err(error) => return self.authority_error(error),
-            };
-        self.arm_authority_wakes(cx, deadline);
-        let result = self.checked_write(cx, result);
+        let result = self.poll_output(cx, |inner, cx| Pin::new(inner).poll_flush(cx));
         if matches!(result, Poll::Ready(Ok(()))) {
             self.authority.finish_flush();
         }
         result
     }
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let authority = self.authority.clone();
-        let waker = cx.waker().clone();
-        let (result, deadline) = match authority
-            .poll_authorized(&waker, || Pin::new(&mut self.inner).poll_shutdown(cx))
-        {
-            Ok(result) => result,
-            Err(error) => return self.authority_error(error),
-        };
-        self.arm_authority_wakes(cx, deadline);
-        let result = self.checked_write(cx, result);
+        let result = self.poll_output(cx, |inner, cx| Pin::new(inner).poll_shutdown(cx));
         if matches!(result, Poll::Ready(Ok(()))) {
             self.authority.finish_flush();
         }

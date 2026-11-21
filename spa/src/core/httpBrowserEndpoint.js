@@ -141,26 +141,26 @@ export function createBrowserHttpEndpoint({
     } catch (error) { stop(); throw error; }
   };
 
-  const openTerminal = async (heldOpening, { signal } = {}) => {
+  const openTerminal = async (heldOpening, { signal, retry } = {}) => {
     check();
     if (!opening || !sameOpening(heldOpening, opening) || signal?.aborted) throw httpFailure("scope_ended");
     const url = terminalUrl(origin, callerOrigin);
-    if (terminal && !terminal.signal.aborted) {
-      if (terminal.owner !== signal) throw httpFailure("busy");
-      return terminal.ready;
-    }
+    const explicitRetry = retry === true;
+    if (terminal && !terminal.signal.aborted) return joinTerminal(terminal, signal, explicitRetry);
 
     const controller = new AbortController();
     const terminalSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
     const attempt = {
       owner: signal,
+      retry: explicitRetry,
       signal: terminalSignal,
       retire: (error = httpFailure("scope_ended")) => controller.abort(error),
     };
     const release = () => { if (terminal === attempt) terminal = null; };
     const { session_id, opening_generation } = opening;
     const epoch = terminalEpoch(opening);
-    const issueTicket = (signal) => json("/v1/terminal-tickets", "POST", { opening_generation }, {
+    const ticketBody = { opening_generation, ...(explicitRetry && { retry: true }) };
+    const issueTicket = (signal) => json("/v1/terminal-tickets", "POST", ticketBody, {
       signal, extra: { "X-Build-Session": session_id },
       read: (response, maxBytes) => readTerminalTicket(response, maxBytes, opening_generation),
     });
@@ -219,6 +219,11 @@ function terminalEpoch(opening) {
   return epoch;
 }
 
+function joinTerminal(attempt, signal, retry) {
+  if (attempt.owner !== signal || attempt.retry !== retry) throw httpFailure("busy");
+  return attempt.ready;
+}
+
 function terminalUrl(origin, callerOrigin) {
   let caller;
   try { caller = new URL(canonicalBridgeOrigin(callerOrigin)); } catch { throw forbiddenTerminalOrigin("Browser terminals require an HTTPS app origin."); }
@@ -257,12 +262,17 @@ function ticketExpiry(timestamp) {
 
 function ticketFailure(status, body) {
   if (status >= 200 && status < 300) return httpFailure("protocol");
-  const code = ticketRefusals.has(body?.error_code) ? body.error_code : "protocol";
+  const code = ticketFailureCode(status, body?.error_code);
   const error = httpFailure(code);
   error.message = ticketFailureMessage(status, code) || error.message;
   error.httpStatus = status;
   error.retryable = (status === 429 || status >= 500) && body?.retryable === true;
   return error;
+}
+
+function ticketFailureCode(status, code) {
+  if (status === 409 && code === "snapshot_write_timeout") return code;
+  return ticketRefusals.has(code) ? code : "protocol";
 }
 
 function ticketFailureMessage(status, code) {

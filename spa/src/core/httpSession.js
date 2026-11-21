@@ -45,10 +45,13 @@ function terminalAccess({ endpoint, opening, bridgeEpoch, current, closeListener
   closeListeners.add(() => { stopWatching(); retire(); });
   return {
     terminalTransport,
-    async openTerminal({ signal } = {}) {
+    async openTerminal({ signal, retry } = {}) {
       if (!current() || terminal.signal.aborted) throw httpFailure("scope_ended");
       if (terminalTransport !== "wss") throw httpFailure(terminalTransport === "protocol_error" ? "protocol" : "unsupported");
-      return endpoint.openTerminal(opening, { signal: signal ? AbortSignal.any([terminal.signal, signal]) : terminal.signal });
+      return endpoint.openTerminal(opening, {
+        signal: signal ? AbortSignal.any([terminal.signal, signal]) : terminal.signal,
+        ...(retry === true && { retry: true }),
+      });
     },
   };
 }

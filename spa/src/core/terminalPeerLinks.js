@@ -58,12 +58,12 @@ function createWebSocketOwner(context, session, config) {
   return {
     deviceId: context.deviceId,
     isCurrent,
-    async open(signal) {
+    async open(signal, { retry } = {}) {
       if (!isCurrent()) throw httpFailure("scope_ended");
       if (session.terminalTransport === "protocol_error") {
         throw Object.assign(httpFailure("protocol"), { message: "The bridge advertised an invalid terminal WebSocket transport." });
       }
-      return session.openTerminal({ signal: AbortSignal.any([signal, lifetime.signal]) });
+      return session.openTerminal({ signal: AbortSignal.any([signal, lifetime.signal]), ...(retry === true && { retry: true }) });
     },
     watchSession() {
       stopWatching = session.onClose?.(() => releaseTerminalPeerLink(session));

@@ -3,13 +3,24 @@ import { decodeSnapshot, ORPHAN_FRAME_LIMIT, TerminalPaneSession, TerminalSocket
 import { createWebSocketBinding, terminalRetryDelay } from "./webSocketBinding.js";
 import { createWebSocketFrameQueue } from "./webSocketRender.js";
 import { httpFailure } from "../core/httpEndpoint.js";
+import { isSnapshotWriteTimeout, TERMINAL_ATTACH_TIMEOUT_MS } from "../core/terminalWebSocket.js";
 
 const textEncoder = new TextEncoder();
 const noop = () => {};
-const SNAPSHOT_TOO_LARGE = "This screen is too large to display";
+const SNAPSHOT_WAIT_MS = 10_000;
+const SNAPSHOT_WAITING = "Waiting for the terminal snapshot…";
+const SNAPSHOT_TIMEOUT = "Snapshot timed out. Use a smaller pane or a faster connection, then Retry.";
+const snapshotBusy = { message: SNAPSHOT_WAITING, error_code: "snapshot_busy", retryable: true };
 const isNewScreenFrame = (frame, cursor) => frame.cursor > cursor || (frame.reset && frame.cursor === cursor);
 const reconnecting = () => Object.assign(new Error("reconnecting to your machine…"), { retryable: true });
 const paneResult = (entry) => ({ term_id: entry.termId, live: entry.live });
+
+function paneFailureMessage(error) {
+  if (isSnapshotWriteTimeout(error)) return SNAPSHOT_TIMEOUT;
+  if (error.error_code === "snapshot_busy") return SNAPSHOT_WAITING;
+  if (error.error_code === "snapshot_too_large") return "This screen is too large to display";
+  return error.message;
+}
 
 function encodeInput(bytes) {
   const chunks = [];
@@ -97,16 +108,18 @@ export class WebSocketTerminalSession extends TerminalPaneSession {
   _suspendPane(entry, error) {
     this._releaseAttachment(entry);
     if (entry.permanentFailure) return;
-    entry.needsRestore = true;
+    entry.permanentFailure = isSnapshotWriteTimeout(error);
+    entry.needsRestore = !entry.permanentFailure;
     this._showFailure(entry, error);
   }
 
   _showFailure(entry, error) {
     entry.failure = error;
-    const connecting = error.retryable && error.httpStatus !== 429;
-    const message = error.error_code === "snapshot_too_large" ? SNAPSHOT_TOO_LARGE : error.message;
-    const retry = connecting ? null : () => this._retryPane(entry, true);
-    entry.onFailure({ message, retry });
+    const connecting = error.retryable && error.httpStatus !== 429 && !isSnapshotWriteTimeout(error);
+    const retry = connecting ? null : () => {
+      if (entry.failure === error) void this._retryPane(entry, true);
+    };
+    entry.onFailure({ message: paneFailureMessage(error), retry });
   }
 
   async _mountPane(termId, kind, params, opts) {
@@ -130,13 +143,17 @@ export class WebSocketTerminalSession extends TerminalPaneSession {
       return await withAttachmentCancellation(this._attachPane(entry, binding, carrier), entry.signal);
     } catch (error) {
       if (!this._ownsAttachment(entry)) throw error;
-      if (!entry.failure && this._binding === binding) this._showFailure(entry, error);
+      if (!entry.failure && this._binding === binding) this._suspendPane(entry, error);
       return paneResult(entry);
     }
   }
 
   _assertPane(entry, binding) {
-    assertAttachmentCurrent({ isCurrent: () => this._ownsAttachment(entry) && this._binding === binding });
+    assertAttachmentCurrent({ isCurrent: () => this._isCurrentPane(entry, binding) });
+  }
+
+  _isCurrentPane(entry, binding) {
+    return this._binding === binding && this._ownsAttachment(entry);
   }
 
   _attachPane(entry, binding, carrier) {
@@ -153,7 +170,7 @@ export class WebSocketTerminalSession extends TerminalPaneSession {
     const isAgent = entry.kind === "agent";
     if (isAgent) this._agentAttachesInFlight++;
     try {
-      const result = await this._sendAttach(entry, binding, attempt);
+      const result = await this._waitForAttach(entry, binding, attempt);
       this._assertPane(entry, binding);
       assertAttachmentCurrent({ isCurrent: () => entry.ws === attempt });
       if (isAgent) this._rekeyAgent(entry.termId, entry, result.term_id);
@@ -167,10 +184,29 @@ export class WebSocketTerminalSession extends TerminalPaneSession {
     }
   }
 
+  async _waitForAttach(entry, binding, attempt) {
+    const deadline = Promise.withResolvers();
+    const expires = setTimeout(() => {
+      deadline.reject(new Error("The terminal snapshot did not arrive in time."));
+    }, TERMINAL_ATTACH_TIMEOUT_MS);
+    const waiting = setTimeout(() => {
+      if (entry.ws === attempt && this._ownsAttachment(entry)) this._showFailure(entry, snapshotBusy);
+    }, SNAPSHOT_WAIT_MS);
+    try {
+      return await withAttachmentCancellation(
+        Promise.race([this._sendAttach(entry, binding, attempt), deadline.promise]), attempt.abort.signal,
+      );
+    } finally {
+      clearTimeout(expires);
+      clearTimeout(waiting);
+    }
+  }
+
   _sendAttach(entry, binding, attempt) {
     const params = { ...entry.attachParams, cols: entry.cols, rows: entry.rows };
     const call = (method, params) => binding.call(attempt.carrier, method, params, {
       signal: attempt.abort.signal,
+      timeoutMs: 0,
       assertCurrent: () => {
         this._assertPane(entry, binding);
         assertAttachmentCurrent({ isCurrent: () => entry.ws === attempt });
@@ -199,9 +235,10 @@ export class WebSocketTerminalSession extends TerminalPaneSession {
       entry.onClosed("reaped");
       return;
     }
-    entry.permanentFailure = !error.retryable;
+    const retryable = error.retryable && !isSnapshotWriteTimeout(error);
+    entry.permanentFailure = !retryable;
     this._showFailure(entry, error);
-    if (error.retryable) this._scheduleReattach(entry);
+    if (retryable) this._scheduleReattach(entry);
     this._binding?.idle();
   }
 
@@ -226,23 +263,30 @@ export class WebSocketTerminalSession extends TerminalPaneSession {
   }
 
   async _retryPane(entry, manual = false) {
-    if (!this._ownsAttachment(entry)) return;
+    if (!this._ownsAttachment(entry) || (!manual && entry.permanentFailure)) return;
     const binding = this._binding;
     if (!binding) return;
-    entry.permanentFailure = false;
-    if (manual) entry.reattachFailures = 0;
+    if (manual) {
+      entry.permanentFailure = false;
+      entry.reattachFailures = 0;
+      entry.failure = null;
+      entry.onFailure(null);
+    }
     try {
-      const carrier = await binding.ensure({ manual });
+      this._assertPane(entry, binding);
+      const carrier = await binding.ensure({ manual, retry: manual });
       this._assertPane(entry, binding);
       await this._attachPane(entry, binding, carrier);
-    } catch { /* The entry retains its refusal or will attach on the next socket. */ }
+    } catch (error) {
+      if (!entry.failure && this._isCurrentPane(entry, binding)) this._suspendPane(entry, error);
+    }
   }
 
   _receivePush(frame) {
     if (frame.type !== "attachment_error") return this._applyPush(frame);
     const entry = [...this._terms.values()].find((entry) => entry.ws?.id === frame.attach_id);
     if (!entry) return;
-    this._refusePane(entry, httpFailure(frame.reason));
+    this._refusePane(entry, frame.reason === "snapshot_busy" ? snapshotBusy : httpFailure(frame.reason));
   }
 
   _stashOrphanFrame(frame, held) {

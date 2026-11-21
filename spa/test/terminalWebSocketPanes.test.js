@@ -62,7 +62,10 @@ class Peer extends EventTarget {
   frames = [];
   close = vi.fn(() => { this.readyState = 3; });
   connect() { this.readyState = 1; this.dispatchEvent(new Event("open")); }
-  drop() { this.readyState = 3; this.dispatchEvent(Object.assign(new Event("close"), { code: 1006 })); }
+  drop({ code = 1006, reason = "" } = {}) {
+    this.readyState = 3;
+    this.dispatchEvent(Object.assign(new Event("close"), { code, reason }));
+  }
   send(bytes) { this.frames.push(JSON.parse(decode.decode(bytes))); }
   take(method) { return this.frames.filter((value) => value.method === method); }
   receive(value) {
@@ -83,8 +86,11 @@ async function urlDevice(id, { refusal, mode = "v1" } = {}) {
   if (vector.descriptor) advertised.transport.terminal_websocket = vector.descriptor;
   if (vector.capability) advertised.greeting.capabilities.push(opening.capability);
   const terminals = [{ term_id: "term-1" }];
-  const fetchImpl = vi.fn(async (url) => {
-    if (url.endsWith(ticket.path)) return refusal ? json(refusal.body, refusal.status) : json(ticket.response.body, 201);
+  const fetchImpl = vi.fn(async (url, request) => {
+    if (url.endsWith(ticket.path)) {
+      const error = typeof refusal === "function" ? refusal(JSON.parse(request.body)) : refusal;
+      return error ? json(error.body, error.status) : json(ticket.response.body, 201);
+    }
     if (url.endsWith(rosterPath)) return json({ bridge_epoch: epoch, ok: true, result: { terminals } });
     return json({ ...advertised, grant_expires_at: new Date(now + 60000).toISOString() });
   });
@@ -116,6 +122,11 @@ async function urlDevice(id, { refusal, mode = "v1" } = {}) {
   const context = { deviceId: id, session, rpc: rest, call: rest };
   contexts.set(id, context);
   return { session, fetchImpl, rest };
+}
+
+function ticketBodies(fetchImpl) {
+  return fetchImpl.mock.calls.filter(([url]) => url.endsWith(fixture.ticket.path))
+    .map(([, request]) => JSON.parse(request.body));
 }
 
 function select(id) {
@@ -271,6 +282,183 @@ describe("URL terminal panes", () => {
     pane.dispose();
   });
 
+  it.each(["private close", "opaque close"])("stops automatic renewal after a snapshot timeout with %s", async (close) => {
+    vi.useFakeTimers();
+    let latched = false;
+    const { automatic_refusal, explicit_retry_body } = fixture.ticket.snapshot_timeout;
+    const { fetchImpl } = await urlDevice("A", {
+      refusal(body) {
+        if (body.retry === true) latched = false;
+        if (latched) return automatic_refusal;
+      },
+    });
+    select("A");
+    const paneHost = host();
+    const mounting = mountUserTerminalPane(paneHost, "term-1", { deviceId: "A" });
+    const siblingFailure = vi.fn();
+    const sibling = terminalManager().attachAgent(frame("agent_attach").params, { onFailure: siblingFailure });
+    const first = await openPeer();
+    await answer(first, "term.attach", "attach_ok");
+    await answer(first, "agent.attach", "agent_attach_ok");
+    const pane = await mounting;
+    await sibling;
+
+    latched = true;
+    first.drop(close === "private close" ? fixture.handshake.snapshot_timeout_close : undefined);
+    await vi.advanceTimersByTimeAsync(16000);
+    const notice = paneHost.querySelector(".term-conn");
+    const message = "Snapshot timed out. Use a smaller pane or a faster connection, then Retry.";
+    expect(notice.querySelector("span").textContent).toBe(message);
+    expect(notice.querySelector("button").hidden).toBe(false);
+    expect(siblingFailure).toHaveBeenLastCalledWith({ message, retry: expect.any(Function) });
+    const automatic = { opening_generation: explicit_retry_body.opening_generation };
+    const attempts = close === "private close" ? [automatic] : [automatic, automatic];
+    expect(ticketBodies(fetchImpl)).toEqual(attempts);
+    expect(sockets).toHaveLength(1);
+
+    notice.querySelector("button").click();
+    const second = await openPeer(1);
+    await answer(second, "term.attach", "attach_ok");
+    await vi.waitFor(() => expect(paneHost.querySelector(".term-conn")).toBeNull());
+    expect(ticketBodies(fetchImpl)).toEqual([...attempts, explicit_retry_body]);
+    expect(second.take("agent.attach")).toEqual([]);
+    expect(siblingFailure).toHaveBeenLastCalledWith({ message, retry: expect.any(Function) });
+    siblingFailure.mock.lastCall[0].retry();
+    await answer(second, "agent.attach", "agent_attach_ok");
+    expect(ticketBodies(fetchImpl)).toEqual([...attempts, explicit_retry_body]);
+    pane.dispose();
+  });
+
+  it("keeps the timeout on a mounted pane when another Opening becomes available", async () => {
+    const { session } = await urlDevice("A");
+    select("A");
+    const paneHost = host();
+    const mounting = mountUserTerminalPane(paneHost, "term-1", { deviceId: "A" });
+    const first = await openPeer();
+    await answer(first, "term.attach", "attach_ok");
+    const pane = await mounting;
+    first.drop(fixture.handshake.snapshot_timeout_close);
+    session.close();
+
+    const { fetchImpl } = await urlDevice("A");
+    select("A");
+    expect(paneHost.querySelector(".term-conn span")?.textContent)
+      .toBe("Snapshot timed out. Use a smaller pane or a faster connection, then Retry.");
+    expect(ticketBodies(fetchImpl)).toEqual([]);
+    paneHost.querySelector(".term-conn button").click();
+    const second = await openPeer(1);
+    await answer(second, "term.attach", "attach_ok");
+    expect(ticketBodies(fetchImpl)).toEqual([fixture.ticket.snapshot_timeout.explicit_retry_body]);
+    pane.dispose();
+  });
+
+  it("recognizes the native close reason and forwards Retry through the terminal owner", async () => {
+    const { session } = await urlDevice("A");
+    let reportClose;
+    const carrier = {
+      onPush: () => () => {},
+      onClose: (callback) => { reportClose = callback; return () => {}; },
+      call: vi.fn(async () => frame("attach_ok").result),
+      close: vi.fn(),
+    };
+    session.openTerminal.mockResolvedValue(carrier);
+    select("A");
+    const paneHost = host();
+    const pane = await mountUserTerminalPane(paneHost, "term-1", { deviceId: "A" });
+    const { code: closeCode, reason } = fixture.handshake.snapshot_timeout_close;
+    reportClose({ error_code: "terminal_closed", closeCode, reason, retryable: false });
+    expect(paneHost.querySelector(".term-conn span")?.textContent)
+      .toBe("Snapshot timed out. Use a smaller pane or a faster connection, then Retry.");
+    paneHost.querySelector(".term-conn button").click();
+    await vi.waitFor(() => expect(carrier.call.mock.calls.filter(([method]) => method === "term.attach")).toHaveLength(2));
+    expect(session.openTerminal.mock.calls[0][0]).not.toHaveProperty("retry");
+    expect(session.openTerminal.mock.calls[1][0]).toMatchObject({ retry: true });
+    pane.dispose();
+  });
+
+  it("shows waiting after ten seconds and retries only the pane for both snapshot_busy envelopes", async () => {
+    vi.useFakeTimers();
+    const { fetchImpl } = await urlDevice("A");
+    select("A");
+    const manager = terminalManager();
+    const paneHost = host();
+    const mounting = mountUserTerminalPane(paneHost, "term-1", { deviceId: "A" });
+    const sibling = manager.attachAgent(frame("agent_attach").params);
+    const peer = await openPeer();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(peer.take("term.attach")).toHaveLength(1);
+    peer.reply(peer.take("agent.attach")[0], frame("agent_attach_ok"));
+    await sibling;
+
+    const waiting = () => paneHost.querySelector(".term-conn span")?.textContent;
+    const first = peer.take("term.attach")[0];
+    await vi.advanceTimersByTimeAsync(fixture.limits.snapshot_deadlines.slot_wait_ms - 1);
+    expect(waiting()).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(waiting()).toBe("Waiting for the terminal snapshot…");
+    expect(paneHost.querySelector(".term-conn button").hidden).toBe(true);
+    peer.reply(first, frame("snapshot_busy_attach"));
+    const pane = await mounting;
+    await vi.advanceTimersByTimeAsync(250);
+    const second = peer.take("term.attach").at(-1);
+    expect(second.id).not.toBe(first.id);
+    peer.reply(second, frame("attach_ok"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(waiting()).toBeUndefined();
+
+    peer.receive({ ...frame("snapshot_busy_reset"), attach_id: second.id });
+    expect(waiting()).toBe("Waiting for the terminal snapshot…");
+    const input = manager.input("agent:agent-1", "x");
+    peer.reply(peer.take("term.input").at(-1));
+    await input;
+    await vi.advanceTimersByTimeAsync(250);
+    const third = peer.take("term.attach").at(-1);
+    expect(third.id).not.toBe(second.id);
+    peer.reply(third, frame("attach_ok"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(waiting()).toBeUndefined();
+    expect(peer.take("agent.attach")).toHaveLength(1);
+    expect(ticketBodies(fetchImpl)).toHaveLength(1);
+    expect(peer.close).not.toHaveBeenCalled();
+    pane.dispose();
+  });
+
+  it("bounds an unanswered attach at 210 seconds and ignores its late snapshot", async () => {
+    vi.useFakeTimers();
+    await urlDevice("A");
+    select("A");
+    const manager = terminalManager();
+    const snapshot = vi.fn();
+    const failure = vi.fn();
+    const pending = manager.attachTerminal("term-1", {}, { onSnapshot: snapshot, onFailure: failure });
+    const sibling = manager.attachAgent(frame("agent_attach").params);
+    const peer = await openPeer();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(peer.take("term.attach")).toHaveLength(1);
+    peer.reply(peer.take("agent.attach")[0], frame("agent_attach_ok"));
+    await sibling;
+    peer.reply(peer.take("term.ack").at(-1));
+    const attach = peer.take("term.attach")[0];
+    const detach = { ...frame("detach"), attach_id: attach.id };
+
+    await vi.advanceTimersByTimeAsync(209999);
+    expect(peer.frames).not.toContainEqual(detach);
+    expect(peer.close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(peer.frames).toContainEqual(detach);
+    expect(failure).toHaveBeenLastCalledWith({
+      message: "The terminal snapshot did not arrive in time.", retry: expect.any(Function),
+    });
+    peer.reply(attach, frame("attach_ok"));
+    const input = manager.input("agent:agent-1", "x");
+    peer.reply(peer.take("term.input").at(-1));
+    await input;
+    expect(snapshot).not.toHaveBeenCalled();
+    expect(peer.take("term.attach")).toHaveLength(1);
+    expect(peer.close).not.toHaveBeenCalled();
+  });
+
   it("uses RTC for a future-version Opening with a declared legacy fallback", async () => {
     const { session } = await urlDevice("A", { mode: "future_version" });
     select("A");
@@ -295,7 +483,7 @@ describe("URL terminal panes", () => {
     peer.receive(frame("output"));
     await vi.advanceTimersByTimeAsync(5000);
     peer.receive(frame("reset"));
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(113000);
     expect(peer.close).not.toHaveBeenCalled();
     expect(peer.take("ping")).toEqual([]);
     expect(peer.take("term.attach")).toHaveLength(count);

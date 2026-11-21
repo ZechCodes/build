@@ -1,9 +1,12 @@
 //! Application caller/output compatibility while producers migrate to events.
 //! No carrier framing, session key or transport codec enters this boundary.
 
-use super::session::{Opening, RequestContext};
+use super::session::{Opening, RequestContext, TerminalInterest};
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
+use std::{
+    borrow::Cow,
+    sync::{Arc, Mutex},
+};
 
 type Output = Arc<dyn Fn(Value) -> bool + Send + Sync>;
 type Liveness = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -21,6 +24,8 @@ pub struct CallContext {
     request_scoped: bool,
     event_live: Liveness,
     scope: Option<u64>,
+    terminal_interest: Option<Arc<TerminalInterest>>,
+    terminal_producer: bool,
     request_order: u64,
     has_events: bool,
     subscription_limit: Option<usize>,
@@ -58,7 +63,12 @@ impl CallContext {
     /// Legacy admitted work survives one carrier closing while its opening lives.
     /// Per-request work additionally retains the initiating request's cancellation.
     pub(crate) fn execution_is_live(&self) -> bool {
-        self.session_is_open() && (!self.request_scoped || (self.reply_live)())
+        self.session_is_open()
+            && (!self.request_scoped || (self.reply_live)())
+            && self
+                .terminal_interest
+                .as_ref()
+                .is_none_or(|interest| interest.is_live())
     }
     pub(crate) fn method_is_live(&self, method: &str) -> bool {
         self.execution_is_live() && (!super::requires_read_interest(method) || self.read_is_live())
@@ -67,7 +77,10 @@ impl CallContext {
         self.has_events
     }
     pub(crate) fn events_are_live(&self) -> bool {
-        self.has_events && self.session_is_open() && (self.event_live)()
+        self.has_events
+            && self.session_is_open()
+            && (self.event_live)()
+            && (self.terminal_interest.is_none() || self.terminal_producer || (self.reply_live)())
     }
     pub(crate) fn logical_subscription_limit(&self) -> Option<usize> {
         self.subscription_limit
@@ -83,6 +96,7 @@ impl CallContext {
     /// Producer state must never retain one request's response/budget resources.
     pub(crate) fn event_context(&self) -> Self {
         let mut producer = self.clone();
+        producer.terminal_producer = true;
         producer.reply = Arc::new(|_| false);
         producer.reply_live = producer.event_live.clone();
         producer.read_live = Arc::new(|| true);
@@ -124,6 +138,8 @@ impl CallContext {
             request_scoped: false,
             event_live: Arc::new(|| true),
             scope: None,
+            terminal_interest: None,
+            terminal_producer: false,
             request_order: 0,
             has_events: true,
             subscription_limit: None,
@@ -137,6 +153,8 @@ impl CallContext {
         let reply_live = reply.clone();
         let events = request.events();
         let event_live = events.clone();
+        let interest = request.terminal_interest.clone();
+        let event_interest = interest.clone();
         let scope = events.as_ref().and_then(|events| events.read_scope().1);
         Self {
             session_id: session.id().into(),
@@ -145,11 +163,13 @@ impl CallContext {
             has_events: events.is_some(),
             subscription_limit: Some(8),
             scope,
+            terminal_interest: interest.clone(),
+            terminal_producer: false,
             request_order: request.request_order(),
             events: Arc::new(move |payload| {
-                events
-                    .as_ref()
-                    .is_some_and(|events| events.push(payload).is_ok())
+                events.as_ref().is_some_and(|events| {
+                    events.push_with_interest(payload, interest.clone()).is_ok()
+                })
             }),
             reply: Arc::new(move |payload| reply.send(payload).is_ok()),
             session_live: Arc::new(move || session.is_live()),
@@ -158,8 +178,33 @@ impl CallContext {
             request_scoped: true,
             event_live: Arc::new(move || {
                 event_live.as_ref().is_some_and(|events| events.is_live())
+                    && event_interest
+                        .as_ref()
+                        .is_none_or(|interest| interest.is_live())
             }),
             gate: Arc::new(Mutex::new(())),
+        }
+    }
+
+    pub(crate) fn terminal_effect_is_live(&self) -> bool {
+        self.terminal_interest.is_none() || self.execution_is_live()
+    }
+
+    pub(crate) fn terminal_client_id(&self) -> &str {
+        self.terminal_interest
+            .as_ref()
+            .map_or(self.session_id(), |interest| interest.id())
+    }
+
+    /// Screen registration uses an interest key. Dispatcher lanes and all
+    /// application code continue to use the authenticated session ID.
+    pub(crate) fn for_terminal_screen(&self) -> Cow<'_, Self> {
+        if let Some(interest) = &self.terminal_interest {
+            let mut sender = self.clone();
+            sender.session_id = interest.id().into();
+            Cow::Owned(sender)
+        } else {
+            Cow::Borrowed(self)
         }
     }
 

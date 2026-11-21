@@ -192,6 +192,12 @@ impl TerminalUpgrade {
         )
     }
 
+    #[cfg(test)]
+    pub(in crate::http) fn for_test(sockets: TerminalSocketBudget) -> Self {
+        let (_, stopped) = watch::channel(false);
+        Self::new(sockets, stopped).0
+    }
+
     /// Check at ticket issuance. Redemption must still reserve under the
     /// ticket/binding transaction's own gate.
     pub fn check_capacity(&self, family: &str) -> Result<(), UpgradeRefusal> {
@@ -221,7 +227,7 @@ impl TerminalUpgrade {
         &self,
         request: &mut Request,
         handshake: Handshake,
-        reservation: TerminalSocketReservation,
+        reservation: impl Into<Arc<TerminalSocketReservation>>,
         handler: impl for<'a> FnOnce(&'a mut TerminalSocket) -> BoxFuture<'a, ()> + Send + 'static,
     ) -> Result<Response, UpgradeRefusal> {
         let stopped = self.stop.borrow();
@@ -234,13 +240,14 @@ impl TerminalUpgrade {
             .ok_or(UpgradeRefusal::BadRequest)?;
         let mut slot = self.job.lock().unwrap();
         let sender = slot.take().ok_or(UpgradeRefusal::Unavailable)?;
-        sender
-            .send(UpgradeJob {
-                on_upgrade,
-                handler: Box::new(handler),
-                reservation,
-            })
-            .map_err(|_| UpgradeRefusal::Unavailable)?;
+        let queued = sender.send(UpgradeJob {
+            on_upgrade,
+            handler: Box::new(handler),
+            reservation: reservation.into(),
+        });
+        drop(slot);
+        drop(stopped);
+        queued.map_err(|_| UpgradeRefusal::Unavailable)?;
         Ok(handshake.response())
     }
 
@@ -256,7 +263,7 @@ pub(super) struct UpgradeJob {
     // before returning terminal capacity.
     on_upgrade: OnUpgrade,
     handler: SocketHandler,
-    reservation: TerminalSocketReservation,
+    reservation: Arc<TerminalSocketReservation>,
 }
 
 impl UpgradeJob {
@@ -287,4 +294,4 @@ pub(super) async fn wait_for_stop(stop: &mut watch::Receiver<bool>) {
 
 #[cfg(test)]
 #[path = "terminal_upgrade/tests.rs"]
-mod tests;
+pub(in crate::http) mod tests;

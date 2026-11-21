@@ -36,6 +36,7 @@ use crate::execution::{
 mod discovery;
 mod renewal;
 mod subscriptions;
+mod terminal;
 mod terminal_tickets;
 
 const LIFECYCLE_BYTES: usize = 64 * 1024;
@@ -49,6 +50,7 @@ struct VerifiedAuthority {
     live: Arc<dyn Fn() -> bool + Send + Sync>,
     scopes: Arc<[String]>,
     credential_digest: [u8; 32],
+    changed: Arc<tokio::sync::Notify>,
 }
 
 impl VerifiedAuthority {
@@ -74,6 +76,7 @@ impl VerifiedAuthority {
             live,
             scopes,
             credential_digest,
+            changed: grant.authority_changed(),
         }
     }
 
@@ -285,7 +288,9 @@ impl HttpRuntime {
                 get(subscriptions::events),
             );
         let router = if self.state.terminal_tickets.is_some() {
-            router.route(terminal_tickets::PATH, post(terminal_tickets::create))
+            router
+                .route(terminal_tickets::PATH, post(terminal_tickets::create))
+                .route(terminal::PATH, axum::routing::any(terminal::upgrade))
         } else {
             router
         };
@@ -1242,6 +1247,7 @@ mod tests {
             live: Arc::new(move || live.load(Ordering::SeqCst)),
             scopes: vec!["bridge:read".into(), "bridge:write".into()].into(),
             credential_digest: [0; 32],
+            changed: Arc::default(),
         }
     }
 

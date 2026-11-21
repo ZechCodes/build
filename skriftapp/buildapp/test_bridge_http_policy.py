@@ -115,6 +115,28 @@ def test_explicit_wss_sources_follow_the_host_only_cookie_boundary(terminal_endp
         assert policy.split() == sources, case["name"]
 
 
+@pytest.mark.parametrize(
+    ("hosted_hostname", "bridge_host"),
+    [
+        ("app.test", "app.test"),
+        ("app.test.", "app.test"),
+        ("APP.Test", "app.test"),
+        ("0:0::1", "[::1]"),
+        ("0000:0000:0000:0000:0000:0000:0000:0001", "[::1]"),
+    ],
+    ids=["canonical", "trailing-dot", "mixed-case", "ipv6", "expanded-ipv6"],
+)
+@pytest.mark.parametrize("port", ["", ":8443"], ids=["same-port", "different-port"])
+def test_same_host_aliases_keep_only_the_https_source(
+    hosted_hostname, bridge_host, port
+):
+    origin = f"https://{bridge_host}{port}"
+    policy = connect_policy(
+        "connect-src 'self'", [origin], hosted_hostname=hosted_hostname
+    )
+    assert policy == f"connect-src 'self' {origin}"
+
+
 def test_connect_policy_inherits_default_and_never_broadens_to_a_scheme():
     policy = connect_policy(
         "default-src 'self'; object-src 'none'",

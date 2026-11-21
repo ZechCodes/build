@@ -7,6 +7,7 @@ header. Origins are permission to attempt discovery, never device authority.
 from __future__ import annotations
 
 from datetime import datetime
+from ipaddress import ip_address
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -27,14 +28,26 @@ MAX_DOCUMENT_ENDPOINTS = 16
 DOCUMENT_PATHS = frozenset({"/app/", "/app", "/app/desktop"})
 
 
+def _canonical_hostname(hostname: str | None) -> str | None:
+    if not hostname:
+        return None
+    hostname = hostname.lower().removesuffix(".")
+    try:
+        return ip_address(hostname).compressed
+    except ValueError:
+        return hostname
+
+
 def connect_policy(base: str, origins: list[str], *, hosted_hostname: str | None) -> str:
     """Append selected canonical HTTPS origins and explicit terminal WSS sources."""
     # The bridge hostname must differ from the hosted app hostname for browser
     # terminals. Host-only cookies are scoped by hostname regardless of port.
+    document_hostname = _canonical_hostname(hosted_hostname)
     terminal_sources = [
         f"wss://{endpoint.netloc}"
         for endpoint in map(urlsplit, origins)
-        if hosted_hostname and endpoint.hostname != hosted_hostname
+        if document_hostname
+        and _canonical_hostname(endpoint.hostname) != document_hostname
     ]
     added_sources = [*origins, *terminal_sources]
     directives = [part.strip() for part in base.split(";") if part.strip()]

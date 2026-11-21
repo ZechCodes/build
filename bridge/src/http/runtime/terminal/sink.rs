@@ -33,6 +33,7 @@ pub(super) struct SocketSink {
     ordinary: Arc<Semaphore>,
     items: Arc<Semaphore>,
     control: Arc<Semaphore>,
+    control_items: Arc<Semaphore>,
     pub(super) interests: Mutex<Interests>,
 }
 
@@ -112,6 +113,7 @@ impl SocketSink {
                 ordinary: Arc::new(Semaphore::new(ORDINARY_QUEUE_BYTES - CONTROL_BYTES)),
                 items: Arc::new(Semaphore::new(QUEUE_ITEMS - CONTROL_ITEMS)),
                 control: Arc::new(Semaphore::new(CONTROL_BYTES)),
+                control_items: Arc::new(Semaphore::new(CONTROL_ITEMS)),
                 interests: Mutex::default(),
             }),
             receive,
@@ -161,12 +163,8 @@ impl SocketSink {
         snapshot: Option<Arc<TerminalSnapshotReservation>>,
     ) -> Option<Reservation> {
         if control {
-            if let Ok(bytes) = self.control.clone().try_acquire_many_owned(size as u32) {
-                return Some(Reservation {
-                    _bytes: Some(bytes),
-                    _item: None,
-                    _snapshot: None,
-                });
+            if let Some(reservation) = self.reserve_control(size) {
+                return Some(reservation);
             }
         }
         let item = self.items.clone().try_acquire_owned().ok()?;
@@ -184,6 +182,20 @@ impl SocketSink {
             _bytes: bytes,
             _item: Some(item),
             _snapshot: snapshot,
+        })
+    }
+
+    fn reserve_control(&self, size: usize) -> Option<Reservation> {
+        let item = self.control_items.clone().try_acquire_owned().ok()?;
+        let bytes = self
+            .control
+            .clone()
+            .try_acquire_many_owned(size as u32)
+            .ok()?;
+        Some(Reservation {
+            _bytes: Some(bytes),
+            _item: Some(item),
+            _snapshot: None,
         })
     }
 

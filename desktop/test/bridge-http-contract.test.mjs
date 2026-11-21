@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { requestOptions, buildRoute } from "../src/bridge-http-contract.mjs";
+import { requestOptions, buildRoute, compatibleTransport } from "../src/bridge-http-contract.mjs";
 const operation = "00000000-0000-4000-8000-000000000001";
 
 test("write metadata preserves absent versus empty dependencies and rejects broader shapes", () => {
@@ -101,4 +101,12 @@ test("unsupported query placement fails closed; path/body mapping never drops pa
   );
   assert.equal(query.path, "/v1/items/x");
   assert.deepEqual(query.body, { cursor: "a & b", limit: 25 });
+});
+
+test("the v1 Opening descriptor is additive to the legacy WebRTC declaration", () => {
+  const base = { resource_manifest_version: 1, operation_ids: [], durable_events: false, terminal: "webrtc" };
+  const manifest = { version: 1, operations: [] };
+  compatibleTransport(manifest, base);
+  compatibleTransport(manifest, { ...base, terminal_websocket: { version: 1, protocol: "build.term.v1" } });
+  assert.throws(() => compatibleTransport(manifest, { ...base, terminal: "wss" }), { code: "incompatible_transport" });
 });

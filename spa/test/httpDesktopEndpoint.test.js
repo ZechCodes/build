@@ -208,3 +208,95 @@ function heldSubscription() {
     emit: (message) => listener({ requestId: api.subscribe.mock.calls[0]?.[2]?.requestId, ...message }),
     accept: () => resolve({ ok: true, value: { stream: "stream" } }) };
 }
+
+const v1Opening = { session_id: "session", opening_generation: "opening", greeting: { bridge_epoch: "epoch" } };
+
+function desktopTerminal() {
+  const success = (value) => ({ ok: true, value });
+  const listeners = new Set();
+  const api = {
+    open: vi.fn().mockResolvedValue(success(v1Opening)),
+    terminalOpen: vi.fn().mockResolvedValue(success({ terminal: "native-terminal" })),
+    terminalCall: vi.fn().mockResolvedValue(success()),
+    terminalDetach: vi.fn().mockResolvedValue(success()),
+    terminalConsume: vi.fn().mockResolvedValue(success()),
+    terminalClose: vi.fn().mockResolvedValue(success()),
+    onTerminalEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    close: vi.fn().mockResolvedValue(success()),
+  };
+  const endpoint = createDesktopHttpEndpoint({ api, identity: { handle: "http-handle" } });
+  const emit = (event) => {
+    const requestId = api.terminalOpen.mock.lastCall[1];
+    for (const listener of listeners) listener({ requestId, terminal: "native-terminal", ...event });
+  };
+  return { api, endpoint, emit, listeners };
+}
+
+describe("desktop endpoint terminal carrier", () => {
+  it("requires the complete facade before advertising an open method", () => {
+    const { api } = desktopTerminal();
+    for (const name of Object.keys(api).filter((name) => /terminal/i.test(name))) {
+      const endpoint = createDesktopHttpEndpoint({ api: { ...api, [name]: undefined }, identity: { handle: "h" } });
+      expect(endpoint.openTerminal).toBeUndefined();
+    }
+  });
+
+  it("passes only an explicit retry flag and preserves ticket refusal status", async () => {
+    const { api, endpoint } = desktopTerminal();
+    api.terminalOpen.mockResolvedValueOnce({
+      ok: false, error: { code: "snapshot_write_timeout", status: 409, retryable: false },
+    });
+    const opening = await endpoint.open("range");
+    await expect(endpoint.openTerminal(opening, { retry: false })).rejects.toMatchObject({
+      code: "snapshot_write_timeout", httpStatus: 409, retryable: false,
+    });
+    expect(api.terminalOpen.mock.calls[0][2]).toEqual({ opening_generation: "opening" });
+    const carrier = await endpoint.openTerminal(opening, { retry: true });
+    expect(api.terminalOpen.mock.calls[1][2]).toEqual({ opening_generation: "opening", retry: true });
+    carrier.close();
+  });
+
+  it("delivers native pushes and replies, ACKs receipt while paint is pending, and preserves close codes", async () => {
+    const { api, endpoint, emit } = desktopTerminal();
+    const opening = await endpoint.open("range");
+    const carrier = await endpoint.openTerminal(opening);
+    const onPush = vi.fn(() => new Promise(() => {}));
+    const onClose = vi.fn();
+    carrier.onPush(onPush);
+    carrier.onClose(onClose);
+    const attachId = vi.fn();
+    const attached = carrier.call("agent.attach", { agent_id: "agent" }, { onAttachId: attachId });
+    const [, , , id] = api.terminalCall.mock.lastCall;
+    expect(attachId).toHaveBeenCalledWith(id);
+    const frame = { id, ok: true, result: { term_id: "term" }, bridge_epoch: "epoch" };
+    emit({ requestId: retiredRequestId, sequence: 1, type: "message", data: frame });
+    emit({ sequence: 1, type: "message", data: frame });
+    expect(await attached).toEqual(frame.result);
+    const push = { type: "attachment_error", attach_id: id, reason: "snapshot_busy", bridge_epoch: "epoch" };
+    emit({ sequence: 2, type: "message", data: push });
+    expect(onPush).toHaveBeenCalledExactlyOnceWith(push);
+    expect(api.terminalConsume.mock.calls).toEqual([["native-terminal", 1], ["native-terminal", 2]]);
+    carrier.detach(id);
+    expect(api.terminalDetach).toHaveBeenCalledWith("native-terminal", id);
+    emit({ type: "close", code: "terminal_closed", closeCode: 4008, reason: "snapshot_write_timeout" });
+    expect(onClose).toHaveBeenCalledWith(expect.objectContaining({ closeCode: 4008, reason: "snapshot_write_timeout", retryable: false }));
+    emit({ type: "message", sequence: 3, data: push });
+    expect(onPush).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a pending open and closes a late native result", async () => {
+    const { api, endpoint, listeners } = desktopTerminal();
+    const result = Promise.withResolvers();
+    api.terminalOpen.mockReturnValueOnce(result.promise);
+    const opening = await endpoint.open("range");
+    const controller = new AbortController();
+    const pending = endpoint.openTerminal(opening, { signal: controller.signal });
+    const [, attempt] = api.terminalOpen.mock.lastCall;
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: "scope_ended" });
+    expect(api.terminalClose).toHaveBeenCalledWith(attempt);
+    expect(listeners.size).toBe(0);
+    result.resolve({ ok: true, value: { terminal: "late-terminal" } });
+    await vi.waitFor(() => expect(api.terminalClose).toHaveBeenCalledWith("late-terminal"));
+  });
+});

@@ -186,8 +186,13 @@ impl Server {
         stream.write_all(request.as_bytes()).await.unwrap();
         stream.flush().await.unwrap();
         let head = read_head(&mut stream).await;
-        let body = read_json_body(&mut stream, &head).await;
-        (status(&head), body)
+        let code = status(&head);
+        let body = if code == 204 {
+            Value::Null
+        } else {
+            read_json_body(&mut stream, &head).await
+        };
+        (code, body)
     }
 
     async fn opening(&self) -> Value {

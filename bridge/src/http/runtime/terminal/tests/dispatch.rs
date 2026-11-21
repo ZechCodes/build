@@ -385,3 +385,52 @@ fn pending_agent_attach(
         },
     ))
 }
+
+#[tokio::test]
+async fn mounted_tls_superseded_attach_receives_correlated_refusal() {
+    let began = Arc::new(Notify::new());
+    let (release, blocked) = std::sync::mpsc::channel();
+    let handler = out_of_order_attach_handler(began.clone(), blocked);
+    let server = Server::start(handler).await;
+    let opening = server.opening().await;
+    let mut socket = server.socket(&server.ticket(&opening).await).await;
+    send(&mut socket, "older", "agent.attach", json!({})).await;
+    timeout(TIMEOUT, began.notified()).await.unwrap();
+    let newer = call(&mut socket, "newer", "agent.attach", json!({})).await;
+    assert_eq!(newer["result"]["term_id"], "agent:shared");
+    release.send(()).unwrap();
+
+    let refusal = timeout(Duration::from_secs(2), object(&mut socket))
+        .await
+        .expect("the superseded attach must receive a correlated reply");
+    assert_superseded(&refusal, "older");
+    assert_eq!(
+        call(&mut socket, "ping", "ping", json!({})).await["ok"],
+        true
+    );
+    server.stop().await;
+}
+
+fn out_of_order_attach_handler(
+    began: Arc<Notify>,
+    blocked: std::sync::mpsc::Receiver<()>,
+) -> FrameHandler {
+    let blocked = Mutex::new(blocked);
+    greeting(FrameHandler::new(FrameClock::new(), move |_, frame, _| {
+        assert_eq!(frame.payload["method"], "agent.attach");
+        if frame.payload["id"] == "older" {
+            began.notify_one();
+            blocked.lock().unwrap().recv_timeout(TIMEOUT).unwrap();
+        }
+        success(&frame, json!({"term_id":"agent:shared","snapshot":""}))
+    }))
+}
+
+fn assert_superseded(reply: &Value, id: &str) {
+    let busy: Value =
+        serde_json::from_str(case_text(&fixture()["messages"]["busy"]["utf8"])).unwrap();
+    assert_eq!(reply["id"], id);
+    assert_eq!(reply["ok"], false);
+    assert_eq!(reply["error_code"], busy["error_code"]);
+    assert_eq!(reply["retryable"], busy["retryable"]);
+}

@@ -118,3 +118,62 @@ async fn mounted_tls_idle_reader_wakes_at_revocation_or_expiry() {
         server.stop().await;
     }
 }
+
+#[tokio::test]
+async fn mounted_tls_idle_reader_wakes_when_opening_closes() {
+    let server = Server::start(fake_handler()).await;
+    let opening = server.opening().await;
+    let (application, _) = application_binding(&server, &opening);
+    let mut socket = open_idle_socket(&server, &opening).await;
+    let session = case_text(&opening["session_id"]);
+    let (code, _) = server
+        .json(
+            "DELETE",
+            &format!("/v1/sessions/{session}"),
+            "opening",
+            session,
+            json!({}),
+        )
+        .await;
+    assert_eq!(code, 204);
+    assert!(!application.is_live());
+    timeout(Duration::from_secs(2), assert_closed(&mut socket, None))
+        .await
+        .expect("Opening close must wake the idle socket before its 60s deadline");
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn mounted_tls_idle_reader_wakes_when_renewal_retires_proof() {
+    let server = Server::start(fake_handler()).await;
+    let opening = server.opening().await;
+    let (application, _) = application_binding(&server, &opening);
+    let mut socket = open_idle_socket(&server, &opening).await;
+    let session = case_text(&opening["session_id"]);
+    // The Opening credential has identical identity and scopes but a distinct
+    // digest from the credential that issued the terminal proof.
+    let (code, _) = server
+        .json(
+            "PATCH",
+            &format!("/v1/sessions/{session}"),
+            "opening",
+            session,
+            json!({}),
+        )
+        .await;
+    assert_eq!(code, 200);
+    assert!(application.is_live());
+    timeout(Duration::from_secs(2), assert_closed(&mut socket, None))
+        .await
+        .expect("retired proof must wake the idle socket before its 60s deadline");
+    server.stop().await;
+}
+
+async fn open_idle_socket(server: &Server, opening: &Value) -> Client {
+    let mut socket = server.socket(&server.ticket(opening).await).await;
+    assert_eq!(
+        call(&mut socket, "ping", "ping", json!({})).await["ok"],
+        true
+    );
+    socket
+}

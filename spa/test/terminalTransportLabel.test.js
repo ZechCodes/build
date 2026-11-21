@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// A device's saved transport is the only input the label reads. The fake keeps
-// the two calls the label makes and leaves the rest of the module real.
+// The label reads the stored negotiated mode, including while disconnected.
 const saved = vi.hoisted(() => {
   const selected = new Map();
   const listeners = new Set();
@@ -18,7 +17,7 @@ const saved = vi.hoisted(() => {
 });
 vi.mock("../src/core/httpConnections.js", async (importOriginal) => ({
   ...(await importOriginal()),
-  usesHttp: (deviceId) => saved.selected.get(deviceId) === "http",
+  cachedTerminalTransport: (deviceId) => saved.selected.get(deviceId),
   onHttpPreferencesChanged: (listener) => {
     saved.listeners.add(listener);
     return () => saved.listeners.delete(listener);
@@ -92,7 +91,7 @@ beforeEach(() => {
 
 describe("a terminal pane names its transport from the device's saved choice", () => {
   it("labels a user terminal and the agent pane of an HTTPS device", async () => {
-    saved.choose("dev-http", "http");
+    saved.choose("dev-http", "webrtc");
 
     const user = await userPane("dev-http");
     const agent = await agentPane("dev-http");
@@ -101,8 +100,8 @@ describe("a terminal pane names its transport from the device's saved choice", (
     expect(labelIn(agent.host)?.textContent).toBe(LABEL);
   });
 
-  it("labels nothing on a WebRTC device or one with no saved choice", async () => {
-    saved.choose("dev-rtc", "webrtc");
+  it("labels nothing on a WebRTC device or one with no negotiated choice", async () => {
+    saved.choose("dev-rtc", "wss");
 
     const chosen = await userPane("dev-rtc");
     const unsaved = await agentPane("dev-none");
@@ -111,22 +110,22 @@ describe("a terminal pane names its transport from the device's saved choice", (
     expect(labelIn(unsaved.host)).toBeNull();
   });
 
-  it("follows a change of the saved transport without remounting the pane", async () => {
+  it("follows a change of the negotiated mode without remounting the pane", async () => {
     const { host } = await userPane("dev-a");
     expect(labelIn(host)).toBeNull();
 
-    saved.choose("dev-a", "http");
-    expect(labelIn(host)?.textContent).toBe(LABEL);
     saved.choose("dev-a", "webrtc");
+    expect(labelIn(host)?.textContent).toBe(LABEL);
+    saved.choose("dev-a", "wss");
     expect(labelIn(host)).toBeNull();
-    saved.choose("dev-b", "http");
+    saved.choose("dev-b", "webrtc");
     expect(labelIn(host)).toBeNull();
     expect(panes.mounted).toBe(1);
   });
 
   it("stays put whatever the terminal connection reports", async () => {
-    saved.choose("dev-http", "http");
-    saved.choose("dev-rtc", "webrtc");
+    saved.choose("dev-http", "webrtc");
+    saved.choose("dev-rtc", "wss");
     const labelled = await agentPane("dev-http");
     const plain = await agentPane("dev-rtc");
 
@@ -138,7 +137,7 @@ describe("a terminal pane names its transport from the device's saved choice", (
   });
 
   it("goes, with its listener, when the pane is disposed", async () => {
-    saved.choose("dev-http", "http");
+    saved.choose("dev-http", "webrtc");
     const user = await userPane("dev-http");
     const agent = await agentPane("dev-http");
 
@@ -151,7 +150,7 @@ describe("a terminal pane names its transport from the device's saved choice", (
   });
 
   it("reaches the agent tab's pane from the device the tab was mounted for", async () => {
-    saved.choose("dev-http", "http");
+    saved.choose("dev-http", "webrtc");
     const host = paneHost();
 
     const tab = mountAgentTab(host, { project_id: "p1" }, { deviceId: "dev-http" });
@@ -160,7 +159,7 @@ describe("a terminal pane names its transport from the device's saved choice", (
   });
 
   it("stays out of the pane's screen, which the terminal makes its input box", async () => {
-    saved.choose("dev-http", "http");
+    saved.choose("dev-http", "webrtc");
 
     const user = await userPane("dev-http");
     const agent = await agentPane("dev-http");
@@ -172,14 +171,14 @@ describe("a terminal pane names its transport from the device's saved choice", (
   });
 
   it("sits just before the touch key bar, so it shows above it", async () => {
-    saved.choose("dev-http", "http");
+    saved.choose("dev-http", "webrtc");
     const { host } = await agentPane("dev-http");
     const keys = document.createElement("div");
     keys.className = "termkeys";
     host.appendChild(keys);
 
+    saved.choose("dev-http", "wss");
     saved.choose("dev-http", "webrtc");
-    saved.choose("dev-http", "http");
 
     expect(labelIn(host).nextElementSibling).toBe(keys);
   });

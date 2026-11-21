@@ -7,10 +7,10 @@
 // below. Panes ride the ONE shared terminal socket (manager.js), demuxed by
 // term_id.
 
-import { terminalManager, subscribeTerminalStatus } from "../terminal/manager.js";
+import { terminalDeviceId, terminalManager, subscribeTerminalStatus } from "../terminal/manager.js";
 import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
-import { onHttpPreferencesChanged, usesHttp } from "./httpConnections.js";
+import { cachedTerminalTransport, onHttpPreferencesChanged } from "./httpConnections.js";
 
 /** What every surface says while the machine is out of reach. One sentence, in
  *  the chip over a live pane and in the place of a pane that could not attach. */
@@ -61,37 +61,34 @@ export function whenTerminalReconnects(retry) {
  * Call AFTER the pane has mounted, so ghostty's own innerHTML reset (pane.js)
  * doesn't wipe the chip.
  */
-export function attachConnectionOverlay(host) {
+export function attachConnectionOverlay(host, deviceId = terminalDeviceId()) {
   const chip = document.createElement("div");
   chip.className = "term-conn";
   chip.hidden = true;
   chip.textContent = RECONNECTING_MESSAGE;
   host.appendChild(chip);
-  const unsubscribe = subscribeTerminalStatus((status) => {
-    const offline = status !== "connected";
+  let status = "connected";
+  const paint = () => {
+    const mode = cachedTerminalTransport(deviceId);
+    const offline = mode !== "wss" && mode !== "protocol_error" && status !== "connected";
     chip.hidden = !offline;
     host.classList.toggle("term-offline", offline);
-  });
+  };
+  const unsubscribe = subscribeTerminalStatus((next) => { status = next; paint(); });
+  const stopTransport = onHttpPreferencesChanged(paint);
   return {
     dispose() {
       unsubscribe();
+      stopTransport();
       chip.remove();
       host.classList.remove("term-offline");
     },
   };
 }
 
-/** What a pane on an HTTPS-selected device says: its terminal still rides the
- *  WebRTC link, whatever the rest of the app is using. */
+/** Label the negotiated fallback using the device's retained terminal mode. */
 export const TRANSPORT_LABEL = "Terminal over WebRTC";
 
-/**
- * Name the transport in a `.termpane` host's corner while `deviceId`'s SAVED
- * choice is HTTPS. Only the preference drives it, never the link's state: the
- * terminal takes WebRTC on that device whether or not the link is up. Returns
- * { dispose() } — stop listening and remove the label. Call after the pane
- * mounts, like the connection overlay.
- */
 export function attachTransportLabel(host, deviceId) {
   const label = document.createElement("div");
   label.className = "term-transport";
@@ -101,7 +98,7 @@ export function attachTransportLabel(host, deviceId) {
     // Never inside .term-screen: the terminal makes that its input box, whose
     // accessible value would read the label as typed text. Just before the
     // touch key bar instead, or last when there is none.
-    if (deviceId && usesHttp(deviceId)) host.insertBefore(label, host.querySelector(":scope > .termkeys"));
+    if (cachedTerminalTransport(deviceId) === "webrtc") host.insertBefore(label, host.querySelector(":scope > .termkeys"));
     else label.remove();
   };
   render();
@@ -127,34 +124,40 @@ export function attachTransportLabel(host, deviceId) {
  *  `onExit(reason)` reacts to closures. `deviceId` is the machine the
  *  worktree is on, for the transport label. Input is allowed — a live PTY on
  *  the user's machine. */
-export function mountAgentPane(host, target, { onLive, onExit, deviceId = null }) {
+export function mountAgentPane(host, target, { onLive, onExit, deviceId = null, signal }) {
   const manager = terminalManager();
   let termId = null; // learned from the attach; null until then, and after a failed one
+  let detach = () => { if (termId) manager.detach(termId); };
+  let controls;
   return mountTerminalPane(host, {
+    signal,
     attach: (opts) =>
       // onTermId, not just the attach result: a screen mounted on a worktree
       // with no agent is keyed by the WORKTREE until one is born, and the
       // socket follows the newborn's id (session.js). Keystrokes have to
       // follow it too.
-      manager.attachAgent(target, { ...opts, onLive, onTermId: (id) => { termId = id; } }).then((r) => {
-        termId = r.term_id;
+      manager.attachAgent(target, {
+        ...opts, signal, onLive, onTermId: (id) => { termId = id; },
+        onRegistered: (dispose, effects) => { detach = dispose; controls = effects; },
+      }).then((r) => {
+        termId ||= r.term_id;
         return r;
       }),
     // Before the attach lands there is no screen to type into. Rejecting (rather
     // than dropping) routes through onInputError, so the idle chip shows instead
     // of the keystroke silently vanishing.
-    input: (data) => (termId ? manager.input(termId, data) : Promise.reject(new Error("no active agent session"))),
-    resize: (cols, rows) => (termId ? manager.resize(termId, cols, rows) : Promise.resolve()),
+    input: (data) => controls ? controls.input(data) : inputAgent(manager, termId, data),
+    resize: (cols, rows) => controls ? controls.resize(cols, rows) : resizeAgent(manager, termId, cols, rows),
     onExit,
     // A keystroke rejected by the bridge means the session is gone — surface it
     // as the idle state (the same reason a live session's close reports), so the
     // "no active agent session" chip shows instead of the input silently
     // vanishing. Non-destructive: a new session's first frame clears it (B1).
-    onInputError: () => onExit && onExit("agent_session_ended"),
+    onInputError: (error) => { if (!controls || error.bridgeRefusal) onExit?.("agent_session_ended"); },
   }).then((pane) => {
     // Overlay the connectivity chip once the pane exists (its mount resets the
     // host's innerHTML). Fold its teardown into the pane's own dispose.
-    const conn = attachConnectionOverlay(host);
+    const conn = attachConnectionOverlay(host, deviceId);
     const transport = attachTransportLabel(host, deviceId);
     return {
       ...pane,
@@ -163,10 +166,18 @@ export function mountAgentPane(host, target, { onLive, onExit, deviceId = null }
         transport.dispose();
         pane.dispose();
         // Deregister the screen the attach named — the server PTY keeps running.
-        if (termId) manager.detach(termId);
+        detach();
       },
     };
-  });
+  }, (error) => { detach(); throw error; });
+}
+
+function inputAgent(manager, termId, data) {
+  return termId ? manager.input(termId, data) : Promise.reject(new Error("no active agent session"));
+}
+
+function resizeAgent(manager, termId, cols, rows) {
+  return termId ? manager.resize(termId, cols, rows) : Promise.resolve();
 }
 
 /** Mount the Agent tab's BODY for a worktree: its one agent as a full PTY, with
@@ -272,10 +283,11 @@ export function mountAgentTab(host, target, { idleLabel = "No agent is currently
   let pane = null;
   let disposed = false;
   let reconnectWatch = null;
+  const lifetime = new AbortController();
   const mountPane = () => {
     reconnectWatch = null;
     mountAgentPane(host.querySelector("#agentpane"), target, {
-      deviceId,
+      deviceId, signal: lifetime.signal,
       // A retained screen with no live session is a harness that ran and
       // stopped; an empty one never ran at all. The message differs; the offer
       // does not.
@@ -308,6 +320,7 @@ export function mountAgentTab(host, target, { idleLabel = "No agent is currently
   return {
     dispose() {
       disposed = true;
+      lifetime.abort();
       if (reconnectWatch) reconnectWatch.dispose();
       if (pane) pane.dispose();
     },

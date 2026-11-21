@@ -2,14 +2,15 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { captureLayout, loadBrowserModules, mountLayout, openLayoutSession } from "./layoutHarness.mjs";
 
 // The real overlays a terminal pane carries — the touch key bar, the
-// reconnecting chip and the saved-transport label — mounted by their own
-// modules. Only the saved preference and the socket's status are stand-ins.
+// reconnecting chip and the negotiated transport label — mounted by their own
+// modules. Only the stored mode and the socket's status are stand-ins.
 const FAKES = {
   "/src/core/httpConnections.js": `
-    export const usesHttp = (deviceId) => deviceId === "dev-http";
+    export const cachedTerminalTransport = (deviceId) => deviceId === "dev-http" ? "webrtc" : null;
     export const onHttpPreferencesChanged = () => () => {};`,
   "/src/terminal/manager.js": `
     export const subscribeTerminalStatus = (fn) => { fn(window.__status || "connected"); return () => {}; };
+    export const terminalDeviceId = () => "dev-http";
     export const terminalManager = () => ({});`,
 };
 const labelFixture = {

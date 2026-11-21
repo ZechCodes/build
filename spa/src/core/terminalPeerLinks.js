@@ -1,5 +1,6 @@
-// Terminal RTC ownership is independent of an HTTP application session. This
-// registry never changes a device context or closes the HTTP session it follows.
+import { httpFailure } from "./httpEndpoint.js";
+
+// One terminal owner for each HTTP Opening in this tab.
 const owners = new Map();
 const retired = new WeakSet();
 let configuration = { open: async () => { throw new Error("terminal RTC is unavailable"); }, isCurrent: () => false, onChanged: () => {} };
@@ -14,10 +15,24 @@ export function terminalPeerLink(context) {
   if (!context) return null;
   const session = context.session;
   if (session?.transport !== "http") return context.peerLink || null;
+  if (usesTerminalWebSocket(session)) return null;
+  return ownerFor(context, session, createLazyOwner);
+}
+
+function usesTerminalWebSocket(session) {
+  return session?.transport === "http" && ["wss", "protocol_error"].includes(session.terminalTransport);
+}
+
+export function terminalWebSocketOwner(context) {
+  const session = context?.session;
+  return usesTerminalWebSocket(session) ? ownerFor(context, session, createWebSocketOwner) : null;
+}
+
+function ownerFor(context, session, createOwner) {
   if (retired.has(session)) return null;
   let owner = owners.get(session);
   if (!owner) {
-    owner = createLazyOwner(context, session, configuration);
+    owner = createOwner(context, session, configuration);
     owners.set(session, owner);
     owner.watchSession();
   }
@@ -34,6 +49,31 @@ export function releaseTerminalPeerLink(session) {
 
 export function clearTerminalPeerLinks() {
   for (const session of [...owners.keys()]) releaseTerminalPeerLink(session);
+}
+
+function createWebSocketOwner(context, session, config) {
+  const lifetime = new AbortController();
+  let stopWatching;
+  const isCurrent = () => !lifetime.signal.aborted && context.session === session && config.isCurrent(context);
+  return {
+    deviceId: context.deviceId,
+    isCurrent,
+    async open(signal) {
+      if (!isCurrent()) throw httpFailure("scope_ended");
+      if (session.terminalTransport === "protocol_error") {
+        throw Object.assign(httpFailure("protocol"), { message: "The bridge advertised an invalid terminal WebSocket transport." });
+      }
+      return session.openTerminal({ signal: AbortSignal.any([signal, lifetime.signal]) });
+    },
+    watchSession() {
+      stopWatching = session.onClose?.(() => releaseTerminalPeerLink(session));
+      if (lifetime.signal.aborted) stopWatching?.();
+    },
+    close() {
+      lifetime.abort();
+      stopWatching?.();
+    },
+  };
 }
 
 function createLazyOwner(context, session, config) {

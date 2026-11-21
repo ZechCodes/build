@@ -27,6 +27,8 @@ export function configureHttpManifest(manifest) { routes = createHttpRoutes(mani
 export const httpResourceRoutes = () => { if (!routes) throw httpFailure("unsupported"); return routes; };
 export const onHttpPreferencesChanged = (listener) => { listeners.add(listener); return () => listeners.delete(listener); };
 export const httpPreferenceFor = (deviceId) => runtime?.preferences.forDevice(deviceId) || null;
+export const cachedTerminalTransport = (deviceId) =>
+  runtime?.current() ? runtime.preferences.terminalModeFor(deviceId) : undefined;
 export const usesHttp = (deviceId) => httpPreferenceFor(deviceId)?.selected === "http";
 export const httpRecoveryCandidates = (devices) => httpRecoveryDevices(devices, httpPreferenceFor);
 
@@ -76,6 +78,14 @@ export async function completeHttpDiscovery(challengeId) {
   discard(prepared.get(grant.identity.deviceId));
   prepared.set(grant.identity.deviceId, { identity: grant.identity, grant });
   return grant.identity;
+}
+
+export async function rememberHttpTerminalMode(deviceId, mode, current) {
+  const held = runtime;
+  const preference = held?.preferences.forDevice(deviceId);
+  if (!preference || !held.current()) return;
+  const changed = await held.preferences.rememberTerminalMode(preference, mode, current);
+  if (changed && held.current()) announce();
 }
 
 export async function selectHttpConnection(identity) {

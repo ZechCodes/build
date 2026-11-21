@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clearTerminalPeerLinks, configureTerminalPeerLinks, releaseTerminalPeerLink, terminalPeerLink } from "../src/core/terminalPeerLinks.js";
+import { clearTerminalPeerLinks, configureTerminalPeerLinks, releaseTerminalPeerLink, terminalPeerLink, terminalWebSocketOwner } from "../src/core/terminalPeerLinks.js";
 
 const deferred = () => { let resolve; let reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const flush = async () => { for (let n = 0; n < 12; n += 1) await Promise.resolve(); };
@@ -29,6 +29,21 @@ describe("terminal peer link registry", () => {
     expect(terminalPeerLink({ ...f.context, session: {}, peerLink: peer })).toBe(peer);
     expect(terminalPeerLink(null)).toBe(null);
     expect(f.options.open).not.toHaveBeenCalled();
+  });
+
+  it("chooses one WSS owner for the exact Opening before ever looking up RTC", async () => {
+    const f = fixture();
+    f.context.session.terminalTransport = "wss";
+    f.context.session.openTerminal = vi.fn(async () => ({}));
+    const owner = terminalWebSocketOwner(f.context);
+    expect(terminalWebSocketOwner(f.context)).toBe(owner);
+    expect(terminalPeerLink(f.context)).toBeNull();
+    expect(f.options.open).not.toHaveBeenCalled();
+    await owner.open(new AbortController().signal);
+    const signal = f.context.session.openTerminal.mock.calls[0][0].signal;
+    releaseTerminalPeerLink(f.context.session);
+    expect(signal.aborted).toBe(true);
+    expect(terminalWebSocketOwner(f.context)).toBeNull();
   });
 
   it("keeps one lazy owner per exact HTTP session and binds before exposing its minted carrier", async () => {

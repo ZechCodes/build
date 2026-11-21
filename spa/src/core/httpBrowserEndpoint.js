@@ -145,11 +145,15 @@ export function createBrowserHttpEndpoint({
     check();
     if (!opening || !sameOpening(heldOpening, opening) || signal?.aborted) throw httpFailure("scope_ended");
     const url = terminalUrl(origin, callerOrigin);
-    if (terminal && !terminal.signal.aborted) return terminal.ready;
+    if (terminal && !terminal.signal.aborted) {
+      if (terminal.owner !== signal) throw httpFailure("busy");
+      return terminal.ready;
+    }
 
     const controller = new AbortController();
     const terminalSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
     const attempt = {
+      owner: signal,
       signal: terminalSignal,
       retire: (error = httpFailure("scope_ended")) => controller.abort(error),
     };
@@ -158,11 +162,11 @@ export function createBrowserHttpEndpoint({
     const epoch = terminalEpoch(opening);
     const issueTicket = (signal) => json("/v1/terminal-tickets", "POST", { opening_generation }, {
       signal, extra: { "X-Build-Session": session_id },
-      read: (response, maxBytes) => readTerminalTicket(response, maxBytes, opening_generation, now),
+      read: (response, maxBytes) => readTerminalTicket(response, maxBytes, opening_generation),
     });
     terminal = attempt;
     attempt.ready = openTerminalWebSocket({
-      url, issueTicket, createWebSocket, epoch, now,
+      url, issueTicket, createWebSocket, epoch,
       signal: terminalSignal, isCurrent: () => active() && terminal === attempt, onEnd: release,
       retiredError: () => controller.signal.reason || httpFailure("scope_ended"),
     }).catch((error) => { release(); throw error; });
@@ -217,16 +221,18 @@ function terminalEpoch(opening) {
 
 function terminalUrl(origin, callerOrigin) {
   let caller;
-  try { caller = new URL(canonicalBridgeOrigin(callerOrigin)); } catch { throw forbiddenTerminalOrigin(); }
+  try { caller = new URL(canonicalBridgeOrigin(callerOrigin)); } catch { throw forbiddenTerminalOrigin("Browser terminals require an HTTPS app origin."); }
   const url = new URL("/v1/terminal", origin);
-  if (caller.hostname === url.hostname) throw forbiddenTerminalOrigin();
+  if (caller.hostname === url.hostname) {
+    throw forbiddenTerminalOrigin("Browser terminals require the app and HTTPS bridge to use different hostnames.");
+  }
   url.protocol = "wss:";
   return url.href;
 }
 
-function forbiddenTerminalOrigin() {
+function forbiddenTerminalOrigin(message) {
   return Object.assign(httpFailure("origin_forbidden"), {
-    message: "Browser terminals require the app and HTTPS bridge to use different hostnames.", retryable: false,
+    message, retryable: false,
   });
 }
 
@@ -235,13 +241,13 @@ const terminalTicket = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u;
 const ticketRefusals = new Set(["invalid_credential", "forbidden_scope", "overloaded", "origin_forbidden", "authority_mismatch"]);
 const utcTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u;
 
-async function readTerminalTicket(response, maxBytes, generation, now) {
+async function readTerminalTicket(response, maxBytes, generation) {
   const body = await boundedJson(response, maxBytes);
   if (response.status !== 201) throw ticketFailure(response.status, body);
   const expiresAt = ticketExpiry(body?.expires_at);
-  if (!(expiresAt > now()) || body.opening_generation !== generation
+  if (!Number.isFinite(expiresAt) || body.opening_generation !== generation
     || typeof body.ticket !== "string" || !terminalTicket.test(body.ticket)) throw httpFailure("protocol");
-  return { token: body.ticket, expiresAt };
+  return { token: body.ticket };
 }
 
 function ticketExpiry(timestamp) {

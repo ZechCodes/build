@@ -25,6 +25,7 @@ import {
   takeConsoleTerminal,
   toggledConsoleSize,
 } from "./consoleModel.js";
+import { cachedTerminalTransport } from "./httpConnections.js";
 import { RECONNECTING_MESSAGE, attachConnectionOverlay, attachTransportLabel, whenTerminalReconnects } from "./surfaceTabs.js";
 import { el } from "../dom.js";
 import { esc } from "./text.js";
@@ -92,14 +93,21 @@ export function mountUserTerminalPane(host, termId, { scope = {}, onExit, stands
   const manager = terminalManager();
   const current = () => stands() && (!deviceId || terminalDeviceId() === deviceId);
   let detach = () => {};
+  let controls;
   // Older console surfaces own their existing retry controller. The project
   // surface delegates recovery to the resource and never reads socket status.
   const attach = recover ? attachUserTerminal : (owner, id, at, options) => owner.attachTerminal(id, at, options);
   return mountTerminalPane(host, {
     signal, isCurrent: current,
-    attach: (opts) => current() ? attach(manager, termId, scope, { ...opts, signal, isCurrent: current, onRegistered: (dispose) => { detach = dispose; } }) : Promise.reject(new Error("This terminal pane closed.")),
-    input: (data) => current() ? manager.input(termId, data) : Promise.resolve(),
-    resize: (cols, rows) => current() ? manager.resize(termId, cols, rows) : Promise.resolve(),
+    attach: (opts) => current() ? attach(manager, termId, scope, { ...opts, signal, isCurrent: current, onRegistered: (dispose, effects) => { detach = dispose; controls = effects; } }) : Promise.reject(new Error("This terminal pane closed.")),
+    input: (data) => {
+      if (!current()) return Promise.resolve();
+      return controls ? controls.input(data) : manager.input(termId, data);
+    },
+    resize: (cols, rows) => {
+      if (!current()) return Promise.resolve();
+      return controls ? controls.resize(cols, rows) : manager.resize(termId, cols, rows);
+    },
     onExit: (...args) => { if (current()) onExit?.(...args); },
   }).then((pane) => {
     const transport = attachTransportLabel(host, transportDeviceId);
@@ -431,12 +439,18 @@ export function mountConsole(host, context) {
     writeThrough(CONSOLE_RECORD_KIND, { selected });
   };
 
+  const usesTerminalWebSocket = () => cachedTerminalTransport(context.deviceId) === "wss";
+  const rosterOptions = () => ({ rosterScope: scope, rosterEntityId: recordEntityId() });
+  const requestShell = () => usesTerminalWebSocket()
+    ? manager.createTerminal(scope, 80, 24, rosterOptions())
+    : manager.createTerminal(scope, 80, 24);
+
   const newTerminal = async () => {
     if (!terms) return;
     const asked = terms;
     let created;
     try {
-      created = await manager.createTerminal(scope, 80, 24);
+      created = await requestShell();
     } catch (error) {
       notifyError("Could not open a terminal", (error && error.message) || "error");
       return;
@@ -454,9 +468,11 @@ export function mountConsole(host, context) {
 
   const closeTerminal = async (termId) => {
     try {
-      await manager.closeTerminal(termId);
-    } catch {
-      /* raced with the reaper — its durable list still drops the tab */
+      if (usesTerminalWebSocket()) await manager.closeTerminal(termId, scope, rosterOptions());
+      else await manager.closeTerminal(termId);
+    } catch (error) {
+      // An unanswered WSS close is reconciled with the authoritative roster.
+      if (error.uncertain && error.terminalWebSocketEffect) return;
     }
     await afterTerminalGone(termId);
   };
@@ -611,7 +627,7 @@ export function mountConsole(host, context) {
           return;
         }
         pane = mounted;
-        connection = attachConnectionOverlay(paneHost);
+        connection = attachConnectionOverlay(paneHost, context.deviceId);
       },
       (error) => {
         if (!current()) return;

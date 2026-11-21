@@ -46,7 +46,7 @@ class FakePeer extends EventTarget {
 }
 
 const endpoints = [];
-function harness({ origin = policy.bridge_https_origin, answer = () => json(ticket.response.body, 201), greeting = opening.base.greeting, renewToken } = {}) {
+function harness({ origin = policy.bridge_https_origin, answer = () => json(ticket.response.body, 201), greeting = opening.base.greeting, renewToken, callerOrigin = policy.caller_origin, clockSkew = 0 } = {}) {
   const peers = [];
   const heldOpening = { ...opening.base, greeting };
   let token = "device-bearer";
@@ -58,10 +58,10 @@ function harness({ origin = policy.bridge_https_origin, answer = () => json(tick
   });
   const endpoint = createBrowserHttpEndpoint({
     grant: {
-      identity: { origin }, token: () => token, expiresAt: () => now + 30000,
+      identity: { origin }, token: () => token, expiresAt: () => now + clockSkew + 30000,
       renew: async () => { if (renewToken) token = renewToken; }, close: vi.fn(),
     },
-    fetchImpl, now: () => now, isCurrent: () => current, callerOrigin: policy.caller_origin,
+    fetchImpl, now: () => now + clockSkew, isCurrent: () => current, callerOrigin,
     createWebSocket: (url, protocols) => {
       const peer = new FakePeer(url, protocols);
       peers.push(peer);
@@ -120,12 +120,12 @@ describe("browser terminal admission", () => {
     expect(headers.has("origin")).toBe(false); // Supplied by the browser.
   });
 
-  it("fences the Opening and validates the returned generation, token and expiry before constructing WSS", async () => {
+  it("fences the Opening and validates the returned generation, token and expiry format before constructing WSS", async () => {
     const good = ticket.response.body;
     for (const body of [
       { ...good, opening_generation: "other" },
       { ...good, ticket: handshake.offers.find(({ name }) => name === "noncanonical_pad_bits").tokens[1].slice(7) },
-      { ...good, expires_at: ticket.lifetime_cases[0].issued_at },
+      { ...good, expires_at: "not a timestamp" },
     ]) {
       const h = harness({ answer: () => json(body, 201) });
       const held = await h.endpoint.open("range");
@@ -152,6 +152,21 @@ describe("browser terminal admission", () => {
     h.peers[0].open(browser_protocol);
     await outcome;
     expect(h.peers[0].close).toHaveBeenCalledTimes(accepted ? 0 : 1);
+  });
+
+  it("lets the bridge decide expiry when the browser clock runs ahead", async () => {
+    const { peer } = await connected(harness({ clockSkew: 16000 }));
+    expect(peer.readyState).toBe(1);
+  });
+
+  it("explains that a non-HTTPS caller origin requires HTTPS", async () => {
+    const h = harness({ callerOrigin: "http://localhost:5173" });
+    const held = await h.endpoint.open("range");
+    await expect(h.endpoint.openTerminal(held)).rejects.toMatchObject({
+      error_code: "origin_forbidden",
+      message: "Browser terminals require an HTTPS app origin.",
+    });
+    expect(h.fetchImpl).toHaveBeenCalledOnce();
   });
 
   it("rejects negotiated extensions even with the expected subprotocol", async () => {
@@ -198,6 +213,24 @@ describe("browser terminal admission", () => {
     await connected(h);
     const posts = h.fetchImpl.mock.calls.filter(([url]) => url.endsWith(ticket.path));
     expect(new Headers(posts.at(-1)[1].headers).get("authorization")).toBe("Bearer renewed-bearer");
+  });
+
+  it("fences the socket to one owner signal per Opening", async () => {
+    const h = harness();
+    const held = await h.endpoint.open("range");
+    const first = new AbortController();
+    const second = new AbortController();
+    const opening = h.endpoint.openTerminal(held, { signal: first.signal });
+    const joining = h.endpoint.openTerminal(held, { signal: first.signal });
+    await expect(h.endpoint.openTerminal(held, { signal: second.signal })).rejects.toMatchObject({ error_code: "busy" });
+    await vi.waitFor(() => expect(h.peers).toHaveLength(1));
+    h.peers[0].open();
+    const [carrier, joined] = await Promise.all([opening, joining]);
+    expect(joined).toBe(carrier);
+    second.abort();
+    expect(h.peers[0].close).not.toHaveBeenCalled();
+    first.abort();
+    expect(h.peers[0].close).toHaveBeenCalledOnce();
   });
 
   it("abandons a pending ticket on owner retirement, including a late fetch response", async () => {
@@ -317,6 +350,67 @@ describe("browser terminal wire", () => {
     await next;
   });
 
+  it("retires a silently dead idle carrier without user action", async () => {
+    vi.useFakeTimers();
+    const { peer, carrier } = await connected();
+    const close = vi.fn();
+    carrier.onClose(close);
+
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(peer.calls()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(peer.calls()).toEqual([{ ...payload("ping"), id: expect.any(String) }]);
+    await vi.advanceTimersByTimeAsync(23999);
+    expect(close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(close).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      error_code: "terminal_disconnected", retryable: true,
+    }));
+    expect(peer.close).toHaveBeenCalledOnce();
+  });
+
+  it("waits for held calls to settle before starting a fresh idle interval", async () => {
+    vi.useFakeTimers();
+    const { peer, carrier } = await connected();
+
+    await vi.advanceTimersByTimeAsync(4000);
+    const attach = request(carrier, "attach");
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(peer.calls().map(({ method }) => method)).toEqual(["term.attach"]);
+    expect(peer.close).not.toHaveBeenCalled();
+    fixtureReply(peer, "attach_ok");
+    await attach;
+
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(peer.calls()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(peer.calls().at(-1)).toEqual({ ...payload("ping"), id: expect.any(String) });
+
+    peer.reply({ ...payload("attach_ok"), result: {} });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(peer.calls().map(({ method }) => method)).toEqual(["term.attach", "ping", "ping"]);
+  });
+
+  it("extends the receive watchdog on pushes and late correlated replies", async () => {
+    vi.useFakeTimers();
+    const { peer, carrier } = await connected();
+    const pending = request(carrier, "attach", { timeoutMs: 12000 });
+    const timedOut = expect(pending).rejects.toMatchObject({ error_code: "timeout", retryable: true });
+    const another = request(carrier, "attach");
+    const firstId = peer.calls()[0].id;
+
+    await vi.advanceTimersByTimeAsync(10000);
+    peer.receive(messages.reset.utf8);
+    await vi.advanceTimersByTimeAsync(12000);
+    await timedOut;
+    peer.reply(payload("attach_ok"), firstId);
+    await vi.advanceTimersByTimeAsync(13000);
+    expect(peer.close).not.toHaveBeenCalled();
+    expect(peer.calls()).toHaveLength(2);
+    peer.reply(payload("attach_ok"));
+    await another;
+  });
+
   it("admits only the pinned methods and original grid dimensions", async () => {
     const { peer, carrier } = await connected();
     for (const { name, method, params, accepted } of limits.grid.cases) {
@@ -337,13 +431,16 @@ describe("browser terminal wire", () => {
   it("retires a physically stalled send without treating absent screen ACK as a stall", async () => {
     vi.useFakeTimers();
     const { peer, carrier } = await connected();
-    const originalSend = peer.send.bind(peer);
-    peer.send = (bytes) => { originalSend(bytes); peer.bufferedAmount += bytes.length; };
     const close = vi.fn();
     carrier.onClose(close);
     peer.receive(messages.output.utf8);
-    await vi.advanceTimersByTimeAsync(limits.sockets.physical_stall_ms);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(peer.calls().map(({ method }) => method)).toEqual(["ping"]);
+    peer.reply({ ...payload("attach_ok"), result: {} });
     expect(close).not.toHaveBeenCalled();
+
+    const originalSend = peer.send.bind(peer);
+    peer.send = (bytes) => { originalSend(bytes); peer.bufferedAmount += bytes.length; };
     const pending = request(carrier, "input");
     const lost = expect(pending).rejects.toMatchObject({ uncertain: true });
     await vi.advanceTimersByTimeAsync(limits.sockets.physical_stall_ms - 1);

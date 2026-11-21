@@ -65,6 +65,7 @@ impl HttpAuthVerifier {
             state: Arc::new(TokenState {
                 revoked: AtomicBool::new(false),
                 verifier_closed: self.inner.closed.clone(),
+                authority_changed: self.inner.authority_changed.clone(),
             }),
             evidence: None,
             pending: None,
@@ -133,6 +134,7 @@ impl VerifierInner {
             Ok(evidence) => entry.evidence = Some(evidence.clone()),
             Err(AuthError::InvalidCredential | AuthError::BindingMismatch | AuthError::Expired) => {
                 state.revoked.store(true, Ordering::Release);
+                self.authority_changed.notify_waiters();
                 cache.remove(&digest);
             }
             Err(_) if entry.evidence.is_none() => {

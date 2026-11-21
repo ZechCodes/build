@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::{watch, Semaphore};
+use tokio::sync::{watch, Notify, Semaphore};
 use tokio::time::Instant;
 
 use super::discovery::DeviceProofSigner;
@@ -124,6 +124,7 @@ pub struct HttpAuthVerifier {
 
 struct VerifierInner {
     closed: Arc<AtomicBool>,
+    authority_changed: Arc<Notify>,
     signer: Arc<dyn AssertionSigner>,
     client: reqwest::Client,
     cache: Mutex<HashMap<TokenDigest, CacheEntry>>,
@@ -163,6 +164,7 @@ impl HttpAuthVerifier {
         Self {
             inner: Arc::new(VerifierInner {
                 closed: Arc::new(AtomicBool::new(false)),
+                authority_changed: Arc::default(),
                 signer,
                 client,
                 cache: Mutex::new(HashMap::new()),
@@ -178,6 +180,7 @@ impl HttpAuthVerifier {
     /// or its configured endpoint is replaced. This verifier cannot be reopened.
     pub fn close(&self) {
         self.inner.closed.store(true, Ordering::Release);
+        self.inner.authority_changed.notify_waiters();
     }
 
     pub async fn verify(&self, token: &str) -> Result<VerifiedHttpGrant, AuthError> {

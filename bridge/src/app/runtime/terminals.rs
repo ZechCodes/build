@@ -377,7 +377,10 @@ pub(in crate::app) fn term_ack(
     };
     // The ack may push one resync snapshot to the caller, so it happens with the
     // app mutex released like every other write to a screen.
-    screen.ack(sender.session_id(), cursor);
+    if !sender.terminal_effect_is_live() {
+        return Err("request authorization has ended".into());
+    }
+    screen.ack(sender.terminal_client_id(), cursor);
     Ok(json!({ "ok": true }))
 }
 
@@ -412,7 +415,9 @@ pub(in crate::app) fn attach_to_tab(
     rows: u16,
 ) -> Value {
     let viewport = attachment.facts.live.then_some((cols, rows));
-    let reading = attachment.terminal.attach(sender, viewport);
+    let reading = attachment
+        .terminal
+        .attach(&sender.for_terminal_screen(), viewport);
     attach_view(attachment.facts, reading)
 }
 

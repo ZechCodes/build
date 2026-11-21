@@ -43,7 +43,7 @@ fn ticket_path() -> &'static str {
 }
 
 fn upgrade_path() -> &'static str {
-    string(&fixture()["handshake"]["path"])
+    "/test/fake-terminal-upgrade"
 }
 
 fn host() -> &'static str {
@@ -107,6 +107,7 @@ impl Auth {
             live: Arc::new(move || !follows_revocation || !live.load(Ordering::Acquire)),
             scopes: scopes.into(),
             credential_digest: Sha256::digest(bearer.as_bytes()).into(),
+            changed: Arc::default(),
         }
     }
 }
@@ -161,7 +162,29 @@ impl Harness {
         let upgrades = axum::Router::new()
             .route(upgrade_path(), axum::routing::get(upgrade))
             .with_state(runtime.state.clone());
-        let app = policy.apply(runtime.router().merge(upgrades));
+        let sockets = runtime
+            .state
+            .terminal_tickets
+            .as_ref()
+            .unwrap()
+            .sockets
+            .clone();
+        let app = policy.apply(
+            runtime
+                .router()
+                .merge(upgrades)
+                .layer(axum::middleware::from_fn(
+                    move |mut request: Request<Body>, next: axum::middleware::Next| {
+                        let sockets = sockets.clone();
+                        async move {
+                            request
+                                .extensions_mut()
+                                .insert(TerminalUpgrade::for_test(sockets));
+                            next.run(request).await
+                        }
+                    },
+                )),
+        );
         let mut request = json_request("POST", "/v1/sessions", json!({"api_range":">=3 <4"}));
         request
             .headers_mut()
@@ -272,8 +295,28 @@ impl Harness {
         .unwrap();
         request.extensions_mut().insert(policy);
         let origin = policy::terminal_origin(&request)?;
-        redeem(self.state(), token, origin, Arc::new(Sink))
+        redeem_test(self.state(), token, origin)
     }
+}
+
+fn redeem_test(
+    state: &HttpState,
+    token: &str,
+    origin: TerminalOrigin<'_>,
+) -> HttpResult<TerminalAdmission> {
+    let mut decoded = [0; TOKEN_BYTES];
+    if token.len() != TOKEN_ENCODED_BYTES
+        || URL_SAFE_NO_PAD.decode_slice(token, &mut decoded) != Ok(TOKEN_BYTES)
+    {
+        return Err(invalid());
+    }
+    redeem(state, &decoded, origin, Arc::new(Sink), |family| {
+        state
+            .terminal_tickets
+            .as_ref()
+            .unwrap()
+            .reserve_socket(family)
+    })
 }
 
 struct Sink;
@@ -293,7 +336,7 @@ async fn upgrade(State(state): State<HttpState>, request: Request<Body>) -> Resp
         .unwrap();
     let token = offer.split_once("ticket.").unwrap().1;
     request.extensions().get::<Race>().unwrap().0.wait().await;
-    match redeem(&state, token, origin, Arc::new(Sink)) {
+    match redeem_test(&state, token, origin) {
         Ok(admission) => {
             let mut response = StatusCode::SWITCHING_PROTOCOLS.into_response();
             response.extensions_mut().insert(Arc::new(admission));

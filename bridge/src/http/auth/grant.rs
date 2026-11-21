@@ -1,7 +1,7 @@
 use super::{AuthError, TokenDigest};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tokio::time::Instant;
+use tokio::{sync::Notify, time::Instant};
 
 /// Immutable session identity. Rotation changes token ID and expiry, not this.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,6 +53,7 @@ pub struct VerifiedHttpGrant {
 pub(super) struct Lease {
     pub(super) evidence: Mutex<Arc<Evidence>>,
     pub(super) closed: AtomicBool,
+    authority_changed: Arc<Notify>,
 }
 
 pub(super) struct Evidence {
@@ -65,6 +66,7 @@ pub(super) struct Evidence {
 
 pub(super) struct TokenState {
     pub(super) verifier_closed: Arc<AtomicBool>,
+    pub(super) authority_changed: Arc<Notify>,
     pub(super) revoked: AtomicBool,
 }
 
@@ -73,6 +75,7 @@ impl VerifiedHttpGrant {
         let grant = Self {
             binding: evidence.binding.clone(),
             lease: Arc::new(Lease {
+                authority_changed: evidence.token_state.authority_changed.clone(),
                 evidence: Mutex::new(evidence),
                 closed: AtomicBool::new(false),
             }),
@@ -144,6 +147,10 @@ impl VerifiedHttpGrant {
         self.lease.evidence.lock().unwrap().credential_digest
     }
 
+    pub(in crate::http) fn authority_changed(&self) -> Arc<Notify> {
+        self.lease.authority_changed.clone()
+    }
+
     pub fn refresh_at(&self) -> Instant {
         self.lease
             .evidence
@@ -153,6 +160,8 @@ impl VerifiedHttpGrant {
     }
 
     pub fn close(&self) {
-        self.lease.closed.store(true, Ordering::Release);
+        if !self.lease.closed.swap(true, Ordering::AcqRel) {
+            self.lease.authority_changed.notify_waiters();
+        }
     }
 }

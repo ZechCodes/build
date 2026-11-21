@@ -96,6 +96,13 @@ async fn test_admission(
     Extension(authority): Extension<OutputAuthority>,
     mut request: Request,
 ) -> Response {
+    // This transport-only fixture models one issued Origin. The mounted
+    // runtime tests run the same vectors with a real ticket and redemption.
+    match crate::http::policy::terminal_origin(&request) {
+        Ok(origin) if origin.caller() == "https://app.test" => {}
+        Ok(_) => return crate::http::policy::origin_forbidden(),
+        Err(refusal) => return *refusal,
+    }
     let handshake = match Handshake::parse(&request) {
         Ok(handshake) => handshake,
         Err(refusal) => return refusal.into_response(),
@@ -191,7 +198,11 @@ impl Server {
             .route("/ordinary", axum::routing::get(|| async { "ordinary" }))
             .with_state(witness.clone());
         let origin = format!("https://localhost:{port}");
-        let policy = HttpPolicy::new(&origin, &["https://app.test".to_owned()]).unwrap();
+        let policy = HttpPolicy::new(
+            &origin,
+            &["https://app.test".into(), "https://other.app.test".into()],
+        )
+        .unwrap();
         let (stop, stopped) = watch::channel(false);
         let joined = tokio::spawn(serve_connections(
             listener,
@@ -320,7 +331,7 @@ impl Server {
     }
 }
 
-fn tls_configs() -> (Arc<rustls::ServerConfig>, TlsConnector) {
+pub(in crate::http) fn tls_configs() -> (Arc<rustls::ServerConfig>, TlsConnector) {
     let rcgen::CertifiedKey { cert, key_pair } =
         rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
     let certificate = cert.der().clone();
@@ -342,7 +353,7 @@ fn tls_configs() -> (Arc<rustls::ServerConfig>, TlsConnector) {
     (Arc::new(server), TlsConnector::from(Arc::new(client)))
 }
 
-async fn write_request(stream: &mut ClientIo, path: &str, headers: &HeaderMap) {
+pub(in crate::http) async fn write_request(stream: &mut ClientIo, path: &str, headers: &HeaderMap) {
     let mut request = format!("GET {path} HTTP/1.1\r\n").into_bytes();
     for (name, value) in headers {
         request.extend_from_slice(name.as_str().as_bytes());
@@ -355,7 +366,7 @@ async fn write_request(stream: &mut ClientIo, path: &str, headers: &HeaderMap) {
     stream.flush().await.unwrap();
 }
 
-async fn read_head(stream: &mut ClientIo) -> Vec<u8> {
+pub(in crate::http) async fn read_head(stream: &mut ClientIo) -> Vec<u8> {
     timeout(TEST_TIMEOUT, async {
         let mut head = Vec::new();
         let mut byte = [0];
@@ -371,7 +382,7 @@ async fn read_head(stream: &mut ClientIo) -> Vec<u8> {
     .expect("HTTP response or socket drop")
 }
 
-fn status(head: &[u8]) -> u64 {
+pub(in crate::http) fn status(head: &[u8]) -> u64 {
     std::str::from_utf8(head)
         .unwrap()
         .split_ascii_whitespace()

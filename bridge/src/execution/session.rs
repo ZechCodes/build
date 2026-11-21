@@ -69,6 +69,12 @@ impl Opening {
         self.0.is_open.store(false, Ordering::SeqCst);
         self.0.closed.notify_waiters();
     }
+    pub(crate) async fn closed(&self) {
+        let closed = self.0.closed.notified();
+        if self.is_open() {
+            closed.await;
+        }
+    }
     pub(crate) fn diagnostic_id(&self) -> u64 {
         self.0.ordinal
     }
@@ -140,6 +146,18 @@ impl VerifiedCaller {
             opening,
         }
     }
+    pub(crate) fn for_terminal_effect(mut self, interest: &Arc<TerminalInterest>) -> Self {
+        let revision = interest.revision.load(Ordering::Acquire);
+        let interest = interest.clone();
+        let verified = self.live;
+        self.live = Arc::new(move || {
+            interest.is_live()
+                && interest.revision.load(Ordering::Acquire) == revision
+                && verified()
+        });
+        self
+    }
+
     pub fn device_id(&self) -> &str {
         match &self.identity {
             Identity::Http(identity) => &identity.device_id,
@@ -246,6 +264,9 @@ pub enum DeliveryError {
 
 /// Implementations must not block or reenter ClientSessions during enqueue.
 pub trait EventSink: Send + Sync {
+    fn is_live(&self) -> bool {
+        true
+    }
     fn try_send(&self, event: EncodedEvent) -> Result<(), DeliveryError>;
 }
 pub trait ReplySink: Send + Sync {
@@ -292,6 +313,51 @@ impl EncodedEvent {
     }
     pub fn is_live(&self) -> bool {
         self.fence.is_live()
+    }
+    pub(crate) fn terminal_interest(&self) -> Option<&Arc<TerminalInterest>> {
+        match &self.fence.target {
+            OutputTarget::TerminalEvent(_, interest) => Some(interest),
+            _ => None,
+        }
+    }
+    pub(crate) fn into_wire(self) -> (Arc<[u8]>, OutputFence) {
+        (self.encoded, self.fence)
+    }
+}
+
+/// Trusted screen registration identity, separate from both the Opening
+/// and the client-chosen attach request ID.
+pub(crate) struct TerminalInterest {
+    id: String,
+    live: AtomicBool,
+    revision: AtomicU64,
+}
+
+impl TerminalInterest {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            live: AtomicBool::new(true),
+            revision: AtomicU64::new(0),
+        })
+    }
+
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub(crate) fn is_live(&self) -> bool {
+        self.live.load(Ordering::Acquire)
+    }
+
+    /// The caller holds the Opening output gate.
+    pub(crate) fn rekey(&self) {
+        self.revision.fetch_add(1, Ordering::Release);
+    }
+
+    /// The caller holds the Opening output gate.
+    pub(crate) fn retire(&self) {
+        self.live.store(false, Ordering::Release);
     }
 }
 
@@ -637,6 +703,39 @@ impl ClientSessions {
             true,
         )
     }
+    /// Bind a per-call proof to the exact terminal stream. The adapter's
+    /// proof also fences work already queued when this stream is replaced.
+    pub(crate) fn request_terminal(
+        &self,
+        binding: &EventBinding,
+        caller: VerifiedCaller,
+        sink: Arc<dyn ReplySink>,
+        interest: Option<Arc<TerminalInterest>>,
+    ) -> Result<RequestContext, SessionError> {
+        let session = &binding.session;
+        if caller.identity != session.0.identity || !matches!(caller.identity, Identity::Http(_)) {
+            return Err(SessionError::WrongCaller);
+        }
+        let authorization = AuthorizationLease {
+            opening: session.opening().clone(),
+            state: Arc::new(Mutex::new(AuthorizationState {
+                deadline: caller.deadline,
+                live: caller.live,
+                retired: false,
+            })),
+        };
+        let mut request = self.request_for_stream_with_authority(
+            session,
+            StreamClass::Terminal,
+            sink,
+            Some(binding),
+            authorization,
+            true,
+        )?;
+        request.terminal_interest = interest;
+        Ok(request)
+    }
+
     fn request_for_stream_with_authority(
         &self,
         session: &SessionLease,
@@ -684,6 +783,7 @@ impl ClientSessions {
             authorization,
         };
         Ok(RequestContext {
+            terminal_interest: None,
             read_interest: Arc::new(ReadInterest::default()),
             stream_class: class,
             session: session.clone(),
@@ -795,7 +895,7 @@ impl EventBinding {
         SessionEvents(self.clone())
     }
     pub fn is_live(&self) -> bool {
-        self.is_current() && self.session.is_live()
+        self.is_current() && self.session.is_live() && self.binding.sink.is_live()
     }
     pub(crate) fn is_current(&self) -> bool {
         self.binding.live.load(Ordering::SeqCst)
@@ -828,12 +928,25 @@ impl SessionEvents {
     }
 
     pub fn push(&self, payload: Value) -> Result<(), DeliveryError> {
+        self.push_with_interest(payload, None)
+    }
+
+    pub(crate) fn push_with_interest(
+        &self,
+        payload: Value,
+        interest: Option<Arc<TerminalInterest>>,
+    ) -> Result<(), DeliveryError> {
         let binding = &self.0;
+        let live = binding.binding.live.clone();
+        let target = match interest {
+            Some(interest) => OutputTarget::TerminalEvent(live, interest),
+            None => OutputTarget::Event(live),
+        };
         let _output = binding.session.opening().0.output_gate.lock().unwrap();
         let mut state = binding.session.0.state.lock().unwrap();
         let fence = OutputFence {
             session: Arc::downgrade(&binding.session.0),
-            target: OutputTarget::Event(binding.binding.live.clone()),
+            target,
         };
         fence.check()?;
         let result = binding
@@ -964,6 +1077,7 @@ impl ReadInterest {
 }
 
 pub struct RequestContext {
+    pub(crate) terminal_interest: Option<Arc<TerminalInterest>>,
     read_interest: Arc<ReadInterest>,
     stream_class: StreamClass,
     session: SessionLease,
@@ -1038,32 +1152,42 @@ impl Drop for RequestContext {
 }
 
 #[derive(Clone)]
-struct OutputFence {
+pub(crate) struct OutputFence {
     session: Weak<Session>,
     target: OutputTarget,
 }
 #[derive(Clone)]
 enum OutputTarget {
     Event(Arc<AtomicBool>),
+    TerminalEvent(Arc<AtomicBool>, Arc<TerminalInterest>),
     Reply(RequestCancellation),
 }
 impl OutputFence {
     /// Caller holds the session output gate during the synchronous enqueue.
-    fn check(&self) -> Result<(), DeliveryError> {
+    pub(crate) fn check(&self) -> Result<(), DeliveryError> {
         let session = self.session.upgrade().ok_or(DeliveryError::Closed)?;
         let live = match &self.target {
             OutputTarget::Event(live) => live.load(Ordering::SeqCst),
+            OutputTarget::TerminalEvent(live, interest) => {
+                live.load(Ordering::SeqCst) && interest.is_live()
+            }
             OutputTarget::Reply(cancellation) => !cancellation.is_cancelled(),
         };
         if !live || !session.opening.is_open() {
             return Err(DeliveryError::Closed);
         }
-        if matches!(self.target, OutputTarget::Event(_)) && !session.authorization.is_valid() {
+        if !matches!(self.target, OutputTarget::Reply(_)) && !session.authorization.is_valid() {
             return Err(DeliveryError::Unauthorized);
         }
         Ok(())
     }
-    fn is_live(&self) -> bool {
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        match &self.target {
+            OutputTarget::Reply(request) => request.authorization.deadline(),
+            _ => None,
+        }
+    }
+    pub(crate) fn is_live(&self) -> bool {
         let Some(session) = self.session.upgrade() else {
             return false;
         };

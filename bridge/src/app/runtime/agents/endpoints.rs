@@ -163,7 +163,7 @@ pub(in crate::app) fn agent_attach(
             s.session_registry
                 .waiting_screen_for_attach(key.clone(), &term_id, cols, rows);
         drop(guard);
-        let reading = screen.attach(sender, Some((cols, rows)));
+        let reading = screen.attach(&sender.for_terminal_screen(), Some((cols, rows)));
         // A screen with no session behind it is dead by definition, and names
         // no harness: nothing has ever run here to name one.
         return Ok(attach_view(

@@ -4,14 +4,12 @@
 //! Binding publication and live proof replacement also take the Opening output
 //! gate, which the listener holds across physical output.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "slice D wires the upgrade admission seam")
-)]
-
 use std::{
     collections::HashMap,
-    sync::{atomic::Ordering, Arc, Mutex, Weak},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, Weak,
+    },
     time::Duration,
 };
 
@@ -26,7 +24,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio::time::Instant;
+use tokio::{sync::Notify, time::Instant};
 
 use super::{
     auth_refusal, bearer, body_refusal, grant_expiry, refusal, resource_opening,
@@ -37,20 +35,23 @@ use crate::execution::session::{
     AuthorizationLease, DeliveryError, EncodedEvent, EventBinding, EventSink, SessionLease,
     StreamClass, VerifiedCaller,
 };
-use crate::http::{listener::OutputAuthority, policy, policy::TerminalOrigin};
+#[cfg(test)]
+use crate::http::limits::TerminalSocketBudget;
+use crate::http::{
+    limits::TerminalSocketReservation,
+    listener::{terminal_upgrade::TerminalUpgrade, OutputAuthority},
+    policy::{self, TerminalOrigin},
+};
 
 pub(super) const PATH: &str = "/v1/terminal-tickets";
 const TOKEN_BYTES: usize = 32;
+#[cfg(test)]
 const TOKEN_ENCODED_BYTES: usize = (TOKEN_BYTES * 8).div_ceil(6);
 const MAX_AGE: Duration = Duration::from_millis(15_000);
 const MAX_PENDING_FAMILY: usize = 8;
 const MAX_PENDING_GLOBAL: usize = 128;
 const ISSUE_BURST: u32 = 8;
 const ISSUE_INTERVAL: Duration = Duration::from_millis(1_000);
-const MAX_HELD_FAMILY: usize = 8;
-const MAX_HELD_GLOBAL: usize = 16;
-const _: () = assert!(MAX_HELD_FAMILY < super::MAX_FAMILY_OPENINGS);
-
 type TicketDigest = [u8; 32];
 
 impl VerifiedAuthority {
@@ -69,7 +70,8 @@ impl VerifiedAuthority {
 #[derive(Default)]
 pub(super) struct TerminalTickets {
     registry: Mutex<Registry>,
-    sockets: Arc<Mutex<HeldSockets>>,
+    #[cfg(test)]
+    sockets: TerminalSocketBudget,
 }
 
 #[derive(Default)]
@@ -227,53 +229,9 @@ impl TerminalTickets {
         Ok(session)
     }
 
-    fn reserve_socket(&self, family: &str) -> HttpResult<HeldSocket> {
-        let mut sockets = self.sockets.lock().unwrap();
-        sockets.check(family)?;
-        sockets.total += 1;
-        *sockets.families.entry(family.into()).or_default() += 1;
-        Ok(HeldSocket {
-            sockets: self.sockets.clone(),
-            family: family.into(),
-        })
-    }
-}
-
-#[derive(Default)]
-struct HeldSockets {
-    total: usize,
-    families: HashMap<String, usize>,
-}
-
-impl HeldSockets {
-    fn check(&self, family: &str) -> HttpResult<()> {
-        if self.total >= MAX_HELD_GLOBAL
-            || self.families.get(family).copied().unwrap_or_default() >= MAX_HELD_FAMILY
-        {
-            return Err(overloaded());
-        }
-        Ok(())
-    }
-}
-
-/// Kept for the physical socket/upgrade attempt, including after supersession.
-struct HeldSocket {
-    sockets: Arc<Mutex<HeldSockets>>,
-    family: String,
-}
-
-impl Drop for HeldSocket {
-    fn drop(&mut self) {
-        let mut sockets = self.sockets.lock().unwrap();
-        sockets.total -= 1;
-        let count = sockets
-            .families
-            .get_mut(&self.family)
-            .expect("held socket is counted");
-        *count -= 1;
-        if *count == 0 {
-            sockets.families.remove(&self.family);
-        }
+    #[cfg(test)]
+    fn reserve_socket(&self, family: &str) -> HttpResult<TerminalSocketReservation> {
+        self.sockets.reserve(family).map_err(|_| overloaded())
     }
 }
 
@@ -311,6 +269,11 @@ async fn issue_response(state: &HttpState, request: Request<Body>) -> HttpResult
         .get::<OutputAuthority>()
         .cloned()
         .ok_or_else(|| refusal(StatusCode::SERVICE_UNAVAILABLE, "unavailable"))?;
+    let upgrade = request
+        .extensions()
+        .get::<TerminalUpgrade>()
+        .cloned()
+        .ok_or_else(|| refusal(StatusCode::SERVICE_UNAVAILABLE, "unavailable"))?;
     let deadline = authority.deadline;
     let body = crate::http::body::read_json_authorized(
         request.into_body(),
@@ -325,7 +288,7 @@ async fn issue_response(state: &HttpState, request: Request<Body>) -> HttpResult
     if opening.generation != body.opening_generation {
         return Err(invalid());
     }
-    mint(state, opening, authority, caller_origin, output)
+    mint(state, opening, authority, caller_origin, output, upgrade)
 }
 
 fn mint(
@@ -334,6 +297,7 @@ fn mint(
     authority: VerifiedAuthority,
     caller_origin: String,
     output: OutputAuthority,
+    upgrade: TerminalUpgrade,
 ) -> HttpResult<Response> {
     let tickets = state.terminal_tickets.as_ref().ok_or_else(invalid)?;
     let mut registry = tickets.registry.lock().unwrap();
@@ -352,11 +316,9 @@ fn mint(
             if !state.accepting.load(Ordering::SeqCst) || !ticket.is_live(now) {
                 return Err(invalid());
             }
-            tickets
-                .sockets
-                .lock()
-                .unwrap()
-                .check(&ticket.authority.identity.family_id)?;
+            upgrade
+                .check_capacity(&ticket.authority.identity.family_id)
+                .map_err(|error| Box::new(error.into_response()))?;
             let expires = ticket.expires;
             Ok::<_, Box<Response>>((registry.issue(ticket, now)?, expires))
         })
@@ -397,21 +359,22 @@ fn issue_output(
     response
 }
 
-/// The offer parser supplies the unprefixed ticket and request policy supplies
-/// the verified origin. This is the only credential check for the upgrade.
+/// The handshake supplies decoded ticket material and the request policy
+/// supplies the verified origin. Only the digest reaches the registry.
 pub(super) fn redeem(
     state: &HttpState,
-    token: &str,
+    token: &[u8; TOKEN_BYTES],
     origin: TerminalOrigin<'_>,
     sink: Arc<dyn EventSink>,
+    reserve: impl FnOnce(&str) -> HttpResult<TerminalSocketReservation>,
 ) -> HttpResult<TerminalAdmission> {
-    let digest = digest_token(token).ok_or_else(invalid)?;
+    let digest: TicketDigest = Sha256::digest(token).into();
     let tickets = state.terminal_tickets.as_ref().ok_or_else(invalid)?;
     let mut registry = tickets.registry.lock().unwrap();
     registry.reap(Instant::now());
     let ticket = registry.pending.get(&digest).ok_or_else(invalid)?;
     validate_redemption(state, ticket, origin)?;
-    let held = tickets.reserve_socket(&ticket.authority.identity.family_id)?;
+    let held = reserve(&ticket.authority.identity.family_id)?;
     let ticket = registry
         .pending
         .remove(&digest)
@@ -461,9 +424,12 @@ fn bind(
     ticket: &PendingTicket,
     prior: Option<&TerminalProof>,
     sink: Arc<dyn EventSink>,
-    held: HeldSocket,
+    held: TerminalSocketReservation,
 ) -> HttpResult<TerminalAdmission> {
-    let proof = Arc::new(TerminalProof(Mutex::new(Some(ticket.authority.clone()))));
+    let proof = Arc::new(TerminalProof {
+        authority: Mutex::new(Some(ticket.authority.clone())),
+        changed: Notify::new(),
+    });
     let lifecycle = ticket.session.authorization();
     let binding = state
         .execution
@@ -474,6 +440,7 @@ fn bind(
             ticket.predecessor.as_ref(),
             Arc::new(ProofSink {
                 lifecycle: lifecycle.clone(),
+                accepting: state.accepting.clone(),
                 proof: Arc::downgrade(&proof),
                 sink: Arc::downgrade(&sink),
             }),
@@ -494,10 +461,12 @@ fn bind(
         lifecycle,
         proof,
         _sink: sink,
-        _held: held,
+        accepting: state.accepting.clone(),
+        held: Arc::new(held),
     })
 }
 
+#[cfg(test)]
 fn digest_token(token: &str) -> Option<TicketDigest> {
     if token.len() != TOKEN_ENCODED_BYTES {
         return None;
@@ -516,11 +485,14 @@ fn overloaded() -> Box<Response> {
     refusal(StatusCode::TOO_MANY_REQUESTS, "overloaded").into()
 }
 
-struct TerminalProof(Mutex<Option<VerifiedAuthority>>);
+struct TerminalProof {
+    authority: Mutex<Option<VerifiedAuthority>>,
+    changed: Notify,
+}
 
 impl TerminalProof {
     fn current(&self) -> Option<VerifiedAuthority> {
-        self.0
+        self.authority
             .lock()
             .unwrap()
             .as_ref()
@@ -529,19 +501,28 @@ impl TerminalProof {
     }
 
     fn is_live(&self) -> bool {
-        self.0
+        self.authority
             .lock()
             .unwrap()
             .as_ref()
             .is_some_and(VerifiedAuthority::is_live)
     }
 
+    fn deadline(&self) -> Option<Instant> {
+        self.authority
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|proof| proof.deadline)
+    }
+
     fn retire(&self) {
-        *self.0.lock().unwrap() = None;
+        *self.authority.lock().unwrap() = None;
+        self.changed.notify_waiters();
     }
 
     fn renew(&self, fresh: &VerifiedAuthority) {
-        let mut proof = self.0.lock().unwrap();
+        let mut proof = self.authority.lock().unwrap();
         match proof.as_mut() {
             Some(old)
                 if old.is_live()
@@ -554,20 +535,27 @@ impl TerminalProof {
             }
             _ => *proof = None,
         }
+        self.changed.notify_waiters();
     }
 }
 
 /// A stored predecessor retains only weak references to socket resources.
 struct ProofSink {
     lifecycle: AuthorizationLease,
+    accepting: Arc<AtomicBool>,
     proof: Weak<TerminalProof>,
     sink: Weak<dyn EventSink>,
 }
 
 impl EventSink for ProofSink {
+    fn is_live(&self) -> bool {
+        self.accepting.load(Ordering::SeqCst)
+            && self.proof.upgrade().is_some_and(|proof| proof.is_live())
+            && self.lifecycle.is_valid()
+    }
+
     fn try_send(&self, event: EncodedEvent) -> Result<(), DeliveryError> {
-        let live = self.proof.upgrade().is_some_and(|proof| proof.is_live());
-        if !live || !self.lifecycle.is_valid() {
+        if !self.is_live() {
             return Err(DeliveryError::Closed);
         }
         self.sink
@@ -585,7 +573,8 @@ pub(super) struct TerminalAdmission {
     lifecycle: AuthorizationLease,
     proof: Arc<TerminalProof>,
     _sink: Arc<dyn EventSink>,
-    _held: HeldSocket,
+    held: Arc<TerminalSocketReservation>,
+    accepting: Arc<AtomicBool>,
 }
 
 impl TerminalAdmission {
@@ -593,20 +582,49 @@ impl TerminalAdmission {
         &self.session
     }
 
+    pub(super) fn retire(&self) {
+        self.binding.close();
+        self.proof.retire();
+    }
+
+    pub(super) fn reservation(&self) -> Arc<TerminalSocketReservation> {
+        self.held.clone()
+    }
+
+    pub(super) async fn ended(&self) {
+        let opening = self.session.opening();
+        loop {
+            let changed = self.proof.changed.notified();
+            let Some(proof) = self.proof.current() else {
+                return;
+            };
+            let revoked = proof.changed.notified();
+            if !self.is_live() {
+                return;
+            }
+            let deadline = self.deadline();
+            tokio::select! {
+                _ = changed => {},
+                _ = opening.closed() => return,
+                _ = tokio::time::sleep_until(deadline) => {},
+                _ = revoked => {},
+            }
+        }
+    }
+
     pub(super) fn binding(&self) -> &EventBinding {
         &self.binding
     }
 
     pub(super) fn is_live(&self) -> bool {
-        self.binding.is_current() && self.lifecycle.is_valid() && self.proof.is_live()
+        self.accepting.load(Ordering::SeqCst)
+            && self.binding.is_current()
+            && self.lifecycle.is_valid()
+            && self.proof.is_live()
     }
 
     pub(super) fn deadline(&self) -> Instant {
-        let terminal = self
-            .proof
-            .current()
-            .map(|proof| proof.deadline)
-            .unwrap_or_else(Instant::now);
+        let terminal = self.proof.deadline().unwrap_or_else(Instant::now);
         terminal.min(self.lifecycle.deadline().unwrap_or_else(Instant::now))
     }
 
@@ -620,12 +638,14 @@ impl TerminalAdmission {
         let binding = self.binding.clone();
         let lifecycle = self.lifecycle.clone();
         let proof = self.proof.clone();
+        let accepting = self.accepting.clone();
         let deadline = authority.deadline.min(lifecycle.deadline()?);
         Some(VerifiedCaller::verified_http(
             authority.identity,
             deadline,
             Arc::new(move || {
-                binding.is_current()
+                accepting.load(Ordering::SeqCst)
+                    && binding.is_current()
                     && lifecycle.is_valid()
                     && proof.is_live()
                     && (authority.live)()
@@ -636,8 +656,7 @@ impl TerminalAdmission {
 
 impl Drop for TerminalAdmission {
     fn drop(&mut self) {
-        self.binding.close();
-        self.proof.retire();
+        self.retire();
     }
 }
 

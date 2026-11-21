@@ -78,7 +78,7 @@ export function installBridgeHttpIpc({
   manifest,
 }) {
   const owners = new WeakMap();
-  const navigating = new WeakSet();
+  const navigations = new WeakMap();
   let nextId = 0;
   const isOwnerCurrent = (owner) =>
     owners.get(owner.contents) === owner &&
@@ -96,7 +96,7 @@ export function installBridgeHttpIpc({
   });
   const terminal = createTerminalIpc({
     bridge, getAuth,
-    isOwnerCurrent: (owner) => isOwnerCurrent(owner) && !navigating.has(owner.contents),
+    isOwnerCurrent: (owner) => isOwnerCurrent(owner) && !navigationPending(owner.contents),
   });
   function retire(contents) {
     const owner = owners.get(contents);
@@ -105,19 +105,52 @@ export function installBridgeHttpIpc({
       bridge.clear(owner);
     }
   }
+  function navigationPending(contents) {
+    const navigation = navigations.get(contents);
+    if (!navigation) return false;
+    if (!navigation.checkIdle || contents.isLoadingMainFrame?.() !== false || contents.isWaitingForResponse?.())
+      return true;
+    navigations.delete(contents);
+    return false;
+  }
+  function checkNavigationAfterEvent(contents) {
+    const navigation = navigations.get(contents);
+    if (!navigation) return;
+    // Electron may emit start, cancellation or failure before Chromium
+    // updates loading state. Uncommitted requests can finish without any
+    // commit or failure event. Only the current start may release its fence.
+    setImmediate(() => {
+      if (navigations.get(contents) !== navigation) return;
+      navigation.checkIdle = true;
+      navigationPending(contents);
+    });
+  }
   function attach(contents) {
     contents.on(
       "did-start-navigation",
       (details, _url, inPlace, isMainFrame) => {
         if ((details.isMainFrame ?? isMainFrame) && !(details.isSameDocument ?? inPlace)) {
-          navigating.add(contents);
+          navigations.set(contents, { checkIdle: false });
           retire(contents);
+          checkNavigationAfterEvent(contents);
         }
       },
     );
-    contents.on("did-navigate", () => navigating.delete(contents));
-    contents.on("render-process-gone", () => retire(contents));
-    contents.on("destroyed", () => retire(contents));
+    contents.on("did-navigate", () => {
+      // Main-frame commit changes document authority, including when the
+      // frame is reused. A newer outstanding request still owns its fence.
+      retire(contents);
+      if (!contents.isWaitingForResponse?.()) navigations.delete(contents);
+    });
+    const checkFailure = (_event, _code, _description, _url, isMainFrame) => {
+      if (isMainFrame) checkNavigationAfterEvent(contents);
+    };
+    contents.on("did-fail-provisional-load", checkFailure);
+    contents.on("did-fail-load", checkFailure);
+    contents.on("did-stop-loading", () => checkNavigationAfterEvent(contents));
+    const discard = () => { navigations.delete(contents); retire(contents); };
+    contents.on("render-process-gone", discard);
+    contents.on("destroyed", discard);
   }
   function caller(event) {
     const contents = getWindow()?.webContents;
@@ -139,7 +172,7 @@ export function installBridgeHttpIpc({
   ipcMain.handle(CHANNEL, async (event, method, args) => {
     const isTerminal = TERMINAL_ARITY.has(method);
     try {
-      if (isTerminal && navigating.has(event.sender)) throw transportError("untrusted_caller");
+      if (isTerminal && navigationPending(event.sender)) throw transportError("untrusted_caller");
       const owner = caller(event);
       validateArguments(method, args, isTerminal);
       const value = await (isTerminal ? terminal : bridge)[method](owner, ...args);

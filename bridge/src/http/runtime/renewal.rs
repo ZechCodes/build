@@ -13,8 +13,10 @@ use axum::{
 };
 use tokio::time::Instant;
 
-use super::{auth_refusal, bearer, opening_body, refusal, HttpResult, HttpState};
-use crate::execution::session::{SessionLease, VerifiedCaller};
+use super::{
+    auth_refusal, bearer, opening_body, refusal, HttpResult, HttpState, VerifiedAuthority,
+};
+use crate::execution::session::SessionLease;
 use crate::http::listener::OutputAuthority;
 
 type Check = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -74,18 +76,7 @@ async fn renewed(
             _ => return Err(refusal(StatusCode::NOT_FOUND, "not_found").into()),
         }
     };
-    let caller = VerifiedCaller::verified_http(
-        authority.identity.clone(),
-        authority.deadline,
-        authority.live.clone(),
-    );
-    let session = state
-        .execution
-        .sessions()
-        .resume(caller, session_id)
-        .ok()
-        .filter(|session| session.opening().is(mounted.opening()))
-        .ok_or_else(unauthorized)?;
+    let session = resume(state, &mounted, &authority)?;
     let greeting = state
         .execution
         .greeting(&session)
@@ -106,4 +97,27 @@ async fn renewed(
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     Ok(response)
+}
+
+fn resume(
+    state: &HttpState,
+    mounted: &SessionLease,
+    authority: &VerifiedAuthority,
+) -> HttpResult<SessionLease> {
+    let resume = || {
+        if !state.accepting.load(Ordering::SeqCst) {
+            return Err(refusal(StatusCode::UNAUTHORIZED, "invalid_credential").into());
+        }
+        state
+            .execution
+            .sessions()
+            .resume(authority.caller(), mounted.id())
+            .ok()
+            .filter(|session| session.opening().is(mounted.opening()))
+            .ok_or_else(|| refusal(StatusCode::UNAUTHORIZED, "invalid_credential").into())
+    };
+    match &state.terminal_tickets {
+        Some(tickets) => tickets.renew(authority, resume),
+        None => resume(),
+    }
 }

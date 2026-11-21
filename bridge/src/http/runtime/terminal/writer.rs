@@ -3,7 +3,6 @@
 use std::sync::{Arc, Mutex};
 
 use futures_util::SinkExt;
-use tokio::sync::OwnedSemaphorePermit;
 use tokio_tungstenite::tungstenite::{
     protocol::{
         frame::{
@@ -20,7 +19,10 @@ use crate::{
     http::listener::{terminal_upgrade::TerminalSocket, OutputAuthority},
 };
 
-use super::{sink::Outbound, TerminalAdmission};
+use super::{
+    sink::{DeliveredCursor, Outbound, Reservation},
+    TerminalAdmission,
+};
 
 const FRAGMENT_BYTES: usize = 256 * 1024;
 
@@ -31,7 +33,7 @@ pub(super) struct WriterFence(Arc<Mutex<Option<ActiveWrite>>>);
 
 struct ActiveWrite {
     fence: OutputFence,
-    _reservation: OwnedSemaphorePermit,
+    _reservation: Reservation,
 }
 
 impl WriterFence {
@@ -70,22 +72,23 @@ impl WriterFence {
         &self,
         socket: &mut TerminalSocket,
         output: Outbound,
-    ) -> Result<(), WriteFailed> {
+    ) -> Result<Option<DeliveredCursor>, WriteFailed> {
         if !output.fence.is_live() {
-            return Ok(());
+            return Ok(None);
         }
         let Some(output) = output.into_write() else {
-            return Ok(());
+            return Ok(None);
         };
         *self.0.lock().unwrap() = Some(ActiveWrite {
             fence: output.fence,
             _reservation: output.reservation,
         });
         write_message(socket, &output.bytes).await?;
+        drop(output.bytes);
         // Failure or cancellation keeps the permit in the I/O authority
         // until the physical socket releases the staged fragment.
         *self.0.lock().unwrap() = None;
-        Ok(())
+        Ok(output.delivered)
     }
 }
 
@@ -96,6 +99,9 @@ pub(super) async fn write_message(
     if bytes.len() <= FRAGMENT_BYTES {
         return send(socket, Message::Binary(bytes.to_vec())).await;
     }
+    // WebSocket data messages cannot interleave with continuations. FIFO plus
+    // one slot per Opening limits a queued sibling to at most one snapshot
+    // ahead of it: 48 fragments, each flushed under BoundedIo's stall cut.
     let chunks = bytes.chunks(FRAGMENT_BYTES);
     let last = chunks.len() - 1;
     for (index, bytes) in chunks.enumerate() {
@@ -114,6 +120,7 @@ pub(super) async fn write_message(
             )),
         )
         .await?;
+        tokio::task::yield_now().await;
     }
     Ok(())
 }

@@ -270,7 +270,7 @@ pub(in crate::app) fn term_attach(
         s.check_terminal_scope(params, &key)?;
         s.attachment(&key)?
     };
-    Ok(attach_to_tab(attachment, sender, cols, rows))
+    attach_to_tab(attachment, sender, cols, rows)
 }
 
 /// Write client keystrokes (base64) to a tab's PTY, by id. Input to the agent
@@ -413,12 +413,13 @@ pub(in crate::app) fn attach_to_tab(
     sender: &SessionSender,
     cols: u16,
     rows: u16,
-) -> Value {
+) -> Result<Value, String> {
     let viewport = attachment.facts.live.then_some((cols, rows));
     let reading = attachment
         .terminal
-        .attach(&sender.for_terminal_screen(), viewport);
-    attach_view(attachment.facts, reading)
+        .attach_checked(&sender.for_terminal_screen(), viewport)
+        .map_err(|error| error.to_string())?;
+    Ok(attach_view(attachment.facts, reading))
 }
 
 impl AppState {

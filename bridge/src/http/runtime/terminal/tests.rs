@@ -125,6 +125,8 @@ struct Server {
     stop: watch::Sender<bool>,
     serving: JoinHandle<std::io::Result<()>>,
     verifier: Arc<Verifier>,
+    ticket_requests: AtomicUsize,
+    upgrades: AtomicUsize,
 }
 
 impl Server {
@@ -156,6 +158,8 @@ impl Server {
             stop,
             serving,
             verifier,
+            ticket_requests: AtomicUsize::new(0),
+            upgrades: AtomicUsize::new(0),
         }
     }
 
@@ -210,6 +214,7 @@ impl Server {
     }
 
     async fn issue(&self, opening: &Value) -> (u64, Value) {
+        self.ticket_requests.fetch_add(1, Ordering::Relaxed);
         self.json(
             "POST",
             terminal_tickets::PATH,
@@ -249,14 +254,39 @@ impl Server {
     }
 
     async fn upgrade(&self, headers: &HeaderMap) -> (Vec<u8>, ClientIo) {
-        let mut client = self.connect().await;
+        self.upgrade_with_reader(headers, false).await
+    }
+
+    async fn upgrade_with_reader(
+        &self,
+        headers: &HeaderMap,
+        small_buffer: bool,
+    ) -> (Vec<u8>, ClientIo) {
+        self.upgrades.fetch_add(1, Ordering::Relaxed);
+        let tcp = TcpStream::connect(("127.0.0.1", self.port)).await.unwrap();
+        if small_buffer {
+            socket2::SockRef::from(&tcp)
+                .set_recv_buffer_size(4096)
+                .unwrap();
+        }
+        let mut client = self
+            .client
+            .connect("localhost".try_into().unwrap(), tcp)
+            .await
+            .unwrap();
         write_request(&mut client, PATH, headers).await;
         let head = read_head(&mut client).await;
         (head, client)
     }
 
     async fn socket(&self, ticket: &str) -> Client {
-        let (head, io) = self.upgrade(&self.handshake(ticket)).await;
+        self.socket_with_reader(ticket, false).await
+    }
+
+    async fn socket_with_reader(&self, ticket: &str, small_buffer: bool) -> Client {
+        let (head, io) = self
+            .upgrade_with_reader(&self.handshake(ticket), small_buffer)
+            .await;
         assert_eq!(status(&head), 101, "{}", String::from_utf8_lossy(&head));
         assert!(!String::from_utf8_lossy(&head).contains(ticket));
         WebSocketStream::from_raw_socket(io, Role::Client, None).await
@@ -389,4 +419,6 @@ fn success(frame: &crate::transport::Frame, result: Value) -> Value {
 
 mod admission;
 mod dispatch;
+mod flow;
+mod snapshot_slots;
 mod wire;

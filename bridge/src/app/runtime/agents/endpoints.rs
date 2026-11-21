@@ -163,7 +163,9 @@ pub(in crate::app) fn agent_attach(
             s.session_registry
                 .waiting_screen_for_attach(key.clone(), &term_id, cols, rows);
         drop(guard);
-        let reading = screen.attach(&sender.for_terminal_screen(), Some((cols, rows)));
+        let reading = screen
+            .attach_checked(&sender.for_terminal_screen(), Some((cols, rows)))
+            .map_err(|error| error.to_string())?;
         // A screen with no session behind it is dead by definition, and names
         // no harness: nothing has ever run here to name one.
         return Ok(attach_view(
@@ -177,7 +179,7 @@ pub(in crate::app) fn agent_attach(
     }
     let attachment = s.attachment(&key)?;
     drop(guard);
-    Ok(attach_to_tab(attachment, sender, cols, rows))
+    attach_to_tab(attachment, sender, cols, rows)
 }
 
 /// Open a worktree's agent with nothing to say to it — the surface's "Start

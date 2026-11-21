@@ -8,10 +8,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde_json::Value;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 
 const MAX_REQUESTS: usize = 32;
+// Two 80 MiB slots across the bridge, held through physical flush. With
+// sixteen four-MiB socket reservations, WSS reserves 224 MiB in total.
+const TERMINAL_SNAPSHOT_SLOTS: usize = 2;
 
 pub(crate) fn next_request_order() -> u64 {
     static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
@@ -29,6 +32,7 @@ struct OpeningState {
     diagnostic_key: std::collections::hash_map::RandomState,
     closed: Notify,
     output_gate: Mutex<()>,
+    terminal_snapshot: OnceLock<Arc<Semaphore>>,
 }
 
 impl Opening {
@@ -41,12 +45,20 @@ impl Opening {
             diagnostic_key: std::collections::hash_map::RandomState::new(),
             closed: Notify::new(),
             output_gate: Mutex::new(()),
+            terminal_snapshot: OnceLock::new(),
         }))
     }
 
     #[cfg(any(test, feature = "testing"))]
     pub fn testing() -> Self {
         Self::new()
+    }
+
+    pub(crate) fn terminal_snapshot_slot(&self) -> Arc<Semaphore> {
+        self.0
+            .terminal_snapshot
+            .get_or_init(|| Arc::new(Semaphore::new(1)))
+            .clone()
     }
 
     pub fn is_open(&self) -> bool {
@@ -279,6 +291,7 @@ pub struct EncodedEvent {
     payload: Value,
     encoded: Arc<[u8]>,
     fence: OutputFence,
+    snapshot: Option<Arc<TerminalSnapshotReservation>>,
 }
 impl EncodedEvent {
     fn new(mut payload: Value, fence: OutputFence) -> Result<Self, DeliveryError> {
@@ -303,6 +316,7 @@ impl EncodedEvent {
             payload,
             encoded,
             fence,
+            snapshot: None,
         })
     }
     pub fn payload(&self) -> &Value {
@@ -320,8 +334,52 @@ impl EncodedEvent {
             _ => None,
         }
     }
-    pub(crate) fn into_wire(self) -> (Arc<[u8]>, OutputFence) {
-        (self.encoded, self.fence)
+    pub(crate) fn into_wire(
+        self,
+    ) -> (
+        Arc<[u8]>,
+        OutputFence,
+        Option<Arc<TerminalSnapshotReservation>>,
+    ) {
+        (self.encoded, self.fence, self.snapshot)
+    }
+}
+
+/// A snapshot is serialized only after acquiring both FIFO slots.
+#[derive(Clone)]
+pub(crate) struct TerminalSnapshotLane {
+    pub(crate) opening: Arc<Semaphore>,
+    pub(crate) bridge: Arc<Semaphore>,
+    pub(crate) runtime: tokio::runtime::Handle,
+    pub(crate) stopped: tokio::sync::watch::Receiver<bool>,
+}
+
+pub(crate) struct TerminalSnapshotReservation {
+    _opening: OwnedSemaphorePermit,
+    _bridge: OwnedSemaphorePermit,
+}
+
+impl TerminalSnapshotLane {
+    pub(crate) async fn reserve(
+        &self,
+        interest: &TerminalInterest,
+    ) -> Option<Arc<TerminalSnapshotReservation>> {
+        let mut stopped = self.stopped.clone();
+        tokio::select! {
+            biased;
+            _ = stopped.wait_for(|stopped| *stopped) => None,
+            _ = interest.ended() => None,
+            reservation = self.acquire() => reservation,
+        }
+    }
+
+    async fn acquire(&self) -> Option<Arc<TerminalSnapshotReservation>> {
+        let opening = self.opening.clone().acquire_owned().await.ok()?;
+        let bridge = self.bridge.clone().acquire_owned().await.ok()?;
+        Some(Arc::new(TerminalSnapshotReservation {
+            _opening: opening,
+            _bridge: bridge,
+        }))
     }
 }
 
@@ -331,14 +389,18 @@ pub(crate) struct TerminalInterest {
     id: String,
     state: AtomicU8,
     revision: AtomicU64,
+    ended: Notify,
+    pub(crate) snapshots: Option<TerminalSnapshotLane>,
 }
 
 impl TerminalInterest {
-    pub(crate) fn new() -> Arc<Self> {
+    pub(crate) fn new(snapshots: Option<TerminalSnapshotLane>) -> Arc<Self> {
         Arc::new(Self {
             id: uuid::Uuid::new_v4().to_string(),
             state: AtomicU8::new(TerminalInterestState::Live as u8),
             revision: AtomicU64::new(0),
+            ended: Notify::new(),
+            snapshots,
         })
     }
 
@@ -359,6 +421,13 @@ impl TerminalInterest {
         }
     }
 
+    async fn ended(&self) {
+        let ended = self.ended.notified();
+        if self.is_live() {
+            ended.await;
+        }
+    }
+
     /// The caller holds the Opening output gate.
     pub(crate) fn rekey(&self) {
         self.revision.fetch_add(1, Ordering::Release);
@@ -368,12 +437,14 @@ impl TerminalInterest {
     pub(crate) fn retire(&self) {
         self.state
             .store(TerminalInterestState::Detached as u8, Ordering::Release);
+        self.ended.notify_waiters();
     }
 
     /// The caller holds the Opening output gate.
     pub(crate) fn supersede(&self) {
         self.state
             .store(TerminalInterestState::Superseded as u8, Ordering::Release);
+        self.ended.notify_waiters();
     }
 }
 
@@ -484,6 +555,7 @@ type AdmissionHook = Arc<dyn Fn() + Send + Sync>;
 pub struct ClientSessions {
     epoch: Arc<str>,
     sessions: Mutex<HashMap<String, SessionLease>>,
+    terminal_snapshots: OnceLock<Arc<Semaphore>>,
     cleanup_hook: Mutex<Option<CleanupHook>>,
     #[cfg(test)]
     admission_hook: Mutex<Option<AdmissionHook>>,
@@ -498,11 +570,18 @@ impl ClientSessions {
         Self {
             epoch: epoch.into(),
             sessions: Mutex::new(HashMap::new()),
+            terminal_snapshots: OnceLock::new(),
             cleanup_hook: Mutex::new(None),
             #[cfg(test)]
             admission_hook: Mutex::new(None),
         }
     }
+    pub(crate) fn terminal_snapshot_pool(&self) -> Arc<Semaphore> {
+        self.terminal_snapshots
+            .get_or_init(|| Arc::new(Semaphore::new(TERMINAL_SNAPSHOT_SLOTS)))
+            .clone()
+    }
+
     pub fn open(&self, caller: VerifiedCaller) -> Result<SessionLease, SessionError> {
         self.reap_expired();
         let authorization = AuthorizationLease {
@@ -960,6 +1039,15 @@ impl SessionEvents {
         payload: Value,
         interest: Option<Arc<TerminalInterest>>,
     ) -> Result<(), DeliveryError> {
+        self.push_terminal(payload, interest, None)
+    }
+
+    pub(crate) fn push_terminal(
+        &self,
+        payload: Value,
+        interest: Option<Arc<TerminalInterest>>,
+        snapshot: Option<Arc<TerminalSnapshotReservation>>,
+    ) -> Result<(), DeliveryError> {
         let binding = &self.0;
         let live = binding.binding.live.clone();
         let target = match interest {
@@ -973,10 +1061,9 @@ impl SessionEvents {
             target,
         };
         fence.check()?;
-        let result = binding
-            .binding
-            .sink
-            .try_send(EncodedEvent::new(payload, fence)?);
+        let mut encoded = EncodedEvent::new(payload, fence)?;
+        encoded.snapshot = snapshot;
+        let result = binding.binding.sink.try_send(encoded);
         if matches!(
             result,
             Err(DeliveryError::Full
@@ -1187,6 +1274,15 @@ enum OutputTarget {
     Reply(RequestCancellation),
 }
 impl OutputFence {
+    /// A pane failure retires the interest at enqueue, but its final control
+    /// still belongs to this exact event binding.
+    pub(crate) fn terminal_failure(mut self) -> Self {
+        if let OutputTarget::TerminalEvent(live, _) = self.target {
+            self.target = OutputTarget::Event(live);
+        }
+        self
+    }
+
     /// Caller holds the session output gate during the synchronous enqueue.
     pub(crate) fn check(&self) -> Result<(), DeliveryError> {
         let session = self.session.upgrade().ok_or(DeliveryError::Closed)?;

@@ -12,9 +12,6 @@ use crate::{
 
 const MAX_ID: usize = 128;
 const MAX_DEPTH: usize = 16;
-const MAX_COLS: u64 = 512;
-const MAX_ROWS: u64 = 256;
-const MAX_CELLS: u64 = 65_536;
 const MAX_CURSOR: u64 = 9_007_199_254_740_991;
 const MAX_INPUT: usize = 64 * 1024;
 const MAX_INPUT_ENCODED: usize = MAX_INPUT.div_ceil(3) * 4;
@@ -107,16 +104,11 @@ impl Method {
 }
 
 fn validate_grid(params: &Map<String, Value>, (cols, rows): (u64, u64)) -> Result<(), ApiError> {
-    fn axis(value: Option<&Value>, default: u64, max: u64) -> Option<u64> {
-        value
-            .map_or(Some(default), Value::as_u64)
-            .filter(|size| (1..=max).contains(size))
-    }
-    let grid =
-        axis(params.get("cols"), cols, MAX_COLS).zip(axis(params.get("rows"), rows, MAX_ROWS));
-    if grid
-        .and_then(|(cols, rows)| cols.checked_mul(rows))
-        .is_some_and(|cells| cells <= MAX_CELLS)
+    let cols = params.get("cols").map_or(Some(cols), Value::as_u64);
+    let rows = params.get("rows").map_or(Some(rows), Value::as_u64);
+    if cols
+        .zip(rows)
+        .is_some_and(|(cols, rows)| crate::screen::wss_grid_supported(cols, rows))
     {
         Ok(())
     } else {

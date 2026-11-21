@@ -67,7 +67,7 @@ fn queued_attach_is_replaced_with_a_correlated_refusal() {
                 .interests
                 .lock()
                 .unwrap()
-                .begin(id.into(), Method::Attach)
+                .begin(id.into(), Method::Attach, None)
                 .unwrap();
             let request = sessions
                 .request_for_stream(
@@ -117,12 +117,12 @@ fn full_interest_map_keeps_existing_attachment() {
         .unwrap();
     for index in 0..cap {
         let id = format!("attach-{index}");
-        interests.begin(id.clone(), Method::Attach).unwrap();
+        interests.begin(id.clone(), Method::Attach, None).unwrap();
         interests.attach_reply(&id, Some(&format!("term-{index}")));
     }
     let original = interests.for_effect("term-0").unwrap();
     assert!(interests
-        .begin("replacement".into(), Method::Attach)
+        .begin("replacement".into(), Method::Attach, None)
         .is_none());
     assert!(Arc::ptr_eq(
         &original,

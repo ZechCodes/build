@@ -1,5 +1,6 @@
 import { createWireBudget } from "./bridge-http-budget.mjs";
 import { createBridgeEventStreams } from "./bridge-http-events.mjs";
+import { createBridgeTerminals, terminalMode } from "./bridge-http-terminal.mjs";
 import { randomUUID } from "node:crypto";
 import {
   canonicalOrigin,
@@ -17,6 +18,18 @@ import {
   buildRoute,
   compatibleTransport,
 } from "./bridge-http-contract.mjs";
+
+function checkedFetch(fetch, validateResponse) {
+  if (!validateResponse) return fetch;
+  return async (url, options) => {
+    const response = await fetch(url, options);
+    if (response.ok && !validateResponse(response)) {
+      void response.body?.cancel();
+      fail("invalid_response");
+    }
+    return response;
+  };
+}
 
 // Only main constructs owners, chooses the manifest and supplies authenticated
 // account state. No renderer-controlled callback can create verified authority.
@@ -128,14 +141,23 @@ export function createBridgeHttp({
     handleFor,
     retire,
   });
+  const terminals = createBridgeTerminals({
+    handleFor,
+    check,
+    device,
+    hostedOrigin,
+  });
   async function device(handle, path, options = {}) {
+    const requestFetch = checkedFetch(fetch, options.validateResponse);
     try {
       return await tracked(
         handle,
         (signal) =>
-          jsonRequest(fetch, `${handle.mint.origin}${path}`, {
+          jsonRequest(requestFetch, `${handle.mint.origin}${path}`, {
             ...options,
-            signal,
+            signal: options.signal
+              ? AbortSignal.any([signal, options.signal])
+              : signal,
             headers: { ...headers(handle), ...options.headers },
           }),
         options.requestId,
@@ -147,7 +169,8 @@ export function createBridgeHttp({
         },
       );
     } catch (error) {
-      if (error.code === "unauthorized") retire(handle);
+      if (error.code === "unauthorized" && !options.preserveHandleOnUnauthorized)
+        retire(handle);
       throw error;
     }
   }
@@ -265,6 +288,9 @@ export function createBridgeHttp({
     clearTimeout(handle.refresh);
     handle.opening = opening;
     handle.deadline = performance.now() + deadline - Date.now();
+    handle.terminalRenewing = false;
+    if (previous && handle.terminal && terminalBindingChanged(previous, opening))
+      terminals.clear(handle, "terminal_binding_changed", true);
     handle.hard = setTimeout(() => retire(handle), deadline - Date.now());
     handle.hard.unref?.();
     handle.refresh = setTimeout(
@@ -315,6 +341,10 @@ export function createBridgeHttp({
         ].map((key) => [key, mint[key]]),
       );
       handle.mint = verifiedMint(updated, expected, hostedOrigin);
+      if (handle.mint.access_token !== mint.access_token) {
+        handle.terminalRenewing = true;
+        terminals.clear(handle, "terminal_credentials_rotated", true);
+      }
       handle.tokenDeadline =
         performance.now() + handle.mint.expires_at * 1000 - Date.now();
       clearTimeout(handle.expiry);
@@ -368,6 +398,7 @@ export function createBridgeHttp({
     clearTimeout(handle.hard);
     clearTimeout(handle.refresh);
     clearTimeout(handle.expiry);
+    terminals.clear(handle);
     events.clear(handle, "credentials_closed");
     for (const operation of pending.values())
       if (operation.handle === handle) operation.controller.abort();
@@ -422,9 +453,20 @@ export function createBridgeHttp({
     subscribe: events.subscribe,
     ack: events.ack,
     unsubscribe: events.unsubscribe,
+    terminalOpen: terminals.open,
+    terminalCall: terminals.call,
+    terminalDetach: terminals.detach,
+    terminalClose: terminals.close,
     cancel,
     close,
     clear,
     revoke,
   };
+}
+
+function terminalBindingChanged(previous, opening) {
+  return (
+    previous.greeting.bridge_epoch !== opening.greeting.bridge_epoch ||
+    terminalMode(opening) !== "wss"
+  );
 }

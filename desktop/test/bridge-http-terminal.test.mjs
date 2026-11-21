@@ -20,6 +20,7 @@ const envelope = (name) => JSON.parse(messages[name].utf8);
 const bearer = "fixture-device-bearer";
 const owner = { id: 1 };
 let tls;
+let originalCAs;
 
 before(() => {
   const directory = mkdtempSync(join(tmpdir(), "desktop-terminal-tls-"));
@@ -35,10 +36,10 @@ before(() => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
-  const original = getCACertificates("default");
-  setDefaultCACertificates([...original, tls.cert]);
-  after(() => setDefaultCACertificates(original));
+  originalCAs = getCACertificates("default");
+  setDefaultCACertificates([...originalCAs, tls.cert]);
 });
+after(() => setDefaultCACertificates(originalCAs));
 
 function issueTicket(response, body = ticketBody(), status = ticket.response.status) {
   response.writeHead(status, ticket.response.headers);
@@ -127,12 +128,12 @@ async function desktop(t, origin, {
   return { adapter, handle, auth };
 }
 
-async function connect(t, options) {
+async function connect(t, options, onEvent) {
   const remote = await peer(t, options);
   const local = await desktop(t, remote.origin);
   const connected = once(remote.wss, "connection");
   const delivery = [];
-  const opened = await local.adapter.terminalOpen(owner, local.handle, (value) => delivery.push(value));
+  const opened = await local.adapter.terminalOpen(owner, local.handle, onEvent ?? ((value) => delivery.push(value)));
   const [socket] = await connected;
   return { ...local, ...opened, remote, socket, delivery };
 }
@@ -171,7 +172,9 @@ function checkUpgrade(remote) {
   assert.equal(upgrade.url, handshake.path);
   assert.equal(headers.host, new URL(remote.origin).host);
   assert.equal(headers.origin, endpoint.caller_origin);
-  assert.equal(headers["sec-websocket-protocol"], handshake.request.headers["sec-websocket-protocol"]);
+  const protocols = (value) => value.split(",").map((token) => token.trim());
+  assert.deepEqual(protocols(headers["sec-websocket-protocol"]),
+    protocols(handshake.request.headers["sec-websocket-protocol"]));
   assert.equal(rawHeaders.filter((value) => /^sec-websocket-protocol$/i.test(value)).length, 1);
   for (const name of ["authorization", "cookie", "x-build-session", "sec-websocket-extensions"])
     assert.equal(headers[name], undefined, name);
@@ -205,6 +208,12 @@ function openTerminal(local) {
   return local.adapter.terminalOpen(owner, local.handle, () => {});
 }
 
+function bypassTicketFetch() {
+  return new Response(JSON.stringify(ticketBody()), {
+    status: ticket.response.status, headers: ticket.response.headers,
+  });
+}
+
 for (const selection of handshake.selections.filter(({ accepted }) => !accepted)) {
   test("native refuses selected protocol " + selection.name, async (t) => {
     const remote = await peer(t, {
@@ -225,12 +234,22 @@ for (const { name, headers } of handshake.invalid_responses.filter(({ status }) 
 test("native verifies the WSS certificate hostname", async (t) => {
   const remote = await peer(t);
   const local = await desktop(t, remote.origin.replace("localhost", "127.0.0.1"), {
-    fetchTicket: async () => new Response(JSON.stringify(ticketBody()), {
-      status: ticket.response.status, headers: ticket.response.headers,
-    }),
+    fetchTicket: bypassTicketFetch,
   });
   await assert.rejects(openTerminal(local), { code: "terminal_network_error" });
   assert.deepEqual(remote.upgrades, []);
+});
+
+test("native refuses a WSS certificate from an untrusted issuer", async (t) => {
+  const remote = await peer(t);
+  const local = await desktop(t, remote.origin, { fetchTicket: bypassTicketFetch });
+  setDefaultCACertificates(originalCAs);
+  try {
+    await assert.rejects(openTerminal(local), { code: "terminal_network_error" });
+    assert.deepEqual(remote.upgrades, []);
+  } finally {
+    setDefaultCACertificates([...originalCAs, tls.cert]);
+  }
 });
 
 test("native refuses the WSS redirect without a second request", async (t) => {
@@ -276,6 +295,23 @@ for (const vector of opening.cases.filter(({ desktop, native_terminal_ipc }) =>
     const code = vector.desktop === "webrtc" ? "terminal_unsupported" : "terminal_protocol_error";
     await assert.rejects(openTerminal(local), { code });
     assert.deepEqual(remote.requests, []);
+  });
+}
+
+for (const [status, code] of [[401, "unauthorized"], [403, "terminal_forbidden"], [429, "terminal_capacity"]]) {
+  test("ticket refusal " + status + " keeps the Opening valid for a fresh ticket", async (t) => {
+    let refuse = true;
+    const remote = await peer(t, { respond(response) {
+      if (refuse) response.writeHead(status).end("peer error text");
+      else issueTicket(response);
+      refuse = false;
+    } });
+    const local = await desktop(t, remote.origin);
+    await assert.rejects(openTerminal(local), { code, status });
+    assert.deepEqual(remote.upgrades, []);
+    const { terminal } = await openTerminal(local);
+    assert.equal(remote.requests.length, 2);
+    local.adapter.terminalClose(owner, terminal);
   });
 }
 
@@ -340,16 +376,84 @@ async function verifySize(ctx, vector) {
 async function waitForDelivery(ctx, expected) {
   // A correlated barrier proves the preceding push was delivered in wire order.
   const { result } = await readCall(ctx, "ping");
-  ctx.socket.send(Buffer.from(JSON.stringify({
-    bridge_epoch: opening.base.greeting.bridge_epoch, ok: true, id: envelope("ping").id, result: {},
-  })));
+  ctx.socket.send(reply(envelope("ping").id));
   await result;
   assert.deepEqual(ctx.delivery, [{ terminal: ctx.terminal, type: "message", data: expected }]);
+}
+
+for (const name of ["output", "reset", "closed", "agent_session_ended", "attachment_error"]) {
+  test("native delivers the frozen push " + name, async (t) => {
+    const ctx = await connect(t);
+    ctx.socket.send(vectorBytes(name));
+    await waitForDelivery(ctx, envelope(name));
+  });
+}
+
+for (const length of [0, limits.message_bytes.ordinary]) {
+  test("native rejects excess snapshot metadata with " + length + " bytes of data", async (t) => {
+    const delivery = Promise.withResolvers();
+    const ctx = await connect(t, undefined, delivery.resolve);
+    const reset = envelope("reset");
+    reset.data = "A".repeat(length);
+    const padding = limits.snapshot_bound.json_metadata_bytes + 1;
+    const closed = once(ctx.socket, "close");
+    ctx.socket.send(Buffer.from(JSON.stringify(reset) + " ".repeat(padding)));
+    assert.equal((await delivery.promise).code, "terminal_message_too_large");
+    assert.equal((await closed)[0], 1009);
+  });
 }
 
 for (const vector of limits.message_cases.filter(({ budget }) => budget !== "client")) {
   test("native applies the frozen receive budget to " + vector.name, async (t) => {
     await verifySize(await connect(t), vector);
+  });
+}
+
+function sizedCall(vector) {
+  const value = { id: "create-sized", method: "term.create", params: { kind: "" } };
+  const space = vector.bytes - Buffer.byteLength(JSON.stringify(value));
+  value.params.kind = "é".repeat(Math.floor(space / 2)) + "x".repeat(space % 2);
+  return value;
+}
+
+for (const vector of limits.message_cases.filter(({ budget }) => budget === "client")) {
+  test("native counts UTF-8 bytes for " + vector.name, async (t) => {
+    const ctx = await connect(t);
+    const value = sizedCall(vector);
+    if (!vector.accepted) {
+      await assert.rejects(call(ctx, value), { code: "request_too_large" });
+      return;
+    }
+    const received = once(ctx.socket, "message");
+    const result = call(ctx, value);
+    const [raw, binary] = await received;
+    assert.equal(binary, true);
+    assert.equal(raw.length, vector.bytes);
+    ctx.socket.send(reply(value.id));
+    await result;
+  });
+}
+
+function reply(id) {
+  return Buffer.from(JSON.stringify({
+    bridge_epoch: opening.base.greeting.bridge_epoch, ok: true, id, result: {},
+  }));
+}
+
+for (const { bytes, accepted } of limits.decoded_input_cases) {
+  test("native bounds a single input envelope at " + bytes + " decoded bytes", async (t) => {
+    const ctx = await connect(t);
+    const value = envelope("input");
+    value.params.data = Buffer.alloc(bytes).toString("base64");
+    if (!accepted) {
+      await assert.rejects(call(ctx, value), { code: "invalid_params" });
+      return;
+    }
+    const received = once(ctx.socket, "message");
+    const result = call(ctx, value);
+    assert.deepEqual(JSON.parse((await received)[0]), value);
+    ctx.socket.send(reply(value.id));
+    await result;
   });
 }
 
@@ -375,6 +479,49 @@ test("owner teardown drops the socket and fences outstanding effects", async (t)
   await assert.rejects(call(ctx, envelope("input")), { code: "invalid_terminal_handle" });
 });
 
+test("owner teardown during ticket issuance prevents a late upgrade", async (t) => {
+  const remote = await peer(t);
+  const posted = Promise.withResolvers();
+  const issued = Promise.withResolvers();
+  const local = await desktop(t, remote.origin, {
+    fetchTicket(_url, { signal }) {
+      posted.resolve(signal);
+      return issued.promise;
+    },
+  });
+  const pending = openTerminal(local);
+  const signal = await posted.promise;
+  local.adapter.clear(owner);
+  issued.resolve(bypassTicketFetch());
+  await assert.rejects(pending, { code: "canceled" });
+  assert.equal(signal.aborted, true);
+  assert.deepEqual(remote.upgrades, []);
+});
+
+test("owner teardown cancels a pending 101", async (t) => {
+  const upgraded = Promise.withResolvers();
+  const remote = await peer(t, { upgrade(_request, socket) {
+    upgraded.resolve({ closed: once(socket, "close") });
+  } });
+  const local = await desktop(t, remote.origin);
+  const pending = openTerminal(local);
+  const { closed } = await upgraded.promise;
+  local.adapter.clear(owner);
+  await assert.rejects(pending, { code: "stale_owner" });
+  await closed;
+});
+
+test("a terminal handle cannot be used from another owner or after an explicit close", async (t) => {
+  const ctx = await connect(t);
+  await assert.rejects(ctx.adapter.terminalCall({ ...owner }, ctx.terminal, "ping", {}),
+    { code: "invalid_terminal_handle" });
+  ctx.adapter.terminalClose(owner, ctx.terminal);
+  const next = await openTerminal(ctx);
+  assert.notEqual(next.terminal, ctx.terminal);
+  assert.equal(ctx.remote.requests.length, 2);
+  await assert.rejects(call(ctx, envelope("input")), { code: "invalid_terminal_handle" });
+});
+
 test("a stale reply with a current ID retires the socket before correlation", async (t) => {
   const ctx = await connect(t);
   const { result } = await readCall(ctx, "attach");
@@ -385,4 +532,11 @@ test("a stale reply with a current ID retires the socket before correlation", as
   })));
   await assert.rejects(result, { code: "terminal_epoch_mismatch" });
   assert.equal((await closed)[0], 1002);
+});
+
+test("a retired main-process receiver can fail delivery without escaping the socket handler", async (t) => {
+  const ctx = await connect(t, undefined, () => { throw new Error("receiver retired"); });
+  const closed = once(ctx.socket, "close");
+  ctx.socket.send(vectorBytes("output"));
+  assert.equal((await closed)[0], 1006);
 });

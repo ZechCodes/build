@@ -1,10 +1,9 @@
 # Terminal WebSocket security checklist
 
-**Release gate held.** The candidate uses wire 3.42.0 and is based on
-`950e59c404f5ed5047a3762d3606e97905531ad0`. The default mount omits
-`terminal_websocket` even when the greeting has `term.websocket`. The two
-routes and descriptor are available together under the test mount. Release
-requires 100/100 and independently reviewed evidence at the candidate.
+**Default mount enabled in slice K.** The bridge uses wire 3.42.0. The ticket
+and upgrade routes ship together with the `terminal_websocket` descriptor on
+Opening POST and PATCH. The Opening retains `"terminal":"webrtc"` for older
+clients.
 
 An existing owner-approved `bridge:read bridge:write` grant includes
 interactive shells. Revocation closes the socket. Processes already started
@@ -15,7 +14,11 @@ keep running. A fresh authorized Opening can reattach to a surviving shell.
 **100/100 in executed qualification.** Each of the ten controls earned 10
 points. Independent review #1152 scored the predecessor 99/100 because the
 native SSE check inspected event types alone. The revised witness checks
-content as well. Independent review of the revised candidate is pending.
+content as well. Independent review #1152 approved the revised slice I
+candidate at `5b4e120ad` with 100/100. The table records the original slice I
+witnesses and gate settings on the base `950e59c404f5ed5047a3762d3606e97905531ad0`.
+See [Slice K default-on re-run](#slice-k-default-on-re-run) for evidence on
+the enabled mount.
 
 | Score | Control | Gate | Executed witnesses and result |
 | ---: | --- | --- | --- |
@@ -188,3 +191,27 @@ matches, five runs of one test, and five passing results.
 | Mounted TLS unread socket | On | Exit 0 in 10.11 s. |
 | Bare TCP trickle control | Not applicable | Exit 0 in 14.01 s. |
 | Bare TCP near-12 MiB at 100 KiB/s | Not applicable | Exit 0 in 122.01 s. |
+
+### Slice K default-on re-run
+
+Use the [qualification runner](../../scripts/bridge-http-qualification/README.md)
+with the default `--gate on` client selection for all six groups (`desktop`,
+`native-grid`, `rebind`, `browser`, `electron` and `electron-sign-out`).
+The fixture uses the standard runtime with the two exact loopback authorities
+on ephemeral ports and a separate temporary state directory for each group.
+Repeat the mounted Rust selection, the timing and recovery witnesses, the
+shared wire contract and the generated manifest and resource coverage checks.
+Build task #1134 records the exact head, commands and exit codes.
+
+- The native WSS and mounted Opening tests cover ticket issuance, Upgrade
+  and attachment with the v1 descriptor and `term.websocket`. The real
+  desktop Opening also carries `"terminal":"webrtc"`, which the legacy IPC
+  surface selects without requesting a ticket.
+- The mounted admission and wire cases and the native desktop and rebind
+  groups cover owner and write authority, single-use tickets, exact Origin,
+  terminal-only dispatch and credential revocation.
+- The timing and recovery witnesses, native grid and mounted drain tests
+  cover bounded cost, fairness, lifecycle isolation and drain.
+- The hosted browser group, Skrift policy tests and Electron groups cover
+  document and credential isolation, native isolation and end-to-end
+  compatibility.

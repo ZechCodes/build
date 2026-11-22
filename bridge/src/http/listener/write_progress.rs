@@ -37,10 +37,10 @@ impl TcpWriteProgress {
             return result;
         }
         let result = if result.is_pending() {
-            // A full TCP send buffer can accept more bytes well before its
-            // next writable event. The normal poll registered that wakeup.
-            // On the listener's periodic rechecks, also try the nonblocking
-            // socket directly so readiness hysteresis cannot hide progress.
+            // A TCP send buffer can accept bytes before Tokio reports it writable.
+            // On every pending poll of a tracked connection, try the socket directly
+            // if the cooperative budget permits. That includes readiness wakes and
+            // the listener's periodic authority rechecks.
             let budget = ready!(coop::poll_proceed(cx));
             match try_send(SockRef::from(&self.stream)) {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => Poll::Pending,

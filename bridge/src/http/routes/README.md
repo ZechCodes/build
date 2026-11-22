@@ -94,9 +94,10 @@ terminal roster reads, including background cache sync.
 
 ## Terminal WebSocket
 
-The terminal WSS routes and Opening advertisement are gated until slice K.
-Both routes are lifecycle endpoints on the verified HTTPS listener, outside
-`resources.tsv`, the REST operation IDs and the Application SSE subscription.
+The default HTTP runtime mounts the terminal WSS routes and advertises WSS
+on Opening POST and PATCH. Both routes are lifecycle endpoints on the verified
+HTTPS listener. The REST catalogue and Application SSE subscription keep
+their existing operation and event sets.
 
 | Route | Contract |
 | --- | --- |
@@ -110,7 +111,7 @@ redemption but before acceptance, the upgrade can return 503 with the ticket
 already spent. A snapshot write timeout returns 409 `snapshot_write_timeout`
 on ticket renewal until successful explicit Retry or a new Opening.
 
-Opening POST and PATCH keep `terminal: "webrtc"`. With the gate on they also
+Opening POST and PATCH keep `terminal: "webrtc"` for older clients and
 advertise `terminal_websocket: {"version":1,"protocol":"build.term.v1"}`.
 Wire 3.42.0 announces `term.websocket` as implementation support. Terminal
 WSS selection requires the descriptor and the capability.
@@ -122,6 +123,9 @@ One binary message carries one UTF-8 JSON envelope. The socket carries
 original attach request ID. It releases that socket's interest without
 ending the shell or agent. An established interest can receive a
 WSS-only `attachment_error` with the same attach ID and a reason.
+The fixture's `reset_overflow` case tests the client's receive limit (1009).
+The bridge sends `attachment_error` with `snapshot_too_large` in place of an
+over-cap reset and keeps the socket open.
 See the [v1 fixture](../../../../fixtures/api/http/terminal-websocket-v1.json),
 [shared execution contract](../../../../docs/shared-execution-api.md#terminal-websocket-adapter),
 and [terminal security checklist](<../../../../planning/v2/Terminal WebSocket Security Checklist.md>).

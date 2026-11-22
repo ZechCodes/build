@@ -858,18 +858,18 @@ runtime that starts them.
 ### Terminal WebSockets
 
 The bridge's HTTP/1.1 listener owns the socket through Hyper's upgrade and
-the Tungstenite session. The same internal gate controls
-`POST /v1/terminal-tickets`, `GET /v1/terminal` with Upgrade, and the v1
-descriptor on Opening POST and PATCH.
-
-The terminal WSS routes and Opening advertisement are gated until slice K.
+the Tungstenite session. The default HTTP runtime serves
+`POST /v1/terminal-tickets` and `GET /v1/terminal` with Upgrade. Opening
+POST and PATCH advertise the v1 WSS descriptor and retain
+`"terminal":"webrtc"` for older clients.
 
 The ticket POST requires a verified owner bearer with `bridge:read` and
 `bridge:write`, the `X-Build-Session` header and the current
-`opening_generation`. Existing owner-approved read/write grants include
-interactive shells. The registry stores a digest of the single-use ticket
-and binds it to the exact Opening allocation and generation, issuer, account,
-device, family, bridge HTTPS authority, endpoint and authorization epochs,
+`opening_generation`. A valid owner-approved URL grant with both scopes
+authorizes interactive shells. The registry stores a digest of the
+single-use ticket and binds it to the exact Opening allocation and
+generation, issuer, account, device, family, bridge HTTPS authority,
+endpoint and authorization epochs,
 credential proof, initiating Origin and expected Terminal binding predecessor
 (including its closed record). A ticket expires at the earlier of 15 seconds
 and the proof deadline. The limits are one pending ticket per Opening, eight
@@ -985,8 +985,8 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
   `3.42.0`. `fixtures/api/versions.json` (`"current"`) must match it.
-  3.42.0 announces `term.websocket` as implementation support. The HTTP
-  Opening must also advertise the matching v1 descriptor to select WSS.
+  3.42.0 announces `term.websocket` as implementation support. The default
+  HTTP Opening advertises the matching v1 descriptor for WSS selection.
   3.37.0 advertises `environments` for the M1 list, journaled project/first
   workspace creation, recovery and read-only environment settings. Creating
   environments or selecting extra folders in the creation wizard, archive,
@@ -4457,9 +4457,9 @@ reply serialization. The release timing workflow runs this regression alongside
 the existing busy lock test. Normal tests cover bounded page work and keyset
 continuation independently of machine timing.
 
-The timing workflow also builds before serial runs in its debug job, nightly
-and by hand. Git child cost, daemon under PTY flood and the mounted terminal
-witnesses run in debug. Terminal timing covers the SPA's lost-Close retry,
+Each timing job builds before its serial timed runs, nightly and by hand.
+Git child cost, daemon under PTY flood and the mounted terminal witnesses
+run in debug. Terminal timing covers the SPA's lost-Close retry,
 trickling TLS readers, a near-limit TLS snapshot at 100 KiB/s, an unread
 terminal socket, and two bare TCP pacing controls. The corresponding
 real-browser lost-Close and maximal-snapshot witnesses remain manual.
@@ -5723,10 +5723,11 @@ refuses when that device cannot answer.
 
 ### Terminal ownership and pane recovery
 
-For a URL device, `Opening.transport` keeps `terminal: "webrtc"` and can
-add `terminal_websocket: {"version":1,"protocol":"build.term.v1"}`. The
-SPA requires that v1 descriptor, `term.websocket` in a compatible greeting,
-and a usable terminal endpoint. A missing descriptor, a compatible
+For a URL device on the default mount, `Opening.transport` keeps
+`terminal: "webrtc"` and advertises
+`terminal_websocket: {"version":1,"protocol":"build.term.v1"}`. The SPA
+requires that v1 descriptor, `term.websocket` in a compatible greeting, and
+a usable terminal endpoint. A missing descriptor, a compatible
 declaration of a future protocol version, or an older native preload without
 the complete terminal facade selects WebRTC for terminals. Older SPAs use
 the legacy field, and WebRTC-selected devices continue using their E2EE

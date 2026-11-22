@@ -88,3 +88,81 @@ TMPDIR=/home/zech/Projects/.agent-scratch/976/tmp nice -n 10 \
   /home/zech/Projects/.agent-scratch/976/venv/bin/python -m unittest discover \
   -s scripts/bridge-http-qualification -p test_runner.py
 ```
+
+## Terminal WSS qualification
+
+Terminal qualification uses `fixture.py qualify` with a library test
+executable. The test mounts the real issuer verifier, proof signer, HTTPS
+listener and application handlers in a disposable process. It binds loopback
+and uses separate hostnames for the hosted document and the bridge. Each
+client group gets a fresh account, endpoint, project state and CA. The tests
+use the installed Node 22.23.4 and npm 12.0.2 locks for transport, SPA and
+desktop. Build the SPA before the browser and Electron groups.
+
+```sh
+export QUALIFICATION_SCRATCH="$(mktemp -d)"
+export CARGO_TARGET_DIR="$QUALIFICATION_SCRATCH/target"
+export TMPDIR="$QUALIFICATION_SCRATCH/tmp"
+nice -n 10 mkdir -p "$TMPDIR"
+nice -n 10 cargo test --manifest-path bridge/Cargo.toml --locked --lib \
+  --no-run --message-format=json > "$QUALIFICATION_SCRATCH/library-tests.jsonl"
+QUALIFICATION_BINARY="$(jq -r 'select(.profile.test and .target.name == "build_bridge").executable // empty' \
+  "$QUALIFICATION_SCRATCH/library-tests.jsonl")"
+```
+
+Run the groups separately so discovery rate limits measure the client under
+test. Use a frozen Skrift virtualenv under `$QUALIFICATION_SCRATCH/venv`.
+Pass the disposable directory as `--scratch-root` and set the loopback bridge
+host and issuer terminal policy explicitly. The issuer terminal policy
+adds the second fixture device and Electron navigation cases. Keep it on
+for terminal qualification, including when the separate bridge gate is off.
+The runner supplies `BUILD_HTTP_QUALIFICATION_SCRATCH` and
+`BUILD_HTTP_QUALIFICATION_FIXTURE` to the mounted Rust test.
+
+```sh
+qualify_terminal() {
+  nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
+    scripts/bridge-http-qualification/fixture.py qualify \
+    --scratch-root "$QUALIFICATION_SCRATCH" --bridge-host 127.0.0.1 \
+    --issuer-terminal-policy on --bridge-test-binary "$QUALIFICATION_BINARY" "$@"
+}
+
+qualify_terminal --gate off --client desktop
+qualify_terminal --gate on --client desktop
+qualify_terminal --gate on --client native-grid
+qualify_terminal --gate on --client rebind
+qualify_terminal --gate on --client browser \
+  --webkit "$QUALIFICATION_SCRATCH/webkit-qualification"
+qualify_terminal --gate on --client electron \
+  --electron "$QUALIFICATION_SCRATCH/electron/electron"
+qualify_terminal --gate on --client electron-sign-out \
+  --electron "$QUALIFICATION_SCRATCH/electron/electron"
+```
+
+The browser group uses Chromium at `CHROMIUM_PATH` and WebKit from the SPA's
+Playwright lock. Chromium gets the fixture CA in isolated NSS databases and
+checks refusal from a fresh trust store first. For Linux WebKit with a
+system-only trust store, point `--webkit` at a scratch launcher that starts
+the pinned Playwright WebKit executable with the CA at
+`$QUALIFICATION_CA_FILE` in its private trust store. The local Arch run used
+Bubblewrap to bind that CA into an isolated p11-kit anchors directory and
+allowed writes under `$QUALIFICATION_RUN_DIR`. The browser runs with TLS
+verification enabled. The Electron executable is the desktop lock's version
+and needs a display. Its test loads the desktop main and preload with the
+local issuer destination, isolated profile and seeded fixture credential.
+The opt-in Electron sign-out group holds a real WSS reply until Account >
+Sign Out destroys the window and the hosted issuer answers DELETE. It
+checks native window retirement, WSS closure, the IPC fence and a clean
+Electron exit. The test records the order of the window and WebContents
+callbacks. Main-process requests and Electron navigation stay on the exact
+fixture origins.
+The rebind group uses a live native WSS client while the fixture bridge
+drains, signs a disable, and starts on the same authority with a new epoch.
+
+The nightly timing workflow runs the mounted lost-Close regression and five
+stalled-write and pacing witnesses. The real-browser lost-Close and
+maximum-grid witnesses run by hand. Set `TERMINAL_WSS_TEST_NODE` to the absolute
+Node 22.23.4 executable for a local lost-Close run. Use `--ignored --exact` for
+these witnesses. The security checklist records the commands and results.
+
+[Terminal WebSocket Security Checklist](../../planning/v2/Terminal%20WebSocket%20Security%20Checklist.md)

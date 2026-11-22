@@ -60,6 +60,71 @@ async fn mounted_tls_effects_require_an_attachment_on_this_socket() {
     server.stop().await;
 }
 
+#[tokio::test]
+async fn mounted_tls_colliding_terminal_ids_stay_on_their_devices() {
+    let (_first_scratch, first_handler, first_project) = real_app();
+    let (_second_scratch, second_handler, second_project) = real_app();
+    let first = Server::start(first_handler).await;
+    let second = Server::start(second_handler).await;
+    let first_opening = first.opening().await;
+    let second_opening = second.opening().await;
+    let first_ticket = first.ticket(&first_opening).await;
+    let second_ticket = second.ticket(&second_opening).await;
+
+    for (server, foreign_ticket) in [(&first, &second_ticket), (&second, &first_ticket)] {
+        let (head, _) = server.upgrade(&server.handshake(foreign_ticket)).await;
+        assert_eq!(
+            status(&head),
+            401,
+            "each listener refuses a ticket unknown to its registry"
+        );
+    }
+
+    let mut first_socket = first.socket(&first_ticket).await;
+    let mut second_socket = second.socket(&second_ticket).await;
+    let first_term = create_and_attach(&mut first_socket, &first_project).await;
+    let second_term = create_and_attach(&mut second_socket, &second_project).await;
+    assert_eq!(
+        first_term, second_term,
+        "exercise an actual terminal ID collision"
+    );
+    close_shell(&mut first_socket, &first_term, &first_project).await;
+    // Closing the same ID on the first device leaves the second binding live.
+    send(
+        &mut second_socket,
+        "input",
+        "term.input",
+        json!({"term_id":second_term,
+            "data":STANDARD.encode(b"printf '%s%s\\n' exact-binding -output\n")}),
+    )
+    .await;
+    wait_for_shell_output(&mut second_socket, &second_term).await;
+    close_shell(&mut second_socket, &second_term, &second_project).await;
+    first.stop().await;
+    second.stop().await;
+}
+
+async fn create_and_attach(socket: &mut Client, project: &str) -> String {
+    let created = call(
+        socket,
+        "create",
+        "term.create",
+        json!({"project_id":project}),
+    )
+    .await;
+    assert_eq!(created["ok"], true, "{created:?}");
+    let term = case_text(&created["result"]["term_id"]);
+    let attached = call(
+        socket,
+        "attach",
+        "term.attach",
+        json!({"term_id":term,"project_id":project}),
+    )
+    .await;
+    assert_eq!(attached["ok"], true, "{attached:?}");
+    term.into()
+}
+
 async fn exercise_shell(socket: &mut Client, term: &str, project: &str) {
     let attached = call(
         socket,
@@ -268,6 +333,38 @@ async fn mounted_tls_replacement_fences_queued_effects_and_keeps_application() {
         .unwrap();
     assert_eq!(pushes.load(Ordering::Relaxed), 1);
     server.stop().await;
+}
+
+#[tokio::test]
+async fn mounted_tls_revocation_discards_queued_input_while_an_effect_is_blocked() {
+    let began = Arc::new(Notify::new());
+    let (release, blocked) = std::sync::mpsc::channel();
+    let effects = Arc::new(Mutex::new(Vec::new()));
+    let handler = blocking_input_handler(began.clone(), blocked, effects.clone());
+    let server = Server::start(handler).await;
+    let opening = server.opening().await;
+    let (application, _) = application_binding(&server, &opening);
+    let mut socket = server.socket(&server.ticket(&opening).await).await;
+    assert_attached(&mut socket).await;
+
+    let input = json!({"term_id":"shell","data":"YQ=="});
+    send(&mut socket, "running", "term.input", input.clone()).await;
+    timeout(TIMEOUT, began.notified()).await.unwrap();
+    send(&mut socket, "queued", "term.input", input).await;
+    assert_eq!(
+        call(&mut socket, "barrier", "ping", json!({})).await["ok"],
+        true
+    );
+
+    server.verifier.revoked.store(true, Ordering::Release);
+    server.verifier.changed.notify_waiters();
+    timeout(Duration::from_secs(2), assert_closed(&mut socket, None))
+        .await
+        .expect("revocation must wake the reader before the blocked effect returns");
+    release.send(()).unwrap();
+    assert!(application.is_live());
+    server.stop().await;
+    assert_eq!(&*effects.lock().unwrap(), &["running"]);
 }
 
 fn blocking_input_handler(

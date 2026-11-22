@@ -102,6 +102,34 @@ async fn mounted_tls_snapshot_slots_wait_for_flush_or_drop_and_drain() {
     drop((first, second, third, fourth));
 }
 
+#[tokio::test]
+async fn mounted_tls_revocation_drops_a_pending_snapshot_before_the_write_timer() {
+    let screen = crate::screen::ScreenHandle::new("fast", 80, 24);
+    let pool = Arc::new(OnceLock::new());
+    let server = Server::start(snapshot_handler(screen, pool.clone())).await;
+    let (observe, mut observed) = mpsc::unbounded_channel();
+    *server.state.output_observer.lock().unwrap() = Some(Arc::new(move |authority| {
+        let _ = observe.send(authority);
+    }));
+    let mut socket = pending_snapshot(&server, &mut observed, "revoked", false).await;
+    let pool = pool.get().unwrap();
+    assert_eq!(pool.available_permits(), 1);
+
+    server.verifier.revoked.store(true, Ordering::Release);
+    server.verifier.changed.notify_waiters();
+    timeout(Duration::from_secs(2), async {
+        while pool.available_permits() != 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("revocation must release its slot before more reader progress or the write timer");
+    // Already authorized bytes may still be buffered in the kernel. The
+    // receiver must never obtain a complete logical snapshot after revocation.
+    assert_closed(&mut socket, None).await;
+    server.stop().await;
+}
+
 struct StalledSnapshot {
     _socket: Client,
     cut: Arc<Notify>,
@@ -114,9 +142,21 @@ async fn stall_snapshot(
 ) -> StalledSnapshot {
     let cut = Arc::new(Notify::new());
     *server.state.stall_cut.lock().unwrap() = Some(cut.clone());
+    StalledSnapshot {
+        _socket: pending_snapshot(server, observed, id, true).await,
+        cut,
+    }
+}
+
+async fn pending_snapshot(
+    server: &Server,
+    observed: &mut mpsc::UnboundedReceiver<OutputAuthority>,
+    id: &str,
+    small_buffer: bool,
+) -> Client {
     let opening = server.opening().await;
     let mut socket = server
-        .socket_with_reader(&server.ticket(&opening).await, true)
+        .socket_with_reader(&server.ticket(&opening).await, small_buffer)
         .await;
     let authority = timeout(TIMEOUT, observed.recv()).await.unwrap().unwrap();
     send(&mut socket, id, "term.attach", json!({"term_id":"slow"})).await;
@@ -127,10 +167,7 @@ async fn stall_snapshot(
     })
     .await
     .expect("physical TLS writer must actually stall");
-    StalledSnapshot {
-        _socket: socket,
-        cut,
-    }
+    socket
 }
 
 async fn assert_ping(socket: &mut Client) {
@@ -459,11 +496,21 @@ async fn object_with_timeout(socket: &mut Client, bound: Duration) -> Value {
     serde_json::from_slice(&message.into_data()).unwrap()
 }
 
-// Run with Node 22 and the SPA and desktop lockfile installs. This opt-in
+// Run with TERMINAL_WSS_TEST_NODE and the SPA and desktop lockfile installs. This opt-in
 // witness uses the real browser endpoint and the desktop's locked WS client.
 #[tokio::test]
 #[ignore = "runs the SPA pane test against the mounted TLS fixture"]
 async fn mounted_tls_lost_close_stops_spa_ticket_requests() {
+    witness_lost_close(false).await;
+}
+
+#[tokio::test]
+#[ignore = "runs the real browser terminal binding against the mounted TLS lost-Close fixture"]
+async fn mounted_tls_lost_close_stops_real_browser_ticket_requests() {
+    witness_lost_close(true).await;
+}
+
+async fn witness_lost_close(real_browser: bool) {
     let entered = Arc::new(Notify::new());
     let (release, parked) = std::sync::mpsc::channel();
     let handler = lost_close_handler(entered.clone(), parked);
@@ -475,7 +522,7 @@ async fn mounted_tls_lost_close_stops_spa_ticket_requests() {
 
     let certificate = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(certificate.path(), &server.certificate).unwrap();
-    let mut spa = start_spa_lost_close_test(&server, certificate.path());
+    let mut spa = start_spa_lost_close_test(&server, certificate.path(), real_browser);
     let result = tokio::select! {
         _ = entered.notified() => {
             // The attach was dispatched after the roster request and upgrade.
@@ -529,14 +576,21 @@ fn lost_close_handler(entered: Arc<Notify>, parked: std::sync::mpsc::Receiver<()
 fn start_spa_lost_close_test(
     server: &Server,
     certificate: &std::path::Path,
+    real_browser: bool,
 ) -> JoinHandle<std::io::Result<std::process::Output>> {
+    if real_browser {
+        return start_browser_terminal_witness(server, certificate, "lost-close");
+    }
     let origin = format!("https://localhost:{}", server.port);
     let certificate = certificate.to_owned();
     tokio::task::spawn_blocking(move || {
-        std::process::Command::new("node")
-            .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../spa"))
+        let node = qualification_node()?;
+        let mut command = std::process::Command::new(node);
+        command
             .env("NODE_EXTRA_CA_CERTS", certificate)
-            .env("TERMINAL_WSS_TEST_ORIGIN", origin)
+            .env("TERMINAL_WSS_TEST_ORIGIN", origin);
+        command
+            .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../spa"))
             .args([
                 "node_modules/vitest/vitest.mjs",
                 "run",
@@ -546,4 +600,40 @@ fn start_spa_lost_close_test(
             ])
             .output()
     })
+}
+
+pub(super) fn start_browser_terminal_witness(
+    server: &Server,
+    certificate: &std::path::Path,
+    scenario: &'static str,
+) -> JoinHandle<std::io::Result<std::process::Output>> {
+    let origin = format!("https://localhost:{}", server.port);
+    let certificate = certificate.to_owned();
+    tokio::task::spawn_blocking(move || {
+        std::process::Command::new(qualification_node()?)
+            .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
+            .env("NODE_EXTRA_CA_CERTS", certificate)
+            .env("TERMINAL_WSS_TEST_ORIGIN", origin)
+            .env("TERMINAL_WSS_TEST_SCENARIO", scenario)
+            .arg("scripts/bridge-http-qualification/browser.mjs")
+            .output()
+    })
+}
+
+fn qualification_node() -> std::io::Result<std::path::PathBuf> {
+    let node = std::env::var_os("TERMINAL_WSS_TEST_NODE")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| {
+            std::io::Error::other("Set TERMINAL_WSS_TEST_NODE to an absolute Node 22.23.4 path")
+        })?;
+    let version = std::process::Command::new(&node)
+        .arg("--version")
+        .output()?;
+    if !version.status.success() || version.stdout != b"v22.23.4\n" {
+        return Err(std::io::Error::other(
+            "The mounted witness requires Node 22.23.4",
+        ));
+    }
+    Ok(node)
 }

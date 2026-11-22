@@ -92,7 +92,7 @@ impl GrantVerifier for Verifier {
             identity: crate::execution::session::HttpIdentity {
                 issuer: "https://issuer.test".into(),
                 account_id: "account".into(),
-                device_id: "device".into(),
+                device_id: self.bridge.clone(),
                 family_id: "family".into(),
                 origin: self.bridge.clone(),
                 endpoint_epoch: "endpoint".into(),
@@ -137,7 +137,20 @@ impl Server {
     }
 
     async fn start_with(handler: FrameHandler, proof_lifetime: Duration) -> Self {
+        Self::mount(handler, proof_lifetime, true).await
+    }
+
+    async fn mount(handler: FrameHandler, proof_lifetime: Duration, terminal: bool) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        Self::mount_on(handler, proof_lifetime, terminal, listener).await
+    }
+
+    async fn mount_on(
+        handler: FrameHandler,
+        proof_lifetime: Duration,
+        terminal: bool,
+        listener: TcpListener,
+    ) -> Self {
         let port = listener.local_addr().unwrap().port();
         let (tls, client, certificate) = tls_fixture();
         let bridge = format!("https://localhost:{port}");
@@ -149,7 +162,9 @@ impl Server {
             proof_lifetime,
         });
         let mut runtime = runtime_with(ExecutionService::new(handler), verifier.clone());
-        runtime.state.terminal_tickets = Some(Arc::default());
+        if terminal {
+            runtime.state.terminal_tickets = Some(Arc::default());
+        }
         let state = runtime.state.clone();
         let (stop, shutdown) = watch::channel(false);
         let serving = tokio::spawn(serve_mounted(listener, tls, policy, runtime, shutdown));
@@ -265,13 +280,17 @@ impl Server {
         headers: &HeaderMap,
         small_buffer: bool,
     ) -> (Vec<u8>, ClientIo) {
-        self.upgrades.fetch_add(1, Ordering::Relaxed);
         let tcp = TcpStream::connect(("127.0.0.1", self.port)).await.unwrap();
         if small_buffer {
             socket2::SockRef::from(&tcp)
                 .set_recv_buffer_size(4096)
                 .unwrap();
         }
+        self.upgrade_on(headers, tcp).await
+    }
+
+    async fn upgrade_on(&self, headers: &HeaderMap, tcp: TcpStream) -> (Vec<u8>, ClientIo) {
+        self.upgrades.fetch_add(1, Ordering::Relaxed);
         let mut client = self
             .client
             .connect("localhost".try_into().unwrap(), tcp)
@@ -475,6 +494,37 @@ async fn mounted_candidate_advertises_terminal_wss_on_post_and_patch() {
     server.stop().await;
 }
 
+#[tokio::test]
+async fn mounted_default_keeps_terminal_routes_unavailable_with_capability() {
+    let server = Server::mount(greeting(fake_handler()), TIMEOUT * 6, false).await;
+    let opened = server.opening().await;
+    let session_id = case_text(&opened["session_id"]);
+    let (status_code, renewed) = server
+        .json(
+            "PATCH",
+            &format!("/v1/sessions/{session_id}"),
+            "opening",
+            session_id,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status_code, 200);
+    for opening in [&opened, &renewed] {
+        assert_eq!(opening["transport"]["terminal"], "webrtc");
+        assert!(opening["transport"].get("terminal_websocket").is_none());
+        assert!(opening["greeting"]["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("term.websocket")));
+    }
+    assert_eq!(server.issue(&opened).await.0, 404);
+    let mut handshake = server.handshake(&"A".repeat(43));
+    handshake.insert(header::AUTHORIZATION, "Bearer writer".parse().unwrap());
+    let (head, _) = server.upgrade(&handshake).await;
+    assert_eq!(status(&head), 404);
+    server.stop().await;
+}
+
 fn success(frame: &crate::transport::Frame, result: Value) -> Value {
     api::reply(frame.payload["id"].clone(), Ok(result))
 }
@@ -482,5 +532,7 @@ fn success(frame: &crate::transport::Frame, result: Value) -> Value {
 mod admission;
 mod dispatch;
 mod flow;
+mod qualification;
 mod snapshot_slots;
+mod update_drain;
 mod wire;

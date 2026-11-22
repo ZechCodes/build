@@ -1,4 +1,99 @@
 use super::*;
+use std::fmt::Write as _;
+
+#[tokio::test]
+async fn mounted_tls_slow_reader_preserves_snapshot_bytes_under_backpressure() {
+    const SNAPSHOT_BYTES: usize = 6 * 1024 * 1024;
+    let mut snapshot = String::with_capacity(SNAPSHOT_BYTES);
+    for offset in (0..SNAPSHOT_BYTES).step_by(16) {
+        write!(snapshot, "{offset:016x}").unwrap();
+    }
+    let result = json!({"term_id":"large","snapshot":snapshot,"cursor":0});
+    let mut expected = api::reply(json!("ordered"), Ok(result.clone()));
+    expected["bridge_epoch"] = json!(crate::bridge_epoch::current());
+    let expected = serde_json::to_vec(&expected).unwrap();
+    let server = Server::start(greeting(FrameHandler::new(
+        FrameClock::new(),
+        move |_, frame, _| success(&frame, result.clone()),
+    )))
+    .await;
+    let (observe, mut observed) = mpsc::unbounded_channel();
+    *server.state.output_observer.lock().unwrap() = Some(Arc::new(move |authority| {
+        let _ = observe.send(authority);
+    }));
+    let opening = server.opening().await;
+    let headers = server.handshake(&server.ticket(&opening).await);
+    let tcp = tokio::net::TcpSocket::new_v4().unwrap();
+    tcp.set_recv_buffer_size(32 * 1024).unwrap();
+    let tcp = tcp
+        .connect(([127, 0, 0, 1], server.port).into())
+        .await
+        .unwrap();
+    let (head, io) = server.upgrade_on(&headers, tcp).await;
+    assert_eq!(status(&head), 101);
+    let mut socket = WebSocketStream::from_raw_socket(io, Role::Client, None).await;
+    let authority = timeout(TIMEOUT, observed.recv()).await.unwrap().unwrap();
+    send(
+        &mut socket,
+        "ordered",
+        "term.attach",
+        json!({"term_id":"large"}),
+    )
+    .await;
+    // Hold all reads until the mounted listener encounters a pending write.
+    timeout(TIMEOUT, async {
+        while !authority.has_pending_write() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the small receive buffer must back up the physical TLS writer");
+
+    let (producer, consumer) = tokio::io::duplex(16 * 1024);
+    let progress = Arc::new(AtomicUsize::new(0));
+    let reader = tokio::spawn(forward_slow_reads(socket, producer, progress.clone()));
+    let mut websocket = WebSocketStream::from_raw_socket(consumer, Role::Client, None).await;
+    let message = timeout(Duration::from_secs(30), websocket.next())
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "slow TLS reader did not finish after {} wire bytes",
+                progress.load(Ordering::Relaxed)
+            )
+        })
+        .expect("snapshot WebSocket message")
+        .unwrap();
+    reader.abort();
+    assert!(message.is_binary());
+    let received = message.into_data();
+    assert_eq!(received.len(), expected.len());
+    let mismatch = received
+        .iter()
+        .zip(&expected)
+        .position(|(left, right)| left != right);
+    assert_eq!(mismatch, None, "first reordered or corrupted byte");
+    eprintln!(
+        "mounted TLS delivered all {} ordered bytes after backpressure",
+        received.len()
+    );
+    server.stop().await;
+}
+
+async fn forward_slow_reads(
+    mut socket: Client,
+    mut receiver: tokio::io::DuplexStream,
+    progress: Arc<AtomicUsize>,
+) {
+    let mut chunk = [0; 4 * 1024];
+    loop {
+        let len = socket.get_mut().read(&mut chunk).await.unwrap();
+        if len == 0 || receiver.write_all(&chunk[..len]).await.is_err() {
+            return;
+        }
+        progress.fetch_add(len, Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
 
 #[tokio::test]
 async fn mounted_tls_near_limit_snapshots_complete_at_full_speed() {

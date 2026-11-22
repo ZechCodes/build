@@ -42,6 +42,7 @@ const metadataUses = {
     ["writes.confirmed",", \"secrets.changed\" , [\"writes.confirmed\"] , \"writes.progress\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
     ["writes.progress",", \"writes.confirmed\" , [\"writes.progress\"] , \"bridge.restarting\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
     ["bridge.restarting",", \"writes.progress\" , [\"bridge.restarting\"] , ] )","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
+    // This capability selects the WSS carrier.
     ["term.websocket",". has ( [\"term.websocket\"] ) ; }","9b25792f01ce809172a3cef251b079f5646e96934ad29f1f3f54ebbd039e88f2"],
     ["secrets.attachments",". has ( [\"secrets.attachments\"] ) , sealedUpload","7bb78ae88368517d4112053e77e2808e7e821ab9ff080f53624ae97b42fa3e7e"],
     ["secrets.sealedUpload",". has ( [\"secrets.sealedUpload\"] ) , metadataEvents","7bb78ae88368517d4112053e77e2808e7e821ab9ff080f53624ae97b42fa3e7e"],

@@ -180,3 +180,84 @@ async fn open_idle_socket(server: &Server, opening: &Value) -> Client {
     );
     socket
 }
+
+#[tokio::test]
+async fn mounted_tls_restart_refuses_old_opening_and_unspent_ticket() {
+    let first = Server::start(fake_handler()).await;
+    let port = first.port;
+    let old = first.opening().await;
+    let stale = first.ticket(&old).await;
+    first.stop().await;
+
+    let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+    let fresh = Server::mount_on(fake_handler(), TIMEOUT * 6, true, listener).await;
+    assert_eq!(fresh.issue(&old).await.0, 401);
+    assert_eq!(
+        status(&fresh.upgrade(&fresh.handshake(&stale)).await.0),
+        401
+    );
+    let opening = fresh.opening().await;
+    let mut replacement = open_idle_socket(&fresh, &opening).await;
+    fresh.stop().await;
+    assert_closed(&mut replacement, None).await;
+}
+
+#[tokio::test]
+async fn mounted_tls_concurrent_redemption_has_exactly_one_winner() {
+    let server = Server::start(fake_handler()).await;
+    let opening = server.opening().await;
+    let ticket = server.ticket(&opening).await;
+    let headers = server.handshake(&ticket);
+    let (first, second) = tokio::join!(server.upgrade(&headers), server.upgrade(&headers));
+    let mut statuses = [status(&first.0), status(&second.0)];
+    statuses.sort_unstable();
+    assert_eq!(statuses, [101, 401]);
+    drop((first, second));
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn mounted_tls_ticket_refuses_a_changed_device_in_the_same_registry() {
+    let server = Server::start(fake_handler()).await;
+    let opening = server.opening().await;
+    let session = case_text(&opening["session_id"]);
+    let ticket = server.ticket(&opening).await;
+    // Leave the registry, ticket, Opening, generation and origin intact.
+    let device = {
+        let mut openings = server.state.openings.lock().unwrap();
+        let mounted = openings.get_mut(session).unwrap();
+        std::mem::replace(&mut mounted.identity.device_id, "other-device".into())
+    };
+    let (head, mut connection) = server.upgrade(&server.handshake(&ticket)).await;
+    assert_eq!(status(&head), 401);
+    let refusal = read_json_body(&mut connection, &head).await;
+    assert_eq!(refusal["error_code"], "invalid_credential");
+    server
+        .state
+        .openings
+        .lock()
+        .unwrap()
+        .get_mut(session)
+        .unwrap()
+        .identity
+        .device_id = device;
+    // Redeem the same ticket to prove it was present and the refusal did not spend it.
+    let socket = server.socket(&ticket).await;
+    drop(socket);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn mounted_tls_cookie_without_ticket_cannot_upgrade() {
+    let server = Server::start(fake_handler()).await;
+    let mut headers = server.handshake(&"A".repeat(43));
+    let cookie = "session=qualification-cookie-sentinel";
+    headers.insert(header::COOKIE, cookie.parse().unwrap());
+    headers.insert(header::SEC_WEBSOCKET_PROTOCOL, PROTOCOL.parse().unwrap());
+    let (head, mut connection) = server.upgrade(&headers).await;
+    assert_eq!(status(&head), 401);
+    let refusal = read_json_body(&mut connection, &head).await;
+    assert_eq!(refusal["error_code"], "invalid_credential");
+    assert!(!refusal.to_string().contains(cookie));
+    server.stop().await;
+}

@@ -13,14 +13,16 @@ keep running. A fresh authorized Opening can reattach to a surviving shell.
 ## Executed evidence
 
 **100/100 in executed qualification.** Each of the ten controls earned 10
-points. Independent candidate review is pending.
+points. Independent review #1152 scored the predecessor 99/100 because the
+native SSE check inspected event types alone. The revised witness checks
+content as well. Independent review of the revised candidate is pending.
 
 | Score | Control | Gate | Executed witnesses and result |
 | ---: | --- | --- | --- |
 | 10/10 | Verified owner and write authority | On | The mounted native client and real Skrift issuer accepted the owner grant. Ticket issue refused read-only with 403 and a different family or Opening generation with 401. The real issuer introspected freshly minted tokens with one persisted fixture claim changed at a time and rejected wrong account, device, issuer, endpoint epoch and authorization epoch. Every refusal preceded upgrade and terminal dispatch. |
 | 10/10 | One-use tickets | On | Mounted concurrent redemption has one 101 and one 401. Ticket and lifecycle tests cover one-use expiry, supersession, exact-credential rotation, DELETE, bounded issue and registry cleanup. A new listener on the same authority refused the prior Opening and its unspent ticket, then accepted a fresh Opening. |
 | 10/10 | Origin, TLS and CSWSH protection | On | Mounted TLS Origin and Host vectors, cookies-only refusal, native redirect and certificate witnesses, and Chromium refusal without the test CA. Chromium, WebKit and native WSS ran with exact local authorities and the fixture CA. |
-| 10/10 | Terminal-only execution | On | Native shell and QA agent exercised every admitted method beside live REST/SSE. The native client refused a shell ID under a sibling source and refused the shell-close verb for an agent. Mounted binary and effect tests covered unrelated methods, authority overrides, stale bindings and agent rekey. Two mounted devices created the same terminal ID, rejected each other's tickets and kept their effects local. SSE carried no terminal bytes. |
+| 10/10 | Terminal-only execution | On | Native shell and QA agent exercised the admitted methods beside live REST/SSE. The native client refused a shell ID under a sibling source and the shell-close verb for an agent. Mounted tests covered unrelated methods, authority overrides, stale bindings and agent rekey. Two devices created the same terminal ID and kept effects local. Each listener refused the other registry's unknown ticket. In a separate single-registry case, changing only the mounted Opening's device ID caused 401. Restoring it let the same ticket redeem. The native SSE assertion searched the full serialized event stream for the PTY sentinel, ticket and both bearers. A negative case put the sentinel inside an ordinary state event and verified rejection. |
 | 10/10 | Revocation and expiry | On | The real issuer accepted fresh write PATCH, fenced WSS on a read-only renewal while REST remained usable, and closed active sockets after family DELETE and hosted client logout. The PTY child finished after the fence and a fresh grant reattached to the same shell. Mounted tests covered idle expiry, blocked input with a queued effect, and revocation during a pending physical TLS snapshot write. The write lost its slot before reader progress or its timer, and the client received no complete snapshot. A signed device disable closed an active WSS and refused renewal. Rebind on the same authority required fresh discovery and a new Opening. |
 | 10/10 | Bounded cost and fairness | On | Full-speed mounted attach/reset, renderer recovery, pause isolation, fragmented message limits and physical drain witnesses passed. On D3, an unread TLS socket released its permit at the 10-second write cut. Both 16 KiB/s readers survived, each read 3 MiB and each grant returned within its own 192 s + 250 ms bound. Three near-12 MiB snapshots at 100 KiB/s reached final flush. The small-buffer slow-reader test compared every binary reply byte, with successful direct `sendmsg` writes observed on a traced run. |
 | 10/10 | Lifecycle isolation and drain | On | Mounted successor and late-cleanup tests, pending-upgrade drain and permit recovery, a real update admission handoff on an active terminal listener, and client detach/reconnect with the shell retained. The updater witness uses an in-process backend that records stage and launch without installing a release. |
@@ -30,28 +32,28 @@ points. Independent candidate review is pending.
 
 ## Reproducing the evidence
 
-Run from the repo root with Node 22.23.4, npm 12.0.2, and scratch under
-`$HOME/Projects/.agent-scratch/1119/i`. Set `TMPDIR` to its `tmp` directory and
-`CARGO_TARGET_DIR` to its `target`. The fixture runner documents the exact
-client and build commands. [Qualification runner](../../scripts/bridge-http-qualification/README.md)
+Run from the repo root with Node 22.23.4, npm 12.0.2, and a disposable scratch
+directory. Set `TMPDIR` to its `tmp` directory and `CARGO_TARGET_DIR` to its
+`target`. For the group selections below, use the runner's `qualify_terminal`
+shell function. It passes the scratch root, loopback bridge host and issuer
+terminal policy explicitly. [Qualification runner](../../scripts/bridge-http-qualification/README.md)
 
-The mounted issuer, Electron navigation, browser and client suites ran from
+The earlier mounted issuer, Electron navigation, browser and client suites ran from
 `3071f72b2678458d9b8774fc6326af8e5b464b7b`. The final mounted Rust suite,
 direct-send test and full Electron sign-out ran from
-`6f2a3555cc7728c9f506c0267cc4ccb889aa843b`. Use the runner's shell
-command with the client and gate selections in the table.
+`6f2a3555cc7728c9f506c0267cc4ccb889aa843b`.
 
 | Command or selection | Gate | Exit |
 | --- | --- | ---: |
 | `nice -n 10 cargo test --manifest-path bridge/Cargo.toml --locked --lib -- --test-threads=1 http::runtime::terminal::tests http::runtime::terminal_tickets http::listener::terminal_upgrade http::listener::tests http::auth::tests cross_transport_update_drain` | Off and on | 0 |
-| `fixture.py qualify --gate off --client desktop` | Off | 0 |
-| `fixture.py qualify --gate off --client browser --webkit "$QUALIFICATION_SCRATCH/webkit-qualification"` | Off | 0 |
-| `fixture.py qualify --gate on --client desktop` | On | 0 |
-| `fixture.py qualify --gate on --client native-grid` | On | 0 |
-| `fixture.py qualify --gate on --client rebind` | On | 0 |
-| `fixture.py qualify --gate on --client browser --webkit "$QUALIFICATION_SCRATCH/webkit-qualification"` | On | 0 |
-| `fixture.py qualify --gate on --client electron --electron "$QUALIFICATION_SCRATCH/electron/electron"` | On | 0 |
-| `fixture.py qualify --gate on --client electron-sign-out --electron "$QUALIFICATION_SCRATCH/electron/electron"` | On | 0 |
+| `qualify_terminal --gate off --client desktop` | Off | 0 |
+| `qualify_terminal --gate off --client browser --webkit "$QUALIFICATION_SCRATCH/webkit-qualification"` | Off | 0 |
+| `qualify_terminal --gate on --client desktop` | On | 0 |
+| `qualify_terminal --gate on --client native-grid` | On | 0 |
+| `qualify_terminal --gate on --client rebind` | On | 0 |
+| `qualify_terminal --gate on --client browser --webkit "$QUALIFICATION_SCRATCH/webkit-qualification"` | On | 0 |
+| `qualify_terminal --gate on --client electron --electron "$QUALIFICATION_SCRATCH/electron/electron"` | On | 0 |
+| `qualify_terminal --gate on --client electron-sign-out --electron "$QUALIFICATION_SCRATCH/electron/electron"` | On | 0 |
 | From `skriftapp/`, `nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/pytest" buildapp/test_bridge_http*.py -q` | Hosted authority and policy (137 passed, 12 skipped) | 0 |
 | From `spa/`, `nice -n 10 node node_modules/vitest/vitest.mjs run test/http*.test.js test/terminalWebSocket*.test.js test/terminalCarrier.test.js test/terminalReconnectIntegration.test.js test/terminal.test.js test/terminalManager.test.js test/terminalFollowAuthority.test.js test/transportPath.test.js` | Client fixtures and device selection (490 passed, one mounted-only skip, run separately) | 0 |
 | `nice -n 10 node --test desktop/test/bridge-http-*.test.mjs desktop/test/main-bridge-http.test.mjs desktop/test/main-auth.test.mjs` | Native compatibility, IPC and F4 sign-out regression (217 passed, 14 opt-in) | 0 |
@@ -152,3 +154,37 @@ The generated desktop manifest is byte-identical to
 `fixtures/api/http/resource-manifest.json`. The coverage check used the
 existing pins. The provenance `scope` wording can be refreshed with the next
 manifest regeneration.
+
+### Review #1152 follow-up
+
+The revised checks started at
+`4af1123c57e9bc2a20a404a15f66c5198a44b496`, on top of the independently
+reviewed `6b5476971440f3bb5476b150ceb343752ce72b37`. Bridge, SPA and desktop
+production code is identical at those revisions. The mounted Rust selection
+and gate-on desktop fixture passed again on
+`81c1ca1511c9c74cc7b9c7fc4f976592ead4d248`. That commit only borrows the
+fixture issuer origin for the policy slice in the opt-in listener.
+
+| Command or selection | Gate | Result |
+| --- | --- | --- |
+| From `desktop/`, `nice -n 10 node --test test/bridge-http-qualification.test.mjs test/main-auth.test.mjs` | Default | Exit 0, 65 passed and 14 opt-in. The ordinary-state-event negative case threw on the hidden PTY sentinel. |
+| `qualify_terminal --gate on --client desktop` | On | Exit 0, including the real SSE content check. Ran from a separate caller-selected fixture root. |
+| `qualify_terminal --gate off --client desktop` | Off | Exit 0, legacy descriptor mode. |
+| `qualify_terminal --gate on --client electron-sign-out --electron "$QUALIFICATION_SCRATCH/electron/electron"` | On | Exit 0 with WSS closure, hosted DELETE 204 and zero held-reply deliveries. |
+| The mounted Rust selection above, including `mounted_tls_ticket_refuses_a_changed_device_in_the_same_registry` | Off and on | Exit 0, 102 passed and 9 opt-in. |
+| `nice -n 10 node --test scripts/http-resource-coverage.test.mjs` | Static | Exit 0, 23 checks with the existing pins. |
+| `nice -n 10 cargo fmt --manifest-path bridge/Cargo.toml --all -- --check` | Static | Exit 0. |
+| `nice -n 10 cargo clippy --manifest-path bridge/Cargo.toml --locked --all-targets -- -D warnings` | Static | Exit 0 at `81c1ca151`. |
+
+The new debug step in `.github/workflows/timing.yml` ran at `4af1123c5`
+from its YAML using Bash with `-e -o pipefail` in `bridge/`, after building
+the library test executable. The step exited 0 and produced five exact
+matches, five runs of one test, and five passing results.
+
+| Nightly witness | Gate | Result |
+| --- | --- | --- |
+| Mounted TLS two 16 KiB/s readers | On | Exit 0. The grants returned after 192.003 s and 192.006 s. |
+| Mounted TLS near-12 MiB at 100 KiB/s | On | Exit 0 in 122.19 s. |
+| Mounted TLS unread socket | On | Exit 0 in 10.11 s. |
+| Bare TCP trickle control | Not applicable | Exit 0 in 14.01 s. |
+| Bare TCP near-12 MiB at 100 KiB/s | Not applicable | Exit 0 in 122.01 s. |

@@ -100,7 +100,7 @@ use the installed Node 22.23.4 and npm 12.0.2 locks for transport, SPA and
 desktop. Build the SPA before the browser and Electron groups.
 
 ```sh
-export QUALIFICATION_SCRATCH="$HOME/Projects/.agent-scratch/1119/i"
+export QUALIFICATION_SCRATCH="$(mktemp -d)"
 export CARGO_TARGET_DIR="$QUALIFICATION_SCRATCH/target"
 export TMPDIR="$QUALIFICATION_SCRATCH/tmp"
 nice -n 10 mkdir -p "$TMPDIR"
@@ -112,37 +112,30 @@ QUALIFICATION_BINARY="$(jq -r 'select(.profile.test and .target.name == "build_b
 
 Run the groups separately so discovery rate limits measure the client under
 test. Use a frozen Skrift virtualenv under `$QUALIFICATION_SCRATCH/venv`.
+Pass the disposable directory as `--scratch-root` and set the loopback bridge
+host and issuer terminal policy explicitly. The issuer terminal policy
+adds the second fixture device and Electron navigation cases. Keep it on
+for terminal qualification, including when the separate bridge gate is off.
+The runner supplies `BUILD_HTTP_QUALIFICATION_SCRATCH` and
+`BUILD_HTTP_QUALIFICATION_FIXTURE` to the mounted Rust test.
 
 ```sh
-nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
-  scripts/bridge-http-qualification/fixture.py qualify \
-  --bridge-test-binary "$QUALIFICATION_BINARY" --gate off --client desktop
+qualify_terminal() {
+  nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
+    scripts/bridge-http-qualification/fixture.py qualify \
+    --scratch-root "$QUALIFICATION_SCRATCH" --bridge-host 127.0.0.1 \
+    --issuer-terminal-policy on --bridge-test-binary "$QUALIFICATION_BINARY" "$@"
+}
 
-nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
-  scripts/bridge-http-qualification/fixture.py qualify \
-  --bridge-test-binary "$QUALIFICATION_BINARY" --gate on --client desktop
-
-nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
-  scripts/bridge-http-qualification/fixture.py qualify \
-  --bridge-test-binary "$QUALIFICATION_BINARY" --gate on --client native-grid
-
-nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
-  scripts/bridge-http-qualification/fixture.py qualify \
-  --bridge-test-binary "$QUALIFICATION_BINARY" --gate on --client rebind
-
-nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
-  scripts/bridge-http-qualification/fixture.py qualify \
-  --bridge-test-binary "$QUALIFICATION_BINARY" --gate on --client browser \
+qualify_terminal --gate off --client desktop
+qualify_terminal --gate on --client desktop
+qualify_terminal --gate on --client native-grid
+qualify_terminal --gate on --client rebind
+qualify_terminal --gate on --client browser \
   --webkit "$QUALIFICATION_SCRATCH/webkit-qualification"
-
-nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
-  scripts/bridge-http-qualification/fixture.py qualify \
-  --bridge-test-binary "$QUALIFICATION_BINARY" --gate on --client electron \
+qualify_terminal --gate on --client electron \
   --electron "$QUALIFICATION_SCRATCH/electron/electron"
-
-nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
-  scripts/bridge-http-qualification/fixture.py qualify \
-  --bridge-test-binary "$QUALIFICATION_BINARY" --gate on --client electron-sign-out \
+qualify_terminal --gate on --client electron-sign-out \
   --electron "$QUALIFICATION_SCRATCH/electron/electron"
 ```
 
@@ -166,10 +159,10 @@ fixture origins.
 The rebind group uses a live native WSS client while the fixture bridge
 drains, signs a disable, and starts on the same authority with a new epoch.
 
-The mounted lost-Close regression runs in the nightly timing workflow. Set
-`TERMINAL_WSS_TEST_NODE` to the absolute Node 22.23.4 executable for a local
-run. Use `--ignored --exact` because Cargo's default suite skips this witness.
-The security checklist records the complete command and the paced-write
-qualification results.
+The nightly timing workflow runs the mounted lost-Close regression and five
+stalled-write and pacing witnesses. The real-browser lost-Close and
+maximum-grid witnesses run by hand. Set `TERMINAL_WSS_TEST_NODE` to the absolute
+Node 22.23.4 executable for a local lost-Close run. Use `--ignored --exact` for
+these witnesses. The security checklist records the commands and results.
 
 [Terminal WebSocket Security Checklist](../../planning/v2/Terminal%20WebSocket%20Security%20Checklist.md)

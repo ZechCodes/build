@@ -88,3 +88,77 @@ TMPDIR=/home/zech/Projects/.agent-scratch/976/tmp nice -n 10 \
   /home/zech/Projects/.agent-scratch/976/venv/bin/python -m unittest discover \
   -s scripts/bridge-http-qualification -p test_runner.py
 ```
+
+## Terminal WSS qualification
+
+Terminal qualification uses `fixture.py qualify` with a library test
+executable. The test mounts the real issuer verifier, proof signer, HTTPS
+listener and application handlers in a disposable process. It binds loopback
+and uses separate hostnames for the hosted document and the bridge. Each
+client group gets a fresh account, endpoint, project state and CA. The tests
+use the installed Node 22.23.4 and npm 12.0.2 locks for transport, SPA and
+desktop. Build the SPA before the browser and Electron groups.
+
+```sh
+export QUALIFICATION_SCRATCH="$HOME/Projects/.agent-scratch/1119/i"
+export CARGO_TARGET_DIR="$QUALIFICATION_SCRATCH/target"
+export TMPDIR="$QUALIFICATION_SCRATCH/tmp"
+nice -n 10 mkdir -p "$TMPDIR"
+nice -n 10 cargo test --manifest-path bridge/Cargo.toml --locked --lib \
+  --no-run --message-format=json > "$QUALIFICATION_SCRATCH/library-tests.jsonl"
+QUALIFICATION_BINARY="$(jq -r 'select(.profile.test and .target.name == "build_bridge").executable // empty' \
+  "$QUALIFICATION_SCRATCH/library-tests.jsonl")"
+```
+
+Run the groups separately so discovery rate limits measure the client under
+test. Use a frozen Skrift virtualenv under `$QUALIFICATION_SCRATCH/venv`.
+
+```sh
+nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
+  scripts/bridge-http-qualification/fixture.py qualify \
+  --bridge-test-binary "$QUALIFICATION_BINARY" --gate off --client desktop
+
+nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
+  scripts/bridge-http-qualification/fixture.py qualify \
+  --bridge-test-binary "$QUALIFICATION_BINARY" --gate on --client desktop
+
+nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
+  scripts/bridge-http-qualification/fixture.py qualify \
+  --bridge-test-binary "$QUALIFICATION_BINARY" --gate on --client native-grid
+
+nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
+  scripts/bridge-http-qualification/fixture.py qualify \
+  --bridge-test-binary "$QUALIFICATION_BINARY" --gate on --client rebind
+
+nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
+  scripts/bridge-http-qualification/fixture.py qualify \
+  --bridge-test-binary "$QUALIFICATION_BINARY" --gate on --client browser \
+  --webkit "$QUALIFICATION_SCRATCH/webkit-qualification"
+
+nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
+  scripts/bridge-http-qualification/fixture.py qualify \
+  --bridge-test-binary "$QUALIFICATION_BINARY" --gate on --client electron \
+  --electron "$QUALIFICATION_SCRATCH/electron/electron"
+```
+
+The browser group uses Chromium at `CHROMIUM_PATH` and WebKit from the SPA's
+Playwright lock. Chromium gets the fixture CA in isolated NSS databases and
+checks refusal from a fresh trust store first. For Linux WebKit with a
+system-only trust store, point `--webkit` at a scratch launcher that starts
+the pinned Playwright WebKit executable with the CA at
+`$QUALIFICATION_CA_FILE` in its private trust store. The local Arch run used
+Bubblewrap to bind that CA into an isolated p11-kit anchors directory and
+allowed writes under `$QUALIFICATION_RUN_DIR`. The browser runs with TLS
+verification enabled. The Electron executable is the desktop lock's version
+and needs a display. Its test loads the desktop main and preload with the
+local issuer destination, isolated profile and seeded fixture credential.
+The rebind group uses a live native WSS client while the fixture bridge
+drains, signs a disable, and starts on the same authority with a new epoch.
+
+The mounted lost-Close regression runs in the nightly timing workflow. Set
+`TERMINAL_WSS_TEST_NODE` to the absolute Node 22.23.4 executable for a local
+run. Use `--ignored --exact` because Cargo's default suite skips this witness.
+The complete command and the pace-sensitive failures are in the security
+checklist.
+
+[Terminal WebSocket Security Checklist](../../planning/v2/Terminal%20WebSocket%20Security%20Checklist.md)

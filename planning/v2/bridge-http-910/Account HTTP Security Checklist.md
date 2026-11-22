@@ -1,5 +1,8 @@
 # Account HTTP security checklist — #910
 
+Terminal ticket and socket qualification has its own evidence and release
+score. [Terminal WebSocket Security Checklist](../Terminal%20WebSocket%20Security%20Checklist.md)
+
 Corrected author witness: **100/100** for the ten owned checks below. The
 original record was superseded by #921's blocking
 logout finding and allocation-availability concern. The corrections follow

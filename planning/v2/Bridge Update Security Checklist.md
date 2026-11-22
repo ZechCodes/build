@@ -1,5 +1,8 @@
 # Bridge update security checklist
 
+The active terminal listener's update-admission and shutdown witnesses are
+recorded in the [Terminal WebSocket Security Checklist](Terminal%20WebSocket%20Security%20Checklist.md).
+
 **Status:** verified (10/10 controls)
 
 **Scope:** replacing a development build with a release from the app, and the

@@ -1,5 +1,8 @@
 # Desktop security checklist
 
+Native terminal WSS and its IPC navigation witnesses are recorded in the
+[Terminal WebSocket Security Checklist](Terminal%20WebSocket%20Security%20Checklist.md).
+
 **Status:** 100/100 (10/10 scoped controls verified)
 **Verified:** 2026-10-19, #665 automatic main-frame 401 recovery and review round 1 load-completion fixes, retaining #635 window chrome and #615 authentication review fixes.
 

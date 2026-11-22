@@ -754,11 +754,12 @@ async function qualifyElectron(main, witness) {
   const fixture = JSON.parse(await readFile(process.env.BUILD_HTTP_QUALIFICATION_FIXTURE, "utf8"));
   const allowedOrigins = new Set([fixture.hostedOrigin, fixture.bridgeOrigin]);
   const fetch = globalThis.fetch;
+  const terminalSockets = [];
   let signOutCheck;
   globalThis.fetch = async (input, options) => {
     const url = new URL(input);
     assert.ok(allowedOrigins.has(url.origin), "qualification main requires a loopback fixture URL");
-    const response = await fetch(input, options);
+    const response = await fetch(input, { ...options, redirect: "error" });
     if (signOutCheck && url.origin === fixture.hostedOrigin && options?.method === "DELETE" &&
         /^\/api\/devices\/[^/]+\/http-credentials\/[^/]+$/.test(url.pathname)) {
       signOutCheck.revoked.resolve(response.status);
@@ -772,6 +773,13 @@ async function qualifyElectron(main, witness) {
   };
   globalThis.qualificationTerminalSend = (event) => {
     if (signOutCheck && event.data?.id === "3") signOutCheck.deliveries++;
+  };
+  globalThis.qualificationTerminalSocket = (url, connect) => {
+    assert.equal(url.origin, fixture.bridgeOrigin.replace(/^https:/, "wss:"));
+    const socket = connect();
+    const closed = new Promise((resolve) => socket.once("close", resolve));
+    terminalSockets.push({ socket, closed });
+    return socket;
   };
   globalThis.qualificationAccessToken = fixture.accessToken;
   const appUrl = fixture.hostedOrigin + "/app/desktop";
@@ -801,12 +809,24 @@ async function qualifyElectron(main, witness) {
         source = source.replace(deliver + ", {",
           "globalThis.qualificationTerminalDelivery(event, () => " + deliver + "), {")
           .replace(send, "globalThis.qualificationTerminalSend(event);\n      " + send);
+      } else if (witness === "sign-out" && url === new URL("./bridge-http-terminal.mjs", main).href) {
+        const constructor = "return new WebSocket(url,";
+        const endOptions = "maxPendingAutoPongs: 128,\n  });";
+        assert.ok(source.includes(constructor) && source.includes(endOptions));
+        source = source.replace(constructor,
+          "return globalThis.qualificationTerminalSocket(url, () => new WebSocket(url,")
+          .replace(endOptions, "maxPendingAutoPongs: 128,\n  }));");
       } else if (url === main) {
         source = source.replace('app.setAsDefaultProtocolClient("getbuilding");', "")
           .replace("void startAuthentication().finally(() => { starting = false; });",
             "accessToken = globalThis.qualificationAccessToken; delete globalThis.qualificationAccessToken;" +
             "mainWindow = createWindow(); starting = false;");
         assert.ok(source.includes("mainWindow = createWindow(); starting = false;"));
+        if (witness === "sign-out") {
+          const retire = "bridgeHttp.retire(contents);";
+          assert.ok(source.includes(retire));
+          source = source.replace(retire, retire + " globalThis.qualificationTerminalRetired(contents);");
+        }
       } else {
         return loaded;
       }
@@ -869,6 +889,16 @@ async function qualifyElectron(main, witness) {
       deliveries: 0,
     };
     const { pending, revoked, finishCleanup } = signOutCheck;
+    assert.equal(terminalSockets.length, 1);
+    const [{ socket, closed }] = terminalSockets;
+    const lifecycle = [];
+    contents.once("destroyed", () => lifecycle.push("destroyed"));
+    globalThis.qualificationTerminalRetired = (retired) => {
+      assert.equal(retired, contents);
+      assert.equal(retired.isDestroyed(), true);
+      lifecycle.push("retired");
+    };
+    win.once("closed", () => lifecycle.push("closed"));
     const errors = [];
     // Capture Electron's exception dialog as a test failure and keep the
     // fixture running long enough to observe revocation and IPC fencing.
@@ -881,12 +911,17 @@ async function qualifyElectron(main, witness) {
       const accountMenu = Menu.getApplicationMenu().items.find(({ label }) => label === "Account");
       const signOut = accountMenu?.submenu.items.find(({ label }) => label === "Sign Out");
       assert.ok(signOut);
+      assert.equal(socket.readyState, socket.OPEN);
       signOut.click();
       assert.equal(await within(revoked.promise, "hosted credential revoke"), 204);
       assert.equal(win.isDestroyed(), true);
+      assert.deepEqual(lifecycle, ["destroyed", "retired", "closed"]);
+      const closeCode = await within(closed, "terminal connection close");
+      assert.equal(socket.readyState, socket.CLOSED);
       deliver();
       assert.equal(signOutCheck.deliveries, 0, "the real reply must be fenced before renderer IPC");
       console.log("Electron sign-out revoked the grant and fenced a held terminal reply (DELETE 204, zero IPC sends)");
+      console.log(`PASS WebContents destroyed, retired, and window closed. Terminal socket close code ${closeCode}.`);
       await report(errors.length === 0);
     } finally {
       process.off("uncaughtException", captureWindowError);

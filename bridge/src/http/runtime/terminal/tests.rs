@@ -36,7 +36,7 @@ use crate::{
     },
     http::{
         listener::terminal_upgrade::{
-            tests::{read_head, status, tls_configs, write_request},
+            tests::{read_head, status, tls_fixture, write_request},
             PROTOCOL,
         },
         policy::HttpPolicy,
@@ -123,6 +123,7 @@ struct Server {
     port: u16,
     state: HttpState,
     client: TlsConnector,
+    certificate: String,
     stop: watch::Sender<bool>,
     serving: JoinHandle<std::io::Result<()>>,
     verifier: Arc<Verifier>,
@@ -138,7 +139,7 @@ impl Server {
     async fn start_with(handler: FrameHandler, proof_lifetime: Duration) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let (tls, client) = tls_configs();
+        let (tls, client, certificate) = tls_fixture();
         let bridge = format!("https://localhost:{port}");
         let policy = HttpPolicy::new(&bridge, &origins()).unwrap();
         let verifier = Arc::new(Verifier {
@@ -156,6 +157,7 @@ impl Server {
             port,
             state,
             client,
+            certificate,
             stop,
             serving,
             verifier,
@@ -415,6 +417,7 @@ fn greeting(handler: FrameHandler) -> FrameHandler {
             "api_version": api::API_VERSION,
             "bridge_epoch": epoch,
             "capabilities": api::capabilities(false),
+            "journal_incarnation": fixture()["opening"]["base"]["greeting"]["journal_incarnation"],
         })
     })
 }

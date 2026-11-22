@@ -346,10 +346,10 @@ function completeRecoveryLoad(window, navigation, load) {
   window.show();
 }
 
-function observeMainFrameNavigation(window) {
+function observeMainFrameNavigation(window, contents) {
   const navigation = { sequence: 0, rejectedRequests: new Set(), canceledUrls: new Set() };
   windowNavigations.set(window, navigation);
-  window.webContents.on("did-start-navigation", (_event, _url, inPlace, isMainFrame) => {
+  contents.on("did-start-navigation", (_event, _url, inPlace, isMainFrame) => {
     // Hash/history navigation belongs to the same document and cannot replace
     // the successful commit or failure recorded for its body.
     if (!isMainFrame || inPlace) return;
@@ -357,16 +357,16 @@ function observeMainFrameNavigation(window) {
     navigation.currentLoad = navigation.pendingLoad || createDocumentLoad();
     navigation.pendingLoad = null;
   });
-  window.webContents.on("did-navigate", (_event, url, statusCode) => {
+  contents.on("did-navigate", (_event, url, statusCode) => {
     didNavigateMainFrame(window, navigation, url, statusCode);
   });
-  window.webContents.on("did-finish-load", () => {
+  contents.on("did-finish-load", () => {
     const load = navigation.currentLoad;
     if (!load?.committed) return;
     load.finished = true;
     completeRecoveryLoad(window, navigation, load);
   });
-  window.webContents.on("did-fail-load", (_event, errorCode, _description, url, isMainFrame) => {
+  contents.on("did-fail-load", (_event, errorCode, _description, url, isMainFrame) => {
     if (!isMainFrame || isCanceledDocumentLoad(window, url, errorCode)) return;
     if (classifyNavigation(url) === "internal") failRecoveryLoad(window);
   });
@@ -541,6 +541,12 @@ function installApplicationMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+function getMainWindowContents() {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  const contents = mainWindow.webContents;
+  return contents && !contents.isDestroyed() ? contents : null;
+}
+
 function createWindow() {
   const window = new BrowserWindow({
     ...createWindowOptions({ development, preload:fileURLToPath(new URL("./preload.cjs",import.meta.url)) }),
@@ -548,9 +554,10 @@ function createWindow() {
     title: "Build",
   });
 
-  bridgeHttp.attach(window.webContents);
-  observeMainFrameNavigation(window);
-  installNavigationPolicy(window.webContents, {
+  const contents = window.webContents;
+  bridgeHttp.attach(contents);
+  observeMainFrameNavigation(window, contents);
+  installNavigationPolicy(contents, {
     openExternal: openOutsideElectron,
     loadInternal: (url) => loadInsideElectron(window, url),
     signOut,
@@ -560,7 +567,7 @@ function createWindow() {
     if (window === mainWindow && !signingOut && !unauthorizedRecovery) window.show();
   });
   window.on("closed", () => {
-    bridgeHttp.retire(window.webContents);
+    bridgeHttp.retire(contents);
     if (mainWindow === window) mainWindow = null;
     if (unauthorizedRecovery?.window === window) unauthorizedRecovery = null;
   });
@@ -595,7 +602,7 @@ if (!hasSingleInstanceLock) {
   app.whenReady().then(() => {
     bridgeHttp=installBridgeHttpIpc({
       ipcMain,manifest:resourceManifest,
-      getWindow:()=>mainWindow,
+      getWebContents: getMainWindowContents,
       getAuth:()=>accessToken && !signingOut && !unauthorizedRecovery ? {accessToken,generation:bridgeCredentialGeneration} : null,
     });
     tokenSession = session.fromPartition("build-oauth", { cache: false });
@@ -604,7 +611,7 @@ if (!hasSingleInstanceLock) {
     installAuthorizationHeader(session.defaultSession.webRequest, () => accessToken);
     installUnauthorizedResponsePolicy(
       session.defaultSession.webRequest,
-      () => mainWindow?.webContents,
+      getMainWindowContents,
       (requestId, url) => void recoverUnauthorized(mainWindow, requestId, url),
     );
     installApplicationMenu();

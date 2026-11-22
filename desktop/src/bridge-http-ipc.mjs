@@ -72,7 +72,7 @@ function validateArguments(method, args, terminal) {
 
 export function installBridgeHttpIpc({
   ipcMain,
-  getWindow,
+  getWebContents,
   getAuth,
   fetch,
   manifest,
@@ -82,7 +82,7 @@ export function installBridgeHttpIpc({
   let nextId = 0;
   const isOwnerCurrent = (owner) =>
     owners.get(owner.contents) === owner &&
-    getWindow()?.webContents === owner.contents &&
+    getWebContents() === owner.contents &&
     owner.contents.mainFrame === owner.frame &&
     trustedUrl(owner.frame.url);
   const bridge = createBridgeHttp({
@@ -153,7 +153,7 @@ export function installBridgeHttpIpc({
     contents.on("destroyed", discard);
   }
   function caller(event) {
-    const contents = getWindow()?.webContents;
+    const contents = getWebContents();
     if (
       !contents ||
       event.sender !== contents ||

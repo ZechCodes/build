@@ -1,5 +1,5 @@
-// Drives the shipped SPA and the real local issuer/bridge. Only the negative
-// discovery proof is altered; responses and application events remain real.
+// Drives the shipped SPA and the real local issuer/bridge. Negative cases
+// alter a discovery proof or ticket request. Responses and events stay real.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
@@ -365,9 +365,33 @@ async function qualifyBrowserShell(page, name) {
       return evidence.sends.includes("term.close") && evidence.pushes["term.closed"] > 0;
     });
     await page.locator(".console-tab.active").waitFor({ state: "detached" });
+    await qualifyBrowserTicketRefusal(page);
   } finally {
     writer.clear();
   }
+}
+
+async function qualifyBrowserTicketRefusal(page) {
+  const ticketUrl = bridgeOrigin + "/v1/terminal-tickets";
+  await page.route(ticketUrl, (route) => {
+    const request = route.request();
+    if (request.method() !== "POST") return route.continue();
+    return route.continue({
+      headers: { ...request.headers(), authorization: "Bearer qualification-invalid-device-bearer" },
+    });
+  });
+  const [refusal] = await Promise.all([
+    page.waitForResponse((response) => response.url() === ticketUrl && response.request().method() === "POST"),
+    page.getByRole("button", { name: "New terminal", exact: true }).click({ timeout: 15_000 }),
+  ]);
+  assert.equal(refusal.status(), 401);
+  assert.equal((await refusal.json()).error_code, "invalid_credential");
+  const notice = page.getByRole("alert").filter({ hasText: "Could not open a terminal" });
+  await notice.getByRole("button", { name: "Show details" }).click({ timeout: 10_000 });
+  await notice.getByText("Bridge authorization expired or was refused. Verify this device with your account again.", {
+    exact: true,
+  }).waitFor({ timeout: 10_000 });
+  console.log("PASS browser handled an actual 401 terminal ticket refusal");
 }
 
 async function typeShellMarker(page, suffix) {

@@ -1,4 +1,80 @@
 use super::*;
+use std::fmt::Write as _;
+
+#[tokio::test]
+async fn mounted_tls_slow_reader_preserves_snapshot_bytes_under_backpressure() {
+    const SNAPSHOT_BYTES: usize = 6 * 1024 * 1024;
+    let mut snapshot = String::with_capacity(SNAPSHOT_BYTES);
+    for offset in (0..SNAPSHOT_BYTES).step_by(16) {
+        write!(snapshot, "{offset:016x}").unwrap();
+    }
+    let result = json!({"term_id":"large","snapshot":snapshot,"cursor":0});
+    let expected = serde_json::to_vec(&api::reply(json!("ordered"), Ok(result.clone()))).unwrap();
+    let server = Server::start(greeting(FrameHandler::new(
+        FrameClock::new(),
+        move |_, frame, _| success(&frame, result.clone()),
+    )))
+    .await;
+    let (observe, mut observed) = mpsc::unbounded_channel();
+    *server.state.output_observer.lock().unwrap() = Some(Arc::new(move |authority| {
+        let _ = observe.send(authority);
+    }));
+    let opening = server.opening().await;
+    let mut socket = server.socket(&server.ticket(&opening).await).await;
+    socket2::SockRef::from(socket.get_ref().get_ref().0)
+        .set_recv_buffer_size(16 * 1024)
+        .unwrap();
+    let authority = timeout(TIMEOUT, observed.recv()).await.unwrap().unwrap();
+    send(
+        &mut socket,
+        "ordered",
+        "term.attach",
+        json!({"term_id":"large"}),
+    )
+    .await;
+    // Hold all reads until the mounted listener encounters a pending write.
+    timeout(TIMEOUT, async {
+        while !authority.has_pending_write() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the small receive buffer must back up the physical TLS writer");
+
+    let (producer, consumer) = tokio::io::duplex(16 * 1024);
+    let reader = tokio::spawn(forward_slow_reads(socket.into_inner(), producer));
+    let mut websocket = WebSocketStream::from_raw_socket(consumer, Role::Client, None).await;
+    let message = timeout(Duration::from_secs(30), websocket.next())
+        .await
+        .expect("the slow TLS reader must finish")
+        .expect("snapshot WebSocket message")
+        .unwrap();
+    reader.abort();
+    assert!(message.is_binary());
+    let received = message.into_data();
+    assert_eq!(received.len(), expected.len());
+    let mismatch = received
+        .iter()
+        .zip(&expected)
+        .position(|(left, right)| left != right);
+    assert_eq!(mismatch, None, "first reordered or corrupted byte");
+    eprintln!(
+        "mounted TLS delivered all {} ordered bytes after backpressure",
+        received.len()
+    );
+    server.stop().await;
+}
+
+async fn forward_slow_reads(mut socket: ClientIo, mut receiver: tokio::io::DuplexStream) {
+    let mut chunk = [0; 4 * 1024];
+    loop {
+        let len = socket.read(&mut chunk).await.unwrap();
+        if len == 0 || receiver.write_all(&chunk[..len]).await.is_err() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
 
 #[tokio::test]
 async fn mounted_tls_near_limit_snapshots_complete_at_full_speed() {

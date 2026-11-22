@@ -221,7 +221,7 @@ const metadataUses = {
   "core/terminalWebSocket.js": [
     // Slice A's terminal-websocket-v1.json defines this handshake subprotocol
     // and the three incoming terminal frame names. These uses are WSS metadata.
-    ["build.term.v1","const TERMINAL_PROTOCOL = [\"build.term.v1\"] ; const CLIENT_BYTES","5ed0baf885c80a3267047d648e7f9eb25715013e30c888266b325f65dc277aa6"],
+    ["build.term.v1","const TERMINAL_PROTOCOL = [\"build.term.v1\"] ; export const","5ed0baf885c80a3267047d648e7f9eb25715013e30c888266b325f65dc277aa6"],
     ["term.output",") { case [\"term.output\"] : return validOutput","e62cedfaa6ee046ff220631a5fe19f2de7571eb0f12f14b20e655cf0e8ad0568"],
     ["term.closed",") ; case [\"term.closed\"] : return text","facf8bbdb3882847df9165e44982914f1eb0577cbf48e742b4b594bbd71bf08c"],
     ["term.reset",". type === [\"term.reset\"] && ! Object","a4922f24d94cb170b852e1297ea1d7a52fb7013efd8ccc7e7ccd1d03c62f8183"],
@@ -386,7 +386,7 @@ const sourceFingerprintParts = {
   "core/githubRepos.js": ["4526fb16", "bfe42e0f", "57b963ea", "fe623873", "0fe9ccce", "521ecc83", "b9117e59", "af64462f"],
   "core/gitPane.js": ["3b9c66d1", "186e1669", "3ecc46b0", "0afe28d8", "10e87dd3", "55dfbb00", "44fa79f8", "88d71409"],
   "core/httpDesktopTerminal.js": ["277a35a7", "2bdcd770", "0e5542b3", "72b60d3d", "ef6ada3b", "02b9d77e", "44ca1e00", "adab6cfc"],
-  "core/httpSession.js": ["d2d24aff", "7b5b1459", "d28fe426", "be959694", "f33589c3", "920bd1fe", "7d85adf9", "3eadcc6f"],
+  "core/httpSession.js": ["b55cab73", "f7b3d0da", "5bbefbb4", "382442b9", "e4bdb89e", "77a9b13c", "b46f8176", "bdaf18e1"],
   "core/inboxCaptures.js": ["48a7f5fb", "b2132a83", "5901fb31", "4fb0c5ae", "97005297", "2d0b9db6", "be2c3e6d", "1271b663"],
   "core/inboxDevices.js": ["cd1cfdd5", "9a9734e7", "ac73df50", "cac3383d", "9b6b0229", "b72936f1", "4b2d5657", "a8586421"],
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
@@ -468,7 +468,7 @@ const sourceFingerprintParts = {
   "core/taskView.js": ["547b447a", "1b089702", "8da986a0", "97cbffed", "86cd8be0", "dfabf680", "23671d54", "6ac7ef11"],
   "core/taskWaitingOnActions.js": ["576156a7", "454cbd39", "333d8645", "9f62ff9e", "00e96c90", "55eb5f60", "441927a5", "f6cf4597"],
   "core/taskWaitingOnPage.js": ["b5a78897", "c7cfc8dc", "8a1ad2e0", "c77cad0a", "874280e0", "1b394697", "37da2547", "7a1c3636"],
-  "core/terminalWebSocket.js": ["ae7de772", "076b18f4", "3fd28fa1", "b650f51c", "7ac99cf6", "298765fe", "3266a351", "5e678702"],
+  "core/terminalWebSocket.js": ["75c754f5", "89a8eb9c", "d41c868b", "b017fe76", "b9264d8c", "f5224faa", "dca40045", "e7bcb53a"],
   "core/theme.js": ["dcf76f3b", "8ab07b95", "96946c96", "79e73d55", "8deb90bc", "251b94d6", "5dd0aaaf", "d1e0a71f"],
   "core/threadAttachmentPages.js": ["df0b246c", "a850af5a", "c612aeac", "414feaa5", "03db6170", "9511cd9c", "372279a6", "9c417822"],
   "core/threadSync.js": ["bf280ad8", "20d158b6", "aaa4f7b9", "695d3816", "1d0200e6", "cf6756bd", "bc0e1372", "2e452737"],
@@ -515,8 +515,8 @@ const sourceFingerprintParts = {
   "terminal/manager.js": ["7a1131c9", "bcdc852d", "85b2e194", "bfafdea3", "f7860398", "5791771b", "7cd93d1f", "75544a65"],
   "terminal/paneSession.js": ["9032c84e", "4ff6e373", "b12e41d2", "5784c3a5", "1de237ef", "dcd353c8", "1a82439c", "269a6bbb"],
   "terminal/session.js": ["9243910d", "807bb2d7", "f42ae6b3", "8d16a483", "056ccbea", "7717cf1b", "1211a1f7", "2a85b224"],
-  "terminal/webSocketBinding.js": ["9f2b52e4", "9cf296e0", "326f3cd5", "47f88071", "d9b7806f", "5009609e", "089b584f", "bb4e1f73"],
-  "terminal/webSocketSession.js": ["074e74a8", "681ae969", "c069af3a", "7cc04944", "971a214a", "46caabc6", "114be171", "75cf97df"],
+  "terminal/webSocketBinding.js": ["9ea70ee5", "2a1734a9", "204d8419", "652c5d0b", "65e14904", "efd0c921", "81227336", "41f6f0c8"],
+  "terminal/webSocketSession.js": ["2bb220c6", "ced6a010", "128fd83b", "98f9a6a4", "5aeb7a00", "454c5fdb", "33f217a0", "02068d44"],
   "views/archive.js": ["6f4a7962", "88f34292", "73eafead", "5dc6229b", "5b040b7a", "09baf137", "8cbbce83", "6c83d400"],
   "views/branchView.js": ["70c29ffd", "bb5b3d73", "5e035b0d", "db7630f9", "db5f60e3", "05e6694e", "84d8115f", "5eb5b72c"],
   // #997 deviceProjects.js:82: the existing project.list loader delegates to owned device recovery.

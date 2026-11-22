@@ -139,6 +139,11 @@ nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
   scripts/bridge-http-qualification/fixture.py qualify \
   --bridge-test-binary "$QUALIFICATION_BINARY" --gate on --client electron \
   --electron "$QUALIFICATION_SCRATCH/electron/electron"
+
+nice -n 10 "$QUALIFICATION_SCRATCH/venv/bin/python" \
+  scripts/bridge-http-qualification/fixture.py qualify \
+  --bridge-test-binary "$QUALIFICATION_BINARY" --gate on --client electron-sign-out \
+  --electron "$QUALIFICATION_SCRATCH/electron/electron"
 ```
 
 The browser group uses Chromium at `CHROMIUM_PATH` and WebKit from the SPA's
@@ -152,6 +157,9 @@ allowed writes under `$QUALIFICATION_RUN_DIR`. The browser runs with TLS
 verification enabled. The Electron executable is the desktop lock's version
 and needs a display. Its test loads the desktop main and preload with the
 local issuer destination, isolated profile and seeded fixture credential.
+The opt-in Electron sign-out group holds a real WSS reply until Account >
+Sign Out destroys the renderer and the hosted issuer answers DELETE. It
+checks the IPC fence and observes any uncaught exception during cleanup.
 The rebind group uses a live native WSS client while the fixture bridge
 drains, signs a disable, and starts on the same authority with a new epoch.
 

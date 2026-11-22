@@ -227,6 +227,8 @@ def terminal_qualification(args):
         env["BUILD_HTTP_QUALIFICATION_GRID"] = "1"
     if args.client == "rebind":
         env["BUILD_HTTP_QUALIFICATION_REBIND"] = "1"
+    if args.client == "electron-sign-out":
+        env["BUILD_HTTP_QUALIFICATION_ELECTRON_SIGN_OUT"] = "1"
     if args.webkit:
         webkit = args.webkit.resolve(strict=True)
         if not webkit.is_relative_to(TERMINAL_SCRATCH.resolve()):
@@ -275,8 +277,9 @@ def terminal_qualification(args):
         else:
             pattern = {
                 "electron": "terminal qualification recovers actual Electron",
+                "electron-sign-out": "terminal qualification fences delayed Electron",
                 "native-grid": "terminal qualification restores the maximum grid",
-                "desktop": "terminal qualification (?!recovers actual Electron|restores the maximum grid|disables)",
+                "desktop": "terminal qualification (?!recovers actual Electron|fences delayed Electron|restores the maximum grid|disables)",
             }[args.client]
             run_logged([*desktop, f"--test-name-pattern={pattern}", test_file],
                        env=env, cwd=repo, log=run_dir / "desktop.log")
@@ -314,14 +317,16 @@ def main():
     parser.add_argument("--electron", type=Path)
     parser.add_argument("--webkit", type=Path)
     parser.add_argument("--gate", choices=["off", "on"], default="on")
-    parser.add_argument("--client", choices=["browser", "desktop", "electron", "native-grid", "rebind"], default="desktop")
+    parser.add_argument("--client", choices=[
+        "browser", "desktop", "electron", "electron-sign-out", "native-grid", "rebind",
+    ], default="desktop")
     args = parser.parse_args()
     if not all(1024 <= port <= 65535 for port in [args.issuer_port, args.bridge_port]):
         parser.error("ports must be unprivileged loopback ports")
     if args.command == "qualify":
         if not args.bridge_test_binary or not args.bridge_test_binary.is_absolute():
             parser.error("--bridge-test-binary must be an absolute cargo test executable path")
-        if args.client == "electron" and (not args.electron or args.gate != "on"):
+        if args.client in ("electron", "electron-sign-out") and (not args.electron or args.gate != "on"):
             parser.error("Electron qualification requires --electron and --gate on")
         if args.client in ("native-grid", "rebind") and args.gate != "on":
             parser.error(f"{args.client} qualification requires --gate on")

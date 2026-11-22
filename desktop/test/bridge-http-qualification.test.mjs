@@ -692,7 +692,14 @@ function verifyGrid(ghostty, recipe, snapshot, tail = "") {
 const electron = process.env.BUILD_HTTP_QUALIFICATION_ELECTRON;
 test("terminal qualification recovers actual Electron IPC after uncommitted navigations", {
   ...qualification, skip: !fixturePath || terminalGate !== "on" || !electron,
-}, async (t) => {
+}, (t) => runElectronQualification(t, "navigation"));
+
+test("terminal qualification fences delayed Electron WSS IPC during native sign-out", {
+  ...qualification, skip: !fixturePath || terminalGate !== "on" || !electron ||
+    process.env.BUILD_HTTP_QUALIFICATION_ELECTRON_SIGN_OUT !== "1",
+}, (t) => runElectronQualification(t, "sign-out"));
+
+async function runElectronQualification(t, witness) {
   const fixture = await loadFixture();
   // Electron's application profile and certificate database are disposable.
   for (const dir of [".local/share/pki/nssdb", ".pki/nssdb"]) {
@@ -703,7 +710,7 @@ test("terminal qualification recovers actual Electron IPC after uncommitted navi
   }
   const entry = resolve(fixture.runDir, "electron-qualification.mjs");
   const main = new URL("../src/main.mjs", import.meta.url).href;
-  await writeFile(entry, "(" + qualifyElectron.toString() + ")(" + JSON.stringify(main) + ")\n", { mode: 0o600 });
+  await writeFile(entry, "(" + qualifyElectron.toString() + ")(..." + JSON.stringify([main, witness]) + ")\n", { mode: 0o600 });
   const logPath = resolve(fixture.runDir, "electron.log");
   const log = await open(logPath, "w", 0o600);
   const child = spawn(electron, [entry], { detached: true, stdio: ["ignore", log.fd, log.fd] });
@@ -727,12 +734,18 @@ test("terminal qualification recovers actual Electron IPC after uncommitted navi
   }, "Electron navigation result", 50_000);
   const output = await readFile(logPath, "utf8");
   assert.equal(outcome?.ok, true, output);
-  assert.match(output, /Electron navigation witnesses passed/);
+  if (witness === "sign-out") {
+    await eventually(() => child.exitCode !== null || child.signalCode !== null, "Electron quit after sign-out", 10_000);
+    assert.equal(child.exitCode, 0, output);
+    assert.match(output, /Electron sign-out revoked the grant and fenced a held terminal reply/);
+  } else {
+    assert.match(output, /Electron navigation witnesses passed/);
+  }
   t.diagnostic(output.split("\n").filter((line) => line.startsWith("PASS") || line.startsWith("Electron navigation")).join("\n"));
-});
+}
 
-async function qualifyElectron(main) {
-  const { app, BrowserWindow, session, shell } = await import("electron");
+async function qualifyElectron(main, witness) {
+  const { app, BrowserWindow, Menu, session, shell } = await import("electron");
   const assert = (await import("node:assert/strict")).default;
   const { once } = await import("node:events");
   const { readFile, rename, writeFile } = await import("node:fs/promises");
@@ -741,10 +754,24 @@ async function qualifyElectron(main) {
   const fixture = JSON.parse(await readFile(process.env.BUILD_HTTP_QUALIFICATION_FIXTURE, "utf8"));
   const allowedOrigins = new Set([fixture.hostedOrigin, fixture.bridgeOrigin]);
   const fetch = globalThis.fetch;
-  globalThis.fetch = (input, options) => {
+  let signOutCheck;
+  globalThis.fetch = async (input, options) => {
     const url = new URL(input);
     assert.ok(allowedOrigins.has(url.origin), "qualification main requires a loopback fixture URL");
-    return fetch(input, options);
+    const response = await fetch(input, options);
+    if (signOutCheck && url.origin === fixture.hostedOrigin && options?.method === "DELETE" &&
+        /^\/api\/devices\/[^/]+\/http-credentials\/[^/]+$/.test(url.pathname)) {
+      signOutCheck.revoked.resolve(response.status);
+      await signOutCheck.finishCleanup.promise;
+    }
+    return response;
+  };
+  globalThis.qualificationTerminalDelivery = (event, deliver) => {
+    if (signOutCheck && event.data?.id === "3") signOutCheck.pending.resolve({ event, deliver });
+    else deliver();
+  };
+  globalThis.qualificationTerminalSend = (event) => {
+    if (signOutCheck && event.data?.id === "3") signOutCheck.deliveries++;
   };
   globalThis.qualificationAccessToken = fixture.accessToken;
   const appUrl = fixture.hostedOrigin + "/app/desktop";
@@ -765,6 +792,15 @@ async function qualifyElectron(main) {
         source = source.replace('export const HOSTED_ORIGIN = "https://getbuild.ing";',
           "export const HOSTED_ORIGIN = " + JSON.stringify(fixture.hostedOrigin) + ";");
         assert.ok(source.includes(fixture.hostedOrigin));
+      } else if (witness === "sign-out" && url === new URL("./bridge-http-ipc.mjs", main).href) {
+        // Hold a real reply just before the IPC boundary. The delivery and
+        // authorization functions still run when the test releases it.
+        const deliver = "deliver(binding, event, delivery)";
+        const send = "binding.owner.frame.send(TERMINAL_EVENT,";
+        assert.ok(source.includes(deliver + ", {") && source.includes(send));
+        source = source.replace(deliver + ", {",
+          "globalThis.qualificationTerminalDelivery(event, () => " + deliver + "), {")
+          .replace(send, "globalThis.qualificationTerminalSend(event);\n      " + send);
       } else if (url === main) {
         source = source.replace('app.setAsDefaultProtocolClient("getbuilding");', "")
           .replace("void startAuthentication().finally(() => { starting = false; });",
@@ -789,6 +825,10 @@ async function qualifyElectron(main) {
     await wait(() => contents.getURL() === appUrl && !contents.isLoadingMainFrame());
     const first = await openTerminal(contents);
     await ping(contents, first);
+    if (witness === "sign-out") {
+      await verifySignOut(win, contents, first);
+      return;
+    }
     await assertNoSubframeBridge(contents);
     console.log("PASS initial terminal IPC");
     await cancelledNavigation(contents);
@@ -819,6 +859,50 @@ async function qualifyElectron(main) {
   } catch (error) {
     console.error(error);
     await report(false);
+  }
+
+  async function verifySignOut(win, contents, terminal) {
+    signOutCheck = {
+      pending: Promise.withResolvers(),
+      revoked: Promise.withResolvers(),
+      finishCleanup: Promise.withResolvers(),
+      deliveries: 0,
+    };
+    const { pending, revoked, finishCleanup } = signOutCheck;
+    const errors = [];
+    // Capture Electron's exception dialog as a test failure and keep the
+    // fixture running long enough to observe revocation and IPC fencing.
+    const captureWindowError = (error) => { errors.push(error); console.error(error); };
+    process.on("uncaughtException", captureWindowError);
+    try {
+      value(await within(invoke(contents, "terminalCall", terminal, "ping", {}, "3"), "terminal call before sign-out"));
+      const { event, deliver } = await within(pending.promise, "terminal reply before sign-out");
+      assert.equal(event.data.ok, true);
+      const accountMenu = Menu.getApplicationMenu().items.find(({ label }) => label === "Account");
+      const signOut = accountMenu?.submenu.items.find(({ label }) => label === "Sign Out");
+      assert.ok(signOut);
+      signOut.click();
+      assert.equal(await within(revoked.promise, "hosted credential revoke"), 204);
+      assert.equal(win.isDestroyed(), true);
+      deliver();
+      assert.equal(signOutCheck.deliveries, 0, "the real reply must be fenced before renderer IPC");
+      console.log("Electron sign-out revoked the grant and fenced a held terminal reply (DELETE 204, zero IPC sends)");
+      await report(errors.length === 0);
+    } finally {
+      process.off("uncaughtException", captureWindowError);
+      finishCleanup.resolve();
+    }
+  }
+
+  async function within(promise, description) {
+    const timeout = new AbortController();
+    try {
+      return await Promise.race([
+        promise, sleep(5000, undefined, { signal: timeout.signal }).then(() => assert.fail("Timed out waiting for " + description)),
+      ]);
+    } finally {
+      timeout.abort();
+    }
   }
 
   async function report(ok) {

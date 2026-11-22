@@ -90,7 +90,8 @@ including the latest closed tombstone; a stale predecessor cannot change the
 current binding. Each request explicitly captures an optional current binding.
 Event replacement cannot redirect old producers or cancel an independent reply.
 HTTP external handles, one-use GET, header CAS and wire budgets belong to its
-adapter. There is no terminal SSE or durable ChangeBus replay here.
+adapter. SSE binds Application events, which recover through a current-state
+refresh. Terminal WSS binds Terminal output and recovers from screen snapshots.
 
 Producer contexts strip request/reply resources. ChangeBus admission enforces
 eight logical IDs for new session bindings atomically at subscription effect;
@@ -101,6 +102,53 @@ and child viewport effects serialize through a shared attachment gate; the exact
 event proof is checked after acquiring it and again under the screen model lock.
 Child I/O does not hold that model lock. writes.subscribe checks both request
 and exact event liveness under its subscription registration lock.
+
+## Terminal WebSocket adapter
+
+The [HTTPS terminal routes](../bridge/src/http/routes/README.md#terminal-websocket)
+redeem a one-use ticket to compare and replace the Opening's exact Terminal
+binding. For each admitted call, the adapter captures the current verified
+terminal caller under the Opening gate and uses `ClientSessions::request_terminal`
+with that proof, the exact binding and the reply sink. It checks the terminal
+allowlist and wire parameters before shared invocation decode and submission.
+Each admitted call keeps its captured authority even if a later Opening PATCH
+refreshes the socket proof. The writer checks output at dequeue and again
+under the Opening gate on physical TLS writes and flushes.
+
+`term.attach` and `agent.attach` create socket-local interests addressed by
+the original request ID. Shell and agent effects use the exact current
+interest and server-issued terminal ID. A server-issued agent rekey retires
+the old revision and its cursor credit. Input, resize and ACK require an
+active interest on this socket. Reaching the 64-interest cap returns
+`invalid_params` for the new attach and preserves the existing registration.
+For two attaches to the same terminal, the newer successful interest
+supersedes the older one. If the older success arrives out of order or is
+still queued, it becomes a correlated retryable `busy` with its original ID.
+A reply already selected for writing finishes in order under its original
+request and socket authority.
+
+WSS-only `{"type":"detach","attach_id":"…"}` releases the exact pending or
+active interest. Explicit pending detach suppresses the canceled attach
+reply. Duplicate and unknown detach IDs are harmless. Releasing the last
+interest closes the socket normally, and the PTY or agent can outlive the
+binding. `term.close` is the separate, scoped shell operation.
+
+Snapshot admission reserves the Opening and bridge slots before capture and
+holds them through final flush or physical I/O drop. Waiting expires after
+10 seconds, with a correlated `snapshot_busy` for attach or an
+`attachment_error` for a pending reset. The latter carries the original
+`attach_id`, `reason` and `bridge_epoch`. An unsupported snapshot is a
+pane-local `snapshot_too_large` refusal using the same two paths. The
+absolute snapshot write deadline can retire the whole terminal socket with
+`4008 snapshot_write_timeout` and latch a 409 on the Opening's ticket path.
+
+The snapshot and its cursor share one capture. WSS counts credit from that
+baseline, checks ACKs against the last flushed cursor for the exact
+interest, and pauses only the affected interest. Acknowledging through that
+cursor schedules a fresh reset. The client recovers the visible screen and
+continues with the live tail. WebRTC uses its own initial ACK exemption and
+live-total clamp. See [Terminal WebSockets](../ARCHITECTURE.md#terminal-websockets)
+and the [v1 fixture](../fixtures/api/http/terminal-websocket-v1.json).
 
 ## Lifecycle and greeting
 

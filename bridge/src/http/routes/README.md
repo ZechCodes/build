@@ -33,8 +33,9 @@ contradict a path selector. All remaining fields, including unknown fields,
 reach existing validation without new parameter rules. Registered v1 methods
 reject unknown fields; six legacy methods preserve their existing unknown-field
 compatibility, defaults and optional-field behavior. GET resources accept only path selectors and no body
-fields. No route aliases, redirects, absolute URLs, arbitrary Git commands,
-method tunnel, terminal output/control or QA route is exported.
+fields. The REST catalogue excludes route aliases, redirects, absolute URLs,
+arbitrary Git commands, method tunnels, interactive terminal operations and QA
+routes.
 
 Run `nice -n 10 node scripts/http-resource-manifest.mjs` from the repository root
 to regenerate `fixtures/api/http/{resource-manifest,openapi}.json`; `--check`
@@ -44,8 +45,9 @@ Manifest version 1 is a resource schema, not a bridge API version. Operation IDs
 are exact method names with dots replaced by underscores. A full catalogue is
 not proof of a mounted runtime: Opening.transport must contain only the actual
 supported mounted operation IDs, plus resource_manifest_version:1,
-terminal:'webrtc', durable_events:false. Clients reject incompatible versions
-or partial required operation sets before enabling the HTTP connection.
+terminal:'webrtc', durable_events:false. The terminal WebSocket descriptor is
+an additive transport member. Clients reject incompatible versions or partial
+required operation sets before enabling the HTTP connection.
 
 The OpenAPI describes actual placement, headers, auth and wire envelopes. Its
 domain parameter/result schemas are explicitly incomplete: the registry has no
@@ -86,9 +88,43 @@ Application stream to SSE, opening with `hello` (`durable:false`, no event IDs,
 Last-Event-ID refused as cursor_unsupported); `DELETE`, replacement, Opening
 close and failed grant checks end it. #911 owns atomic expected-old stream
 replacement, the last-issued-handle
-tombstone, one-use GET and exact-generation DELETE/late-close fences. HTTP has
-no terminal stream; term.list is exposed solely as roster metadata required by
-background cache sync. agent.attach and all terminal I/O remain WebRTC.
+tombstone, one-use GET and exact-generation DELETE/late-close fences.
+Application SSE carries changes and state. `term.list` stays on REST for
+terminal roster reads, including background cache sync.
+
+## Terminal WebSocket
+
+The terminal WSS routes and Opening advertisement are gated until slice K.
+Both routes are lifecycle endpoints on the verified HTTPS listener, outside
+`resources.tsv`, the REST operation IDs and the Application SSE subscription.
+
+| Route | Contract |
+| --- | --- |
+| `POST /v1/terminal-tickets` | Supply the device bearer with `bridge:read` and `bridge:write`, `X-Build-Session`, the allowed caller Origin and JSON `{"opening_generation":"…"}`. The 201 response is `no-store` and carries `ticket`, `expires_at` and `opening_generation`. A successful explicit Retry with `"retry":true` clears a latched snapshot write timeout on that Opening. |
+| `GET /v1/terminal` | HTTP/1.1 WebSocket upgrade over TLS with the exact issuing Origin. Offer `build.term.v1` and `ticket.<token>`. A 101 selects only `build.term.v1` and binds the Opening's exact Terminal stream. The ticket is single-use and each new socket needs its own ticket. |
+
+Both routes require the configured Host and a single explicitly allowed HTTPS
+Origin. Upgrade checks Origin before handshake syntax or redemption.
+Quota refusal returns 429 without spending a ticket. If shutdown wins after
+redemption but before acceptance, the upgrade can return 503 with the ticket
+already spent. A snapshot write timeout returns 409 `snapshot_write_timeout`
+on ticket renewal until successful explicit Retry or a new Opening.
+
+Opening POST and PATCH keep `terminal: "webrtc"`. With the gate on they also
+advertise `terminal_websocket: {"version":1,"protocol":"build.term.v1"}`.
+Wire 3.42.0 announces `term.websocket` as implementation support. Terminal
+WSS selection requires the descriptor and the capability.
+
+One binary message carries one UTF-8 JSON envelope. The socket carries
+`term.create`, `term.attach`, `term.input`, `term.resize`, `term.ack`,
+`term.close`, `agent.attach`, and liveness `ping`, plus terminal pushes.
+`{"type":"detach","attach_id":"…"}` is a WSS-only control keyed to the
+original attach request ID. It releases that socket's interest without
+ending the shell or agent. An established interest can receive a
+WSS-only `attachment_error` with the same attach ID and a reason.
+See the [v1 fixture](../../../../fixtures/api/http/terminal-websocket-v1.json),
+[shared execution contract](../../../../docs/shared-execution-api.md#terminal-websocket-adapter),
+and [terminal security checklist](<../../../../planning/v2/Terminal WebSocket Security Checklist.md>).
 
 ## Bounds
 

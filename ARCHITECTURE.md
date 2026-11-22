@@ -29,7 +29,7 @@ relative to the repository root.
 | desktop app | `desktop/` (Electron; loads the hosted SPA, see `desktop/src/security-policy.mjs`) | the user's desktop |
 | E2EE protocol | `transport/js/` (SPA/web binding), `transport/python/` (reference/tests); Rust in `bridge/src/transport.rs`. Compatibility tests and fixtures live in this checkout | both ends; Python is test-only |
 
-A session goes like this:
+A WebRTC session goes like this:
 
 1. The SPA signs in to skriftapp and asks it for a gateway token and the device
    list (`spa/src/api.js`). Presence and each device's transport key come from
@@ -52,6 +52,13 @@ The browser gets its ICE server list from skriftapp (`POST /api/rtc/ice-servers`
 credential in that list: `offered_server` in `bridge/src/rtc.rs` copies them into
 its ICE configuration. The long-lived Cloudflare TURN key they are minted from
 stays on skriftapp and never reaches a browser or a bridge.
+
+A device connected by URL uses its verified bridge HTTPS listener directly.
+Application calls use REST and changes arrive over SSE. When terminal WSS is
+available, the same listener carries terminal traffic over a separate socket
+without relay rendezvous or WebRTC. Electron main makes the native connections
+for the hosted SPA. See [Terminal WebSockets](#terminal-websockets) and
+[Terminal ownership and pane recovery](#terminal-ownership-and-pane-recovery).
 
 ---
 
@@ -848,6 +855,118 @@ runtime that starts them.
   `BRIDGE_ICE_POLICY`, `BRIDGE_ICE_RELAY_MIN_WAIT_MS` and `BRIDGE_ICE_INTERFACES`.
   Large messages are split and reassembled by `bridge/src/rtc/chunk.rs`.
 
+### Terminal WebSockets
+
+The bridge's HTTP/1.1 listener owns the socket through Hyper's upgrade and
+the Tungstenite session. The same internal gate controls
+`POST /v1/terminal-tickets`, `GET /v1/terminal` with Upgrade, and the v1
+descriptor on Opening POST and PATCH.
+
+The terminal WSS routes and Opening advertisement are gated until slice K.
+
+The ticket POST requires a verified owner bearer with `bridge:read` and
+`bridge:write`, the `X-Build-Session` header and the current
+`opening_generation`. Existing owner-approved read/write grants include
+interactive shells. The registry stores a digest of the single-use ticket
+and binds it to the exact Opening allocation and generation, issuer, account,
+device, family, bridge HTTPS authority, endpoint and authorization epochs,
+credential proof, initiating Origin and expected Terminal binding predecessor
+(including its closed record). A ticket expires at the earlier of 15 seconds
+and the proof deadline. The limits are one pending ticket per Opening, eight
+per family and 128 globally, with a per-family burst of eight and one refill
+per second. Issuing again replaces the pending ticket for that Opening.
+
+Both routes require the configured Host and one explicit, allowlisted HTTPS
+Origin. The upgrade checks Origin before handshake syntax and redemption, and
+requires the same Origin that minted the ticket. The client offers
+`build.term.v1` and `ticket.<token>` as subprotocols. The server selects only
+`build.term.v1`. Authentication comes from the ticket, and TLS protects the
+connection to the verified bridge. The browser uses a different hostname from
+the hosted app even when the ports differ, keeping the app cookie out of the
+handshake. The hosted CSP allows exact HTTPS and WSS authorities for eligible
+endpoints and the live initiating discovery candidate. See the
+[route contract](bridge/src/http/routes/README.md#terminal-websocket)
+and [terminal security checklist](<planning/v2/Terminal WebSocket Security Checklist.md>).
+
+Redemption checks capacity before spending the ticket and compares and
+replaces the exact predecessor. A capacity refusal leaves the ticket
+unspent. If the listener begins stopping between redemption and upgrade
+acceptance, acceptance can return 503 after the spend. The next connection
+needs a new ticket. The listener permits 16 held terminal sockets, eight
+per credential family and one current Terminal binding per Opening.
+Superseded sockets count until physical I/O drops. Terminals retain their
+permits under the listener's 128-socket cap and use a separate binding from
+Application SSE.
+
+Each binary WebSocket message carries one UTF-8 JSON envelope with the
+existing reply, cursor and base64 PTY fields. Client messages cap at 128 KiB
+across fragments, with 64 KiB of decoded input per call. The allowlist is
+`term.create`, `term.attach`, `term.input`, `term.resize`, `term.ack`,
+`term.close`, `agent.attach` and `ping`. Output uses `term.output`,
+`term.reset` and `term.closed`, with WSS-only attachment controls. Each
+call captures the current proof and exact Terminal binding before invoking
+shared execution. Input, resize and ACK also require an active interest on
+that socket for the current terminal ID. See
+[the shared execution contract](docs/shared-execution-api.md#terminal-websocket-adapter).
+
+Each socket permits eight outstanding calls, 64 active or pending interests
+and a 128-item, 2 MiB ordinary outbound budget with eight items and 8 KiB
+reserved for controls. Ordinary outbound messages cap at 1 MiB. Successful
+shell and agent attach replies and resets can use up to 12 MiB with at most
+64 KiB of JSON metadata. The writer serializes messages, flushing each
+fragment of up to 256 KiB. Snapshot work reserves one of two 80 MiB bridge
+slots and the Opening's single slot together before capture, holding them
+through final flush or I/O drop. The 224 MiB adapter allowance accounts for
+the snapshot slots and sixteen 4 MiB sockets. Screen model, TLS and kernel
+memory have separate costs.
+
+Terminal credit follows the attachment's PTY byte cursor starting at its
+snapshot. WSS rejects ACKs above the last flushed cursor. An interest over
+its 1 MiB unacknowledged window pauses independently of siblings and REST/SSE.
+An ACK through its last delivered cursor schedules a fresh reset and resumes
+live output. Missing ACKs alone never cause a socket timeout.
+
+The listener cuts a pending WSS write or flush after 10 continuous seconds
+without TCP write progress below TLS. Bytes accepted by TCP reset this
+timer even when the TLS operation stays pending. A pending tracked TCP
+write can also try a direct nonblocking send, subject to Tokio's cooperative
+budget. The snapshot deadline is independent. It starts at grant and covers
+encoding and final flush, with a budget of
+`min(192 s, max(30 s, ceil(encoded bytes / 65,536) s))`. The 192-second
+ceiling applies before the encoded size is known. A partial write can reset
+the stall timer and leaves the snapshot deadline fixed. A slot waiter holds
+neither slot and expires after 10 seconds with pane-local, retryable
+`snapshot_busy`. That refusal is sent or queued ahead of the next snapshot
+for the same Opening.
+
+The following Close codes apply while output authority and the wire permit
+a Close frame.
+
+| Code | Cause |
+| --- | --- |
+| 1000 | The last attachment on the socket detaches. |
+| 1002, 1003, 1007 | Invalid protocol or envelope, text where binary is required, or invalid UTF-8, respectively. |
+| 1009 | An inbound aggregate or ordinary outbound message exceeds its cap. |
+| 1011 | The writer cannot reserve or queue actual output, or encounters an internal delivery failure. |
+| 4008 `snapshot_write_timeout` | The absolute snapshot deadline expires. |
+
+Snapshot timeout releases its slots immediately and attempts the 4008 Close
+only at a writable frame boundary. The Opening records the reason so the
+next automatic ticket POST returns 409 `snapshot_write_timeout` even if
+the client sees an abnormal close (1006). A physical stall or retired
+authority can end I/O without a Close frame. Pane-local snapshot errors use
+a correlated refusal or `attachment_error` and release the affected interest.
+
+A verified Opening PATCH can extend a still-live terminal proof only when
+the exact credential and scopes match. Rotation requires a new ticket and
+socket. Scope loss, expiry, observed revocation, Opening retirement and
+replacement fence input, queued effects and output, including writes and
+flushes below the WebSocket codec. A socket close releases attachments and
+waiters while launched processes keep running. Update drain stops admission,
+invalidates pending tickets, fences pending and active upgrades, and joins
+or aborts their listener tasks within the existing five-second teardown.
+Recovery after restart requires fresh verification and a new Opening.
+
 ### Wire versioning and capabilities
 
 Secret attachment wire 3.36.0 (#1003) registers sealed uploads, metadata
@@ -865,7 +984,9 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
 
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.41.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.42.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  3.42.0 announces `term.websocket` as implementation support. The HTTP
+  Opening must also advertise the matching v1 descriptor to select WSS.
   3.37.0 advertises `environments` for the M1 list, journaled project/first
   workspace creation, recovery and read-only environment settings. Creating
   environments or selecting extra folders in the creation wizard, archive,
@@ -4336,6 +4457,18 @@ reply serialization. The release timing workflow runs this regression alongside
 the existing busy lock test. Normal tests cover bounded page work and keyset
 continuation independently of machine timing.
 
+The timing workflow also builds before serial runs in its debug job, nightly
+and by hand. Git child cost, daemon under PTY flood and the mounted terminal
+witnesses run in debug. Terminal timing covers the SPA's lost-Close retry,
+trickling TLS readers, a near-limit TLS snapshot at 100 KiB/s, an unread
+terminal socket, and two bare TCP pacing controls. The corresponding
+real-browser lost-Close and maximal-snapshot witnesses remain manual.
+Busy app-lock holds, MCP reads, SSE push latency beside a stalled stream and
+bounded-task carrier latency run in release. Carrier content, protocol,
+reporting and byte-bound checks stay in default tests. See the
+[timing workflow](.github/workflows/timing.yml) and
+[qualification runner](scripts/bridge-http-qualification/README.md).
+
 Unit tests sit beside the code (`#[cfg(test)]` modules, and directories such as
 `bridge/src/app/tests/` and `bridge/src/store/tests/`). Integration tests are in
 `bridge/tests/`: the wire contract (`api_contract.rs`), relay (`relay_*.rs`),
@@ -5499,10 +5632,12 @@ No new timer, persistent store or connection-state UI is introduced.
 
 ### Connection state machine
 
-`spa/src/connection.js` runs one **application** session per device, carried
-only over that device's DataChannels. Terminals mint their own E2EE session
-through the same device's rendezvous (`mintTerminalSession`), and it rides the
-`term` channel.
+`spa/src/connection.js` tracks the current **application** session for each
+device. The WebRTC path uses the device's DataChannels. Its terminal session
+mints a separate E2EE session through the device's rendezvous
+(`mintTerminalSession`) and rides the `term` channel. The URL path uses
+`spa/src/core/httpDeviceConnection.js` and an HTTP Opening with REST and SSE.
+Terminal ownership for URL devices is negotiated separately below.
 
 - **Rendezvous**: `createRelayRendezvous` (`spa/src/core/rendezvous.js`) opens
   the relay socket, mints the session (`session_init` / `session_accept`) and
@@ -5585,6 +5720,81 @@ from transport receipts, including after the original caller timed out.
 A surface calls the bridge through its device context: `context.rpc(method,
 params)` from `contextFor(deviceId)` or `routeContext(route)`. `context.rpc`
 refuses when that device cannot answer.
+
+### Terminal ownership and pane recovery
+
+For a URL device, `Opening.transport` keeps `terminal: "webrtc"` and can
+add `terminal_websocket: {"version":1,"protocol":"build.term.v1"}`. The
+SPA requires that v1 descriptor, `term.websocket` in a compatible greeting,
+and a usable terminal endpoint. A missing descriptor, a compatible
+declaration of a future protocol version, or an older native preload without
+the complete terminal facade selects WebRTC for terminals. Older SPAs use
+the legacy field, and WebRTC-selected devices continue using their E2EE
+terminal sessions. Malformed or contradictory descriptors surface a
+terminal protocol error. Once WSS is selected, ticket refusals, TLS/CSP and
+socket failures stay on that path. The application keeps its REST/SSE session.
+
+`terminalPeerLinks.js` and the terminal manager select one lazy owner per
+tab and exact URL Opening, shared by shell and agent panes. WSS terminal
+activity uses no RTC owner or relay negotiation. The manager retires the
+old owner on device or Opening replacement and fences late frames,
+including against the Opening's bridge epoch. URL roster reads
+(`term.list`) stay on REST. The fallback label reads the last negotiated mode
+from the account's saved device record, including on a cold mount. WSS pane
+notices read the terminal session's retained pane failure and recovery state.
+
+On transient loss the binding obtains a fresh ticket with jittered backoff
+(nominally 250 ms up to 8 s) while panes still need it. It reattaches
+eligible panes on the same selected device, restores the visible snapshot
+and its cursor, accepts equal-cursor resets and then applies contiguous
+output. A gap or staging overflow resnapshots just that pane. Agent panes
+also handle pending birth and server-issued terminal ID changes. ACKs
+follow emulator application, with later ACKs coalesced. Unmount cancels
+the pane's pending ACK and releases its original attach ID with WSS detach.
+Handed-off effects can have uncertain delivery. The client refreshes the
+REST roster after uncertain create or close and never replays input,
+create or close automatically.
+
+A pane shows snapshot waiting at 10 seconds and has a 210-second deadline
+per attach. The browser receives complete WebSocket messages, so pending
+attaches extend its ordinary 24-second receive watchdog to cover the
+earliest pending attach deadline, with a 24-second minimum. Detach re-arms
+it from that point. On a dead path a single attach can fail at 210 seconds
+and leave the socket alive for up to another 24 seconds (about 234 seconds
+in all). Staggered attaches can keep it alive through the latest attach's
+deadline, and a manual Retry starts a fresh deadline for that pane. Each
+pane still fails by its own deadline. Idle browser sockets probe after five
+seconds without wire work.
+
+`snapshot_busy` retries only the affected pane. `snapshot_too_large`
+shows “This screen is too large to display” and requires manual Retry.
+A delivered 4008 or a ticket 409 for
+`snapshot_write_timeout` stops automatic reconnect and keeps affected panes
+in manual retry, even across Opening replacement. Every manual Retry that
+needs a new ticket sends `retry: true`. Successful issuance clears that
+Opening's timeout. One pane's Retry can reopen the shared socket, and each
+affected sibling still needs its own Retry. If all panes timed out, the next
+new pane mount makes one plain ticket POST and stops if it gets the same 409.
+
+On desktop the complete preload facade uses opaque handles tied to the
+trusted top-level hosted frame, account generation and exact Opening. Main
+owns tickets and native WSS, with the hosted Origin, platform certificate
+and hostname validation, and redirects and compression disabled. IPC
+delivery receipts give main bounded, ordered delivery independently of
+terminal cursor ACKs. Navigation and renderer exit retire old handles and
+fence delayed replies.
+
+Sign-out first marks the account signing out and advances the bridge
+credential generation. Native revocation synchronously clears local handles,
+terminates terminal sockets and aborts pending native work before awaiting
+the hosted family DELETEs. Sign-out then destroys the window. Its
+`closed` callback retires the WebContents captured at window creation
+before clearing window references. If `destroyed` runs first, it retires
+the same owner. Retirement deletes the owner entry before clearing its
+remaining handles, so whichever event runs second finds no owner to clear.
+The IPC lookup checks both the window and WebContents for destruction.
+Sign-out awaits bridge revocations before clearing browser storage and the
+HTTP cache.
 
 ### Capability gating
 
@@ -6004,3 +6214,5 @@ whose ratchet count is pinned by `spa/test/complexityRatchet.test.js`.
 | Change how a device is paired | the bridge's printed block and approve link in `bridge/src/pairing.rs`; the installers' framing in `scripts/install.sh`; `#/pair/<code>` in `spa/src/core/pairLink.js` opens `spa/src/sheets/addDevice.js` (`openPairingLink` in `spa/src/views/gate.js`); the fragment survives sign-in through `withArrivalFragment` in `skriftapp/buildapp/landing/passkey-signin.js`; the rules are `planning/v2/Device Pairing Security Checklist.md` |
 | Change a colour | tokens in `spa/src/styles.css` (both themes) |
 | Change transport or ICE | `bridge/src/rtc.rs`, `bridge/src/rtc/policy.rs`, `spa/src/core/peerLink.js`, `spa/src/connection.js` |
+| Trace terminal WSS admission or output | `bridge/src/http/runtime/terminal_tickets.rs`, `bridge/src/http/runtime/terminal.rs` and `terminal/`, `bridge/src/http/terminal_upgrade.rs`, `bridge/src/http/listener/write_progress.rs`, `bridge/src/execution/session/snapshots.rs` and the [v1 fixture](fixtures/api/http/terminal-websocket-v1.json) |
+| Trace terminal selection, pane recovery or native retirement | `spa/src/core/httpSession.js`, `spa/src/core/terminalPeerLinks.js`, `spa/src/terminal/webSocketSession.js`, `spa/src/terminal/webSocketBinding.js`, `spa/src/core/terminalWebSocket.js`, `desktop/src/bridge-http-terminal.mjs`, `desktop/src/bridge-http-ipc.mjs` and `desktop/src/main.mjs` |

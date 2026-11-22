@@ -42,6 +42,7 @@ const metadataUses = {
     ["writes.confirmed",", \"secrets.changed\" , [\"writes.confirmed\"] , \"writes.progress\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
     ["writes.progress",", \"writes.confirmed\" , [\"writes.progress\"] , \"bridge.restarting\" ,","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
     ["bridge.restarting",", \"writes.progress\" , [\"bridge.restarting\"] , ] )","b8e7be171636f28e5b878f03d8bce6204bdeb46e57af38c774b5af07e1640e17"],
+    ["term.websocket",". has ( [\"term.websocket\"] ) ; }","9b25792f01ce809172a3cef251b079f5646e96934ad29f1f3f54ebbd039e88f2"],
     ["secrets.attachments",". has ( [\"secrets.attachments\"] ) , sealedUpload","7bb78ae88368517d4112053e77e2808e7e821ab9ff080f53624ae97b42fa3e7e"],
     ["secrets.sealedUpload",". has ( [\"secrets.sealedUpload\"] ) , metadataEvents","7bb78ae88368517d4112053e77e2808e7e821ab9ff080f53624ae97b42fa3e7e"],
     // #1099: four finite secret feature lookups; these names never produce RPC methods.
@@ -178,9 +179,6 @@ const metadataUses = {
     ["build.navigation.previous","const TAB_KEY = [\"build.navigation.previous\"] ; const trackers","3206e95b6e23daf65fdc6baad67c4da1b71cd4755605050775f71e498dbdbc37"],
   ],
   "core/httpSession.js": [
-    // The Opening capability selects the terminal WSS carrier described by
-    // fixtures/api/http/terminal-websocket-v1.json.
-    ["term.websocket",". includes ( [\"term.websocket\"] ) ; }","88a2e77a5a62769a89df54e5122fa1a3c83cbd08554a2c96afe7e333d4c4ec05"],
     ["writes.confirmed","( ! [ [\"writes.confirmed\"] , \"writes.progress\" ]","f18c0c901618e0fa60c5b764429dc17bfe9267b2b04576dce46159b37451e991"],
     ["writes.progress","[ \"writes.confirmed\" , [\"writes.progress\"] ] . includes","f18c0c901618e0fa60c5b764429dc17bfe9267b2b04576dce46159b37451e991"],
   ],
@@ -340,7 +338,7 @@ const sourceFingerprintParts = {
   "core/agentSurfacesModel.js": ["546cf5aa", "3a478c63", "4a0f02f5", "4eafcae5", "53a5ffd3", "3ad4f563", "c075aa93", "dcbbef9d"],
   "core/bridgeApi/v1/compactionParams.js": ["506db6e2", "f8148bc4", "925e889b", "61c6fe15", "d8cf74e2", "ef7e468f", "b610115f", "7132ce5b"],
   // #1099: Explicit environment feature flag added; adapter method dispatch is unchanged.
-  "core/bridgeApi/v1/index.js": ["99221f53","f616ccaa","2c6f7b44","c6c74ed3","8cb6bdff","f36dc16e","3bfd4920","8a478c84"],
+  "core/bridgeApi/v1/index.js": ["d778cb65", "785be2f4", "f21f4bf4", "4ec01f56", "9b300ddc", "db6fa9c6", "7c792f9a", "f51f7943"],
   "core/bridgeApi/v1/writeMethods.js": ["c78ae754", "d23774c3", "664a2901", "97e2fcce", "bf94d04d", "13e8fc66", "96313eb2", "3ea76832"],
   "core/bridgeEpoch.js": ["e04a0a11", "6535b020", "abcac20c", "972a554f", "8d51fbb9", "6ef07fd8", "16062ed0", "9cd4d213"],
   "core/bridgeUpdatePanel.js": ["f9b19cc7", "4abdfc5a", "d159194d", "49ee91ed", "d39ab2e7", "15a6a80f", "0cb51530", "623ca8e5"],
@@ -386,7 +384,7 @@ const sourceFingerprintParts = {
   "core/githubRepos.js": ["4526fb16", "bfe42e0f", "57b963ea", "fe623873", "0fe9ccce", "521ecc83", "b9117e59", "af64462f"],
   "core/gitPane.js": ["3b9c66d1", "186e1669", "3ecc46b0", "0afe28d8", "10e87dd3", "55dfbb00", "44fa79f8", "88d71409"],
   "core/httpDesktopTerminal.js": ["277a35a7", "2bdcd770", "0e5542b3", "72b60d3d", "ef6ada3b", "02b9d77e", "44ca1e00", "adab6cfc"],
-  "core/httpSession.js": ["b55cab73", "f7b3d0da", "5bbefbb4", "382442b9", "e4bdb89e", "77a9b13c", "b46f8176", "bdaf18e1"],
+  "core/httpSession.js": ["27562da9", "e3362df9", "2d8524fc", "0058e1b1", "254ac825", "87a5f730", "2b364292", "7fbcc72d"],
   "core/inboxCaptures.js": ["48a7f5fb", "b2132a83", "5901fb31", "4fb0c5ae", "97005297", "2d0b9db6", "be2c3e6d", "1271b663"],
   "core/inboxDevices.js": ["cd1cfdd5", "9a9734e7", "ac73df50", "cac3383d", "9b6b0229", "b72936f1", "4b2d5657", "a8586421"],
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],

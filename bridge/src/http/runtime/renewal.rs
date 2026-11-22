@@ -86,7 +86,7 @@ async fn renewed(
         .authorization()
         .deadline()
         .unwrap_or(authority.deadline);
-    let body = opening_body(session_id, &generation, greeting, in_force);
+    let body = opening_body(state, session_id, &generation, greeting, in_force);
     let encoded = serde_json::to_vec(&body).expect("the opening is plain JSON");
     let (check, deadline) = lifecycle_fences(&session);
     let ticket = output.bind(check, deadline, session.opening().clone());

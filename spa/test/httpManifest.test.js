@@ -7,10 +7,10 @@ import { createHttpRoutes } from "../src/core/httpRoutes.js";
 describe("reviewed REST manifest consumption", () => {
   it("pins the coordinator-released bytes and exact operation IDs", () => {
     const bytes = readFileSync(new URL("../../fixtures/api/http/resource-manifest.json", import.meta.url));
-    expect(createHash("sha256").update(bytes).digest("hex")).toBe("5f1fe9633d0dfca3cab3b0239f2adc2c5c80321706afc89193538569f26d6aea");
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe("df5b5a9ddc618a64b03aa7af84336e04cddccae9108f70760a3f197e74eee05c");
     expect(createHttpRoutes(manifest).operationIds()).toEqual(manifest.transport.operation_ids);
     expect(createHttpRoutes(manifest).operationIds()).toContain("tasks_review_retryDelivery");
-    // S2.5 releases the existing environment-delete route; regeneration retains 172 routes and these exact bytes.
+    // Terminal WSS mounts separately. Its descriptor does not add REST operation IDs.
     expect(manifest.operations).toHaveLength(172);
     for (const operation of ["environment_delete", "project_rename", "environment_rename", "environment_add_source", "environment_remove_source", "environment_update_source", "environment_sync_source", "environment_set_isolation", "environment_create_project", "environment_create", "environment_discard_unused", "project_archive", "project_restore", "environment_list", "tasks_review_snapshot", "tasks_review_act", "tasks_review_complete", "sync_head", "sync_snapshot", "sync_changes", "secrets_create", "secrets_list", "secrets_revoke", "secrets_audit"]) {
       expect(createHttpRoutes(manifest).operationIds()).toContain(operation);

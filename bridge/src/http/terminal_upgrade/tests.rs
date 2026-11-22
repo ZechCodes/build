@@ -332,6 +332,11 @@ impl Server {
 }
 
 pub(in crate::http) fn tls_configs() -> (Arc<rustls::ServerConfig>, TlsConnector) {
+    let (server, client, _) = tls_fixture();
+    (server, client)
+}
+
+pub(in crate::http) fn tls_fixture() -> (Arc<rustls::ServerConfig>, TlsConnector, String) {
     let rcgen::CertifiedKey { cert, key_pair } =
         rcgen::generate_simple_self_signed(vec!["localhost".to_owned()]).unwrap();
     let certificate = cert.der().clone();
@@ -350,7 +355,11 @@ pub(in crate::http) fn tls_configs() -> (Arc<rustls::ServerConfig>, TlsConnector
         .unwrap()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    (Arc::new(server), TlsConnector::from(Arc::new(client)))
+    (
+        Arc::new(server),
+        TlsConnector::from(Arc::new(client)),
+        cert.pem(),
+    )
 }
 
 pub(in crate::http) async fn write_request(stream: &mut ClientIo, path: &str, headers: &HeaderMap) {

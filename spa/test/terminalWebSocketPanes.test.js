@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { createRequire } from "node:module";
+import { resolve } from "node:path";
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fixture from "../../fixtures/api/http/terminal-websocket-v1.json";
@@ -53,6 +55,7 @@ const rtcParent = vi.fn();
 const rtcMint = vi.fn();
 const relaySocket = vi.fn();
 const rtcPeer = vi.fn();
+const mountedBridge = process.env.TERMINAL_WSS_TEST_ORIGIN;
 
 class Peer extends EventTarget {
   readyState = 0;
@@ -115,13 +118,54 @@ async function urlDevice(id, { refusal, mode = "v1" } = {}) {
     } },
     routes,
   });
+  return { ...installUrlDevice(id, session), fetchImpl };
+}
+
+function installUrlDevice(id, session) {
   opens.push(session);
   session.allowRefresh();
   vi.spyOn(session, "openTerminal");
   const rest = vi.fn((method, params) => session.rawCall(method, params));
   const context = { deviceId: id, session, rpc: rest, call: rest };
   contexts.set(id, context);
-  return { session, fetchImpl, rest };
+  return { session, rest };
+}
+
+async function openMountedBridge(requests, closes) {
+  const url = new URL(mountedBridge);
+  expect(url.origin).toBe(mountedBridge);
+  expect(url.hostname).toBe("localhost");
+  expect(url.protocol).toBe("https:");
+  const { caller_origin: callerOrigin } = fixture.endpoint;
+  const requireDesktop = createRequire(resolve("../desktop/package.json"));
+  const { WebSocket } = requireDesktop("ws");
+  // WebSocket message buffers come from Node's realm in this socket fixture.
+  vi.stubGlobal("ArrayBuffer", Buffer.alloc(0).buffer.constructor);
+  const endpoint = createBrowserHttpEndpoint({
+    grant: {
+      identity: { origin: mountedBridge, deviceId: "A" }, token: () => "writer",
+      expiresAt: () => Date.now() + 60000, renew: async () => {}, close() {},
+    },
+    callerOrigin,
+    async fetchImpl(url, init) {
+      const headers = new Headers(init.headers);
+      headers.set("Origin", callerOrigin);
+      const ticket = new URL(url).pathname === fixture.ticket.path ? { request: JSON.parse(init.body) } : null;
+      if (ticket) requests.push(ticket);
+      const response = await fetch(url, { ...init, headers });
+      if (ticket) {
+        ticket.status = response.status;
+        if (!response.ok) ticket.body = await response.clone().json();
+      }
+      return response;
+    },
+    createWebSocket(url, protocols) {
+      const socket = new WebSocket(url, protocols, { origin: callerOrigin, perMessageDeflate: false });
+      socket.addEventListener("close", ({ code }) => closes.push(code), { once: true });
+      return socket;
+    },
+  });
+  installUrlDevice("A", await openHttpSession({ endpoint, routes }));
 }
 
 function ticketBodies(fetchImpl) {
@@ -314,6 +358,13 @@ describe("URL terminal panes", () => {
     const automatic = { opening_generation: explicit_retry_body.opening_generation };
     const attempts = close === "private close" ? [automatic] : [automatic, automatic];
     expect(ticketBodies(fetchImpl)).toEqual(attempts);
+    if (close === "opaque close") {
+      const requestIndex = fetchImpl.mock.calls.findLastIndex(([url]) => url.endsWith(fixture.ticket.path));
+      const response = await fetchImpl.mock.results[requestIndex].value;
+      expect(response.status).toBe(409);
+    }
+    await vi.advanceTimersByTimeAsync(16000);
+    expect(ticketBodies(fetchImpl)).toEqual(attempts);
     expect(sockets).toHaveLength(1);
 
     notice.querySelector("button").click();
@@ -328,6 +379,39 @@ describe("URL terminal panes", () => {
     expect(ticketBodies(fetchImpl)).toEqual([...attempts, explicit_retry_body]);
     pane.dispose();
   });
+
+  it.runIf(Boolean(mountedBridge))("stops ticket requests against the mounted bridge after losing the Close", async () => {
+    const requests = [];
+    const closes = [];
+    await openMountedBridge(requests, closes);
+    select("A");
+    const paneHost = host();
+    const pane = await mountUserTerminalPane(paneHost, "term-1", { deviceId: "A" });
+
+    const { body, status } = fixture.ticket.snapshot_timeout.automatic_refusal;
+    await vi.waitFor(() => expect(requests[1]).toMatchObject({ body, status }), { timeout: 5000 });
+    expect(closes).toEqual([1006]);
+    const opening = { opening_generation: requests[0].request.opening_generation };
+    expect(requests.map(({ request }) => request)).toEqual([opening, opening]);
+    const notice = () => paneHost.querySelector(".term-conn");
+    await vi.waitFor(() => expect(notice()?.querySelector("span").textContent)
+      .toBe("Snapshot timed out. Use a smaller pane or a faster connection, then Retry."));
+
+    await new Promise((resolve) => setTimeout(resolve, 9000));
+    expect(requests).toHaveLength(2);
+    notice().querySelector("button").click();
+    await vi.waitFor(() => expect(requests[2]?.status).toBe(201));
+    await vi.waitFor(() => expect(pane.terminal.writes.map(({ bytes }) => bytes))
+      .toContainEqual(new Uint8Array([111, 107])));
+    expect(notice()).toBeNull();
+    expect(requests.map(({ request, status }) => ({ request, status }))).toEqual([
+      { request: opening, status: 201 },
+      { request: opening, status: 409 },
+      { request: { ...opening, retry: true }, status: 201 },
+    ]);
+    expect(rtcMint).not.toHaveBeenCalled();
+    pane.dispose();
+  }, 20000);
 
   it("keeps the timeout on a mounted pane when another Opening becomes available", async () => {
     const { session } = await urlDevice("A");
@@ -459,13 +543,14 @@ describe("URL terminal panes", () => {
     expect(peer.close).not.toHaveBeenCalled();
   });
 
-  it("uses RTC for a future-version Opening with a declared legacy fallback", async () => {
-    const { session } = await urlDevice("A", { mode: "future_version" });
+  it.each(["old_bridge", "future_version"])("uses RTC for the %s Opening vector", async (mode) => {
+    const { session, fetchImpl } = await urlDevice("A", { mode });
     select("A");
     terminalManager();
     await vi.waitFor(() => expect(rtcMint).toHaveBeenCalledOnce());
     expect(session.terminalTransport).toBe("webrtc");
     expect(session.openTerminal).not.toHaveBeenCalled();
+    expect(ticketBodies(fetchImpl)).toEqual([]);
     expect(sockets).toHaveLength(0);
   });
 

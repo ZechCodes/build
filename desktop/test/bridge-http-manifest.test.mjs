@@ -15,9 +15,12 @@ import { networkOptions } from "../src/bridge-http-network.mjs";
 const artifact = new URL("../src/bridge-http-resources.json", import.meta.url);
 const manifest = () => JSON.parse(readFileSync(artifact));
 const expectedHash =
-  "bf75fca58d9ea75db89092d65621d99ca422bda7b164dfcabb3c40a1c713cd97";
+  "df5b5a9ddc618a64b03aa7af84336e04cddccae9108f70760a3f197e74eee05c";
 
-test("packaged manifest is byte-identical to the coordinator-released committed artifact", () => {
+test("packaged manifest is byte-identical to the generated HTTP artifact", () => {
+  const generated = new URL("../../fixtures/api/http/resource-manifest.json", import.meta.url);
+  assert.ok(readFileSync(artifact).equals(readFileSync(generated)));
+
   assert.equal(
     createHash("sha256").update(readFileSync(artifact)).digest("hex"),
     expectedHash,
@@ -29,20 +32,22 @@ test("packaged manifest is byte-identical to the coordinator-released committed 
   );
   assert.equal(
     provenance.predecessor.sourceCommit,
-    "79d60d9526e6d2acbe8a49bf307395c3bb45c4be",
+    "ac7be8780336698dae39bf7fe58272ee60bd595e",
   );
   assert.equal(
     provenance.predecessor.sha256,
-    "bcada2539a96e5784e864abf4e17564bb2d7260ac612f729db4dd5b7adbde616",
+    "bf75fca58d9ea75db89092d65621d99ca422bda7b164dfcabb3c40a1c713cd97",
   );
-  assert.equal(provenance.sourceTask, 913);
+  assert.equal(provenance.sourceTask, 1131);
+  assert.equal(provenance.sourcePath, "fixtures/api/http/resource-manifest.json");
+  assert.equal(provenance.predecessor.sourceTask, 913);
   assert.equal(provenance.sha256, expectedHash);
 });
 
-test("all 149 reconciled operations preserve method, path, body, event and byte-limit contracts", () => {
+test("all 172 generated operations preserve method, path, body, event and byte-limit contracts", () => {
   const m = manifest();
   assert.equal(m.version, 1);
-  assert.equal(m.operations.length, 149);
+  assert.equal(m.operations.length, 172);
   assert.deepEqual(
     [...new Set(m.operations.map((o) => o.operationId))].sort(),
     m.transport.operation_ids,

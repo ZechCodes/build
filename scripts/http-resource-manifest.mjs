@@ -57,7 +57,7 @@ for (const key of ["method", "operationId"]) {
 const keys = operations.map((op) => `${op.verb} ${op.path.replace(/\{\w+\}/g, "{}")}`);
 if (new Set(keys).size !== keys.length) throw new Error("Ambiguous resource routes");
 const exclusions = [
-  ...["agent.attach", "term.create", "term.close", "term.attach", "term.input", "term.resize", "term.ack"].map((method) => ({ method, reason: "terminal control/output uses a separately authenticated WebRTC path" })),
+  ...["agent.attach", "term.create", "term.close", "term.attach", "term.input", "term.resize", "term.ack"].map((method) => ({ method, reason: "terminal control and output use separately authenticated WSS with WebRTC fallback" })),
   ...["rtc.offer", "rtc.ice", "rtc.close"].map((method) => ({ method, reason: "authenticated WebRTC signaling only" })),
   ...["stream.start", "stream.events", "stream.state"].map((method) => ({ method, reason: "QA-only; never exported by HTTP" })),
 ];

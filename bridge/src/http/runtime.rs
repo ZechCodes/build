@@ -808,7 +808,13 @@ async fn open_session(
     };
     let generation = uuid::Uuid::new_v4().to_string();
     let session_id = session.id().to_owned();
-    let response = opening_body(&session_id, &generation, greeting, authority.deadline);
+    let response = opening_body(
+        &state,
+        &session_id,
+        &generation,
+        greeting,
+        authority.deadline,
+    );
     let publish_error = {
         let mut openings = state.openings.lock().unwrap();
         if !state.accepting.load(Ordering::SeqCst) {
@@ -862,6 +868,7 @@ async fn open_session(
 
 /// The Opening both `POST /v1/sessions` and its renewal reply with.
 fn opening_body(
+    state: &HttpState,
     session_id: &str,
     generation: &str,
     greeting: serde_json::Value,
@@ -872,17 +879,24 @@ fn opening_body(
         .iter()
         .map(|operation| operation.operation_id.as_str())
         .collect::<Vec<_>>();
+    let mut transport = json!({
+        "resource_manifest_version": super::routes::manifest().version,
+        "operation_ids": operation_ids,
+        "terminal": "webrtc",
+        "durable_events": false,
+    });
+    if state.terminal_tickets.is_some() {
+        transport["terminal_websocket"] = json!({
+            "version": 1,
+            "protocol": super::listener::terminal_upgrade::PROTOCOL,
+        });
+    }
     json!({
         "session_id": session_id,
         "opening_generation": generation,
         "greeting": greeting,
         "grant_expires_at": grant_expiry(deadline),
-        "transport": {
-            "resource_manifest_version": super::routes::manifest().version,
-            "operation_ids": operation_ids,
-            "terminal": "webrtc",
-            "durable_events": false,
-        },
+        "transport": transport,
     })
 }
 
@@ -1536,6 +1550,40 @@ mod tests {
         assert_eq!(opening["transport"]["resource_manifest_version"], 1);
         assert_eq!(opening["transport"]["terminal"], "webrtc");
         assert_eq!(opening["transport"]["durable_events"], false);
+    }
+
+    #[tokio::test]
+    async fn default_mount_omits_terminal_wss_on_post_and_patch() {
+        let app = router_with(
+            execution(),
+            Arc::new(WitnessVerifier {
+                calls: Arc::default(),
+                authority: Some(authority()),
+            }),
+        );
+        let (status, opened) = resource_json(
+            &app,
+            "POST",
+            "/v1/sessions",
+            "",
+            Some(json!({"api_range": ">=3.24.0 <4.0.0"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{opened:?}");
+        let session_id = opened["session_id"].as_str().unwrap();
+        let (status, renewed) = resource_json(
+            &app,
+            "PATCH",
+            format!("/v1/sessions/{session_id}"),
+            session_id,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{renewed:?}");
+        for opening in [opened, renewed] {
+            assert_eq!(opening["transport"]["terminal"], "webrtc");
+            assert!(opening["transport"].get("terminal_websocket").is_none());
+        }
     }
 
     #[tokio::test]

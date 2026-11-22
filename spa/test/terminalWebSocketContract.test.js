@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { selectAdapter, SPA_API_RANGE } from "../src/core/bridgeApi/index.js";
 import { createBridgeEpoch } from "../src/core/bridgeEpoch.js";
 import { terminalWebSocketMode, validateHttpOpening } from "../src/core/httpSession.js";
 
@@ -8,6 +9,7 @@ function readFixture(name) {
 }
 
 const contract = readFixture("terminal-websocket-v1");
+const versions = JSON.parse(readFileSync(new URL("../../fixtures/api/versions.json", import.meta.url)));
 const manifest = readFixture(contract.opening.operation_ids_from.fixture.replace(/\.json$/u, ""));
 const routes = { operationIds: () => manifest.operations.map(({ operationId }) => operationId) };
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -23,6 +25,8 @@ describe("terminal WebSocket v1 browser vectors", () => {
       opening.transport.operation_ids = routes.operationIds();
       if (Object.hasOwn(vector, "descriptor")) opening.transport.terminal_websocket = vector.descriptor;
       if (vector.capability) opening.greeting.capabilities.push(capability);
+      if (vector.name !== "old_bridge") opening.greeting.api_version = versions.current;
+      expect(selectAdapter(opening.greeting), vector.name).toMatchObject({ major: 3, range: SPA_API_RANGE });
       expect(() => validateHttpOpening(opening, routes), vector.name).not.toThrow();
       expect(terminalWebSocketMode(opening), vector.name).toBe(vector.browser);
     }

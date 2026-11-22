@@ -132,3 +132,45 @@ fn creation_attempts_have_explicit_http_resources() {
         assert_eq!(operation["path"], path);
     }
 }
+
+#[test]
+fn terminal_contract_stays_outside_the_resource_manifest() {
+    let manifest = json(root().join("fixtures/api/http/resource-manifest.json"));
+    let contract = json(root().join("fixtures/api/http/terminal-websocket-v1.json"));
+    let terminal_exclusions: BTreeSet<_> = manifest["exclusions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|op| {
+            op["reason"]
+                .as_str()
+                .unwrap()
+                .contains("WSS with WebRTC fallback")
+        })
+        .map(|op| op["method"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        terminal_exclusions,
+        BTreeSet::from([
+            "agent.attach",
+            "term.ack",
+            "term.attach",
+            "term.close",
+            "term.create",
+            "term.input",
+            "term.resize"
+        ]),
+    );
+    for path in ["/v1/terminal", "/v1/terminal-tickets"] {
+        assert!(manifest["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|op| op["path"] != path));
+    }
+    assert_eq!(
+        manifest["transport"]["terminal"],
+        contract["opening"]["base"]["transport"]["terminal"]
+    );
+    assert!(manifest["transport"].get("terminal_websocket").is_none());
+}

@@ -171,3 +171,92 @@ fn snapshot_handler(
         },
     ))
 }
+
+// Run with Node 22 and the SPA and desktop lockfile installs. This opt-in
+// witness uses the real browser endpoint and the desktop's locked WS client.
+#[tokio::test]
+#[ignore = "runs the SPA pane test against the mounted TLS fixture"]
+async fn mounted_tls_lost_close_stops_spa_ticket_requests() {
+    let entered = Arc::new(Notify::new());
+    let (release, parked) = std::sync::mpsc::channel();
+    let handler = lost_close_handler(entered.clone(), parked);
+    let server = Server::start_with(handler, Duration::from_secs(360)).await;
+    let (observe, mut observed) = mpsc::unbounded_channel();
+    *server.state.output_observer.lock().unwrap() = Some(Arc::new(move |authority| {
+        let _ = observe.send(authority);
+    }));
+
+    let certificate = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(certificate.path(), &server.certificate).unwrap();
+    let mut spa = start_spa_lost_close_test(&server, certificate.path());
+    let result = tokio::select! {
+        _ = entered.notified() => {
+            // The attach was dispatched after the roster request and upgrade.
+            // Refuse the physical Close write while the Opening stays valid.
+            let output = std::iter::from_fn(|| observed.try_recv().ok()).last().unwrap();
+            output.set(Some(Arc::new(|| false)));
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(193)).await;
+            tokio::time::resume();
+            let pool = server.state.execution.sessions().terminal_snapshot_pool();
+            timeout(TIMEOUT, async {
+                while pool.available_permits() != 2 {
+                    tokio::task::yield_now().await;
+                }
+            }).await.unwrap();
+            release.send(()).unwrap();
+            spa.await
+        }
+        result = &mut spa => result,
+    };
+    drop(release);
+    server.stop().await;
+    let output = result.unwrap().unwrap();
+    assert!(
+        output.status.success(),
+        "{}
+{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn lost_close_handler(entered: Arc<Notify>, parked: std::sync::mpsc::Receiver<()>) -> FrameHandler {
+    let parked = Mutex::new(Some(parked));
+    greeting(FrameHandler::new(FrameClock::new(), move |_, frame, _| {
+        let result = match case_text(&frame.payload["method"]) {
+            "term.list" => json!({"terminals": [{"term_id": "term-1"}]}),
+            "term.attach" => {
+                if let Some(parked) = parked.lock().unwrap().take() {
+                    entered.notify_one();
+                    let _ = parked.recv();
+                }
+                json!({"term_id": "term-1", "snapshot": "b2s=", "cursor": 2, "cols": 80, "rows": 24})
+            }
+            _ => json!({}),
+        };
+        success(&frame, result)
+    }))
+}
+
+fn start_spa_lost_close_test(
+    server: &Server,
+    certificate: &std::path::Path,
+) -> JoinHandle<std::io::Result<std::process::Output>> {
+    let origin = format!("https://localhost:{}", server.port);
+    let certificate = certificate.to_owned();
+    tokio::task::spawn_blocking(move || {
+        std::process::Command::new("node")
+            .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../spa"))
+            .env("NODE_EXTRA_CA_CERTS", certificate)
+            .env("TERMINAL_WSS_TEST_ORIGIN", origin)
+            .args([
+                "node_modules/vitest/vitest.mjs",
+                "run",
+                "test/terminalWebSocketPanes.test.js",
+                "-t",
+                "stops ticket requests against the mounted bridge",
+            ])
+            .output()
+    })
+}

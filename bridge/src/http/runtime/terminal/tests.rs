@@ -92,7 +92,7 @@ impl GrantVerifier for Verifier {
             identity: crate::execution::session::HttpIdentity {
                 issuer: "https://issuer.test".into(),
                 account_id: "account".into(),
-                device_id: "device".into(),
+                device_id: self.bridge.clone(),
                 family_id: "family".into(),
                 origin: self.bridge.clone(),
                 endpoint_epoch: "endpoint".into(),

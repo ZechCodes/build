@@ -13,6 +13,7 @@ import re
 import secrets
 import sys
 import tempfile
+import time
 from uuid import uuid4
 
 
@@ -97,7 +98,7 @@ def generated_identity(issuer):
     }
 
 
-async def seed(run_dir, issuer, bridge_origin):
+async def seed(run_dir, issuer, bridge_origin, terminal=False):
     from uuid import UUID
     from buildapp.db_test_support import create_skrift_schema_in, file_session_maker, add_account, add_member
     from buildapp.models import Device
@@ -110,6 +111,7 @@ async def seed(run_dir, issuer, bridge_origin):
     maker = file_session_maker(database)
     identity = generated_identity(issuer)
     email = "qualification976@example.com"
+    unrelated = {}
     try:
         async with maker() as session:
             account = await add_account(session, email)
@@ -119,6 +121,8 @@ async def seed(run_dir, issuer, bridge_origin):
                 owner_user_id=account, approved=True,
                 identity_public_key_b64=identity["identity_public_key_b64"],
                 transport_public_key_b64=identity["transport"]["public_key_b64"]))
+            if terminal:
+                unrelated = await seed_unrelated_device(session, issuer)
             await session.commit()
     finally:
         await maker.kw["bind"].dispose()
@@ -132,9 +136,25 @@ async def seed(run_dir, issuer, bridge_origin):
         "accessToken": token, "identityFile": str(identity_file),
         "projectsDir": str(run_dir / "home/projects"), "runDir": str(run_dir),
         "caFile": str(run_dir / "ca.pem"), "screenshotDir": str(run_dir / "screenshots"),
-        "logsDir": str(run_dir)}
+        "logsDir": str(run_dir), **unrelated}
     private_write(run_dir / "runtime.json", json.dumps(metadata, indent=2))
     print("Prepared disposable account and paired device", flush=True)
+
+
+async def seed_unrelated_device(session, issuer):
+    from uuid import UUID
+    from buildapp.db_test_support import add_account, add_member
+    from buildapp.models import Device
+
+    email = "unrelated-terminal-qualification@example.com"
+    account = await add_account(session, email)
+    await add_member(session, account, email)
+    identity = generated_identity(issuer)
+    session.add(Device(id=UUID(identity["device_id"]), name="Unrelated qualification device",
+        owner_user_id=account, approved=True,
+        identity_public_key_b64=identity["identity_public_key_b64"],
+        transport_public_key_b64=identity["transport"]["public_key_b64"]))
+    return {"unrelatedAccount": str(account), "unrelatedDevice": identity["device_id"]}
 
 
 async def serve(app, run_dir, port, terminal=False):
@@ -203,6 +223,10 @@ def terminal_qualification(args):
         SSL_CERT_FILE=fixture["caFile"],
         SSL_CERT_DIR=str(run_dir / "empty-ca-dir"),
     )
+    if args.client == "native-grid":
+        env["BUILD_HTTP_QUALIFICATION_GRID"] = "1"
+    if args.client == "rebind":
+        env["BUILD_HTTP_QUALIFICATION_REBIND"] = "1"
     if args.webkit:
         webkit = args.webkit.resolve(strict=True)
         if not webkit.is_relative_to(TERMINAL_SCRATCH.resolve()):
@@ -222,27 +246,60 @@ def terminal_qualification(args):
         issuer_log = run_dir / "issuer.log"
         issuer = launch(stack, [*command, "serve"], env=env, cwd=repo, log=issuer_log)
         wait_ready(issuer, fixture["hostedOrigin"] + "/auth/dummy/login", ca, issuer_log)
-        bridge_log = run_dir / "bridge.log"
-        bridge = launch(stack, [binary, "--ignored", "--exact", TERMINAL_LISTENER, "--nocapture"],
-                        env=env, cwd=run_dir, log=bridge_log)
-        wait_ready(bridge, fixture["bridgeOrigin"] + "/.well-known/build-bridge", ca, bridge_log)
+        def start_bridge(log_name):
+            log = run_dir / log_name
+            bridge = launch(stack, [binary, "--ignored", "--exact", TERMINAL_LISTENER, "--nocapture"],
+                            env=env, cwd=run_dir, log=log)
+            wait_ready(bridge, fixture["bridgeOrigin"] + "/.well-known/build-bridge", ca, log)
+            return bridge
+
+        bridge = start_bridge("bridge.log")
+        desktop = ["node", "--test"]
+        test_file = repo / "desktop/test/bridge-http-qualification.test.mjs"
         if args.client == "browser":
             run_logged(["node", repo / "scripts/bridge-http-qualification/browser.mjs"],
                        env=env, cwd=repo, log=run_dir / "browser.log")
+        elif args.client == "rebind":
+            log = run_dir / "desktop.log"
+            client = launch(stack, [*desktop, "--test-name-pattern=terminal qualification disables", test_file],
+                            env=env, cwd=repo, log=log)
+            wait_for_client_marker(client, run_dir / "disable-ready", log)
+            stop_terminal_bridge(bridge, run_dir / "bridge.log")
+            wait_for_client_marker(client, run_dir / "rebind-ready", log)
+            bridge = start_bridge("bridge-rebound.log")
+            (run_dir / "rebound").touch()
+            status = client.wait(timeout=30)
+            print(f"{log.name}: exit={status}", flush=True)
+            if status:
+                raise RuntimeError(f"Qualification command failed; see {log}")
         else:
-            pattern = (
-                "terminal qualification recovers actual Electron"
-                if args.client == "electron"
-                else "terminal qualification (?!recovers actual Electron)"
-            )
-            run_logged(["node", "--test", f"--test-name-pattern={pattern}",
-                        repo / "desktop/test/bridge-http-qualification.test.mjs"],
+            pattern = {
+                "electron": "terminal qualification recovers actual Electron",
+                "native-grid": "terminal qualification restores the maximum grid",
+                "desktop": "terminal qualification (?!recovers actual Electron|restores the maximum grid|disables)",
+            }[args.client]
+            run_logged([*desktop, f"--test-name-pattern={pattern}", test_file],
                        env=env, cwd=repo, log=run_dir / "desktop.log")
-        bridge.terminate()
-        status = bridge.wait(timeout=10)
-        print(f"Mounted bridge shutdown: exit={status}", flush=True)
-        if status:
-            raise RuntimeError(f"Qualification listener failed to drain; see {bridge_log}")
+        stop_terminal_bridge(bridge, run_dir / ("bridge-rebound.log" if args.client == "rebind" else "bridge.log"))
+
+
+def wait_for_client_marker(client, path, log):
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if client.poll() is not None:
+            raise RuntimeError(f"Qualification command exited {client.returncode}; see {log}")
+        if path.exists():
+            return
+        time.sleep(0.05)
+    raise TimeoutError(f"Client did not create {path.name}; see {log}")
+
+
+def stop_terminal_bridge(bridge, log):
+    bridge.terminate()
+    status = bridge.wait(timeout=10)
+    print(f"Mounted bridge shutdown: exit={status}", flush=True)
+    if status:
+        raise RuntimeError(f"Qualification listener failed to drain; see {log}")
 
 
 def main():
@@ -257,7 +314,7 @@ def main():
     parser.add_argument("--electron", type=Path)
     parser.add_argument("--webkit", type=Path)
     parser.add_argument("--gate", choices=["off", "on"], default="on")
-    parser.add_argument("--client", choices=["browser", "desktop", "electron"], default="desktop")
+    parser.add_argument("--client", choices=["browser", "desktop", "electron", "native-grid", "rebind"], default="desktop")
     args = parser.parse_args()
     if not all(1024 <= port <= 65535 for port in [args.issuer_port, args.bridge_port]):
         parser.error("ports must be unprivileged loopback ports")
@@ -266,6 +323,8 @@ def main():
             parser.error("--bridge-test-binary must be an absolute cargo test executable path")
         if args.client == "electron" and (not args.electron or args.gate != "on"):
             parser.error("Electron qualification requires --electron and --gate on")
+        if args.client in ("native-grid", "rebind") and args.gate != "on":
+            parser.error(f"{args.client} qualification requires --gate on")
         terminal_qualification(args)
         return
     if args.run_dir is None:
@@ -292,7 +351,8 @@ def main():
     if args.command == "prepare":
         create_certificates(run_dir)
         bridge_host = "127.0.0.1" if args.scratch_task == 1132 else "localhost"
-        asyncio.run(seed(run_dir, issuer, f"https://{bridge_host}:{args.bridge_port}"))
+        asyncio.run(seed(run_dir, issuer, f"https://{bridge_host}:{args.bridge_port}",
+                         terminal=args.scratch_task == 1132))
     else:
         asyncio.run(serve(app, run_dir, args.issuer_port, terminal=args.scratch_task == 1132))
 

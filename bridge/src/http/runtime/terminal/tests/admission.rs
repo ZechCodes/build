@@ -201,3 +201,32 @@ async fn mounted_tls_restart_refuses_old_opening_and_unspent_ticket() {
     fresh.stop().await;
     assert_closed(&mut replacement, None).await;
 }
+
+#[tokio::test]
+async fn mounted_tls_concurrent_redemption_has_exactly_one_winner() {
+    let server = Server::start(fake_handler()).await;
+    let opening = server.opening().await;
+    let ticket = server.ticket(&opening).await;
+    let headers = server.handshake(&ticket);
+    let (first, second) = tokio::join!(server.upgrade(&headers), server.upgrade(&headers));
+    let mut statuses = [status(&first.0), status(&second.0)];
+    statuses.sort_unstable();
+    assert_eq!(statuses, [101, 401]);
+    drop((first, second));
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn mounted_tls_cookie_without_ticket_cannot_upgrade() {
+    let server = Server::start(fake_handler()).await;
+    let mut headers = server.handshake(&"A".repeat(43));
+    let cookie = "session=qualification-cookie-sentinel";
+    headers.insert(header::COOKIE, cookie.parse().unwrap());
+    headers.insert(header::SEC_WEBSOCKET_PROTOCOL, PROTOCOL.parse().unwrap());
+    let (head, mut connection) = server.upgrade(&headers).await;
+    assert_eq!(status(&head), 401);
+    let refusal = read_json_body(&mut connection, &head).await;
+    assert_eq!(refusal["error_code"], "invalid_credential");
+    assert!(!refusal.to_string().contains(cookie));
+    server.stop().await;
+}

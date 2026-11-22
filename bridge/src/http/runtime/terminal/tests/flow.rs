@@ -332,6 +332,16 @@ impl Paint {
 }
 
 fn screen_handler(screens: Vec<(&'static str, ScreenHandle)>) -> FrameHandler {
+    screen_handler_with_input(screens, |screen, input| {
+        screen.feed(input);
+        screen.flush();
+    })
+}
+
+fn screen_handler_with_input(
+    screens: Vec<(&'static str, ScreenHandle)>,
+    apply_input: impl Fn(&ScreenHandle, &[u8]) + Send + Sync + 'static,
+) -> FrameHandler {
     greeting(FrameHandler::new(
         FrameClock::new(),
         move |sender, frame, _| {
@@ -349,8 +359,8 @@ fn screen_handler(screens: Vec<(&'static str, ScreenHandle)>) -> FrameHandler {
                             )
                         }
                     };
-                    json!({"term_id":term,"snapshot":reading.snapshot,"cursor":reading.cursor,
-                    "cols":reading.cols,"rows":reading.rows})
+                    json!({"term_id":term,"live":true,"provider":null,"snapshot":reading.snapshot,
+                    "cursor":reading.cursor,"cols":reading.cols,"rows":reading.rows})
                 }
                 "term.ack" => {
                     screen.ack(
@@ -361,8 +371,7 @@ fn screen_handler(screens: Vec<(&'static str, ScreenHandle)>) -> FrameHandler {
                 }
                 "term.input" => {
                     let input = STANDARD.decode(case_text(&params["data"])).unwrap();
-                    screen.feed(&input);
-                    screen.flush();
+                    apply_input(screen, &input);
                     json!({"ok":true})
                 }
                 other => panic!("unexpected {other}"),
@@ -370,6 +379,40 @@ fn screen_handler(screens: Vec<(&'static str, ScreenHandle)>) -> FrameHandler {
             success(&frame, result)
         },
     ))
+}
+
+#[tokio::test]
+#[ignore = "runs a real browser and Ghostty renderer against a mounted maximum grid"]
+async fn mounted_tls_real_browser_recovers_maximal_snapshot() {
+    let server = Server::start_with(maximal_handler(), Duration::from_secs(240)).await;
+    let certificate = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(certificate.path(), &server.certificate).unwrap();
+    let browser =
+        super::snapshot_slots::start_browser_terminal_witness(&server, certificate.path(), "paint");
+    let result = browser.await.unwrap().unwrap();
+    server.stop().await;
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    print!("{}", String::from_utf8_lossy(&result.stdout));
+}
+
+pub(super) fn maximal_handler() -> FrameHandler {
+    let recipe = &fixture()["recovery"];
+    let cols = recipe["cols"].as_u64().unwrap() as u16;
+    let rows = recipe["rows"].as_u64().unwrap() as u16;
+    let screen = ScreenHandle::new("painted", cols, rows);
+    let mut paint = Paint::new(recipe, cols, rows).bytes;
+    screen.feed(&paint);
+    screen.flush();
+    paint.extend_from_slice(b"\x1b[2;5H?\x1b[6;8H");
+    screen_handler_with_input(vec![("painted", screen)], move |screen, input| {
+        screen.feed(if input == b"r" { &paint } else { input });
+        screen.flush();
+    })
 }
 
 async fn attach(socket: &mut Client, id: &str, term: &str, cols: u16, rows: u16) -> Value {

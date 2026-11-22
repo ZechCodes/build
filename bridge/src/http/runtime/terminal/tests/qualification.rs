@@ -43,6 +43,9 @@ impl Qualification {
     }
 
     fn execution(&self) -> Arc<ExecutionService> {
+        if std::env::var_os("BUILD_HTTP_QUALIFICATION_GRID").is_some() {
+            return ExecutionService::new(super::flow::maximal_handler());
+        }
         let home = self.run_dir.join("home");
         let harness = HarnessContext::resolved(home.join("unused.sock"), home.clone()).unwrap();
         let app = AppState::new_unrooted_configured(home.join("worktrees"), "main", true, harness)
@@ -95,7 +98,14 @@ async fn serve_terminal_qualification_fixture() {
     let policy = HttpPolicy::new(&fixture.bridge_origin, &[fixture.hosted_origin.clone()]).unwrap();
     let signer = fixture.signer();
     let registrar = EndpointRegistrar::new(signer.clone()).unwrap();
-    registrar.register(None, true).await.unwrap();
+    let disabled_epoch = fixture.run_dir.join("disabled-epoch");
+    let rebind = std::env::var_os("BUILD_HTTP_QUALIFICATION_REBIND") == Some("1".into());
+    let previous = if rebind && disabled_epoch.exists() {
+        Some(std::fs::read_to_string(&disabled_epoch).unwrap())
+    } else {
+        None
+    };
+    registrar.register(previous.as_deref(), true).await.unwrap();
     let verifier = HttpAuthVerifier::new(signer.clone()).unwrap();
     let mut runtime = mount(fixture.execution(), verifier).with_discovery(signer.clone());
     if std::env::var_os("BUILD_HTTP_QUALIFICATION_TERMINAL").as_deref()
@@ -114,9 +124,13 @@ async fn serve_terminal_qualification_fixture() {
             serving.await.unwrap().unwrap();
         }
     }
-    EndpointRegistrar::new(fixture.signer())
+    let disabled = fixture.signer();
+    EndpointRegistrar::new(disabled.clone())
         .unwrap()
         .register(Some(signer.endpoint_epoch()), false)
         .await
         .unwrap();
+    if rebind {
+        std::fs::write(disabled_epoch, disabled.endpoint_epoch()).unwrap();
+    }
 }

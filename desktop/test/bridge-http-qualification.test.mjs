@@ -32,7 +32,7 @@ async function eventually(predicate, description, timeout = 35_000) {
   }
   assert.fail(`Timed out waiting for ${description}`);
 }
-function harness(t, fixture, { badProof = false, autoAck = true, observeBearer = () => {} } = {}) {
+function harness(t, fixture, { badProof = false, autoAck = true, observeBearer = () => {}, observeTicket } = {}) {
   const trace = [];
   const output = [];
   const listeners = new Set();
@@ -52,6 +52,9 @@ function harness(t, fixture, { badProof = false, autoAck = true, observeBearer =
     }
     const response = await globalThis.fetch(input, options);
     trace.push({ path: url.pathname, method: options.method, status: response.status });
+    if (observeTicket && url.pathname === "/v1/terminal-tickets" && response.status === 201) {
+      observeTicket((await response.clone().json()).ticket);
+    }
     if (url.pathname.endsWith("/.well-known/build-bridge") && badProof) {
       const value = await response.json();
       const parts = value.proof.split(".");
@@ -221,7 +224,11 @@ test("terminal qualification uses native WSS beside real REST and SSE", {
   ...qualification, skip: !fixturePath || terminalGate !== "on",
 }, async (t) => {
   const fixture = await loadFixture();
-  const h = harness(t, fixture);
+  const secrets = new Set([fixture.accessToken, "wss-native-qualification"]);
+  const h = harness(t, fixture, {
+    observeBearer: (bearer) => secrets.add(bearer.slice("Bearer ".length)),
+    observeTicket: (ticket) => secrets.add(ticket),
+  });
   const identity = await h.bridge.discover(h.owner, fixture.bridgeOrigin);
   const opening = await h.bridge.open(h.owner, identity.handle, "^3.0.0");
   assert.deepEqual(opening.transport.terminal_websocket, { version: 1, protocol: "build.term.v1" });
@@ -243,11 +250,24 @@ test("terminal qualification uses native WSS beside real REST and SSE", {
     item.state?.projects?.some((row) => row.project_id === scope.project_id))), "SSE state while WSS is open");
   const stopAgent = await exerciseNativeAgent(h, identity.handle, terminal, scope, events);
   await exerciseNativeShell(h, terminal, scope, events);
+  await exerciseNativeSource(h, fixture, identity.handle, terminal, scope);
   await stopAgent();
   assert.equal(h.trace.filter((entry) => entry.path === "/v1/terminal-tickets" && entry.status === 201).length, 1);
   assert.equal(h.output.some((event) => event.data?.type?.startsWith("term.")), false);
+  await assertShippedLogsRedact(fixture, secrets, h.trace);
   t.diagnostic("native TLS WSS agent attach and shell create, attach, resize, input, output and close beside REST and SSE");
 });
+
+async function assertShippedLogsRedact(fixture, secrets, trace) {
+  assert.ok(secrets.size >= 4, "issuer bearer, bridge bearer, ticket and terminal output were observed");
+  const logs = await Promise.all(["issuer.log", "bridge.log"].map((name) =>
+    readFile(resolve(fixture.runDir, name), "utf8")));
+  logs.push(JSON.stringify(trace));
+  for (const value of secrets) {
+    assert.ok(typeof value === "string" && value.length > 0, "the fixture observed a nonempty sentinel");
+    assert.ok(logs.every((log) => !log.includes(value)), "diagnostics must redact credentials, tickets and terminal output");
+  }
+}
 
 async function exerciseNativeAgent(h, handle, terminal, scope, events) {
   const rest = async (operation, params) => {
@@ -267,6 +287,9 @@ async function exerciseNativeAgent(h, handle, terminal, scope, events) {
     assert.equal(result.result.term_id, agent.term_id);
     return result.result.live;
   }, "started QA agent to expose a live screen", 5000);
+  const wrongClass = await h.bridge.terminalCall(h.owner, terminal, "term.close", { term_id: agent.term_id });
+  assert.equal(wrongClass.ok, false);
+  assert.match(wrongClass.error, /cannot close an agent terminal/i);
   return async () => {
     // The fixture's QA harness reads stdin until EOF.
     await terminalResult(h, terminal, "term.input", { term_id: agent.term_id, data: "BA==" });
@@ -276,14 +299,15 @@ async function exerciseNativeAgent(h, handle, terminal, scope, events) {
 }
 
 async function exerciseNativeShell(h, terminal, scope, events) {
-  const call = async (method, params) => {
-    const reply = await h.bridge.terminalCall(h.owner, terminal, method, params);
+  const call = async (method, params, id) => {
+    const reply = await h.bridge.terminalCall(h.owner, terminal, method, params, id);
     assert.equal(reply.ok, true, `${method}: ${reply.error_code}`);
     return reply.result;
   };
   const shell = await call("term.create", scope);
   const scoped = { ...scope, term_id: shell.term_id };
-  const attached = await call("term.attach", scoped);
+  const attachment = randomUUID();
+  const attached = await call("term.attach", scoped, attachment);
   assert.equal(attached.term_id, shell.term_id);
   assert.equal(typeof attached.snapshot, "string");
   await call("term.resize", { term_id: shell.term_id, cols: 100, rows: 30 });
@@ -293,7 +317,37 @@ async function exerciseNativeShell(h, terminal, scope, events) {
   await eventually(() => outputFor(events, shell.term_id).includes("wss-native-qualification"), "native shell output");
   const cursor = events.findLast((event) => event.data?.type === "term.output")?.data.cursor;
   await call("term.ack", { term_id: shell.term_id, cursor });
+  h.bridge.terminalDetach(h.owner, terminal, attachment);
+  const detached = await h.bridge.terminalCall(h.owner, terminal, "term.input", { term_id: shell.term_id, data: "eA==" });
+  assert.equal(detached.error_code, "invalid_params");
+  const restored = await call("term.attach", scoped);
+  assert.equal(restored.term_id, shell.term_id);
+  assert.ok(restored.cursor >= cursor);
   await call("term.close", scoped);
+}
+
+async function exerciseNativeSource(h, fixture, handle, terminal, scope) {
+  async function addSource(name) {
+    const sourcePath = resolve(fixture.projectsDir, name);
+    await mkdir(sourcePath, { mode: 0o700 });
+    const added = await h.bridge.request(h.owner, handle, "project_add_source", { ...scope, path: sourcePath });
+    assert.equal(added.ok, true, added.error_code);
+    const source = added.result.added_sources.find(({ path }) => path === sourcePath);
+    assert.ok(source, "the REST project row returned the added source");
+    return source;
+  }
+  const source = await addSource("qualification-source");
+  const sibling = await addSource("qualification-sibling");
+  const scoped = { ...scope, source_id: source.id, source_path: source.path };
+  const { term_id } = await terminalResult(h, terminal, "term.create", scoped);
+  for (const method of ["term.attach", "term.close"]) {
+    const wrongSource = await h.bridge.terminalCall(h.owner, terminal, method,
+      { ...scope, term_id, source_id: sibling.id, source_path: sibling.path });
+    assert.equal(wrongSource.error_code, "not_found", method);
+  }
+  const attached = await terminalResult(h, terminal, "term.attach", { ...scoped, term_id });
+  assert.equal(attached.term_id, term_id);
+  await terminalResult(h, terminal, "term.close", { ...scoped, term_id });
 }
 
 function outputFor(events, term) {
@@ -316,16 +370,24 @@ test("terminal qualification refuses a read-only grant at the real verifier", {
 });
 
 async function restrictFixtureFamily(fixture, family) {
-  assert.equal(resolve(fixture.runDir, "runtime.json"), resolve(fixturePath));
-  const { DatabaseSync } = await import("node:sqlite");
-  const database = new DatabaseSync(resolve(fixture.runDir, "app.db"));
+  const database = await fixtureDatabase(fixture);
   try {
     const update = database.prepare("UPDATE bridge_http_families SET scope = ? WHERE id = ?");
-    // Skrift's SQLite UUID adapter stores the 16-byte value.
-    assert.equal(update.run("bridge:read", Buffer.from(family.replaceAll("-", ""), "hex")).changes, 1);
+    assert.equal(update.run("bridge:read", fixtureUuid(family)).changes, 1);
   } finally {
     database.close();
   }
+}
+
+async function fixtureDatabase(fixture) {
+  assert.equal(resolve(fixture.runDir, "runtime.json"), resolve(fixturePath));
+  const { DatabaseSync } = await import("node:sqlite");
+  return new DatabaseSync(resolve(fixture.runDir, "app.db"));
+}
+
+function fixtureUuid(id) {
+  // Skrift's SQLite UUID adapter stores the 16-byte value.
+  return Buffer.from(id.replaceAll("-", ""), "hex");
 }
 
 test("terminal qualification binds tickets to the exact family and generation", {
@@ -341,21 +403,56 @@ test("terminal qualification binds tickets to the exact family and generation", 
   await h.bridge.open(h.owner, second.handle, "^3.0.0");
   assert.ok(first.familyId !== second.familyId, "separately approved family");
   for (const [credential, generation] of [[bearer, opened.opening_generation], [firstBearer, randomUUID()]]) {
-    const response = await fetch(fixture.bridgeOrigin + "/v1/terminal-tickets", {
-      method: "POST", headers: {
-        Authorization: credential, Origin: fixture.hostedOrigin, "X-Build-Session": opened.session_id,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ opening_generation: generation }),
-    });
-    assert.equal(response.status, 401);
-    const body = await response.text();
-    assert.equal(JSON.parse(body).error_code, "invalid_credential");
-    assert.ok(!body.includes(credential.slice("Bearer ".length)), "ticket refusal redacts the device credential");
+    await assertDeniedTicket(fixture, opened, credential, generation);
   }
+  await assertHostedBindingRefusals(fixture, first, opened);
   const { terminal } = await h.bridge.terminalOpen(h.owner, first.handle, () => {});
   await terminalResult(h, terminal, "ping", {});
 });
+
+async function assertHostedBindingRefusals(fixture, identity, opening) {
+  const database = await fixtureDatabase(fixture);
+  // Vary one persisted claim at a time after a real issuer mint and before its
+  // first introspection. Each case uses its own token digest.
+  const variants = [
+    ["user_id", fixtureUuid(fixture.unrelatedAccount)],
+    ["device_id", fixtureUuid(fixture.unrelatedDevice)],
+    ["issuer", "https://unrelated.invalid"],
+    ["endpoint_epoch", randomUUID()],
+    ["authorization_epoch", -1],
+  ];
+  try {
+    for (const [field, invalid] of variants) {
+      const family = fixtureUuid(identity.familyId);
+      const read = database.prepare("SELECT " + field + " AS claim FROM bridge_http_families WHERE id = ?");
+      const write = database.prepare("UPDATE bridge_http_families SET " + field + " = ? WHERE id = ?");
+      const original = read.get(family).claim;
+      const fresh = await renewFixtureCredential(fixture, identity);
+      assert.equal(write.run(invalid, family).changes, 1);
+      try {
+        await assertDeniedTicket(fixture, opening, "Bearer " + fresh.access_token, opening.opening_generation);
+      } finally {
+        assert.equal(write.run(original, family).changes, 1);
+      }
+    }
+  } finally {
+    database.close();
+  }
+}
+
+async function assertDeniedTicket(fixture, opening, credential, generation) {
+  const response = await fetch(fixture.bridgeOrigin + "/v1/terminal-tickets", {
+    method: "POST", headers: {
+      Authorization: credential, Origin: fixture.hostedOrigin, "X-Build-Session": opening.session_id,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ opening_generation: generation }),
+  });
+  assert.equal(response.status, 401);
+  const body = await response.text();
+  assert.equal(JSON.parse(body).error_code, "invalid_credential");
+  assert.ok(!body.includes(credential.slice("Bearer ".length)), "ticket refusal redacts the device credential");
+}
 
 test("terminal qualification preserves fresh write renewal and fences read-only renewal", {
   ...qualification, skip: !fixturePath || terminalGate !== "on",
@@ -383,14 +480,51 @@ test("terminal qualification preserves fresh write renewal and fences read-only 
 });
 
 async function renewFixtureCredential(fixture, identity) {
-  const response = await fetch(fixture.hostedOrigin + "/api/devices/" + fixture.deviceId + "/http-credentials", {
+  const response = await requestFixtureRenewal(fixture, identity);
+  assert.equal(response.status, 201);
+  return response.json();
+}
+
+function requestFixtureRenewal(fixture, identity) {
+  return fetch(fixture.hostedOrigin + "/api/devices/" + fixture.deviceId + "/http-credentials", {
     method: "POST",
     headers: { Authorization: "Bearer " + fixture.accessToken, "Content-Type": "application/json" },
     body: JSON.stringify({ family_id: identity.familyId, endpoint_epoch: identity.endpointEpoch }),
   });
-  assert.equal(response.status, 201);
-  return response.json();
 }
+
+test("terminal qualification disables and rebinds a mounted device with an active socket", {
+  ...qualification, skip: !fixturePath || process.env.BUILD_HTTP_QUALIFICATION_REBIND !== "1",
+}, async (t) => {
+  const fixture = await loadFixture();
+  let bearer;
+  const h = harness(t, fixture, { observeBearer: (value) => { bearer = value; } });
+  const identity = await h.bridge.discover(h.owner, fixture.bridgeOrigin);
+  const opening = await h.bridge.open(h.owner, identity.handle, "^3.0.0");
+  const staleBearer = bearer;
+  const events = [];
+  const { terminal } = await h.bridge.terminalOpen(h.owner, identity.handle, (event) => events.push(event));
+  await terminalResult(h, terminal, "ping", {});
+  const marker = (name) => resolve(fixture.runDir, name);
+  await writeFile(marker("disable-ready"), "");
+
+  await eventually(() => hasFile(marker("disabled-epoch")), "issuer to accept the signed disable", 10_000);
+  await eventually(() => events.some(({ type }) => type === "close"), "disabled listener to close WSS", 3000);
+  await assert.rejects(h.bridge.terminalCall(h.owner, terminal, "ping", {}), { code: "invalid_terminal_handle" });
+  const renewal = await requestFixtureRenewal(fixture, identity);
+  assert.equal(renewal.status, 401);
+  await renewal.body?.cancel();
+  await writeFile(marker("rebind-ready"), "");
+
+  await eventually(() => hasFile(marker("rebound")), "listener to rebind at the same authority", 15_000);
+  assert.equal(await patchOpening(fixture, opening, staleBearer), 401);
+  const rebound = await h.bridge.discover(h.owner, fixture.bridgeOrigin);
+  assert.notEqual(rebound.endpointEpoch, identity.endpointEpoch);
+  await h.bridge.open(h.owner, rebound.handle, "^3.0.0");
+  const fresh = await h.bridge.terminalOpen(h.owner, rebound.handle, () => {});
+  await terminalResult(h, fresh.terminal, "ping", {});
+  t.diagnostic("signed disable closed WSS and refused renewal, then a new endpoint epoch required fresh discovery");
+});
 
 test("terminal qualification revokes the socket and retains a process already started", {
   ...qualification, skip: !fixturePath || terminalGate !== "on",
@@ -419,12 +553,25 @@ test("terminal qualification revokes the socket and retains a process already st
   await writeFile(release, "");
   await eventually(() => hasFile(resolve(projectPath, ".qualification-finished")), "process still running after revocation");
   const next = await h.bridge.discover(h.owner, fixture.bridgeOrigin);
-  await h.bridge.open(h.owner, next.handle, "^3.0.0");
-  const second = await h.bridge.terminalOpen(h.owner, next.handle, () => {});
+  const reopened = await h.bridge.open(h.owner, next.handle, "^3.0.0");
+  const freshEvents = [];
+  const second = await h.bridge.terminalOpen(h.owner, next.handle, (event) => freshEvents.push(event));
   const restored = await terminalResult(h, second.terminal, "term.attach", params);
   assert.equal(restored.term_id, term.term_id);
   await terminalResult(h, second.terminal, "term.close", params);
   t.diagnostic("real grant DELETE fenced the old WSS; the started process finished and a fresh grant reattached the same shell");
+
+  await terminalResult(h, second.terminal, "ping", {});
+  const logout = await fetch(fixture.hostedOrigin + "/api/bridge-http/logout", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + fixture.accessToken, "Content-Type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(logout.status, 204);
+  assert.equal(await patchOpening(fixture, reopened, deviceBearer), 401);
+  await eventually(() => freshEvents.some((event) => event.type === "close"), "socket to close after hosted logout", 7000);
+  await assert.rejects(h.bridge.terminalCall(h.owner, second.terminal, "ping", {}), { code: "invalid_terminal_handle" });
+  t.diagnostic("real hosted client logout retired the replacement WSS after verification");
 });
 
 async function terminalResult(h, terminal, method, params) {
@@ -462,6 +609,84 @@ async function patchOpening(fixture, opening, bearer) {
   });
   await response.body?.cancel();
   return response.status;
+}
+
+test("terminal qualification restores the maximum grid over native WSS", {
+  ...qualification, skip: !fixturePath || process.env.BUILD_HTTP_QUALIFICATION_GRID !== "1",
+}, async (t) => {
+  const fixture = await loadFixture();
+  const h = harness(t, fixture);
+  const identity = await h.bridge.discover(h.owner, fixture.bridgeOrigin);
+  await h.bridge.open(h.owner, identity.handle, "^3.0.0");
+  const events = [];
+  const { terminal } = await h.bridge.terminalOpen(h.owner, identity.handle, (event) => events.push(event));
+  const { recovery: recipe } = JSON.parse(await readFile(new URL("../../fixtures/api/http/terminal-websocket-v1.json", import.meta.url), "utf8"));
+  const ghostty = await loadFixtureGhostty();
+  const { cols, rows } = recipe;
+  const size = Buffer.byteLength;
+  const attachment = await h.bridge.terminalCall(h.owner, terminal, "term.attach", { term_id: "painted", cols, rows });
+  assert.equal(attachment.ok, true, attachment.error_code);
+  verifyGrid(ghostty, recipe, attachment.result.snapshot).free();
+  const attachedBytes = size(JSON.stringify(attachment));
+  await terminalResult(h, terminal, "term.ack", { term_id: "painted", cursor: attachment.result.cursor });
+  await terminalResult(h, terminal, "term.input", { term_id: "painted", data: "cg==" });
+  await eventually(() => events.some(({ data }) => data?.type === "term.reset"), "native maximum-grid reset");
+  const reset = events.find(({ data }) => data?.type === "term.reset").data;
+  const emulator = verifyGrid(ghostty, recipe, reset.data, "\x1b[2;5H?\x1b[6;8H");
+  t.after(() => emulator.free());
+  const resetBytes = size(JSON.stringify(reset));
+  await terminalResult(h, terminal, "term.ack", { term_id: "painted", cursor: reset.cursor });
+  const next = recipe.next_output;
+  await terminalResult(h, terminal, "term.input", { term_id: "painted", data: Buffer.from(next).toString("base64") });
+  await eventually(() => outputFor(events, "painted") === next, "native next live byte");
+  emulator.write(next);
+  emulator.update();
+  assert.equal(emulator.getGraphemeString(5, 7), next);
+  await terminalResult(h, terminal, "term.input", { term_id: "painted", data: recipe.next_input_base64 });
+  await eventually(() => outputFor(events, "painted") === next + "x", "native keystroke echo after reset");
+  assert.equal(events.filter(({ data }) => data?.type === "term.reset").length, 1);
+  assert.equal(h.trace.filter(({ path }) => path === "/v1/terminal-tickets").length, 1);
+  assert.ok([attachedBytes, resetBytes].every((bytes) => bytes > 1024 * 1024 && bytes <= 12 * 1024 * 1024));
+  t.diagnostic("Native WSS restored all 65,536 cells and the cursor, then received the next live byte. Frame bytes " + attachedBytes + ", " + resetBytes);
+});
+
+async function loadFixtureGhostty() {
+  const packageRoot = new URL("../../spa/node_modules/ghostty-web/", import.meta.url);
+  const { Ghostty } = await import(new URL("dist/ghostty-web.js", packageRoot));
+  const wasm = await readFile(new URL("ghostty-vt.wasm", packageRoot));
+  const { instance } = await WebAssembly.instantiate(wasm, { env: { log() {} } });
+  return new Ghostty(instance);
+}
+
+function verifyGrid(ghostty, recipe, snapshot, tail = "") {
+  const { cols, rows, cells } = recipe;
+  const [odd, even] = cells.map(({ sgr, text }) => sgr + text);
+  const paint = recipe.prefix + ((odd + even).repeat(cols / 2) + (even + odd).repeat(cols / 2))
+    .repeat(rows / 2) + recipe.suffix + tail;
+  const expected = ghostty.createTerminal(cols, rows);
+  const actual = ghostty.createTerminal(cols, rows);
+  try {
+    actual.write(Buffer.from(snapshot, "base64"));
+    expected.write(paint);
+    actual.update();
+    expected.update();
+    assert.deepEqual(actual.getCursor(), expected.getCursor());
+    const left = actual.getViewport();
+    const right = expected.getViewport();
+    assert.equal(left.length, cols * rows);
+    assert.equal(right.length, left.length);
+    const mismatch = left.findIndex((cell, i) => Object.keys(cell).some((field) => cell[field] !== right[i][field]));
+    assert.equal(mismatch, -1, "all maximum-grid cells must match");
+    for (const { row, col } of recipe.witness_cells) {
+      assert.equal(actual.getGraphemeString(row, col), expected.getGraphemeString(row, col));
+    }
+    return actual;
+  } catch (error) {
+    actual.free();
+    throw error;
+  } finally {
+    expected.free();
+  }
 }
 
 const electron = process.env.BUILD_HTTP_QUALIFICATION_ELECTRON;
@@ -516,9 +741,10 @@ async function qualifyElectron(main) {
   const fixture = JSON.parse(await readFile(process.env.BUILD_HTTP_QUALIFICATION_FIXTURE, "utf8"));
   const allowedOrigins = new Set([fixture.hostedOrigin, fixture.bridgeOrigin]);
   const fetch = globalThis.fetch;
-  globalThis.fetch = (url, options) => {
-    assert.ok(allowedOrigins.has(new URL(url).origin), "qualification main requires a loopback fixture URL");
-    return fetch(url, options);
+  globalThis.fetch = (input, options) => {
+    const url = new URL(input);
+    assert.ok(allowedOrigins.has(url.origin), "qualification main requires a loopback fixture URL");
+    return fetch(input, options);
   };
   globalThis.qualificationAccessToken = fixture.accessToken;
   const appUrl = fixture.hostedOrigin + "/app/desktop";
@@ -563,6 +789,7 @@ async function qualifyElectron(main) {
     await wait(() => contents.getURL() === appUrl && !contents.isLoadingMainFrame());
     const first = await openTerminal(contents);
     await ping(contents, first);
+    await assertNoSubframeBridge(contents);
     console.log("PASS initial terminal IPC");
     await cancelledNavigation(contents);
     console.log("PASS terminal IPC after cancellation");
@@ -574,7 +801,19 @@ async function qualifyElectron(main) {
     await win.loadURL(appUrl + "?qualification_navigation=commit");
     await committed;
     await checkRetired(contents, stale);
+    const beforeExit = await openTerminal(contents);
+    await ping(contents, beforeExit);
+    const gone = once(contents, "render-process-gone", { signal: AbortSignal.timeout(8000) });
+    const renderer = contents.getOSProcessId();
+    assert.ok(renderer > 0 && renderer !== process.pid);
+    // Kill only this fixture's renderer. SIGKILL leaves no core dump.
+    process.kill(renderer, "SIGKILL");
+    const [, details] = await gone;
+    assert.equal(details.reason, "killed");
+    await win.loadURL(appUrl);
+    await checkRetired(contents, beforeExit);
     await ping(contents, await openTerminal(contents));
+    console.log("PASS renderer exit retired the handle and fresh IPC worked");
     console.log("Electron navigation witnesses passed on " + process.versions.electron);
     await report(true);
   } catch (error) {
@@ -673,4 +912,19 @@ async function qualifyElectron(main) {
     assert.equal(reply.ok, false);
     assert.equal(reply.error.code, "invalid_terminal_handle");
   }
+
+  async function assertNoSubframeBridge(contents) {
+    const bridgeType = await contents.executeJavaScript(`new Promise((resolve) => {
+      const frame = document.createElement("iframe");
+      frame.srcdoc = "<p>Qualification subframe</p>";
+      frame.onload = () => {
+        resolve(typeof frame.contentWindow.buildBridgeHttp);
+        frame.remove();
+      };
+      document.body.append(frame);
+    })`);
+    assert.equal(bridgeType, "undefined");
+    console.log("PASS subframe cannot access the terminal preload");
+  }
+
 }

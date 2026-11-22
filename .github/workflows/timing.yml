@@ -87,7 +87,8 @@ jobs:
 
       - name: Mounted terminal lost-Close witness
         run: |
-          export TERMINAL_WSS_TEST_NODE="$(command -v node)"
+          TERMINAL_WSS_TEST_NODE="$(command -v node)"
+          export TERMINAL_WSS_TEST_NODE
           nice -n 10 cargo test --locked --lib -- --ignored --exact \
             http::runtime::terminal::tests::snapshot_slots::mounted_tls_lost_close_stops_spa_ticket_requests
 

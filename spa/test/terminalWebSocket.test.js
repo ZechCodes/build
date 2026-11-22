@@ -233,6 +233,22 @@ describe("browser terminal admission", () => {
     expect(h.peers[0].close).toHaveBeenCalledOnce();
   });
 
+  it("single-flights only matching retry intent and sends the explicit ticket body", async () => {
+    const h = harness();
+    const held = await h.endpoint.open("range");
+    const { signal } = new AbortController();
+    const first = h.endpoint.openTerminal(held, { signal, retry: true });
+    const joined = h.endpoint.openTerminal(held, { signal, retry: true });
+    const refused = h.endpoint.openTerminal(held, { signal }).catch((error) => error);
+    await vi.waitFor(() => expect(h.peers).toHaveLength(1));
+    h.peers[0].open();
+    expect(await refused).toMatchObject({ error_code: "busy" });
+    expect(await joined).toBe(await first);
+    const requests = h.fetchImpl.mock.calls.filter(([url]) => url.endsWith(ticket.path));
+    expect(requests).toHaveLength(1);
+    expect(JSON.parse(requests[0][1].body)).toEqual(ticket.snapshot_timeout.explicit_retry_body);
+  });
+
   it("abandons a pending ticket on owner retirement, including a late fetch response", async () => {
     let release;
     const h = harness({ answer: () => new Promise((resolve) => { release = resolve; }) });
@@ -366,6 +382,31 @@ describe("browser terminal wire", () => {
     expect(close).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       error_code: "terminal_disconnected", retryable: true,
     }));
+    expect(peer.close).toHaveBeenCalledOnce();
+  });
+
+  it("bounds receive silence even when an attach snapshot might be fragmented", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const { peer, carrier } = await connected();
+    const pending = request(carrier, "attach").catch((error) => error);
+    await vi.advanceTimersByTimeAsync(209999);
+    expect(peer.close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pending).toMatchObject({ error_code: "uncertain_delivery" });
+    expect(peer.close).toHaveBeenCalledOnce();
+  });
+
+  it("returns to the ordinary receive watchdog when a pending snapshot detaches", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+    const { peer, carrier } = await connected();
+    const pending = request(carrier, "attach").catch((error) => error);
+    await vi.advanceTimersByTimeAsync(123000);
+    expect(peer.close).not.toHaveBeenCalled();
+    carrier.detach(peer.calls()[0].id);
+    await vi.advanceTimersByTimeAsync(23999);
+    expect(peer.close).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pending).toMatchObject({ error_code: "uncertain_delivery" });
     expect(peer.close).toHaveBeenCalledOnce();
   });
 

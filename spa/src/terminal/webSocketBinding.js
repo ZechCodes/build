@@ -1,4 +1,5 @@
 import { httpFailure } from "../core/httpEndpoint.js";
+import { isSnapshotWriteTimeout } from "../core/terminalWebSocket.js";
 
 const RETRY_DELAYS = [250, 500, 1000, 2000, 4000, 8000];
 
@@ -31,7 +32,7 @@ export function createWebSocketBinding({ owner, hasPanes, onReady, onLoss, onPus
     if (!release(attempt) || ended) return;
     failure = error;
     onLoss(error);
-    if (error.retryable && owner.isCurrent() && hasPanes()) scheduleRetry();
+    if (error.retryable && !isSnapshotWriteTimeout(error) && owner.isCurrent() && hasPanes()) scheduleRetry();
   }
 
   function scheduleRetry() {
@@ -59,15 +60,21 @@ export function createWebSocketBinding({ owner, hasPanes, onReady, onLoss, onPus
     return carrier;
   }
 
-  function ensure({ manual = false } = {}) {
+  function blocked({ manual, retry }) {
+    if (!failure) return false;
+    if (isSnapshotWriteTimeout(failure)) return !retry;
+    return !manual && (!failure.retryable || retryTimer !== undefined);
+  }
+
+  function ensure({ manual = false, retry = false } = {}) {
     if (ended || !owner.isCurrent()) return Promise.reject(httpFailure("scope_ended"));
     if (held) return held.ready;
-    if (!manual && failure && (!failure.retryable || retryTimer !== undefined)) return Promise.reject(failure);
+    if (blocked({ manual, retry })) return Promise.reject(failure);
     clearTimeout(retryTimer);
     retryTimer = undefined;
     const attempt = { abort: new AbortController() };
     held = attempt;
-    attempt.ready = owner.open(attempt.abort.signal).then((carrier) => accept(attempt, carrier)).catch((error) => {
+    attempt.ready = owner.open(attempt.abort.signal, retry ? { retry: true } : undefined).then((carrier) => accept(attempt, carrier)).catch((error) => {
       failed(attempt, error);
       throw error;
     });

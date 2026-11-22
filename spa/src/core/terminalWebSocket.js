@@ -2,6 +2,7 @@ import { endedOpeningError } from "./bridgeEpoch.js";
 import { httpFailure } from "./httpEndpoint.js";
 
 export const TERMINAL_PROTOCOL = "build.term.v1";
+export const TERMINAL_ATTACH_TIMEOUT_MS = 210_000;
 
 const CLIENT_BYTES = 128 * 1024;
 const ORDINARY_BYTES = 1024 * 1024;
@@ -10,8 +11,6 @@ const SNAPSHOT_METADATA_BYTES = 64 * 1024;
 const INPUT_BYTES = 64 * 1024;
 const SEND_QUEUE_BYTES = 2 * 1024 * 1024;
 const SEND_STALL_MS = 10000;
-// A caller deadline leaves its wire slot held. Allow room for slow snapshots
-// while bounding how long work can occupy slots without any inbound progress.
 const RECEIVE_STALL_MS = 24000;
 const IDLE_PROBE_MS = 5000;
 const CALL_LIMIT = 8;
@@ -88,7 +87,7 @@ function validOrdinaryPush(frame) {
   switch (frame.type) {
     case "term.output": return validOutput(frame);
     case "term.closed": return text(frame.term_id) && text(frame.reason);
-    case "attachment_error": return validId(frame.attach_id) && frame.reason === "snapshot_too_large";
+    case "attachment_error": return validId(frame.attach_id) && ["snapshot_too_large", "snapshot_busy"].includes(frame.reason);
     default: return false;
   }
 }
@@ -146,10 +145,16 @@ function protocolError(closeCode = 1002) {
   });
 }
 
-function transportError(closeCode = 1006) {
-  const retryable = ![1002, 1003, 1007, 1008, 1009].includes(closeCode);
+export function isSnapshotWriteTimeout({ error_code, closeCode, reason }) {
+  return error_code === "snapshot_write_timeout" || (closeCode === 4008 && reason === "snapshot_write_timeout");
+}
+
+function transportError(closeCode = 1006, reason = "") {
+  const snapshotTimeout = isSnapshotWriteTimeout({ closeCode, reason });
+  const code = snapshotTimeout ? "snapshot_write_timeout" : "terminal_disconnected";
+  const retryable = !snapshotTimeout && ![1002, 1003, 1007, 1008, 1009].includes(closeCode);
   return Object.assign(new Error("The terminal WebSocket connection ended."), {
-    error_code: "terminal_disconnected", code: "terminal_disconnected", closeCode, retryable, uncertain: false,
+    error_code: code, code, closeCode, reason, retryable, uncertain: false,
   });
 }
 
@@ -232,7 +237,7 @@ function createCarrier({ socket, epoch, signal, isCurrent, retiredError, onEnd }
     try { emit(closes, error); } finally { closes.clear(); }
   };
   const retire = () => stop(retiredError());
-  const lost = ({ code }) => stop(current() ? transportError(code) : retiredError());
+  const lost = ({ code, reason }) => stop(current() ? transportError(code, reason) : retiredError());
   const openTimer = setTimeout(() => stop(current() ? transportError() : retiredError()), SEND_STALL_MS);
   const openSocket = () => {
     if (!current()) {
@@ -275,11 +280,30 @@ function createCarrier({ socket, epoch, signal, isCurrent, retiredError, onEnd }
     else lastBuffered = after;
   };
 
+  function snapshotDeadline() {
+    let earliest = Infinity;
+    for (const call of held.values()) earliest = Math.min(earliest, call.snapshotDeadline ?? Infinity);
+    return earliest;
+  }
+
   function watchLiveness() {
     clearTimeout(livenessTimer);
+    // Browser WebSocket only delivers complete messages. The first pending
+    // attach can be silent through admission and all snapshot fragments.
+    const deadline = snapshotDeadline();
+    const wait = Number.isFinite(deadline)
+      ? Math.max(RECEIVE_STALL_MS, Math.ceil(deadline - performance.now()))
+      : RECEIVE_STALL_MS;
     livenessTimer = held.size
-      ? setTimeout(() => stop(current() ? transportError() : retiredError()), RECEIVE_STALL_MS)
+      ? setTimeout(() => stop(current() ? transportError() : retiredError()), wait)
       : setTimeout(probeIdle, IDLE_PROBE_MS);
+  }
+
+  function holdCall(id, reply, method) {
+    const attach = attachMethods.has(method);
+    const startsSnapshot = attach && snapshotDeadline() === Infinity;
+    held.set(id, { ...reply, method, snapshotDeadline: attach ? performance.now() + TERMINAL_ATTACH_TIMEOUT_MS : undefined });
+    if (held.size === 1 || startsSnapshot) watchLiveness();
   }
 
   function probeIdle() {
@@ -297,8 +321,7 @@ function createCarrier({ socket, epoch, signal, isCurrent, retiredError, onEnd }
     const id = String(++requestId);
     const reply = Promise.withResolvers();
     send({ id, method, params });
-    held.set(id, { ...reply, method });
-    if (held.size === 1) watchLiveness();
+    holdCall(id, reply, method);
     const result = callerResult(reply.promise, method, options);
     if (onAttachId && attachMethods.has(method)) {
       try { onAttachId(id); } catch (error) { void result.catch(() => {}); throw error; }
@@ -318,7 +341,13 @@ function createCarrier({ socket, epoch, signal, isCurrent, retiredError, onEnd }
     },
     detach(attachId) {
       if (!validId(attachId) || !current() || socket.readyState !== 1) return;
-      try { send({ type: "detach", attach_id: attachId }); } catch { /* Send failure retires this socket's interests. */ }
+      try { send({ type: "detach", attach_id: attachId }); } catch { return; }
+      const pending = held.get(attachId);
+      if (pending?.snapshotDeadline === undefined) return;
+      // Keep correlation and wire credit for a late reply, but end the
+      // snapshot receive allowance when the pane releases its interest.
+      pending.snapshotDeadline = undefined;
+      watchLiveness();
     },
     onPush: (callback) => listen(pushes, callback),
     onClose(callback) {

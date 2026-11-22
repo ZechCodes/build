@@ -183,7 +183,13 @@ async fn open_idle_socket(server: &Server, opening: &Value) -> Client {
 
 #[tokio::test]
 async fn mounted_tls_restart_refuses_old_opening_and_unspent_ticket() {
-    let first = Server::start(fake_handler()).await;
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    // A child paused before exec can still hold a CLOEXEC listener descriptor.
+    #[cfg(target_os = "linux")]
+    let _inherited_listener = std::os::fd::AsFd::as_fd(&listener)
+        .try_clone_to_owned()
+        .unwrap();
+    let first = Server::mount_on(fake_handler(), TIMEOUT * 6, true, listener).await;
     let port = first.port;
     let old = first.opening().await;
     let stale = first.ticket(&old).await;

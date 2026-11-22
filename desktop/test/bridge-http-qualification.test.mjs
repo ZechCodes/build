@@ -204,20 +204,30 @@ test("desktop ninth family stream is refused by the real bridge and ends in a pl
   t.diagnostic(JSON.stringify({ refusal: "ninth family stream", status: 429, message }));
 });
 
-test("terminal qualification checks the default mount with a real credential", {
-  ...qualification, skip: !fixturePath || terminalGate !== "off",
+test("terminal qualification preserves WebRTC for older desktop IPC", {
+  ...qualification, skip: !fixturePath || !terminalGate,
 }, async (t) => {
   const fixture = await loadFixture();
-  const h = harness(t, fixture);
+  const h = harness(t, fixture, { autoAck: false });
   const identity = await h.bridge.discover(h.owner, fixture.bridgeOrigin);
-  const opening = await h.bridge.open(h.owner, identity.handle, "^3.0.0");
-  assert.ok(opening.greeting.capabilities.includes("term.websocket"));
-  assert.equal(opening.transport.terminal, "webrtc");
-  assert.equal(Object.hasOwn(opening.transport, "terminal_websocket"), false);
-  await assert.rejects(h.bridge.terminalOpen(h.owner, identity.handle, () => {}), {
-    code: "terminal_unsupported",
+  const endpoint = nativeEndpoint(h, identity);
+  let opening;
+  const session = await openHttpSession({
+    endpoint: {
+      ...endpoint,
+      async open(apiRange) {
+        opening = await endpoint.open(apiRange);
+        return opening;
+      },
+    },
+    routes: createHttpRoutes(fixture.manifest),
   });
+  t.after(() => session.close());
+  assert.equal(opening.transport.terminal, "webrtc");
+  assert.equal(Object.hasOwn(opening.transport, "terminal_websocket"), terminalGate !== "off");
+  assert.equal(session.terminalTransport, "webrtc");
   assert.equal(h.trace.some((entry) => entry.path === "/v1/terminal-tickets"), false);
+  t.diagnostic('Opening declares "terminal":"webrtc" and the legacy IPC surface selects it');
 });
 
 test("SSE redaction catches terminal output inside an ordinary state event", () => {
@@ -239,6 +249,7 @@ test("terminal qualification uses native WSS beside real REST and SSE", {
   });
   const identity = await h.bridge.discover(h.owner, fixture.bridgeOrigin);
   const opening = await h.bridge.open(h.owner, identity.handle, "^3.0.0");
+  assert.ok(opening.greeting.capabilities.includes("term.websocket"));
   assert.deepEqual(opening.transport.terminal_websocket, { version: 1, protocol: "build.term.v1" });
   await h.bridge.subscribe(h.owner, identity.handle, { kind: "application" }, { requestId: randomUUID() });
   await eventually(() => h.output.some((event) => event.event === "hello"), "native SSE hello");

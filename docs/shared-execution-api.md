@@ -105,11 +105,14 @@ and exact event liveness under its subscription registration lock.
 
 ## Terminal WebSocket adapter
 
-The [HTTPS terminal routes](../bridge/src/http/routes/README.md#terminal-websocket)
-redeem a one-use ticket to compare and replace the Opening's exact Terminal
-binding. For each admitted call, the adapter captures the current verified
-terminal caller under the Opening gate and uses `ClientSessions::request_terminal`
-with that proof, the exact binding and the reply sink. It checks the terminal
+The default runtime mounts the HTTPS terminal routes. See the
+[route contract](../bridge/src/http/routes/README.md#terminal-websocket).
+Opening POST and PATCH carry the v1 WSS descriptor alongside the WebRTC
+fallback. The upgrade redeems a one-use ticket to compare and replace the
+Opening's exact Terminal binding. For each admitted call, the adapter captures
+the current verified terminal caller under the Opening gate and uses
+`ClientSessions::request_terminal` with that proof, the exact binding and
+the reply sink. It checks the terminal
 allowlist and wire parameters before shared invocation decode and submission.
 Each admitted call keeps its captured authority even if a later Opening PATCH
 refreshes the socket proof. The writer checks output at dequeue and again
@@ -139,8 +142,11 @@ holds them through final flush or physical I/O drop. Waiting expires after
 `attachment_error` for a pending reset. The latter carries the original
 `attach_id`, `reason` and `bridge_epoch`. An unsupported snapshot is a
 pane-local `snapshot_too_large` refusal using the same two paths. The
-absolute snapshot write deadline can retire the whole terminal socket with
-`4008 snapshot_write_timeout` and latch a 409 on the Opening's ticket path.
+fixture's `reset_overflow` case checks the client's receive limit (1009).
+The bridge substitutes the pane-local control for an over-cap reset and
+keeps the socket open. The absolute snapshot write deadline can retire
+the whole terminal socket with `4008 snapshot_write_timeout` and latch a
+409 on the Opening's ticket path.
 
 The snapshot and its cursor share one capture. WSS counts credit from that
 baseline, checks ACKs against the last flushed cursor for the exact

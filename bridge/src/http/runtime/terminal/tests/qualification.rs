@@ -120,9 +120,9 @@ async fn serve_terminal_qualification_fixture() {
     let verifier = HttpAuthVerifier::new(signer.clone()).unwrap();
     let mut runtime = mount(fixture.execution(), verifier).with_discovery(signer.clone());
     if std::env::var_os("BUILD_HTTP_QUALIFICATION_TERMINAL").as_deref()
-        == Some(std::ffi::OsStr::new("on"))
+        == Some(std::ffi::OsStr::new("off"))
     {
-        runtime.state.terminal_tickets = Some(Arc::default());
+        runtime.state.terminal_tickets = None;
     }
     let (stop, stopped) = watch::channel(false);
     let mut term =

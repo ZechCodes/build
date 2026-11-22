@@ -212,9 +212,21 @@ async fn mounted_tls_trickling_readers_recover_both_snapshot_slots() {
     )
     .await;
     let refusal = object_with_timeout(&mut sibling, TIMEOUT + Duration::from_secs(3)).await;
+    let released = pool.available_permits();
     let read_counts = progress
         .each_ref()
         .map(|count| count.load(Ordering::Relaxed));
+    if refusal["error_code"] != "snapshot_busy" || released != 0 {
+        // Keep both readers alive for the diagnostic run after an early release.
+        let ids = [&first_opening, &second_opening]
+            .map(|opening| opening_diagnostic_id(&server, opening));
+        let _ = timeout(Duration::from_secs(15), async {
+            while ids.iter().any(|id| pool.holds(*id)) {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await;
+    }
     assert!(
         read_counts.iter().all(|count| *count >= 8),
         "both TLS readers must consume 16 KiB per second into the first 10-second window: {read_counts:?}"
@@ -230,8 +242,7 @@ async fn mounted_tls_trickling_readers_recover_both_snapshot_slots() {
     assert!(wait_started.elapsed() >= TIMEOUT);
     assert_ping(&mut sibling).await;
     assert_eq!(
-        pool.available_permits(),
-        0,
+        released, 0,
         "both readers still make progress after the independent 10-second wait"
     );
     let (first, second) = timeout(Duration::from_secs(195), reading)
@@ -262,6 +273,13 @@ async fn mounted_tls_trickling_readers_recover_both_snapshot_slots() {
     .await;
     assert_eq!(next["ok"], true);
     server.stop().await;
+}
+
+fn opening_diagnostic_id(server: &Server, opening: &Value) -> u64 {
+    server.state.openings.lock().unwrap()[case_text(&opening["session_id"])]
+        .session
+        .opening()
+        .diagnostic_id()
 }
 
 #[tokio::test]
@@ -367,7 +385,7 @@ async fn trickle(
 }
 
 async fn forward_paced(
-    mut socket: ClientIo,
+    mut socket: impl tokio::io::AsyncRead + Unpin,
     mut receiver: tokio::io::DuplexStream,
     progress: Arc<AtomicUsize>,
     started: Instant,
@@ -382,7 +400,7 @@ async fn forward_paced(
                 Ok(bytes) => bytes,
                 Err(error) => {
                     eprintln!(
-                        "TLS reader stopped after {:?} and {} bytes: {error}",
+                        "paced reader stopped after {:?} and {} bytes: {error}",
                         started.elapsed(),
                         progress.load(Ordering::Relaxed)
                     );
@@ -397,6 +415,9 @@ async fn forward_paced(
         }
     }
 }
+
+#[path = "paced_controls.rs"]
+mod paced_controls;
 
 async fn object_with_timeout(socket: &mut Client, bound: Duration) -> Value {
     let message = timeout(bound, socket.next())

@@ -326,8 +326,7 @@ fn runtime_with(execution: Arc<ExecutionService>, verifier: Arc<dyn GrantVerifie
             accepting: Arc::new(AtomicBool::new(true)),
             buffers: Arc::new(super::limits::BufferBudget::default()),
             discovery: None,
-            // The internal mount gate stays off until terminal WSS qualifies.
-            terminal_tickets: None,
+            terminal_tickets: Some(Arc::default()),
             #[cfg(test)]
             output_observer: Arc::new(Mutex::new(None)),
             #[cfg(test)]

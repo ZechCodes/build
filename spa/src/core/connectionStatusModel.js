@@ -81,22 +81,26 @@ export const OFFLINE = "offline";
  *  the machine, or through a TURN relay. A machine whose path nothing has
  *  answered for yet says the plain word — the reader is told what is known,
  *  and never guessed at. */
-const connectedLabelFor = (path) => {
-  if (path === "https") return "Connected HTTPS · Terminal uses WebRTC";
+const connectedLabelFor = (path, terminalTransport) => {
+  if (path === "https") {
+    return terminalTransport === "webrtc" ? "Connected HTTPS · Terminal over WebRTC" : "Connected HTTPS";
+  }
   if (path === "turn") return "Connected TURN";
   return path === "direct" ? "Connected WebRTC" : "Connected";
 };
 
 /** What one row says about one machine. Short by design: a row has the room
  *  for a state, and the ring's own label is where the sentence is. */
-const rowLabel = (status, seconds, path) => {
-  if (status === CONNECTED) return connectedLabelFor(path);
+const rowLabel = (status, seconds, path, terminalTransport) => {
+  if (status === CONNECTED) return connectedLabelFor(path, terminalTransport);
   if (status === OFFLINE) return "Offline";
   return status === WAITING && seconds > 0 ? `Reconnecting in ${seconds} s` : "Reconnecting";
 };
 
-const rowFor = (id, name, status, seconds, path = null) =>
-  ({ id, name, status, seconds, path: status === CONNECTED ? path : null, label: rowLabel(status, seconds, path) });
+const rowFor = (id, name, status, seconds, device) => {
+  const path = status === CONNECTED ? device?.path || null : null;
+  return { id, name, status, seconds, path, label: rowLabel(status, seconds, path, device?.terminalTransport) };
+};
 
 /** Every machine, in the account's own order, each with what is true of IT —
  *  the same records the ring is derived from, read one machine at a time. A
@@ -108,7 +112,7 @@ function rowsFor(devices, recoveries, nowMs) {
   const rowOf = (id, name) => {
     const record = recovering.get(id);
     const device = devices.find((candidate) => candidate.id === id);
-    if (!record) return rowFor(id, name, device?.live ? CONNECTED : OFFLINE, null, device?.path || null);
+    if (!record) return rowFor(id, name, device?.live ? CONNECTED : OFFLINE, null, device);
     const seconds = record.status === WAITING ? secondsUntilAttempt(record.nextAttemptAt, nowMs) : null;
     return rowFor(id, name, record.status, seconds);
   };

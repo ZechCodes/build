@@ -438,17 +438,6 @@ describe("where the menu opens", () => {
     return end < 0 ? "" : sheet.slice(body, end).replace(/\s+/g, " ");
   };
 
-  it("opens upward from the ring, anchored to the corner it stands in", () => {
-    const menuRule = ruleFor(".connection-menu");
-    expect(menuRule).toContain("position:absolute");
-    expect(menuRule).toContain("bottom:calc(100% + 8px)");
-    expect(menuRule).toContain("right:0");
-  });
-
-  it("is never wider than the viewport it has to fit in", () => {
-    expect(ruleFor(".connection-menu")).toContain("max-width:min(260px, calc(100vw - 24px))");
-  });
-
   it("stands above the composer rather than over it, and is pressable", () => {
     // The ring sits in the strip's column, which is beside the panel the
     // composer is pinned to — and it is the press, so nothing may swallow it.

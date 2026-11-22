@@ -9,7 +9,7 @@ export function mountHttpTransportControls(host, deviceId) {
   host.innerHTML = `<h3>Connection transport</h3>
     <label for="device-transport">Views and actions</label>
     <select id="device-transport"><option value="webrtc">WebRTC</option><option value="http">HTTPS and live updates</option></select>
-    <p class="dim" data-http-origin></p><p class="dim">HTTPS is optional. The terminal always uses WebRTC separately. Transport changes do not resend uncertain actions.</p>
+    <p class="dim" data-http-origin></p><p class="dim">HTTPS is optional. Terminals also use HTTPS when supported. Older setups may use WebRTC. Transport changes do not resend uncertain actions.</p>
     <button class="btn" data-http-add>Verify HTTPS address…</button><p role="status" aria-live="polite" data-http-status></p>`;
   const select = host.querySelector("select");
   const status = host.querySelector("[data-http-status]");

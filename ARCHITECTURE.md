@@ -5682,6 +5682,9 @@ Terminal ownership for URL devices is negotiated separately below.
   `subscribeConnectionSync`: final chained passes plus each device's bounded
   queue snapshot, excluding later traffic. Reduced motion disables rotation. This
   connection status exception does not expose sync state to other cache-rendered views.
+  HTTPS device rows use the current session's negotiated terminal carrier to
+  show the WebRTC fallback only when that carrier was selected. The device
+  menu fits the viewport and wraps transport labels.
   Per-device contexts live in
   `spa/src/core/deviceContexts.js`.
 

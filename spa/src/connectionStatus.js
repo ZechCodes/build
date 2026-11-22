@@ -52,18 +52,22 @@ let syncActive = false;
  *  answer if something asked them now. */
 function devicesNow() {
   const live = new Map(liveContexts().map((context) => [context.deviceId, context]));
-  return App.devices.map((device) => ({
-    id: device.id,
-    name: device.name,
-    live: live.has(device.id),
-    // Its link is putting a failed path right in place (#123): held, but not
-    // answering until the restart lands.
-    restoring: isRestoringInPlace(live.get(device.id)),
-    // How that machine is carrying, as its own peer link measured it
-    // (core/transportPath.js). Null until the first sample lands, which the
-    // row says as the plain word.
-    path: live.get(device.id)?.session?.transport === "http" ? "https" : live.get(device.id)?.peerLink?.transportPath?.() || null,
-  }));
+  return App.devices.map((device) => {
+    const context = live.get(device.id);
+    const session = context?.session;
+    return {
+      id: device.id,
+      name: device.name,
+      live: live.has(device.id),
+      // Its link is putting a failed path right in place (#123): held, but not
+      // answering until the restart lands.
+      restoring: isRestoringInPlace(context),
+      // The session already holds the negotiated terminal carrier for this
+      // HTTPS Opening. The peer path stays unknown until its first sample.
+      path: session?.transport === "http" ? "https" : context?.peerLink?.transportPath?.() || null,
+      terminalTransport: session?.terminalTransport,
+    };
+  });
 }
 
 /** The ring's parts, made once and then kept: the button the ring is drawn on,
@@ -105,9 +109,29 @@ function paintMenu(menu, rows) {
   if (menu.dataset.rows === signature) return;
   menu.dataset.rows = signature;
   menu.innerHTML = rows.map(rowHtml).join("");
+  if (!menu.hidden) positionOpenMenu();
 }
 
 // ─── The press ───────────────────────────────────────────────────────────────
+
+/** Keep the menu beside the ring and clear of the viewport edges. The menu
+ *  scrolls when the device list is taller than the space on either side. */
+function positionOpenMenu() {
+  const host = document.getElementById("connection-status");
+  const menu = host?.querySelector(".connection-menu:not([hidden])");
+  if (!menu) return;
+  const anchor = host.querySelector(".connection-status").getBoundingClientRect();
+  const { clientWidth, clientHeight } = document.documentElement;
+  const edge = 8;
+  const above = anchor.top - 2 * edge;
+  const below = clientHeight - anchor.bottom - 2 * edge;
+  const opensBelow = menu.scrollHeight + 2 > above && below > above;
+  menu.style.maxHeight = `${Math.max(0, opensBelow ? below : above)}px`;
+
+  const { width, height } = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(edge, Math.min(anchor.right - width, clientWidth - width - edge))}px`;
+  menu.style.top = `${opensBelow ? anchor.bottom + edge : anchor.top - height - edge}px`;
+}
 
 /** Whether the menu is showing. Read off the button rather than held beside
  *  it: the button is what a screen reader is told, and two places to ask would
@@ -132,10 +156,13 @@ function paintMenuOpen(host, open, restoreFocus = false) {
   if (menu) menu.hidden = !open;
   host.classList.toggle("is-open", open);
   if (open) {
+    positionOpenMenu();
+    window.addEventListener("resize", positionOpenMenu);
     host.ownerDocument.addEventListener("keydown", onMenuKey, true);
     host.ownerDocument.addEventListener("pointerdown", onOutsidePress, true);
     return;
   }
+  window.removeEventListener("resize", positionOpenMenu);
   host.ownerDocument.removeEventListener("keydown", onMenuKey, true);
   host.ownerDocument.removeEventListener("pointerdown", onOutsidePress, true);
   // Only where the reader shut it themselves: an outside press has already put

@@ -1,5 +1,5 @@
 //! Mount the candidate with the real issuer verifier for local client tests.
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::Deserialize;
 
@@ -27,11 +27,18 @@ struct Qualification {
 
 impl Qualification {
     fn read() -> Self {
-        let path = PathBuf::from(std::env::var_os("BUILD_HTTP_QUALIFICATION_FIXTURE").unwrap());
+        let path = PathBuf::from(
+            std::env::var_os("BUILD_HTTP_QUALIFICATION_FIXTURE")
+                .expect("set BUILD_HTTP_QUALIFICATION_FIXTURE to the prepared runtime.json"),
+        );
         let path = path.canonicalize().unwrap();
-        let scratch = Path::new("/home/zech/Projects/.agent-scratch/1119/i")
-            .canonicalize()
-            .unwrap();
+        let scratch = PathBuf::from(
+            std::env::var_os("BUILD_HTTP_QUALIFICATION_SCRATCH")
+                .expect("set BUILD_HTTP_QUALIFICATION_SCRATCH to the disposable fixture root"),
+        )
+        .canonicalize()
+        .expect("BUILD_HTTP_QUALIFICATION_SCRATCH must be an existing directory");
+        assert!(scratch.is_dir());
         let dir = path.parent().unwrap();
         assert!(dir.starts_with(&scratch) && dir != scratch);
         assert_eq!(path.file_name().unwrap(), "runtime.json");

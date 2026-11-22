@@ -11,13 +11,21 @@ name: Bridge timing tests
 # large_recovery_reads_finish_under_100ms_while_the_app_lock_is_held
 # (src/app/tracker/sync_tests.rs),
 # bounded_reads_carrier_max_and_p99_with_both_locks_held
-# (tests/bounded_task_carrier_perf.rs), and
+# (tests/bounded_task_carrier_perf.rs),
 # stalled_stream_leaves_push_latency_p50_p95
-# (src/http/runtime/tests/subscriptions/stream_bounds.rs).
+# (src/http/runtime/tests/subscriptions/stream_bounds.rs), and the terminal
+# witnesses in src/http/runtime/terminal/tests/snapshot_slots.rs:
+# mounted_tls_lost_close_stops_spa_ticket_requests,
+# mounted_tls_trickling_readers_recover_both_snapshot_slots,
+# mounted_tls_maximum_snapshot_completes_at_100_kib_per_second,
+# the two bare_tcp_* paced controls (paced_controls.rs), and
+# an_unread_terminal_socket_is_cut_by_the_clock (terminal_upgrade/tests.rs).
+# The real-browser mounted_tls_lost_close_stops_real_browser_ticket_requests
+# and mounted_tls_real_browser_recovers_maximal_snapshot remain manual.
 # They compare wall-clock times against
 # fixed ceilings, which a machine running other suites breaks with nothing wrong in
 # the bridge, so they are out of `cargo test` and run here instead, alone on a
-# fresh runner. The first two retain their debug profile; the busy lock-hold,
+# fresh runner. The git, PTY flood and terminal witnesses use the debug profile; the busy lock-hold,
 # MCP read, SSE push latency and task-carrier regressions use the release profile
 # the local shipping build uses. Stream order and delivery beside a stalled client
 # stay in default tests. The carrier's content/protocol/reporting/byte checks still run in
@@ -82,7 +90,7 @@ jobs:
         run: |
           nice -n 10 npm install -g npm@12.0.2 --ignore-scripts --no-audit --no-fund
           nice -n 10 npm ci --prefix transport/js --ignore-scripts
-          nice -n 10 npm ci --prefix spa --legacy-peer-deps
+          nice -n 10 npm ci --prefix spa --legacy-peer-deps --ignore-scripts
           nice -n 10 npm ci --prefix desktop --ignore-scripts
 
       - name: Mounted terminal lost-Close witness
@@ -91,6 +99,21 @@ jobs:
           export TERMINAL_WSS_TEST_NODE
           nice -n 10 cargo test --locked --lib -- --ignored --exact \
             http::runtime::terminal::tests::snapshot_slots::mounted_tls_lost_close_stops_spa_ticket_requests
+
+      - name: Mounted terminal pacing and stalled-write witnesses
+        shell: bash
+        run: |
+          for test in \
+            http::runtime::terminal::tests::snapshot_slots::mounted_tls_trickling_readers_recover_both_snapshot_slots \
+            http::runtime::terminal::tests::snapshot_slots::mounted_tls_maximum_snapshot_completes_at_100_kib_per_second \
+            http::listener::terminal_upgrade::tests::an_unread_terminal_socket_is_cut_by_the_clock \
+            http::runtime::terminal::tests::snapshot_slots::paced_controls::bare_tcp_trickle_observes_the_same_physical_writer \
+            http::runtime::terminal::tests::snapshot_slots::paced_controls::bare_tcp_near_limit_snapshot_at_100_kib_per_second
+          do
+            nice -n 10 cargo test --locked --lib -- --ignored --exact --list "$test" |
+              grep -Fx "$test: test"
+            nice -n 10 cargo test --locked --lib -- --ignored --exact --test-threads=1 --nocapture "$test"
+          done
 
   busy-lock-holds:
     name: Busy app-lock holds, MCP reads and SSE push latency (release)

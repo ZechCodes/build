@@ -177,7 +177,7 @@ def main():
         (run_dir / name).mkdir()
     env = base_environment(run_dir)
     fixture_args = [sys.executable, script_dir / "fixture.py", "--repo", repo, "--run-dir", run_dir,
-        "--scratch-task", args.scratch_task,
+        "--scratch-root", SCRATCH, "--bridge-host", "localhost", "--issuer-terminal-policy", "off",
         "--issuer-port", args.issuer_port, "--bridge-port", args.bridge_port]
     run_logged([*fixture_args, "prepare"], env=env, cwd=repo, log=run_dir / "prepare.log")
     fixture_path = run_dir / "runtime.json"

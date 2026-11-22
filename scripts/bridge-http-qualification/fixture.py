@@ -187,7 +187,6 @@ def with_electron_navigation(app):
     return navigation
 
 
-TERMINAL_SCRATCH = Path.home() / "Projects/.agent-scratch/1119/i"
 TERMINAL_LISTENER = (
     "http::runtime::terminal::tests::qualification::serve_terminal_qualification_fixture"
 )
@@ -197,21 +196,24 @@ def terminal_qualification(args):
     from run import (base_environment, ensure_free_ports, install_shutdown_handlers,
                      launch, run_logged, wait_ready)
 
+    scratch = args.scratch_root
     binary = args.bridge_test_binary.resolve(strict=True)
-    target = (TERMINAL_SCRATCH / "target/debug/deps").resolve()
+    target = (scratch / "target/debug/deps").resolve()
     if binary.parent != target or not re.fullmatch(r"build_bridge-[0-9a-f]{16}", binary.name):
         raise ValueError("provide the cargo lib test executable from the task scratch target")
     install_shutdown_handlers()
     ensure_free_ports([args.issuer_port, args.bridge_port])
-    run_dir = Path(tempfile.mkdtemp(prefix="run-", dir=TERMINAL_SCRATCH))
+    run_dir = Path(tempfile.mkdtemp(prefix="run-", dir=scratch))
     for name in ("home", "tmp", "empty-ca-dir"):
         (run_dir / name).mkdir()
     env = base_environment(run_dir)
-    env.update(CARGO_TARGET_DIR=str(TERMINAL_SCRATCH / "target"))
+    env.update(CARGO_TARGET_DIR=str(scratch / "target"), BUILD_HTTP_QUALIFICATION_SCRATCH=str(scratch))
     repo = args.repo.resolve()
     command = [
         sys.executable, Path(__file__).resolve(), "--repo", repo, "--run-dir", run_dir,
-        "--scratch-task", "1132", "--issuer-port", args.issuer_port, "--bridge-port", args.bridge_port,
+        "--scratch-root", scratch, "--bridge-host", args.bridge_host,
+        "--issuer-terminal-policy", args.issuer_terminal_policy,
+        "--issuer-port", args.issuer_port, "--bridge-port", args.bridge_port,
     ]
     run_logged([*command, "prepare"], env=env, cwd=repo, log=run_dir / "prepare.log")
     fixture_path = run_dir / "runtime.json"
@@ -231,12 +233,12 @@ def terminal_qualification(args):
         env["BUILD_HTTP_QUALIFICATION_ELECTRON_SIGN_OUT"] = "1"
     if args.webkit:
         webkit = args.webkit.resolve(strict=True)
-        if not webkit.is_relative_to(TERMINAL_SCRATCH.resolve()):
+        if not webkit.is_relative_to(scratch):
             raise ValueError("provide the WebKit launcher from the task scratch")
         env["BUILD_HTTP_QUALIFICATION_WEBKIT"] = str(webkit)
     if args.electron:
         electron = args.electron.resolve(strict=True)
-        if electron.parent != (TERMINAL_SCRATCH / "electron").resolve() or electron.name != "electron":
+        if electron.parent != (scratch / "electron").resolve() or electron.name != "electron":
             raise ValueError("provide the locked Electron executable from the task scratch")
         env["BUILD_HTTP_QUALIFICATION_ELECTRON"] = str(electron)
         for name in ("DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XAUTHORITY"):
@@ -312,7 +314,10 @@ def main():
     parser.add_argument("--run-dir", type=Path)
     parser.add_argument("--issuer-port", type=int, default=18476)
     parser.add_argument("--bridge-port", type=int, default=19476)
-    parser.add_argument("--scratch-task", type=int, choices=[976, 977, 1132], default=976)
+    parser.add_argument("--scratch-root", type=Path, required=True, help="existing disposable fixture directory")
+    parser.add_argument("--bridge-host", choices=["localhost", "127.0.0.1"], required=True)
+    parser.add_argument("--issuer-terminal-policy", choices=["off", "on"], required=True,
+                        help="enable the terminal-specific issuer fixture and navigation routes")
     parser.add_argument("--bridge-test-binary", type=Path)
     parser.add_argument("--electron", type=Path)
     parser.add_argument("--webkit", type=Path)
@@ -323,7 +328,12 @@ def main():
     args = parser.parse_args()
     if not all(1024 <= port <= 65535 for port in [args.issuer_port, args.bridge_port]):
         parser.error("ports must be unprivileged loopback ports")
+    args.scratch_root = args.scratch_root.resolve()
+    if not args.scratch_root.is_dir():
+        parser.error("--scratch-root must be an existing directory")
     if args.command == "qualify":
+        if args.bridge_host != "127.0.0.1" or args.issuer_terminal_policy != "on":
+            parser.error("terminal qualification requires --bridge-host 127.0.0.1 --issuer-terminal-policy on")
         if not args.bridge_test_binary or not args.bridge_test_binary.is_absolute():
             parser.error("--bridge-test-binary must be an absolute cargo test executable path")
         if args.client in ("electron", "electron-sign-out") and (not args.electron or args.gate != "on"):
@@ -335,12 +345,8 @@ def main():
     if args.run_dir is None:
         parser.error("--run-dir is required for prepare and serve")
     run_dir = args.run_dir.resolve()
-    scratch = Path("/home/zech/Projects/.agent-scratch") / str(args.scratch_task)
-    if args.scratch_task == 1132:
-        scratch = Path("/home/zech/Projects/.agent-scratch/1119/i")
-    scratch = scratch.resolve()
-    if not run_dir.is_relative_to(scratch) or run_dir == scratch:
-        parser.error("--run-dir must be a disposable child of the selected task scratch")
+    if not run_dir.is_relative_to(args.scratch_root) or run_dir == args.scratch_root:
+        parser.error("--run-dir must be a disposable child of --scratch-root")
     run_dir.mkdir(parents=True, exist_ok=True)
     if args.command == "prepare" and (run_dir / "app.db").exists():
         parser.error("Qualification requires a fresh disposable database")
@@ -353,13 +359,12 @@ def main():
     os.chdir(run_dir)
     from skrift.asgi import create_app
     app = create_app()
+    terminal = args.issuer_terminal_policy == "on"
     if args.command == "prepare":
         create_certificates(run_dir)
-        bridge_host = "127.0.0.1" if args.scratch_task == 1132 else "localhost"
-        asyncio.run(seed(run_dir, issuer, f"https://{bridge_host}:{args.bridge_port}",
-                         terminal=args.scratch_task == 1132))
+        asyncio.run(seed(run_dir, issuer, f"https://{args.bridge_host}:{args.bridge_port}", terminal=terminal))
     else:
-        asyncio.run(serve(app, run_dir, args.issuer_port, terminal=args.scratch_task == 1132))
+        asyncio.run(serve(app, run_dir, args.issuer_port, terminal=terminal))
 
 
 if __name__ == "__main__":

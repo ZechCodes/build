@@ -220,6 +220,14 @@ test("terminal qualification checks the default mount with a real credential", {
   assert.equal(h.trace.some((entry) => entry.path === "/v1/terminal-tickets"), false);
 });
 
+test("SSE redaction catches terminal output inside an ordinary state event", () => {
+  const sentinel = "wss-native-qualification";
+  const output = [{ event: "push", data: { type: "state", items: [{ text: sentinel }] } }];
+  assert.throws(() => assertSseRedacts(output, new Set([sentinel])), {
+    message: "SSE must redact credentials, tickets and terminal output",
+  });
+});
+
 test("terminal qualification uses native WSS beside real REST and SSE", {
   ...qualification, skip: !fixturePath || terminalGate !== "on",
 }, async (t) => {
@@ -254,18 +262,27 @@ test("terminal qualification uses native WSS beside real REST and SSE", {
   await stopAgent();
   assert.equal(h.trace.filter((entry) => entry.path === "/v1/terminal-tickets" && entry.status === 201).length, 1);
   assert.equal(h.output.some((event) => event.data?.type?.startsWith("term.")), false);
+  assertSseRedacts(h.output, secrets);
   await assertShippedLogsRedact(fixture, secrets, h.trace);
   t.diagnostic("native TLS WSS agent attach and shell create, attach, resize, input, output and close beside REST and SSE");
 });
+
+function assertSseRedacts(output, secrets) {
+  assertRedacts([JSON.stringify(output)], secrets, "SSE must redact credentials, tickets and terminal output");
+}
 
 async function assertShippedLogsRedact(fixture, secrets, trace) {
   assert.ok(secrets.size >= 4, "issuer bearer, bridge bearer, ticket and terminal output were observed");
   const logs = await Promise.all(["issuer.log", "bridge.log"].map((name) =>
     readFile(resolve(fixture.runDir, name), "utf8")));
   logs.push(JSON.stringify(trace));
+  assertRedacts(logs, secrets, "diagnostics must redact credentials, tickets and terminal output");
+}
+
+function assertRedacts(sources, secrets, message) {
   for (const value of secrets) {
     assert.ok(typeof value === "string" && value.length > 0, "the fixture observed a nonempty sentinel");
-    assert.ok(logs.every((log) => !log.includes(value)), "diagnostics must redact credentials, tickets and terminal output");
+    assert.ok(sources.every((source) => !source.includes(value)), message);
   }
 }
 

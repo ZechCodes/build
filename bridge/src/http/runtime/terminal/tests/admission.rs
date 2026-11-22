@@ -217,6 +217,37 @@ async fn mounted_tls_concurrent_redemption_has_exactly_one_winner() {
 }
 
 #[tokio::test]
+async fn mounted_tls_ticket_refuses_a_changed_device_in_the_same_registry() {
+    let server = Server::start(fake_handler()).await;
+    let opening = server.opening().await;
+    let session = case_text(&opening["session_id"]);
+    let ticket = server.ticket(&opening).await;
+    // Leave the registry, ticket, Opening, generation and origin intact.
+    let device = {
+        let mut openings = server.state.openings.lock().unwrap();
+        let mounted = openings.get_mut(session).unwrap();
+        std::mem::replace(&mut mounted.identity.device_id, "other-device".into())
+    };
+    let (head, mut connection) = server.upgrade(&server.handshake(&ticket)).await;
+    assert_eq!(status(&head), 401);
+    let refusal = read_json_body(&mut connection, &head).await;
+    assert_eq!(refusal["error_code"], "invalid_credential");
+    server
+        .state
+        .openings
+        .lock()
+        .unwrap()
+        .get_mut(session)
+        .unwrap()
+        .identity
+        .device_id = device;
+    // Redeem the same ticket to prove it was present and the refusal did not spend it.
+    let socket = server.socket(&ticket).await;
+    drop(socket);
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn mounted_tls_cookie_without_ticket_cannot_upgrade() {
     let server = Server::start(fake_handler()).await;
     let mut headers = server.handshake(&"A".repeat(43));

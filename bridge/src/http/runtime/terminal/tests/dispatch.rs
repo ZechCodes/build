@@ -76,7 +76,7 @@ async fn mounted_tls_colliding_terminal_ids_stay_on_their_devices() {
         assert_eq!(
             status(&head),
             401,
-            "a foreign ticket cannot attach on this device"
+            "each listener refuses a ticket unknown to its registry"
         );
     }
 

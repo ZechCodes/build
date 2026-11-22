@@ -172,6 +172,241 @@ fn snapshot_handler(
     ))
 }
 
+const MAX_SNAPSHOT_BYTES: usize = 12 * 1024 * 1024;
+const TRICKLE_BYTES: usize = 16 * 1024;
+const TRICKLE_READS: usize = 192;
+
+#[tokio::test]
+#[ignore = "paces two real TLS readers through the 192-second snapshot budget"]
+async fn mounted_tls_trickling_readers_recover_both_snapshot_slots() {
+    let server = paced_snapshot_server().await;
+    let (first_opening, first) = start_paced_snapshot(&server, "first").await;
+    let (second_opening, second) = start_paced_snapshot(&server, "second").await;
+    let pool = server.state.execution.sessions().terminal_snapshot_pool();
+    let started = Instant::now();
+    let progress = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
+    let reading = tokio::spawn({
+        let progress = progress.clone();
+        async move {
+            tokio::join!(
+                trickle(first, &progress[0], "first", started),
+                trickle(second, &progress[1], "second", started)
+            )
+        }
+    });
+    timeout(TIMEOUT, async {
+        while pool.available_permits() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let waiting = server.opening().await;
+    let mut sibling = server.socket(&server.ticket(&waiting).await).await;
+    let wait_started = Instant::now();
+    send(
+        &mut sibling,
+        "waiting",
+        "term.attach",
+        json!({"term_id":"small"}),
+    )
+    .await;
+    let refusal = object_with_timeout(&mut sibling, TIMEOUT + Duration::from_secs(3)).await;
+    let read_counts = progress
+        .each_ref()
+        .map(|count| count.load(Ordering::Relaxed));
+    assert!(
+        read_counts.iter().all(|count| *count >= 8),
+        "both TLS readers must consume 16 KiB per second into the first 10-second window: {read_counts:?}"
+    );
+    assert_eq!(refusal["id"], "waiting");
+    assert_eq!(
+        refusal["error_code"],
+        "snapshot_busy",
+        "the waiter completed after {:?} while both TLS clients were still reading: {read_counts:?}. Reply ok={}",
+        wait_started.elapsed(),
+        refusal["ok"]
+    );
+    assert!(wait_started.elapsed() >= TIMEOUT);
+    assert_ping(&mut sibling).await;
+    assert_eq!(
+        pool.available_permits(),
+        0,
+        "both readers still make progress after the independent 10-second wait"
+    );
+    let (first, second) = timeout(Duration::from_secs(195), reading)
+        .await
+        .expect("both mounted writers must release their slots by the hard ceiling")
+        .unwrap();
+    for (read_count, _reader) in [first, second] {
+        assert!(
+            read_count >= TRICKLE_READS,
+            "reader lost the connection after only {read_count} trickles"
+        );
+    }
+    assert!(started.elapsed() <= Duration::from_secs(195));
+    assert_eq!(pool.available_permits(), 2);
+    for opening in [first_opening, second_opening] {
+        assert_eq!(
+            server.issue(&opening).await.0,
+            409,
+            "timeout latches on its exact Opening"
+        );
+    }
+    let next = call(
+        &mut sibling,
+        "fresh",
+        "term.attach",
+        json!({"term_id":"small"}),
+    )
+    .await;
+    assert_eq!(next["ok"], true);
+    server.stop().await;
+}
+
+#[tokio::test]
+#[ignore = "paces a 12 MiB snapshot at 100 KiB/s over mounted TLS"]
+async fn mounted_tls_maximum_snapshot_completes_at_100_kib_per_second() {
+    let server = paced_snapshot_server().await;
+    let (_, socket) = start_paced_snapshot(&server, "paced").await;
+    let (producer, consumer) = tokio::io::duplex(128 * 1024);
+    let progress = Arc::new(AtomicUsize::new(0));
+    let started = Instant::now();
+    let paced = tokio::spawn(forward_paced(socket, producer, progress.clone(), started));
+    let mut websocket = WebSocketStream::from_raw_socket(consumer, Role::Client, None).await;
+    let message = timeout(Duration::from_secs(150), websocket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_or_else(|error| {
+            panic!(
+                "12 MiB snapshot incomplete after {:?} and {} bytes at 100 KiB/s: {error}",
+                started.elapsed(),
+                progress.load(Ordering::Relaxed)
+            )
+        });
+    assert!(started.elapsed() >= Duration::from_secs(120));
+    assert!((MAX_SNAPSHOT_BYTES - 512..=MAX_SNAPSHOT_BYTES).contains(&message.len()));
+    let reply: Value = serde_json::from_slice(&message.into_data()).unwrap();
+    assert_eq!(reply["id"], "paced");
+    assert_eq!(reply["ok"], true);
+    assert_eq!(
+        server
+            .state
+            .execution
+            .sessions()
+            .terminal_snapshot_pool()
+            .available_permits(),
+        2
+    );
+    paced.abort();
+    server.stop().await;
+}
+
+async fn paced_snapshot_server() -> Server {
+    let handler = greeting(FrameHandler::new(FrameClock::new(), |_, frame, _| {
+        let term_id = case_text(&frame.payload["params"]["term_id"]);
+        let snapshot = if term_id == "large" {
+            "A".repeat(MAX_SNAPSHOT_BYTES - 512)
+        } else {
+            String::new()
+        };
+        success(
+            &frame,
+            json!({"term_id":term_id,"snapshot":snapshot,"cursor":0}),
+        )
+    }));
+    Server::start_with(handler, Duration::from_secs(360)).await
+}
+
+async fn start_paced_snapshot(server: &Server, id: &str) -> (Value, ClientIo) {
+    let opening = server.opening().await;
+    let headers = server.handshake(&server.ticket(&opening).await);
+    let (head, mut io) = server.upgrade(&headers).await;
+    assert_eq!(status(&head), 101);
+    let call = json!({"id":id,"method":"term.attach","params":{"term_id":"large"}});
+    let mut frame = Frame::message(
+        serde_json::to_vec(&call).unwrap(),
+        OpCode::Data(Data::Binary),
+        true,
+    );
+    frame.header_mut().mask = Some([0x21, 0x73, 0xf9, 0x44]);
+    let mut encoded = Vec::new();
+    frame.format(&mut encoded).unwrap();
+    io.write_all(&encoded).await.unwrap();
+    io.flush().await.unwrap();
+    (opening, io)
+}
+
+async fn trickle(
+    mut socket: ClientIo,
+    progress: &AtomicUsize,
+    name: &str,
+    started: Instant,
+) -> (usize, ClientIo) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    let mut buf = vec![0; TRICKLE_BYTES];
+    for reads in 0..TRICKLE_READS {
+        interval.tick().await;
+        if !matches!(
+            timeout(TIMEOUT, socket.read_exact(&mut buf)).await,
+            Ok(Ok(_))
+        ) {
+            return (reads, socket);
+        }
+        progress.store(reads + 1, Ordering::Relaxed);
+        eprintln!(
+            "{name} reader received {} bytes at {:?}",
+            (reads + 1) * TRICKLE_BYTES,
+            started.elapsed()
+        );
+    }
+    // Hold the transport through the last deadline tick.
+    interval.tick().await;
+    (TRICKLE_READS, socket)
+}
+
+async fn forward_paced(
+    mut socket: ClientIo,
+    mut receiver: tokio::io::DuplexStream,
+    progress: Arc<AtomicUsize>,
+    started: Instant,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    let mut buf = vec![0; 100 * 1024];
+    loop {
+        interval.tick().await;
+        let mut remaining = buf.len();
+        while remaining != 0 {
+            let bytes = match socket.read(&mut buf[..remaining]).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    eprintln!(
+                        "TLS reader stopped after {:?} and {} bytes: {error}",
+                        started.elapsed(),
+                        progress.load(Ordering::Relaxed)
+                    );
+                    return;
+                }
+            };
+            if bytes == 0 || receiver.write_all(&buf[..bytes]).await.is_err() {
+                return;
+            }
+            progress.fetch_add(bytes, Ordering::Relaxed);
+            remaining -= bytes;
+        }
+    }
+}
+
+async fn object_with_timeout(socket: &mut Client, bound: Duration) -> Value {
+    let message = timeout(bound, socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    serde_json::from_slice(&message.into_data()).unwrap()
+}
+
 // Run with Node 22 and the SPA and desktop lockfile installs. This opt-in
 // witness uses the real browser endpoint and the desktop's locked WS client.
 #[tokio::test]

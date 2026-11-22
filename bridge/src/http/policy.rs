@@ -10,6 +10,15 @@ use tower_http::cors::CorsLayer;
 
 use super::limits::MAX_HEADER_BYTES;
 
+// OPTIONS carries the preflight. These are the resource methods it can allow.
+const RESOURCE_METHODS: [Method; 5] = [
+    Method::GET,
+    Method::POST,
+    Method::PUT,
+    Method::PATCH,
+    Method::DELETE,
+];
+
 const REQUEST_HEADERS: [&str; 10] = [
     "authorization",
     "content-type",
@@ -50,14 +59,7 @@ impl HttpPolicy {
     pub fn apply(self, router: Router) -> Router {
         let cors = CorsLayer::new()
             .allow_origin(self.origins.clone())
-            .allow_methods([
-                Method::GET,
-                Method::HEAD,
-                Method::POST,
-                Method::PATCH,
-                Method::DELETE,
-                Method::OPTIONS,
-            ])
+            .allow_methods(RESOURCE_METHODS)
             .allow_headers(REQUEST_HEADERS.map(HeaderName::from_static))
             .expose_headers([
                 HeaderName::from_static("x-request-id"),
@@ -134,10 +136,8 @@ impl HttpPolicy {
             .get(header::ACCESS_CONTROL_REQUEST_METHOD)
             .and_then(|value| value.to_str().ok());
         if !request.headers().contains_key(header::ORIGIN)
-            || !matches!(
-                method,
-                Some("GET" | "HEAD" | "POST" | "PATCH" | "DELETE" | "OPTIONS")
-            )
+            || !method
+                .is_some_and(|method| RESOURCE_METHODS.iter().any(|allowed| allowed == method))
         {
             return Err((StatusCode::FORBIDDEN, "preflight_forbidden"));
         }

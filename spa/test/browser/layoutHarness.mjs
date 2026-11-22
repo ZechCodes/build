@@ -85,8 +85,8 @@ export async function openLayoutSession({ plugins = [] } = {}) {
   }
   const port = server.httpServer.address().port;
   const basePath = server.config.base;
-  async function withPage(check, { width = 1180, height = 840, deviceScaleFactor = 1, hasTouch = false } = {}) {
-    const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor, hasTouch });
+  async function withPage(check, { width = 1180, height = 840, deviceScaleFactor = 1, hasTouch = false, ignoreHTTPSErrors = false } = {}) {
+    const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor, hasTouch, ignoreHTTPSErrors });
     try {
       // Serve real Vite-transformed modules through the driver, without an HTTP
       // proxy or retained APIResponse bodies. Host network notifications can

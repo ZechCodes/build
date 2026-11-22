@@ -1060,6 +1060,7 @@ fn error_body(code: &'static str) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     mod discovery;
+    mod project_unread;
     mod subscriptions;
 
     use super::*;

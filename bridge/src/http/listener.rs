@@ -405,6 +405,10 @@ async fn serve_connections(
     };
     // Stop accepting and fence each HTTP socket before bounded teardown.
     drop(accepting);
+    // A forked child can still hold a copy of the listener before exec.
+    // On Linux, shutdown deactivates the shared socket before we close our copy.
+    #[cfg(target_os = "linux")]
+    let _ = socket2::SockRef::from(&listener).shutdown(std::net::Shutdown::Both);
     drop(listener);
     let _ = stop.send(true);
     if timeout(limits::SOCKET_TEARDOWN_TIMEOUT, async {

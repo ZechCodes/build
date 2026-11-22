@@ -144,6 +144,11 @@ function namesOf(greeting, version) {
   return new Set(Array.isArray(greeting.capabilities) ? greeting.capabilities : []);
 }
 
+/** Implementation support. HTTP Openings also require the matching descriptor. */
+export function supportsTerminalWebSocket(greeting) {
+  return namesOf(greeting, greeting?.api_version).has("term.websocket");
+}
+
 function secretCapabilities(names, version) {
   const supported = satisfies(version, ">=3.36.0 <4.0.0");
   return {

@@ -1,4 +1,5 @@
 import { SPA_API_RANGE } from "./bridgeApi/index.js";
+import { supportsTerminalWebSocket } from "./bridgeApi/v1/index.js";
 import { createBridgeEpoch, endedOpeningError } from "./bridgeEpoch.js";
 import { httpFailure } from "./httpEndpoint.js";
 import { httpRequest } from "./httpFetch.js";
@@ -24,16 +25,12 @@ export function terminalWebSocketMode(opening) {
   const descriptor = opening.transport.terminal_websocket;
   if (!validTerminalDescriptor(descriptor)) return "protocol_error";
   if (descriptor.version > 1) return descriptor.protocol === TERMINAL_PROTOCOL ? "protocol_error" : "webrtc";
-  return supportsTerminalV1(opening.greeting, descriptor.protocol) ? "wss" : "protocol_error";
+  return descriptor.protocol === TERMINAL_PROTOCOL && supportsTerminalWebSocket(opening.greeting) ? "wss" : "protocol_error";
 }
 
 function validTerminalDescriptor(descriptor) {
   return Number.isSafeInteger(descriptor?.version) && descriptor.version >= 1
     && typeof descriptor.protocol === "string" && protocolToken.test(descriptor.protocol);
-}
-
-function supportsTerminalV1(greeting, protocol) {
-  return protocol === TERMINAL_PROTOCOL && Array.isArray(greeting?.capabilities) && greeting.capabilities.includes("term.websocket");
 }
 
 function terminalAccess({ endpoint, opening, bridgeEpoch, current, closeListeners }) {

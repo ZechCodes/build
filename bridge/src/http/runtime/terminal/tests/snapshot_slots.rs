@@ -101,8 +101,81 @@ async fn mounted_tls_snapshot_slots_wait_for_flush_or_drop_and_drain() {
     drop((first, second, third, fourth));
 }
 
+#[tokio::test]
+async fn mounted_tls_snapshot_timeout_without_close_latches_until_explicit_retry() {
+    let fast = crate::screen::ScreenHandle::new("fast", 80, 24);
+    let pool = Arc::new(OnceLock::new());
+    let server = Server::start_with(
+        snapshot_handler(fast, pool.clone()),
+        Duration::from_secs(360),
+    )
+    .await;
+    let (observe, mut observed) = mpsc::unbounded_channel();
+    *server.state.output_observer.lock().unwrap() = Some(Arc::new(move |authority| {
+        let _ = observe.send(authority);
+    }));
+    let StalledSnapshot {
+        mut socket,
+        opening,
+        cut: _stall_cut,
+    } = stall_snapshot(&server, &mut observed, "lost-close").await;
+
+    let grant_pool = pool.get().unwrap();
+    assert_eq!(grant_pool.available_permits(), 1);
+    // stall_snapshot has observed a real blocked TLS write and controls the
+    // independent no-progress cut. The whole-message deadline wins mid-frame.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(193)).await;
+    tokio::time::resume();
+    let received = timeout(TIMEOUT, socket.next()).await.unwrap();
+    assert_eq!(grant_pool.available_permits(), 2);
+    assert!(
+        matches!(
+            received,
+            Some(Err(Error::Protocol(
+                tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake
+            )))
+        ) || matches!(received, Some(Err(Error::Io(ref error))) if error.kind() == std::io::ErrorKind::UnexpectedEof),
+        "peer should see a transport loss without a Close frame: {received:?}"
+    );
+
+    let expected = &fixture()["ticket"]["snapshot_timeout"]["automatic_refusal"];
+    assert_eq!(
+        server.issue(&opening).await,
+        (
+            expected["status"].as_u64().unwrap(),
+            expected["body"].clone()
+        )
+    );
+    let mut retry_body = fixture()["ticket"]["snapshot_timeout"]["explicit_retry_body"].clone();
+    retry_body["opening_generation"] = opening["opening_generation"].clone();
+    let (status, issued) = server
+        .json(
+            "POST",
+            terminal_tickets::PATH,
+            "writer",
+            case_text(&opening["session_id"]),
+            retry_body,
+        )
+        .await;
+    assert_eq!(status, 201, "{issued:?}");
+    let mut restored = server.socket(case_text(&issued["ticket"])).await;
+    let reply = call(
+        &mut restored,
+        "restored",
+        "term.attach",
+        json!({"term_id":"fast"}),
+    )
+    .await;
+    assert_eq!(reply["ok"], true, "{reply:?}");
+    assert_eq!(server.ticket_requests.load(Ordering::Relaxed), 2);
+    assert_eq!(server.upgrades.load(Ordering::Relaxed), 2);
+    server.stop().await;
+}
+
 struct StalledSnapshot {
-    _socket: Client,
+    socket: Client,
+    opening: Value,
     cut: Arc<Notify>,
 }
 
@@ -127,7 +200,8 @@ async fn stall_snapshot(
     .await
     .expect("physical TLS writer must actually stall");
     StalledSnapshot {
-        _socket: socket,
+        socket,
+        opening,
         cut,
     }
 }

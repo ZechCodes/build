@@ -3526,31 +3526,31 @@
   "exclusions": [
     {
       "method": "agent.attach",
-      "reason": "terminal control/output uses a separately authenticated WebRTC path"
+      "reason": "terminal control and output use separately authenticated WSS with WebRTC fallback"
     },
     {
       "method": "term.create",
-      "reason": "terminal control/output uses a separately authenticated WebRTC path"
+      "reason": "terminal control and output use separately authenticated WSS with WebRTC fallback"
     },
     {
       "method": "term.close",
-      "reason": "terminal control/output uses a separately authenticated WebRTC path"
+      "reason": "terminal control and output use separately authenticated WSS with WebRTC fallback"
     },
     {
       "method": "term.attach",
-      "reason": "terminal control/output uses a separately authenticated WebRTC path"
+      "reason": "terminal control and output use separately authenticated WSS with WebRTC fallback"
     },
     {
       "method": "term.input",
-      "reason": "terminal control/output uses a separately authenticated WebRTC path"
+      "reason": "terminal control and output use separately authenticated WSS with WebRTC fallback"
     },
     {
       "method": "term.resize",
-      "reason": "terminal control/output uses a separately authenticated WebRTC path"
+      "reason": "terminal control and output use separately authenticated WSS with WebRTC fallback"
     },
     {
       "method": "term.ack",
-      "reason": "terminal control/output uses a separately authenticated WebRTC path"
+      "reason": "terminal control and output use separately authenticated WSS with WebRTC fallback"
     },
     {
       "method": "rtc.offer",

@@ -15462,7 +15462,7 @@
                       "id": "example",
                       "ok": true,
                       "result": {
-                        "api_version": "3.41.0",
+                        "api_version": "3.42.0",
                         "ack_confirm_methods": [
                           "environment.create",
                           "environment.create_project",
@@ -15714,6 +15714,7 @@
                           "term.list",
                           "term.projectSources",
                           "term.resize",
+                          "term.websocket",
                           "thread.activity",
                           "thread.attach",
                           "thread.attachment",

@@ -410,8 +410,66 @@ fn application_binding(
 }
 
 fn greeting(handler: FrameHandler) -> FrameHandler {
-    handler
-        .with_greeting_reads(|epoch| json!({"api_version": api::API_VERSION, "bridge_epoch":epoch}))
+    handler.with_greeting_reads(|epoch| {
+        json!({
+            "api_version": api::API_VERSION,
+            "bridge_epoch": epoch,
+            "capabilities": api::capabilities(false),
+        })
+    })
+}
+
+#[tokio::test]
+async fn mounted_candidate_advertises_terminal_wss_on_post_and_patch() {
+    let handler = greeting(FrameHandler::new(FrameClock::new(), |_, frame, _| {
+        success(&frame, json!({}))
+    }));
+    let server = Server::start(handler).await;
+    let opened = server.opening().await;
+    let session_id = case_text(&opened["session_id"]);
+    let (renew_status, renewed) = server
+        .json(
+            "PATCH",
+            &format!("/v1/sessions/{session_id}"),
+            "opening",
+            session_id,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(renew_status, 200, "{renewed:?}");
+    assert_eq!(renewed["session_id"], opened["session_id"]);
+    assert_eq!(renewed["opening_generation"], opened["opening_generation"]);
+
+    let contract = &fixture()["opening"];
+    let resources: Value = serde_json::from_str(include_str!(
+        "../../../../../fixtures/api/http/resource-manifest.json"
+    ))
+    .unwrap();
+    for opening in [&opened, &renewed] {
+        let transport = &opening["transport"];
+        assert_eq!(
+            transport[case_text(&contract["descriptor_field"])],
+            contract["descriptor"]
+        );
+        assert_eq!(
+            transport["terminal"],
+            contract["base"]["transport"]["terminal"]
+        );
+        assert_eq!(transport["resource_manifest_version"], resources["version"]);
+        assert_eq!(
+            transport["operation_ids"],
+            resources["transport"]["operation_ids"]
+        );
+        assert!(opening["greeting"]["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&contract["capability"]));
+    }
+
+    let ticket = server.ticket(&renewed).await;
+    let (headers, _) = server.upgrade(&server.handshake(&ticket)).await;
+    assert_eq!(status(&headers), 101);
+    server.stop().await;
 }
 
 fn success(frame: &crate::transport::Frame, result: Value) -> Value {

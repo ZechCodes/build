@@ -29,7 +29,7 @@ const eventExamples = fixtures
 
 describe("the v1 adapter against fixtures/api/v1", () => {
   it("retains device roster and pooled directory session facts in the current wire release", () => {
-    expect(versions.current).toBe("3.41.0");
+    expect(versions.current).toBe("3.42.0");
     const snapshot = methodFixtures.find(({ body }) => body.method === "sync.snapshot").body;
     const example = snapshot.examples.find((entry) => entry.since === "3.34.0");
     expect(example.params.scope).toEqual({ kind: "device" });
@@ -43,6 +43,15 @@ describe("the v1 adapter against fixtures/api/v1", () => {
       project_id: "proj-1", session_started_ms: 1800000000000, last_activity_ms: 1800000060000,
     });
     expect(v1.parseResult("sync.snapshot", example.result)).toEqual(example.result);
+  });
+
+  it("announces terminal WebSocket implementation support independently of the wire minor", () => {
+    const greeting = methodFixtures.find(({ body }) => body.method === "session.hello").body;
+    expect(greeting.terminal_websocket).toEqual({ since: versions.current, capabilities: ["term.websocket"] });
+    expect(v1.supportsTerminalWebSocket(greeting.result)).toBe(true);
+    const { api_version } = greeting.result;
+    expect(v1.supportsTerminalWebSocket({ api_version, capabilities: [] })).toBe(false);
+    expect(v1.supportsTerminalWebSocket({ api_version: "4.0.0", capabilities: ["term.websocket"] })).toBe(false);
   });
 
   it("announces terminal source selectors independently of Git and Files", () => {

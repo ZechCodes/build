@@ -314,6 +314,13 @@ describe("URL terminal panes", () => {
     const automatic = { opening_generation: explicit_retry_body.opening_generation };
     const attempts = close === "private close" ? [automatic] : [automatic, automatic];
     expect(ticketBodies(fetchImpl)).toEqual(attempts);
+    if (close === "opaque close") {
+      const requestIndex = fetchImpl.mock.calls.findLastIndex(([url]) => url.endsWith(fixture.ticket.path));
+      const response = await fetchImpl.mock.results[requestIndex].value;
+      expect(response.status).toBe(409);
+    }
+    await vi.advanceTimersByTimeAsync(16000);
+    expect(ticketBodies(fetchImpl)).toEqual(attempts);
     expect(sockets).toHaveLength(1);
 
     notice.querySelector("button").click();
@@ -459,13 +466,14 @@ describe("URL terminal panes", () => {
     expect(peer.close).not.toHaveBeenCalled();
   });
 
-  it("uses RTC for a future-version Opening with a declared legacy fallback", async () => {
-    const { session } = await urlDevice("A", { mode: "future_version" });
+  it.each(["old_bridge", "future_version"])("uses RTC for the %s Opening vector", async (mode) => {
+    const { session, fetchImpl } = await urlDevice("A", { mode });
     select("A");
     terminalManager();
     await vi.waitFor(() => expect(rtcMint).toHaveBeenCalledOnce());
     expect(session.terminalTransport).toBe("webrtc");
     expect(session.openTerminal).not.toHaveBeenCalled();
+    expect(ticketBodies(fetchImpl)).toEqual([]);
     expect(sockets).toHaveLength(0);
   });
 

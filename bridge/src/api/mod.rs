@@ -80,7 +80,8 @@ use std::collections::BTreeSet;
 /// 3.39.0 advertises project archive/restore, project rename and environment settings edits.
 /// 3.40.0 releases environment-scoped secrets with the settings/composer consumer.
 /// 3.41.0 releases environment and project/task deletion in settings.
-pub const API_VERSION: &str = "3.41.0";
+/// 3.42.0 adds capability negotiation for the gated HTTP terminal WebSocket.
+pub const API_VERSION: &str = "3.42.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -109,6 +110,8 @@ pub const QA_METHODS: &[&str] = &["stream.events", "stream.start", "stream.state
 /// Cross-verb wire features whose availability cannot be expressed by a
 /// single method name. The SPA consumes a subset as shape and behavior gates.
 pub const FEATURE_CAPABILITIES: &[&str] = &[
+    // Since 3.42.0: HTTP Opening also needs the WSS descriptor.
+    "term.websocket",
     "environments.delete", // Since 3.41.0: delete empty environments from settings.
     "projects.deleteTasks", // Since 3.41.0: deliberate project and task deletion.
     SECRETS_ENVIRONMENT_SCOPE_CAPABILITY, // Since 3.40.0: environment secrets in settings/composer.

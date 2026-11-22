@@ -892,13 +892,17 @@ async function qualifyElectron(main, witness) {
     assert.equal(terminalSockets.length, 1);
     const [{ socket, closed }] = terminalSockets;
     const lifecycle = [];
-    contents.once("destroyed", () => lifecycle.push("destroyed"));
+    const destroyed = Promise.withResolvers();
+    contents.once("destroyed", () => {
+      lifecycle.push("WebContents destroyed");
+      destroyed.resolve();
+    });
     globalThis.qualificationTerminalRetired = (retired) => {
       assert.equal(retired, contents);
-      assert.equal(retired.isDestroyed(), true);
-      lifecycle.push("retired");
+      assert.equal(win.isDestroyed(), true);
+      lifecycle.push("retire returned");
     };
-    win.once("closed", () => lifecycle.push("closed"));
+    win.once("closed", () => lifecycle.push("closed handler completed"));
     const errors = [];
     // Capture Electron's exception dialog as a test failure and keep the
     // fixture running long enough to observe revocation and IPC fencing.
@@ -915,13 +919,16 @@ async function qualifyElectron(main, witness) {
       signOut.click();
       assert.equal(await within(revoked.promise, "hosted credential revoke"), 204);
       assert.equal(win.isDestroyed(), true);
-      assert.deepEqual(lifecycle, ["destroyed", "retired", "closed"]);
+      await within(destroyed.promise, "WebContents destruction");
+      assert.equal(contents.isDestroyed(), true);
+      assert.equal(lifecycle.length, 3);
+      assert.ok(lifecycle.indexOf("retire returned") < lifecycle.indexOf("closed handler completed"));
       const closeCode = await within(closed, "terminal connection close");
       assert.equal(socket.readyState, socket.CLOSED);
       deliver();
       assert.equal(signOutCheck.deliveries, 0, "the real reply must be fenced before renderer IPC");
       console.log("Electron sign-out revoked the grant and fenced a held terminal reply (DELETE 204, zero IPC sends)");
-      console.log(`PASS WebContents destroyed, retired, and window closed. Terminal socket close code ${closeCode}.`);
+      console.log(`PASS Native sign-out lifecycle: ${lifecycle.join(", ")}. Terminal socket close code ${closeCode}.`);
       await report(errors.length === 0);
     } finally {
       process.off("uncaughtException", captureWindowError);

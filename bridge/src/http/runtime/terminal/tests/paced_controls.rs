@@ -42,7 +42,7 @@ async fn mounted_tls_slow_reader_preserves_snapshot_bytes_under_backpressure() {
     .expect("the small receive buffer must back up the physical TLS writer");
 
     let (producer, consumer) = tokio::io::duplex(16 * 1024);
-    let reader = tokio::spawn(forward_slow_reads(socket.into_inner(), producer));
+    let reader = tokio::spawn(forward_slow_reads(socket, producer));
     let mut websocket = WebSocketStream::from_raw_socket(consumer, Role::Client, None).await;
     let message = timeout(Duration::from_secs(30), websocket.next())
         .await
@@ -65,10 +65,10 @@ async fn mounted_tls_slow_reader_preserves_snapshot_bytes_under_backpressure() {
     server.stop().await;
 }
 
-async fn forward_slow_reads(mut socket: ClientIo, mut receiver: tokio::io::DuplexStream) {
+async fn forward_slow_reads(mut socket: Client, mut receiver: tokio::io::DuplexStream) {
     let mut chunk = [0; 4 * 1024];
     loop {
-        let len = socket.read(&mut chunk).await.unwrap();
+        let len = socket.get_mut().read(&mut chunk).await.unwrap();
         if len == 0 || receiver.write_all(&chunk[..len]).await.is_err() {
             return;
         }

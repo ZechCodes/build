@@ -280,13 +280,17 @@ impl Server {
         headers: &HeaderMap,
         small_buffer: bool,
     ) -> (Vec<u8>, ClientIo) {
-        self.upgrades.fetch_add(1, Ordering::Relaxed);
         let tcp = TcpStream::connect(("127.0.0.1", self.port)).await.unwrap();
         if small_buffer {
             socket2::SockRef::from(&tcp)
                 .set_recv_buffer_size(4096)
                 .unwrap();
         }
+        self.upgrade_on(headers, tcp).await
+    }
+
+    async fn upgrade_on(&self, headers: &HeaderMap, tcp: TcpStream) -> (Vec<u8>, ClientIo) {
+        self.upgrades.fetch_add(1, Ordering::Relaxed);
         let mut client = self
             .client
             .connect("localhost".try_into().unwrap(), tcp)

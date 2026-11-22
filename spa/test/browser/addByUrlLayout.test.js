@@ -19,6 +19,19 @@ it("keeps verified HTTPS identity and the explicit choice readable on a phone", 
     await captureLayout(page, "add-by-url-mobile.png");
     expect(dimensions.contentWidth).toBeLessThanOrEqual(dimensions.width + 1);
     expect(await page.locator("#urlconnect").textContent()).toBe("Use HTTPS");
-    expect(await page.locator("#urlidentity").textContent()).toContain("terminal uses WebRTC");
+    expect(await page.locator("#urlidentity").textContent()).toContain("Terminals also use HTTPS when supported. Older setups may use WebRTC.");
   }, { width: 390, height: 800 });
+});
+
+it("describes both terminal carriers in the device transport settings", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountLayout(page, '<section id="transport"></section>', { basePath });
+    await loadBrowserModules(page, { transport: "src/core/httpTransportControls.js" }, basePath);
+    await page.evaluate(() => {
+      window.__layoutModules.transport.mountHttpTransportControls(document.querySelector("#transport"), "fixture-device");
+    });
+    expect(await page.locator("#transport").textContent()).toContain(
+      "Terminals also use HTTPS when supported. Older setups may use WebRTC.",
+    );
+  });
 });

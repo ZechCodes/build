@@ -688,7 +688,7 @@ async function terminalIpc(t, remote) {
   const ipc = installBridgeHttpIpc({
     ipcMain: { handle(_channel, callback) { handler = callback; } },
     getAuth: () => auth,
-    getWindow: () => ({ webContents: contents }),
+    getWebContents: () => contents,
     manifest,
     fetch(url, options) {
       if (url.startsWith(new URL(APP_URL).origin + "/api/"))

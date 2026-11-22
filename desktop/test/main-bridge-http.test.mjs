@@ -45,6 +45,17 @@ function invoke(h, method, args) {
   );
 }
 
+function guardWindowContents(window) {
+  const contents = window.webContents;
+  Object.defineProperty(window, "webContents", {
+    get() {
+      if (window.isDestroyed()) throw new TypeError("Object has been destroyed");
+      return contents;
+    },
+  });
+  return contents;
+}
+
 test("main installs only sandboxed typed preload and fences old handles on OAuth rotation", async (t) => {
   const requests = [];
   const h = await launch(t, {
@@ -83,6 +94,47 @@ test("offline native signout clears local credentials and retires IPC even when 
   assert.equal(h.calls.windows[0].destroyed, true);
   assert.equal(requests.filter((r) => r.options.method === "DELETE").length, 1);
   assert.ok(h.calls.quit);
+});
+
+test("native sign-out completes when closed fires after Electron destroys the window", async (t) => {
+  const requests = [];
+  const h = await launch(t, { bridgeFetch: bridgeFetch(requests) });
+  const [window] = h.calls.windows;
+  const contents = guardWindowContents(window);
+  assert.equal((await invoke(h, "resume", [resume])).ok, true);
+  window.prependOnceListener("closed", () => contents.emit("destroyed"));
+
+  await h.signOut().click();
+
+  assert.equal(window.destroyed, true);
+  assert.equal(requests.filter((r) => r.options.method === "DELETE").length, 1);
+  assert.deepEqual(h.calls.cleanup, ["storage", "cache"]);
+  assert.equal(h.calls.quit, 1);
+});
+
+test("late document and IPC callbacks ignore the destroyed window during close", async (t) => {
+  const requests = [];
+  const h = await launch(t, { bridgeFetch: bridgeFetch(requests) });
+  const [window] = h.calls.windows;
+  const contents = guardWindowContents(window);
+  const { id, mainFrame } = contents;
+  const ipc = h.calls.ipc.get("build:bridge-http");
+  let lateResponse;
+  let lateCall;
+  window.prependOnceListener("closed", () => {
+    h.calls.responseHeaders({
+      url: mainFrame.url, statusCode: 401, resourceType: "mainFrame", webContentsId: id,
+    }, (decision) => { lateResponse = decision; });
+    lateCall = ipc({ sender: contents, senderFrame: mainFrame }, "resume", [resume]);
+  });
+
+  window.destroy();
+
+  assert.deepEqual(lateResponse, {});
+  assert.equal((await lateCall).error.code, "untrusted_caller");
+  assert.deepEqual(requests, []);
+  h.app.emit("activate");
+  assert.equal(h.calls.windows.length, 2);
 });
 
 test("main IPC uses the actual packaged manifest for a body-free GET resource", async (t) => {

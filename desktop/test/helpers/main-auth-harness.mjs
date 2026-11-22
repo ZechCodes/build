@@ -44,6 +44,7 @@ export async function launch(t, { stored = "fixture-refresh-saved", available = 
       this.webContents = new EventEmitter();
       this.webContents.id = calls.windows.length + 1;
       this.webContents.mainFrame = { url: "https://getbuild.ing/app/desktop" };
+      this.webContents.isDestroyed = () => this.isDestroyed();
       this.webContents.send = (...args) => calls.bridgeEvents.push(args);
       this.webContents.setWindowOpenHandler = (handler) => { this.webContents.openWindow = handler; };
       calls.windows.push(this);
@@ -56,6 +57,7 @@ export async function launch(t, { stored = "fixture-refresh-saved", available = 
     hide() { this.actions.push("hide"); }
     show() { this.actions.push("show"); }
     focus() { this.actions.push("focus"); }
+    isDestroyed() { return Boolean(this.destroyed); }
     isMinimized() { return Boolean(this.minimized); }
     restore() { this.actions.push("restore"); this.minimized = false; }
     destroy() { this.actions.push("destroy"); this.destroyed = true; this.emit("closed"); }

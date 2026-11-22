@@ -17,7 +17,6 @@ function harness(t, overrideFetch) {
   contents.mainFrame = { url: APP_URL };
   contents.id = 1;
   contents.send = (...args) => calls.sent.push(args);
-  const window = { webContents: contents };
   const auth = { accessToken: "fixture-account-token", generation: 1 };
   const calls = { sent: [], fetch: [] };
   const fetch = async (url, options) => {
@@ -39,7 +38,7 @@ function harness(t, overrideFetch) {
   };
   const bridge = installBridgeHttpIpc({
     ipcMain,
-    getWindow: () => window,
+    getWebContents: () => contents,
     getAuth: () => auth,
     fetch,
     manifest: { version: 1, operations: [] },

@@ -158,15 +158,18 @@ verification enabled. The Electron executable is the desktop lock's version
 and needs a display. Its test loads the desktop main and preload with the
 local issuer destination, isolated profile and seeded fixture credential.
 The opt-in Electron sign-out group holds a real WSS reply until Account >
-Sign Out destroys the renderer and the hosted issuer answers DELETE. It
-checks the IPC fence and observes any uncaught exception during cleanup.
+Sign Out destroys the window and the hosted issuer answers DELETE. It
+checks native window retirement, WSS closure, the IPC fence and a clean
+Electron exit. The test records the order of the window and WebContents
+callbacks. Main-process requests and Electron navigation stay on the exact
+fixture origins.
 The rebind group uses a live native WSS client while the fixture bridge
 drains, signs a disable, and starts on the same authority with a new epoch.
 
 The mounted lost-Close regression runs in the nightly timing workflow. Set
 `TERMINAL_WSS_TEST_NODE` to the absolute Node 22.23.4 executable for a local
 run. Use `--ignored --exact` because Cargo's default suite skips this witness.
-The complete command and the pace-sensitive failures are in the security
-checklist.
+The security checklist records the complete command and the paced-write
+qualification results.
 
 [Terminal WebSocket Security Checklist](../../planning/v2/Terminal%20WebSocket%20Security%20Checklist.md)

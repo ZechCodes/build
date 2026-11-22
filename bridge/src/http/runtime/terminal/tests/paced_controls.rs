@@ -84,7 +84,7 @@ async fn bare_writer() -> (
     TcpStream,
     JoinHandle<Result<(), super::super::super::writer::WriteFailed>>,
 ) {
-    use crate::http::listener::BoundedIo;
+    use crate::http::listener::{BoundedIo, TcpWriteProgress};
 
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let client = TcpStream::connect(listener.local_addr().unwrap())
@@ -92,7 +92,9 @@ async fn bare_writer() -> (
         .unwrap();
     let (server, _) = listener.accept().await.unwrap();
     let writer = tokio::spawn(async move {
-        let output = BoundedIo::new(server, OutputAuthority::default());
+        let authority = OutputAuthority::default();
+        authority.track_write_progress();
+        let output = BoundedIo::new(TcpWriteProgress::new(server, authority.clone()), authority);
         let mut websocket = WebSocketStream::from_raw_socket(output, Role::Server, None).await;
         WriterFence::default()
             .write_message(&mut websocket, &vec![b'x'; MAX_SNAPSHOT_BYTES])

@@ -66,7 +66,9 @@ enum Mode {
     BlockUntilStop,
     FailHandshakeWrite,
     HoldBeforeUpgrade,
-    StallWriter,
+    StallWriter {
+        manual_cut: bool,
+    },
 }
 
 #[derive(Default)]
@@ -122,7 +124,7 @@ async fn test_admission(
         Mode::BlockUntilStop => upgrade.stopped().await,
         Mode::HoldBeforeUpgrade => std::future::pending().await,
         Mode::FailHandshakeWrite => authority.set(Some(Arc::new(|| false))),
-        Mode::Echo | Mode::StallWriter => {}
+        Mode::Echo | Mode::StallWriter { .. } => {}
     }
     upgrade
         .accept(&mut request, handshake, reservation, move |socket| {
@@ -138,8 +140,10 @@ async fn run_test_socket(
 ) {
     witness.started.fetch_add(1, Ordering::Relaxed);
     let _cleanup = SessionGuard(witness.clone());
-    if matches!(witness.mode, Mode::StallWriter) {
-        authority.cut_stalled_writes_on(witness.cut_stall.clone());
+    if let Mode::StallWriter { manual_cut } = witness.mode {
+        if manual_cut {
+            authority.cut_stalled_writes_on(witness.cut_stall.clone());
+        }
         *witness.stall_authority.lock().unwrap() = Some(authority);
         witness.writing.notify_one();
         while socket
@@ -225,7 +229,7 @@ impl Server {
 
     async fn connect(&self) -> ClientIo {
         let tcp = TcpStream::connect(("127.0.0.1", self.port)).await.unwrap();
-        if matches!(self.witness.mode, Mode::StallWriter) {
+        if matches!(self.witness.mode, Mode::StallWriter { .. }) {
             socket2::SockRef::from(&tcp)
                 .set_recv_buffer_size(4096)
                 .unwrap();
@@ -758,7 +762,7 @@ async fn shutdown_bounds_the_join_of_a_pending_admission_that_never_resumes() {
 
 #[tokio::test]
 async fn the_physical_stall_cut_still_applies_after_upgrade() {
-    let server = Server::start(Mode::StallWriter).await;
+    let server = Server::start(Mode::StallWriter { manual_cut: true }).await;
     let socket = server.open(0).await;
     server.wait_for_stalled_write().await;
     server.witness.cut_stall.notify_one();
@@ -770,11 +774,35 @@ async fn the_physical_stall_cut_still_applies_after_upgrade() {
 
 #[tokio::test]
 async fn listener_shutdown_joins_a_stalled_websocket_writer() {
-    let server = Server::start(Mode::StallWriter).await;
+    let server = Server::start(Mode::StallWriter { manual_cut: true }).await;
     let socket = server.open(0).await;
     server.wait_for_stalled_write().await;
     let witness = server.witness.clone();
     server.join().await;
     assert_eq!(witness.ended.load(Ordering::Relaxed), 1);
     drop(socket);
+}
+
+#[tokio::test]
+#[ignore = "waits for the real ten-second stalled-write deadline"]
+async fn an_unread_terminal_socket_is_cut_by_the_clock() {
+    let server = Server::start(Mode::StallWriter { manual_cut: false }).await;
+    let started = tokio::time::Instant::now();
+    let socket = server.open(0).await;
+    server.wait_for_stalled_write().await;
+    let deadline = crate::http::sse::STALLED_WRITE_TIMEOUT;
+    let permits = tokio::time::timeout_at(
+        started + deadline + Duration::from_secs(2),
+        server
+            .sockets
+            .acquire_many(u32::try_from(limits::MAX_SOCKETS).unwrap()),
+    )
+    .await
+    .expect("the unread socket must release its permit")
+    .unwrap();
+    drop(permits);
+    assert!(started.elapsed() >= deadline);
+    assert_eq!(server.witness.ended.load(Ordering::Relaxed), 1);
+    drop(socket);
+    server.join().await;
 }

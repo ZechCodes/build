@@ -170,6 +170,7 @@ Feature: Account-owned optional HTTPS interface
     Given an unknown, null or suffix-matching Origin
     When it requests discovery or a protected route
     Then it receives no permissive CORS headers or protected data
+    And preflight admits and advertises exactly the HTTP resource catalog's methods for an allowed Origin
     And a successful OPTIONS request never creates authority
     And a native caller with no Origin still needs a valid target-specific bearer
 

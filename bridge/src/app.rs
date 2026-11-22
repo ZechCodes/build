@@ -998,6 +998,15 @@ impl AppState {
         self.store.clone()
     }
 
+    #[cfg(test)]
+    pub(crate) fn post_agent_message_for_test(&mut self, owner: &str, agent: &str, body: &str) {
+        self.edit_agent_conversation(owner, agent, |thread, _| {
+            thread.post_agent(body, None, now_rfc3339());
+            Ok(())
+        })
+        .unwrap();
+    }
+
     /// Push to the clients from `runtime`: the change bus's flush and every
     /// terminal's paint, serialized and encrypted per client, apart from the
     /// runtime that answers the clients' requests.

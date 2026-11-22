@@ -1553,7 +1553,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_mount_omits_terminal_wss_on_post_and_patch() {
+    async fn default_mount_advertises_terminal_wss_on_post_and_patch() {
         let app = router_with(
             execution(),
             Arc::new(WitnessVerifier {
@@ -1582,7 +1582,10 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{renewed:?}");
         for opening in [opened, renewed] {
             assert_eq!(opening["transport"]["terminal"], "webrtc");
-            assert!(opening["transport"].get("terminal_websocket").is_none());
+            assert_eq!(
+                opening["transport"]["terminal_websocket"],
+                json!({"version": 1, "protocol": "build.term.v1"})
+            );
         }
     }
 

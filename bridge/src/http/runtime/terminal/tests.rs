@@ -162,8 +162,8 @@ impl Server {
             proof_lifetime,
         });
         let mut runtime = runtime_with(ExecutionService::new(handler), verifier.clone());
-        if terminal {
-            runtime.state.terminal_tickets = Some(Arc::default());
+        if !terminal {
+            runtime.state.terminal_tickets = None;
         }
         let state = runtime.state.clone();
         let (stop, shutdown) = watch::channel(false);
@@ -442,7 +442,7 @@ fn greeting(handler: FrameHandler) -> FrameHandler {
 }
 
 #[tokio::test]
-async fn mounted_candidate_advertises_terminal_wss_on_post_and_patch() {
+async fn mounted_default_serves_terminal_routes_and_advertises_wss() {
     let handler = greeting(FrameHandler::new(FrameClock::new(), |_, frame, _| {
         success(&frame, json!({}))
     }));
@@ -461,6 +461,10 @@ async fn mounted_candidate_advertises_terminal_wss_on_post_and_patch() {
     assert_eq!(renew_status, 200, "{renewed:?}");
     assert_eq!(renewed["session_id"], opened["session_id"]);
     assert_eq!(renewed["opening_generation"], opened["opening_generation"]);
+
+    let ticket = server.ticket(&renewed).await;
+    let (headers, _) = server.upgrade(&server.handshake(&ticket)).await;
+    assert_eq!(status(&headers), 101);
 
     let contract = &fixture()["opening"];
     let resources: Value = serde_json::from_str(include_str!(
@@ -488,14 +492,11 @@ async fn mounted_candidate_advertises_terminal_wss_on_post_and_patch() {
             .contains(&contract["capability"]));
     }
 
-    let ticket = server.ticket(&renewed).await;
-    let (headers, _) = server.upgrade(&server.handshake(&ticket)).await;
-    assert_eq!(status(&headers), 101);
     server.stop().await;
 }
 
 #[tokio::test]
-async fn mounted_default_keeps_terminal_routes_unavailable_with_capability() {
+async fn unmounted_terminal_routes_stay_unavailable_with_capability() {
     let server = Server::mount(greeting(fake_handler()), TIMEOUT * 6, false).await;
     let opened = server.opening().await;
     let session_id = case_text(&opened["session_id"]);

@@ -1,4 +1,5 @@
 use super::*;
+use crate::execution::session::SnapshotPool;
 
 #[tokio::test]
 async fn mounted_tls_snapshot_slots_wait_for_flush_or_drop_and_drain() {
@@ -180,9 +181,13 @@ const TRICKLE_READS: usize = 192;
 #[ignore = "paces two real TLS readers through the 192-second snapshot budget"]
 async fn mounted_tls_trickling_readers_recover_both_snapshot_slots() {
     let server = paced_snapshot_server().await;
-    let (first_opening, first) = start_paced_snapshot(&server, "first").await;
-    let (second_opening, second) = start_paced_snapshot(&server, "second").await;
     let pool = server.state.execution.sessions().terminal_snapshot_pool();
+    let (first_opening, first) = start_paced_snapshot(&server, "first").await;
+    let first_id = opening_diagnostic_id(&server, &first_opening);
+    let first_grant = observe_grant(&pool, first_id).await;
+    let (second_opening, second) = start_paced_snapshot(&server, "second").await;
+    let second_id = opening_diagnostic_id(&server, &second_opening);
+    let second_grant = observe_grant(&pool, second_id).await;
     let started = Instant::now();
     let progress = Arc::new([AtomicUsize::new(0), AtomicUsize::new(0)]);
     let reading = tokio::spawn({
@@ -194,13 +199,7 @@ async fn mounted_tls_trickling_readers_recover_both_snapshot_slots() {
             )
         }
     });
-    timeout(TIMEOUT, async {
-        while pool.available_permits() != 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
+    assert_eq!(pool.available_permits(), 0);
     let waiting = server.opening().await;
     let mut sibling = server.socket(&server.ticket(&waiting).await).await;
     let wait_started = Instant::now();
@@ -218,10 +217,8 @@ async fn mounted_tls_trickling_readers_recover_both_snapshot_slots() {
         .map(|count| count.load(Ordering::Relaxed));
     if refusal["error_code"] != "snapshot_busy" || released != 0 {
         // Keep both readers alive for the diagnostic run after an early release.
-        let ids = [&first_opening, &second_opening]
-            .map(|opening| opening_diagnostic_id(&server, opening));
         let _ = timeout(Duration::from_secs(15), async {
-            while ids.iter().any(|id| pool.holds(*id)) {
+            while pool.holds(first_id) || pool.holds(second_id) {
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
         })
@@ -245,17 +242,20 @@ async fn mounted_tls_trickling_readers_recover_both_snapshot_slots() {
         released, 0,
         "both readers still make progress after the independent 10-second wait"
     );
-    let (first, second) = timeout(Duration::from_secs(195), reading)
+    tokio::join!(
+        wait_for_grant_release(&pool, first_id, first_grant),
+        wait_for_grant_release(&pool, second_id, second_grant),
+    );
+    let (first, second) = tokio::time::timeout_at(started + Duration::from_secs(195), reading)
         .await
-        .expect("both mounted writers must release their slots by the hard ceiling")
+        .expect("both readers must finish their paced reads")
         .unwrap();
-    for (read_count, _reader) in [first, second] {
+    for (read_count, _) in [&first, &second] {
         assert!(
-            read_count >= TRICKLE_READS,
+            *read_count >= TRICKLE_READS,
             "reader lost the connection after only {read_count} trickles"
         );
     }
-    assert!(started.elapsed() <= Duration::from_secs(195));
     assert_eq!(pool.available_permits(), 2);
     for opening in [first_opening, second_opening] {
         assert_eq!(
@@ -272,7 +272,38 @@ async fn mounted_tls_trickling_readers_recover_both_snapshot_slots() {
     )
     .await;
     assert_eq!(next["ok"], true);
+    drop((first, second));
     server.stop().await;
+}
+
+async fn observe_grant(pool: &SnapshotPool, opening: u64) -> Instant {
+    timeout(TIMEOUT, async {
+        while !pool.holds(opening) {
+            tokio::task::yield_now().await;
+        }
+        Instant::now()
+    })
+    .await
+    .expect("snapshot slot granted")
+}
+
+async fn wait_for_grant_release(pool: &SnapshotPool, opening: u64, granted: Instant) {
+    // Allow timer wakeup and observation to run on the mounted test runtime.
+    const SCHEDULING_TOLERANCE: Duration = Duration::from_millis(250);
+    let budget = Duration::from_secs(192) + SCHEDULING_TOLERANCE;
+    tokio::time::timeout_at(granted + budget, async {
+        while pool.holds(opening) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("snapshot slot must return by its own observed grant deadline");
+    let elapsed = granted.elapsed();
+    assert!(
+        elapsed <= budget,
+        "Opening {opening} held a slot for {elapsed:?}"
+    );
+    eprintln!("Opening {opening} returned its snapshot slot after {elapsed:?}");
 }
 
 fn opening_diagnostic_id(server: &Server, opening: &Value) -> u64 {

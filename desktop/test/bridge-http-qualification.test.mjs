@@ -208,7 +208,7 @@ test("terminal qualification preserves WebRTC for older desktop IPC", {
   ...qualification, skip: !fixturePath || !terminalGate,
 }, async (t) => {
   const fixture = await loadFixture();
-  const h = harness(t, fixture);
+  const h = harness(t, fixture, { autoAck: false });
   const identity = await h.bridge.discover(h.owner, fixture.bridgeOrigin);
   const endpoint = nativeEndpoint(h, identity);
   let opening;

@@ -9,7 +9,9 @@ async fn mounted_tls_slow_reader_preserves_snapshot_bytes_under_backpressure() {
         write!(snapshot, "{offset:016x}").unwrap();
     }
     let result = json!({"term_id":"large","snapshot":snapshot,"cursor":0});
-    let expected = serde_json::to_vec(&api::reply(json!("ordered"), Ok(result.clone()))).unwrap();
+    let mut expected = api::reply(json!("ordered"), Ok(result.clone()));
+    expected["bridge_epoch"] = json!(crate::bridge_epoch::current());
+    let expected = serde_json::to_vec(&expected).unwrap();
     let server = Server::start(greeting(FrameHandler::new(
         FrameClock::new(),
         move |_, frame, _| success(&frame, result.clone()),

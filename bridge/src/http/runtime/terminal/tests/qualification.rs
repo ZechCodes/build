@@ -102,7 +102,11 @@ async fn serve_terminal_qualification_fixture() {
         &fixture.run_dir.join("key.pem"),
     )
     .unwrap();
-    let policy = HttpPolicy::new(&fixture.bridge_origin, &[fixture.hosted_origin.clone()]).unwrap();
+    let policy = HttpPolicy::new(
+        &fixture.bridge_origin,
+        std::slice::from_ref(&fixture.hosted_origin),
+    )
+    .unwrap();
     let signer = fixture.signer();
     let registrar = EndpointRegistrar::new(signer.clone()).unwrap();
     let disabled_epoch = fixture.run_dir.join("disabled-epoch");

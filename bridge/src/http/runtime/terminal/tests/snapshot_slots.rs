@@ -459,7 +459,7 @@ async fn object_with_timeout(socket: &mut Client, bound: Duration) -> Value {
     serde_json::from_slice(&message.into_data()).unwrap()
 }
 
-// Run with Node 22 and the SPA and desktop lockfile installs. This opt-in
+// Run with TERMINAL_WSS_TEST_NODE and the SPA and desktop lockfile installs. This opt-in
 // witness uses the real browser endpoint and the desktop's locked WS client.
 #[tokio::test]
 #[ignore = "runs the SPA pane test against the mounted TLS fixture"]
@@ -533,7 +533,8 @@ fn start_spa_lost_close_test(
     let origin = format!("https://localhost:{}", server.port);
     let certificate = certificate.to_owned();
     tokio::task::spawn_blocking(move || {
-        std::process::Command::new("node")
+        let node = qualification_node()?;
+        std::process::Command::new(node)
             .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../spa"))
             .env("NODE_EXTRA_CA_CERTS", certificate)
             .env("TERMINAL_WSS_TEST_ORIGIN", origin)
@@ -546,4 +547,22 @@ fn start_spa_lost_close_test(
             ])
             .output()
     })
+}
+
+fn qualification_node() -> std::io::Result<std::path::PathBuf> {
+    let node = std::env::var_os("TERMINAL_WSS_TEST_NODE")
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| {
+            std::io::Error::other("Set TERMINAL_WSS_TEST_NODE to an absolute Node 22.23.4 path")
+        })?;
+    let version = std::process::Command::new(&node)
+        .arg("--version")
+        .output()?;
+    if !version.status.success() || version.stdout != b"v22.23.4\n" {
+        return Err(std::io::Error::other(
+            "The mounted witness requires Node 22.23.4",
+        ));
+    }
+    Ok(node)
 }

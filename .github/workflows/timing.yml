@@ -76,6 +76,21 @@ jobs:
           a_git_child_costs_what_the_child_costs
           the_daemon_answers_reads_and_writes_while_three_ptys_flood
 
+      # This ignored witness runs the SPA pane against the mounted bridge.
+      - name: Install terminal qualification clients
+        working-directory: .
+        run: |
+          nice -n 10 npm install -g npm@12.0.2 --ignore-scripts --no-audit --no-fund
+          nice -n 10 npm ci --prefix transport/js --ignore-scripts
+          nice -n 10 npm ci --prefix spa --legacy-peer-deps
+          nice -n 10 npm ci --prefix desktop --ignore-scripts
+
+      - name: Mounted terminal lost-Close witness
+        run: |
+          export TERMINAL_WSS_TEST_NODE="$(command -v node)"
+          nice -n 10 cargo test --locked --lib -- --ignored --exact \
+            http::runtime::terminal::tests::snapshot_slots::mounted_tls_lost_close_stops_spa_ticket_requests
+
   busy-lock-holds:
     name: Busy app-lock holds, MCP reads and SSE push latency (release)
     runs-on: ubuntu-latest

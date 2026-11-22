@@ -180,3 +180,24 @@ async fn open_idle_socket(server: &Server, opening: &Value) -> Client {
     );
     socket
 }
+
+#[tokio::test]
+async fn mounted_tls_restart_refuses_old_opening_and_unspent_ticket() {
+    let first = Server::start(fake_handler()).await;
+    let port = first.port;
+    let old = first.opening().await;
+    let stale = first.ticket(&old).await;
+    first.stop().await;
+
+    let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+    let fresh = Server::mount_on(fake_handler(), TIMEOUT * 6, true, listener).await;
+    assert_eq!(fresh.issue(&old).await.0, 401);
+    assert_eq!(
+        status(&fresh.upgrade(&fresh.handshake(&stale)).await.0),
+        401
+    );
+    let opening = fresh.opening().await;
+    let mut replacement = open_idle_socket(&fresh, &opening).await;
+    fresh.stop().await;
+    assert_closed(&mut replacement, None).await;
+}

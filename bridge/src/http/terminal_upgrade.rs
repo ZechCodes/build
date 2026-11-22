@@ -27,6 +27,8 @@ use tokio_tungstenite::{
 
 use crate::http::limits::{self, TerminalSocketBudget, TerminalSocketReservation};
 
+use super::OutputAuthority;
+
 pub const PATH: &str = "/v1/terminal";
 pub const PROTOCOL: &str = "build.term.v1";
 /// Buffered wire bytes, including frame headers. Keep half the allocation
@@ -267,11 +269,12 @@ pub(super) struct UpgradeJob {
 }
 
 impl UpgradeJob {
-    pub(super) async fn run(self) {
+    pub(super) async fn run(self, authority: OutputAuthority) {
         let _reservation = self.reservation;
         let Ok(io) = self.on_upgrade.await else {
             return;
         };
+        authority.track_write_progress();
         let config = WebSocketConfig {
             // Send eagerly. Tungstenite keeps its staging allocation after
             // flush, so large messages must use bounded fragments.

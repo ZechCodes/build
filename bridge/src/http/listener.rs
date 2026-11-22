@@ -3,7 +3,7 @@ use std::future::Future;
 use std::io;
 use std::net::IpAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
@@ -28,6 +28,10 @@ use crate::execution::session::Opening;
 pub mod terminal_upgrade;
 
 use terminal_upgrade::{wait_for_stop, TerminalUpgrade};
+
+mod write_progress;
+
+pub(in crate::http) use write_progress::TcpWriteProgress;
 
 pub const AUTHORITY_RECHECK: std::time::Duration = std::time::Duration::from_millis(25);
 
@@ -56,6 +60,8 @@ struct AuthorityState {
     releases: Mutex<Vec<(uuid::Uuid, Box<dyn Send>)>>,
     waker: AtomicWaker,
     pending_write: AtomicBool,
+    // Zero until the terminal upgrade. Then counts TCP bytes plus one.
+    write_progress: AtomicU64,
     #[cfg(test)]
     stall_cut: Mutex<Option<Arc<tokio::sync::Notify>>>,
 }
@@ -74,6 +80,10 @@ pub struct OutputTicket {
 }
 
 impl OutputAuthority {
+    pub(in crate::http) fn track_write_progress(&self) {
+        self.0.write_progress.store(1, Ordering::Relaxed);
+    }
+
     #[cfg(any(test, feature = "testing"))]
     pub fn has_pending_write(&self) -> bool {
         self.0.pending_write.load(Ordering::Acquire)
@@ -418,6 +428,8 @@ async fn connection(
     terminal_sockets: limits::TerminalSocketBudget,
 ) -> io::Result<()> {
     socket.set_nodelay(true)?;
+    let authority = OutputAuthority::default();
+    let socket = TcpWriteProgress::new(socket, authority.clone());
     let stream = tokio::select! {
         accepted = timeout(limits::HEADER_TIMEOUT, acceptor.accept(socket)) => {
             accepted.map_err(|_| io::Error::new(io::ErrorKind::TimedOut,"TLS handshake deadline"))??
@@ -425,25 +437,33 @@ async fn connection(
         _ = stop.changed() => return Ok(()),
     };
     let (upgrade, mut job) = TerminalUpgrade::new(terminal_sockets, stop.clone());
-    drive_http(stream, peer, router, stop.clone(), upgrade).await?;
+    drive_http(
+        stream,
+        peer,
+        router,
+        stop.clone(),
+        upgrade,
+        authority.clone(),
+    )
+    .await?;
     if let Ok(job) = job.try_recv() {
         tokio::select! {
             biased;
             _ = wait_for_stop(&mut stop) => {}
-            _ = job.run() => {}
+            _ = job.run(authority) => {}
         }
     }
     Ok(())
 }
 
 async fn drive_http(
-    stream: tokio_rustls::server::TlsStream<TcpStream>,
+    stream: tokio_rustls::server::TlsStream<TcpWriteProgress>,
     peer: IpAddr,
     router: Router,
     mut stop: watch::Receiver<bool>,
     upgrade: TerminalUpgrade,
+    authority: OutputAuthority,
 ) -> io::Result<()> {
-    let authority = OutputAuthority::default();
     let mut io = BoundedIo::new(stream, authority.clone());
     io.stop = Some(stop.clone());
     let io = TokioIo::new(io);
@@ -480,6 +500,7 @@ pub struct BoundedIo<T> {
     authority: OutputAuthority,
     stop: Option<watch::Receiver<bool>>,
     write_deadline: Option<StalledWriteDeadline>,
+    write_progress: u64,
     authority_deadline: Option<Pin<Box<Sleep>>>,
     authority_recheck: Option<Pin<Box<Sleep>>>,
 }
@@ -491,6 +512,7 @@ impl<T> BoundedIo<T> {
             authority,
             stop: None,
             write_deadline: None,
+            write_progress: 0,
             authority_deadline: None,
             authority_recheck: None,
         }
@@ -564,6 +586,13 @@ impl<T> BoundedIo<T> {
             self.authority_recheck = None;
             return result;
         }
+        let progress = self.authority.0.write_progress.load(Ordering::Relaxed);
+        if progress != self.write_progress {
+            self.write_progress = progress;
+            if self.authority.rechecks_by_clock() {
+                self.write_deadline = None;
+            }
+        }
         let authority = self.authority.clone();
         let timer = self
             .write_deadline
@@ -630,7 +659,9 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for BoundedIo<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::poll;
     use tokio::io::AsyncWriteExt;
+    use tokio::time::{advance, Instant};
 
     /// A socket whose peer never reads: writes stay pending and nothing wakes them.
     struct NeverDrains;
@@ -649,6 +680,44 @@ mod tests {
         fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Pending
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_terminal_flush_gets_ten_seconds_from_each_transport_write() {
+        let authority = OutputAuthority::default();
+        authority.track_write_progress();
+        let mut socket = BoundedIo::new(NeverDrains, authority.clone());
+        let mut flush = Box::pin(socket.flush());
+        let before_deadline = STALLED_WRITE_TIMEOUT - std::time::Duration::from_secs(1);
+        assert!(poll!(&mut flush).is_pending());
+
+        for _ in 0..2 {
+            advance(before_deadline).await;
+            // The fake TLS flush is still Pending, but each time the TCP
+            // socket beneath it has accepted one more byte.
+            authority.0.write_progress.fetch_add(1, Ordering::Relaxed);
+            assert!(poll!(&mut flush).is_pending());
+        }
+
+        let last_progress = Instant::now();
+        advance(before_deadline).await;
+        assert!(poll!(&mut flush).is_pending());
+        let error = flush.await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(last_progress.elapsed(), STALLED_WRITE_TIMEOUT);
+        assert!(!authority.has_pending_write());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn blocked_terminal_write_times_out_in_ten_seconds() {
+        let authority = OutputAuthority::default();
+        authority.track_write_progress();
+        let mut socket = BoundedIo::new(NeverDrains, authority.clone());
+        let started = Instant::now();
+        let error = socket.write_all(b"frame").await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(started.elapsed(), STALLED_WRITE_TIMEOUT);
+        assert!(!authority.has_pending_write());
     }
 
     /// A check going false wakes nothing: no `invalidate()`, no socket progress,

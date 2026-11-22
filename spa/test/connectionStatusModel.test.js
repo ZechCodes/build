@@ -97,6 +97,15 @@ describe("the machines, one row each", () => {
     expect(status([{ ...STUDIO, path: "turn" }]).rows[0].label).toBe("Connected TURN");
   });
 
+  it.each([
+    ["wss", "Connected HTTPS"],
+    ["webrtc", "Connected HTTPS · Terminal over WebRTC"],
+    ["protocol_error", "Connected HTTPS"],
+    [undefined, "Connected HTTPS"],
+  ])("labels an HTTPS device with negotiated terminal mode %s", (terminalTransport, label) => {
+    expect(status([{ ...STUDIO, path: "https", terminalTransport }]).rows[0].label).toBe(label);
+  });
+
   it("says the plain word while nothing has answered for the path yet", () => {
     expect(status([STUDIO]).rows[0].label).toBe("Connected");
     expect(status([{ ...STUDIO, path: "something new" }]).rows[0].label).toBe("Connected");

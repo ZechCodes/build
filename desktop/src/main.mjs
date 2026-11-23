@@ -24,6 +24,7 @@ import {
 
 import { createTokenStore } from "./token-store.mjs";
 import { installBridgeHttpIpc } from "./bridge-http-ipc.mjs";
+import { createBridgeHttpSettings } from "./bridge-http-settings.mjs";
 import resourceManifest from "./bridge-http-resources.json" with {type:"json"};
 
 const development = !app.isPackaged;
@@ -604,6 +605,8 @@ if (!hasSingleInstanceLock) {
       ipcMain,manifest:resourceManifest,
       getWebContents: getMainWindowContents,
       getAuth:()=>accessToken && !signingOut && !unauthorizedRecovery ? {accessToken,generation:bridgeCredentialGeneration} : null,
+      settings: createBridgeHttpSettings(app.getPath("userData")),
+      getSettingsToken: () => signingOut ? null : accessToken,
     });
     tokenSession = session.fromPartition("build-oauth", { cache: false });
     tokenStore = createTokenStore({ userData: app.getPath("userData"), safeStorage });

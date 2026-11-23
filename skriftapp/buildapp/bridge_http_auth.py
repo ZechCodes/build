@@ -60,7 +60,10 @@ async def registration_challenge(db, device_id, proof, issuer, now):
     # A capacity/write failure rolls back both proof spend and nonce allocation.
     async with db.begin_nested():
         await _record_replay(db, device, claims, now)
-        await _bounded_challenges(db, BridgeHttpChallenge.device_id == device_id, now, 8)
+        registration = (BridgeHttpChallenge.device_id == device_id) & (
+            BridgeHttpChallenge.purpose == "registration"
+        )
+        await _bounded_challenges(db, registration, now, 8)
         challenge, nonce = await _challenge(
             db, now, purpose="registration", device_id=device_id
         )
@@ -235,13 +238,19 @@ async def _endpoint(db, device_id):
     )
 
 
-async def create_discovery(db, user_id, client_binding, origin, issuer, now):
+async def create_discovery(
+    db, user_id, client_binding, origin, issuer, now, *, device_id=None
+):
     # Serializes bounded per-account challenge allocation across hosted workers.
     await db.scalar(select(User).where(User.id == user_id).with_for_update())
     if not await _active_member(db, user_id):
         refuse()
     await _client_active(db, user_id, client_binding, now)
     origin = canonical_origin(origin)
+    if device_id is not None:
+        device = await current_device(db, device_id)
+        if device.owner_user_id != user_id:
+            refuse()
     await _bounded_challenges(db, BridgeHttpChallenge.user_id == user_id, now, 8)
     challenge, _ = await _challenge(
         db,
@@ -250,6 +259,7 @@ async def create_discovery(db, user_id, client_binding, origin, issuer, now):
         user_id=user_id,
         client_binding=client_binding,
         origin=origin,
+        device_id=device_id,
     )
     return discovery_payload(challenge, issuer)
 
@@ -262,6 +272,7 @@ def discovery_payload(challenge, issuer):
         "expires_at": int(challenge.expires_at.timestamp()),
         "issuer": canonical_origin(issuer),
         "account_id": str(challenge.user_id),
+        **({"device_id": str(challenge.device_id)} if challenge.device_id else {}),
         "resume_url": f"/app/?bridge_discovery={challenge.id}",
     }
 
@@ -305,6 +316,8 @@ async def complete_discovery(
     )
     if actual != expected or claims["origin"] != endpoint.origin:
         refuse()
+    if challenge.device_id is not None and challenge.device_id != device.id:
+        raise ClientException("The saved address answered as a different bridge", status_code=409)
     await _record_replay(db, device, claims, now)
     await _spend(db, challenge, claims.get("nonce"), now)
     family = BridgeHttpFamily(

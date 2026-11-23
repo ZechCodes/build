@@ -182,6 +182,7 @@ export function createBridgeHttp({
       origin: mint.origin,
       endpointEpoch: mint.endpoint_epoch,
       familyId: mint.family_id,
+      ...(mint.fingerprint && { fingerprint: mint.fingerprint }),
     };
   }
   function adopt(binding, mint) {
@@ -207,15 +208,16 @@ export function createBridgeHttp({
     handle.expiry.unref?.();
     return metadata(handle);
   }
-  async function discover(owner, input) {
+  async function discover(owner, input, expected = {}) {
     const binding = capture(owner);
     const origin = canonicalOrigin(input);
     const challenge = await hosted(
-      "/api/bridge-discovery/challenges",
+      expected.device_id ? `/api/devices/${segment(expected.device_id)}/http-discovery` : "/api/bridge-discovery/challenges",
       { origin },
       binding,
     );
     identifier(challenge.challenge_id, "invalid_response");
+    if (expected.device_id && challenge.device_id !== expected.device_id) fail("wrong_bridge");
     if (
       challenge.issuer !== hostedOrigin ||
       typeof challenge.nonce !== "string" ||
@@ -240,6 +242,7 @@ export function createBridgeHttp({
       { challenge_id: challenge.challenge_id, proof: proof.proof },
       binding,
     ).catch((error) => {
+      if (expected.device_id && error.status === 409) fail("wrong_bridge");
       if (
         error.code === "unauthorized" ||
         (error.code === "http_error" && [401, 403].includes(error.status))
@@ -247,7 +250,13 @@ export function createBridgeHttp({
         fail("discovery_failed");
       throw error;
     });
-    return adopt(binding, verifiedMint(result, { origin }, hostedOrigin));
+    return adopt(binding, verifiedMint(result, { origin, ...expected }, hostedOrigin));
+  }
+  function discoverSaved(owner, origin, identity) {
+    exact(identity, ["deviceId", "fingerprint"]);
+    const expected = { device_id: identifier(identity.deviceId) };
+    if (identity.fingerprint !== undefined) expected.fingerprint = identifier(identity.fingerprint);
+    return discover(owner, origin, expected);
   }
   async function resume(owner, hint) {
     exact(hint, ["deviceId", "origin", "endpointEpoch", "familyId"]);
@@ -447,6 +456,7 @@ export function createBridgeHttp({
   }
   return {
     discover,
+    discoverSaved,
     resume,
     open,
     request,

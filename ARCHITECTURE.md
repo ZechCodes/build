@@ -3967,10 +3967,15 @@ The port is bound without listening during preparation; TCP connections are
 refused until registration and durable acknowledgment both succeed. Retry logs
 distinguish registration from deactivation, including during shutdown.
 Shutdown cancels pending registration;
-an active listener still shuts down through its authority fence. An unexpected
-HTTP task failure is logged without terminating the daemon. Endpoint records and
-their sibling locks belong to the device identity: buildctl migration retains
-the target's `tasks/http-endpoint.json` and `.lock`, excluding source copies.
+an active listener still shuts down through its authority fence. A managed
+deploy or updater marks the exact running service invocation before stopping
+it. A clean marked stop closes every local opening and retains the hosted
+registration. Startup must still register and acknowledge its actual policy
+before listening. The same policy reuses its epoch, while a changed or disabled
+policy publishes a new generation and revokes the old families. An unmarked
+stop or listener failure runs hosted deactivation after closing local authority.
+Endpoint records and restart markers belong to the device identity. Buildctl
+migration retains the target's endpoint state and excludes source copies.
 
 Build maintains the crypto bindings in [transport/](transport/README.md) and
 `bridge/src/transport.rs`. The historical [E2E-MVP](transport/E2E-MVP.md)
@@ -5755,6 +5760,29 @@ from transport receipts, including after the original caller timed out.
 A surface calls the bridge through its device context: `context.rpc(method,
 params)` from `contextFor(deviceId)` or `routeContext(route)`. `context.rpc`
 refuses when that device cannot answer.
+
+HTTPS selection saves the canonical address for the paired device and account.
+The address and optional pinned fingerprint are settings. Family and endpoint
+epoch are renewal hints, and bearer tokens remain in memory. An account reset
+keeps only the account-scoped address, fingerprint, and transport choice.
+Desktop stores those fields under the account named by its current hosted sign-in
+and clears its renderer storage on sign-out.
+
+An expired bearer, closed stream, or old-opening 401 retires the exact opening.
+Recovery first resumes the saved grant family. If hosted refuses the family, or
+the bridge refuses a freshly minted bearer at opening, recovery uses Add by
+URL's one-use challenge, bound to the saved device before hosted can mint a
+replacement. Verification checks the signed device proof, registration, origin,
+account, endpoint epoch, and the saved fingerprint when present. A different
+bridge cannot replace the saved address or receive a bearer from that proof.
+When the current document's enforced CSP lacks the precise origin, recovery
+loads a fresh authenticated document using the bound challenge. Device IDs
+in the resume URL only prioritize owned registrations within the CSP budget.
+Browser local-network permissions are enforced before connection. The transport
+panel offers the browser's permission request and displays sign-in and
+different-device failures. The shared recovery schedule applies while the
+setting is selected. Reconnection opens a fresh session and refreshes cached
+state without replaying uncertain actions.
 
 ### Terminal ownership and pane recovery
 

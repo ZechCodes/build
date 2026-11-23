@@ -141,6 +141,21 @@ def test_routes_discover_renew_revoke_and_never_accept_client_authority(monkeypa
             ).status_code
             == 401
         )
+        saved = client.post(f"/api/devices/{device.id}/http-discovery", json={"origin": ORIGIN})
+        assert saved.status_code == 201, saved.text
+        assert saved.json()["device_id"] == str(device.id)
+        proof = signed(
+            key, device, "discovery",
+            challenge_id=saved.json()["challenge_id"], nonce=saved.json()["nonce"],
+            origin=ORIGIN, endpoint_epoch="one", issuer=ISSUER,
+        )
+        replacement = client.post(
+            "/api/bridge-discovery/complete",
+            json={"challenge_id": saved.json()["challenge_id"], "proof": proof},
+        )
+        assert replacement.status_code == 201, replacement.text
+        assert replacement.json()["device_id"] == str(device.id)
+        assert replacement.json()["family_id"] != minted["family_id"]
 
         async def read():
             async with app.state.make_session() as db:
@@ -148,9 +163,9 @@ def test_routes_discover_renew_revoke_and_never_accept_client_authority(monkeypa
 
         with client.portal() as portal:
             families = portal.call(read)
-        assert len(families) == 1
-        assert families[0].revoked_at is not None
-        assert isinstance(families[0].user_id, UUID)
+        assert len(families) == 2
+        assert sum(family.revoked_at is not None for family in families) == 1
+        assert all(isinstance(family.user_id, UUID) for family in families)
 
 
 def test_discovery_routes_require_membership_and_json_and_bound_body(monkeypatch):

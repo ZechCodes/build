@@ -2219,8 +2219,7 @@ describe("explicit HTTP selection with independent relay presence", () => {
     expect(contextFor("dev-a").session.sessionId).toBe("opening-2");
   });
 
-  it("the authorization banner Retry resumes the saved identity before showing the refusal again", async () => {
-    const { mountDeviceStrip } = await import("../src/core/deviceNotice.js");
+  it("retains retry after hosted refuses a saved family", async () => {
     const { renew } = serveSavedHttpIdentity();
     const { session } = await connectDevice("dev-a");
     renew.mockImplementation(() => new Response(null, { status: 401 }));
@@ -2229,21 +2228,12 @@ describe("explicit HTTP selection with independent relay presence", () => {
     await flush();
     expect(contextFor("dev-a").blocked).toBe("http-auth");
     expect(renew).toHaveBeenCalledTimes(2);
-    const host = document.createElement("div");
-    const detach = mountDeviceStrip(host, contextFor("dev-a"));
-    try {
-      expect(host.textContent).toContain("verify the address again");
-      host.querySelector("[data-retry-device]").click();
-      await flush();
-      expect(renew.mock.calls).toEqual([
-        [{ family_id: "family", endpoint_epoch: "endpoint" }],
-        [{ family_id: "family", endpoint_epoch: "endpoint" }],
-        [{ family_id: "family", endpoint_epoch: "endpoint" }],
-      ]);
-      expect(host.textContent).toContain("verify the address again");
-    } finally {
-      detach();
-    }
+    await reachNextRecoveryAttempt();
+    expect(renew.mock.calls).toEqual([
+      [{ family_id: "family", endpoint_epoch: "endpoint" }],
+      [{ family_id: "family", endpoint_epoch: "endpoint" }],
+      [{ family_id: "family", endpoint_epoch: "endpoint" }],
+    ]);
   });
 
   it("retires the HTTP lifetime before an explicit WebRTC choice", async () => {
@@ -2296,6 +2286,7 @@ describe("explicit HTTP selection with independent relay presence", () => {
     expect(wire.openSession).not.toHaveBeenCalled();
     expect(contextFor("dev-a").blocked).toBe("http-auth");
     await vi.advanceTimersByTimeAsync(30000);
-    expect(http.open).toHaveBeenCalledOnce();
+    expect(http.open.mock.calls.length).toBeGreaterThan(1);
+    expect(openedFor("dev-a")).toHaveLength(0);
   });
 });

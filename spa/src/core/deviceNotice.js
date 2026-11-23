@@ -11,6 +11,7 @@ import { deviceNameOf } from "./devicePolicy.js";
 import { awaitingFirstAnswer, canAnswer, contextFor, onDeviceStateChanged } from "./deviceContexts.js";
 import { surfaceContext } from "./surfaceContext.js";
 import { connectDevice, deviceRecoverySnapshot, onDeviceRecoveryChanged } from "../connection.js";
+import { usesHttp } from "./httpConnections.js";
 
 /** What this client says about a machine it cannot reach, in the account's name
  *  for it — the one sentence, whether a surface prints it or a refused opener
@@ -30,7 +31,7 @@ const deviceOfflineHtml = (deviceId) => `<div class="empty">${esc(deviceOfflineN
 const listedOnline = (deviceId) => App.devices.some((device) => device.id === deviceId && device.status === "online");
 const recovering = (deviceId) => {
   const state = deviceRecoverySnapshot(deviceId);
-  return listedOnline(deviceId) && state && !Array.isArray(state) && state.status !== "idle";
+  return state && !Array.isArray(state) && state.status !== "idle";
 };
 
 /**
@@ -50,7 +51,7 @@ export function mountDeviceNotice(root, deviceId) {
   const paint = () => {
     if (surfaceContext(App.route)) return render();
     const context = contextFor(deviceId);
-    const connecting = listedOnline(deviceId) && (!context?.blocked || recovering(deviceId));
+    const connecting = (listedOnline(deviceId) || usesHttp(deviceId)) && (!context?.blocked || recovering(deviceId));
     root.innerHTML = connecting
       ? `<div class="empty">Connecting to ${esc(deviceNameOf(App.devices, deviceId) || "device")}…</div>`
       : deviceOfflineHtml(deviceId);

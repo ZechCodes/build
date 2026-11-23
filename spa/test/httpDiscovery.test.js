@@ -75,4 +75,26 @@ describe("account-bound Add by URL", () => {
     expect(renewed.token()).toBe(mint.access_token);
     renewed.close();
   });
+
+  it("recovers a saved device through one bound challenge without its previous family", async () => {
+    const saved = { deviceId: "device", origin, endpointEpoch: "old", familyId: "old" };
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json({ ...pending, device_id: "device" }))
+      .mockResolvedValueOnce(json({ proof: "proof" })).mockResolvedValueOnce(json(mint));
+    const discovery = create(fetchImpl);
+    const challenge = await discovery.beginSaved(saved);
+    const renewed = await discovery.finishSaved(challenge, saved);
+    expect(renewed.identity).toMatchObject({ deviceId: "device", origin, endpointEpoch: "epoch", familyId: "family" });
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      issuer + "/api/devices/device/http-discovery", origin + "/.well-known/build-bridge",
+      issuer + "/api/bridge-discovery/complete",
+    ]);
+    expect(fetchImpl.mock.calls[1][1]).toMatchObject({ credentials: "omit", redirect: "error" });
+    renewed.close();
+  });
+
+  it("refuses a saved-device challenge for another device before contacting the bridge", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json({ ...pending, device_id: "other" }));
+    await expect(create(fetchImpl).beginSaved({ deviceId: "device", origin })).rejects.toMatchObject({ code: "wrong_bridge" });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
 });

@@ -19,9 +19,9 @@ ISSUER = "https://app.example"
 ORIGIN = "https://bridge.example:8443"
 
 
-async def paired(db):
-    user = await add_account(db, "owner@example.com")
-    await add_member(db, user, "owner@example.com")
+async def paired(db, email="owner@example.com"):
+    user = await add_account(db, email)
+    await add_member(db, user, email)
     key = Ed25519PrivateKey.generate()
     device = Device(
         name="Laptop",
@@ -54,8 +54,8 @@ def signed(key, device, purpose, **fields):
     )
 
 
-async def registered(db):
-    user, device, key = await paired(db)
+async def registered(db, email="owner@example.com"):
+    user, device, key = await paired(db, email)
     # Unit-service identities represent logins already completed by the supported
     # authentication hook. No service call may invent a new browser identity.
     db.add_all(
@@ -671,6 +671,40 @@ async def test_desktop_near_expiry_parent_has_no_authorization_grace(db):
     assert await auth.introspect(
         db, minted["access_token"], assertion, ISSUER, exact_deadline
     ) == {"active": False}
+
+
+@pytest.mark.asyncio
+async def test_saved_address_discovery_refuses_another_owned_bridge(db):
+    from sqlalchemy import func, select
+    from buildapp.models import BridgeHttpFamily
+
+    user, device, key = await registered(db)
+    _, other, other_key = await registered(db, "other@example.com")
+    other.owner_user_id = user
+    await db.flush()
+    other_endpoint = await auth._endpoint(db, other.id)
+    other_endpoint.user_id = user
+    await db.commit()
+    binding = "browser:session-one"
+    pending = await auth.create_discovery(
+        db, user, binding, ORIGIN, ISSUER, utc_now(), device_id=device.id
+    )
+    assert pending["device_id"] == str(device.id)
+
+    async def complete(signer, target):
+        proof = signed(
+            signer, target, "discovery", challenge_id=pending["challenge_id"],
+            nonce=pending["nonce"], origin=ORIGIN, endpoint_epoch="epoch-one", issuer=ISSUER,
+        )
+        return await auth.complete_discovery(
+            db, user, binding, pending["challenge_id"], proof, ISSUER, utc_now()
+        )
+
+    with pytest.raises(ClientException) as wrong_device:
+        await complete(other_key, other)
+    assert wrong_device.value.status_code == 409
+    assert await db.scalar(select(func.count()).select_from(BridgeHttpFamily)) == 0
+    assert (await complete(key, device))["device_id"] == str(device.id)
 
 
 @pytest.mark.asyncio

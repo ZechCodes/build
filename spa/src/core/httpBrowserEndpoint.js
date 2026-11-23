@@ -66,7 +66,10 @@ export function createBrowserHttpEndpoint({
   const readResponse = async (response, maxBytes) => {
     // An old opening and an invalid bearer have the same bridge response.
     // Retire this opening and let the saved identity obtain fresh authority.
-    if (response.status === 401) endOpening();
+    if (response.status === 401) {
+      if (!opening) throw httpFailure("opening_refused");
+      endOpening();
+    }
     const value = await boundedJson(response, maxBytes);
     if (!response.ok && typeof value?.error !== "string") throw httpFailure("protocol");
     return value;

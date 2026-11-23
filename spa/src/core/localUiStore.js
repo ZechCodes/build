@@ -370,15 +370,39 @@ export function subscribeUiRecords(prefixAddress, listener) {
   return subscribe(prefixAddress, listener);
 }
 
-/** Drop every record — for the account reset that precedes the next account,
- *  never for a replica's lifetime. A carry pass already under way writes
- *  nothing after it. */
+/** Account reset erases UI state and HTTPS grant hints. Only the account-keyed
+ *  device address, paired fingerprint and transport choice survive. */
 export function wipeUiRecords() {
   wipes += 1;
   return database.write((store) => {
-    store.clear();
+    const scan = store.openCursor();
+    scan.onsuccess = () => {
+      const cursor = scan.result;
+      if (!cursor) return;
+      const settings = retainedHttpSettings(cursor);
+      if (settings) cursor.update(settings);
+      else cursor.delete();
+      cursor.continue();
+    };
     return null;
   }).then((wrote) => {
     if (wrote) announce([]);
   });
+}
+
+function retainedHttpSettings(cursor) {
+  const [device, entity, kind, sub] = partsOfKey(cursor.key);
+  const value = cursor.value?.value;
+  if (device !== "" || kind !== "ui-http-connections" || sub !== "account%3A" || !entity || value?.accountId !== entity
+    || !Array.isArray(value.connections)) return null;
+  const connections = value.connections.slice(0, 16).filter(validRetainedAddress).map(({ deviceId, origin, selected, fingerprint }) => ({
+    deviceId, origin, selected, ...(fingerprint && { fingerprint }),
+  }));
+  return { ...writeStamp(), value: { accountId: entity, connections } };
+}
+
+function validRetainedAddress(value) {
+  return value && typeof value.deviceId === "string" && value.deviceId.length <= 128
+    && typeof value.origin === "string" && value.origin.length <= 2048 && ["http", "webrtc"].includes(value.selected)
+    && (value.fingerprint === undefined || typeof value.fingerprint === "string" && value.fingerprint.length <= 128);
 }

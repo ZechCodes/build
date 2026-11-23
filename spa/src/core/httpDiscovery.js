@@ -21,7 +21,10 @@ export function createBridgeDiscovery({ issuer, accountId, fetchImpl = fetch, is
       headers: jsonHeaders, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     if ([408, 429].includes(response.status) || response.status >= 500) throw httpFailure("network");
-    if (!response.ok) throw httpFailure("authentication");
+    if (!response.ok) {
+      const code = response.status === 409 ? "wrong_bridge" : "authentication";
+      throw Object.assign(httpFailure(code), { status: response.status });
+    }
     return boundedJson(response, 16 * 1024);
   }, { isCurrent, timeoutMs: 5000 });
 
@@ -39,6 +42,7 @@ export function createBridgeDiscovery({ issuer, accountId, fetchImpl = fetch, is
     }
     if (!validMintFields(mint)) throw httpFailure("authentication");
     if (identity && !sameBinding(mint, identity)) throw httpFailure("authentication");
+    if (identity && !matchesSavedDevice(mint, identity)) throw httpFailure("wrong_bridge");
     if (!alive(mint.expires_at, now)) throw httpFailure("scope_ended");
     return mint;
   };
@@ -46,6 +50,38 @@ export function createBridgeDiscovery({ issuer, accountId, fetchImpl = fetch, is
   const renew = async (identity) => verifyMint(await hosted(`/api/devices/${encodeURIComponent(identity.deviceId)}/http-credentials`, {
     family_id: identity.familyId, endpoint_epoch: identity.endpointEpoch,
   }), identity.origin, identity);
+
+  const verifySaved = (pending, identity) => {
+    verifyPending(pending, identity.origin);
+    if (pending.device_id !== identity.deviceId) throw httpFailure("wrong_bridge");
+    return pending;
+  };
+
+  const completePending = async (pending, expected) => {
+    const { challenge_id: challengeId, nonce } = pending;
+    const { proof } = await httpRequest(async (signal) => {
+      let response;
+      try {
+        response = await fetchImpl(pending.origin + "/.well-known/build-bridge", {
+          method: "POST", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", signal, headers: jsonHeaders,
+          body: JSON.stringify({ challenge_id: challengeId, nonce }),
+        });
+      } catch { throw httpFailure("network"); }
+      if (!response.ok) throw httpFailure("discovery_failed");
+      return boundedJson(response, 16 * 1024);
+    }, { isCurrent, timeoutMs: 5000 });
+    if (typeof proof !== "string" || proof.length > 16 * 1024) throw httpFailure("protocol");
+    const mint = verifyMint(await hosted("/api/bridge-discovery/complete", { challenge_id: challengeId, proof }), pending.origin);
+    if (expected && !matchesSavedDevice(mint, expected)) throw httpFailure("wrong_bridge");
+    return hold(mint);
+  };
+
+  const readPending = async (challengeId) => {
+    if (!nonempty(challengeId)) throw httpFailure("protocol");
+    const pending = verifyPending(await hosted(`/api/bridge-discovery/challenges/${encodeURIComponent(challengeId)}`, undefined, "GET"));
+    if (pending.challenge_id !== challengeId) throw httpFailure("authentication");
+    return pending;
+  };
 
   const hold = (initial) => {
     let mint = initial;
@@ -80,20 +116,25 @@ export function createBridgeDiscovery({ issuer, accountId, fetchImpl = fetch, is
       return issuer + pending.resume_url;
     },
     async complete(challengeId) {
-      if (!nonempty(challengeId)) throw httpFailure("protocol");
-      const pending = verifyPending(await hosted(`/api/bridge-discovery/challenges/${encodeURIComponent(challengeId)}`, undefined, "GET"));
-      if (pending.challenge_id !== challengeId) throw httpFailure("authentication");
-      const { proof } = await httpRequest(async (signal) => {
-        const response = await fetchImpl(pending.origin + "/.well-known/build-bridge", {
-          method: "POST", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", signal, headers: jsonHeaders,
-          body: JSON.stringify({ challenge_id: pending.challenge_id, nonce: pending.nonce }),
-        });
-        if (!response.ok) throw httpFailure("authentication");
-        return boundedJson(response, 16 * 1024);
-      }, { isCurrent, timeoutMs: 5000 });
-      if (typeof proof !== "string" || proof.length > 16 * 1024) throw httpFailure("protocol");
-      const mint = verifyMint(await hosted("/api/bridge-discovery/complete", { challenge_id: challengeId, proof }), pending.origin);
-      return hold(mint);
+      const pending = await readPending(challengeId);
+      if (pending.device_id) throw httpFailure("wrong_bridge");
+      return completePending(pending);
+    },
+    async beginSaved(identity) {
+      const origin = canonicalBridgeOrigin(identity.origin);
+      if (!nonempty(identity.deviceId)) throw httpFailure("protocol");
+      const path = `/api/devices/${encodeURIComponent(identity.deviceId)}/http-discovery`;
+      const pending = await hosted(path, { origin }).catch((error) => {
+        if ([401, 403].includes(error.status)) throw httpFailure("sign_in");
+        throw error;
+      });
+      return verifySaved(pending, identity);
+    },
+    finishSaved(pending, identity) {
+      return completePending(verifySaved(pending, identity), identity);
+    },
+    async resumeSavedChallenge(challengeId, identity) {
+      return completePending(verifySaved(await readPending(challengeId), identity), identity);
     },
     async resume(identity) {
       canonicalBridgeOrigin(identity.origin);
@@ -101,4 +142,8 @@ export function createBridgeDiscovery({ issuer, accountId, fetchImpl = fetch, is
       return hold(await renew(identity));
     },
   };
+}
+
+function matchesSavedDevice(mint, identity) {
+  return mint.device_id === identity.deviceId && (!identity.fingerprint || mint.fingerprint === identity.fingerprint);
 }

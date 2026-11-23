@@ -90,7 +90,10 @@ export function createDesktopHttpEndpoint({ api, identity, isCurrent = () => tru
   return {
     identity,
     async open(apiRange) {
-      const opening = await invoke("open", identity.handle, apiRange);
+      const opening = await invoke("open", identity.handle, apiRange).catch((error) => {
+        if (error.code === "unauthorized") throw httpFailure("opening_refused");
+        throw error;
+      });
       terminals?.bind(opening);
       return opening;
     },

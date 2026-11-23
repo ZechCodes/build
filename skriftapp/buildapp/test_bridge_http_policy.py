@@ -201,9 +201,11 @@ async def test_document_query_bounds_endpoints_and_rechecks_current_owner_and_ep
 
     user = await add_account(db, "policy@example.com")
     other = await add_account(db, "other@example.com")
-    for index in range(19):
+    endpoints = [
         await seed_endpoint(db, user, f"https://bridge-{index}.example")
-    await seed_endpoint(db, other, "https://other.example")
+        for index in range(19)
+    ]
+    foreign = await seed_endpoint(db, other, "https://other.example")
     await seed_endpoint(db, user, "https://disabled.example", enabled=False)
     await seed_endpoint(db, user, "https://unapproved.example", approved=False)
     await seed_endpoint(db, user, "https://old-epoch.example", epoch=2)
@@ -218,6 +220,13 @@ async def test_document_query_bounds_endpoints_and_rechecks_current_owner_and_ep
     registered = await document_origins(db, user, "browser:one", None, now)
     assert len(registered) == 16
     assert all(origin.startswith("https://bridge-") for origin in registered)
+    omitted = next(endpoint for endpoint in endpoints if endpoint.origin not in registered)
+    preferred = await document_origins(
+        db, user, "browser:one", None, now, (omitted.device_id, foreign.device_id)
+    )
+    assert len(preferred) == 16
+    assert omitted.origin in preferred
+    assert foreign.origin not in preferred
     assert await document_origins(db, user, "browser:one", str(candidate.id), now) == [
         *registered,
         candidate.origin,

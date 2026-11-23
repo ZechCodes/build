@@ -33,5 +33,7 @@ it("describes both terminal carriers in the device transport settings", async ()
     expect(await page.locator("#transport").textContent()).toContain(
       "Terminals also use HTTPS when supported. Older setups may use WebRTC.",
     );
+    expect(await page.getByLabel("Bridge HTTPS address").getAttribute("type")).toBe("url");
+    expect(await page.getByRole("button", { name: "Save and use HTTPS" }).isVisible()).toBe(true);
   });
 });

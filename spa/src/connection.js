@@ -443,7 +443,7 @@ function attemptRecoveryDevice(deviceId, epoch) {
 function retryableConnectionFailure(deviceId, error) {
   const lifecycle = existingDeviceLifecycle(deviceId)?.snapshot();
   if (lifecycle?.securityStop || contextFor(deviceId)?.unsupported) return false;
-  return !error?.securityCritical && !["no-webrtc", "http-auth", "http-unsupported"].includes(error?.blockedReason);
+  return !error?.securityCritical && error?.blockedReason !== "no-webrtc";
 }
 
 async function connectOnce(deviceId, attempt) {
@@ -459,7 +459,7 @@ async function connectOverHttp(deviceId, attempt) {
   try {
     return await openHttpDeviceConnection(deviceId, attempt, {
       greet: greetLiveBridge,
-      onLost: (lifetime, error) => loseHttpConnection(deviceId, lifetime, error),
+      onLost: (lifetime) => loseEstablishedConnection(deviceId, lifetime),
       onAdopt: (context) => { joinFeed(context); syncHome(context); followTerminalsIfTheirs(context, { freshSession: true }); },
       onDetached: () => followTerminalsIfTheirs({ deviceId }),
     });
@@ -471,29 +471,34 @@ async function connectOverHttp(deviceId, attempt) {
 
 const httpAuthCodes = new Set(["authentication", "unauthorized", "binding_mismatch", "stale_owner", "untrusted_caller", "invalid_handle"]);
 const httpCompatibilityCodes = new Set(["unsupported", "incompatible_transport", "unsupported_operation", "invalid_manifest"]);
+const httpRecoveryReasons = new Map([
+  ["scope_ended", "http-lost"],
+  ["opening_refused", "http-lost"],
+  ["sign_in", "http-sign-in"],
+  ["wrong_bridge", "http-wrong-bridge"],
+  ["network_permission", "http-permission"],
+  ["network_permission_denied", "http-permission-denied"],
+]);
 const httpBlockedReason = (error) => {
+  const recoveryReason = httpRecoveryReasons.get(error?.code);
+  if (recoveryReason) return recoveryReason;
   if (httpAuthCodes.has(error?.code)) return "http-auth";
   if (httpCompatibilityCodes.has(error?.code)) return "http-unsupported";
   return ["network", "network_error"].includes(error?.code) ? "http-network" : "http-failed";
 };
 
-function loseHttpConnection(deviceId, lifetime, error) {
-  if (!lifetime.current()) return;
-  if (!httpAuthCodes.has(error?.code)) { loseEstablishedConnection(deviceId, lifetime); return; }
-  blockDeviceConnection(deviceId, lifetime, "http-auth");
-  deviceRecovery.stop(deviceId, { cancel: false });
-  syncHome(contextFor(deviceId));
-}
-
 /** An explicit choice retires the old transport before dialing its replacement.
  * No request accepted by the old opening is replayed on the new one. */
-export async function chooseDeviceTransport(deviceId, { transport: selected, identity } = {}) {
+export async function chooseDeviceTransport(deviceId, { transport: selected, identity, removeAddress = false } = {}) {
   await restoreHttpConnections();
   if (selected === "http") {
     if (identity?.deviceId !== deviceId) throw new Error("The HTTPS address belongs to a different device.");
     await selectHttpConnection(identity);
   }
-  else if (selected === "webrtc") await selectWebRtcConnection(deviceId);
+  else if (selected === "webrtc") {
+    if (removeAddress) await forgetHttpConnection(deviceId);
+    else await selectWebRtcConnection(deviceId);
+  }
   else throw new Error("Choose HTTPS or WebRTC.");
   deviceRecovery.stop(deviceId, { cancel: true });
   connectionAttempts.forDevice(deviceId).cancel();
@@ -730,7 +735,6 @@ export function deviceWentAway(deviceId) {
  * machine the account no longer has.
  */
 export function retireDevice(deviceId) {
-  void forgetHttpConnection(deviceId).catch(() => {});
   // A dial in flight at this machine is called off first: whatever it lands or
   // fails at is about a machine the account no longer has.
   deviceRecovery.stop(deviceId, { cancel: false });

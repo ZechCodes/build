@@ -363,7 +363,7 @@ it("joins the same open attempt only when the retry intent also matches", async 
 });
 
 it.each([
-  [401, "invalid_credential", "Bridge authorization expired or was refused. Verify this device with your account again."],
+  [401, "invalid_credential", "The account could not authorize HTTPS for this device."],
   [403, "forbidden_scope", "This device grant does not allow terminal access."],
   [403, "terminal_forbidden", "This device grant does not allow terminal access."],
 ])("uses the terminal authorization message for %s %s and preserves the code", async (status, code, message) => {

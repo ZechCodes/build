@@ -9,6 +9,22 @@ const create = (accountId = "a", initial) => {
 };
 
 describe("account-bound transport preference", () => {
+  it("keeps an address without any HTTP grant", async () => {
+    const { store, saved } = create();
+    await store.restore();
+    await store.selectHttp({ deviceId: "device", origin: identity.origin });
+    const cold = create("a", saved()).store;
+    await cold.restore();
+    expect(cold.forDevice("device")).toEqual({ deviceId: "device", origin: identity.origin, selected: "http" });
+    const preference = cold.forDevice("device");
+    await expect(cold.rememberAuthority(preference, { ...identity, deviceId: "foreign" })).rejects.toMatchObject({ code: "wrong_bridge" });
+    await cold.rememberAuthority(preference, identity);
+    expect(cold.forDevice("device")).toMatchObject({ origin: identity.origin, familyId: identity.familyId, selected: "http" });
+    await cold.selectWebRtc("device");
+    expect(await cold.rememberAuthority(preference, identity)).toBeNull();
+    expect(cold.forDevice("device").selected).toBe("webrtc");
+  });
+
   it("stores one hint per paired device and no secret", async () => {
     const { store, saved } = create();
     await store.restore(); await store.selectHttp(identity);

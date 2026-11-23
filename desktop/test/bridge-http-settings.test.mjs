@@ -25,3 +25,18 @@ test("desktop settings survive a fresh process and expose only the signed-in acc
   reopened.write(access(account), { accountId: account, deviceId, setting: null });
   assert.deepEqual(reopened.read(access(account)).connections, []);
 });
+
+test("a learned pin updates only the exact legacy setting and survives restart", (t) => {
+  const userData = mkdtempSync(join(tmpdir(), "build-http-pin-"));
+  t.after(() => rmSync(userData, { recursive: true, force: true }));
+  const token = access(account);
+  const store = createBridgeHttpSettings(userData);
+  const setting = { deviceId, origin: "https://127.0.0.1:8443", selected: "http" };
+  store.write(token, { accountId: account, deviceId, setting });
+  const pinned = { ...setting, fingerprint: "paired-fingerprint" };
+  assert.equal(store.write(token, { accountId: account, deviceId, setting: pinned, expected: setting }), true);
+  const reopened = createBridgeHttpSettings(userData);
+  assert.deepEqual(reopened.read(token).connections, [pinned]);
+  assert.equal(reopened.write(token, { accountId: account, deviceId, setting: { ...pinned, fingerprint: "changed" }, expected: setting }), false);
+  assert.deepEqual(reopened.read(token).connections, [pinned]);
+});

@@ -59,10 +59,10 @@ describe("account-bound Add by URL", () => {
     expect(new Headers(fetchImpl.mock.calls[0][1].headers).has("authorization")).toBe(false);
   });
 
-  it.each([408, 429, 503])("keeps hosted renewal retryable after HTTP %s", async (status) => {
+  it.each([[408, "network"], [429, "rate_limited"], [503, "network"]])("keeps hosted renewal retryable after HTTP %s", async (status, code) => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(new Response(null, { status }));
     await expect(create(fetchImpl).resume({ deviceId: "device", origin, endpointEpoch: "epoch", familyId: "family" }))
-      .rejects.toMatchObject({ code: "network" });
+      .rejects.toMatchObject({ code });
   });
 
   it("ends a stale mint while keeping the saved identity renewable", async () => {

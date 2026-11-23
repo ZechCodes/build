@@ -126,6 +126,9 @@ export function createBridgeHttp({
         signal,
         headers: { Authorization: `Bearer ${getAuth().accessToken}` },
         maxBytes: 32 * 1024,
+      }).catch((error) => {
+        if (error.status === 429) fail("rate_limited");
+        throw error;
       }),
     );
   const headers = (handle) => ({

@@ -674,6 +674,46 @@ async def test_desktop_near_expiry_parent_has_no_authorization_grace(db):
 
 
 @pytest.mark.asyncio
+async def test_two_unreachable_saved_devices_in_two_tabs_leave_add_by_url_available(db):
+    from litestar.exceptions import TooManyRequestsException
+
+    user, reachable, key = await registered(db)
+    devices = []
+    for email in ("down-one@example.com", "down-two@example.com"):
+        _, device, _ = await registered(db, email)
+        device.owner_user_id = user
+        devices.append(device)
+    await db.commit()
+
+    binding = "browser:session-one"
+    now = utc_now()
+    allocated = {device.id: set() for device in devices}
+    rate_limited = 0
+    for retry in range(6):
+        # Two tabs share the authenticated browser binding. The down bridges
+        # never answer the proof request, so no challenge can be completed.
+        for device in (devices[0], devices[1], devices[0]):
+            try:
+                saved = await auth.create_discovery(
+                    db, user, binding, ORIGIN, ISSUER, now + timedelta(seconds=10 * retry),
+                    device_id=device.id,
+                )
+                allocated[device.id].add(saved["challenge_id"])
+            except TooManyRequestsException:
+                rate_limited += 1
+            await db.commit()
+
+    # The user and a third, healthy saved bridge can still obtain authority.
+    manual = await mint_for_client(db, user, reachable, key, binding)
+    healthy = await auth.create_discovery(
+        db, user, binding, ORIGIN, ISSUER, utc_now(), device_id=reachable.id
+    )
+    assert manual["device_id"] == healthy["device_id"] == str(reachable.id)
+    assert rate_limited == 0
+    assert all(len(pending) == 1 for pending in allocated.values())
+
+
+@pytest.mark.asyncio
 async def test_saved_address_discovery_refuses_another_owned_bridge(db):
     from sqlalchemy import func, select
     from buildapp.models import BridgeHttpFamily

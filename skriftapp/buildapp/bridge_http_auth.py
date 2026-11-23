@@ -76,7 +76,7 @@ async def registration_challenge(db, device_id, proof, issuer, now):
 
 async def _bounded_challenges(db, owner, now, maximum):
     await db.execute(
-        delete(BridgeHttpChallenge).where(BridgeHttpChallenge.expires_at < now)
+        delete(BridgeHttpChallenge).where(BridgeHttpChallenge.expires_at <= now)
     )
     count = await db.scalar(
         select(func.count())
@@ -247,11 +247,12 @@ async def create_discovery(
         refuse()
     await _client_active(db, user_id, client_binding, now)
     origin = canonical_origin(origin)
-    if device_id is not None:
-        device = await current_device(db, device_id)
-        if device.owner_user_id != user_id:
-            refuse()
-    await _bounded_challenges(db, BridgeHttpChallenge.user_id == user_id, now, 8)
+    if device_id is None:
+        await _bounded_challenges(db, _discovery_scope(user_id, None), now, 8)
+    else:
+        pending = await _saved_discovery(db, user_id, client_binding, device_id, origin, now)
+        if pending:
+            return discovery_payload(pending, issuer)
     challenge, _ = await _challenge(
         db,
         now,
@@ -262,6 +263,42 @@ async def create_discovery(
         device_id=device_id,
     )
     return discovery_payload(challenge, issuer)
+
+
+def _discovery_scope(user_id, device_id):
+    return (
+        (BridgeHttpChallenge.user_id == user_id)
+        & (BridgeHttpChallenge.purpose == "discovery")
+        & (BridgeHttpChallenge.device_id == device_id)
+    )
+
+
+async def _saved_discovery(db, user_id, client_binding, device_id, origin, now):
+    device = await current_device(db, device_id)
+    if device.owner_user_id != user_id:
+        refuse()
+    device_scope = _discovery_scope(user_id, device_id)
+    current = (
+        device_scope
+        & (BridgeHttpChallenge.client_binding == client_binding)
+        & BridgeHttpChallenge.consumed_at.is_(None)
+        & (BridgeHttpChallenge.expires_at > now)
+    )
+    # The user lock also covers tabs sharing this login. Keep the same
+    # nonce and expiry until success, expiry, or a change to the address.
+    pending = await db.scalar(
+        select(BridgeHttpChallenge)
+        .where(current, BridgeHttpChallenge.origin == origin)
+        .order_by(BridgeHttpChallenge.expires_at.desc())
+        .limit(1)
+    )
+    if pending:
+        return pending
+    await db.execute(update(BridgeHttpChallenge).where(current).values(consumed_at=now))
+    # Recovery on one device cannot consume the interactive budget or another
+    # device's slots, even when the account has several separate logins.
+    await _bounded_challenges(db, device_scope, now, 8)
+    return None
 
 
 def discovery_payload(challenge, issuer):

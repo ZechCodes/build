@@ -324,7 +324,7 @@ const sourceFingerprintParts = {
   "app.js": ["8e043a81", "cc1d5abd", "0e312435", "52018876", "d56a6883", "8c9587f5", "e34aa31b", "25b32265"],
   "appState.js": ["d24d9edc", "6e4988f0", "8a5289ee", "6c449b3f", "91bdbe42", "7cd43ada", "7a9df6a4", "acd39971"],
   // #1162: saved HTTPS recovery replaces session authority; RPC methods and routing edges are unchanged.
-  "connection.js": ["26aca7a6", "80baa1da", "9d723560", "3d34c5dd", "544eb59a", "3bf21b17", "64a32eed", "3e35c0cb"],
+  "connection.js": ["7a940384", "94f7b68b", "0e6779f8", "aa264012", "a0d934d0", "c08ef0c0", "15265ab1", "c913d227"],
   "core/activityRuns.js": ["2bd80d81", "ad2ddde9", "da2fc194", "95b7b7ba", "4d0a86f4", "29a52906", "009b6fc5", "5221d710"],
   "core/adoption.js": ["350b90d5", "9e535f4b", "15adf2ef", "7eacd8c0", "fb946020", "b6130cb8", "ce729fed", "bb90597e"],
   "core/agentDefaults.js": ["f856d23d", "2c446c14", "c6e4d78e", "e11e737d", "75e1fbc1", "fa79564d", "2ef20a2b", "1cdbbcb0"],

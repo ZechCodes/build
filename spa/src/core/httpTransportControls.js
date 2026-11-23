@@ -10,6 +10,7 @@ const transportProblems = new Map([
   ["http-wrong-bridge", "wrong_bridge"],
   ["http-permission", "network_permission"],
   ["http-permission-denied", "network_permission_denied"],
+  ["http-rate-limited", "rate_limited"],
   ["http-network", "network"],
   ["http-auth", "authentication"],
   ["http-unsupported", "unsupported"],

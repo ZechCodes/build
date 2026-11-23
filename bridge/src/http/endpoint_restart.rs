@@ -2,21 +2,35 @@ use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+const RESTART_INTENT_LIFETIME: Duration = Duration::from_secs(60);
 
 pub(super) fn planned(state: &Path, invocation: &str) -> bool {
     if !valid_invocation(invocation) {
         return false;
     }
-    read_marker(&state.with_extension("restart"))
-        .is_some_and(|marker| marker.strip_suffix('\n') == Some(invocation))
+    read_marker(
+        &state.with_extension("restart"),
+        Some(RESTART_INTENT_LIFETIME),
+    )
+    .is_some_and(|marker| marker.strip_suffix('\n') == Some(invocation))
 }
 
-fn read_marker(path: &Path) -> Option<String> {
+fn read_marker(path: &Path, maximum_age: Option<Duration>) -> Option<String> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
         .ok()?;
+    if let Some(maximum) = maximum_age {
+        let age = SystemTime::now()
+            .duration_since(file.metadata().ok()?.modified().ok()?)
+            .ok()?;
+        if age >= maximum {
+            return None;
+        }
+    }
     let mut marker = String::new();
     file.take(64).read_to_string(&mut marker).ok()?;
     Some(marker)
@@ -70,7 +84,7 @@ pub(super) fn publish_live_invocation(state: &Path) -> io::Result<String> {
 }
 
 pub(crate) fn active_invocation(state: &Path, pid: u32) -> Option<String> {
-    let marker = read_marker(&state.with_extension("run"))?;
+    let marker = read_marker(&state.with_extension("run"), None)?;
     let (process, id) = marker.strip_suffix('\n')?.split_once(' ')?;
     (process.parse::<u32>().ok()? == pid && valid_invocation(id)).then(|| id.to_owned())
 }

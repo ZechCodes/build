@@ -3969,7 +3969,9 @@ distinguish registration from deactivation, including during shutdown.
 Shutdown cancels pending registration;
 an active listener still shuts down through its authority fence. A managed
 deploy or updater marks the exact running service invocation before stopping
-it. A clean marked stop closes every local opening and retains the hosted
+it. The marker expires after one minute, so an interrupted rollout cannot
+preserve registration on a later ordinary shutdown. A clean marked stop
+closes every local opening and retains the hosted
 registration. Startup must still register and acknowledge its actual policy
 before listening. The same policy reuses its epoch, while a changed or disabled
 policy publishes a new generation and revokes the old families. An unmarked
@@ -5766,13 +5768,19 @@ The address and optional pinned fingerprint are settings. Family and endpoint
 epoch are renewal hints, and bearer tokens remain in memory. An account reset
 keeps only the account-scoped address, fingerprint, and transport choice.
 Desktop stores those fields under the account named by its current hosted sign-in
-and clears its renderer storage on sign-out.
+and clears its renderer storage on sign-out. An issuer-verified fingerprint
+fills an unpinned desktop setting only if its address and selection still
+match. Retiring a device frees its saved address slot.
 
 An expired bearer, closed stream, or old-opening 401 retires the exact opening.
 Recovery first resumes the saved grant family. If hosted refuses the family, or
 the bridge refuses a freshly minted bearer at opening, recovery uses Add by
 URL's one-use challenge, bound to the saved device before hosted can mint a
-replacement. Verification checks the signed device proof, registration, origin,
+replacement. Hosted reuses one live challenge for the same client, device, and
+origin, including across tabs. Each saved device has its own challenge budget,
+and Add by URL keeps a separate eight-slot budget per account. Hosted 429 pauses
+the affected device for one minute, including across wake and manual Retry.
+Verification checks the signed device proof, registration, origin,
 account, endpoint epoch, and the saved fingerprint when present. A different
 bridge cannot replace the saved address or receive a bearer from that proof.
 When the current document's enforced CSP lacks the precise origin, recovery

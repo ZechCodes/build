@@ -2140,6 +2140,13 @@ describe("a machine a page stands on, which the account calls offline", () => {
 });
 
 describe("explicit HTTP selection with independent relay presence", () => {
+  it("releases the saved HTTPS slot when the account retires the device", async () => {
+    http.selected.add("dev-a");
+    retireDevice("dev-a");
+    await flush();
+    expect(http.selected.has("dev-a")).toBe(false);
+  });
+
   function serveSavedHttpIdentity() {
     const origin = "https://127.0.0.1:8443";
     const issuer = "https://127.0.0.1:9443";
@@ -2217,6 +2224,19 @@ describe("explicit HTTP selection with independent relay presence", () => {
     expect(contextFor("dev-a").blocked).not.toBe("http-auth");
     expect(renew).toHaveBeenCalledTimes(2);
     expect(contextFor("dev-a").session.sessionId).toBe("opening-2");
+  });
+
+  it("waits a minute after a rate-limited renewal of a live opening", async () => {
+    const { renew } = serveSavedHttpIdentity();
+    await connectDevice("dev-a");
+    renew.mockImplementation(() => new Response(null, { status: 429 }));
+    vi.setSystemTime(Date.now() + 250000);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(renew).toHaveBeenCalledTimes(2);
+    await expect(connectDevice("dev-a")).rejects.toMatchObject({ code: "rate_limited" });
+    expect(renew).toHaveBeenCalledTimes(2);
+    await reachNextRecoveryAttempt();
+    expect(renew).toHaveBeenCalledTimes(3);
   });
 
   it("retains retry after hosted refuses a saved family", async () => {

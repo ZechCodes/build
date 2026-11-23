@@ -20,7 +20,8 @@ export function createBridgeDiscovery({ issuer, accountId, fetchImpl = fetch, is
       method, credentials: "same-origin", redirect: "error", referrerPolicy: "no-referrer", signal,
       headers: jsonHeaders, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    if ([408, 429].includes(response.status) || response.status >= 500) throw httpFailure("network");
+    if (response.status === 429) throw httpFailure("rate_limited");
+    if (response.status === 408 || response.status >= 500) throw httpFailure("network");
     if (!response.ok) {
       const code = response.status === 409 ? "wrong_bridge" : "authentication";
       throw Object.assign(httpFailure(code), { status: response.status });
@@ -67,6 +68,7 @@ export function createBridgeDiscovery({ issuer, accountId, fetchImpl = fetch, is
           body: JSON.stringify({ challenge_id: challengeId, nonce }),
         });
       } catch { throw httpFailure("network"); }
+      if (response.status === 429) throw httpFailure("rate_limited");
       if (!response.ok) throw httpFailure("discovery_failed");
       return boundedJson(response, 16 * 1024);
     }, { isCurrent, timeoutMs: 5000 });

@@ -73,6 +73,7 @@ import { syncRestoredDevice } from "./core/cacheSync.js";
 import { forgetRtcClientHints, rememberRtcClientSupport, rtcClientId } from "./core/rtcClientHint.js";
 import { openHttpDeviceConnection } from "./core/httpDeviceConnection.js";
 import { forgetHttpConnection, httpRecoveryCandidates, restoreHttpConnections, selectHttpConnection, selectWebRtcConnection, usesHttp } from "./core/httpConnections.js";
+import { httpFailure } from "./core/httpEndpoint.js";
 
 // ---- one rendezvous per device (spec rules 4, 5 and 7) -----------------------
 
@@ -420,6 +421,7 @@ export function connectDevice(deviceId, { recoveryEpoch = null, reason = "unname
   // starts it reports its outcome to recovery, or one failure would advance the
   // backoff once per observer rather than once per dial.
   if (attemptOwner.connecting) return attemptOwner.connect(() => null);
+  if (deviceRecovery.coolingDown(deviceId)) return Promise.reject(httpFailure("rate_limited"));
   const epoch = recoveryEpoch ?? deviceRecovery.beginAttempt(deviceId);
   const identity = deviceContextIdentity(deviceId);
   const pending = attemptOwner.connect(
@@ -430,7 +432,9 @@ export function connectDevice(deviceId, { recoveryEpoch = null, reason = "unname
   );
   pending.then(
     () => deviceRecovery.connected(deviceId, { epoch }),
-    (error) => deviceRecovery.failed(deviceId, { epoch, retryable: retryableConnectionFailure(deviceId, error) }),
+    (error) => deviceRecovery.failed(deviceId, {
+      epoch, retryable: retryableConnectionFailure(deviceId, error), retryAfterMs: error?.retryAfterMs,
+    }),
   );
   return pending;
 }
@@ -459,7 +463,7 @@ async function connectOverHttp(deviceId, attempt) {
   try {
     return await openHttpDeviceConnection(deviceId, attempt, {
       greet: greetLiveBridge,
-      onLost: (lifetime) => loseEstablishedConnection(deviceId, lifetime),
+      onLost: (lifetime, error) => loseEstablishedConnection(deviceId, lifetime, error?.retryAfterMs),
       onAdopt: (context) => { joinFeed(context); syncHome(context); followTerminalsIfTheirs(context, { freshSession: true }); },
       onDetached: () => followTerminalsIfTheirs({ deviceId }),
     });
@@ -478,6 +482,7 @@ const httpRecoveryReasons = new Map([
   ["wrong_bridge", "http-wrong-bridge"],
   ["network_permission", "http-permission"],
   ["network_permission_denied", "http-permission-denied"],
+  ["rate_limited", "http-rate-limited"],
 ]);
 const httpBlockedReason = (error) => {
   const recoveryReason = httpRecoveryReasons.get(error?.code);
@@ -593,7 +598,7 @@ function askTheAppSideBeforeBelievingIt(deviceId, lifetime) {
   });
 }
 
-function loseEstablishedConnection(deviceId, lifetime) {
+function loseEstablishedConnection(deviceId, lifetime, retryAfterMs = 0) {
   if (!lifetime.current()) return false;
   if (!connectionAttempts.isConnecting(deviceId)) closeRendezvous(deviceId);
   const { context, changed } = loseDeviceConnection(deviceId, lifetime);
@@ -602,7 +607,14 @@ function loseEstablishedConnection(deviceId, lifetime) {
   // Before connectOnce hands the lifetime off, its own rejection is the failed
   // fresh attempt and owns the backoff. Starting recovery here would supersede
   // that epoch and turn repeated greeting-time drops into a silent tight loop.
-  if (!connectionAttempts.isConnecting(deviceId) && !context.unsupported) deviceRecovery.recoverNow(deviceId);
+  if (!connectionAttempts.isConnecting(deviceId) && !context.unsupported) {
+    if (retryAfterMs) {
+      const epoch = deviceRecovery.beginAttempt(deviceId, { resetFailures: true });
+      deviceRecovery.failed(deviceId, { epoch, retryAfterMs });
+    } else {
+      deviceRecovery.recoverNow(deviceId);
+    }
+  }
   return true;
 }
 
@@ -735,6 +747,7 @@ export function deviceWentAway(deviceId) {
  * machine the account no longer has.
  */
 export function retireDevice(deviceId) {
+  void forgetHttpConnection(deviceId).catch(() => {});
   // A dial in flight at this machine is called off first: whatever it lands or
   // fails at is about a machine the account no longer has.
   deviceRecovery.stop(deviceId, { cancel: false });

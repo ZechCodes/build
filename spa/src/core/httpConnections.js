@@ -51,15 +51,20 @@ async function readPreference(address, accountId, current) {
   return value;
 }
 
+async function persistNativePreference(accountId, deviceId, replacement, expected, current) {
+  const api = native();
+  if (!api?.settingsWrite || expected && (expected.fingerprint || !replacement?.fingerprint)) return true;
+  if (!current()) throw httpFailure("scope_ended");
+  return desktopHttpValue(await api.settingsWrite({
+    accountId, deviceId,
+    setting: replacement ? settingFields(replacement) : null,
+    ...(expected && { expected: settingFields(expected) }),
+  }));
+}
+
 async function writePreference(address, value, { deviceId, expected }, current) {
   const replacement = value.connections.find((row) => row.deviceId === deviceId);
-  const api = native();
-  if (!expected && api?.settingsWrite) {
-    if (!current()) throw httpFailure("scope_ended");
-    desktopHttpValue(await api.settingsWrite({
-      accountId: value.accountId, deviceId, setting: replacement ? settingFields(replacement) : null,
-    }));
-  }
+  if (!await persistNativePreference(value.accountId, deviceId, replacement, expected, current)) return false;
   let committed = false;
   const applied = await updateUiState(address, (previous) => {
     const saved = accountConnections(previous, value.accountId);
@@ -176,7 +181,7 @@ export async function httpEndpointFor(deviceId, isCurrent) {
   const remember = async (identity) => {
     if (!current()) throw httpFailure("scope_ended");
     if (!sameHttpDevice(preference, identity)) throw httpFailure("wrong_bridge");
-    if (matchesPreference(identity, preference)) return;
+    if (matchesPreference(identity, preference) && !(identity.fingerprint && !preference.fingerprint)) return;
     const next = await held.preferences.rememberAuthority(preference, identity, current);
     if (!next) throw httpFailure("scope_ended");
     preference = next;
@@ -210,13 +215,14 @@ const matchesPreference = (identity, preference) => identity && sameHttpDevice(p
   && identity.familyId === preference.familyId && identity.endpointEpoch === preference.endpointEpoch;
 
 async function nativeSavedIdentity(api, { deviceId, origin, endpointEpoch, familyId, fingerprint }, current) {
+  const pin = fingerprint && { fingerprint };
   if (familyId) {
-    const result = await api.resume({ deviceId, origin, endpointEpoch, familyId, ...(fingerprint && { fingerprint }) });
-    if (result?.ok || result?.error?.code !== "unauthorized") return desktopHttpValue(result);
+    const result = await api.resume({ deviceId, origin, endpointEpoch, familyId, ...pin });
+    if (result?.error?.code !== "unauthorized") return desktopHttpValue(result);
   }
   if (!current()) throw httpFailure("scope_ended");
   if (!api.discoverSaved) throw httpFailure("incompatible_transport");
-  return desktopHttpValue(await api.discoverSaved(origin, { deviceId, ...(fingerprint && { fingerprint }) }));
+  return desktopHttpValue(await api.discoverSaved(origin, { deviceId, ...pin }));
 }
 
 async function nativeEndpoint(api, ready, preference, current, remember) {

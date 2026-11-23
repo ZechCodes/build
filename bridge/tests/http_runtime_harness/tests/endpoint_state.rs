@@ -44,6 +44,15 @@ fn planned_restart_requires_the_running_systemd_invocation() {
     {
         let _published = endpoint_restart::RestartIntent::publish(&endpoint, running).unwrap();
         assert!(endpoint_restart::planned(&endpoint, running));
+        // A killed rollout leaves the marker behind. A later unrelated
+        // shutdown in the very same service invocation must deactivate.
+        std::fs::File::options()
+            .write(true)
+            .open(&intent)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(90))
+            .unwrap();
+        assert!(!endpoint_restart::planned(&endpoint, running));
     }
     assert!(!intent.exists());
 }

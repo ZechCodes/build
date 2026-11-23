@@ -44,6 +44,7 @@ const BLOCKED_WHY = {
   "http-wrong-bridge": "the saved HTTPS address answered as a different bridge",
   "http-permission": "the browser needs permission to connect to this HTTPS address",
   "http-permission-denied": "the browser blocked local network access",
+  "http-rate-limited": "HTTPS authorization is temporarily rate limited",
   "http-unsupported": "the HTTPS bridge does not support this app's required operations",
   "http-network": "HTTPS could not be reached; check certificate trust, network access and browser permissions",
   "http-failed": "the HTTPS connection failed",

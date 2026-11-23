@@ -16,6 +16,23 @@ describe("device recovery supervisor", () => {
     return { recovery, attempts, cancelled };
   };
 
+  it("respects a hosted cooldown through presence, wake, and manual retry", async () => {
+    const { recovery, attempts } = setup();
+    const online = [{ id: "dev-a", status: "online" }];
+    recovery.syncPresence(online);
+    recovery.failed("dev-a", { epoch: recovery.beginAttempt("dev-a"), retryAfterMs: 60000 });
+    expect(recovery.snapshot("dev-a").nextAttemptAt).toBe(Date.now() + 60000);
+    recovery.syncPresence(online);
+    expect(recovery.wake().woke).toEqual([]);
+    expect(recovery.nudge().woke).toEqual([]);
+    expect(recovery.beginAttempt("dev-a", { resetFailures: true })).toBeNull();
+    expect(recovery.recoverNow("dev-a")).toBeNull();
+    await vi.advanceTimersByTimeAsync(59999);
+    expect(attempts).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toEqual(["dev-a"]);
+  });
+
   it("tries a lost online device immediately and stays silent until that fresh attempt fails", async () => {
     const { recovery, attempts } = setup();
     recovery.syncPresence([{ id: "dev-a", status: "online" }]);

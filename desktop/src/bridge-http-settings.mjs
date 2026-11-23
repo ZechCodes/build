@@ -24,6 +24,13 @@ function clean(setting, deviceId) {
   return { deviceId, origin: canonicalOrigin(setting.origin), selected: setting.selected, ...(fingerprint && { fingerprint }) };
 }
 
+function canLearnPin(current, expected, replacement) {
+  if (!current || !replacement?.fingerprint || expected.fingerprint) return false;
+  return current.origin === expected.origin && replacement.origin === expected.origin
+    && current.selected === expected.selected && replacement.selected === expected.selected
+    && (!current.fingerprint || current.fingerprint === replacement.fingerprint);
+}
+
 export function createBridgeHttpSettings(userData) {
   const directory = join(userData, "bridge-http-settings");
   const pathFor = (accountId) => join(directory, accountId + ".json");
@@ -38,12 +45,18 @@ export function createBridgeHttpSettings(userData) {
     }
   }
   function write(access, input) {
-    exact(input, ["accountId", "deviceId", "setting"]);
+    exact(input, ["accountId", "deviceId", "setting", "expected"]);
     const accountId = accountOf(access);
     if (accountId !== input.accountId) fail("sign_in");
     const deviceId = identifier(input.deviceId);
-    const connections = (read(access)?.connections || []).filter((entry) => entry.deviceId !== deviceId);
-    if (input.setting !== null) connections.push(clean(input.setting, deviceId));
+    const saved = read(access)?.connections || [];
+    const replacement = input.setting === null ? null : clean(input.setting, deviceId);
+    if (input.expected !== undefined) {
+      const current = saved.find((entry) => entry.deviceId === deviceId);
+      if (!canLearnPin(current, clean(input.expected, deviceId), replacement)) return false;
+    }
+    const connections = saved.filter((entry) => entry.deviceId !== deviceId);
+    if (replacement) connections.push(replacement);
     if (connections.length > 16) fail("busy");
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     const staging = join(directory, randomUUID() + ".tmp");

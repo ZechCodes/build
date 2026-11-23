@@ -30,6 +30,7 @@ export function httpFailure(code, uncertain = false) {
     wrong_bridge: "The saved HTTPS address answered as a different bridge.",
     network_permission: "Allow this site to access the saved address in your browser.",
     network_permission_denied: "Allow local network access for this site in your browser settings.",
+    rate_limited: "HTTPS authorization is rate limited. Build will try again shortly.",
     protocol: "The bridge returned an invalid HTTP response.",
     scope_ended: "This bridge connection has ended.",
     opening_refused: "The HTTPS session needs fresh authorization.",
@@ -53,5 +54,6 @@ export function httpFailure(code, uncertain = false) {
   };
   return Object.assign(new Error(messages[code] || "The HTTPS bridge request failed."), {
     code, error_code: code, uncertain,
+    ...(code === "rate_limited" && { retryAfterMs: 60_000 }),
   });
 }

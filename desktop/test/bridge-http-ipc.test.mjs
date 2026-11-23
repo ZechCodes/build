@@ -202,8 +202,11 @@ test("IPC preserves the plain discovery refusal and prevents renderer issuer ove
   } });
 });
 
-for (const status of [429, 503]) {
-  test(`IPC keeps discovery completion ${status} as a service failure`, async (t) => {
+for (const [status, code, message] of [
+  [429, "rate_limited", "Bridge HTTP rate limited."],
+  [503, "http_error", "Bridge HTTP http error."],
+]) {
+  test(`IPC preserves the failure category for discovery completion ${status}`, async (t) => {
     const h = harness(t, async (url) => {
       if (url.endsWith("/challenges")) return new Response(JSON.stringify({
         issuer: "https://getbuild.ing", challenge_id: "challenge", nonce: "n".repeat(32),
@@ -213,7 +216,7 @@ for (const status of [429, 503]) {
       return new Response(null, { status });
     });
     assert.deepEqual(await h.invoke("discover", ["https://bridge.test"]), {
-      ok: false, error: { code: "http_error", message: "Bridge HTTP http error." },
+      ok: false, error: { code, message },
     });
   });
 }

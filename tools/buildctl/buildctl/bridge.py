@@ -254,7 +254,7 @@ class Bridge:
                 "install failed; if unpaired, run bridge pair, approve on dev, then bridge deploy again"
             )
         self.service.reload()
-        self.service.stop()
+        self.service.stop_for_restart()
         cursor = LogCursor(self.env)  # The old process is stopped before the baseline.
         self.service.start()
         self.verify(expected, cursor)

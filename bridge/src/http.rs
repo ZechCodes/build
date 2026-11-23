@@ -4,6 +4,7 @@ pub mod auth;
 pub mod body;
 pub mod discovery;
 pub mod discovery_limits;
+pub(crate) mod endpoint_restart;
 pub mod endpoint_state;
 pub mod limits;
 pub mod listener;

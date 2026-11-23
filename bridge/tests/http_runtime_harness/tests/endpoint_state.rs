@@ -1,5 +1,7 @@
 //! Deterministic cross-process interleavings at the actual persistence boundary.
 // The copied module also exposes production-only registration helpers.
+#[path = "../../../src/http/endpoint_restart.rs"]
+mod endpoint_restart;
 #[allow(dead_code)]
 #[path = "../../../src/http/endpoint_state.rs"]
 mod endpoint_state;
@@ -21,6 +23,49 @@ fn policy() -> EndpointPolicy {
 
 fn record(path: &Path) -> EndpointRecord {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
+
+#[test]
+fn planned_restart_requires_the_running_systemd_invocation() {
+    let directory = tempfile::tempdir().unwrap();
+    let endpoint = directory.path().join("http-endpoint.json");
+    let intent = endpoint.with_extension("restart");
+    let running = "0123456789abcdef0123456789abcdef";
+    assert!(!endpoint_restart::planned(&endpoint, running));
+    std::fs::write(&intent, format!("{running}\n")).unwrap();
+    assert!(endpoint_restart::planned(&endpoint, running));
+    assert!(!endpoint_restart::planned(
+        &endpoint,
+        "0123456789abcdef0123456789abcdee"
+    ));
+    assert!(!endpoint_restart::planned(&endpoint, ""));
+    std::fs::write(&intent, format!("{running}\nforged")).unwrap();
+    assert!(!endpoint_restart::planned(&endpoint, running));
+    {
+        let _published = endpoint_restart::RestartIntent::publish(&endpoint, running).unwrap();
+        assert!(endpoint_restart::planned(&endpoint, running));
+    }
+    assert!(!intent.exists());
+}
+
+#[test]
+fn planned_launchd_restart_uses_the_selected_process_and_start_nonce() {
+    let directory = tempfile::tempdir().unwrap();
+    let endpoint = directory.path().join("http-endpoint.json");
+    let pid = std::process::id();
+    let running = endpoint_restart::publish_live_invocation(&endpoint).unwrap();
+    assert_eq!(
+        endpoint_restart::active_invocation(&endpoint, pid),
+        Some(running.clone())
+    );
+    assert_eq!(
+        endpoint_restart::active_invocation(&endpoint, pid.wrapping_add(1)),
+        None
+    );
+    let _intent = endpoint_restart::RestartIntent::publish(&endpoint, &running).unwrap();
+    assert!(endpoint_restart::planned(&endpoint, &running));
+    let successor = endpoint_restart::publish_live_invocation(&endpoint).unwrap();
+    assert!(!endpoint_restart::planned(&endpoint, &successor));
 }
 
 #[test]

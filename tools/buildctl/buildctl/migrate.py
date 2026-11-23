@@ -21,7 +21,9 @@ from .runtime import BuildctlError, Runner
 
 # Device-vault keys and values are never a migration/rollback payload.
 IMPORTED = ('config.json', 'projects', 'provider-recovery', 'review-receivers', 'harness', 'tasks')
-DEVICE_TASK_FILES = {'http-endpoint.json', 'http-endpoint.json.lock'}
+DEVICE_TASK_FILES = {
+    'http-endpoint.json', 'http-endpoint.json.lock', 'http-endpoint.restart', 'http-endpoint.run',
+}
 DEVICE_TASK_PATHS = {Path('tasks') / name for name in DEVICE_TASK_FILES}
 
 OPERATIONAL = {'identity.json', 'log', 'builds', 'buildctl.json', 'buildctl-candidate', 'buildctl.lock'}

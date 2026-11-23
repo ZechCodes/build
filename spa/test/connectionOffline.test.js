@@ -2222,8 +2222,13 @@ describe("explicit HTTP selection with independent relay presence", () => {
   it("the authorization banner Retry resumes the saved identity before showing the refusal again", async () => {
     const { mountDeviceStrip } = await import("../src/core/deviceNotice.js");
     const { renew } = serveSavedHttpIdentity();
+    const { session } = await connectDevice("dev-a");
     renew.mockImplementation(() => new Response(null, { status: 401 }));
-    await expect(connectDevice("dev-a")).rejects.toMatchObject({ code: "authentication" });
+    await expect(session.readResource()).rejects.toThrow();
+    expect(contextFor("dev-a").blocked).not.toBe("http-auth");
+    await flush();
+    expect(contextFor("dev-a").blocked).toBe("http-auth");
+    expect(renew).toHaveBeenCalledTimes(2);
     const host = document.createElement("div");
     const detach = mountDeviceStrip(host, contextFor("dev-a"));
     try {
@@ -2231,6 +2236,7 @@ describe("explicit HTTP selection with independent relay presence", () => {
       host.querySelector("[data-retry-device]").click();
       await flush();
       expect(renew.mock.calls).toEqual([
+        [{ family_id: "family", endpoint_epoch: "endpoint" }],
         [{ family_id: "family", endpoint_epoch: "endpoint" }],
         [{ family_id: "family", endpoint_epoch: "endpoint" }],
       ]);

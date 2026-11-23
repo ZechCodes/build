@@ -5,8 +5,8 @@ const nonempty = (value) => typeof value === "string" && value.length > 0 && val
 const alive = (value, now) => Number.isFinite(value) && value > now() / 1000;
 const validPending = (pending, accountId, issuer, now) => pending && pending.account_id === accountId
   && pending.issuer === issuer && alive(pending.expires_at, now) && nonempty(pending.challenge_id) && nonempty(pending.nonce);
-const validMint = (mint, accountId, issuer, origin, now) => mint && mint.issuer === issuer
-  && mint.account_id === accountId && mint.origin === origin && alive(mint.expires_at, now);
+const validMint = (mint, accountId, issuer, origin) => mint && mint.issuer === issuer
+  && mint.account_id === accountId && mint.origin === origin && Number.isFinite(mint.expires_at);
 const validMintFields = (mint) => [mint.device_id, mint.endpoint_epoch, mint.family_id, mint.access_token].every(nonempty)
   && !/[\r\n]/.test(mint.access_token) && hasClientScopes(mint.scope);
 const hasClientScopes = (scope) => typeof scope === "string" && ["bridge:read", "bridge:write"].every((required) => scope.split(" ").includes(required));
@@ -20,6 +20,7 @@ export function createBridgeDiscovery({ issuer, accountId, fetchImpl = fetch, is
       method, credentials: "same-origin", redirect: "error", referrerPolicy: "no-referrer", signal,
       headers: jsonHeaders, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
+    if ([408, 429].includes(response.status) || response.status >= 500) throw httpFailure("network");
     if (!response.ok) throw httpFailure("authentication");
     return boundedJson(response, 16 * 1024);
   }, { isCurrent, timeoutMs: 5000 });
@@ -33,11 +34,12 @@ export function createBridgeDiscovery({ issuer, accountId, fetchImpl = fetch, is
   };
 
   const verifyMint = (mint, origin, identity) => {
-    if (!validMint(mint, accountId, issuer, origin, now)) {
+    if (!validMint(mint, accountId, issuer, origin)) {
       throw httpFailure("authentication");
     }
     if (!validMintFields(mint)) throw httpFailure("authentication");
     if (identity && !sameBinding(mint, identity)) throw httpFailure("authentication");
+    if (!alive(mint.expires_at, now)) throw httpFailure("scope_ended");
     return mint;
   };
 
@@ -54,7 +56,7 @@ export function createBridgeDiscovery({ issuer, accountId, fetchImpl = fetch, is
       name: typeof mint.name === "string" ? mint.name : "", fingerprint: typeof mint.fingerprint === "string" ? mint.fingerprint : "",
     });
     const active = () => !closed && isCurrent();
-    const check = () => { if (!active() || !alive(mint.expires_at, now)) throw httpFailure("authentication"); };
+    const check = () => { if (!active() || !alive(mint.expires_at, now)) throw httpFailure("scope_ended"); };
     return {
       identity,
       token() { check(); return mint.access_token; },

@@ -26,7 +26,10 @@ export function createBrowserHttpEndpoint({
   let refreshTimer;
   let hardDeadline = Infinity;
   const active = () => !closed && isCurrent() && monotonic() < hardDeadline;
-  const check = () => { if (!active()) throw httpFailure("scope_ended"); };
+  const check = () => {
+    if (!active()) throw httpFailure("scope_ended");
+    if (grant.expiresAt() <= now()) endOpening();
+  };
 
   const headers = (extra = {}, hasBody = true) => {
     const value = { ...jsonHeaders, Authorization: `Bearer ${grant.token()}`, ...extra };
@@ -51,13 +54,19 @@ export function createBrowserHttpEndpoint({
     lifetime.abort(httpFailure("scope_ended"));
     grant.close();
   };
-  const lose = (error = httpFailure("authentication")) => {
+  const lose = (error = httpFailure("scope_ended")) => {
     if (closed) return;
     close(); onLost(error);
   };
+  const endOpening = () => {
+    lose();
+    throw httpFailure("scope_ended");
+  };
 
   const readResponse = async (response, maxBytes) => {
-    if (response.status === 401) { lose(); throw httpFailure("authentication"); }
+    // An old opening and an invalid bearer have the same bridge response.
+    // Retire this opening and let the saved identity obtain fresh authority.
+    if (response.status === 401) endOpening();
     const value = await boundedJson(response, maxBytes);
     if (!response.ok && typeof value?.error !== "string") throw httpFailure("protocol");
     return value;
@@ -71,10 +80,11 @@ export function createBrowserHttpEndpoint({
     const encoded = body === undefined ? undefined : JSON.stringify(body);
     if (encoded && new TextEncoder().encode(encoded).byteLength > requestMaxBytes) throw httpFailure("protocol");
     return httpRequest(async (requestSignal) => {
+      const requestHeaders = headers(extra, encoded !== undefined);
       let response;
       try {
         response = await fetchImpl(origin + path, { method, credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", cache: "no-store",
-          headers: headers(extra, encoded !== undefined), signal: requestSignal, ...withBody(encoded) });
+          headers: requestHeaders, signal: requestSignal, ...withBody(encoded) });
       } catch { throw httpFailure("network", true); }
       return read(response, maxBytes);
     }, { signal: signal ? AbortSignal.any([lifetime.signal, signal]) : lifetime.signal, timeoutMs, isCurrent: active });
@@ -83,7 +93,8 @@ export function createBrowserHttpEndpoint({
   const armGrant = (value, started) => {
     const serverDeadline = Date.parse(value.grant_expires_at);
     const wait = Math.min(30000 - (monotonic() - started), serverDeadline - now(), grant.expiresAt() - now());
-    if (!Number.isFinite(wait) || wait <= 0) throw httpFailure("authentication");
+    if (!Number.isFinite(wait)) throw httpFailure("protocol");
+    if (wait <= 0) endOpening();
     hardDeadline = monotonic() + wait;
     clearTimeout(hardTimer); clearTimeout(refreshTimer);
     hardTimer = setTimeout(() => lose(), wait);

@@ -52,10 +52,27 @@ describe("account-bound Add by URL", () => {
     }
   });
 
-  it("binds renewal to the same device, family and epoch", async () => {
-    const fetchImpl = vi.fn().mockResolvedValueOnce(json({ ...mint, device_id: "other" }));
+  it.each([{ device_id: "other" }, { endpoint_epoch: "other" }, { family_id: "other" }])("refuses a changed renewal binding %j", async (change) => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json({ ...mint, ...change }));
     await expect(create(fetchImpl).resume({ deviceId: "device", origin, endpointEpoch: "epoch", familyId: "family" })).rejects.toThrow();
     expect(fetchImpl.mock.calls[0][0]).toBe(issuer + "/api/devices/device/http-credentials");
     expect(new Headers(fetchImpl.mock.calls[0][1].headers).has("authorization")).toBe(false);
+  });
+
+  it.each([408, 429, 503])("keeps hosted renewal retryable after HTTP %s", async (status) => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(new Response(null, { status }));
+    await expect(create(fetchImpl).resume({ deviceId: "device", origin, endpointEpoch: "epoch", familyId: "family" }))
+      .rejects.toMatchObject({ code: "network" });
+  });
+
+  it("ends a stale mint while keeping the saved identity renewable", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json({ ...mint, expires_at: 999 })).mockResolvedValueOnce(json(mint));
+    const discovery = create(fetchImpl);
+    const identity = { deviceId: "device", origin, endpointEpoch: "epoch", familyId: "family" };
+    await expect(discovery.resume(identity)).rejects.toMatchObject({ code: "scope_ended" });
+    const renewed = await discovery.resume(identity);
+    expect(renewed.identity).toMatchObject(identity);
+    expect(renewed.token()).toBe(mint.access_token);
+    renewed.close();
   });
 });

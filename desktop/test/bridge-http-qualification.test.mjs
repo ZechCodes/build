@@ -153,7 +153,7 @@ test("desktop refuses a tampered real discovery proof with a plain error before 
   assert.equal(h.trace.some((request) => request.path.startsWith("/v1/")), false);
 });
 
-test("desktop refuses a genuinely revoked credential with account-verification guidance", qualification, async (t) => {
+test("desktop refuses a genuinely revoked credential and requests fresh discovery", qualification, async (t) => {
   const fixture = await loadFixture();
   const h = harness(t, fixture);
   const identity = await h.bridge.discover(h.owner, fixture.bridgeOrigin);
@@ -164,8 +164,8 @@ test("desktop refuses a genuinely revoked credential with account-verification g
   const endpoint = nativeEndpoint(h, identity);
   t.after(() => endpoint.close());
   await assert.rejects(endpoint.open("^3.0.0"), (error) => {
-    assert.equal(error.code, "unauthorized");
-    assert.match(error.message, /authorization was refused.*Verify this device again/);
+    assert.equal(error.code, "opening_refused");
+    assert.equal(error.message, "The HTTPS session needs fresh authorization.");
     return true;
   });
   assert.ok(h.trace.some((entry) => entry.path === "/v1/sessions" && entry.status === 401));

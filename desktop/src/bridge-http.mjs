@@ -259,7 +259,7 @@ export function createBridgeHttp({
     return discover(owner, origin, expected);
   }
   async function resume(owner, hint) {
-    exact(hint, ["deviceId", "origin", "endpointEpoch", "familyId"]);
+    exact(hint, ["deviceId", "origin", "endpointEpoch", "familyId", "fingerprint"]);
     const binding = capture(owner);
     const expected = {
       device_id: identifier(hint.deviceId),
@@ -268,6 +268,8 @@ export function createBridgeHttp({
     };
     if (hint.origin !== undefined)
       expected.origin = canonicalOrigin(hint.origin);
+    if (hint.fingerprint !== undefined)
+      expected.fingerprint = identifier(hint.fingerprint);
     const result = await hosted(
       `/api/devices/${segment(hint.deviceId)}/http-credentials`,
       { family_id: hint.familyId, endpoint_epoch: hint.endpointEpoch },

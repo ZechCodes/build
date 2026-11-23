@@ -32,6 +32,7 @@ export function httpFailure(code, uncertain = false) {
     network_permission_denied: "Allow local network access for this site in your browser settings.",
     protocol: "The bridge returned an invalid HTTP response.",
     scope_ended: "This bridge connection has ended.",
+    opening_refused: "The HTTPS session needs fresh authorization.",
     stream_reset: "Live updates ended. Reconnecting and refreshing current state…",
     unsupported: "This bridge does not provide all required HTTP operations. Use WebRTC or update the bridge.",
     timeout: "The HTTPS bridge did not answer before the deadline.",

@@ -211,7 +211,7 @@ const matchesPreference = (identity, preference) => identity && sameHttpDevice(p
 
 async function nativeSavedIdentity(api, { deviceId, origin, endpointEpoch, familyId, fingerprint }, current) {
   if (familyId) {
-    const result = await api.resume({ deviceId, origin, endpointEpoch, familyId });
+    const result = await api.resume({ deviceId, origin, endpointEpoch, familyId, ...(fingerprint && { fingerprint }) });
     if (result?.ok || result?.error?.code !== "unauthorized") return desktopHttpValue(result);
   }
   if (!current()) throw httpFailure("scope_ended");

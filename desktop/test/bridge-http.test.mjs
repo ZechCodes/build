@@ -132,6 +132,14 @@ test("native saved-address discovery binds the challenge and mint to the origina
   assert.equal(h.requests.length, 3);
 });
 
+test("native resume checks the fingerprint returned by discovery", async (t) => {
+  const h = harness(t);
+  const { handle: _handle, ...hint } = await h.bridge.discover(h.owner, "https://bridge.test");
+  const resumed = await h.bridge.resume(h.owner, hint);
+  assert.equal(resumed.fingerprint, hint.fingerprint);
+  await assert.rejects(h.bridge.resume(h.owner, { ...hint, fingerprint: "changed" }), { code: "binding_mismatch" });
+});
+
 test("substituted endpoint and account renewal bindings are refused before bridge credentials", async (t) => {
   const h = harness(t, { mint: { origin: "https://other.test" } });
   await assert.rejects(h.bridge.discover(h.owner, "https://bridge.test"), {

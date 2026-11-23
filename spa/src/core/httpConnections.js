@@ -61,7 +61,7 @@ async function writePreference(address, value, { deviceId, expected }, current) 
     }));
   }
   let committed = false;
-  await updateUiState(address, (previous) => {
+  const applied = await updateUiState(address, (previous) => {
     const saved = accountConnections(previous, value.accountId);
     const old = saved.find((row) => row?.deviceId === deviceId);
     if (expected && !sameStoredSetting(old, expected)) return previous;
@@ -71,7 +71,7 @@ async function writePreference(address, value, { deviceId, expected }, current) 
     committed = true;
     return { accountId: value.accountId, connections: retained };
   }, current);
-  return committed;
+  return committed && applied;
 }
 
 function sameStoredSetting(stored, expected) {

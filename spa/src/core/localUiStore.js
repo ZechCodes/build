@@ -292,6 +292,7 @@ export async function updateUiRecord(address, update, active = () => true) {
     return null;
   });
   if (committed && applied) announce(partsOfKey(key));
+  return Boolean(committed && applied);
 }
 
 /** Clear a sent draft only while the write captured before sending is still

@@ -139,7 +139,7 @@ async fn https_view_clears_project_unread_on_a_fresh_opening() {
     server.await.unwrap().unwrap();
 }
 
-fn project_with_unread(root: &std::path::Path) -> (AppState, String, String) {
+pub(super) fn project_with_unread(root: &std::path::Path) -> (AppState, String, String) {
     let repo = crate::git_fixture::init_repo_named(root, "repo");
     let context =
         crate::harness::HarnessContext::resolved(root.join("mcp.sock"), root.to_owned()).unwrap();

@@ -1347,23 +1347,42 @@ async function readProjectTerminals(context, scope) {
   if (answer && context.active()) await writeProjectTerminalRoster(context, scope, answer.terminals || [], { fence });
 }
 
-function reconcileProjectTerminalSubscriptions(context, scopes) {
-  const deviceId = context.deviceId;
+const MAX_PROJECT_TERMINAL_SUBSCRIPTIONS = 2;
+
+function projectTerminalCoverage(deviceId, scopes) {
+  const route = App.route;
+  const projectId = route?.deviceId === deviceId ? route.projectId : null;
+  const priority = (scope) => Number(scope.project_id !== projectId);
+  return scopes.toSorted((a, b) => priority(a) - priority(b)).slice(0, MAX_PROJECT_TERMINAL_SUBSCRIPTIONS);
+}
+
+function watchProjectTerminal(deviceId, id, scope) {
+  return watchChanges({ ...subscriptionShape(deviceId), id: `s-project-term:${id}`,
+    scope: { kind: "project_source", ...scope }, kinds: ["terminals"],
+    mode: "realtime", priority: "foreground", optional: true,
+    catchUp: () => {
+      const context = syncContext(contextFor(deviceId));
+      if (holdingLock && context) return readProjectTerminals(context, scope);
+    },
+  });
+}
+
+function reconcileProjectTerminalSubscriptions({ deviceId }, scopes) {
   let held = projectTerminalSubscriptions.get(deviceId);
   if (!held) projectTerminalSubscriptions.set(deviceId, held = new Map());
-  const wanted = new Map(scopes.map((scope) => [directoryCacheId(scope), scope]));
+  const wanted = new Map(projectTerminalCoverage(deviceId, scopes).map((scope) => [directoryCacheId(scope), scope]));
   for (const [id, watcher] of held) {
     if (wanted.has(id)) continue;
     watcher.dispose();
     held.delete(id);
   }
+  const added = [];
   for (const [id, scope] of wanted) {
     if (held.has(id)) continue;
-    held.set(id, watchChanges({ ...subscriptionShape(deviceId), id: `s-project-term:${id}`,
-      scope: { kind: "project_source", ...scope }, kinds: ["terminals"],
-      // Console create and close change another client's visible roster now.
-      mode: "realtime", priority: "foreground" }));
+    held.set(id, watchProjectTerminal(deviceId, id, scope));
+    added.push(scope);
   }
+  return added;
 }
 
 /** The commits this checkout has that its push target does not, newest first.
@@ -1734,7 +1753,23 @@ function followVisibleThread(deviceId) {
   held.thread?.dispose();
   held.threadEntityId = wanted;
   held.thread = wanted ? watchChanges({ ...subscriptionShape(deviceId), id: "s-thread",
-    entity: wanted, kinds: ["thread"], mode: "realtime", priority: "foreground" }) : null;
+    entity: wanted, kinds: ["thread"], mode: "realtime", priority: "foreground",
+    catchUp: () => catchUpVisibleThread(deviceId, wanted),
+  }) : null;
+}
+
+function catchUpVisibleThread(deviceId, entityId) {
+  const thread = visibleSyncThread(deviceId);
+  const context = syncContext(contextFor(deviceId));
+  if (!holdingLock || !context || thread?.entityId !== entityId) return;
+  const active = () => {
+    const shown = visibleSyncThread(deviceId);
+    return context.active() && shown?.entityId === entityId && shown.agentId === thread.agentId
+      && shown.conversationId === thread.conversationId && shown.threadId === thread.threadId;
+  };
+  return syncThread({ ...context, active }, entityId, {
+    id: thread.agentId, conversation_id: thread.conversationId, thread_id: thread.threadId,
+  }, "foreground");
 }
 
 /**
@@ -1817,6 +1852,25 @@ export function routeChanged() {
   for (const deviceId of [...subscriptions.keys()]) {
     void passes.get(deviceId)?.foreground?.();
     void refollowRoute(deviceId);
+  }
+  const { deviceId, projectId } = App.route || {};
+  if (projectId && projectTerminalSubscriptions.has(deviceId)) {
+    void refollowProjectTerminalCoverage(deviceId).catch(pushError);
+  }
+}
+
+async function refollowProjectTerminalCoverage(deviceId) {
+  const route = App.route;
+  const context = syncContext(contextFor(deviceId));
+  if (!context || !bridgeCapabilities(deviceId).changes?.projectSources) return;
+  const scopes = projectTerminalScopes(await heldValue(context, "", "projects"));
+  if (!context.active() || route !== App.route) return;
+  const added = reconcileProjectTerminalSubscriptions(context, scopes);
+  if (!added.length) return;
+  await settledWithin(subscriptionsSettledFor(deviceId), GREETING_WAIT_MS);
+  for (const scope of added) {
+    if (route !== App.route) return;
+    await readProjectTerminals(context, scope);
   }
 }
 

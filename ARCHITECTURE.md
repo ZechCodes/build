@@ -344,6 +344,14 @@ pool is full, or the family is at its cap, the next stream GET is refused with
 429 `overloaded` and `retryable` set, and reserves and binds nothing. Openings
 are capped separately, at 16 per family and 1,024 in all, with one stream slot
 each. There is no per-account stream limit.
+
+An HTTP application binding holds at most eight ordinary logical change
+subscriptions and one reserved `s-thread` subscription. The SPA upserts this
+one ID with the mounted conversation's entity scope as the reader moves.
+The reservation uses the existing subscribe and unsubscribe resources and
+wire fields. The WebRTC application channel uses the legacy caller path,
+which does not impose the eight-slot logical limit.
+
 A stream also ends, and returns its reservation, on any of these:
 
 - a full queue;
@@ -4561,7 +4569,7 @@ in `shell.js`. The bottom Console tray opens the existing console and never
 creates a shell; the project rail has no separate Terminal entry.
 `projectConsole.js` paints source-labelled tabs from each
 source's `terminals` cache record at device/project/source/captured-path addresses.
-Source terminal roster subscriptions use realtime delivery at foreground priority.
+Held source terminal subscriptions use realtime delivery at foreground priority.
 `projectConsole.js` re-reads only its project/support/source-terminal cache records;
 create and close commit and read back independently of background collectors,
 guarded by an applied generation.
@@ -4582,14 +4590,18 @@ validation and attach replies; detach releases only the requesting registration.
 Failed or cancelled pane setup releases every acquired terminal resource. Channel
 recovery stays in the terminal lifecycle; the project console neither reads
 connection status nor changes its presentation on disconnect/reconnect.
-`cacheSync.js` prepares original-source subscriptions with the ownership lists
-when `changes.projectSources` is present. On sync/reconnect, `syncPhases.js`
+`cacheSync.js` keeps up to two original-source terminal subscriptions per device
+when `changes.projectSources` is present, preferring sources in the routed
+project. The existing wire names one exact original source per subscription.
+The SPA yields these optional subscriptions first when the HTTPS budget fills.
+On sync/reconnect, `syncPhases.js`
 reads all source terminal rosters after the foreground and inbox, through the
 same two background streams as checkout warming. Their exact terminal record
 identities share the planner's completion and visibility promotion, so an
 unrelated source reply never blocks a newly selected foreground. Source push
 and list writes check membership/location transactionally and keep equal IDs on
-other devices and paths separate. No project terminal polling is introduced.
+other devices and paths separate. When navigation brings a source into coverage
+or the bridge accepts deferred coverage, the cache reads the affected rosters.
 
 Commit drafts keep device and account-epoch ownership in the in-memory stash
 as well as their device-scoped `build-ui` records. Old account panes cannot
@@ -5687,6 +5699,19 @@ Terminal ownership for URL devices is negotiated separately below.
   menu fits the viewport and wraps transport labels.
   Per-device contexts live in
   `spa/src/core/deviceContexts.js`.
+
+`changeEvents.js` asks for the mounted conversation before ordinary
+subscriptions. For HTTPS it holds at most seven ordinary subscriptions, so the
+mounted conversation fits even when talking to an older eight-slot bridge.
+It releases stale coverage before adding other watches and accounts for an
+uncertain subscribe until the ID is acknowledged or unsubscribed. A `busy`
+refusal stays pending on the current opening and records a `subscription`
+diagnostic with the refused ID and code. It can retry after another slot is
+released, when the desired scopes change, or on a push. A new `busy` refusal
+also receives one delayed retry for an otherwise quiet opening. Restored
+coverage triggers a catch-up read into the cache. An HTTPS opening whose
+event stream never delivered `hello` fails during stream startup, before the
+SPA requests logical subscriptions.
 
 `sessionRpc.js` shares eight SQL sender credits across the opening's carriers
 and priorities. Extra reads stay unsent and have no wire deadline yet.

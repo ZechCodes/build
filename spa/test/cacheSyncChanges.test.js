@@ -1797,6 +1797,30 @@ describe("project source terminal rosters", () => {
     expect(bridge.call).toHaveBeenCalledWith("term.list", { ...scope, source_id: "plain", source_path: "/plain" }, expect.anything());
     expect(live().filter((watcher) => watcher.scope?.kind === "project_source").map((watcher) => watcher.kinds)).toEqual([["terminals"], ["terminals"]]);
   });
+  it("bounds live source subscriptions and still reads every source roster", async () => {
+    projectSourceFacts = true;
+    projectTerminalFacts = true;
+    const sources = Array.from({ length: 12 }, (_, index) => ({ id: `source-${index}`, path: `/repo-${index}` }));
+    script["project.list"] = () => ({ projects: [{ project_id: "p1", sources }] });
+    await boot([]);
+    expect(calls("term.list").filter(([, scope]) => scope.source_id)).toHaveLength(12);
+    expect(live().filter((watcher) => watcher.scope?.kind === "project_source")).toHaveLength(2);
+  });
+  it("promotes the routed project's source and refreshes its roster when coverage moves", async () => {
+    projectSourceFacts = true;
+    projectTerminalFacts = true;
+    script["project.list"] = () => ({ projects: [
+      { project_id: "p1", sources: [{ id: "a", path: "/a" }, { id: "b", path: "/b" }] },
+      { project_id: "p2", sources: [{ id: "c", path: "/c" }] },
+    ] });
+    await boot([]);
+    bridge.call.mockClear();
+    App.route = { name: "project", deviceId: "dev-1", projectId: "p2" };
+    sync.routeChanged();
+    await vi.waitFor(() => expect(calls("term.list").map(([, params]) => params.source_id)).toContain("c"));
+    expect(live().filter((watcher) => watcher.scope?.kind === "project_source")
+      .map((watcher) => watcher.scope.source_id)).toEqual(["a", "c"]);
+  });
   it("delivers create then close immediately to two independent client caches", async () => {
     const id = await prepare();
     const first = { cache, sync, watcher: live().find((watcher) => watcher.scope?.source_id === scope.source_id) };

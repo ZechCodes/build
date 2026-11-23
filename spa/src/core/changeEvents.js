@@ -1,6 +1,6 @@
 // The subscriptions this client holds, and the pushes that arrive on them.
 //
-// NOTHING HERE RUNS ON A TIMER. Every detail surface used to poll on a 1.6–2 s
+// Surface refreshes do not poll. Every detail surface used to poll on a 1.6–2 s
 // interval because nothing told it anything had happened; a bridge that pushes
 // tells it, and the client's whole cadence is now the flush arriving. A
 // registration that names a poll is refused rather than quietly honoured
@@ -157,6 +157,10 @@ function newBridgeState(deviceId) {
     apiVersion: PRE_ALPHA_API_VERSION,
     subscriptions: false, // whether this session is serving the contract
     live: new Map(), // subscription_id → the spec this bridge is holding
+    busy: new Set(),
+    deferred: new Set(),
+    retryTimer: null,
+    http: false,
     boardRevision: null, // the newest revision this device's feed has read for
     chain: Promise.resolve(),
     queued: false,
@@ -189,7 +193,8 @@ export function disarmChangeEvents(deviceId) {
   const device = deviceKeyOf(deviceId);
   const state = bridges.get(device);
   if (state) {
-    state.live.clear();
+    state.call = null;
+    clearSubscriptionState(state);
     setSubscriptionsMode(state, false);
     bridges.delete(device);
   }
@@ -236,7 +241,8 @@ export function resetChangeEvents() {
   watchers.clear();
   armed.clear();
   for (const state of [...bridges.values()]) {
-    state.live.clear();
+    state.call = null;
+    clearSubscriptionState(state);
     setSubscriptionsMode(state, false);
   }
   bridges.clear();
@@ -295,6 +301,9 @@ function scopesOf(watcher) {
   if (source) return [{ id: watcher.id, scope: source }];
   if (watcher.scope === "all") return [{ id: watcher.id, scope: { kind: "all" } }];
   if (watchesBoard(watcher)) return [{ id: watcher.id, scope: { kind: "board" } }];
+  if (watcher.id === MOUNTED_THREAD_SUBSCRIPTION) {
+    return entityIdsOf(watcher).slice(0, 1).map((id) => ({ id: watcher.id, scope: { kind: "entity", id } }));
+  }
   return entityIdsOf(watcher).map((entityId) => ({
     id: `${watcher.id}:${entityId}`,
     scope: { kind: "entity", id: entityId },
@@ -320,18 +329,37 @@ function specsOf(watcher) {
 
 /** Everything the surfaces listening to this device want, right now. */
 const COMPACTION_SUBSCRIPTION = "compaction-observations";
+const MOUNTED_THREAD_SUBSCRIPTION = "s-thread";
+// Older HTTP bridges count the mounted thread against the eight-slot limit.
+const HTTP_ORDINARY_SLOTS = 7;
+
 function desiredSubscriptions(deviceId) {
   const desired = new Map();
   if (bridgeCapabilities(deviceId).compaction.harnessThresholds) desired.set(COMPACTION_SUBSCRIPTION, {
-    subscription_id: COMPACTION_SUBSCRIPTION, scope: { kind: "all" }, kinds: ["compaction.changed"],
-    mode: "realtime", priority: "background",
+    spec: {
+      subscription_id: COMPACTION_SUBSCRIPTION, scope: { kind: "all" }, kinds: ["compaction.changed"],
+      mode: "realtime", priority: "background",
+    },
   });
   for (const watcher of watchers) {
     if (!watcher.hears(deviceId)) continue;
     if (projectSourceScopeOf(watcher) && !bridgeCapabilities(deviceId).changes.projectSources) continue;
-    for (const spec of specsOf(watcher)) desired.set(spec.subscription_id, spec);
+    for (const spec of specsOf(watcher)) desired.set(spec.subscription_id, { spec, watcher });
   }
   return desired;
+}
+
+function subscriptionOrder({ spec, watcher }) {
+  if (spec.subscription_id === MOUNTED_THREAD_SUBSCRIPTION) return 0;
+  if (["s-inbox", "s-background"].includes(spec.subscription_id)) return 1;
+  return watcher?.optional ? 3 : 2;
+}
+
+function admittedSubscriptions(state, desired) {
+  if (!state.http) return desired;
+  const entries = [...desired].sort(([, a], [, b]) => subscriptionOrder(a) - subscriptionOrder(b));
+  const size = HTTP_ORDINARY_SLOTS + Number(desired.has(MOUNTED_THREAD_SUBSCRIPTION));
+  return new Map(entries.slice(0, size));
 }
 
 /// How one subscription call ended, which is three things and not two.
@@ -371,14 +399,15 @@ function noteRefusedSubscription(state, method, params, thrown) {
  *  when it was one. */
 async function askBridge(state, method, params) {
   const call = state.call;
+  const ownsReply = () => state.call === call && state.current();
   try {
     await call(method, params);
   } catch (thrown) {
-    if (state.call !== call) return { outcome: CALL_STALE };
+    if (!ownsReply()) return { outcome: CALL_STALE };
     noteRefusedSubscription(state, method, params, thrown);
     return { outcome: CALL_REFUSED, refusal: thrown };
   }
-  return { outcome: state.call === call ? CALL_DONE : CALL_STALE };
+  return { outcome: ownsReply() ? CALL_DONE : CALL_STALE };
 }
 
 /// The kinds a refused subscribe named as unknown to its bridge
@@ -405,50 +434,79 @@ function withoutRefusedKinds(spec, refusal) {
 async function subscribeSpec(state, spec) {
   const asked = await askBridge(state, "changes.subscribe", spec);
   const retry = asked.outcome === CALL_REFUSED ? withoutRefusedKinds(spec, asked.refusal) : null;
-  return retry ? (await askBridge(state, "changes.subscribe", retry)).outcome : asked.outcome;
+  return retry ? askBridge(state, "changes.subscribe", retry) : asked;
 }
 
-/// Whether the diff may go on after this call.
-///
-/// A REFUSED spec is ONE spec's problem. It used to end the whole diff, and
-/// that made a single unknown field catastrophic: `s-inbox` naming a kind the
-/// bridge had never heard of was refused, the loop returned, and `s-background`
-/// and `s-active` were never taken out either — a device holding no
-/// subscriptions at all, which hears nothing and looks exactly like a dead
-/// connection. The refused id is dropped from `live` so a later pass asks
-/// again (a bridge that is upgraded under this tab heals without a reload),
-/// and the specs after it are still worth asking for.
-///
-/// STALE does end it: every spec after this one would be sent to a session
-/// that has gone, and `adoptGreetedSession` replays the whole map on the new
-/// one anyway.
-function keepGoingAfter(state, id, outcome) {
-  if (outcome === CALL_DONE) return true;
-  state.live.delete(id);
-  return outcome === CALL_REFUSED;
+function clearSubscriptionState(state) {
+  state.live.clear();
+  state.busy.clear();
+  state.deferred.clear();
+  clearTimeout(state.retryTimer);
+  state.retryTimer = null;
+}
+
+// A transient refusal gets one delayed retry. Further attempts ride a new
+// desired diff or a push, so a persistently full opening cannot start a poll.
+function retryBusy(state, id) {
+  if (state.busy.has(id)) return;
+  state.busy.add(id);
+  state.retryTimer ??= setTimeout(() => {
+    state.retryTimer = null;
+    scheduleSync(state.deviceId);
+  }, 500);
 }
 
 async function dropStale(state, desired) {
   for (const id of [...state.live.keys()]) {
     if (desired.has(id)) continue;
-    state.live.delete(id);
-    const { outcome } = await askBridge(state, "changes.unsubscribe", { subscription_id: id });
+    const { outcome, refusal } = await askBridge(state, "changes.unsubscribe", { subscription_id: id });
     if (outcome === CALL_STALE) return false;
+    if (outcome === CALL_DONE) {
+      state.live.delete(id);
+      state.busy.delete(id);
+    } else if (refusalCode(refusal) === "busy") retryBusy(state, id);
   }
   return true;
 }
 
-async function addDesired(state, desired) {
-  for (const [id, spec] of desired) {
-    const wire = JSON.stringify(spec);
-    if (state.live.get(id) === wire) continue;
-    // The spec as wanted, even when the bridge took it without a kind it did
-    // not know: the next diff compares against this and asks nothing again.
+function canAddSubscription(state, id) {
+  if (!state.http || id === MOUNTED_THREAD_SUBSCRIPTION || state.live.has(id)) return true;
+  return state.live.size - Number(state.live.has(MOUNTED_THREAD_SUBSCRIPTION)) < HTTP_ORDINARY_SLOTS;
+}
+
+function settleSubscription(state, id, wire, watcher, { outcome, refusal }) {
+  if (outcome === CALL_DONE) {
     state.live.set(id, wire);
-    const outcome = await subscribeSpec(state, spec);
-    if (outcome === CALL_DONE) announceHeld(state.deviceId, id);
-    if (!keepGoingAfter(state, id, outcome)) return false;
+    const busy = state.busy.delete(id);
+    const deferred = state.deferred.delete(id);
+    announceHeld(state.deviceId, id);
+    if (busy || deferred || id === MOUNTED_THREAD_SUBSCRIPTION) refreshCoveredWatcher(state, watcher);
+    return;
   }
+  // A timed-out subscribe might have installed the id. Keep its slot
+  // accounted for until an upsert or unsubscribe is acknowledged.
+  if (refusal?.uncertain && !state.live.has(id)) state.live.set(id, null);
+  if (refusalCode(refusal) === "busy") retryBusy(state, id);
+}
+
+function refreshCoveredWatcher(state, watcher) {
+  const call = state.call;
+  void Promise.resolve().then(() => {
+    if (state.call !== call || !state.current() || !watchers.has(watcher)) return;
+    return watcher.catchUp ? watcher.catchUp() : deliver(watcher);
+  }).catch((error) => console.warn("Subscription catch-up failed:", error));
+}
+
+async function addSubscription(state, id, { spec, watcher }) {
+  const wire = JSON.stringify(spec);
+  if (state.live.get(id) === wire) return true;
+  if (!canAddSubscription(state, id)) {
+    state.deferred.add(id);
+    return true;
+  }
+  const result = await subscribeSpec(state, spec);
+  if (result.outcome === CALL_STALE) return false;
+  settleSubscription(state, id, wire, watcher, result);
   return true;
 }
 
@@ -477,10 +535,23 @@ function announceHeld(deviceId, subscriptionId) {
 /** The diff for one device: what its bridge holds and nobody wants goes, what is
  *  wanted and not held (or held at another cadence) is upserted. A spec that has
  *  not moved costs nothing. */
+function updateDeferredCoverage(state, desired, admitted) {
+  for (const id of state.deferred) if (!desired.has(id)) state.deferred.delete(id);
+  for (const id of state.busy) if (!desired.has(id) && !state.live.has(id)) state.busy.delete(id);
+  for (const id of desired.keys()) if (!admitted.has(id)) state.deferred.add(id);
+}
+
 async function syncSubscriptions(state) {
-  if (!state.subscriptions || !state.call) return;
+  if (!state.subscriptions || !state.call || !state.current()) return;
   const desired = desiredSubscriptions(state.deviceId);
-  if (await dropStale(state, desired)) await addDesired(state, desired);
+  const admitted = admittedSubscriptions(state, desired);
+  updateDeferredCoverage(state, desired, admitted);
+  const mounted = admitted.get(MOUNTED_THREAD_SUBSCRIPTION);
+  if (mounted && !await addSubscription(state, MOUNTED_THREAD_SUBSCRIPTION, mounted)) return;
+  if (!await dropStale(state, admitted)) return;
+  for (const [id, entry] of admitted) {
+    if (id !== MOUNTED_THREAD_SUBSCRIPTION && !await addSubscription(state, id, entry)) return;
+  }
 }
 
 /** Queue one diff for one device behind whatever is already running for it.
@@ -606,6 +677,8 @@ function withDefaults(registration, defaults) {
  * `onChanges(items)` receives the
  * items for the entities this surface stands for; without one, an item runs
  * `refresh` instead.
+ * `catchUp` can read the affected cache records when coverage resumes.
+ * `optional` marks subscriptions that give way first on bounded HTTPS openings.
  *
  * `pausesWhileHidden: false` is for a surface that keeps up while the tab is
  * away; by default a hidden tab notes what it missed and acts on it when the
@@ -903,13 +976,14 @@ async function negotiate(call, isCurrent, strict) {
 /** The session this device's desired map is now held on. It holds none of it
  *  yet — a reconnect is a new session, and a re-greet of the same one has
  *  dropped whatever it had — so the whole map is replayed. */
-function adoptGreetedSession(state, call) {
+function adoptGreetedSession(state, call, http) {
+  if (!(state.http && http && state.call === call)) clearSubscriptionState(state);
   state.call = call;
+  state.http = http;
   // The gap behind this session announced nothing and the bridge answering it
   // may not be the one that counted to the revision last seen, so the first
   // board item of the new session always refreshes.
   state.boardRevision = null;
-  state.live.clear();
   setSubscriptionsMode(state, bridgeCapabilities(state.deviceId).changes.subscriptions);
   scheduleSync(state.deviceId);
 }
@@ -919,7 +993,7 @@ function adoptGreetedSession(state, call) {
 function abandonBridge(state) {
   armChangeEvents(null, state.deviceId);
   state.call = null;
-  state.live.clear();
+  clearSubscriptionState(state);
   setSubscriptionsMode(state, false);
   return false;
 }
@@ -1061,19 +1135,20 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting, isCurren
   void rememberTaskChecklistSupport(deviceId, state.adapter.capabilities, () => bridgeFor(deviceId)?.adapter === adapter);
   onGreeting(greeting);
   armChangeEvents(greeting, deviceId);
-  adoptGreetedSession(state, call);
+  adoptGreetedSession(state, call, Boolean(beforeRefresh));
   if (beforeRefresh) return refreshAfterSubscriptions(state, call, isCurrent, beforeRefresh);
   refetchEverything(deviceId);
   return changeEventsArmed(deviceId);
 }
 
-// HTTP installs its application stream before greeting. Ordinary reads remain
-// gated until these exact opening's logical subscriptions have been accepted.
+// HTTP settles the first subscription diff before releasing reads. Busy
+// coverage can land later and catch up without replacing the opening.
 async function refreshAfterSubscriptions(state, call, isCurrent, beforeRefresh) {
   await subscriptionsSettledFor(state.deviceId);
   if (state.call !== call || !isCurrent()) return false;
-  const desired = desiredSubscriptions(state.deviceId);
-  const complete = [...desired].every(([id, spec]) => state.live.get(id) === JSON.stringify(spec));
+  const desired = admittedSubscriptions(state, desiredSubscriptions(state.deviceId));
+  const complete = [...desired].every(([id, { spec }]) =>
+    state.live.get(id) === JSON.stringify(spec) || state.busy.has(id) || state.deferred.has(id));
   if (!state.subscriptions || !complete) throw new Error("The bridge could not establish live subscriptions.");
   beforeRefresh();
   if (state.call !== call || !isCurrent()) return false;

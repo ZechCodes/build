@@ -144,7 +144,7 @@ const metadataUses = {
     ["build.cacheSync","const SYNC_LOCK = [\"build.cacheSync\"] ; export const","f2160711e2b162e0f91fe453ac136176a51044a2a1195c1aa76e865b26b57f6e"],
   ],
   "core/changeEvents.js": [
-    ["compaction.changed","kinds : [ [\"compaction.changed\"] ] , mode","c27346939208820b8d95aac7199bdd6db22004a95ed5f68d962b5f368551d091"],
+    ["compaction.changed","kinds : [ [\"compaction.changed\"] ] , mode","d80859e50787b38542f8ff59bc31fcc158cf0700427d6885eae12a91c14291f1"],
     ["files.hints",". includes ( [\"files.hints\"] ) ) ;","696d73df4befe57fd7f675bf2f6987edd81138ce7ab50f6fc79994f47cc2f3ba"],
     ["writes.confirmed","( [ [ [\"writes.confirmed\"] , dispatchWriteConfirmation ]","06d4c42e09cfd3e624d0ea7aaa97f7753fe7b0cbbfa181303be348210ace0719"],
     ["writes.progress","] , [ [\"writes.progress\"] , dispatchWriteConfirmation ]","06d4c42e09cfd3e624d0ea7aaa97f7753fe7b0cbbfa181303be348210ace0719"],
@@ -345,13 +345,15 @@ const sourceFingerprintParts = {
   "core/bridgeUpdatePanel.js": ["f9b19cc7", "4abdfc5a", "d159194d", "49ee91ed", "d39ab2e7", "15a6a80f", "0cb51530", "623ca8e5"],
   "core/bridgeUpdates.js": ["279cb932", "0495aa46", "c347f93b", "10a492d5", "8d29b0a9", "e9309a9a", "91de7993", "e5f40ad3"],
   // #997 runtime-board cacheSync.js:754,783,1978: existing board.list also refreshes only runtime collections; durable scope/tip writers stay gated, no new method.
-  "core/cacheSync.js": ["b6bcb9e8", "4426cefb", "d1cfb123", "ff4b180d", "5a937f61", "4274f74a", "5db90bd4", "46bb4681"],
+  // #1157: existing scoped thread and terminal reads catch up after coverage lands.
+  "core/cacheSync.js": ["127f5db5", "e2800e63", "6a42acd4", "2da7809c", "2085bbfa", "0b2e8507", "a2326df7", "4f035f21"],
   // #997 runtime-board captureDecisionView.js:142: branch choices join cached runtime run bodies; existing RPC and mutation dispatch unchanged.
   "core/captureDecisionView.js": ["66de7f78", "fbbd155f", "c29e58b8", "da80c68a", "2069fabf", "03333d95", "69b155a6", "382df322"],
   // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
   // #1065: concrete hello gates cached capability evidence; greeting refusal still disarms. RPC edges are unchanged.
   // #1099: Default environment secret flag is false; event dispatch is unchanged.
-  "core/changeEvents.js": ["104af306","abe91f55","ab78db34","955e6f9e","0bb35a5c","1a9cae92","be6b7736","404ff8c6"],
+  // #1157: prioritization, retries and recovery use the existing change subscription resources.
+  "core/changeEvents.js": ["f4f2dcdf","2b0609f6","baa1e2ce","3eeb443c","f02b3002","66d209df","9915f3aa","a20de714"],
   "core/changesComments.js": ["a4d03b10", "31dbf6e1", "6e12294d", "e69ceb46", "2958a35c", "7f2f07c9", "4088008f", "f1d7394d"],
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],

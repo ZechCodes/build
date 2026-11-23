@@ -142,12 +142,13 @@ const choose = (field, value) => {
 
 function openSecondProjectComposer(context) {
   const projects = ["Build", "December Game Jam"].map((name, index) => ({
-    id: `proj-${index + 1}`, name, projectKey: `menu-device|proj-${index + 1}`,
+    id: `proj-${index + 1}`, name, projectKey: `${context.deviceId}|proj-${index + 1}`,
   }));
   const [, project] = projects;
+  const callRpc = vi.fn(() => new Promise(() => {}));
   pane = mountTasksPane(host, {
     deviceId: context.deviceId, projectId: project.id, projectName: project.name, projectKey: project.projectKey,
-    defaultView: "dashboard", callRpc: () => new Promise(() => {}),
+    defaultView: "dashboard", callRpc,
     catalog: () => context.modelCatalog(),
     feed: () => ({ projects, items: [], workspaces: [] }),
   });
@@ -157,6 +158,7 @@ function openSecondProjectComposer(context) {
   expect(selectField("isolation").selectedOptions[0].textContent).toBe("Inherit project setting");
   host.querySelector("[data-agent-choice-toggle]").click();
   expect(selectField("choice-provider").selectedOptions[0].textContent).toBe("Claude Code");
+  return callRpc;
 }
 
 it.each(["WebRTC", "HTTPS"])("fills the second project's open New task model and effort menus over %s", async (transport) => {
@@ -165,11 +167,12 @@ it.each(["WebRTC", "HTTPS"])("fills the second project's open New task model and
   const deviceId = "menu-device";
   const { session, selection, adapter } = await catalogSession(transport, deviceId, models);
   const context = adoptDeviceSession(session);
-  openSecondProjectComposer(context);
+  const callRpc = openSecondProjectComposer(context);
   expect(values("model")).toEqual([""]);
   expect(selectField("choice-model").selectedOptions[0].textContent).toBe("Harness default");
   const title = selectField("summary");
   title.value = "December Game Jam";
+  title.dispatchEvent(new Event("input"));
   title.focus();
 
   adoptBridgeSelection(context, selection, adapter);
@@ -193,6 +196,14 @@ it.each(["WebRTC", "HTTPS"])("fills the second project's open New task model and
   expect(values("effort")).toEqual(["", "medium"]);
   expect(selectField("choice-model").value).toBe("");
   expect(selectField("choice-effort").value).toBe("");
+
+  choose("choice-model", "gpt");
+  choose("choice-effort", "medium");
+  host.querySelector("[data-compose-file]").click();
+  expect(callRpc).toHaveBeenCalledWith("tasks.create", expect.objectContaining({
+    project_id: "proj-2",
+    assignee: { kind: "new_workspace", provider: "codex", model: "gpt", effort: "medium" },
+  }));
 });
 
 it("shows the cached harness catalog when the device has no session", async () => {

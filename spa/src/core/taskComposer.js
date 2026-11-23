@@ -53,6 +53,7 @@ import {
 } from "./trackerAssigneeControl.js";
 import { fieldTraits } from "./fieldTraits.js";
 import { taskAttachmentRefusal } from "./taskAttachments.js";
+import { contextFor } from "./deviceContexts.js";
 
 const PREFIX = "task-new";
 const INPUT_ID = `${PREFIX}-body`;
@@ -189,6 +190,21 @@ const FACETS = [
   { name: "labels", label: "Labels", multi: true, summary: "count", invent: (word) => `Create “${word}”` },
 ];
 
+function watchComposerCatalog(deviceId, paint) {
+  const context = contextFor(deviceId);
+  if (!context) return;
+  // Subscribe before reading so a newer cache publication takes precedence.
+  let heardCatalog = false;
+  const stop = context.onModelCatalogChanged((offered) => {
+    heardCatalog = true;
+    paint(offered);
+  });
+  void context.modelCatalog().then((offered) => {
+    if (!heardCatalog) paint(offered);
+  }).catch(() => {});
+  return stop;
+}
+
 /**
  * Open the composer into `host`.
  *
@@ -279,23 +295,35 @@ export function openTaskComposer(host, {
 
   // ---- the one zone that is ever redrawn -----------------------------------
 
-  /// Choosing a kind that cuts a workspace grows two more fields, so this zone
-  /// is re-rendered when the SHAPE changes and never merely because somebody
-  /// typed in it — a form that rebuilds itself under a caret is a form you
-  /// cannot type a workspace name into.
-  const paintAssignee = () => {
+  // Preserve focus and the workspace-label caret when a catalog update redraws these fields.
+  function paintAssignee() {
+    const focused = assigneeHost.ownerDocument.activeElement;
+    const keepFocus = assigneeHost.contains(focused);
     assigneeHost.innerHTML = assigneeControlHtml(options, state.draft, { prefix: PREFIX, catalog: state.catalog });
+    wireAssignee();
+    if (!keepFocus) return;
+    const field = assigneeHost.querySelector(focused.id ? `#${focused.id}` : "[data-agent-choice-toggle]");
+    field?.focus({ preventScroll: true });
+    if (typeof focused.selectionStart === "number") {
+      field?.setSelectionRange(focused.selectionStart, focused.selectionEnd, focused.selectionDirection);
+    }
+  }
+
+  function wireAssignee() {
     wireAssigneeControl(assigneeHost, state.draft, {
       prefix: PREFIX,
       onDraft: (next) => {
-        const reshaped = next.optionId !== state.draft.optionId || next.choiceOpen !== state.draft.choiceOpen;
+        const previous = state.draft;
+        const reshaped = next.optionId !== previous.optionId || next.choiceOpen !== previous.choiceOpen
+          || next.choice.provider !== previous.choice.provider || next.choice.model !== previous.choice.model;
         state.draft = next;
-        saveDraft(reshaped === false);
+        saveDraft(!reshaped);
         if (reshaped) paintAssignee();
+        else wireAssignee();
         paintPress();
       },
     });
-  };
+  }
 
   // ---- what the form says about itself -------------------------------------
 
@@ -382,6 +410,7 @@ export function openTaskComposer(host, {
   function close({ filed = false } = {}) {
     if (state.closed) return;
     state.closed = true;
+    stopCatalog?.();
     draftRecord.dispose();
     menus.forEach((menu) => menu.dispose());
     host.innerHTML = "";
@@ -452,6 +481,14 @@ export function openTaskComposer(host, {
   paintPress();
   autoGrow(body);
   title.focus();
+
+  function showCatalog(offered) {
+    if (state.closed || state.catalog === offered) return;
+    state.catalog = offered;
+    if (assigneeHost.querySelector(".agent-choice")) paintAssignee();
+  }
+
+  const stopCatalog = catalog === null ? watchComposerCatalog(deviceId, showCatalog) : null;
 
   return {
     close,

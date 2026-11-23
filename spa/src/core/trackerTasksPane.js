@@ -862,7 +862,6 @@ export function mountTasksPane(host, options) {
       columns: state.columns,
       labels: labelsOf(state.all),
       options: assigneeOptions(groups()),
-      catalog: state.catalog(),
       callRpc: state.callRpc,
       onFiled: (answer, outcome) => {
         void showTheNewTask(answer?.task);
@@ -878,7 +877,6 @@ export function mountTasksPane(host, options) {
         if (!filed) host.querySelector("[data-task-new]")?.focus();
       },
     });
-    void state.refreshCatalog?.();
   }
 
   // ---- wiring --------------------------------------------------------------

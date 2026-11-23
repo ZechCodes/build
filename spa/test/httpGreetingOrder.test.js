@@ -120,11 +120,36 @@ describe("HTTP greeting subscribes before refresh", () => {
     expect(beforeRelease).toBeGreaterThan(1);
     await vi.advanceTimersByTimeAsync(5_000);
     expect(attempts()).toHaveLength(beforeRelease);
+    dispatchChangeEvent({ type: "changes", subscription_id: "waiting", items: [{ entity_id: "thread", state: {} }] }, "device");
+    await subscriptionsSettled();
+    expect(attempts()).toHaveLength(beforeRelease + 1);
+    // This release should retry immediately even though the last refusal is fresh.
     waiting.dispose();
     await subscriptionsSettled();
     expect(held).toEqual(new Set(["contender"]));
-    expect(attempts()).toHaveLength(beforeRelease + 1);
+    expect(attempts()).toHaveLength(beforeRelease + 2);
     expect(freed).toHaveBeenCalledOnce();
+  });
+
+  it("ends a refusal episode when the mounted view goes back to the already held thread", async () => {
+    vi.useFakeTimers();
+    let entity = "held";
+    const catchUp = vi.fn();
+    watchChanges({ id: "s-thread", deviceId: "device", entity: () => entity, kinds: ["thread"], refresh() {}, catchUp });
+    const call = vi.fn(async (method, spec) => {
+      if (method === "session.hello") return greeting;
+      if (spec.scope.id === "blocked") throw Object.assign(Error("no capacity"), { error_code: "busy" });
+    });
+    await greetBridge(call, { deviceId: "device", beforeRefresh() {} });
+    for (const wanted of ["blocked", "held", "blocked"]) {
+      entity = wanted;
+      dispatchChangeEvent({ type: "changes", subscription_id: "s-thread", items: [{ entity_id: "held", thread: [] }] }, "device");
+      await subscriptionsSettled();
+    }
+    expect(call.mock.calls.filter(([method]) => method === "changes.subscribe").map(([, spec]) => spec.scope.id))
+      .toEqual(["held", "blocked", "blocked"]);
+    expect(connectionDiagnosticHistory().filter(({ event, code }) => event === "subscription" && code === "busy")).toHaveLength(2);
+    expect(catchUp).not.toHaveBeenCalled();
   });
 
   it("does not release or refresh after its opening is retired", async () => {

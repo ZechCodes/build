@@ -1347,19 +1347,24 @@ async function readProjectTerminals(context, scope) {
   if (answer && context.active()) await writeProjectTerminalRoster(context, scope, answer.terminals || [], { fence });
 }
 
-const MAX_PROJECT_TERMINAL_SUBSCRIPTIONS = 2;
+const HTTP_OFF_ROUTE_TERMINAL_WATCHES = 2;
+const usesHttp = (deviceId) => contextFor(deviceId)?.session?.transport === "http";
 
 function projectTerminalCoverage(deviceId, scopes) {
+  if (!usesHttp(deviceId)) return scopes.map((scope) => ({ scope, priority: "foreground" }));
   const route = App.route;
-  const projectId = route?.deviceId === deviceId ? route.projectId : null;
-  const priority = (scope) => Number(scope.project_id !== projectId);
-  return scopes.toSorted((a, b) => priority(a) - priority(b)).slice(0, MAX_PROJECT_TERMINAL_SUBSCRIPTIONS);
+  const projectId = route?.deviceId === deviceId ? route.projectId : undefined;
+  return [
+    ...scopes.filter((scope) => scope.project_id === projectId).map((scope) => ({ scope, priority: "foreground" })),
+    ...scopes.filter((scope) => scope.project_id !== projectId).slice(0, HTTP_OFF_ROUTE_TERMINAL_WATCHES)
+      .map((scope) => ({ scope, priority: "background" })),
+  ];
 }
 
-function watchProjectTerminal(deviceId, id, scope) {
+function watchProjectTerminal(deviceId, id, scope, priority) {
   return watchChanges({ ...subscriptionShape(deviceId), id: `s-project-term:${id}`,
     scope: { kind: "project_source", ...scope }, kinds: ["terminals"],
-    mode: "realtime", priority: "foreground", optional: true,
+    mode: "realtime", priority, optional: true,
     catchUp: () => {
       const context = syncContext(contextFor(deviceId));
       if (holdingLock && context) return readProjectTerminals(context, scope);
@@ -1370,17 +1375,17 @@ function watchProjectTerminal(deviceId, id, scope) {
 function reconcileProjectTerminalSubscriptions({ deviceId }, scopes) {
   let held = projectTerminalSubscriptions.get(deviceId);
   if (!held) projectTerminalSubscriptions.set(deviceId, held = new Map());
-  const wanted = new Map(projectTerminalCoverage(deviceId, scopes).map((scope) => [directoryCacheId(scope), scope]));
-  for (const [id, watcher] of held) {
-    if (wanted.has(id)) continue;
+  const wanted = new Map(projectTerminalCoverage(deviceId, scopes).map((entry) => [directoryCacheId(entry.scope), entry]));
+  for (const [id, { watcher, priority }] of held) {
+    if (wanted.get(id)?.priority === priority) continue;
     watcher.dispose();
     held.delete(id);
   }
   const added = [];
-  for (const [id, scope] of wanted) {
+  for (const [id, { scope, priority }] of wanted) {
     if (held.has(id)) continue;
-    held.set(id, watchProjectTerminal(deviceId, id, scope));
-    added.push(scope);
+    held.set(id, { watcher: watchProjectTerminal(deviceId, id, scope, priority), priority });
+    if (priority === "foreground") added.push(scope);
   }
   return added;
 }
@@ -1853,9 +1858,8 @@ export function routeChanged() {
     void passes.get(deviceId)?.foreground?.();
     void refollowRoute(deviceId);
   }
-  const { deviceId, projectId } = App.route || {};
-  if (projectId && projectTerminalSubscriptions.has(deviceId)) {
-    void refollowProjectTerminalCoverage(deviceId).catch(pushError);
+  for (const deviceId of projectTerminalSubscriptions.keys()) {
+    if (usesHttp(deviceId)) void refollowProjectTerminalCoverage(deviceId).catch(pushError);
   }
 }
 
@@ -2821,7 +2825,7 @@ export function startCacheSync() {
 
 function disposeProjectTerminalSubscriptions() {
   for (const held of projectTerminalSubscriptions.values()) {
-    for (const watcher of held.values()) watcher.dispose();
+    for (const { watcher } of held.values()) watcher.dispose();
   }
   projectTerminalSubscriptions.clear();
 }

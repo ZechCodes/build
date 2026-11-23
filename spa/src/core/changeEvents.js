@@ -157,9 +157,8 @@ function newBridgeState(deviceId) {
     apiVersion: PRE_ALPHA_API_VERSION,
     subscriptions: false, // whether this session is serving the contract
     live: new Map(), // subscription_id → the spec this bridge is holding
-    busy: new Set(),
+    busy: new Map(),
     deferred: new Set(),
-    retryTimer: null,
     http: false,
     boardRevision: null, // the newest revision this device's feed has read for
     chain: Promise.resolve(),
@@ -352,7 +351,8 @@ function desiredSubscriptions(deviceId) {
 function subscriptionOrder({ spec, watcher }) {
   if (spec.subscription_id === MOUNTED_THREAD_SUBSCRIPTION) return 0;
   if (["s-inbox", "s-background"].includes(spec.subscription_id)) return 1;
-  return watcher?.optional ? 3 : 2;
+  if (!watcher?.optional) return 2;
+  return spec.priority === "foreground" ? 3 : 4;
 }
 
 function admittedSubscriptions(state, desired) {
@@ -388,10 +388,13 @@ const refusalCode = (thrown) => thrown?.code || thrown?.error_code || "unknown";
 /// code, both from closed sets.
 function noteRefusedSubscription(state, method, params, thrown) {
   if (method !== "changes.subscribe") return;
+  const code = refusalCode(thrown);
+  const id = params.subscription_id;
+  if (code === "busy" && typeof state.busy.get(id)?.wire === "string") return;
   recordConnectionDiagnostic(`${state.deviceId}:subscriptions`, "subscription", {
     state: "refused",
-    subscription: params?.subscription_id || "",
-    code: refusalCode(thrown),
+    subscription: id,
+    code,
   });
 }
 
@@ -439,32 +442,54 @@ async function subscribeSpec(state, spec) {
 
 function clearSubscriptionState(state) {
   state.live.clear();
-  state.busy.clear();
+  for (const id of state.busy.keys()) clearBusyRefusal(state, id);
   state.deferred.clear();
-  clearTimeout(state.retryTimer);
-  state.retryTimer = null;
 }
 
-// A transient refusal gets one delayed retry. Further attempts ride a new
-// desired diff or a push, so a persistently full opening cannot start a poll.
-function retryBusy(state, id) {
-  if (state.busy.has(id)) return;
-  state.busy.add(id);
-  state.retryTimer ??= setTimeout(() => {
-    state.retryTimer = null;
+const BUSY_INITIAL_RETRY_MS = 500;
+const BUSY_PUSH_BACKOFF_MS = 2_000;
+
+function clearBusyRefusal(state, id) {
+  const episode = state.busy.get(id);
+  clearTimeout(episode?.timer);
+  state.busy.delete(id);
+  return episode;
+}
+
+function shouldRetrySubscription(state, id, wire) {
+  const episode = state.busy.get(id);
+  return episode?.wire !== wire || episode.retryAt <= performance.now();
+}
+
+// A transient refusal gets one delayed retry. After that, pushes may retry
+// after a cooldown. A real slot release or a changed spec can retry sooner.
+function rememberBusyRefusal(state, id, wire) {
+  const previous = clearBusyRefusal(state, id);
+  if (previous?.wire === wire) {
+    state.busy.set(id, { wire, retryAt: performance.now() + BUSY_PUSH_BACKOFF_MS });
+    return;
+  }
+  const episode = { wire, retryAt: Infinity };
+  episode.timer = setTimeout(() => {
+    episode.retryAt = 0;
     scheduleSync(state.deviceId);
-  }, 500);
+  }, BUSY_INITIAL_RETRY_MS);
+  state.busy.set(id, episode);
+}
+
+function releaseSubscription(state, id) {
+  state.live.delete(id);
+  clearBusyRefusal(state, id);
+  for (const episode of state.busy.values()) episode.retryAt = 0;
 }
 
 async function dropStale(state, desired) {
   for (const id of [...state.live.keys()]) {
-    if (desired.has(id)) continue;
+    if (desired.has(id) || !shouldRetrySubscription(state, id, null)) continue;
     const { outcome, refusal } = await askBridge(state, "changes.unsubscribe", { subscription_id: id });
     if (outcome === CALL_STALE) return false;
-    if (outcome === CALL_DONE) {
-      state.live.delete(id);
-      state.busy.delete(id);
-    } else if (refusalCode(refusal) === "busy") retryBusy(state, id);
+    if (outcome === CALL_DONE) releaseSubscription(state, id);
+    else if (refusalCode(refusal) === "busy") rememberBusyRefusal(state, id, null);
   }
   return true;
 }
@@ -477,16 +502,16 @@ function canAddSubscription(state, id) {
 function settleSubscription(state, id, wire, watcher, { outcome, refusal }) {
   if (outcome === CALL_DONE) {
     state.live.set(id, wire);
-    const busy = state.busy.delete(id);
+    const busy = clearBusyRefusal(state, id)?.wire === wire;
     const deferred = state.deferred.delete(id);
     announceHeld(state.deviceId, id);
-    if (busy || deferred || id === MOUNTED_THREAD_SUBSCRIPTION) refreshCoveredWatcher(state, watcher);
+    if (busy || deferred) refreshCoveredWatcher(state, watcher);
     return;
   }
   // A timed-out subscribe might have installed the id. Keep its slot
   // accounted for until an upsert or unsubscribe is acknowledged.
   if (refusal?.uncertain && !state.live.has(id)) state.live.set(id, null);
-  if (refusalCode(refusal) === "busy") retryBusy(state, id);
+  if (refusalCode(refusal) === "busy") rememberBusyRefusal(state, id, wire);
 }
 
 function refreshCoveredWatcher(state, watcher) {
@@ -499,7 +524,11 @@ function refreshCoveredWatcher(state, watcher) {
 
 async function addSubscription(state, id, { spec, watcher }) {
   const wire = JSON.stringify(spec);
-  if (state.live.get(id) === wire) return true;
+  if (state.live.get(id) === wire) {
+    clearBusyRefusal(state, id);
+    return true;
+  }
+  if (!shouldRetrySubscription(state, id, wire)) return true;
   if (!canAddSubscription(state, id)) {
     state.deferred.add(id);
     return true;
@@ -537,7 +566,7 @@ function announceHeld(deviceId, subscriptionId) {
  *  not moved costs nothing. */
 function updateDeferredCoverage(state, desired, admitted) {
   for (const id of state.deferred) if (!desired.has(id)) state.deferred.delete(id);
-  for (const id of state.busy) if (!desired.has(id) && !state.live.has(id)) state.busy.delete(id);
+  for (const id of state.busy.keys()) if (!desired.has(id) && !state.live.has(id)) clearBusyRefusal(state, id);
   for (const id of desired.keys()) if (!admitted.has(id)) state.deferred.add(id);
 }
 
@@ -549,8 +578,10 @@ async function syncSubscriptions(state) {
   const mounted = admitted.get(MOUNTED_THREAD_SUBSCRIPTION);
   if (mounted && !await addSubscription(state, MOUNTED_THREAD_SUBSCRIPTION, mounted)) return;
   if (!await dropStale(state, admitted)) return;
+  // If the mounted thread was busy, the unsubscribe may have freed its slot.
+  if (!state.busy.has(MOUNTED_THREAD_SUBSCRIPTION)) admitted.delete(MOUNTED_THREAD_SUBSCRIPTION);
   for (const [id, entry] of admitted) {
-    if (id !== MOUNTED_THREAD_SUBSCRIPTION && !await addSubscription(state, id, entry)) return;
+    if (!await addSubscription(state, id, entry)) return;
   }
 }
 

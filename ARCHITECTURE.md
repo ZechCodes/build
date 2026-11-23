@@ -4569,7 +4569,12 @@ in `shell.js`. The bottom Console tray opens the existing console and never
 creates a shell; the project rail has no separate Terminal entry.
 `projectConsole.js` paints source-labelled tabs from each
 source's `terminals` cache record at device/project/source/captured-path addresses.
-Held source terminal subscriptions use realtime delivery at foreground priority.
+Every source in the routed project requests realtime terminal delivery at
+foreground priority. WebRTC also requests every off-route source. On HTTPS,
+the sync tier requests at most two off-route sources per device at background
+priority. The logical subscription budget admits routed terminal watches
+before off-route terminal watches and gives both groups lower admission
+priority than the core subscriptions. Roster reads still cover every source.
 `projectConsole.js` re-reads only its project/support/source-terminal cache records;
 create and close commit and read back independently of background collectors,
 guarded by an applied generation.
@@ -5705,11 +5710,13 @@ subscriptions. For HTTPS it holds at most seven ordinary subscriptions, so the
 mounted conversation fits even when talking to an older eight-slot bridge.
 It releases stale coverage before adding other watches and accounts for an
 uncertain subscribe until the ID is acknowledged or unsubscribed. A `busy`
-refusal stays pending on the current opening and records a `subscription`
-diagnostic with the refused ID and code. It can retry after another slot is
-released, when the desired scopes change, or on a push. A new `busy` refusal
-also receives one delayed retry for an otherwise quiet opening. Restored
-coverage triggers a catch-up read into the cache. An HTTPS opening whose
+refusal stays pending on the current opening and records one `subscription`
+diagnostic per refusal episode with the ID and code. It gets one retry after
+500 ms even on a quiet opening. Subsequent pushes can trigger a retry after
+a two-second cooldown. A slot release or an updated spec can retry sooner.
+Restored coverage triggers a catch-up read into the cache. On a normal
+conversation switch, the mounted conversation uses its regular foreground
+read and starts receiving pushes once the upsert lands. An HTTPS opening whose
 event stream never delivered `hello` fails during stream startup, before the
 SPA requests logical subscriptions.
 

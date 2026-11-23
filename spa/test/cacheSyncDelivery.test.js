@@ -175,8 +175,9 @@ describe("a flush arriving at the real subscriptions", () => {
       sync.routeChanged();
       const terminalWatches = () => [...held.values()].filter(({ scope }) => scope.kind === "project_source");
       const routedWatches = () => terminalWatches().filter(({ scope }) => scope.project_id === "p1");
-      await vi.waitFor(() => expect(routedWatches().map(({ scope }) => scope.source_id)).toEqual(sources.map(({ id }) => id)));
+      await announced(changeEvents.onSubscriptionHeld, () => routedWatches().length === sources.length);
       await changeEvents.subscriptionsSettled();
+      expect(routedWatches().map(({ scope }) => scope.source_id)).toEqual(sources.map(({ id }) => id));
       expect(held.get("s-thread")?.scope).toEqual({ kind: "entity", id: "run-1" });
       expect(terminalWatches()).toHaveLength(http ? 4 : sources.length + offRoute.length);
       for (const tabs of [[{ term_id: "created-elsewhere" }], []]) {
@@ -643,6 +644,7 @@ describe("a pass racing the wire", () => {
     wire.answering("changes.subscribe", (params) => {
       if (refusing && params.subscription_id === "s-background") throw Object.assign(new Error("busy"), { code: "busy" });
     });
+    const extra = changeEvents.watchChanges({ deviceId: "dev-1", scope: "all", kinds: ["state"], refresh() {} });
     await greet();
     board = [branchItem()];
     sync.startCacheSync();
@@ -651,7 +653,10 @@ describe("a pass racing the wire", () => {
 
     head.now = "after";
     refusing = false;
-    await flush([{ entity_id: "run-1", state: branchItem() }]); // any delivery asks for the diff again
+    const acknowledged = announced(changeEvents.onSubscriptionHeld, () => wire.held.has("s-background"));
+    extra.dispose();
+    await acknowledged;
+    await settle();
     expect(wire.held.has("s-background")).toBe(true);
 
     expect(await headOf("run-1")).toBe("after");

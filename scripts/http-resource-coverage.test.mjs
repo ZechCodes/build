@@ -346,14 +346,14 @@ const sourceFingerprintParts = {
   "core/bridgeUpdates.js": ["279cb932", "0495aa46", "c347f93b", "10a492d5", "8d29b0a9", "e9309a9a", "91de7993", "e5f40ad3"],
   // #997 runtime-board cacheSync.js:754,783,1978: existing board.list also refreshes only runtime collections; durable scope/tip writers stay gated, no new method.
   // #1157: existing scoped thread and terminal reads catch up after coverage lands.
-  "core/cacheSync.js": ["127f5db5", "e2800e63", "6a42acd4", "2da7809c", "2085bbfa", "0b2e8507", "a2326df7", "4f035f21"],
+  "core/cacheSync.js": ["055ce95f", "16226ae8", "cc3f2475", "6cb15a8d", "e7b487c5", "596d2c82", "87a6aa7a", "f52585d6"],
   // #997 runtime-board captureDecisionView.js:142: branch choices join cached runtime run bodies; existing RPC and mutation dispatch unchanged.
   "core/captureDecisionView.js": ["66de7f78", "fbbd155f", "c29e58b8", "da80c68a", "2069fabf", "03333d95", "69b155a6", "382df322"],
   // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
   // #1065: concrete hello gates cached capability evidence; greeting refusal still disarms. RPC edges are unchanged.
   // #1099: Default environment secret flag is false; event dispatch is unchanged.
   // #1157: prioritization, retries and recovery use the existing change subscription resources.
-  "core/changeEvents.js": ["f4f2dcdf","2b0609f6","baa1e2ce","3eeb443c","f02b3002","66d209df","9915f3aa","a20de714"],
+  "core/changeEvents.js": ["952cccd6", "63949a31", "f803bf52", "3f622784", "dbba2d1f", "4e24e5fe", "f5179d9f", "253080e5"],
   "core/changesComments.js": ["a4d03b10", "31dbf6e1", "6e12294d", "e69ceb46", "2958a35c", "7f2f07c9", "4088008f", "f1d7394d"],
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],

@@ -49,7 +49,8 @@ describe("HTTP greeting subscribes before refresh", () => {
     }
     await greetBridge(call, { deviceId: "device", beforeRefresh() {} });
     expect(held.size).toBe(7);
-    const thread = (entity) => watchChanges({ id: "s-thread", deviceId: "device", entity, kinds: ["thread"], refresh() {} });
+    const catchUp = vi.fn();
+    const thread = (entity) => watchChanges({ id: "s-thread", deviceId: "device", entity, kinds: ["thread"], refresh() {}, catchUp });
     const first = thread("first");
     await subscriptionsSettled();
     expect(held.get("s-thread")?.scope).toEqual({ kind: "entity", id: "first" });
@@ -58,6 +59,7 @@ describe("HTTP greeting subscribes before refresh", () => {
     await subscriptionsSettled();
     expect(held.get("s-thread")?.scope).toEqual({ kind: "entity", id: "second" });
     expect(held.size).toBe(8);
+    expect(catchUp).not.toHaveBeenCalled();
     expect(call.mock.calls).not.toContainEqual(["changes.unsubscribe", { subscription_id: "s-thread" }]);
   });
 
@@ -78,9 +80,23 @@ describe("HTTP greeting subscribes before refresh", () => {
     expect(connectionDiagnosticHistory()).toContainEqual(expect.objectContaining({
       event: "subscription", state: "refused", subscription: "s-thread", code: "busy",
     }));
+    const attempts = () => call.mock.calls.filter(([method, spec]) => method === "changes.subscribe" && spec.subscription_id === "s-thread");
+    const push = async () => {
+      dispatchChangeEvent({ type: "changes", subscription_id: "inbox", items: [{ entity_id: "thread", state: {} }] }, "device");
+      await subscriptionsSettled();
+    };
+    for (let i = 0; i < 4; i += 1) await push();
+    expect(attempts()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(attempts()).toHaveLength(2);
+    for (let i = 0; i < 4; i += 1) await push();
+    expect(attempts()).toHaveLength(2);
+    expect(connectionDiagnosticHistory().filter(({ event, subscription }) => event === "subscription" && subscription === "s-thread")).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(attempts()).toHaveLength(2);
     blocked = false;
-    dispatchChangeEvent({ type: "changes", subscription_id: "inbox", items: [{ entity_id: "thread", state: {} }] }, "device");
-    await subscriptionsSettled();
+    await push();
+    expect(attempts()).toHaveLength(3);
     expect(catchUp).toHaveBeenCalledOnce();
   });
 

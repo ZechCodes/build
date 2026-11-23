@@ -33,6 +33,10 @@ const bridge = { call: null };
 const App = { route: { name: "inbox" }, devices: [{ id: "dev-1" }] };
 vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")).App }));
 vi.mock("../src/app.js", () => ({ App }));
+let lazyReads = false;
+vi.mock("../src/core/scopedSyncRuntime.js", async (original) => ({
+  ...await original(), lazyViewReadsEnabled: () => lazyReads,
+}));
 
 const contexts = new Map();
 const stateListeners = new Set();
@@ -114,6 +118,7 @@ beforeEach(async () => {
   stateListeners.clear();
   contexts.clear();
   board = [];
+  lazyReads = false;
   App.route = { name: "inbox" };
   registerDevice("dev-1");
   bridge.call = vi.fn(async (method, params) => answer(method, params));
@@ -129,6 +134,68 @@ afterEach(() => {
 });
 
 describe("a flush arriving at the real subscriptions", () => {
+  it.each(["webrtc", "http"])("delivers every routed source's terminal pushes and keeps the mounted thread live over %s", async (transport) => {
+    const http = transport === "http";
+    const sources = ["one", "two", "three"].map((id) => ({ id, path: `/${id}` }));
+    const offRoute = Array.from({ length: 8 }, (_, index) => ({ id: `other-${index}`, path: `/other-${index}` }));
+    const projects = [{ project_id: "elsewhere", sources: offRoute }, { project_id: "p1", sources }];
+    const agent = { id: "agent-1", conversation_id: "conversation-1" };
+    const held = new Map();
+    let published = false;
+    lazyReads = true;
+    contexts.get("dev-1").session.transport = transport;
+    bridge.call = vi.fn(async (method, spec) => {
+      if (method === "session.hello") return {
+        api_version: "3.24.0", push_events: true,
+        capabilities: ["changes.subscriptions", "changes.projectSources", "term.projectSources"],
+        changes: { kinds: ["state", "thread", "terminals"] },
+      };
+      if (method === "changes.unsubscribe") return held.delete(spec.subscription_id);
+      if (method === "changes.subscribe") {
+        if (http && held.size === 8 && !held.has(spec.subscription_id)) throw Object.assign(Error("no capacity"), { code: "busy" });
+        held.set(spec.subscription_id, spec);
+        return {};
+      }
+      if (method === "project.list") return { projects };
+      if (method === "thread.page" && published) return {
+        items: [{ id: "message", type: "message", data: { sequence: 1, role: "agent", body: "live reply" } }],
+        has_more: false, thread_last_sequence: 1,
+      };
+      return answer(method, spec);
+    });
+    await changeEvents.greetBridge(bridge.call, { deviceId: "dev-1", beforeRefresh: http ? () => {} : undefined });
+    await boot([branchItem({ agents: [agent] })]);
+    await passesSettled(sync, "dev-1");
+
+    const { registerSyncThread } = await import("../src/core/syncVisibleScopes.js");
+    const { directoryCacheId } = await import("../src/core/directoryScope.js");
+    const stop = registerSyncThread(() => ({ deviceId: "dev-1", entityId: "run-1", agentId: agent.id, conversationId: agent.conversation_id }));
+    try {
+      App.route = BRANCH_ROUTE;
+      sync.routeChanged();
+      const terminalWatches = () => [...held.values()].filter(({ scope }) => scope.kind === "project_source");
+      const routedWatches = () => terminalWatches().filter(({ scope }) => scope.project_id === "p1");
+      await vi.waitFor(() => expect(routedWatches().map(({ scope }) => scope.source_id)).toEqual(sources.map(({ id }) => id)));
+      await changeEvents.subscriptionsSettled();
+      expect(held.get("s-thread")?.scope).toEqual({ kind: "entity", id: "run-1" });
+      expect(terminalWatches()).toHaveLength(http ? 4 : sources.length + offRoute.length);
+      for (const tabs of [[{ term_id: "created-elsewhere" }], []]) {
+        for (const spec of routedWatches()) {
+          const { kind, ...scope } = spec.scope;
+          await flush([{ project_source: scope, terminals: { tabs } }], spec.subscription_id);
+          expect((await read(directoryCacheId(scope), "terminals"))?.value.tabs).toEqual(tabs);
+        }
+      }
+      bridge.call.mockClear();
+      published = true;
+      await flush([{ entity_id: "run-1", thread: [{ agent_id: agent.id, conversation_id: agent.conversation_id, last_sequence: 1 }] }], "s-thread");
+      expect((await read("run-1", "thread", agent.conversation_id))?.value.items[0]?.data.body).toBe("live reply");
+      expect(calls("thread.page")).toHaveLength(1);
+    } finally {
+      stop();
+    }
+  });
+
   it("syncs and retains the conversation of an unwatched workspace run", async () => {
     const hiddenRun = {
       run_id: "run-quiet", project_id: "p1", state: "building",

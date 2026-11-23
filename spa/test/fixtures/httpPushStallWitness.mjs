@@ -20,7 +20,7 @@ const endpoint = createBrowserHttpEndpoint({ grant, fetchImpl(url, options) {
   return fetch(url, { ...options, headers: { ...options.headers, Origin: "https://app.example" } });
 } });
 
-const threadSubscription = `s-thread:${entityId}`;
+const threadSubscription = "s-thread";
 let threadTip = 0;
 let inboxPushes = 0;
 const losses = [];

@@ -587,6 +587,10 @@ pub struct SubscriptionSpec<K = KindSet> {
     pub priority: Priority,
 }
 
+// The SPA upserts this one id when the mounted conversation changes. A
+// bounded event binding has one such slot in addition to its ordinary slots.
+const MOUNTED_THREAD_SUBSCRIPTION: &str = "s-thread";
+
 impl SubscriptionSpec<KindNames> {
     /// The same spec with its kinds read, or every name among them that is
     /// not a kind this bridge knows.
@@ -1855,16 +1859,7 @@ impl ChangeBus {
                 existing.session = session.event_context();
             }
             None => {
-                let owned = subscriptions
-                    .iter()
-                    .filter(|existing| existing.matches_context(session))
-                    .count();
-                if session
-                    .logical_subscription_limit()
-                    .is_some_and(|limit| owned >= limit)
-                {
-                    return Err(crate::api::ApiError::busy("too many logical subscriptions"));
-                }
+                check_subscription_capacity(&subscriptions, session, &sub.id)?;
                 subscriptions.push(Subscription::new(sub, session.event_context(), now));
             }
         }
@@ -2438,6 +2433,28 @@ impl ChangeBus {
             handle.spawn(ChangeBus::run(bus));
         }
     }
+}
+
+fn check_subscription_capacity(
+    subscriptions: &[Subscription],
+    session: &SessionSender,
+    id: &str,
+) -> Result<(), crate::api::ApiError> {
+    if id == MOUNTED_THREAD_SUBSCRIPTION {
+        return Ok(());
+    }
+    if let Some(limit) = session.logical_subscription_limit() {
+        let ordinary = subscriptions
+            .iter()
+            .filter(|sub| {
+                sub.matches_context(session) && sub.spec.id != MOUNTED_THREAD_SUBSCRIPTION
+            })
+            .count();
+        if ordinary >= limit {
+            return Err(crate::api::ApiError::busy("too many logical subscriptions"));
+        }
+    }
+    Ok(())
 }
 
 impl Subscription {
@@ -5301,6 +5318,17 @@ mod binding_resources {
         bus.try_subscribe(&caller, spec(&id, Kind::Files)).unwrap();
         assert_eq!(
             bus.try_subscribe(&caller, spec("excess", Kind::State))
+                .unwrap_err()
+                .code(),
+            "busy"
+        );
+        bus.try_subscribe(&caller, spec(MOUNTED_THREAD_SUBSCRIPTION, Kind::Thread))
+            .unwrap();
+        bus.try_subscribe(&caller, spec(MOUNTED_THREAD_SUBSCRIPTION, Kind::Thread))
+            .unwrap();
+        assert_eq!(bus.list(session.id()).len(), 9);
+        assert_eq!(
+            bus.try_subscribe(&caller, spec("still-excess", Kind::State))
                 .unwrap_err()
                 .code(),
             "busy"

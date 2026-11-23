@@ -7,7 +7,6 @@ use std::{
 };
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Known HTTPS logical subscription limit regression; requires Node.js (task #1157)"]
 async fn mounted_thread_receives_pushes_alongside_project_terminals() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();

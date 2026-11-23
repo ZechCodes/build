@@ -674,6 +674,72 @@ async def test_desktop_near_expiry_parent_has_no_authorization_grace(db):
 
 
 @pytest.mark.asyncio
+async def test_browser_family_survives_bearer_cleanup_but_not_login_rotation(db):
+    from sqlalchemy import func, select
+    from buildapp.models import BridgeHttpToken
+
+    user, device, key = await registered(db)
+    binding = "browser:session-one"
+    minted = await mint_for_client(db, user, device, key, binding)
+    later = datetime.fromtimestamp(minted["expires_at"], timezone.utc) + timedelta(
+        hours=23
+    )
+    identity = (device.id, minted["family_id"], "epoch-one", ISSUER, later)
+
+    renewed = await auth.renew(db, user, binding, *identity)
+    assert renewed["family_id"] == minted["family_id"]
+    assert renewed["access_token"] != minted["access_token"]
+    assert await db.scalar(select(func.count()).select_from(BridgeHttpToken)) == 1
+    with pytest.raises(NotAuthorizedException):
+        await auth.renew(db, user, "browser:another-session", *identity)
+
+
+@pytest.mark.asyncio
+async def test_orderly_bridge_shutdown_revokes_family_across_same_policy_restart(db):
+    from buildapp.models import BridgeHttpFamily
+
+    user, device, key = await registered(db)
+    binding = "browser:session-one"
+    minted = await mint_for_client(db, user, device, key, binding)
+
+    async def register(epoch, previous, enabled):
+        challenge = await auth.registration_challenge(
+            db, device.id, signed(key, device, "registration-challenge"),
+            ISSUER, utc_now(),
+        )
+        proof = signed(
+            key,
+            device,
+            "registration",
+            challenge_id=challenge["challenge_id"],
+            nonce=challenge["nonce"],
+            origin=ORIGIN,
+            endpoint_epoch=epoch,
+            previous_endpoint_epoch=previous,
+            enabled=enabled,
+        )
+        return await auth.register_endpoint(db, device.id, proof, ISSUER, utc_now())
+
+    async def resume():
+        return await auth.renew(
+            db, user, binding, device.id, minted["family_id"], "epoch-one",
+            ISSUER, utc_now(),
+        )
+
+    await register("epoch-one", "epoch-one", True)
+    assert (await resume())["family_id"] == minted["family_id"]
+
+    await register("shutdown", "epoch-one", False)
+    family = await db.get(
+        BridgeHttpFamily, UUID(minted["family_id"]), populate_existing=True
+    )
+    assert family.revoked_at is not None
+    await register("restart", "shutdown", True)
+    with pytest.raises(NotAuthorizedException):
+        await resume()
+
+
+@pytest.mark.asyncio
 async def test_changed_paired_identity_key_invalidates_old_endpoint(db):
     user, device, key = await registered(db)
     new_key = Ed25519PrivateKey.generate()

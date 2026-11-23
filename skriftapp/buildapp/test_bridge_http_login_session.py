@@ -171,6 +171,40 @@ def family_count(client):
     return framework.on_database(client, read)
 
 
+def test_hosted_cookie_reissue_keeps_family_until_sign_in_expires(
+    login_app, monkeypatch
+):
+    from types import SimpleNamespace
+    from litestar.middleware.session import client_side
+
+    issued = client_side.time.time()
+    cookie_now = issued
+    monkeypatch.setattr(client_side, "time", SimpleNamespace(time=lambda: cookie_now))
+    with framework_client(login_app) as client:
+        user, _ = real_login(client)
+        device, key = enroll_and_register(client, user)
+        saved = mint(client, device, key)
+        original = cookie_snapshot(client)
+        path = f"/api/devices/{device.id}/http-credentials"
+        identity = {"family_id": saved["family_id"], "endpoint_epoch": "login-epoch"}
+        lifetime = client.session_backend.config.max_age
+
+        cookie_now = issued + lifetime - 3600
+        resumed = client.post(path, json=identity)
+        assert resumed.status_code == 201, resumed.text
+        assert resumed.json()["family_id"] == saved["family_id"]
+
+        cookie_now = issued + lifetime + 1
+        assert client.post(path, json=identity).status_code == 201
+        restore(client, original)
+        assert client.post(path, json=identity).status_code == 401
+
+        same_user, _ = real_login(client)
+        assert same_user == user
+        assert client.post(path, json=identity).status_code == 401
+        assert family_count(client) == 1
+
+
 def test_real_earliest_login_cookie_cannot_remint_after_csrf_logout(
     login_app, tmp_path, monkeypatch
 ):

@@ -23,6 +23,36 @@ fn record(path: &Path) -> EndpointRecord {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
+#[test]
+fn unchanged_policy_reuses_epoch_unless_shutdown_persists_disable() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("endpoint.json");
+    let first = EndpointRecord::prepare(&path, Some(policy()))
+        .unwrap()
+        .unwrap();
+    first.acknowledge(&path).unwrap();
+
+    let reopened = EndpointRecord::prepare(&path, Some(policy()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(reopened.endpoint_epoch, first.endpoint_epoch);
+
+    let disabled = EndpointRecord::prepare(&path, None).unwrap().unwrap();
+    assert!(!disabled.enabled);
+    assert_ne!(disabled.endpoint_epoch, first.endpoint_epoch);
+    disabled.acknowledge(&path).unwrap();
+
+    let restarted = EndpointRecord::prepare(&path, Some(policy()))
+        .unwrap()
+        .unwrap();
+    assert!(restarted.enabled);
+    assert_ne!(restarted.endpoint_epoch, disabled.endpoint_epoch);
+    assert_ne!(restarted.endpoint_epoch, first.endpoint_epoch);
+    assert!(restarted
+        .registration_predecessors()
+        .contains(&Some(disabled.endpoint_epoch)));
+}
+
 struct HeldTransaction {
     child: Child,
     output: BufReader<ChildStdout>,

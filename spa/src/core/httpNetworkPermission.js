@@ -21,6 +21,10 @@ export async function checkHttpNetworkPermission(origin, permissions = navigator
   const caller = httpNetworkPermission(callerOrigin);
   if (caller === name || caller === "loopback-network") return;
   const status = await permissions.query({ name }).catch(() => null);
+  checkPermissionStatus(status);
+}
+
+function checkPermissionStatus(status) {
   if (status?.state === "denied") throw httpFailure("network_permission_denied");
   if (status?.state === "prompt") throw httpFailure("network_permission");
 }

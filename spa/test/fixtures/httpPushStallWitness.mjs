@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter, once } from "node:events";
 import { readFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { createBrowserHttpEndpoint } from "../../src/core/httpBrowserEndpoint.js";
@@ -23,15 +24,18 @@ const endpoint = createBrowserHttpEndpoint({ grant, fetchImpl(url, options) {
 const threadSubscription = "s-thread";
 let threadTip = 0;
 let inboxPushes = 0;
+const pushes = new EventEmitter();
 const losses = [];
 const session = await openHttpSession({
   endpoint, routes, onLost: (error) => losses.push(error),
   onPush(frame) {
     if (frame.type !== "changes") return;
     if (frame.subscription_id === "s-inbox" && frame.items.some((item) => item.entity_id === entityId)) inboxPushes += 1;
-    if (frame.subscription_id !== threadSubscription) return;
-    const tips = frame.items.find((item) => item.entity_id === entityId)?.thread || [];
-    threadTip = Math.max(threadTip, ...tips.filter((tip) => tip.agent_id === agentId).map((tip) => tip.last_sequence));
+    if (frame.subscription_id === threadSubscription) {
+      const tips = frame.items.find((item) => item.entity_id === entityId)?.thread || [];
+      threadTip = Math.max(threadTip, ...tips.filter((tip) => tip.agent_id === agentId).map((tip) => tip.last_sequence));
+    }
+    pushes.emit("changes");
   },
 });
 const subscribe = (subscription_id, scope, kinds, mode = "realtime", priority = "foreground") =>
@@ -39,7 +43,7 @@ const subscribe = (subscription_id, scope, kinds, mode = "realtime", priority = 
 const unsubscribe = (subscription_id) => session.rawCall("changes.unsubscribe", { subscription_id });
 const watchThread = () => subscribe(threadSubscription, { kind: "entity", id: entityId }, ["thread"]);
 const savedMessage = async (body) => {
-  const until = performance.now() + 3_000;
+  const until = performance.now() + 10_000;
   do {
     const page = await session.rawCall("thread.page", { entity_id: entityId, agent_id: agentId });
     const message = page.items.find((item) => item.data?.body === body);
@@ -49,12 +53,23 @@ const savedMessage = async (body) => {
   assert.fail(`The REST read never found "${body}"`);
 };
 
+async function waitForPush(delivered) {
+  const signal = AbortSignal.timeout(10_000);
+  while (!delivered()) {
+    try {
+      await once(pushes, "changes", { signal });
+    } catch (error) {
+      if (error.name === "AbortError") return false;
+      throw error;
+    }
+  }
+  return true;
+}
+
 async function publishAndWaitForPush(body) {
   console.log(`publish ${body}`);
   const sequence = await savedMessage(body);
-  const until = performance.now() + 1_000;
-  while (threadTip < sequence && performance.now() < until) await delay(25);
-  return { sequence, delivered: threadTip >= sequence };
+  return { sequence, delivered: await waitForPush(() => threadTip >= sequence) };
 }
 
 try {
@@ -74,7 +89,7 @@ try {
   console.log(`Thread push received before the slots fill at sequence ${initial.sequence}`);
   await unsubscribe(threadSubscription);
 
-  // Device sync holds one terminal subscription per registered project source.
+  // Fill the ordinary slots with exact project-source subscriptions.
   const { projects } = await session.rawCall("project.list");
   const sources = projects.flatMap(({ project_id, sources }) => sources.map(({ id, path }) => ({
     project_id, source_id: id, source_path: path,
@@ -86,7 +101,7 @@ try {
   const refused = await watchThread().then(() => null, (error) => error);
   const previousInboxPushes = inboxPushes;
   const stalled = await publishAndWaitForPush("with all project terminal subscriptions held");
-  const inboxDelivered = inboxPushes > previousInboxPushes;
+  const inboxDelivered = await waitForPush(() => inboxPushes > previousInboxPushes);
   const outcome = refused ? `${refused.error_code} (${refused.message})` : "accepted";
   console.log(`Thread subscribe returned ${outcome}`);
   console.log(`REST saw sequence ${stalled.sequence}. Thread push delivered = ${stalled.delivered}. Inbox push delivered = ${inboxDelivered}.`);

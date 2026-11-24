@@ -33,6 +33,17 @@ describe("selection from the committed device record", () => {
     expect(selectDeviceTransport(device(), manual, true)).toMatchObject({ kind: "blocked", reason: "policy_unknown" });
   });
 
+  it.each([
+    { source: "personal", origin: personal, expectedReason: "policy_unknown" },
+    { source: "webrtc", origin: null, expectedReason: "policy_unknown" },
+    { source: "hosted", origin: null, expectedReason: "setup_pending" },
+  ])("holds a cached $source projection that omits RTC permission", ({ source, origin, expectedReason }) => {
+    const transport = { source, origin, reason: null, assignment_revision: null };
+    expect(selectDeviceTransport(device(transport), null, true)).toMatchObject({
+      kind: "blocked", reason: expectedReason,
+    });
+  });
+
   it("does not use an obsolete origin when the issuer withdraws or rotates the assignment", () => {
     const ready = projection({ source: "hosted", rtc_allowed: false, origin: hosted, assignment_revision: 1 });
     const first = selectDeviceTransport(device(ready), null, true);

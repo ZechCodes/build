@@ -3,7 +3,7 @@
 import "fake-indexeddb/auto";
 import { afterEach, expect, it, vi } from "vitest";
 import {
-  cachedTerminalTransport, httpEndpointFor, httpPreferenceFor, rememberHttpTerminalMode, resetHttpConnections, restoreHttpConnections, selectHttpConnection,
+  cachedTerminalTransport, deviceTransportFor, httpEndpointFor, httpPreferenceFor, rememberHttpTerminalMode, resetHttpConnections, restoreHttpConnections, selectHttpConnection,
 } from "../src/core/httpConnections.js";
 import { App } from "../src/appState.js";
 import { writeUiRecord } from "../src/core/localUiStore.js";
@@ -21,6 +21,7 @@ afterEach(() => {
   App.deviceTransportPolicy = null;
   delete window.buildBridgeHttp;
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   document.head.replaceChildren();
 });
 
@@ -143,6 +144,22 @@ it("uses native discovery for the cached projection and closes a grant that arri
   expect(api.close).toHaveBeenCalledWith("retired");
 });
 
+it("holds an HTTPS projection that is still in memory after its account changes", async () => {
+  const nextAccount = "10000000-0000-4000-8000-000000000078";
+  document.head.innerHTML = `<meta name="build-account-id" content="${account}">`;
+  project(origin, 1);
+  App.deviceTransportPolicy = { accountId: account, policyAware: true };
+  expect(deviceTransportFor(deviceId).kind).toBe("http");
+
+  document.head.querySelector("meta").content = nextAccount;
+  await restoreHttpConnections();
+  const request = vi.fn();
+  vi.stubGlobal("fetch", request);
+  expect(deviceTransportFor(deviceId)).toMatchObject({ kind: "blocked", reason: "policy_unknown" });
+  await expect(httpEndpointFor(deviceId, () => true)).rejects.toMatchObject({ code: "scope_ended" });
+  expect(request).not.toHaveBeenCalled();
+});
+
 it("gives an old desktop preload upgrade guidance without trying browser discovery", async () => {
   document.head.innerHTML = `<meta name="build-account-id" content="${account}">`;
   project(origin, 1);
@@ -153,6 +170,20 @@ it("gives an old desktop preload upgrade guidance without trying browser discove
   await expect(httpEndpointFor(deviceId, () => true)).rejects.toMatchObject({ code: "desktop_update_required" });
   expect(request).not.toHaveBeenCalled();
   expect(window.buildBridgeHttp.discover).not.toHaveBeenCalled();
+});
+
+it("gives Electron with no preload facade upgrade guidance without trying browser discovery", async () => {
+  document.head.innerHTML = `<meta name="build-account-id" content="${account}">`;
+  project(origin, 1);
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 Electron/36.0.0");
+  expect(window.buildBridgeHttp).toBeUndefined();
+  const request = vi.fn();
+  vi.stubGlobal("fetch", request);
+  await restoreHttpConnections();
+  await expect(httpEndpointFor(deviceId, () => true)).rejects.toMatchObject({
+    code: "desktop_update_required", message: "Update the Build desktop app to use this HTTPS connection.",
+  });
+  expect(request).not.toHaveBeenCalled();
 });
 
 it("uses the projected browser origin even when a different manual address was saved", async () => {

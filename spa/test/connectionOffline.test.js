@@ -2343,6 +2343,20 @@ describe("explicit HTTP selection with independent relay presence", () => {
     expect(streams[0].signal.aborted).toBe(false);
   });
 
+  it("waits only the remaining heartbeat window when foregrounding just before the deadline", async () => {
+    const { streams, openings } = serveHttpStream();
+    setVisibility("visible");
+    await connectDevice("dev-a");
+    setVisibility("hidden");
+    vi.setSystemTime(Date.now() + 18000);
+    setVisibility("visible");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(streams[0].signal.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(openings).toEqual(["opening-1", "opening-2"]);
+  });
+
   it("releases the old slot before reopening and coalesces wake events during recovery", async () => {
     const { streams, openings, streamSlots, overloaded, holdCleanupUntil } = serveHttpStream();
     for (let index = 0; index < 7; index += 1) streamSlots.add(`other-tab-${index}`);
@@ -2397,7 +2411,7 @@ describe("explicit HTTP selection with independent relay presence", () => {
     setVisibility("hidden");
     setVisibility("visible");
     window.dispatchEvent(new Event("online"));
-    await vi.advanceTimersByTimeAsync(6900);
+    await vi.advanceTimersByTimeAsync(7900);
     expect(stalled.signal?.aborted).toBe(true);
     expect(http.open).toHaveBeenCalledTimes(3);
     expect(contextFor("dev-a")?.session?.sessionId).toBe(fixture.openings.at(-1));

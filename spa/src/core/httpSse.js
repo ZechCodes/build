@@ -1,6 +1,48 @@
 // No durable cursor: the owner refreshes current state after a broken stream.
 // Consumer promises apply backpressure directly; no extra client event queue.
 const MAX_EVENT_BYTES = 1024 * 1024;
+
+// The bridge sends a keepalive every 15 s. Allow 5 s for delivery jitter.
+const STREAM_IDLE_MS = 20000;
+
+export function createStreamWatch(onStall, now) {
+  const page = globalThis.document;
+  const window = globalThis.window;
+  let lastByteAt;
+  let timer;
+  const arm = (delay) => {
+    clearTimeout(timer);
+    timer = setTimeout(onStall, delay);
+  };
+  const onWake = () => {
+    if (page?.visibilityState === "hidden") return;
+    // Wall time keeps counting when the browser freezes callbacks and timers.
+    const remaining = STREAM_IDLE_MS - (now() - lastByteAt);
+    if (remaining <= 0) onStall();
+    else arm(Math.min(remaining, STREAM_IDLE_MS));
+  };
+  const onPageShow = (event) => {
+    if (event.persisted) onStall();
+  };
+  return {
+    activity() {
+      lastByteAt = now();
+      arm(STREAM_IDLE_MS);
+    },
+    watchWake() {
+      page?.addEventListener("visibilitychange", onWake);
+      window?.addEventListener("online", onWake);
+      window?.addEventListener("pageshow", onPageShow);
+    },
+    close() {
+      clearTimeout(timer);
+      page?.removeEventListener("visibilitychange", onWake);
+      window?.removeEventListener("online", onWake);
+      window?.removeEventListener("pageshow", onPageShow);
+    },
+  };
+}
+
 const utf8Bytes = (character) => {
   const point = character.codePointAt(0);
   if (point <= 0x7f) return 1;
@@ -58,22 +100,31 @@ function lineParser(consume) {
   };
 }
 
-export async function readTransientEvents(response, consume, onActivity = () => {}) {
+function eventReader(response) {
   if (!response.ok || response.headers.get("content-type")?.split(";")[0].trim() !== "text/event-stream" || !response.body) {
     throw new Error("Expected an SSE response");
   }
-  const reader = response.body.getReader();
+  return response.body.getReader();
+}
+
+export async function readTransientEvents(response, consume, onActivity = () => {}, signal) {
+  const reader = eventReader(response);
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const take = lineParser(eventParser(consume));
+  const cancel = () => reader.cancel().catch(() => {});
+  signal?.addEventListener("abort", cancel, { once: true });
   try {
     while (true) {
+      signal?.throwIfAborted();
       const { value, done } = await reader.read();
+      signal?.throwIfAborted();
       if (done) { await take.write(decoder.decode()); await take.finish(); return; }
-      onActivity();
+      if (value.byteLength) onActivity();
       await take.write(decoder.decode(value, { stream: true }));
     }
   } finally {
-    await reader.cancel().catch(() => {});
+    signal?.removeEventListener("abort", cancel);
+    await cancel();
     reader.releaseLock();
   }
 }

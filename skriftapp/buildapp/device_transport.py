@@ -7,7 +7,7 @@ from litestar.exceptions import PermissionDeniedException
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from buildapp.accounts import account_policy
+from buildapp.accounts import AccountPolicyValues, account_policy
 from buildapp.bridge_http_auth import endpoint_matches_pairing, valid_endpoint
 from buildapp.bridge_http_models import BridgeHttpEndpoint
 from buildapp.models import Device
@@ -38,10 +38,16 @@ async def mark_hosted_ready_once(db_session: AsyncSession, pairing: Device) -> b
     return updated is not None
 
 
-async def rtc_allowed(db_session: AsyncSession, device: Device) -> bool:
+async def rtc_allowed(
+    db_session: AsyncSession, device: Device, *, policy: AccountPolicyValues | None = None,
+) -> bool:
     """Decide RTC eligibility for a pairing using its owner's current policy."""
     owner = device.owner_user_id
-    if owner is None or not (await account_policy(db_session, owner)).tunnel_access:
+    if owner is None:
+        return True
+    if policy is None:
+        policy = await account_policy(db_session, owner)
+    if not policy.tunnel_access:
         return True
     if device.hosted_ready_once or os.environ.get(RTC_BOOTSTRAP_ENV, "on") != "on":
         return False
@@ -71,12 +77,12 @@ async def require_rtc_mint(
 
 
 async def transport_projection(
-    db_session: AsyncSession, device: Device, endpoint: BridgeHttpEndpoint | None,
+    db_session: AsyncSession, device: Device, endpoint: BridgeHttpEndpoint | None, *, policy: AccountPolicyValues,
 ) -> dict:
     origin = endpoint.origin if endpoint is not None and valid_endpoint(endpoint, device) else None
     return {
         "source": "personal" if origin is not None else "webrtc",
-        "rtc_allowed": await rtc_allowed(db_session, device),
+        "rtc_allowed": await rtc_allowed(db_session, device, policy=policy),
         "reason": None,
         "origin": origin,
         "assignment_revision": None,

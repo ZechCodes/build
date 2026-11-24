@@ -150,9 +150,9 @@ const reviewComment = "Match the label the sidebar uses.";
               answer. Run Claude Code, Codex and Pi together in Build.
             </p>
             <ul class="captions">
-              <li>Your agents run on your computer.</li>
-              <li>Your files stay there.</li>
-              <li>Build's servers cannot read your code or prompts.</li>
+              <li>Your agents run on your machine.</li>
+              <li>End-to-end encryption is available with WebRTC.</li>
+              <li>Your project files are stored on that machine.</li>
             </ul>
             <p class="scope">Model requests still go to the providers you configure.</p>
           </div>
@@ -415,12 +415,10 @@ const reviewComment = "Match the label the sidebar uses.";
               </p>
             </details>
             <details id="privacy-summary">
-              <summary>What can Build's servers see?</summary>
-              <p>
-                Your account, your registered devices, connection diagnostics, and a push
-                subscription if you turn notifications on. Not your code or prompts. The
-                connection between your devices is end-to-end encrypted.
-              </p>
+              <summary>Who can read my connection?</summary>
+              <p>WebRTC encrypts traffic end to end between your app and bridge, including through TURN.</p>
+              <p>For personal HTTPS, who can read traffic depends on where your TLS or private tunnel ends.</p>
+              <p>Hosted HTTPS passes through Cloudflare. Cloudflare can read your code, prompts and terminal traffic on this connection. This option is planned.</p>
               <a href="/privacy">Read the architecture and privacy details</a>
             </details>
             <details>

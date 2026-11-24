@@ -14,16 +14,17 @@ Two audiences, mirroring ``devices_controller``:
   an Ed25519 signature over a timestamped challenge, verified against the
   device's pinned identity key (same proof-of-key scheme as registration).
 
-E2EE invariant (#200): the api forwards opaque ciphertext and sees only sids.
-The pushed payload is ``web_push.push_payload(task_id, kind, blob)`` —
-``{"task_id", "kind", "url"}`` where ``task_id`` is opaque and ``kind`` a generic
-label, plus ``"sealed"`` when the bridge sealed a blob to that subscription. The
-api matches a blob to a subscription by ``web_push.subscription_id(endpoint)``,
-validates only its shape and forwards it byte-identical; it never decodes,
-stores or logs a blob or a payload. Content authenticity rests on the
-notification public key never reaching the api: the key goes from the browser to
-the bridge over the E2EE session only, and without it no one can seal content
-the browser will open.
+The API forwards sealed push content (#200) as opaque ciphertext.
+The pushed payload from ``web_push.push_payload(task_id, kind, blob)`` carries
+an opaque ``task_id``, a generic ``kind`` and a ``url``. It also carries ``sealed``
+when the bridge sealed a blob to that subscription. The API matches the blob
+by ``web_push.subscription_id(endpoint)``, validates its shape, and forwards it
+byte-identical. The blob and payload stay out of API storage and logs.
+
+The seal alone does not authenticate the sender. The browser registers the
+notification public key over an authenticated bridge connection.
+On an HTTPS path, a TLS terminator can see the registered public key. The
+private key stays in the browser.
 """
 
 from __future__ import annotations

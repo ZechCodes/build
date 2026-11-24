@@ -1,22 +1,28 @@
 # Build SPA (v2 web client)
 
-The task board / plan / diff / terminal web client. Vanilla ES modules, no
-framework, bundled with Vite. Every dependency is self-hosted (libsodium, the
-`@build/secure-transport` binding, ghostty-web with inlined wasm, Inter fonts)
-— zero CDN at runtime.
+Manage coding agents on your machines with git-native review. The task board,
+plan, diff and terminal use vanilla ES modules bundled with Vite. Build
+self-hosts runtime dependencies such as libsodium, the `@build/secure-transport`
+binding, ghostty-web with inlined wasm, and Inter fonts.
+
+The app connects to your bridge over WebRTC or verified HTTPS.
+
+- WebRTC encrypts traffic end to end between your app and bridge, including through TURN.
+- For personal HTTPS, who can read traffic depends on where your TLS or private tunnel ends.
+- Hosted HTTPS passes through Cloudflare. Cloudflare can read your code, prompts and terminal traffic on this connection. This option is planned.
 
 ## Layout
 
 ```
 src/core/       runtime-agnostic logic, fully unit-tested:
-  session.js      E2EE relay session (authenticate → device_key → session_init)
+  session.js      WebRTC encrypted rendezvous (authenticate → device_key → session_init)
   diff.js         unified-diff parsing + review noise filter
   markdown.js     safe markdown rendering for plans/notifications
   notes.js        batched plan/diff comments → agent notes
   router.js       hash routes (#/board, #/task/<id>/<tab>, …)
 src/views/      board, workspace (Changes/Files/Tasks), notifications, settings, task, gate
 src/sheets/     modal sheets: new task, repo browser/new/clone/remote, add device
-src/terminal/   the PTY drawer (ghostty-web) + its reconnecting E2EE session
+src/terminal/   the PTY drawer (ghostty-web) and its WebRTC or WSS connection
 src/            app shell: state+render dispatch, connection lifecycle,
                 device store/picker, api client, comment popover
 ```
@@ -109,9 +115,10 @@ assertion gate, not a pixel comparison against historical screenshots.
 immutable caching. The build output is gitignored — build it as part of the
 image/deploy pipeline.
 
-CSP needs: `script-src 'self'`, `style-src 'self' 'unsafe-inline'` (inline
-style attributes), `connect-src 'self' data: <relay ws(s) origin>` (`data:`
-because ghostty-web instantiates its wasm from a data: URL), `font-src 'self'`.
+The CSP uses `script-src 'self'`, `style-src 'self' 'unsafe-inline'` for inline
+style attributes, and `font-src 'self'`. Its `connect-src` includes `'self'`,
+`data:` for the ghostty-web wasm, the WebRTC relay origin, and exact HTTPS/WSS
+authorities for eligible bridge endpoints and the active discovery candidate.
 
 ## Markdown rendering
 

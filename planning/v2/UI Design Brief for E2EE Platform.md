@@ -1,5 +1,7 @@
 # Build v1 — UI Design Brief & User Stories
 
+> This describes the WebRTC path. See [Account types and hosted tunnels](<Account Types and Hosted Tunnels Plan.md>).
+
 ## Secret composer — #1006 implementation amendment (2026-11-05)
 
 The paperclip opens a themed ARIA menu with Files or images and, on capable

@@ -473,6 +473,7 @@ def test_an_existing_account_signs_in_from_the_sign_in_view_and_meets_the_wrong_
     landing = client.get(signed_in.json()["redirect"], follow_redirects=False)
     assert landing.status_code == 403
     assert MISMATCH_HEADING in landing.text
+    assert "<span>LOCAL-FIRST</span>" in landing.text
 
 
 # --- Skrift's own checks come first ----------------------------------------------

@@ -1,7 +1,7 @@
 // Web-push subscription management. The api only ever holds the subscription
 // and relays ciphertext: what a push says is sealed by the bridge to this
 // browser's notification key (#200), which is made here after subscribing and
-// handed to the bridges over E2EE (core/pushKeySync.js).
+// handed to the bridges over an authenticated bridge connection (core/pushKeySync.js).
 //
 // The service worker (public/sw.js, served same-origin at /app/sw.js) opens a
 // sealed push, falls back to generic copy for anything else, and never caches

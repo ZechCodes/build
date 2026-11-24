@@ -359,6 +359,14 @@ describe("the device connection gate", () => {
 });
 
 describe("the first-run screen", () => {
+  it("explains what to pair and how to compare the fingerprint", async () => {
+    await boot();
+    const text = document.getElementById("root").textContent;
+    expect(text).toContain("Pair the device that runs your coding agents.");
+    expect(text).toContain("Compare the fingerprint with the one your bridge printed.");
+    expect(text).not.toMatch(/only paired devices|end-to-end encrypted/i);
+  });
+
   it("offers Sign out through the existing server logout flow", async () => {
     await boot();
     const signOut = document.querySelector('#root a[href="/auth/logout"]');

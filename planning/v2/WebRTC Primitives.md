@@ -1,5 +1,7 @@
 # WebRTC Primitives
 
+> This describes the WebRTC path. See [Account types and hosted tunnels](<Account Types and Hosted Tunnels Plan.md>).
+
 Status: design, 2026-09-02. The component list for `WebRTC Transport Spec.md`, which is binding.
 
 Two rules govern every component below. Each is stated once, in the component that owns it; everything else defers to it

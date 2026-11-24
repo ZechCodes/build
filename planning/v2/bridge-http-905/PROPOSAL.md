@@ -1,5 +1,7 @@
 # Account-authenticated REST/SSE and URL discovery
 
+> This describes the earlier URL-mode design. See [Account types and hosted tunnels](<../Account Types and Hosted Tunnels Plan.md>).
+
 Status: proposed contract for #902/#905 and independent #906 architecture review.
 No production implementation or deployment is authorized by this document.
 Base: fetched `origin/dev` at `12b8f869bd94e259666df69f1a8c0cde5c695982`.

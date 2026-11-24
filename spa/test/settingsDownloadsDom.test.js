@@ -79,6 +79,19 @@ beforeEach(async () => {
   ({ renderSettings } = await import("../src/views/settings.js"));
 });
 
+it("explains who can read each connection path even before a device is paired", async () => {
+  await renderSettings();
+  const text = document.getElementById("root").textContent;
+  expect(text).toContain("Who can read this connection?");
+  expect(text).toContain("WebRTC encrypts traffic end to end between your app and bridge, including through TURN");
+  expect(text).toContain(
+    "Hosted HTTPS passes through Cloudflare. Cloudflare can read your code, prompts and terminal traffic on this connection. This option is planned.",
+  );
+  expect(text).toContain("For personal HTTPS, who can read traffic depends on where your TLS or private tunnel ends.");
+  expect(text).toContain("Compare the fingerprint with the one your bridge printed.");
+  expect(text).not.toMatch(/only paired devices|nothing else|servers move ciphertext/i);
+});
+
 describe("Settings → Downloads", () => {
   it("mounts the same downloads block the gate shows, for this browser's platform", async () => {
     await renderSettings();

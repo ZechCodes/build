@@ -30,10 +30,9 @@ spec disagrees with the code or `ARCHITECTURE.md`, the code and
 
 ## About this project
 
-Build is an agentic IDE for developers, meant to be easy to contribute to: it
-lets a developer monitor agents running on their own machine, track tasks,
-create plans, review changes and make their own changes, from a browser or the
-desktop app, end-to-end encrypted.
+Build is an agentic IDE for developers. Manage coding agents on your machines with git-native review.
+Use the browser or desktop app to track tasks, review changes and make your own
+edits. The bridge runs on the machine that runs your agents.
 
 Design rules:
 

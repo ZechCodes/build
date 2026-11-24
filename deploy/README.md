@@ -113,11 +113,14 @@ the bridges keep their identities, so both bridge containers must be
 
 ## ICE servers (the WebRTC upgrade)
 
-A browser reaches its bridge over WebRTC DataChannels and nothing else, falling
-back to Cloudflare TURN when neither peer can hole-punch. The browser fetches the
-server list from the api (`POST /api/rtc/ice-servers`, session-cookie
-authenticated) and forwards it to the bridge inside the sealed session, so the
-bridge needs no Cloudflare access.
+A browser reaches its bridge over WebRTC or verified HTTPS. HTTPS devices use
+REST for calls, SSE for updates, and WSS for terminals when available.
+
+A WebRTC connection uses DataChannels and can fall back to Cloudflare TURN
+when a direct connection fails. The browser fetches the ICE server list from
+the API (`POST /api/rtc/ice-servers`, authenticated by the session cookie) and
+forwards it to the bridge inside the sealed WebRTC signaling session. The list
+includes short-lived TURN credentials when TURN is configured.
 
 | Env key | Where it comes from | What it is |
 |---|---|---|

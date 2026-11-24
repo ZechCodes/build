@@ -45,7 +45,7 @@ FONT_PRELOAD_LINK = (
     '<link rel="preload" href="/landing/fonts/JetBrainsMono-latin.woff2" '
     'as="font" type="font/woff2" crossorigin>'
 )
-FOOTER_ASSURANCE_COPY = "LOCAL-FIRST // E2E ENCRYPTED"
+FOOTER_ASSURANCE_COPY = "<span>LOCAL-FIRST</span>"
 FOOTER_COPYRIGHT_COPY = "© 2026 BUILD · GETBUILD.ING"
 
 CI_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml"
@@ -275,6 +275,22 @@ def test_docs_publish_current_host_and_harness_status():
     assert 'id="architecture"' in html
     assert 'href="/app/"' in html
     assert releases.DOWNLOADS_PATH not in html
+
+
+@pytest.mark.parametrize("render_page", [render_docs_page, render_privacy_page])
+def test_public_pages_describe_who_can_read_each_connection_path(render_page):
+    html = render_page()
+    assert (
+        "WebRTC encrypts traffic end to end between your app and bridge, including through TURN"
+    ) in html
+    assert (
+        "Hosted HTTPS passes through Cloudflare. "
+        "Cloudflare can read your code, prompts and terminal traffic on this connection."
+    ) in html
+    assert (
+        "For personal HTTPS, who can read traffic depends on where your TLS or private tunnel ends."
+    ) in html
+    assert FOOTER_ASSURANCE_COPY in html
 
 
 def test_privacy_page_names_each_real_connection_party_and_provider_boundary():

@@ -1,5 +1,7 @@
 # Bridge Wire Protocol Spec
 
+> This describes the WebRTC path. See [Account types and hosted tunnels](<Account Types and Hosted Tunnels Plan.md>).
+
 Status: draft 2026-09-13. Branch: `build/bridge-wire-interface`.
 
 Two parts, one contract. Part 1 replaces the all-or-nothing push

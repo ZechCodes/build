@@ -23,6 +23,10 @@ ACTIVITY_FRAGMENT_NAME = "activity-section.html"
 DOCS_PATH = "/docs"
 PRIVACY_PATH = "/privacy"
 
+_CONNECTION_PATHS = """<p>WebRTC encrypts traffic end to end between your app and bridge, including through TURN.</p>
+  <p>For personal HTTPS, who can read traffic depends on where your TLS or private tunnel ends.</p>
+  <p>Hosted HTTPS passes through Cloudflare. Cloudflare can read your code, prompts and terminal traffic on this connection. This option is planned.</p>"""
+
 
 def load_content() -> dict[str, Any]:
     return json.loads(read_landing_file(CONTENT_FILE_NAME))
@@ -69,7 +73,8 @@ def render_docs_body(public_base_url: str = "https://getbuild.ing") -> str:
   </section>
   <section id="architecture" aria-labelledby="architecture-title">
     <h2 id="architecture-title">Connection architecture</h2>
-    <p>The app server handles authentication, device registration, and rendezvous. The browser and host negotiate an encrypted WebRTC data channel. Direct connections reveal each peer's IP to the other; when direct connection fails, Cloudflare TURN can relay DTLS ciphertext.</p>
+    <p>The app server handles authentication, device registration, and WebRTC rendezvous.</p>
+    {_CONNECTION_PATHS}
     <p>Your coding agents, workspaces, terminals, and Git operations run on the paired host.</p>
     <a href="/privacy">Read the storage and transport details</a>
   </section>
@@ -93,11 +98,16 @@ def _render_dev_docs_body() -> str:
     dev channel with its own state. Production installers are unavailable on this site.</p>
     <a class="primary-action" href="/app/">Open dev app</a>
   </section>
+  <section id="architecture" aria-labelledby="architecture-title">
+    <h2 id="architecture-title">Connection architecture</h2>
+    {_CONNECTION_PATHS}
+    <a href="/privacy">Read the storage and transport details</a>
+  </section>
 </main>"""
 
 
 def render_privacy_body() -> str:
-    return """<main class="public-doc content-container">
+    return f"""<main class="public-doc content-container">
   <a class="doc-back" href="/" aria-label="Build home"><img src="/landing/brand-mark.svg" alt="">build</a>
   <h1>Architecture and privacy</h1>
   <p>Build stores the account and device records needed to authenticate you, approve a host, and establish a connection. Device records include the host's registered identity and connection status.</p>
@@ -106,9 +116,10 @@ def render_privacy_body() -> str:
   <h2>Optional browser notifications</h2>
   <p>If you enable browser push notifications, the hosted Build service stores the browser's push endpoint and its p256dh and auth encryption keys with your account. Unsubscribing removes that endpoint for the signed-in account.</p>
   <h2>Where agent work runs</h2>
-  <p>Coding agents execute on your paired host. Workspaces, terminals, files, diffs, and Git operations are produced there and sent to the browser over the encrypted application session.</p>
+  <p>Coding agents execute on your paired host. The browser uses the bridge connection to work with those workspaces, terminals, files, diffs, and Git operations.</p>
   <h2>How a browser reaches a host</h2>
-  <p>The app and relay coordinate WebRTC negotiation. A direct connection exposes each peer's IP address to the other. If direct connection is unavailable, Cloudflare TURN may relay DTLS ciphertext and can observe connection metadata such as source IP, timing, and traffic size.</p>
+  {_CONNECTION_PATHS}
+  <p>The app and relay coordinate WebRTC negotiation. Direct WebRTC exposes each peer's IP address to the other. When WebRTC uses Cloudflare TURN, TURN relays DTLS ciphertext and can observe connection metadata such as source IP, timing, and traffic size.</p>
   <h2>Provider boundary</h2>
   <p>The hosted Build service does not receive or store your coding-harness credentials. Each harness is installed and authenticated on the host, and its own provider terms and data handling still apply.</p>
   <a href="/docs#architecture">Read the setup and connection guide</a>

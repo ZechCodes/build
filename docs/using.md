@@ -31,6 +31,27 @@ be online to open its page.
 **Creation device** ("New projects and captures go to"), plus agent defaults,
 appearance, notifications, downloads, and your devices and keys.
 
+## Connection paths
+
+The app connects to your bridge over WebRTC or verified HTTPS. Open **Settings** and
+look for **Who can read this connection?** to see the privacy details.
+
+- WebRTC encrypts traffic end to end between your app and bridge, including through TURN.
+- For personal HTTPS, who can read traffic depends on where your TLS or private tunnel ends.
+- Hosted HTTPS passes through Cloudflare. Cloudflare can read your code, prompts and terminal traffic on this connection. This option is planned.
+
+Today WebRTC is the default. **Add by URL** lets you use a personal address
+after Build verifies the bridge. When hosted tunnels are available, the
+[hosted tunnels plan](<../planning/v2/Account Types and Hosted Tunnels Plan.md#account-policy-and-rtc-eligibility>)
+describes how Build will choose a path for each device.
+
+| Policy at the issuer | Client behavior for a new connection |
+| --- | --- |
+| No tunnel entitlement | The default is WebRTC. A user can select their own verified HTTPS address with the existing terminal compatibility rules. |
+| Entitled, personal origin configured | Use the registered personal HTTPS address. Show any setup error and keep the personal selection. |
+| Entitled, hosted setup pending | Use WebRTC only if the issuer permits it with `rtc_allowed=true`. Otherwise show cached work and the setup or update reason. |
+| Entitled, hosted ready once | Use hosted HTTPS for REST, SSE and terminal WSS. During outage or replacement, keep cached work visible and retry HTTPS. |
+
 ## Device project folders
 
 On a device's settings page, use **Choose folder…** to browse that device's

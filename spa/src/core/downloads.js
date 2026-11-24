@@ -61,7 +61,7 @@ function releaseDownloadsHtml(downloads, platformKey) {
       ${installLineHtml(downloads?.install_command ?? "")}
       ${otherPlatformsHtml(matched ? platforms.filter((platform) => platform !== matched) : [], downloads ?? {})}
       ${desktopHtml(downloads)}
-      ${dim("Once paired, the bridge runs on your machine and holds its own key; Build's servers move ciphertext.", "margin-top:12px")}
+      ${dim("The bridge runs on your machine. Pair it to use it from Build.", "margin-top:12px")}
     </div>`;
 }
 

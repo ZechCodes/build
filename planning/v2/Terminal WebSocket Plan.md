@@ -1,5 +1,7 @@
 # Terminal WebSockets on the bridge HTTP listener
 
+> This describes the earlier URL-mode design. See [Account types and hosted tunnels](<Account Types and Hosted Tunnels Plan.md>).
+
 **Decision for #1119.** A URL-connected device carries application requests over HTTPS, changes over SSE, and interactive terminals over one lazily opened WSS connection per SPA tab and selected device Opening. Qualify browser and desktop with relay rendezvous and WebRTC unavailable. Preserve the existing WebRTC terminal path for mixed versions. Production rollout is outside this plan.
 
 The original planning references below describe Build at `234f44a4caef63f85b2534290686b2788c7d6185`. The prior proposal explicitly deferred terminal parity and required a separately authenticated fallback in the interim (`planning/v2/bridge-http-905/PROPOSAL.md:321-331`, `planning/v2/bridge-http-905/PROPOSAL.md:501-513`, `planning/v2/bridge-http-905/PROPOSAL.md:535`). The implementation notes added in slice J describe the pinned dev base `3e5e7f0e56ec1125bbfe9be99cea5ef3817b9309`.

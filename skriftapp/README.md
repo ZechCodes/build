@@ -3,9 +3,15 @@
 A minimal [Skrift](https://github.com/ZechCodes/skrift) app that provides **auth**,
 the device registry/pairing api, gateway-token minting, and serves the Build SPA.
 After login you write a goal → a planning agent writes a plan → you approve → a
-coding agent implements it → you watch the git diff appear live. The SPA talks to
-the bridge over E2EE **directly through the relay's `/ws/client`** (the node
-gateway is retired); Skrift does auth + api + serving.
+coding agent implements it → you watch the git diff appear live.
+
+Manage coding agents on your machines with git-native review. The SPA connects
+to the bridge over WebRTC or verified HTTPS. The relay's `/ws/client` carries
+WebRTC signaling.
+
+- WebRTC encrypts traffic end to end between your app and bridge, including through TURN.
+- For personal HTTPS, who can read traffic depends on where your TLS or private tunnel ends.
+- Hosted HTTPS passes through Cloudflare. Cloudflare can read your code, prompts and terminal traffic on this connection. This option is planned.
 
 - `app.dev.yaml` — controllers (BuildController + devices api + Skrift auth/admin),
   sqlite, dummy auth, and a dev-relaxed CSP.
@@ -59,9 +65,9 @@ approve → watch the diff.
 unused email-bound invite for `qa@localhost` with the raw token in `BUILD_DEV_INVITE_TOKEN`,
 default `COMPOSE-INVITE`, and `web/pair.mjs` redeems it before it pairs.)
 
-Automated end-to-end (from `../web/`):
+The WebRTC QA harness lives in `../web/` alongside the Playwright app-flow test.
 
-- `API_URL=http://127.0.0.1:8090 RELAY_URL=ws://127.0.0.1:18090 node e2e.mjs` — E2EE round-trip
+- `API_URL=http://127.0.0.1:8090 RELAY_URL=ws://127.0.0.1:18090 node e2e.mjs` — WebRTC encrypted round-trip
 - `… node qa.mjs` — 16-check task-lifecycle suite (bridge needs `BRIDGE_QA_AGENT=1`)
 - `APP=http://localhost:8090 node skrift-flow.mjs` — Playwright: login → goal →
   plan → approve → live diff, screenshots to /tmp/build-app-*.png
@@ -73,9 +79,10 @@ Automated end-to-end (from `../web/`):
 `app.yaml` is the real production config (loaded when `SKRIFT_ENV` is unset or
 `production`): passkey-only auth pinned to `https://getbuild.ing` (dummy auth is
 dev-only; Skrift hard-blocks it in production), rate limiting on, env-driven
-Postgres (`$DATABASE_URL`), and a same-origin CSP whose only external target is
-`wss://relay.getbuild.ing`. Dummy auth, the relaxed CSP, and the `/internal/*`
-localhost fallback live only in `app.dev.yaml`.
+Postgres (`$DATABASE_URL`), and a CSP that allows the WebRTC relay at
+`wss://relay.getbuild.ing` and exact HTTPS/WSS authorities for eligible bridge
+endpoints and the active discovery candidate. Dummy auth, the relaxed CSP, and
+the `/internal/*` localhost fallback live only in `app.dev.yaml`.
 
 The SPA bundle is served same-origin; build it with
 `VITE_RELAY_URL=wss://relay.getbuild.ing` for production.

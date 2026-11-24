@@ -1,5 +1,7 @@
 # Worktree Surfaces — Binding Technical Spec
 
+> This describes the WebRTC path. See [Account types and hosted tunnels](<Account Types and Hosted Tunnels Plan.md>).
+
 **Status:** Binding. Implementers follow this exactly; names and shapes below are the
 contract between four sequential implementation layers. Where this spec pins a name,
 use that name. Where behavior is unspecified, match the existing code's conventions

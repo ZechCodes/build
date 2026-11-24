@@ -137,13 +137,11 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   registerDispose(() => { disposeCreation?.(); disposePairing?.(); disposeDiagnostics?.(); disposeCacheHealth?.(); disposeDevices?.(); disposeCatalog?.(); disposeCatalogState?.(); disposePush?.(); });
   root.innerHTML = `
     <div class="board-head" style="justify-content:space-between;gap:12px"><div><h1>Local settings</h1><p>Preferences saved in this browser.</p></div>${signOutHtml()}</div>
-    <p class="settings-intro" style="margin-top:18px">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
     <div class="panel">
-      <h3>🔒 What our servers see</h3>
-      <div class="row"><span class="k">Routing IDs</span><span class="v">which device a blob is for — random identifiers, no names</span></div>
-      <div class="row"><span class="k">Ciphertext sizes</span><span class="v">how big each encrypted blob is</span></div>
-      <div class="row"><span class="k">Timing</span><span class="v">when blobs move</span></div>
-      <div class="row last"><span class="k">Nothing else</span><span class="v">no goals, no plans, no diffs, no terminal bytes — content decrypts only on your devices</span></div>
+      <h3>Who can read this connection?</h3>
+      <p class="settings-intro">WebRTC encrypts traffic end to end between your app and bridge, including through TURN.</p>
+      <p class="settings-intro">For personal HTTPS, who can read traffic depends on where your TLS or private tunnel ends.</p>
+      <p class="settings-intro" style="margin-bottom:0">Hosted HTTPS passes through Cloudflare. Cloudflare can read your code, prompts and terminal traffic on this connection. This option is planned.</p>
     </div>
     <div class="panel">
       <h3>🖥️ Creation device</h3>
@@ -180,7 +178,7 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
     <p><a class="btn" href="#/account/environments">Environments</a></p>
     <div class="panel">
       <h3>📱 Devices &amp; keys</h3>
-      <div class="dim" style="font-size:13px;margin-bottom:8px">Only paired devices can read your tasks. When you add one, confirm its fingerprint matches what the bridge printed. Each device's own settings — its projects, its folder, how agents run there — live on its page.</div>
+      <div class="dim" style="font-size:13px;margin-bottom:8px">Compare the fingerprint with the one your bridge printed. Each device's own settings — its projects, its folder, how agents run there — live on its page.</div>
       <div id="devlist"><span class="dim" style="font-size:13px">loading…</span></div>
       <div class="addproj"><button class="btn primary" id="adddev">Add a device…</button><button class="btn" id="addurl">Add by URL…</button></div>
       <div class="adderr" id="deverr"></div>

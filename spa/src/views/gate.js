@@ -1,6 +1,6 @@
 // Connection gate. Before the app can load we need a live, owned device.
 // Three entry states: onboarding (no devices yet), waiting (devices exist but
-// none online — auto-reconnect), connected (open the E2EE session and render).
+// none online — auto-reconnect), connected (open an authenticated bridge connection and render).
 //
 // The waiting screen is not only a boot state. Every surface in the app is
 // about a machine, so an account that has run out of machines that can answer
@@ -114,8 +114,8 @@ function keepPaintedShell() {
  *
  * Everything the first screen shows was written by the last session: which
  * machines the account has, and each machine's board with its two lists. So
- * the gate reads them and hands the page straight to the reader — the device
- * GET and the E2EE handshake that follow are catching up, not loading.
+ * the gate reads them and hands the page straight to the reader. The device
+ * GET and the authenticated bridge connection catch up in the background.
  *
  * Answers whether it painted. An empty cache has nothing to stand on, and the
  * gate screens are what a first run sees, exactly as before.
@@ -417,7 +417,7 @@ function onboardingStepsHtml() {
         ${signOutHtml()}
       </div>
       <h1 style="margin:0 0 6px">Welcome to Build</h1>
-      <p class="settings-intro" style="margin:0 0 10px">Your coding agents run on your own devices, end-to-end encrypted. Add a device to begin — only paired devices can read your tasks, plans, and diffs.</p>
+      <p class="settings-intro" style="margin:0 0 10px">Pair the device that runs your coding agents.</p>
       <p class="dim" style="font-size:12.5px;margin:0 0 22px">Agents run on your machine in YOLO mode; Build makes what they did visible, it does not sandbox them.</p>
       <div class="panel">
         ${stepHtml(
@@ -431,7 +431,7 @@ function onboardingStepsHtml() {
           <div class="addproj" style="margin-top:6px"><input id="ocode" ${fieldTraits("code")} placeholder="e.g. G6ZP-KD2U" style="text-transform:uppercase" />
             <button class="btn primary" id="olookup">Add device</button></div>`,
         )}
-        ${stepHtml(3, "<b>Compare the fingerprint</b> with what the bridge printed, then approve.")}
+        ${stepHtml(3, "<b>Compare the fingerprint</b> with the one your bridge printed. If it matches, approve the device.")}
       </div>
       <div id="opairbox"></div>
       <div class="adderr" id="oerr"></div>

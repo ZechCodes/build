@@ -44,6 +44,10 @@ describe("iPad PWA document metadata", () => {
 });
 
 describe("installable PWA manifest", () => {
+  it("describes the app without a transport-wide encryption claim", () => {
+    expect(manifest.description).toBe("Manage coding agents on your machines with git-native review.");
+  });
+
   it("keeps authentication inside the standalone app", () => {
     expect(manifest).toMatchObject({
       display: "standalone",

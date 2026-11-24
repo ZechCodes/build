@@ -25,7 +25,7 @@ NO_DESCRIPTION = ""
 NO_SCRIPTS = ""
 DEFAULT_FOOTER = (
     '<footer class="rule-top"><div class="content-container footer-bar">'
-    '<span>LOCAL-FIRST // E2E ENCRYPTED</span>'
+    '<span>LOCAL-FIRST</span>'
     '<span>© 2026 BUILD · GETBUILD.ING</span></div></footer>'
 )
 

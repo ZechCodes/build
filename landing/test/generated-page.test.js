@@ -182,6 +182,22 @@ describe("the generated landing document", () => {
     assert.ok(html.includes("Accounts are invite-only while Build is in alpha."));
   });
 
+  it("scopes the landing page's encryption claims to each connection path", () => {
+    const copy = html.replace(/\s+/g, " ");
+    const captions = copy.match(/<ul class="captions">.*?<\/ul>/)?.[0] ?? "";
+    const captionText = captions.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+    assert.ok(captionText.includes("Your agents run on your machine. End-to-end encryption is available with WebRTC."));
+    const faq = copy.match(/<details id="privacy-summary">.*?<\/details>/)?.[0] ?? "";
+    for (const description of [
+      "WebRTC encrypts traffic end to end between your app and bridge, including through TURN",
+      "Hosted HTTPS passes through Cloudflare. Cloudflare can read your code, prompts and terminal traffic on this connection.",
+      "For personal HTTPS, who can read traffic depends on where your TLS or private tunnel ends.",
+    ]) {
+      assert.ok(faq.includes(description), description);
+    }
+    assert.doesNotMatch(copy, /servers cannot read|not your code or prompts/i);
+  });
+
   it("shows the readable proof beside each act", () => {
     for (const proof of [
       "it(&quot;keeps archived items in search&quot;, () =&gt; {",

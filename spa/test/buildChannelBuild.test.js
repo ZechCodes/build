@@ -39,7 +39,7 @@ const productionHashes = {
   "apple-touch-icon.png": "efac7fbdb6c7f230384218d28e73ec21740f654abfd5db482a92a53a6d87938b",
   "icon-192.png": "08da309b8345126043791ef46a297aea89507596818a005a693b34cfc3791ec8",
   "icon-512.png": "b9c23970bfba14dd85de1192dadcf32e2fb93dbffb82cb4c6c429daaa9497928",
-  "manifest.webmanifest": "c525d20e9a3bc92ce656a7f5cf404c0535276c9ee13c6392827699e1411b71dc",
+  "manifest.webmanifest": "e47a11fffb0ab8b8eb3e3a9b85c5d90d195db99a54df3d179e951fd62c3163e5",
 };
 
 describe("channel icons in the built SPA", () => {

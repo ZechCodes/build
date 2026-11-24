@@ -72,10 +72,10 @@ describe("downloadsHtml", () => {
     expect(linkUrls(host)).toContain(DOWNLOADS.checksums_url);
   });
 
-  it("says where the bridge runs and what the servers carry", () => {
+  it("says where the bridge runs without promising one transport for all devices", () => {
     const text = parse(downloadsHtml(DOWNLOADS, "macos-arm64")).textContent;
-    expect(text).toContain("the bridge runs on your machine");
-    expect(text).toContain("Build's servers move ciphertext");
+    expect(text).toContain("The bridge runs on your machine.");
+    expect(text).not.toContain("Build's servers move ciphertext");
   });
 
   it("escapes every label, url and command the api hands it", () => {

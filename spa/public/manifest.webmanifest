@@ -1,7 +1,7 @@
 {
   "name": "Build",
   "short_name": "Build",
-  "description": "tmux for coding agents \u2014 E2E encrypted, git-native review.",
+  "description": "Manage coding agents on your machines with git-native review.",
   "id": "/app/",
   "lang": "en",
   "dir": "ltr",

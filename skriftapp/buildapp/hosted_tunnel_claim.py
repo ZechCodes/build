@@ -15,7 +15,6 @@ from buildapp.models import HostedModeReport
 
 CHALLENGE = "hosted-tunnel-challenge"
 CLAIM = "hosted-tunnel-claim"
-SETUP_REASONS = {"provisioning", "capacity", "collision"}
 
 
 async def _saved_report(db, device):
@@ -76,7 +75,7 @@ async def issue_challenge(db, device_id, proof, issuer, now):
 def _check_challenge(challenge, device, saved, report, claims):
     generation = claims.get("generation")
     if "generation" not in claims or (
-        generation is not None and (type(generation) is not int or not 0 < generation < 2**31)
+        generation is not None and not source.valid_generation(generation)
     ):
         auth.refuse()
     if (challenge.device_id, challenge.user_id) != (device.id, device.owner_user_id):
@@ -148,8 +147,7 @@ async def _release_current(db, device, generation):
     if not source.ready_assignment(row):
         if generation is not None:
             return _setup("assignment_changed")
-        reason = row.setup_reason if row is not None else None
-        return _setup(reason if reason in SETUP_REASONS else "provisioning")
+        return _setup(source.setup_reason(row))
     if generation != row.generation:
         return _setup("assignment_changed")
     version = _assignment_version(row)

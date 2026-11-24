@@ -7,6 +7,7 @@ from litestar.exceptions import PermissionDeniedException
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from buildapp import hosted_tunnel_source
 from buildapp.accounts import AccountPolicyValues, account_policy
 from buildapp.bridge_http_auth import endpoint_is_current, endpoint_matches_pairing
 from buildapp.bridge_http_models import BridgeHttpEndpoint
@@ -80,13 +81,19 @@ async def transport_projection(
     db_session: AsyncSession, device: Device, endpoint: BridgeHttpEndpoint | None, *, policy: AccountPolicyValues,
 ) -> dict:
     current = endpoint if await endpoint_is_current(db_session, endpoint, device) else None
-    source = "webrtc"
+    source, origin, reason, revision = "webrtc", None, None, None
     if current is not None:
-        source = "hosted" if current.assignment_generation is not None else "personal"
+        origin, revision = current.origin, current.assignment_generation
+        source = "hosted" if revision is not None else "personal"
+    else:
+        assignment = await hosted_tunnel_source.current_assignment(db_session, device)
+        if assignment is not None:
+            source, revision = "hosted", assignment.generation
+            reason = hosted_tunnel_source.setup_reason(assignment)
     return {
         "source": source,
         "rtc_allowed": await rtc_allowed(db_session, device, policy=policy),
-        "reason": None,
-        "origin": current.origin if current is not None else None,
-        "assignment_revision": current.assignment_generation if current is not None else None,
+        "reason": reason,
+        "origin": origin,
+        "assignment_revision": revision,
     }

@@ -3,8 +3,10 @@
 import asyncio
 import base64
 import json
+import logging
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+from importlib.util import find_spec
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -39,6 +41,7 @@ SYNTHETIC_SECRET = base64.b64encode(b"synthetic-test-marker-for-a-tunnel").decod
 CHALLENGE = "hosted-tunnel-challenge"
 CLAIM = "hosted-tunnel-claim"
 BINDING = "browser:client"
+GENERATION = 2**51 + 17
 
 
 @dataclass
@@ -47,7 +50,7 @@ class FakeAssignment:
     owner_user_id: UUID
     pairing_created_at: datetime
     authorization_epoch: int
-    generation: int = 1
+    generation: int = GENERATION
     label: str = "a" * 32
     hostname: str = f"b-{'a' * 32}.{ZONE}"
     tunnel_id: UUID | None = field(default_factory=uuid4)
@@ -62,7 +65,8 @@ class FakeAssignments:
     after_materialize = None
 
     async def get_current_assignment(self, db_session, pairing, reports):
-        if self.row and pairing in await reports.hosted_pairings(db_session):
+        identity = source.PairingIdentity.from_device(pairing)
+        if self.row and identity in await reports.hosted_pairings(db_session):
             return self.row
         return None
 
@@ -87,7 +91,7 @@ class FakeAssignments:
 @pytest.fixture()
 def assignments(monkeypatch):
     fake = FakeAssignments()
-    monkeypatch.setenv("HOSTED_TUNNEL_ZONE_NAME", ZONE)
+    monkeypatch.delenv("HOSTED_TUNNEL_ZONE_NAME", raising=False)
     monkeypatch.setattr(source, "get_current_assignment", fake.get_current_assignment)
     monkeypatch.setattr(source, "materialize_credentials", fake.materialize_connector_credentials)
     return fake
@@ -151,9 +155,47 @@ async def test_mode_and_policy_are_derived_only_from_signed_reports(db, assignme
     }
     result = await submit(db, device, key)
     assert result == {
-        "status": "assigned", "hostname": assignments.row.hostname, "generation": 1,
+        "status": "assigned", "hostname": assignments.row.hostname, "generation": GENERATION,
         "credentials": assignments.materialize_connector_credentials(assignments.row),
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["capacity", "collision"])
+async def test_pending_assignment_reason_is_public_without_credentials(db, assignments, reason):
+    _, device, key = await entitled(db)
+    await submit(db, device, key)
+    assignments.assign(
+        device, state="pending", setup_reason=reason, tunnel_id=None, dns_record_id=None,
+    )
+    assert await submit(db, device, key) == {"status": "setup", "reason": reason}
+    assert await transport_projection(db, device, None) == {
+        "source": "hosted", "rtc_allowed": True, "reason": reason, "origin": None,
+        "assignment_revision": GENERATION,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    find_spec("buildapp.hosted_tunnel_assignments") is not None,
+    reason="this check runs against the standalone issuer without the provisioner module",
+)
+async def test_claim_without_assignment_module_stays_in_setup(db):
+    _, device, key = await entitled(db)
+    assert await submit(db, device, key) == {"status": "setup", "reason": "provisioning"}
+    assert await submit(db, device, key, PERSONAL) == {"status": "personal"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hostname", [
+    f"b-{'d' * 32}.other.example",
+    f"b-{'a' * 32}.other.example:8443",
+])
+async def test_assignment_hostname_must_be_canonical_and_match_label(db, assignments, hostname):
+    _, device, key = await entitled(db)
+    await submit(db, device, key)
+    assignments.assign(device, hostname=hostname)
+    assert await submit(db, device, key) == {"status": "setup", "reason": "provisioning"}
 
 
 @pytest.mark.asyncio
@@ -207,8 +249,8 @@ async def test_stale_generation_and_rotation_during_materialization_never_releas
     await submit(db, device, key)
     initial = assignments.assign(device)
     pending = await begin(db, device, key)
-    assert pending["generation"] == 1
-    assignments.row = replace(initial, generation=2)
+    assert pending["generation"] == GENERATION
+    assignments.row = replace(initial, generation=GENERATION + 1)
     result = await claim.claim_assignment(
         db, device.id, proof_for(key, device, pending), ISSUER, utc_now(),
     )
@@ -216,7 +258,7 @@ async def test_stale_generation_and_rotation_during_materialization_never_releas
     await db.commit()
 
     def rotate():
-        assignments.row.generation = 3
+        assignments.row.generation = GENERATION + 2
 
     assignments.after_materialize = rotate
     assert await submit(db, device, key) == {"status": "setup", "reason": "assignment_changed"}
@@ -336,12 +378,12 @@ async def setup_hosted_endpoint(db, assignments):
     personal_grant = await discovery(db, user, device, key, ORIGIN, "epoch-one")
     await db.commit()
     with pytest.raises(ClientException) as conflict:
-        await register(db, device, key, origin, "hosted", None, generation=1)
+        await register(db, device, key, origin, "hosted", None, generation=GENERATION)
     assert conflict.value.status_code == 409
     await reset(db, device)
-    await register(db, device, key, origin, "starting", "epoch-one", generation=1, enabled=False)
+    await register(db, device, key, origin, "starting", "epoch-one", generation=GENERATION, enabled=False)
     assert not device.hosted_ready_once
-    await register(db, device, key, origin, "hosted", "starting", generation=1)
+    await register(db, device, key, origin, "hosted", "starting", generation=GENERATION)
     assert device.hosted_ready_once
     assert await introspect(db, device, key, personal_grant) == {"active": False}
     minted = await discovery(db, user, device, key, origin, "hosted")
@@ -356,9 +398,9 @@ async def test_obsolete_hosted_authority_refuses_all_paths(db, assignments):
     endpoint = await auth._endpoint(db, device.id)
     assert await transport_projection(db, device, endpoint) == {
         "source": "hosted", "rtc_allowed": True, "reason": None, "origin": origin,
-        "assignment_revision": 1,
+        "assignment_revision": GENERATION,
     }
-    assignments.row = replace(assignments.row, generation=2)
+    assignments.row = replace(assignments.row, generation=GENERATION + 1)
     assert await introspect(db, device, key, minted) == {"active": False}
     assert (await transport_projection(db, device, endpoint))["origin"] is None
     await db.commit()
@@ -371,13 +413,13 @@ async def test_obsolete_hosted_authority_refuses_all_paths(db, assignments):
     with pytest.raises(NotAuthorizedException):
         await auth.create_discovery(db, user, BINDING, origin, ISSUER, utc_now(), device_id=device.id)
     await reset(db, device)
-    for generation in (None, 1):
+    for generation in (None, GENERATION):
         with pytest.raises(NotAuthorizedException):
             await register(db, device, key, origin, "late", "hosted", generation=generation)
         await reset(db, device)
     assignments.row = None
     with pytest.raises(NotAuthorizedException):
-        await register(db, device, key, origin, "late", "hosted", generation=1)
+        await register(db, device, key, origin, "late", "hosted", generation=GENERATION)
 
 
 @pytest.mark.asyncio
@@ -395,7 +437,7 @@ async def test_personal_switch_withdraws_hosted_authority_and_survives_stale_cle
     await register(db, device, key, ORIGIN, "personal", "hosted")
     fresh = await discovery(db, user, device, key, ORIGIN, "personal")
     await db.commit()
-    await auth.withdraw_hosted_registration(db, device.id, origin, 1, utc_now())
+    await auth.withdraw_hosted_registration(db, device.id, origin, GENERATION, utc_now())
     await db.commit()
     assert (await auth._endpoint(db, device.id)).origin == ORIGIN
     assert (await introspect(db, device, key, fresh))["active"]
@@ -417,6 +459,10 @@ def test_claim_http_cache_bounds_and_secret_redaction(monkeypatch, assignments, 
             return device, key
 
     with TestClient(app=app, raise_server_exceptions=False) as client:
+        # Litestar configures a non-propagating app logger, so capture its
+        # records directly after startup.
+        controller_logger = logging.getLogger(BridgeHttpController.__module__)
+        monkeypatch.setattr(controller_logger, "handlers", [caplog.handler])
         with client.portal() as portal:
             device, key = portal.call(seed)
         path = f"/api/devices/{device.id}/hosted-tunnel"
@@ -449,6 +495,9 @@ def test_claim_http_cache_bounds_and_secret_redaction(monkeypatch, assignments, 
         assert failed.headers["cache-control"] == "no-store"
         assert SYNTHETIC_SECRET not in failed.text
     assert SYNTHETIC_SECRET not in caplog.text
+    assert [(record.args, record.exc_info) for record in caplog.records if record.name == controller_logger.name] == [
+        ((path, "RuntimeError"), None),
+    ]
 
 
 def test_signed_fixture_has_expected_proof_fields():

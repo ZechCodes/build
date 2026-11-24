@@ -139,14 +139,14 @@
           "challenge_id": "00000000-0000-0000-0000-000000000008",
           "nonce": "DAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw",
           "expires_at": 1795554300,
-          "generation": 4
+          "generation": 2251799813685265
         }
       },
       "request": {
         "method": "POST",
         "path": "/api/devices/34fbced7-beb6-4ade-a8ba-ca0e7f99351a/hosted-tunnel",
         "body": {
-          "proof": "eyJhbGciOiJFZERTQSIsInR5cCI6ImJ1aWxkLWh0dHAtaG9zdGVkLXR1bm5lbC1jbGFpbStqd3QifQ.eyJpc3MiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJzdWIiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJhdWQiOiJodHRwczovL2lzc3Vlci5leGFtcGxlL2FwaS9kZXZpY2VzLzM0ZmJjZWQ3LWJlYjYtNGFkZS1hOGJhLWNhMGU3Zjk5MzUxYS9ob3N0ZWQtdHVubmVsIiwiaWF0IjoxNzk1NTU0MjQxLCJleHAiOjE3OTU1NTQyNzEsImp0aSI6IjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwOSIsIm1vZGUiOiJob3N0ZWQiLCJob3N0ZWRfY2FwYWJsZSI6dHJ1ZSwiY2hhbGxlbmdlX2lkIjoiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDA4Iiwibm9uY2UiOiJEQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3IiwiZ2VuZXJhdGlvbiI6NH0.ZXaiXsehkkkDX8cMNk22vOPrbnQggJ4NGfL2XzZ06DMQs-IG1qdUGtEuS_KzfZTMjkOx-ZxM_rJqvyrUdOjDBQ"
+          "proof": "eyJhbGciOiJFZERTQSIsInR5cCI6ImJ1aWxkLWh0dHAtaG9zdGVkLXR1bm5lbC1jbGFpbStqd3QifQ.eyJpc3MiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJzdWIiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJhdWQiOiJodHRwczovL2lzc3Vlci5leGFtcGxlL2FwaS9kZXZpY2VzLzM0ZmJjZWQ3LWJlYjYtNGFkZS1hOGJhLWNhMGU3Zjk5MzUxYS9ob3N0ZWQtdHVubmVsIiwiaWF0IjoxNzk1NTU0MjQxLCJleHAiOjE3OTU1NTQyNzEsImp0aSI6IjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwOSIsIm1vZGUiOiJob3N0ZWQiLCJob3N0ZWRfY2FwYWJsZSI6dHJ1ZSwiY2hhbGxlbmdlX2lkIjoiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDA4Iiwibm9uY2UiOiJEQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3IiwiZ2VuZXJhdGlvbiI6MjI1MTc5OTgxMzY4NTI2NX0.wn4cfUefxheFE_D0GLEgeLdysYvNt95YcUVmko8hcwY2UgDeeYoUJNN_TQ3pcraadJu5SKUFQKTyKGuoA_QqBw"
         }
       },
       "proof_claims": {
@@ -160,14 +160,14 @@
         "hosted_capable": true,
         "challenge_id": "00000000-0000-0000-0000-000000000008",
         "nonce": "DAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw",
-        "generation": 4
+        "generation": 2251799813685265
       },
       "response": {
         "status_code": 200,
         "body": {
           "status": "assigned",
           "hostname": "b-4071dc1c1a3d412b8a47cf8bfaf0bf51.hosted.example",
-          "generation": 4,
+          "generation": 2251799813685265,
           "credentials": {
             "AccountTag": "synthetic-fixture-account",
             "TunnelID": "04e99b3f-60bf-4557-aaef-cfb9820aaa29",

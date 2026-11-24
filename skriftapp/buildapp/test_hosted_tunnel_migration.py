@@ -12,6 +12,27 @@ from skrift.db.base import Base
 from buildapp.migration_test_support import load_migration, migration_path
 from buildapp.models import HostedModeReport
 
+PERSONAL_ORIGIN = "https://personal.example"
+HOSTED_ORIGIN = "https://b-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.hosted.example"
+
+
+def insert_registration(db, account_id, device_id, origin):
+    db.exec_driver_sql("INSERT INTO devices (id, approved) VALUES (?, 1)", (device_id,))
+    db.exec_driver_sql(
+        "INSERT INTO bridge_http_endpoints "
+        "(id, device_id, user_id, origin, identity_fingerprint, endpoint_epoch, "
+        "authorization_epoch, enabled, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, 'fixture', 'epoch', 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        (uuid4().bytes, device_id, account_id, origin),
+    )
+    db.exec_driver_sql(
+        "INSERT INTO bridge_http_families (id, user_id, device_id, issuer, client_binding, "
+        "origin, endpoint_epoch, authorization_epoch, scope, created_at, updated_at) "
+        "VALUES (?, ?, ?, 'https://issuer.example', 'browser:test', ?, 'epoch', 0, "
+        "'bridge:read', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        (uuid4().bytes, account_id, device_id, origin),
+    )
+
 
 @pytest.mark.parametrize("target_metadata", [None, Base.metadata], ids=["standalone", "skrift"])
 def test_hosted_mode_upgrade_and_downgrade(target_metadata):
@@ -20,7 +41,7 @@ def test_hosted_mode_upgrade_and_downgrade(target_metadata):
     hosted = load_migration(migration_path("20261124_203000_4ac3e7d238b1_hosted_mode_report.py"))
     assert hosted.down_revision == policy.revision
     engine = sa.create_engine("sqlite://")
-    account_id, device_id, endpoint_id = (uuid4().bytes for _ in range(3))
+    account_id, personal_id, hosted_id = (uuid4().bytes for _ in range(3))
     with engine.begin() as db:
         db.exec_driver_sql("PRAGMA foreign_keys=ON")
         fixture = sa.MetaData()
@@ -31,29 +52,34 @@ def test_hosted_mode_upgrade_and_downgrade(target_metadata):
         )
         fixture.create_all(db)
         db.exec_driver_sql("INSERT INTO users VALUES (?)", (account_id,))
-        db.exec_driver_sql("INSERT INTO devices VALUES (?, 1)", (device_id,))
         with Operations.context(MigrationContext.configure(db, opts={"target_metadata": target_metadata})):
             authority.upgrade()
             policy.upgrade()
-            db.exec_driver_sql(
-                "INSERT INTO bridge_http_endpoints "
-                "(id, device_id, user_id, origin, identity_fingerprint, endpoint_epoch, "
-                "authorization_epoch, enabled, created_at, updated_at) "
-                "VALUES (?, ?, ?, 'https://personal.example', 'fixture', 'epoch', 0, 1, "
-                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
-                (endpoint_id, device_id, account_id),
-            )
+            insert_registration(db, account_id, personal_id, PERSONAL_ORIGIN)
             hosted.upgrade()
             inspector = sa.inspect(db)
+            generation_type = next(
+                c["type"] for c in inspector.get_columns("bridge_http_endpoints")
+                if c["name"] == "assignment_generation"
+            )
+            assert isinstance(generation_type, sa.BigInteger)
             assert {
                 c["name"] for c in inspector.get_columns("hosted_mode_reports")
             } == set(HostedModeReport.__table__.columns.keys())
             assert db.exec_driver_sql(
                 "SELECT origin, enabled, assignment_generation FROM bridge_http_endpoints"
-            ).one() == ("https://personal.example", 1, None)
+            ).one() == (PERSONAL_ORIGIN, 1, None)
+            insert_registration(db, account_id, hosted_id, HOSTED_ORIGIN)
+            db.exec_driver_sql(
+                "UPDATE bridge_http_endpoints SET assignment_generation = ? WHERE device_id = ?",
+                (2**51 + 17, hosted_id),
+            )
             hosted.downgrade()
         assert "hosted_mode_reports" not in sa.inspect(db).get_table_names()
-        assert db.exec_driver_sql(
+        assert dict(db.exec_driver_sql(
             "SELECT origin, enabled FROM bridge_http_endpoints"
-        ).one() == ("https://personal.example", 1)
+        ).all()) == {PERSONAL_ORIGIN: 1, HOSTED_ORIGIN: 0}
+        assert dict(db.exec_driver_sql(
+            "SELECT origin, revoked_at IS NOT NULL FROM bridge_http_families"
+        ).all()) == {PERSONAL_ORIGIN: 0, HOSTED_ORIGIN: 1}
     engine.dispose()

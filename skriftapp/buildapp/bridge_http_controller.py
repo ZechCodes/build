@@ -1,6 +1,7 @@
 """Fixed hosted routes; no URL fetch/proxy and no raw-token path parameters."""
 
 import json
+import logging
 from contextlib import suppress
 from uuid import UUID
 
@@ -51,6 +52,7 @@ HOSTED_CLAIM_ERRORS = {
     413: "request_too_large",
     429: "challenge_budget_exhausted",
 }
+logger = logging.getLogger(__name__)
 
 
 async def hosted_claim_request(operation, device_id, request, db, issuer, success_status):
@@ -63,10 +65,8 @@ async def hosted_claim_request(operation, device_id, request, db, issuer, succes
     except HTTPException as error:
         if error.status_code in HOSTED_CLAIM_ERRORS:
             status = error.status_code
-    except Exception:
-        # Materialization and database failures must never send or log their
-        # exception details.
-        pass
+    except Exception as error:
+        logger.warning("Hosted tunnel request failed on %s (%s)", request.url.path, type(error).__name__)
     with suppress(Exception):
         await db.rollback()
     return response({"error": HOSTED_CLAIM_ERRORS.get(status, "claim_unavailable")}, status)

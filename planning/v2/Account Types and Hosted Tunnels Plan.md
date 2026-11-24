@@ -51,6 +51,8 @@ Send both requests to the paired issuer over verified HTTPS with redirect follow
 
 Both proofs carry the canonical device UUID as `iss` and `sub`, the canonical issuer HTTPS origin plus the full request path as `aud`, integer Unix timestamps `iat` and `exp` at most 30 seconds apart, and a fresh random `jti` of 16–128 ASCII letters, digits, underscores or hyphens. The issuer allows five seconds of timestamp skew. Proofs and challenges are single use. A challenge binds its generation and report to the pairing that issued it. After a mode or capability change is accepted, outstanding challenges for the preceding report revision are refused.
 
+A non-null generation fits the exact JSON integer range, 1 through 2⁵³−1. The provisioner starts generations in the 52-bit range, so the bridge should store them in a 64-bit integer.
+
 `mode` is `personal` whenever a local personal origin is configured, including invalid or disabled settings. Use `hosted` to request hosted setup when there is no personal origin, or `off` to withdraw the request. `hosted_capable` is a JSON boolean. The claim commits the signed report. A personal report withdraws any hosted registration and triggers the provisioner to remove the previous assignment and resources.
 
 | 200 result | Meaning |
@@ -63,6 +65,8 @@ Both proofs carry the canonical device UUID as `iss` and `sub`, the canonical is
 Application responses carry `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. Error bodies contain only `error`, with 400 `invalid_request`, 401 `device_proof_refused` (including stale pairing, invalid/expired proof or challenge, and replay), 413 `request_too_large`, 429 `challenge_budget_exhausted`, or 503 `claim_unavailable`. Retry a lost response or a retryable setup result with backoff, a new challenge request and fresh proofs. Start the exchange on boot or a mode change. A changed `entitlement_revision` integer in a successful `POST /api/devices/heartbeat` response also triggers a signed recheck. Compare it for inequality and treat it as a hint only.
 
 For a hosted endpoint, sign `assignment_generation` in the existing endpoint registration proof and use the exact `https://<hostname>` from the assignment. Omit that field for personal registrations. A bridge can register with `enabled: false` before starting the connector. Once the connector and listener are ready, send an enabled registration at a fresh endpoint epoch with the disabled registration as the predecessor. The first matching enabled registration latches `hosted_ready_once` on the pairing.
+
+The issuer uses the assignment row’s canonical hostname and matching label. The host-label form `b-<32 lowercase hex digits>` stays reserved after removal. Only the provisioner reads `HOSTED_TUNNEL_ZONE_NAME`. The issuer materializer uses `HOSTED_TUNNEL_ACCOUNT_ID` and the mounted key file named by `HOSTED_TUNNEL_WRAPPING_KEY_FILE`. The provisioner loads `HOSTED_TUNNEL_MODE_SOURCE=buildapp.hosted_tunnel_source:hosted_mode_source` during startup.
 
 The [signed claim fixtures](fixtures/hosted-tunnel-claim.json) contain both requests and responses for personal, provisioning and assigned results, with a test key and synthetic connector credential. Their timestamps are fixed for offline verification.
 

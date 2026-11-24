@@ -12,9 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp.accounts import account_policy
+from buildapp.bridge_http_proofs import canonical_origin
 from buildapp.models import Device, HostedModeReport
 
 try:
+    from buildapp.hosted_tunnel_assignments import HostedModeSource as _HostedModeSource
     from buildapp.hosted_tunnel_assignments import (
         PairingIdentity,
         get_current_assignment,
@@ -33,15 +35,20 @@ except ModuleNotFoundError as error:
 
         @classmethod
         def from_device(cls, device):
-            return cls(
-                device.id, device.owner_user_id, device.created_at, device.authorization_epoch,
-            )
+            if device.approved and device.owner_user_id is not None:
+                return cls(
+                    device.id, device.owner_user_id, device.created_at, device.authorization_epoch,
+                )
+            return None
 
     async def get_current_assignment(db_session, pairing, reports):
         return None
 
     async def notify_hosted_tunnels_changed(db_session):
         pass
+
+    class _HostedModeSource(Protocol):
+        async def hosted_pairings(self, db_session: AsyncSession) -> Collection[PairingIdentity]: ...
 
 
 class Assignment(Protocol):
@@ -69,7 +76,7 @@ class MaterializeCredentials(Protocol):
     def __call__(self, assignment: Assignment, /) -> ConnectorCredentials: ...
 
 
-class HostedModeSource:
+class SqlHostedModeSource(_HostedModeSource):
     async def hosted_pairings(self, db_session: AsyncSession) -> Collection[PairingIdentity]:
         """Return the complete current pairing set or propagate the read failure."""
         rows = await db_session.execute(
@@ -92,8 +99,18 @@ class HostedModeSource:
         return {PairingIdentity(*row) for row in rows}
 
 
-hosted_mode_source = HostedModeSource()
+hosted_mode_source = SqlHostedModeSource()
 RESERVED_LABEL = re.compile(r"b-[0-9a-f]{32}")
+SETUP_REASONS = {"provisioning", "capacity", "collision"}
+
+
+def valid_generation(generation) -> bool:
+    return type(generation) is int and 0 < generation < 2**53
+
+
+def setup_reason(row: Assignment | None) -> str:
+    reason = row.setup_reason if row is not None else None
+    return reason if reason in SETUP_REASONS else "provisioning"
 
 
 async def has_tunnel_access(db, device):
@@ -101,39 +118,46 @@ async def has_tunnel_access(db, device):
 
 
 async def current_assignment(db, device) -> Assignment | None:
-    if not await has_tunnel_access(db, device):
-        return None
     pairing = PairingIdentity.from_device(device)
-    row = await get_current_assignment(db, pairing, hosted_mode_source)
-    if row is None or pairing != PairingIdentity(
-        row.device_id, row.owner_user_id, row.pairing_created_at, row.authorization_epoch,
+    if pairing is None or not await has_tunnel_access(db, device):
+        return None
+    row = await get_current_assignment(db, device, hosted_mode_source)
+    if (
+        row is None
+        or pairing != PairingIdentity(
+            row.device_id, row.owner_user_id, row.pairing_created_at, row.authorization_epoch,
+        )
+        or not _valid_assignment_address(row)
     ):
         return None
     return row
 
 
-def bridge_zone() -> str:
-    return os.environ.get("HOSTED_TUNNEL_ZONE_NAME", "").strip().lower().removesuffix(".")
-
-
 def is_hosted_origin(origin: str) -> bool:
     label, _, domain = (urlsplit(origin).hostname or "").partition(".")
-    zone = bridge_zone()
-    # Without the zone, reserve the generated label shape so loss of issuer
-    # configuration cannot turn a hosted address into a personal registration.
-    return bool(domain and RESERVED_LABEL.fullmatch(label) and (not zone or domain == zone))
+    # Reserve the generated label even after the provisioner deletes its row.
+    return bool(domain and RESERVED_LABEL.fullmatch(label))
+
+
+def _valid_assignment_address(row: Assignment) -> bool:
+    label, _, domain = row.hostname.partition(".")
+    if not domain or label != f"b-{row.label}" or not RESERVED_LABEL.fullmatch(label):
+        return False
+    origin = f"https://{row.hostname}"
+    try:
+        return (
+            canonical_origin(origin) == origin
+            and urlsplit(origin).hostname == row.hostname
+            and valid_generation(row.generation)
+        )
+    except ValueError:
+        return False
 
 
 def ready_assignment(row: Assignment | None) -> bool:
-    if row is None or row.state != "ready" or not row.tunnel_id or not row.dns_record_id:
-        return False
-    zone = bridge_zone()
     return (
-        bool(zone)
-        and RESERVED_LABEL.fullmatch(f"b-{row.label}") is not None
-        and row.hostname == f"b-{row.label}.{zone}"
-        and type(row.generation) is int
-        and 0 < row.generation <= 2**31 - 1
+        row is not None and row.state == "ready"
+        and row.tunnel_id is not None and bool(row.dns_record_id)
     )
 
 

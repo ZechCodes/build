@@ -415,7 +415,7 @@ def endpoint_matches_pairing(endpoint: BridgeHttpEndpoint, device: Device) -> bo
 
 
 async def _current_hosted_origin(db, device, origin, generation):
-    if type(generation) is not int or not 0 < generation < 2**31:
+    if not hosted_tunnel_source.valid_generation(generation):
         return False
     row = await hosted_tunnel_source.current_assignment(db, device)
     return (

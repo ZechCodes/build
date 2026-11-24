@@ -1,15 +1,17 @@
 """Fixed hosted routes; no URL fetch/proxy and no raw-token path parameters."""
 
 import json
+from contextlib import suppress
 from uuid import UUID
 
 from litestar import Controller, Request, delete, get, post
 from litestar.di import Provide
-from litestar.exceptions import ClientException
+from litestar.exceptions import ClientException, HTTPException
 from litestar.response import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import bridge_http_auth as auth
+from buildapp import hosted_tunnel_claim
 from buildapp.clock import utc_now
 from buildapp.desktop_auth import bridge_http_client_binding, build_auth_guard
 from buildapp.email_message import provide_public_base_url
@@ -43,6 +45,33 @@ def response(payload, status_code=201):
     )
 
 
+HOSTED_CLAIM_ERRORS = {
+    400: "invalid_request",
+    401: "device_proof_refused",
+    413: "request_too_large",
+    429: "challenge_budget_exhausted",
+}
+
+
+async def hosted_claim_request(operation, device_id, request, db, issuer, success_status):
+    status = 503
+    try:
+        body = await fields(request, ("proof",))
+        payload = await operation(db, device_id, body["proof"], issuer, utc_now())
+        await db.commit()
+        return response(payload, success_status)
+    except HTTPException as error:
+        if error.status_code in HOSTED_CLAIM_ERRORS:
+            status = error.status_code
+    except Exception:
+        # Materialization and database failures must never send or log their
+        # exception details.
+        pass
+    with suppress(Exception):
+        await db.rollback()
+    return response({"error": HOSTED_CLAIM_ERRORS.get(status, "claim_unavailable")}, status)
+
+
 async def discovery_challenge(request, db_session, public_base_url, device_id=None):
     body = await fields(request, ("origin",), 2200)
     try:
@@ -66,6 +95,22 @@ class BridgeHttpController(Controller):
     dependencies = {
         "public_base_url": Provide(provide_public_base_url, sync_to_thread=False)
     }
+
+    @post("/api/devices/{device_id:uuid}/hosted-tunnel/challenge")
+    async def hosted_challenge(
+        self, device_id: UUID, request: Request, db_session: AsyncSession, public_base_url: str,
+    ) -> Response:
+        return await hosted_claim_request(
+            hosted_tunnel_claim.issue_challenge, device_id, request, db_session, public_base_url, 201,
+        )
+
+    @post("/api/devices/{device_id:uuid}/hosted-tunnel", status_code=200)
+    async def hosted_claim(
+        self, device_id: UUID, request: Request, db_session: AsyncSession, public_base_url: str,
+    ) -> Response:
+        return await hosted_claim_request(
+            hosted_tunnel_claim.claim_assignment, device_id, request, db_session, public_base_url, 200,
+        )
 
     @post("/api/devices/{device_id:uuid}/http-endpoint/challenge")
     async def registration_challenge(

@@ -8,7 +8,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp.accounts import AccountPolicyValues, account_policy
-from buildapp.bridge_http_auth import endpoint_matches_pairing, valid_endpoint
+from buildapp.bridge_http_auth import endpoint_is_current, endpoint_matches_pairing
 from buildapp.bridge_http_models import BridgeHttpEndpoint
 from buildapp.models import Device
 
@@ -79,11 +79,14 @@ async def require_rtc_mint(
 async def transport_projection(
     db_session: AsyncSession, device: Device, endpoint: BridgeHttpEndpoint | None, *, policy: AccountPolicyValues,
 ) -> dict:
-    origin = endpoint.origin if endpoint is not None and valid_endpoint(endpoint, device) else None
+    current = endpoint if await endpoint_is_current(db_session, endpoint, device) else None
+    source = "webrtc"
+    if current is not None:
+        source = "hosted" if current.assignment_generation is not None else "personal"
     return {
-        "source": "personal" if origin is not None else "webrtc",
+        "source": source,
         "rtc_allowed": await rtc_allowed(db_session, device, policy=policy),
         "reason": None,
-        "origin": origin,
-        "assignment_revision": None,
+        "origin": current.origin if current is not None else None,
+        "assignment_revision": current.assignment_generation if current is not None else None,
     }

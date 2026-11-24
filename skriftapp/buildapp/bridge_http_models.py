@@ -21,6 +21,7 @@ class BridgeHttpEndpoint(Base):
     identity_fingerprint: Mapped[str] = mapped_column(String(64))
     endpoint_epoch: Mapped[str] = mapped_column(String(128))
     authorization_epoch: Mapped[int] = mapped_column(Integer)
+    assignment_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean)
 
 

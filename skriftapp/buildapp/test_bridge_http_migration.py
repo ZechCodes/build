@@ -49,9 +49,10 @@ def test_migration_adds_constraints_indexes_and_preserves_legacy_approval():
             models.BridgeHttpClient,
         ):
             table = model.__table__
-            assert {c["name"] for c in inspector.get_columns(table.name)} == set(
-                table.columns.keys()
-            )
+            expected_columns = set(table.columns.keys())
+            if model is models.BridgeHttpEndpoint:
+                expected_columns.remove("assignment_generation")  # added by the hosted-mode migration
+            assert {c["name"] for c in inspector.get_columns(table.name)} == expected_columns
             expected = {tuple(c.name for c in index.columns) for index in table.indexes}
             assert {
                 tuple(i["column_names"]) for i in inspector.get_indexes(table.name)

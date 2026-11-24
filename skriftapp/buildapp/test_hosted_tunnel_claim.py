@@ -2,12 +2,15 @@
 
 import asyncio
 import base64
+import json
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from litestar.di import Provide
 from litestar.exceptions import ClientException, NotAuthorizedException
 from litestar.testing import TestClient
@@ -25,6 +28,7 @@ from buildapp.db_test_support import (
     file_session_maker,
     in_memory_session_maker,
 )
+from buildapp.device_transport import transport_projection
 from buildapp.models import AccountPolicy, Device
 from buildapp.test_bridge_http_auth import ISSUER, ORIGIN, paired, registered, signed
 
@@ -166,17 +170,36 @@ async def test_replay_expiry_and_wrong_audience_or_purpose_are_refused(db, assig
         (signed(key, device, "registration"), ISSUER, utc_now()),
         (raw, "https://foreign.example", utc_now()),
         (raw, ISSUER, utc_now() + timedelta(seconds=36)),
+        (proof_for(key, device, {**pending, "nonce": "b" * 43}), ISSUER, utc_now()),
+        (proof_for(key, device, pending, PERSONAL), ISSUER, utc_now()),
     ):
         with pytest.raises(NotAuthorizedException):
             await claim.claim_assignment(db, device.id, invalid, issuer, now)
         await reset(db, device)
     expected = await claim.claim_assignment(db, device.id, raw, ISSUER, utc_now())
-    assert expected == {"status": "setup", "reason": "pending"}
+    assert expected == {"status": "setup", "reason": "provisioning"}
     await db.commit()
     for repeated in (raw, proof_for(key, device, pending)):
         with pytest.raises(NotAuthorizedException):
             await claim.claim_assignment(db, device.id, repeated, ISSUER, utc_now())
         await reset(db, device)
+
+
+@pytest.mark.asyncio
+async def test_fresh_proof_cannot_spend_an_expired_challenge(db, assignments):
+    _, device, key = await entitled(db)
+    pending = await begin(db, device, key)
+    # The handler time is the challenge deadline. Sign a fresh proof for that
+    # instant so the failure specifically exercises the SQL expiry predicate.
+    now = datetime.fromtimestamp(pending["expires_at"], utc_now().tzinfo)
+    raw = proof_for(key, device, pending)
+    claims = jwt.decode(raw, options={"verify_signature": False})
+    raw = jwt.encode(
+        {**claims, "iat": int(now.timestamp()), "exp": int(now.timestamp()) + 30},
+        key, algorithm="EdDSA", headers={"typ": auth.TYPES[CLAIM]},
+    )
+    with pytest.raises(NotAuthorizedException):
+        await claim.claim_assignment(db, device.id, raw, ISSUER, now)
 
 
 @pytest.mark.asyncio
@@ -203,13 +226,13 @@ async def test_stale_generation_and_rotation_during_materialization_never_releas
 @pytest.mark.asyncio
 async def test_cross_account_assignment_and_stale_owner_are_refused(db, assignments):
     _, device, key = await entitled(db)
-    other, other_device, other_key = await paired(db, "other@example.com")
+    other, _, other_key = await paired(db, "other@example.com")
     await submit(db, device, key)
     # The issuer validates assignment identity even if a source returns a foreign row.
-    assignments.assign(other_device)
+    assignments.row = replace(assignments.assign(device), owner_user_id=other)
     pending = await begin(db, device, key)
     assert pending["generation"] is None
-    assert await submit(db, device, key) == {"status": "setup", "reason": "pending"}
+    assert await submit(db, device, key) == {"status": "setup", "reason": "provisioning"}
     with pytest.raises(NotAuthorizedException):
         await claim.claim_assignment(
             db, device.id, proof_for(other_key, device, pending), ISSUER, utc_now(),
@@ -331,14 +354,23 @@ async def setup_hosted_endpoint(db, assignments):
 async def test_obsolete_hosted_authority_refuses_all_paths(db, assignments):
     user, device, key, origin, minted = await setup_hosted_endpoint(db, assignments)
     assert (await introspect(db, device, key, minted))["active"]
+    endpoint = await auth._endpoint(db, device.id)
+    assert await transport_projection(db, device, endpoint) == {
+        "source": "hosted", "rtc_allowed": True, "reason": None, "origin": origin,
+        "assignment_revision": 1,
+    }
     assignments.row = replace(assignments.row, generation=2)
     assert await introspect(db, device, key, minted) == {"active": False}
+    assert (await transport_projection(db, device, endpoint))["origin"] is None
     await db.commit()
     with pytest.raises(NotAuthorizedException):
         await auth.renew(db, user, BINDING, device.id, minted["family_id"], "hosted", ISSUER, utc_now())
     await reset(db, device)
     with pytest.raises(NotAuthorizedException):
         await discovery(db, user, device, key, origin, "hosted")
+    await reset(db, device)
+    with pytest.raises(NotAuthorizedException):
+        await auth.create_discovery(db, user, BINDING, origin, ISSUER, utc_now(), device_id=device.id)
     await reset(db, device)
     for generation in (None, 1):
         with pytest.raises(NotAuthorizedException):
@@ -421,18 +453,17 @@ def test_claim_http_cache_bounds_and_secret_redaction(monkeypatch, assignments, 
 
 
 def test_signed_fixture_has_expected_proof_fields():
-    # The committed cross-language fixture is checked independently of a clock.
-    from pathlib import Path
-    import json
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
     fixture = json.loads((Path(__file__).parents[2] / "planning/v2/fixtures/hosted-tunnel-claim.json").read_text())
     key = Ed25519PublicKey.from_public_bytes(base64.b64decode(fixture["public_key_b64"]))
     for example in fixture["cases"]:
-        proof = example["request"]["body"]["proof"]
-        assert jwt.get_unverified_header(proof) == {"alg": "EdDSA", "typ": auth.TYPES[CLAIM]}
-        payload = jwt.decode(
-            proof, key, algorithms=["EdDSA"], audience=fixture["issuer"] + example["request"]["path"],
-            options={"verify_exp": False, "verify_iat": False},
-        )
-        assert payload == example["proof_claims"]
+        for phase, purpose in (("challenge_", CHALLENGE), ("", CLAIM)):
+            request = example[phase + "request"]
+            proof = request["body"]["proof"]
+            assert jwt.get_unverified_header(proof) == {"alg": "EdDSA", "typ": auth.TYPES[purpose]}
+            payload = jwt.decode(
+                proof, key, algorithms=["EdDSA"], audience=fixture["issuer"] + request["path"],
+                options={"verify_exp": False, "verify_iat": False},
+            )
+            assert payload == example[phase + "proof_claims"]
+        for field_name in ("challenge_id", "nonce", "generation"):
+            assert example["proof_claims"][field_name] == example["challenge_response"]["body"][field_name]

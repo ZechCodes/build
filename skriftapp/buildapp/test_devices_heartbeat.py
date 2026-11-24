@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from buildapp import desktop_auth, devices_controller, presence
 from buildapp.db_test_support import add_member, asgi_app, in_memory_session_maker
 from buildapp.devices_controller import HEARTBEAT_ROUTE_PATH, DevicesController
-from buildapp.models import Device
+from buildapp.models import AccountPolicy, Device
 
 USER = uuid4()
 
@@ -134,11 +134,36 @@ def test_a_signed_heartbeat_stamps_last_seen_and_writes_nothing_else(client):
     response = client.post(HEARTBEAT_ROUTE_PATH, json=bridge.heartbeat())
 
     assert response.status_code == HTTP_200_OK, response.text
-    assert response.json() == {"ok": True}
+    assert response.json() == {"ok": True, "entitlement_revision": 0}
     device = stored(client, bridge.device.id)
     assert device.last_seen_at is not None
     (listed,) = client.get("/api/devices").json()["devices"]
     assert listed["status"] == "online"
+
+
+def test_entitlement_hint_changes_on_promotion_and_removal(client):
+    bridge = paired_bridge(client)
+    timestamp = int(datetime.now(timezone.utc).timestamp()) - 2
+
+    async def policy(enabled):
+        async with client.app.state.make_session() as session:
+            await session.merge(AccountPolicy(id=USER, tunnel_access=enabled, promotion_revision=1))
+            await session.commit()
+
+    def beat(offset):
+        response = client.post(HEARTBEAT_ROUTE_PATH, json=bridge.heartbeat(timestamp + offset))
+        assert response.status_code == HTTP_200_OK
+        assert set(response.json()) == {"ok", "entitlement_revision"}
+        return response.json()["entitlement_revision"]
+
+    before = beat(0)
+    with client.portal() as portal:
+        portal.call(policy, True)
+    granted = beat(1)
+    with client.portal() as portal:
+        portal.call(policy, False)
+    withdrawn = beat(2)
+    assert len({before, granted, withdrawn}) == 3
 
 
 def test_a_heartbeat_makes_the_listing_report_online(client):

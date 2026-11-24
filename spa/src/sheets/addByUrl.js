@@ -91,6 +91,7 @@ export function openAddByUrl(onDone = () => {}, { challengeId, services = defaul
 // server supplies their canonical origin; no token or origin is taken from URL.
 export function resumeAddByUrl(onDone) {
   const url = new URL(location.href);
+  if (url.searchParams.has("bridge_recovery")) return;
   const challengeId = url.searchParams.get("bridge_discovery");
   if (!challengeId) return;
   url.searchParams.delete("bridge_discovery");

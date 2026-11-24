@@ -144,7 +144,7 @@ const metadataUses = {
     ["build.cacheSync","const SYNC_LOCK = [\"build.cacheSync\"] ; export const","f2160711e2b162e0f91fe453ac136176a51044a2a1195c1aa76e865b26b57f6e"],
   ],
   "core/changeEvents.js": [
-    ["compaction.changed","kinds : [ [\"compaction.changed\"] ] , mode","c27346939208820b8d95aac7199bdd6db22004a95ed5f68d962b5f368551d091"],
+    ["compaction.changed","kinds : [ [\"compaction.changed\"] ] , mode","d80859e50787b38542f8ff59bc31fcc158cf0700427d6885eae12a91c14291f1"],
     ["files.hints",". includes ( [\"files.hints\"] ) ) ;","696d73df4befe57fd7f675bf2f6987edd81138ce7ab50f6fc79994f47cc2f3ba"],
     ["writes.confirmed","( [ [ [\"writes.confirmed\"] , dispatchWriteConfirmation ]","06d4c42e09cfd3e624d0ea7aaa97f7753fe7b0cbbfa181303be348210ace0719"],
     ["writes.progress","] , [ [\"writes.progress\"] , dispatchWriteConfirmation ]","06d4c42e09cfd3e624d0ea7aaa97f7753fe7b0cbbfa181303be348210ace0719"],
@@ -323,7 +323,8 @@ const sourceFingerprintParts = {
   // #1065: accepted navigation notifies only opted-in project settings; RPC edges are unchanged.
   "app.js": ["8e043a81", "cc1d5abd", "0e312435", "52018876", "d56a6883", "8c9587f5", "e34aa31b", "25b32265"],
   "appState.js": ["d24d9edc", "6e4988f0", "8a5289ee", "6c449b3f", "91bdbe42", "7cd43ada", "7a9df6a4", "acd39971"],
-  "connection.js": ["009f7235", "cbcbf300", "43c93b7c", "bcfb2243", "e17e2797", "d809e8af", "5e60cb14", "d0fe86f7"],
+  // #1162: saved HTTPS recovery replaces session authority; RPC methods and routing edges are unchanged.
+  "connection.js": ["7a940384", "94f7b68b", "0e6779f8", "aa264012", "a0d934d0", "c08ef0c0", "15265ab1", "c913d227"],
   "core/activityRuns.js": ["2bd80d81", "ad2ddde9", "da2fc194", "95b7b7ba", "4d0a86f4", "29a52906", "009b6fc5", "5221d710"],
   "core/adoption.js": ["350b90d5", "9e535f4b", "15adf2ef", "7eacd8c0", "fb946020", "b6130cb8", "ce729fed", "bb90597e"],
   "core/agentDefaults.js": ["f856d23d", "2c446c14", "c6e4d78e", "e11e737d", "75e1fbc1", "fa79564d", "2ef20a2b", "1cdbbcb0"],
@@ -345,13 +346,15 @@ const sourceFingerprintParts = {
   "core/bridgeUpdatePanel.js": ["f9b19cc7", "4abdfc5a", "d159194d", "49ee91ed", "d39ab2e7", "15a6a80f", "0cb51530", "623ca8e5"],
   "core/bridgeUpdates.js": ["279cb932", "0495aa46", "c347f93b", "10a492d5", "8d29b0a9", "e9309a9a", "91de7993", "e5f40ad3"],
   // #997 runtime-board cacheSync.js:754,783,1978: existing board.list also refreshes only runtime collections; durable scope/tip writers stay gated, no new method.
-  "core/cacheSync.js": ["b6bcb9e8", "4426cefb", "d1cfb123", "ff4b180d", "5a937f61", "4274f74a", "5db90bd4", "46bb4681"],
+  // #1157: existing scoped thread and terminal reads catch up after coverage lands.
+  "core/cacheSync.js": ["055ce95f", "16226ae8", "cc3f2475", "6cb15a8d", "e7b487c5", "596d2c82", "87a6aa7a", "f52585d6"],
   // #997 runtime-board captureDecisionView.js:142: branch choices join cached runtime run bodies; existing RPC and mutation dispatch unchanged.
   "core/captureDecisionView.js": ["66de7f78", "fbbd155f", "c29e58b8", "da80c68a", "2069fabf", "03333d95", "69b155a6", "382df322"],
   // #997 changeEvents.js:832: pass the accepted greeting version with existing compaction invalidation reads; no new RPC method.
   // #1065: concrete hello gates cached capability evidence; greeting refusal still disarms. RPC edges are unchanged.
   // #1099: Default environment secret flag is false; event dispatch is unchanged.
-  "core/changeEvents.js": ["104af306","abe91f55","ab78db34","955e6f9e","0bb35a5c","1a9cae92","be6b7736","404ff8c6"],
+  // #1157: prioritization, retries and recovery use the existing change subscription resources.
+  "core/changeEvents.js": ["952cccd6", "63949a31", "f803bf52", "3f622784", "dbba2d1f", "4e24e5fe", "f5179d9f", "253080e5"],
   "core/changesComments.js": ["a4d03b10", "31dbf6e1", "6e12294d", "e69ceb46", "2958a35c", "7f2f07c9", "4088008f", "f1d7394d"],
   "core/changesModel.js": ["1a2a1485", "24c755c4", "706c0111", "981a4765", "2cc7236e", "4ff87fce", "4a7640ba", "13a75672"],
   "core/changesReview.js": ["efa3d8fd", "2f936aea", "3c017fef", "5e7e463e", "5b6485cf", "abc5c809", "6e9a2636", "42ac75ec"],
@@ -446,7 +449,7 @@ const sourceFingerprintParts = {
   "core/taskAggregateReads.js": ["145d7d37", "d5b65ef2", "fca15f4d", "c61a586c", "f62233a0", "b8b309eb", "4a69f9d4", "8575b030"],
   "core/taskAttachmentBodies.js": ["7acfa90a", "4413c7df", "89207db8", "07fa4c16", "b21cc95f", "dc3bf412", "eb0c14de", "671d3006"],
   "core/taskChecklist.js": ["405a6444", "8132e330", "6ff6c056", "a1e71101", "3bdd9028", "a42eae55", "d6ebaf5b", "952f8a34"],
-  "core/taskComposer.js": ["44233e6a", "d60f8251", "f724f7bc", "af16b319", "2c205f31", "5a10e50b", "b233a25f", "ed90f8ad"],
+  "core/taskComposer.js": ["4a4ef3e2", "c83377d2", "2f4cab4f", "8db75231", "a051d72d", "e87de8cf", "9c6cfcd3", "aa9326ef"],
   "core/taskCountReaderRuntime.js": ["dc823412", "765c408d", "09a4bd9d", "959b3450", "116e39aa", "fb67622c", "6afd9df6", "ce9e3eff"],
   "core/taskFilterChoices.js": ["6e7fca24", "b96c853f", "5baa71d1", "9e8c17fc", "9a8ad6ff", "14e53667", "9d583cd0", "032ce3ee"],
   "core/taskMutationFence.js": ["2dc72ae3", "4b7951a8", "6c8da04d", "12b9066a", "d17d90f7", "5d5d3285", "070f5a99", "ce39c1d3"],
@@ -473,7 +476,7 @@ const sourceFingerprintParts = {
   "core/threadSync.js": ["bf280ad8", "20d158b6", "aaa4f7b9", "695d3816", "1d0200e6", "cf6756bd", "bc0e1372", "2e452737"],
   "core/trackerPages.js": ["2f749a25", "259d2e7b", "904e56ef", "15e91197", "da83450c", "c490c89c", "12b5ae68", "4b7a60e3"],
   "core/trackerTaskPage.js": ["3da4a334", "89927e6f", "0b98373a", "a1304529", "4a5e74ac", "af04828f", "8a0803dd", "59502532"],
-  "core/trackerTasksPane.js": ["80f5f62d", "fd719fe1", "535f6317", "215df125", "eeda25ec", "ddcbf174", "924f173f", "99ae4b57"],
+  "core/trackerTasksPane.js": ["26decc35", "2c999f4b", "d45b8d0d", "ee28217b", "ddd06eda", "0b6967c1", "4558e4b7", "b3124104"],
   "core/userPresence.js": ["b4a43148", "8352b41e", "f38b7e72", "b03317b3", "ca411d39", "6e7fb659", "b308effa", "511a43aa"],
   "core/watchedTaskFollower.js": ["d08812f3", "b1c71fd1", "c45cc354", "8e0d2495", "ad2f20de", "f54548b0", "89d31f41", "17aa347f"],
   "core/watchSetting.js": ["550f0da2", "883ae225", "24fd912e", "e669ffb0", "c1d76f0b", "3879059c", "c35a16c8", "8d6065c6"],

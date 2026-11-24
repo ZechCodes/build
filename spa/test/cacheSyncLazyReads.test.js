@@ -58,3 +58,27 @@ it("removes all-scope body subscriptions and unopened push repairs, then restore
   expect(calls()).toContain("thread.page"); expect(calls()).toContain("git.status");
   expect(fake.watchers.filter((held) => !held.disposed && held.scope === "all").flatMap((held) => held.kinds)).toContain("thread");
 });
+
+it("reads the mounted thread when its live coverage lands and fences a retired mount", async () => {
+  const { registerSyncThread } = await import("../src/core/syncVisibleScopes.js");
+  sync.startCacheSync();
+  await passesSettled(sync, "lazy-device");
+  const stop = registerSyncThread(() => ({
+    deviceId: "lazy-device", entityId: "lazy-run", agentId: "lazy-agent", conversationId: "lazy-conversation",
+  }));
+  try {
+    sync.routeChanged();
+    const watcher = fake.watchers.find((held) => held.id === "s-thread" && !held.disposed);
+    fake.context.rpc.mockClear();
+    await watcher.catchUp();
+    expect(fake.context.rpc).toHaveBeenCalledWith("thread.page", expect.objectContaining({
+      entity_id: "lazy-run", agent_id: "lazy-agent",
+    }), expect.anything());
+    stop();
+    fake.context.rpc.mockClear();
+    await watcher.catchUp();
+    expect(fake.context.rpc).not.toHaveBeenCalled();
+  } finally {
+    stop();
+  }
+});

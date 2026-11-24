@@ -43,6 +43,24 @@ def response(payload, status_code=201):
     )
 
 
+async def discovery_challenge(request, db_session, public_base_url, device_id=None):
+    body = await fields(request, ("origin",), 2200)
+    try:
+        payload = await auth.create_discovery(
+            db_session,
+            require_user(request),
+            bridge_http_client_binding(request),
+            body["origin"],
+            public_base_url,
+            utc_now(),
+            device_id=device_id,
+        )
+    except ValueError:
+        raise ClientException("Invalid HTTPS origin") from None
+    await db_session.commit()
+    return response(payload)
+
+
 class BridgeHttpController(Controller):
     path = ""
     dependencies = {
@@ -79,20 +97,13 @@ class BridgeHttpController(Controller):
     async def challenge(
         self, request: Request, db_session: AsyncSession, public_base_url: str
     ) -> Response:
-        body = await fields(request, ("origin",), 2200)
-        try:
-            payload = await auth.create_discovery(
-                db_session,
-                require_user(request),
-                bridge_http_client_binding(request),
-                body["origin"],
-                public_base_url,
-                utc_now(),
-            )
-        except ValueError:
-            raise ClientException("Invalid HTTPS origin") from None
-        await db_session.commit()
-        return response(payload)
+        return await discovery_challenge(request, db_session, public_base_url)
+
+    @post("/api/devices/{device_id:uuid}/http-discovery", guards=[build_auth_guard])
+    async def saved_challenge(
+        self, device_id: UUID, request: Request, db_session: AsyncSession, public_base_url: str
+    ) -> Response:
+        return await discovery_challenge(request, db_session, public_base_url, device_id)
 
     @get(
         "/api/bridge-discovery/challenges/{challenge_id:uuid}",

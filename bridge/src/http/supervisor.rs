@@ -92,6 +92,15 @@ struct DisableContext {
     issuer: String,
     origin: CanonicalOrigin,
     state_path: PathBuf,
+    restart_invocation: Option<String>,
+}
+
+fn restart_invocation(state_path: &Path) -> Option<String> {
+    if cfg!(target_os = "macos") {
+        super::endpoint_restart::publish_live_invocation(state_path).ok()
+    } else {
+        std::env::var("INVOCATION_ID").ok()
+    }
 }
 
 async fn prepare_listener<F, Fut>(
@@ -190,6 +199,7 @@ impl PreparedHttp {
         .await?;
 
         let runtime = runtime::mount(execution, verifier).with_discovery(signer);
+        let restart_invocation = restart_invocation(&state_path);
         Ok(Self {
             listener,
             tls,
@@ -200,6 +210,7 @@ impl PreparedHttp {
                 issuer: issuer.as_str().to_owned(),
                 origin,
                 state_path,
+                restart_invocation,
             },
         })
     }
@@ -216,6 +227,9 @@ impl PreparedHttp {
             .await
             .map_err(|error| format!("HTTP listener failed: {error}"));
         // Local authority has already been fenced and the listener retired.
+        if result.is_ok() && disable.planned_restart() {
+            return result;
+        }
         // Hosted deactivation is bounded and can never postpone that fence.
         if let Err(error) = tokio::time::timeout(Duration::from_secs(5), disable.register()).await {
             eprintln!("HTTP endpoint deactivation timed out: {error}");
@@ -253,6 +267,14 @@ pub async fn reconcile_disabled(
 }
 
 impl DisableContext {
+    fn planned_restart(&self) -> bool {
+        self.restart_invocation
+            .as_deref()
+            .is_some_and(|invocation| {
+                super::endpoint_restart::planned(&self.state_path, invocation)
+            })
+    }
+
     async fn register(self) {
         let record = match prepare_record(&self.state_path, None).await {
             Ok(Some(record)) => record,

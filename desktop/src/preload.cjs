@@ -9,6 +9,9 @@ function on(channel, listener) {
 }
 const facade = {
   discover: (origin) => invoke("discover", [origin]),
+  discoverSaved: (origin, identity) => invoke("discoverSaved", [origin, identity]),
+  settingsRead: () => invoke("settingsRead", []),
+  settingsWrite: (change) => invoke("settingsWrite", [change]),
   resume: (identity) => invoke("resume", [identity]),
   open: (handle, apiRange) => invoke("open", [handle, apiRange]),
   request: (handle, operationId, params, options = {}) =>

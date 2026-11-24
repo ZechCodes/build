@@ -37,6 +37,8 @@ class FakeRunner:
         self.stop_seen = False
         self.legacy_binaries = set()
         self.runtime_failure = None
+        self.restart_invocation = ""
+        self.restart_intent = None
 
     def run(self, args, *, cwd=None, env=None, check=True, diagnostics=False):
         self.calls.append((args, cwd, env))
@@ -100,8 +102,12 @@ class FakeRunner:
         if args[2] == "is-active":
             return ("active", 0) if self.active else ("inactive", 3)
         if args[2] == "show":
+            if "--property=InvocationID" in args:
+                return self.restart_invocation, 0
             return "123", 0
         if args[2] == "stop":
+            marker = self.home / ".local/state/build-dev/tasks/http-endpoint.restart"
+            self.restart_intent = marker.read_text().strip() if marker.exists() else None
             self.stop_seen = True
             if self.old_auth_on_stop:
                 self.append_auth()
@@ -167,6 +173,14 @@ def test_deploy_status_rollback(setup):
     assert not runner.worktree_path.exists()
     assert all("build-bridge.service" not in args for args, _, _ in runner.calls)
     assert not env.home.joinpath(".build").exists()
+
+
+def test_deploy_marks_only_the_stopping_service_invocation(setup):
+    bridge, runner, env = setup
+    runner.restart_invocation = "ab" * 16
+    bridge.deploy()
+    assert runner.restart_intent == runner.restart_invocation
+    assert not (env.state_root / "tasks/http-endpoint.restart").exists()
 
 
 def test_activation_installs_runtime_launcher_before_service(setup):

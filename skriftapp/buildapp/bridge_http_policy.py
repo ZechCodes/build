@@ -26,6 +26,7 @@ from buildapp.session_auth import require_user, session_user_id
 
 MAX_DOCUMENT_ENDPOINTS = 16
 DOCUMENT_PATHS = frozenset({"/app/", "/app", "/app/desktop"})
+DOCUMENT_ORIGINS = "build_bridge_http_document_origins"
 
 
 def _canonical_hostname(hostname: str | None) -> str | None:
@@ -70,7 +71,8 @@ def connect_policy(base: str, origins: list[str], *, hosted_hostname: str | None
 
 
 async def document_origins(
-    db: AsyncSession, user_id: UUID, client_binding: str, challenge_id: str | None, now: datetime
+    db: AsyncSession, user_id: UUID, client_binding: str, challenge_id: str | None, now: datetime,
+    preferred: tuple[UUID, ...] = (),
 ) -> list[str]:
     """At most sixteen current owned endpoints and one live initiating candidate.
 
@@ -79,7 +81,7 @@ async def document_origins(
     """
     from buildapp.models import BridgeHttpChallenge, BridgeHttpEndpoint, Device
 
-    result = await db.execute(
+    query = (
         select(BridgeHttpEndpoint.origin)
         .join(Device, Device.id == BridgeHttpEndpoint.device_id)
         .where(
@@ -89,9 +91,11 @@ async def document_origins(
             Device.owner_user_id == user_id,
             Device.approved.is_(True),
         )
-        .order_by(BridgeHttpEndpoint.device_id)
         .limit(MAX_DOCUMENT_ENDPOINTS)
     )
+    if preferred:
+        query = query.order_by(BridgeHttpEndpoint.device_id.in_(preferred).desc())
+    result = await db.execute(query.order_by(BridgeHttpEndpoint.device_id))
     origins = list(dict.fromkeys(result.scalars()))
     try:
         selected_id = UUID(challenge_id) if challenge_id else None
@@ -125,6 +129,16 @@ def _valid_origins(origins: list[str]) -> list[str]:
     return valid
 
 
+def preferred_devices(request: Request) -> tuple[UUID, ...]:
+    raw = request.query_params.get("bridge_devices", "")
+    if not raw or len(raw) > 37 * MAX_DOCUMENT_ENDPOINTS:
+        return ()
+    try:
+        return tuple(dict.fromkeys(UUID(value) for value in raw.split(",")[:MAX_DOCUMENT_ENDPOINTS]))
+    except ValueError:
+        return ()
+
+
 class BuildBridgeCSPMiddleware:
     """Modify only successful authenticated app HTML in the real framework stack."""
 
@@ -150,7 +164,9 @@ class BuildBridgeCSPMiddleware:
             return
         request = Request(scope)
         user_id = require_user(request)
-        origins = await self._authorized_origins(request, user_id)
+        origins = scope.get(DOCUMENT_ORIGINS)
+        if origins is None:
+            origins = await self.authorized_origins(request, user_id)
         if self.settings.enabled and self.settings.content_security_policy:
             existing = next((value.decode() for name, value in headers if name.lower() == b"content-security-policy"), None)
             base = existing or self.settings.content_security_policy
@@ -166,7 +182,7 @@ class BuildBridgeCSPMiddleware:
 
 
     @staticmethod
-    async def _authorized_origins(request: Request, user_id: UUID) -> list[str]:
+    async def authorized_origins(request: Request, user_id: UUID) -> list[str]:
         from buildapp.bridge_http_auth import _client_active
 
         # Old signed cookies still render cached views under the baseline CSP;
@@ -177,7 +193,8 @@ class BuildBridgeCSPMiddleware:
                 now = utc_now()
                 await _client_active(db, user_id, binding, now)
                 return await document_origins(
-                    db, user_id, binding, request.query_params.get("bridge_discovery"), now
+                    db, user_id, binding, request.query_params.get("bridge_discovery"), now,
+                    preferred_devices(request),
                 )
         except NotAuthorizedException:
             return []

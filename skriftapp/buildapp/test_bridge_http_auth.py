@@ -19,9 +19,9 @@ ISSUER = "https://app.example"
 ORIGIN = "https://bridge.example:8443"
 
 
-async def paired(db):
-    user = await add_account(db, "owner@example.com")
-    await add_member(db, user, "owner@example.com")
+async def paired(db, email="owner@example.com"):
+    user = await add_account(db, email)
+    await add_member(db, user, email)
     key = Ed25519PrivateKey.generate()
     device = Device(
         name="Laptop",
@@ -54,8 +54,8 @@ def signed(key, device, purpose, **fields):
     )
 
 
-async def registered(db):
-    user, device, key = await paired(db)
+async def registered(db, email="owner@example.com"):
+    user, device, key = await paired(db, email)
     # Unit-service identities represent logins already completed by the supported
     # authentication hook. No service call may invent a new browser identity.
     db.add_all(
@@ -671,6 +671,146 @@ async def test_desktop_near_expiry_parent_has_no_authorization_grace(db):
     assert await auth.introspect(
         db, minted["access_token"], assertion, ISSUER, exact_deadline
     ) == {"active": False}
+
+
+@pytest.mark.asyncio
+async def test_two_unreachable_saved_devices_in_two_tabs_leave_add_by_url_available(db):
+    from litestar.exceptions import TooManyRequestsException
+
+    user, reachable, key = await registered(db)
+    devices = []
+    for email in ("down-one@example.com", "down-two@example.com"):
+        _, device, _ = await registered(db, email)
+        device.owner_user_id = user
+        devices.append(device)
+    await db.commit()
+
+    binding = "browser:session-one"
+    now = utc_now()
+    allocated = {device.id: set() for device in devices}
+    rate_limited = 0
+    for retry in range(6):
+        # Two tabs share the authenticated browser binding. The down bridges
+        # never answer the proof request, so no challenge can be completed.
+        for device in (devices[0], devices[1], devices[0]):
+            try:
+                saved = await auth.create_discovery(
+                    db, user, binding, ORIGIN, ISSUER, now + timedelta(seconds=10 * retry),
+                    device_id=device.id,
+                )
+                allocated[device.id].add(saved["challenge_id"])
+            except TooManyRequestsException:
+                rate_limited += 1
+            await db.commit()
+
+    # The user and a third, healthy saved bridge can still obtain authority.
+    manual = await mint_for_client(db, user, reachable, key, binding)
+    healthy = await auth.create_discovery(
+        db, user, binding, ORIGIN, ISSUER, utc_now(), device_id=reachable.id
+    )
+    assert manual["device_id"] == healthy["device_id"] == str(reachable.id)
+    assert rate_limited == 0
+    assert all(len(pending) == 1 for pending in allocated.values())
+
+
+@pytest.mark.asyncio
+async def test_saved_address_discovery_refuses_another_owned_bridge(db):
+    from sqlalchemy import func, select
+    from buildapp.models import BridgeHttpFamily
+
+    user, device, key = await registered(db)
+    _, other, other_key = await registered(db, "other@example.com")
+    other.owner_user_id = user
+    await db.flush()
+    other_endpoint = await auth._endpoint(db, other.id)
+    other_endpoint.user_id = user
+    await db.commit()
+    binding = "browser:session-one"
+    pending = await auth.create_discovery(
+        db, user, binding, ORIGIN, ISSUER, utc_now(), device_id=device.id
+    )
+    assert pending["device_id"] == str(device.id)
+
+    async def complete(signer, target):
+        proof = signed(
+            signer, target, "discovery", challenge_id=pending["challenge_id"],
+            nonce=pending["nonce"], origin=ORIGIN, endpoint_epoch="epoch-one", issuer=ISSUER,
+        )
+        return await auth.complete_discovery(
+            db, user, binding, pending["challenge_id"], proof, ISSUER, utc_now()
+        )
+
+    with pytest.raises(ClientException) as wrong_device:
+        await complete(other_key, other)
+    assert wrong_device.value.status_code == 409
+    assert await db.scalar(select(func.count()).select_from(BridgeHttpFamily)) == 0
+    assert (await complete(key, device))["device_id"] == str(device.id)
+
+
+@pytest.mark.asyncio
+async def test_browser_family_survives_bearer_cleanup_but_not_login_rotation(db):
+    from sqlalchemy import func, select
+    from buildapp.models import BridgeHttpToken
+
+    user, device, key = await registered(db)
+    binding = "browser:session-one"
+    minted = await mint_for_client(db, user, device, key, binding)
+    later = datetime.fromtimestamp(minted["expires_at"], timezone.utc) + timedelta(
+        hours=23
+    )
+    identity = (device.id, minted["family_id"], "epoch-one", ISSUER, later)
+
+    renewed = await auth.renew(db, user, binding, *identity)
+    assert renewed["family_id"] == minted["family_id"]
+    assert renewed["access_token"] != minted["access_token"]
+    assert await db.scalar(select(func.count()).select_from(BridgeHttpToken)) == 1
+    with pytest.raises(NotAuthorizedException):
+        await auth.renew(db, user, "browser:another-session", *identity)
+
+
+@pytest.mark.asyncio
+async def test_orderly_bridge_shutdown_revokes_family_across_same_policy_restart(db):
+    from buildapp.models import BridgeHttpFamily
+
+    user, device, key = await registered(db)
+    binding = "browser:session-one"
+    minted = await mint_for_client(db, user, device, key, binding)
+
+    async def register(epoch, previous, enabled):
+        challenge = await auth.registration_challenge(
+            db, device.id, signed(key, device, "registration-challenge"),
+            ISSUER, utc_now(),
+        )
+        proof = signed(
+            key,
+            device,
+            "registration",
+            challenge_id=challenge["challenge_id"],
+            nonce=challenge["nonce"],
+            origin=ORIGIN,
+            endpoint_epoch=epoch,
+            previous_endpoint_epoch=previous,
+            enabled=enabled,
+        )
+        return await auth.register_endpoint(db, device.id, proof, ISSUER, utc_now())
+
+    async def resume():
+        return await auth.renew(
+            db, user, binding, device.id, minted["family_id"], "epoch-one",
+            ISSUER, utc_now(),
+        )
+
+    await register("epoch-one", "epoch-one", True)
+    assert (await resume())["family_id"] == minted["family_id"]
+
+    await register("shutdown", "epoch-one", False)
+    family = await db.get(
+        BridgeHttpFamily, UUID(minted["family_id"]), populate_existing=True
+    )
+    assert family.revoked_at is not None
+    await register("restart", "shutdown", True)
+    with pytest.raises(NotAuthorizedException):
+        await resume()
 
 
 @pytest.mark.asyncio

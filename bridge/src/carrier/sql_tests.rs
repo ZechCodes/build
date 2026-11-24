@@ -106,6 +106,28 @@ async fn answer(rx: &mut mpsc::UnboundedReceiver<OutboundEnvelope>, key: &str) -
     }
 }
 
+#[tokio::test]
+async fn webrtc_channel_does_not_use_the_http_logical_subscription_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = crate::app::AppState::new_unrooted(dir.path(), "main", true, "unused.sock").shared();
+    let mut client = Client::new(crate::app::AppState::handler(app));
+    for index in 0..9 {
+        client
+            .send(
+                index,
+                "changes.subscribe",
+                json!({
+                    "subscription_id": format!("watch-{index}"),
+                    "scope": {"kind": "all"},
+                    "kinds": ["state"],
+                }),
+            )
+            .await;
+        let reply = client.reply().await;
+        assert_eq!(reply["ok"], true, "{reply}");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_reads_use_dedicated_workers_even_with_a_term_id() {
     let (gate, held) = OffLockGate::new();

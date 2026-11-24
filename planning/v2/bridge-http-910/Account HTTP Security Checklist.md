@@ -45,6 +45,42 @@ old parent possession can mint only until that immutable expiry unless revoked.
 Cached authority never outlives its known expiry or verification-start+30 seconds.
 The final task report supplies actual gate exit codes and skipped baseline tests.
 
+## Saved address recovery — #1162
+
+The address setting survives grant retirement. Hosted renewal still checks the
+exact original family, epoch, account and client binding. Automatic discovery
+uses the same one-use origin challenge and signed proof as Add by URL, with a
+paired device ID captured before completion. A valid proof from another device
+cannot mint a family for that saved setting. The browser and desktop also check
+the saved fingerprint when supplied, and keep the previous address on failure.
+The issuer can fill a legacy desktop setting's missing fingerprint only if the
+saved device, address and transport choice still match. Device retirement
+removes the stored setting.
+Logout still tombstones the client. Expired OAuth parents and revoked families
+still cannot renew, and fresh discovery requires current signed-in authority.
+
+A managed restart closes all live sessions and outputs locally before preserving
+the endpoint record for the exact marked invocation, with a one-minute marker
+lifetime. Startup still registers
+and durably acknowledges its policy. Policy change, explicit disable and an
+ordinary stop retain hosted revocation. The exact-origin, no-store document CSP
+continues to scope browser proof and application traffic. Admission of a saved
+origin does not bypass certificate validation, CORS, or browser local-network
+permission. The permission action carries neither a bearer nor a proof.
+
+Recovery allocation reuses an unspent client-, device- and origin-bound
+challenge without extending its expiry. A changed address retires that
+client's previous challenge. Per-device recovery budgets leave the interactive
+Add by URL budget intact during outages. Proof verification, one-use spend
+and replay checks apply to every completion, including shared-tab reuse.
+
+Regression witnesses include `test_saved_address_discovery_refuses_another_owned_bridge`,
+`test_routes_discover_renew_revoke_and_never_accept_client_authority`,
+`test_hosted_cookie_reissue_keeps_family_until_sign_in_expires`, browser saved
+recovery and permission tests, the native saved-device test, and the bridge
+restart-intent and endpoint-epoch harnesses. The ten controls retain their
+100/100 design score.
+
 Gitleaks initially identified the three public fixed-key JWS vectors as JWTs.
 The coordinator reviewed the fixture and authorized only their exact historical
 commit/file/rule/line fingerprints in `.gitleaksignore`; the JWT rule remains

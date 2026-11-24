@@ -28,6 +28,8 @@ export function createDeviceRecoverySupervisor({
   const records = new Map();
   const epochs = new Map();
   const listeners = new Set();
+  const coolingDown = (deviceId) => records.get(deviceId)?.retryAfter > now();
+  const mayBringForward = (record) => record.status === "waiting" && !coolingDown(record.deviceId);
 
   const notify = () => listeners.forEach((listener) => listener());
   const nextEpoch = (deviceId) => {
@@ -102,7 +104,7 @@ export function createDeviceRecoverySupervisor({
      * diagnostics record.
      */
     wake(reason = "wake") {
-      const waiting = [...records.values()].filter((record) => record.status === "waiting");
+      const waiting = [...records.values()].filter(mayBringForward);
       for (const record of waiting) {
         const epoch = nextEpoch(record.deviceId);
         start(record.deviceId, 0, epoch, { defer: true });
@@ -123,7 +125,7 @@ export function createDeviceRecoverySupervisor({
      * (review #743: ten extra dials in a second, the count stuck at 1).
      */
     nudge(reason = "nudge") {
-      const due = [...records.values()].filter((record) => record.status === "waiting" && !record.early);
+      const due = [...records.values()].filter((record) => mayBringForward(record) && !record.early);
       for (const record of due) {
         start(record.deviceId, record.failedAttempts, nextEpoch(record.deviceId), { defer: true, early: true });
       }
@@ -131,7 +133,7 @@ export function createDeviceRecoverySupervisor({
     },
 
     recoverNow(deviceId) {
-      if (!online.has(deviceId)) return null;
+      if (!online.has(deviceId) || coolingDown(deviceId)) return null;
       const epoch = nextEpoch(deviceId);
       start(deviceId, 0, epoch, { defer: true });
       return epoch;
@@ -139,7 +141,7 @@ export function createDeviceRecoverySupervisor({
 
     /** Mark a caller-owned immediate attempt, such as the reader's Retry. */
     beginAttempt(deviceId, { resetFailures = false } = {}) {
-      if (!online.has(deviceId)) return null;
+      if (!online.has(deviceId) || coolingDown(deviceId)) return null;
       const previous = records.get(deviceId);
       cancelTimer(previous);
       const epoch = nextEpoch(deviceId);
@@ -155,22 +157,24 @@ export function createDeviceRecoverySupervisor({
       return epoch;
     },
 
-    failed(deviceId, { epoch = epochs.get(deviceId), retryable = true } = {}) {
+    failed(deviceId, { epoch = epochs.get(deviceId), retryable = true, retryAfterMs = 0 } = {}) {
       if (epochs.get(deviceId) !== epoch) return;
       if (!retryable || !online.has(deviceId)) {
         forget(deviceId);
         return;
       }
-      const previous = records.get(deviceId);
-      const failedAttempts = (previous?.failedAttempts || 0) + 1;
+      const previous = records.get(deviceId) || { failedAttempts: 0 };
+      const failedAttempts = previous.failedAttempts + 1;
       const base = BACKOFF_MS[Math.min(failedAttempts - 1, BACKOFF_MS.length - 1)];
       const jitter = Math.round(base * JITTER_FRACTION * (random() * 2 - 1));
-      const delay = Math.min(BACKOFF_MS.at(-1), Math.max(0, base + jitter));
-      const nextAttemptAt = now() + delay;
+      const delay = Math.max(retryAfterMs, Math.min(BACKOFF_MS.at(-1), base + jitter));
+      const failedAt = now();
+      const nextAttemptAt = failedAt + delay;
       const timer = setTimer(() => start(deviceId, failedAttempts, epoch), delay);
       cancelTimer(previous);
       records.set(deviceId, {
-        deviceId, status: "waiting", failedAttempts, nextAttemptAt, timer, epoch, early: Boolean(previous?.early),
+        deviceId, status: "waiting", failedAttempts, nextAttemptAt, timer, epoch,
+        early: Boolean(previous.early), retryAfter: failedAt + retryAfterMs,
       });
       notify();
     },
@@ -192,6 +196,7 @@ export function createDeviceRecoverySupervisor({
     },
 
     epoch: (deviceId) => epochs.get(deviceId) || 0,
+    coolingDown,
     snapshot(deviceId) {
       if (deviceId !== undefined) return publicRecord(records.get(deviceId)) || null;
       return [...records.values()].map(publicRecord);

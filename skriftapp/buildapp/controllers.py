@@ -7,6 +7,7 @@ assets under ``static/assets/`` (js, css, self-hosted fonts). Zero CDN.
 
 import asyncio
 from html import escape
+import json
 from pathlib import Path
 
 from litestar import Controller, Request, get, post
@@ -18,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from buildapp import releases
 from buildapp.accounts import account_email
 from buildapp.alpha_membership import is_alpha_member
+from buildapp.bridge_http_policy import BuildBridgeCSPMiddleware, DOCUMENT_ORIGINS
 from buildapp.desktop_auth import build_auth_guard
 from buildapp.email_message import provide_public_base_url
 from buildapp.invite_pages import APP_PATH, invite_only_outcome
@@ -63,11 +65,11 @@ class BuildController(Controller):
             email = await account_email(db_session, user_id)
             return invite_only_outcome(email).response()
 
-        return await self._render_spa(user_id, db_session)
+        return await self._render_spa(request, user_id, db_session)
 
     @get("/desktop", guards=[build_auth_guard])
     async def desktop(self, request: Request, db_session: AsyncSession) -> Response:
-        return await self._render_spa(require_user(request), db_session)
+        return await self._render_spa(request, require_user(request), db_session)
 
     @get("/downloads")
     async def downloads(self, public_base_url: str, asset_source: AssetSource) -> dict:
@@ -96,12 +98,15 @@ class BuildController(Controller):
         return await asset_source.deliver(name)
 
     @staticmethod
-    async def _render_spa(user_id, db_session: AsyncSession) -> Response:
+    async def _render_spa(request: Request, user_id, db_session: AsyncSession) -> Response:
         email = await account_email(db_session, user_id) or "user"
 
         html = await asyncio.to_thread((STATIC_DIR / "index.html").read_text)
         html = html.replace("{{USER0}}", email[0:1].upper())
         html = html.replace("{{ACCOUNT_ID}}", escape(str(user_id), quote=True))
+        origins = await BuildBridgeCSPMiddleware.authorized_origins(request, user_id)
+        request.scope[DOCUMENT_ORIGINS] = origins
+        html = html.replace("{{BRIDGE_HTTP_ORIGINS}}", escape(json.dumps(origins), quote=True))
         # Never cached. Every asset this names is content-hashed and served
         # immutable, so fetching this document again is the ONLY way a browser
         # moves to a new build — and sent with no cache headers it was the one

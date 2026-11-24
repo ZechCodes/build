@@ -128,10 +128,14 @@ describe("the local UI store", () => {
     expect((await store.readUiRecord(DRAFT)).value).toEqual({ body: "later" });
   });
 
-  it("forgets everything on an account reset", async () => {
+  it("retains only the saved HTTPS setting across an account reset", async () => {
+    const addresses = { deviceId: "", entityId: "d82cf22f-5bfc-4887-8211-9bbd653e1b78", kind: "ui-http-connections", sub: "account:" };
+    const setting = { deviceId: "device", origin: "https://127.0.0.1:8443", selected: "http", fingerprint: "fingerprint" };
     await store.writeUiRecord(DRAFT, { body: "the last account's" });
+    await store.writeUiRecord(addresses, { accountId: addresses.entityId, connections: [{ ...setting, familyId: "grant", endpointEpoch: "old" }] });
     await store.wipeUiRecords();
     expect(await store.readUiRecord(DRAFT)).toBeUndefined();
+    expect((await store.readUiRecord(addresses)).value).toEqual({ accountId: addresses.entityId, connections: [setting] });
   });
 
   it("keeps every draft when a build with an older version of it opens", async () => {

@@ -344,6 +344,14 @@ pool is full, or the family is at its cap, the next stream GET is refused with
 429 `overloaded` and `retryable` set, and reserves and binds nothing. Openings
 are capped separately, at 16 per family and 1,024 in all, with one stream slot
 each. There is no per-account stream limit.
+
+An HTTP application binding holds at most eight ordinary logical change
+subscriptions and one reserved `s-thread` subscription. The SPA upserts this
+one ID with the mounted conversation's entity scope as the reader moves.
+The reservation uses the existing subscribe and unsubscribe resources and
+wire fields. The WebRTC application channel uses the legacy caller path,
+which does not impose the eight-slot logical limit.
+
 A stream also ends, and returns its reservation, on any of these:
 
 - a full queue;
@@ -3959,10 +3967,17 @@ The port is bound without listening during preparation; TCP connections are
 refused until registration and durable acknowledgment both succeed. Retry logs
 distinguish registration from deactivation, including during shutdown.
 Shutdown cancels pending registration;
-an active listener still shuts down through its authority fence. An unexpected
-HTTP task failure is logged without terminating the daemon. Endpoint records and
-their sibling locks belong to the device identity: buildctl migration retains
-the target's `tasks/http-endpoint.json` and `.lock`, excluding source copies.
+an active listener still shuts down through its authority fence. A managed
+deploy or updater marks the exact running service invocation before stopping
+it. The marker expires after one minute, so an interrupted rollout cannot
+preserve registration on a later ordinary shutdown. A clean marked stop
+closes every local opening and retains the hosted
+registration. Startup must still register and acknowledge its actual policy
+before listening. The same policy reuses its epoch, while a changed or disabled
+policy publishes a new generation and revokes the old families. An unmarked
+stop or listener failure runs hosted deactivation after closing local authority.
+Endpoint records and restart markers belong to the device identity. Buildctl
+migration retains the target's endpoint state and excludes source copies.
 
 Build maintains the crypto bindings in [transport/](transport/README.md) and
 `bridge/src/transport.rs`. The historical [E2E-MVP](transport/E2E-MVP.md)
@@ -4561,7 +4576,12 @@ in `shell.js`. The bottom Console tray opens the existing console and never
 creates a shell; the project rail has no separate Terminal entry.
 `projectConsole.js` paints source-labelled tabs from each
 source's `terminals` cache record at device/project/source/captured-path addresses.
-Source terminal roster subscriptions use realtime delivery at foreground priority.
+Every source in the routed project requests realtime terminal delivery at
+foreground priority. WebRTC also requests every off-route source. On HTTPS,
+the sync tier requests at most two off-route sources per device at background
+priority. The logical subscription budget admits routed terminal watches
+before off-route terminal watches and gives both groups lower admission
+priority than the core subscriptions. Roster reads still cover every source.
 `projectConsole.js` re-reads only its project/support/source-terminal cache records;
 create and close commit and read back independently of background collectors,
 guarded by an applied generation.
@@ -4582,14 +4602,18 @@ validation and attach replies; detach releases only the requesting registration.
 Failed or cancelled pane setup releases every acquired terminal resource. Channel
 recovery stays in the terminal lifecycle; the project console neither reads
 connection status nor changes its presentation on disconnect/reconnect.
-`cacheSync.js` prepares original-source subscriptions with the ownership lists
-when `changes.projectSources` is present. On sync/reconnect, `syncPhases.js`
+`cacheSync.js` keeps up to two original-source terminal subscriptions per device
+when `changes.projectSources` is present, preferring sources in the routed
+project. The existing wire names one exact original source per subscription.
+The SPA yields these optional subscriptions first when the HTTPS budget fills.
+On sync/reconnect, `syncPhases.js`
 reads all source terminal rosters after the foreground and inbox, through the
 same two background streams as checkout warming. Their exact terminal record
 identities share the planner's completion and visibility promotion, so an
 unrelated source reply never blocks a newly selected foreground. Source push
 and list writes check membership/location transactionally and keep equal IDs on
-other devices and paths separate. No project terminal polling is introduced.
+other devices and paths separate. When navigation brings a source into coverage
+or the bridge accepts deferred coverage, the cache reads the affected rosters.
 
 Commit drafts keep device and account-epoch ownership in the in-memory stash
 as well as their device-scoped `build-ui` records. Old account panes cannot
@@ -5688,6 +5712,21 @@ Terminal ownership for URL devices is negotiated separately below.
   Per-device contexts live in
   `spa/src/core/deviceContexts.js`.
 
+`changeEvents.js` asks for the mounted conversation before ordinary
+subscriptions. For HTTPS it holds at most seven ordinary subscriptions, so the
+mounted conversation fits even when talking to an older eight-slot bridge.
+It releases stale coverage before adding other watches and accounts for an
+uncertain subscribe until the ID is acknowledged or unsubscribed. A `busy`
+refusal stays pending on the current opening and records one `subscription`
+diagnostic per refusal episode with the ID and code. It gets one retry after
+500 ms even on a quiet opening. Subsequent pushes can trigger a retry after
+a two-second cooldown. A slot release or an updated spec can retry sooner.
+Restored coverage triggers a catch-up read into the cache. On a normal
+conversation switch, the mounted conversation uses its regular foreground
+read and starts receiving pushes once the upsert lands. An HTTPS opening whose
+event stream never delivered `hello` fails during stream startup, before the
+SPA requests logical subscriptions.
+
 `sessionRpc.js` shares eight SQL sender credits across the opening's carriers
 and priorities. Extra reads stay unsent and have no wire deadline yet.
 Background SQL reads have a separate 12 s admission deadline, independent of
@@ -5723,6 +5762,35 @@ from transport receipts, including after the original caller timed out.
 A surface calls the bridge through its device context: `context.rpc(method,
 params)` from `contextFor(deviceId)` or `routeContext(route)`. `context.rpc`
 refuses when that device cannot answer.
+
+HTTPS selection saves the canonical address for the paired device and account.
+The address and optional pinned fingerprint are settings. Family and endpoint
+epoch are renewal hints, and bearer tokens remain in memory. An account reset
+keeps only the account-scoped address, fingerprint, and transport choice.
+Desktop stores those fields under the account named by its current hosted sign-in
+and clears its renderer storage on sign-out. An issuer-verified fingerprint
+fills an unpinned desktop setting only if its address and selection still
+match. Retiring a device frees its saved address slot.
+
+An expired bearer, closed stream, or old-opening 401 retires the exact opening.
+Recovery first resumes the saved grant family. If hosted refuses the family, or
+the bridge refuses a freshly minted bearer at opening, recovery uses Add by
+URL's one-use challenge, bound to the saved device before hosted can mint a
+replacement. Hosted reuses one live challenge for the same client, device, and
+origin, including across tabs. Each saved device has its own challenge budget,
+and Add by URL keeps a separate eight-slot budget per account. Hosted 429 pauses
+the affected device for one minute, including across wake and manual Retry.
+Verification checks the signed device proof, registration, origin,
+account, endpoint epoch, and the saved fingerprint when present. A different
+bridge cannot replace the saved address or receive a bearer from that proof.
+When the current document's enforced CSP lacks the precise origin, recovery
+loads a fresh authenticated document using the bound challenge. Device IDs
+in the resume URL only prioritize owned registrations within the CSP budget.
+Browser local-network permissions are enforced before connection. The transport
+panel offers the browser's permission request and displays sign-in and
+different-device failures. The shared recovery schedule applies while the
+setting is selected. Reconnection opens a fresh session and refreshes cached
+state without replaying uncertain actions.
 
 ### Terminal ownership and pane recovery
 

@@ -95,6 +95,7 @@ test("discovery sends hosted OAuth only to hosted routes; device token remains p
     "deviceId",
     "endpointEpoch",
     "familyId",
+    "fingerprint",
     "handle",
     "origin",
   ]);
@@ -113,6 +114,30 @@ test("discovery sends hosted OAuth only to hosted routes; device token remains p
     h.requests[3].opts.headers.Authorization,
     "Bearer fixture-device-token",
   );
+});
+
+test("native saved-address discovery binds the challenge and mint to the original device", async (t) => {
+  const h = harness(t, {
+    mint: { device_id: "different" },
+    fetch: async (url) => {
+      if (url.endsWith("/devices/device/http-discovery")) return json({
+        challenge_id: "challenge", nonce: "n".repeat(32), issuer: "https://getbuild.ing",
+        device_id: "device", expires_at: Math.floor(Date.now() / 1000) + 60,
+      });
+    },
+  });
+  await assert.rejects(h.bridge.discoverSaved(h.owner, "https://bridge.test", { deviceId: "device", fingerprint: "fingerprint" }), { code: "binding_mismatch" });
+  assert.match(h.requests[0].url, /\/devices\/device\/http-discovery$/);
+  assert.equal(h.requests[1].opts.headers.Authorization, undefined);
+  assert.equal(h.requests.length, 3);
+});
+
+test("native resume checks the fingerprint returned by discovery", async (t) => {
+  const h = harness(t);
+  const { handle: _handle, ...hint } = await h.bridge.discover(h.owner, "https://bridge.test");
+  const resumed = await h.bridge.resume(h.owner, hint);
+  assert.equal(resumed.fingerprint, hint.fingerprint);
+  await assert.rejects(h.bridge.resume(h.owner, { ...hint, fingerprint: "changed" }), { code: "binding_mismatch" });
 });
 
 test("substituted endpoint and account renewal bindings are refused before bridge credentials", async (t) => {

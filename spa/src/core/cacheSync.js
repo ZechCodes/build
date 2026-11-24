@@ -1347,23 +1347,47 @@ async function readProjectTerminals(context, scope) {
   if (answer && context.active()) await writeProjectTerminalRoster(context, scope, answer.terminals || [], { fence });
 }
 
-function reconcileProjectTerminalSubscriptions(context, scopes) {
-  const deviceId = context.deviceId;
+const HTTP_OFF_ROUTE_TERMINAL_WATCHES = 2;
+const usesHttp = (deviceId) => contextFor(deviceId)?.session?.transport === "http";
+
+function projectTerminalCoverage(deviceId, scopes) {
+  if (!usesHttp(deviceId)) return scopes.map((scope) => ({ scope, priority: "foreground" }));
+  const route = App.route;
+  const projectId = route?.deviceId === deviceId ? route.projectId : undefined;
+  return [
+    ...scopes.filter((scope) => scope.project_id === projectId).map((scope) => ({ scope, priority: "foreground" })),
+    ...scopes.filter((scope) => scope.project_id !== projectId).slice(0, HTTP_OFF_ROUTE_TERMINAL_WATCHES)
+      .map((scope) => ({ scope, priority: "background" })),
+  ];
+}
+
+function watchProjectTerminal(deviceId, id, scope, priority) {
+  return watchChanges({ ...subscriptionShape(deviceId), id: `s-project-term:${id}`,
+    scope: { kind: "project_source", ...scope }, kinds: ["terminals"],
+    mode: "realtime", priority, optional: true,
+    catchUp: () => {
+      const context = syncContext(contextFor(deviceId));
+      if (holdingLock && context) return readProjectTerminals(context, scope);
+    },
+  });
+}
+
+function reconcileProjectTerminalSubscriptions({ deviceId }, scopes) {
   let held = projectTerminalSubscriptions.get(deviceId);
   if (!held) projectTerminalSubscriptions.set(deviceId, held = new Map());
-  const wanted = new Map(scopes.map((scope) => [directoryCacheId(scope), scope]));
-  for (const [id, watcher] of held) {
-    if (wanted.has(id)) continue;
+  const wanted = new Map(projectTerminalCoverage(deviceId, scopes).map((entry) => [directoryCacheId(entry.scope), entry]));
+  for (const [id, { watcher, priority }] of held) {
+    if (wanted.get(id)?.priority === priority) continue;
     watcher.dispose();
     held.delete(id);
   }
-  for (const [id, scope] of wanted) {
+  const added = [];
+  for (const [id, { scope, priority }] of wanted) {
     if (held.has(id)) continue;
-    held.set(id, watchChanges({ ...subscriptionShape(deviceId), id: `s-project-term:${id}`,
-      scope: { kind: "project_source", ...scope }, kinds: ["terminals"],
-      // Console create and close change another client's visible roster now.
-      mode: "realtime", priority: "foreground" }));
+    held.set(id, { watcher: watchProjectTerminal(deviceId, id, scope, priority), priority });
+    if (priority === "foreground") added.push(scope);
   }
+  return added;
 }
 
 /** The commits this checkout has that its push target does not, newest first.
@@ -1734,7 +1758,23 @@ function followVisibleThread(deviceId) {
   held.thread?.dispose();
   held.threadEntityId = wanted;
   held.thread = wanted ? watchChanges({ ...subscriptionShape(deviceId), id: "s-thread",
-    entity: wanted, kinds: ["thread"], mode: "realtime", priority: "foreground" }) : null;
+    entity: wanted, kinds: ["thread"], mode: "realtime", priority: "foreground",
+    catchUp: () => catchUpVisibleThread(deviceId, wanted),
+  }) : null;
+}
+
+function catchUpVisibleThread(deviceId, entityId) {
+  const thread = visibleSyncThread(deviceId);
+  const context = syncContext(contextFor(deviceId));
+  if (!holdingLock || !context || thread?.entityId !== entityId) return;
+  const active = () => {
+    const shown = visibleSyncThread(deviceId);
+    return context.active() && shown?.entityId === entityId && shown.agentId === thread.agentId
+      && shown.conversationId === thread.conversationId && shown.threadId === thread.threadId;
+  };
+  return syncThread({ ...context, active }, entityId, {
+    id: thread.agentId, conversation_id: thread.conversationId, thread_id: thread.threadId,
+  }, "foreground");
 }
 
 /**
@@ -1817,6 +1857,24 @@ export function routeChanged() {
   for (const deviceId of [...subscriptions.keys()]) {
     void passes.get(deviceId)?.foreground?.();
     void refollowRoute(deviceId);
+  }
+  for (const deviceId of projectTerminalSubscriptions.keys()) {
+    if (usesHttp(deviceId)) void refollowProjectTerminalCoverage(deviceId).catch(pushError);
+  }
+}
+
+async function refollowProjectTerminalCoverage(deviceId) {
+  const route = App.route;
+  const context = syncContext(contextFor(deviceId));
+  if (!context || !bridgeCapabilities(deviceId).changes?.projectSources) return;
+  const scopes = projectTerminalScopes(await heldValue(context, "", "projects"));
+  if (!context.active() || route !== App.route) return;
+  const added = reconcileProjectTerminalSubscriptions(context, scopes);
+  if (!added.length) return;
+  await settledWithin(subscriptionsSettledFor(deviceId), GREETING_WAIT_MS);
+  for (const scope of added) {
+    if (route !== App.route) return;
+    await readProjectTerminals(context, scope);
   }
 }
 
@@ -2767,7 +2825,7 @@ export function startCacheSync() {
 
 function disposeProjectTerminalSubscriptions() {
   for (const held of projectTerminalSubscriptions.values()) {
-    for (const watcher of held.values()) watcher.dispose();
+    for (const { watcher } of held.values()) watcher.dispose();
   }
   projectTerminalSubscriptions.clear();
 }

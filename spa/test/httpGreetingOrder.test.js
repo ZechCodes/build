@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { greetBridge, resetChangeEvents, watchChanges } from "../src/core/changeEvents.js";
+import { dispatchChangeEvent, greetBridge, resetChangeEvents, subscriptionsSettled, watchChanges } from "../src/core/changeEvents.js";
+import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory } from "../src/core/connectionDiagnostics.js";
 
 const greeting = { api_version: "3.24.0", push_events: true, capabilities: ["changes.subscriptions"] };
 const flush = async () => { for (let i = 0; i < 20; i += 1) await Promise.resolve(); };
-beforeEach(() => { resetChangeEvents(); });
-afterEach(() => { resetChangeEvents(); });
+beforeEach(() => { resetChangeEvents(); clearConnectionDiagnosticHistory(); });
+afterEach(() => { resetChangeEvents(); vi.useRealTimers(); });
 
 describe("HTTP greeting subscribes before refresh", () => {
   it("holds ordinary refresh until logical subscriptions settle", async () => {
@@ -24,15 +25,131 @@ describe("HTTP greeting subscribes before refresh", () => {
     dispose.dispose();
   });
 
-  it("fails closed on subscription refusal", async () => {
+  it("fails closed on a permanent subscription refusal", async () => {
     const refresh = vi.fn(); const ready = vi.fn();
     const dispose = watchChanges({ deviceId: "device", scope: "all", kinds: ["state"], refresh });
     await expect(greetBridge(async (method) => {
       if (method === "session.hello") return greeting;
-      throw Object.assign(Error("no capacity"), { error_code: "busy" });
+      throw Object.assign(Error("unknown kind"), { error_code: "invalid_params" });
     }, { deviceId: "device", beforeRefresh: ready })).rejects.toThrow();
     expect(ready).not.toHaveBeenCalled(); expect(refresh).not.toHaveBeenCalled();
     dispose.dispose();
+  });
+
+  it("holds a slot for the mounted thread on a bridge with the old eight-slot limit", async () => {
+    const held = new Map();
+    const call = vi.fn(async (method, spec) => {
+      if (method === "session.hello") return greeting;
+      if (method === "changes.unsubscribe") return held.delete(spec.subscription_id);
+      if (!held.has(spec.subscription_id) && held.size === 8) throw Object.assign(Error("no capacity"), { error_code: "busy" });
+      held.set(spec.subscription_id, spec);
+    });
+    for (let index = 0; index < 10; index += 1) {
+      watchChanges({ id: `source-${index}`, deviceId: "device", scope: "all", kinds: ["terminals"], refresh() {} });
+    }
+    await greetBridge(call, { deviceId: "device", beforeRefresh() {} });
+    expect(held.size).toBe(7);
+    const catchUp = vi.fn();
+    const thread = (entity) => watchChanges({ id: "s-thread", deviceId: "device", entity, kinds: ["thread"], refresh() {}, catchUp });
+    const first = thread("first");
+    await subscriptionsSettled();
+    expect(held.get("s-thread")?.scope).toEqual({ kind: "entity", id: "first" });
+    first.dispose();
+    thread("second");
+    await subscriptionsSettled();
+    expect(held.get("s-thread")?.scope).toEqual({ kind: "entity", id: "second" });
+    expect(held.size).toBe(8);
+    expect(catchUp).not.toHaveBeenCalled();
+    expect(call.mock.calls).not.toContainEqual(["changes.unsubscribe", { subscription_id: "s-thread" }]);
+  });
+
+  it("retains a busy HTTP subscription and catches up after a later push triggers retry", async () => {
+    vi.useFakeTimers();
+    const ready = vi.fn();
+    const catchUp = vi.fn();
+    let blocked = true;
+    const call = vi.fn(async (method, spec) => {
+      if (method === "session.hello") return greeting;
+      if (spec.subscription_id === "s-thread" && blocked) throw Object.assign(Error("no capacity"), { error_code: "busy" });
+    });
+    watchChanges({ id: "inbox", deviceId: "device", scope: "all", kinds: ["state"], refresh() {} });
+    watchChanges({ id: "s-thread", deviceId: "device", entity: "thread", kinds: ["thread"], refresh() {}, catchUp });
+    await greetBridge(call, { deviceId: "device", beforeRefresh: ready });
+    expect(ready).toHaveBeenCalledOnce();
+    expect(catchUp).not.toHaveBeenCalled();
+    expect(connectionDiagnosticHistory()).toContainEqual(expect.objectContaining({
+      event: "subscription", state: "refused", subscription: "s-thread", code: "busy",
+    }));
+    const attempts = () => call.mock.calls.filter(([method, spec]) => method === "changes.subscribe" && spec.subscription_id === "s-thread");
+    const push = async () => {
+      dispatchChangeEvent({ type: "changes", subscription_id: "inbox", items: [{ entity_id: "thread", state: {} }] }, "device");
+      await subscriptionsSettled();
+    };
+    for (let i = 0; i < 4; i += 1) await push();
+    expect(attempts()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(attempts()).toHaveLength(2);
+    for (let i = 0; i < 4; i += 1) await push();
+    expect(attempts()).toHaveLength(2);
+    expect(connectionDiagnosticHistory().filter(({ event, subscription }) => event === "subscription" && subscription === "s-thread")).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(attempts()).toHaveLength(2);
+    blocked = false;
+    await push();
+    expect(attempts()).toHaveLength(3);
+    expect(catchUp).toHaveBeenCalledOnce();
+  });
+
+  it("retries after a slot is released and gives an otherwise quiet refusal only one delayed retry", async () => {
+    vi.useFakeTimers();
+    const held = new Set();
+    const freed = vi.fn();
+    const waiting = watchChanges({ id: "waiting", deviceId: "device", scope: "all", kinds: ["state"], refresh() {} });
+    watchChanges({ id: "contender", deviceId: "device", scope: "all", kinds: ["state"], refresh() {}, catchUp: freed });
+    const call = vi.fn(async (method, spec) => {
+      if (method === "session.hello") return greeting;
+      if (method === "changes.unsubscribe") return held.delete(spec.subscription_id);
+      if (held.size && !held.has(spec.subscription_id)) throw Object.assign(Error("no capacity"), { error_code: "busy" });
+      held.add(spec.subscription_id);
+    });
+    await greetBridge(call, { deviceId: "device", beforeRefresh() {} });
+    const attempts = () => call.mock.calls.filter(([method, p]) => method === "changes.subscribe" && p.subscription_id === "contender");
+    expect(attempts()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const beforeRelease = attempts().length;
+    expect(beforeRelease).toBeGreaterThan(1);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(attempts()).toHaveLength(beforeRelease);
+    dispatchChangeEvent({ type: "changes", subscription_id: "waiting", items: [{ entity_id: "thread", state: {} }] }, "device");
+    await subscriptionsSettled();
+    expect(attempts()).toHaveLength(beforeRelease + 1);
+    // This release should retry immediately even though the last refusal is fresh.
+    waiting.dispose();
+    await subscriptionsSettled();
+    expect(held).toEqual(new Set(["contender"]));
+    expect(attempts()).toHaveLength(beforeRelease + 2);
+    expect(freed).toHaveBeenCalledOnce();
+  });
+
+  it("ends a refusal episode when the mounted view goes back to the already held thread", async () => {
+    vi.useFakeTimers();
+    let entity = "held";
+    const catchUp = vi.fn();
+    watchChanges({ id: "s-thread", deviceId: "device", entity: () => entity, kinds: ["thread"], refresh() {}, catchUp });
+    const call = vi.fn(async (method, spec) => {
+      if (method === "session.hello") return greeting;
+      if (spec.scope.id === "blocked") throw Object.assign(Error("no capacity"), { error_code: "busy" });
+    });
+    await greetBridge(call, { deviceId: "device", beforeRefresh() {} });
+    for (const wanted of ["blocked", "held", "blocked"]) {
+      entity = wanted;
+      dispatchChangeEvent({ type: "changes", subscription_id: "s-thread", items: [{ entity_id: "held", thread: [] }] }, "device");
+      await subscriptionsSettled();
+    }
+    expect(call.mock.calls.filter(([method]) => method === "changes.subscribe").map(([, spec]) => spec.scope.id))
+      .toEqual(["held", "blocked", "blocked"]);
+    expect(connectionDiagnosticHistory().filter(({ event, code }) => event === "subscription" && code === "busy")).toHaveLength(2);
+    expect(catchUp).not.toHaveBeenCalled();
   });
 
   it("does not release or refresh after its opening is retired", async () => {

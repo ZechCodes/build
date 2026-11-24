@@ -45,6 +45,7 @@ import { pendingDeviceHtml } from "../core/deviceFingerprint.js";
 import { accountReadCadence, isPairingConnecting, notePairingApproved, onPairingChanged } from "../core/pendingPairing.js";
 import { restoreWriteOperations } from "../core/writeOperationRuntime.js";
 import { usesHttp } from "../core/httpConnections.js";
+import { mountHttpTransportControls } from "../core/httpTransportControls.js";
 
 /** Whether the cache's two readers are up. They are started once, before any
  *  session answers, and stood down when a gate screen takes the page (which is
@@ -524,7 +525,8 @@ function waitingRowHtml(device) {
     <div class="projrow"><span class="pname">${esc(device.name)}</span>
       <span class="ppath mono" style="font-size:11px">${esc(device.fingerprint.slice(0, 16))}…</span>
       <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${device.status === "online" && !blocked ? "var(--green)" : "var(--dim)"}"></span> ${esc(word)}</span>
-      ${blocked ? `<button class="btn mini" type="button" data-retry-device="${esc(device.id)}">Retry</button>` : ""}</div>`;
+      ${blocked ? `<button class="btn mini" type="button" data-retry-device="${esc(device.id)}">Retry</button>` : ""}
+      <button class="btn mini" type="button" data-transport-device="${esc(device.id)}">Transport</button></div>`;
 }
 
 /** A reader asking one machine again from the screen that is waiting on it. The
@@ -532,6 +534,15 @@ function waitingRowHtml(device) {
  *  could not be reached again wears its new reason here. */
 function retryOneDevice(deviceId) {
   connectDevice(deviceId, { reason: "gate" }).catch(() => paintWaiting(App.devices));
+}
+
+function openWaitingTransport(deviceId) {
+  const dialog = document.querySelector("#wait-transport");
+  if (!dialog || dialog.open) return;
+  const dispose = mountHttpTransportControls(dialog.querySelector("section"), deviceId);
+  dialog.addEventListener("close", dispose, { once: true });
+  App.viewDispose = dispose;
+  dialog.showModal();
 }
 
 /** Why the page is waiting, one sentence per situation. A machine the account
@@ -596,11 +607,14 @@ function renderWaiting(devices) {
         <button class="btn" id="retrybtn">Retry now</button>
         <button class="btn" id="addmore">Add another device…</button></div>
       <div class="adderr" id="oerr"></div>
+      <dialog id="wait-transport" aria-label="Connection transport"><section></section>
+        <form method="dialog"><button class="btn">Close</button></form></dialog>
     </div>`;
   paintWaiting(devices);
   $("#waitlist").onclick = (event) => {
-    const asked = event.target.closest("[data-retry-device]");
-    if (asked) retryOneDevice(asked.dataset.retryDevice);
+    const asked = event.target.closest("[data-retry-device], [data-transport-device]");
+    if (asked?.dataset.retryDevice) retryOneDevice(asked.dataset.retryDevice);
+    if (asked?.dataset.transportDevice) openWaitingTransport(asked.dataset.transportDevice);
   };
   // A machine this client has stopped dialling — its key was not the key this
   // account pinned — is the one thing on this screen that waiting will not fix,

@@ -12,6 +12,8 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createBridgeEpoch } from "../src/core/bridgeEpoch.js";
+import { createBrowserHttpEndpoint } from "../src/core/httpBrowserEndpoint.js";
+import { createBridgeDiscovery } from "../src/core/httpDiscovery.js";
 import { configureTerminalPeerLinks } from "../src/core/terminalPeerLinks.js";
 
 const terminals = vi.hoisted(() => ({ followTerminalDevice: vi.fn(), terminalDeviceId: vi.fn(() => null) }));
@@ -2138,6 +2140,122 @@ describe("a machine a page stands on, which the account calls offline", () => {
 });
 
 describe("explicit HTTP selection with independent relay presence", () => {
+  it("releases the saved HTTPS slot when the account retires the device", async () => {
+    http.selected.add("dev-a");
+    retireDevice("dev-a");
+    await flush();
+    expect(http.selected.has("dev-a")).toBe(false);
+  });
+
+  function serveSavedHttpIdentity() {
+    const origin = "https://127.0.0.1:8443";
+    const issuer = "https://127.0.0.1:9443";
+    const credentials = issuer + "/api/devices/dev-a/http-credentials";
+    const identity = { origin, deviceId: "dev-a", endpointEpoch: "endpoint", familyId: "family" };
+    const renew = vi.fn(() => new Response(JSON.stringify({
+      origin, issuer, account_id: "account", device_id: identity.deviceId,
+      endpoint_epoch: identity.endpointEpoch, family_id: identity.familyId,
+      expires_at: Math.floor(Date.now() / 1000) + 300, access_token: "fixture-bearer", scope: "bridge:read bridge:write",
+    }), { status: 201 }));
+    const patch = vi.fn(() => new Response(JSON.stringify({ error: "Missing session", error_code: "not_found" }), { status: 404 }));
+    const resource = vi.fn(() => new Response(JSON.stringify({ error: "Invalid credential", error_code: "invalid_credential" }), { status: 401 }));
+    const fetchImpl = vi.fn(async (url, { method, body }) => {
+      if (url === credentials) return renew(JSON.parse(body));
+      if (url === origin + "/v1/sessions" && method === "POST") {
+        return new Response(JSON.stringify({
+          session_id: "opening-" + renew.mock.calls.length, opening_generation: "generation",
+          grant_expires_at: new Date(Date.now() + 30000).toISOString(),
+        }));
+      }
+      if (url.startsWith(origin + "/v1/sessions/") && method === "PATCH") return patch();
+      if (url.startsWith(origin + "/v1/sessions/") && method === "DELETE") return new Response(null, { status: 204 });
+      if (url === origin + "/v1/tasks/t" && method === "GET") return resource();
+      throw new Error("Unhandled loopback fixture route");
+    });
+    const discovery = createBridgeDiscovery({ issuer, accountId: "account", fetchImpl });
+    http.selected.add(identity.deviceId);
+    syncDeviceRecoveryPresence(App.devices);
+    http.open.mockImplementation(async (deviceId, _attempt, { onLost }) => {
+      const grant = await discovery.resume(identity);
+      const endpoint = createBrowserHttpEndpoint({ grant, fetchImpl });
+      const opening = await endpoint.open("range");
+      const session = {
+        ...fakeSession(deviceId), transport: "http", close: endpoint.close, sessionId: opening.session_id,
+        readResource: () => endpoint.request(opening, { method: "GET", path: "/v1/tasks/t" }, {}),
+      };
+      const { context, lifetime } = adoptDeviceConnection(session, null);
+      endpoint.onLost((error) => onLost(lifetime, error));
+      return context;
+    });
+    return { renew, patch };
+  }
+
+  it("resumes the saved identity when the tab wakes after the bearer expires", async () => {
+    const { renew, patch } = serveSavedHttpIdentity();
+    await connectDevice("dev-a");
+    // Some browsers pause the monotonic clock during OS sleep. The suspended
+    // callback sees an expired bearer before the monotonic opening timer fires.
+    vi.setSystemTime(Date.now() + 6 * 60 * 1000);
+    await vi.advanceTimersByTimeAsync(21000);
+    expect(patch).not.toHaveBeenCalled();
+    expect(contextFor("dev-a").blocked).not.toBe("http-auth");
+    expect(renew.mock.calls).toEqual([
+      [{ family_id: "family", endpoint_epoch: "endpoint" }],
+      [{ family_id: "family", endpoint_epoch: "endpoint" }],
+    ]);
+    expect(contextFor("dev-a").session.sessionId).toBe("opening-2");
+  });
+
+  it("resumes after an unchanged endpoint loses its old opening on restart", async () => {
+    const { renew, patch } = serveSavedHttpIdentity();
+    await connectDevice("dev-a");
+    await vi.advanceTimersByTimeAsync(21000);
+    expect(patch).toHaveBeenCalledOnce();
+    expect(renew).toHaveBeenCalledTimes(2);
+    expect(contextFor("dev-a").session.sessionId).toBe("opening-2");
+    expect(contextFor("dev-a").blocked).toBeFalsy();
+  });
+
+  it("resumes when a lost opening returns 401 to a resource request", async () => {
+    const { renew } = serveSavedHttpIdentity();
+    const { session } = await connectDevice("dev-a");
+    await expect(session.readResource()).rejects.toThrow();
+    await flush();
+    expect(contextFor("dev-a").blocked).not.toBe("http-auth");
+    expect(renew).toHaveBeenCalledTimes(2);
+    expect(contextFor("dev-a").session.sessionId).toBe("opening-2");
+  });
+
+  it("waits a minute after a rate-limited renewal of a live opening", async () => {
+    const { renew } = serveSavedHttpIdentity();
+    await connectDevice("dev-a");
+    renew.mockImplementation(() => new Response(null, { status: 429 }));
+    vi.setSystemTime(Date.now() + 250000);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(renew).toHaveBeenCalledTimes(2);
+    await expect(connectDevice("dev-a")).rejects.toMatchObject({ code: "rate_limited" });
+    expect(renew).toHaveBeenCalledTimes(2);
+    await reachNextRecoveryAttempt();
+    expect(renew).toHaveBeenCalledTimes(3);
+  });
+
+  it("retains retry after hosted refuses a saved family", async () => {
+    const { renew } = serveSavedHttpIdentity();
+    const { session } = await connectDevice("dev-a");
+    renew.mockImplementation(() => new Response(null, { status: 401 }));
+    await expect(session.readResource()).rejects.toThrow();
+    expect(contextFor("dev-a").blocked).not.toBe("http-auth");
+    await flush();
+    expect(contextFor("dev-a").blocked).toBe("http-auth");
+    expect(renew).toHaveBeenCalledTimes(2);
+    await reachNextRecoveryAttempt();
+    expect(renew.mock.calls).toEqual([
+      [{ family_id: "family", endpoint_epoch: "endpoint" }],
+      [{ family_id: "family", endpoint_epoch: "endpoint" }],
+      [{ family_id: "family", endpoint_epoch: "endpoint" }],
+    ]);
+  });
+
   it("retires the HTTP lifetime before an explicit WebRTC choice", async () => {
     http.selected.add("dev-a");
     http.open.mockImplementation(async (deviceId) => {
@@ -2188,6 +2306,7 @@ describe("explicit HTTP selection with independent relay presence", () => {
     expect(wire.openSession).not.toHaveBeenCalled();
     expect(contextFor("dev-a").blocked).toBe("http-auth");
     await vi.advanceTimersByTimeAsync(30000);
-    expect(http.open).toHaveBeenCalledOnce();
+    expect(http.open.mock.calls.length).toBeGreaterThan(1);
+    expect(openedFor("dev-a")).toHaveLength(0);
   });
 });

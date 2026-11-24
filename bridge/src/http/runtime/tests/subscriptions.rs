@@ -757,6 +757,7 @@ async fn production_tls_listener_deletes_a_subscription_and_ends_its_stream() {
 
 mod contract;
 mod cross_transport;
+mod push_stall;
 mod renewal;
 mod stream_bounds;
 mod verified_renewal;

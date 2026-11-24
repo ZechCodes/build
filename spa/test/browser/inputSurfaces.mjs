@@ -22,6 +22,7 @@ export const INPUT_SOURCES = {
   "core/fileEditor.js": "file editor",
   "core/filesUploadActions.js": "New folder",
   "core/filterMenuControl.js": "filter menu / task composer",
+  "core/httpTransportControls.js": "device settings",
   "core/inbox.js": "reroute",
   "core/projectChangesDrafts.js": "saved source draft",
   "core/scopedCompactionEditor.js": "device settings / project settings / workspace settings",
@@ -85,7 +86,7 @@ export const INPUT_RADIO_SOURCES = {
 };
 
 export const INPUT_SURFACES = [
-  { name: "device settings", selectSurface: "device settings", selectors: ['input[name="model"]', "#workspaceidlehours"] },
+  { name: "device settings", selectSurface: "device settings", selectors: ['input[name="model"]', "#workspaceidlehours", "#device-bridge-url"] },
   { name: "task controls", selectSurface: "task controls", selectors: ["#task-labels", "[data-waiting-search]", "#assign-workspace", "#capture-branch", "#capture-answer", "#create-work-input"] },
   { name: "new environment", selectSurface: "new environment", selectors: ["#create-environment-label", "#create-folder-value-0", "#create-folder-label-0", "#create-folder-branch-0", "#create-folder-label-1", "#create-folder-branch-1"] },
   { name: "workspace advanced folders", selectSurface: "workspace advanced folders", selectors: ["#create-work-input", "[data-create-advanced][open]", "#create-folder-value-0", "#create-folder-label-0", "#create-folder-branch-0", "#create-folder-label-1", "#create-folder-branch-1"] },

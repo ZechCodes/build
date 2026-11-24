@@ -8,6 +8,13 @@ const grant = () => ({ identity: { origin, deviceId: "device" }, token: () => "d
 afterEach(() => vi.useRealTimers());
 
 describe("browser HTTP endpoint", () => {
+  it("requests fresh discovery when a freshly minted bearer cannot open a session", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(json({ error: "Invalid credential", error_code: "invalid_credential" }, 401));
+    const endpoint = createBrowserHttpEndpoint({ grant: grant(), fetchImpl });
+    await expect(endpoint.open("range")).rejects.toMatchObject({ code: "opening_refused" });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    endpoint.close();
+  });
   it("sends only the device bearer with fixed redirect, cookie and metadata policy", async () => {
     const fetchImpl = vi.fn().mockResolvedValueOnce(json(opening)).mockResolvedValueOnce(json({ ok: true, result: {} })).mockResolvedValue(new Response(null, { status: 204 }));
     const endpoint = createBrowserHttpEndpoint({ grant: grant(), fetchImpl });

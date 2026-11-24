@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 import hashlib
 import os
+import re
 import sys
+from tempfile import NamedTemporaryFile
 from typing import Protocol
 
 from .runtime import BuildctlError
@@ -23,6 +25,7 @@ class ServiceManager(Protocol):
     def prepare_install(self) -> None: ...
     def reload(self) -> None: ...
     def stop(self) -> None: ...
+    def stop_for_restart(self) -> None: ...
     def start(self) -> None: ...
 
 
@@ -70,6 +73,27 @@ class Systemd:
     def stop(self):
         self.env.require_mutation()
         self.command("stop")
+
+    def stop_for_restart(self):
+        self.env.require_mutation()
+        invocation = self.command(
+            "show", "--property=InvocationID", "--value", check=False
+        ).stdout.strip()
+        if not re.fullmatch(r"[0-9a-f]{32}", invocation) or invocation == "0" * 32:
+            self.stop()
+            return
+        directory = self.env.path(self.env.state_root / "tasks")
+        marker = self.env.path(directory / "http-endpoint.restart")
+        directory.mkdir(exist_ok=True, mode=0o700)
+        with NamedTemporaryFile(mode="w", dir=directory, prefix=".restart-", delete=False) as stream:
+            temporary = Path(stream.name)
+        try:
+            temporary.write_text(invocation + "\n")
+            os.replace(temporary, marker)
+            self.stop()
+        finally:
+            temporary.unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
 
     def start(self):
         self.env.require_mutation()

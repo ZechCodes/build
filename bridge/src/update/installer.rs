@@ -864,6 +864,9 @@ fn service_command(job: &Job, action: &str) -> Result<(), String> {
     } else {
         None
     };
+    let _http_restart = stopping_pid
+        .flatten()
+        .and_then(|pid| planned_http_restart(job, pid));
     let mut command = match std::env::consts::OS {
         "linux" => {
             // Every start the helper makes has the bridge stopped: the moment
@@ -906,6 +909,38 @@ fn service_command(job: &Job, action: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn planned_http_restart(
+    job: &Job,
+    pid: u32,
+) -> Option<crate::http::endpoint_restart::RestartIntent> {
+    use crate::http::endpoint_restart::{active_invocation, RestartIntent};
+
+    let state = job.tasks_dir.join("http-endpoint.json");
+    let id = match std::env::consts::OS {
+        "linux" => systemd_invocation(),
+        "macos" => active_invocation(&state, pid),
+        _ => None,
+    }?;
+    RestartIntent::publish(&state, &id).ok()
+}
+
+fn systemd_invocation() -> Option<String> {
+    let mut command = Command::new("systemctl");
+    command.args([
+        "--user",
+        "show",
+        "-p",
+        "InvocationID",
+        "--value",
+        "build-bridge.service",
+    ]);
+    let output = bounded_output(&mut command, Duration::from_secs(5)).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(std::str::from_utf8(&output.stdout).ok()?.trim().to_owned())
 }
 
 fn stop_failure_is_absent(action: &str, os: &str, observed: Option<Option<u32>>) -> bool {

@@ -17,6 +17,9 @@ const TERMINAL_ARITY = new Map([
 ]);
 const ARITY = new Map([
   ["discover", [1, 1]],
+  ["discoverSaved", [2, 2]],
+  ["settingsRead", [0, 0]],
+  ["settingsWrite", [1, 1]],
   ["resume", [1, 1]],
   ["open", [2, 2]],
   ["request", [3, 4]],
@@ -76,6 +79,8 @@ export function installBridgeHttpIpc({
   getAuth,
   fetch,
   manifest,
+  settings,
+  getSettingsToken = () => getAuth()?.accessToken,
 }) {
   const owners = new WeakMap();
   const navigations = new WeakMap();
@@ -175,13 +180,18 @@ export function installBridgeHttpIpc({
       if (isTerminal && navigationPending(event.sender)) throw transportError("untrusted_caller");
       const owner = caller(event);
       validateArguments(method, args, isTerminal);
-      const value = await (isTerminal ? terminal : bridge)[method](owner, ...args);
+      const value = await invoke(owner, method, args, isTerminal);
       if (!isOwnerCurrent(owner)) throw transportError("stale_owner");
       return { ok: true, value };
     } catch (error) {
       return safeError(error, isTerminal);
     }
   });
+  function invoke(owner, method, args, isTerminal) {
+    if (method === "settingsRead") return settings.read(getSettingsToken());
+    if (method === "settingsWrite") return settings.write(getSettingsToken(), args[0]);
+    return (isTerminal ? terminal : bridge)[method](owner, ...args);
+  }
   return {
     attach,
     retire,

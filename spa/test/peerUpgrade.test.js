@@ -76,7 +76,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
 
 const { App, resetApplication } = await import("../src/app.js");
 const { selectAdapter } = await import("../src/core/bridgeApi/index.js");
-const { adoptBridgeSelection, contextFor, onDeviceStateChanged } = await import("../src/core/deviceContexts.js");
+const { adoptBridgeSelection, adoptDeviceConnection, contextFor, onDeviceStateChanged } = await import("../src/core/deviceContexts.js");
 const {
   connectDevice,
   deviceRecoverySnapshot,
@@ -603,6 +603,19 @@ describe("a connection that goes after it was live", () => {
 });
 
 describe("the terminals' session", () => {
+  it("scopes ICE credentials to the device opening its terminal peer link", async () => {
+    await connect("dev-a");
+    api.fetchIceServers.mockClear();
+    const deviceId = "dev-b";
+    adoptDeviceConnection({ deviceId, transport: "http", call: vi.fn(), close: vi.fn() });
+    const refusal = new Error("ICE mint refused");
+    api.fetchIceServers.mockRejectedValueOnce(refusal);
+    peerLink.open.mockImplementationOnce(({ fetchIceServers }) => fetchIceServers());
+
+    await expect(terminals.mint(deviceId)).rejects.toBe(refusal);
+    expect(api.fetchIceServers).toHaveBeenCalledExactlyOnceWith(deviceId);
+  });
+
   it("is minted on that device's own rendezvous, which closes again after", async () => {
     await connect("dev-a");
     const before = sockets().length;

@@ -189,9 +189,9 @@ async def test_replay_expiry_and_wrong_audience_or_purpose_are_refused(db, assig
 async def test_fresh_proof_cannot_spend_an_expired_challenge(db, assignments):
     _, device, key = await entitled(db)
     pending = await begin(db, device, key)
-    # The handler time is the challenge deadline. Sign a fresh proof for that
-    # instant so the failure specifically exercises the SQL expiry predicate.
-    now = datetime.fromtimestamp(pending["expires_at"], utc_now().tzinfo)
+    # Challenge responses truncate to whole seconds. Move beyond the stored
+    # deadline and sign a fresh proof to exercise the SQL expiry predicate.
+    now = datetime.fromtimestamp(pending["expires_at"] + 1, utc_now().tzinfo)
     raw = proof_for(key, device, pending)
     claims = jwt.decode(raw, options={"verify_signature": False})
     raw = jwt.encode(

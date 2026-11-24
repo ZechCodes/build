@@ -27,13 +27,23 @@ def upgrade():
         sa.Column("id", GUID(length=16), nullable=False),
         sa.Column("account_type", sa.String(5), nullable=False, server_default="free"),
         sa.Column(
-            "tunnel_access", sa.Boolean(create_constraint=True, name="account_policy_tunnel_access"),
+            "tunnel_access",
+            sa.Boolean(
+                create_constraint=True,
+                name=op.f("ck_account_policies_account_policy_tunnel_access"),
+            ),
             nullable=False, server_default=sa.false(),
         ),
         sa.Column("promotion_revision", sa.Integer(), nullable=False, server_default="0"),
         *audit_columns(),
-        sa.CheckConstraint("account_type IN ('free', 'admin')", name="account_policy_type"),
-        sa.CheckConstraint("promotion_revision >= 0", name="account_policy_revision"),
+        sa.CheckConstraint(
+            "account_type IN ('free', 'admin')",
+            name=op.f("ck_account_policies_account_policy_type"),
+        ),
+        sa.CheckConstraint(
+            "promotion_revision >= 0",
+            name=op.f("ck_account_policies_account_policy_revision"),
+        ),
         sa.ForeignKeyConstraint(
             ["id"], ["users.id"], name="fk_account_policies_id_users", ondelete="CASCADE",
         ),

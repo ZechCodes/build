@@ -10,7 +10,7 @@ from buildapp.models import Device
 
 async def mark_hosted_ready_once(db_session: AsyncSession, pairing: Device) -> bool:
     """Latch first readiness for this pairing in the caller's transaction."""
-    if pairing.owner_user_id is None:
+    if not pairing.approved or pairing.owner_user_id is None:
         return False
     # A revoked row can be purged and later recreated with the same device ID.
     # The creation stamp fences that case, even if the new row restarts at epoch 0.

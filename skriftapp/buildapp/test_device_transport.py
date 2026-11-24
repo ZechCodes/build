@@ -6,7 +6,6 @@ import json
 import pytest
 from litestar.testing import TestClient
 from skrift.auth.session_keys import SESSION_USER_ID
-from sqlalchemy import select
 
 from buildapp import bridge_http_auth, pairing_crypto
 from buildapp.bridge_http_models import BridgeHttpEndpoint
@@ -147,7 +146,10 @@ async def test_device_transport_readiness_survives_https_reregistration(db):
     assert device.owner_user_id == user
 
 
-def test_device_transport_readiness_resets_when_device_is_paired_again(transport_client):
+@pytest.mark.parametrize("snapshot_while_revoked", [False, True], ids=["approved", "revoked"])
+def test_device_transport_readiness_resets_when_device_is_paired_again(
+    transport_client, snapshot_while_revoked,
+):
     from buildapp.device_transport import mark_hosted_ready_once
 
     client = transport_client
@@ -164,6 +166,17 @@ def test_device_transport_readiness_resets_when_device_is_paired_again(transport
     client.set_session_data({SESSION_USER_ID: str(owner)})
     response = client.post(f"/api/devices/{old.id}/revoke")
     assert response.is_success, response.text
+
+    async def read_revoked():
+        async with client.app.state.make_session() as db:
+            return await db.get(Device, old.id)
+
+    snapshot = old
+    if snapshot_while_revoked:
+        with client.portal() as portal:
+            snapshot = portal.call(read_revoked)
+        assert snapshot.approved is False
+
     code = "ABCD-EFGH"
     code_hash = pairing_crypto.hash_code(code)
     challenge = pairing_crypto.registration_challenge(
@@ -182,10 +195,14 @@ def test_device_transport_readiness_resets_when_device_is_paired_again(transport
 
     async def inspect():
         async with client.app.state.make_session() as db:
-            current = await db.scalar(select(Device).where(Device.id == old.id))
+            current = await db.get(Device, old.id)
             assert current.approved is True and current.owner_user_id == owner
             assert current.hosted_ready_once is False
-            assert await mark_hosted_ready_once(db, old) is False
+            if snapshot_while_revoked:
+                assert current.authorization_epoch == snapshot.authorization_epoch
+            assert await mark_hosted_ready_once(db, snapshot) is False
+            await db.refresh(current)
+            assert current.hosted_ready_once is False
             assert await mark_hosted_ready_once(db, current) is True
 
     with client.portal() as portal:

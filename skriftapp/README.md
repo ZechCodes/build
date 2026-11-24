@@ -141,10 +141,12 @@ checks every 30 seconds.
 | `HOSTED_TUNNEL_CAPACITY` | Maximum number of non-deleted tunnels in the whole account, including idle tunnels and other consumers. |
 | `HOSTED_TUNNEL_MODE_SOURCE` | The issuer's signed-mode adapter, `buildapp.hosted_tunnel_source:hosted_mode_source`. |
 
-The issuer also needs the account ID and zone name for credential issuance and
-reserved-host validation. The worker reserves zone-scoped tunnel names derived
-from `HOSTED_TUNNEL_ZONE_NAME`. Give dev and prod separate credentials and zones.
-Use the wildcard edge certificate for every bridge hostname in its zone.
+The issuer uses the account ID and wrapping key file for credential issuance.
+It verifies the hosted origin against the assignment's canonical hostname and
+reserves the `b-<32 lowercase hex digits>` host-label form after removal. The
+worker uses `HOSTED_TUNNEL_ZONE_NAME` to derive its zone-scoped tunnel names.
+Give dev and prod separate credentials and zones. Use the wildcard edge
+certificate for every bridge hostname in its zone.
 
 To replace one assignment, run
 `python -m buildapp.hosted_tunnel_worker rotate DEVICE_ID GENERATION` with the

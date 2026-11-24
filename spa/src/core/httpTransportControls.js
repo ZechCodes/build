@@ -1,6 +1,8 @@
-import { httpPreferenceFor, onHttpPreferencesChanged, restoreHttpConnections } from "./httpConnections.js";
+import { cachedTerminalTransport, deviceTransportFor, httpPreferenceFor, onHttpPreferencesChanged, restoreHttpConnections } from "./httpConnections.js";
 import { chooseDeviceTransport, connectDevice } from "../connection.js";
 import { App } from "../appState.js";
+import { onDevicesChanged } from "../devices.js";
+import { terminalCompatibilityText, transportReasonText } from "./deviceTransportSelection.js";
 import { contextFor, onDeviceStateChanged } from "./deviceContexts.js";
 import { httpFailure } from "./httpEndpoint.js";
 import { httpNetworkPermission, requestHttpNetworkPermission } from "./httpNetworkPermission.js";
@@ -27,8 +29,9 @@ export function mountHttpTransportControls(host, deviceId) {
     <form data-http-address><label for="device-bridge-url">Bridge HTTPS address</label>
       <div class="projfolder"><input id="device-bridge-url" type="url" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" required>
       <button class="btn" type="submit">Save and use HTTPS</button></div></form>
-    <p class="dim">Terminals also use HTTPS when supported. Older setups may use WebRTC. Transport changes do not resend uncertain actions.</p>
+    <p class="dim" data-http-manual>Terminals also use HTTPS when supported. Older setups may use WebRTC. Transport changes do not resend uncertain actions.</p>
     <button class="btn" type="button" data-http-remove hidden>Remove HTTPS address</button>
+    <p data-http-policy role="status" hidden></p>
     <p role="status" aria-live="polite" data-http-status></p>
     <button class="btn" type="button" data-http-permission hidden>Allow browser network access</button>`;
   const select = host.querySelector("select");
@@ -37,10 +40,15 @@ export function mountHttpTransportControls(host, deviceId) {
   const remove = host.querySelector("[data-http-remove]");
   const permission = host.querySelector("[data-http-permission]");
   const status = host.querySelector("[data-http-status]");
+  const policyStatus = host.querySelector("[data-http-policy]");
+  const manualControls = [select, host.querySelector('label[for="device-transport"]'), form, host.querySelector("[data-http-manual]")];
   let active = true;
   let shownOrigin;
   const paintStatus = () => {
-    if (!active) return;
+    if (!active || !policyStatus.hidden) return;
+    paintLegacyStatus();
+  };
+  const paintLegacyStatus = () => {
     const context = contextFor(deviceId);
     const chosen = httpPreferenceFor(deviceId);
     if (chosen?.selected !== "http") { permission.hidden = true; return; }
@@ -49,8 +57,24 @@ export function mountHttpTransportControls(host, deviceId) {
     status.textContent = problem ? httpFailure(problem).message : "";
     permission.hidden = !showPermission(problem, chosen.origin);
   };
+  const paintPolicy = (selection) => {
+    const manual = selection.kind !== "blocked" && !selection.wssOnly;
+    policyStatus.hidden = manual;
+    status.hidden = !manual;
+    for (const control of manualControls) control.hidden = !manual;
+    if (manual) return false;
+    remove.hidden = true;
+    permission.hidden = !selection.origin || !httpNetworkPermission(selection.origin);
+    if (selection.kind === "blocked") policyStatus.textContent = transportReasonText(selection.reason);
+    else {
+      const source = selection.source === "hosted" ? "Hosted HTTPS" : "Personal HTTPS";
+      const terminal = terminalCompatibilityText.get(cachedTerminalTransport(deviceId));
+      policyStatus.textContent = `${source} · ${selection.origin} · ${terminal}`;
+    }
+    return true;
+  };
   const paint = () => {
-    if (!active) return;
+    if (!active || paintPolicy(deviceTransportFor(deviceId))) return;
     const preference = httpPreferenceFor(deviceId);
     select.value = preference?.selected || "webrtc";
     select.querySelector('[value="http"]').disabled = !preference;
@@ -60,6 +84,7 @@ export function mountHttpTransportControls(host, deviceId) {
     paintStatus();
   };
   const stop = onHttpPreferencesChanged(paint);
+  const stopDevices = onDevicesChanged(paint);
   const stopStatus = onDeviceStateChanged(paintStatus);
   void restoreHttpConnections().then(paint).catch(() => {});
   paint();
@@ -80,10 +105,10 @@ export function mountHttpTransportControls(host, deviceId) {
   };
   remove.onclick = () => change({ transport: "webrtc", removeAddress: true });
   permission.onclick = async () => {
-    const preference = httpPreferenceFor(deviceId);
-    if (preference?.selected !== "http") return;
-    await requestHttpNetworkPermission(preference.origin);
+    const selection = deviceTransportFor(deviceId);
+    if (selection.kind !== "http") return;
+    await requestHttpNetworkPermission(selection.origin);
     if (active) void connectDevice(deviceId, { reason: "browser-network-permission" }).catch(() => {});
   };
-  return () => { active = false; stop(); stopStatus(); };
+  return () => { active = false; stop(); stopStatus(); stopDevices(); };
 }

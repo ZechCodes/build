@@ -39,6 +39,8 @@ const BLOCKED_WHY = {
   failed: "it failed",
   lost: "it dropped, and could not be made again",
   unreached: "the machine is not answering",
+  "http-desktop-update": "the Build desktop app needs updating for this HTTPS connection",
+  "http-setup": "waiting for this device’s HTTPS setup",
   "http-auth": "the account could not authorize HTTPS for this device",
   "http-sign-in": "sign in to an account that can access this bridge",
   "http-wrong-bridge": "the saved HTTPS address answered as a different bridge",

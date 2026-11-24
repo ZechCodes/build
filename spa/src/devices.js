@@ -22,10 +22,15 @@ import { fetchDevices } from "./api.js";
 import { deviceNameOf } from "./core/devicePolicy.js";
 import { mountDeviceFilterCache, rememberDeviceFilter } from "./core/deviceFilter.js";
 import { deviceWentAway, openDeviceSessions, retireDevice, syncDeviceRecoveryPresence, syncHome } from "./connection.js";
-import { DEVICES_ADDRESS, readCached, subscribeCache, writeCached } from "./core/localCache.js";
+import { DEVICES_ADDRESS, mergeCachedAtomically, mergeCachedTogether, readCachedMany, subscribeCache, takeCachedCount } from "./core/localCache.js";
+import { writeAccountId } from "./core/writeOperationRuntime.js";
 import { uiAddress, watchUiState } from "./core/localUiState.js";
 import { bridgeUpdateNotifies, bridgeUpdateStatus, onBridgeUpdatesChanged, trackBridgeUpdateDevices } from "./core/bridgeUpdates.js";
 import { accountReadCadence, isPairingConnecting, onPairingChanged, pairingsLandedIn } from "./core/pendingPairing.js";
+
+const POLICY_ADDRESS = { ...DEVICES_ADDRESS, kind: "device-transport-policy" };
+const deviceListAddresses = [DEVICES_ADDRESS, POLICY_ADDRESS];
+const presenceOrder = (accountId) => ({ ...DEVICES_ADDRESS, kind: "device-presence-order", entityId: accountId || "" });
 
 let presenceGeneration = 0;
 const deviceListListeners = new Set();
@@ -43,36 +48,46 @@ let latestDeviceRead = Promise.resolve([]);
  * announcement clears it: the only announced missing record is an eviction or
  * account reset, and keeping the old account's devices then would be wrong.
  */
-function takeUpCachedDevices({ clearMissing = false } = {}) {
+function takeUpCachedDevices({ clearMissing = false, offline = false } = {}) {
   const generation = ++deviceReadGeneration;
-  const read = readCached(DEVICES_ADDRESS).then(async (record) => {
-    if (generation !== deviceReadGeneration) return App.devices;
+  const epoch = App.accountEpoch;
+  const accountId = writeAccountId();
+  const read = readCachedMany(deviceListAddresses).then(async ([record, policyRecord]) => {
+    if (generation !== deviceReadGeneration || epoch !== App.accountEpoch || accountId !== writeAccountId()) return App.devices;
     if (!record && !clearMissing) return App.devices;
-    const devices = Array.isArray(record?.value) ? record.value : [];
-    App.devices = devices;
-    // A device just approved that the account now calls online has landed:
-    // the surfaces naming it as connecting repaint, and the poll slows down.
+    const devices = applyDeviceListing(record, policyRecord?.value, accountId, offline);
     pairingsLandedIn(devices);
     trackBridgeUpdateDevices(devices);
     paintBridgeUpdateMark();
     syncDeviceRecoveryPresence(devices);
     await forgetFilterOnMissingDevice();
-    for (const listener of [...deviceListListeners]) listener(devices);
-    return devices;
+    if (generation === deviceReadGeneration && epoch === App.accountEpoch) {
+      for (const listener of [...deviceListListeners]) listener(devices);
+    }
+    return App.devices;
   });
   latestDeviceRead = read;
   return read;
 }
 
+function applyDeviceListing(record, policy, accountId, offline) {
+  const owned = !policy || policy.accountId === accountId;
+  const cached = owned ? record?.value : null;
+  const rows = Array.isArray(cached) ? cached : [];
+  App.deviceTransportPolicy = owned ? policy ?? null : null;
+  App.devices = offline ? rows.map((device) => ({ ...device, status: "offline" })) : rows;
+  return App.devices;
+}
+
 // Installed when the store module is imported, before any REST read can write.
-// `writeCached` announces synchronously after commit, so a writer can wait for
+// Cache writes announce synchronously after commit, so a writer can wait for
 // the exact reread its own write started without applying its payload directly.
 subscribeCache(DEVICES_ADDRESS, () => {
   latestDeviceRead = takeUpCachedDevices({ clearMissing: true });
 });
 
 /** Read the account list for a mounting surface, without making a network ask. */
-export const readCachedDevices = () => takeUpCachedDevices();
+export const readCachedDevices = ({ offline = false } = {}) => takeUpCachedDevices({ offline, clearMissing: offline });
 
 /** Hear the canonical list after a cache readback has applied it. */
 export function onDevicesChanged(listener) {
@@ -86,32 +101,50 @@ export async function refreshDevices() {
 }
 
 /** The one REST read of the account list: fetched, committed to its cache
- *  record and taken back up. Answers what the api itself said, which is what
- *  a presence read retires on; what surfaces paint is `App.devices`. */
+ *  record and taken back up. Presence and rendering use the committed rows. */
 async function pullAccountList() {
   const generation = ++presenceGeneration;
   const accountEpoch = App.accountEpoch;
-  const devices = await fetchDevices();
-  if (generation !== presenceGeneration || accountEpoch !== App.accountEpoch) throw new Error("stale device presence read");
-  // The rail is the whole account's, so a reload paints every machine it knows
-  // before this read has answered. It has no TTL — the list leaves only when
-  // the account stops naming it, which is this write replacing it. Awaited
-  // rather than let go of, so what the next paint reads off disk is what this
-  // read said.
-  await writeCached(DEVICES_ADDRESS, devices);
+  const accountId = writeAccountId();
+  const current = () => generation === presenceGeneration && accountEpoch === App.accountEpoch && accountId === writeAccountId();
+  const [order, response] = await Promise.all([
+    takeCachedCount(presenceOrder(accountId)),
+    fetchDevices({ includeTransportPolicy: true }),
+  ]);
+  const devices = Array.isArray(response) ? response : response.devices;
+  const policy = policyFromListing(response.transport_policy, devices, accountId, order);
+  const committed = await mergeCachedTogether(deviceListAddresses, ([, previous]) => {
+    if (!current() || previous?.accountId === accountId && previous.order > order) return null;
+    return [devices, policy];
+  });
+  if (!committed || !current()) throw new Error("stale device presence read");
   await latestDeviceRead;
-  return devices;
+  if (!current()) throw new Error("stale device presence read");
+  return App.devices;
 }
 
-/** Commit an account action through the same record as presence reads. An
- * older presence request must not undo a rename or revocation after it lands. */
+function policyFromListing(policy, devices, accountId, order) {
+  return {
+    accountId, order,
+    policyAware: Boolean(policy) || devices.some((device) => Object.hasOwn(device, "transport")),
+    tunnelAccess: policy?.tunnel_access === true,
+    promotionRevision: Number.isSafeInteger(policy?.promotion_revision) ? policy.promotion_revision : null,
+  };
+}
+
+/** Commit a rename or revocation without replacing a newer account listing. */
 async function changeCachedDevices(change) {
-  presenceGeneration += 1;
-  const accountEpoch = App.accountEpoch;
-  const record = await readCached(DEVICES_ADDRESS);
-  if (accountEpoch !== App.accountEpoch) throw new Error("device account changed");
-  if (!Array.isArray(record?.value)) return refreshDevices();
-  await writeCached(DEVICES_ADDRESS, change(record.value));
+  const generation = ++presenceGeneration;
+  const epoch = App.accountEpoch;
+  const accountId = writeAccountId();
+  let missing = false;
+  await mergeCachedAtomically(DEVICES_ADDRESS, (value) => {
+    if (presenceGeneration !== generation || epoch !== App.accountEpoch || accountId !== writeAccountId()) return null;
+    missing = !Array.isArray(value);
+    return missing ? null : change(value);
+  });
+  if (epoch !== App.accountEpoch || accountId !== writeAccountId()) throw new Error("device account changed");
+  if (missing) return refreshDevices();
   await latestDeviceRead;
   return App.devices;
 }

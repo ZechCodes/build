@@ -33,9 +33,17 @@ function validTerminalDescriptor(descriptor) {
     && typeof descriptor.protocol === "string" && protocolToken.test(descriptor.protocol);
 }
 
-function terminalAccess({ endpoint, opening, bridgeEpoch, current, closeListeners }) {
+function terminalModeFor(opening, endpoint, wssOnly) {
   const advertised = terminalWebSocketMode(opening);
-  const terminalTransport = advertised === "wss" && typeof endpoint.openTerminal !== "function" ? "webrtc" : advertised;
+  if (advertised === "wss" && typeof endpoint.openTerminal === "function") return "wss";
+  if (wssOnly) return "update_required";
+  return advertised === "protocol_error" ? advertised : "webrtc";
+}
+
+const terminalFailure = new Map([["protocol_error", "protocol"], ["update_required", "terminal_update_required"]]);
+
+function terminalAccess({ endpoint, opening, bridgeEpoch, current, closeListeners, wssOnly }) {
+  const terminalTransport = terminalModeFor(opening, endpoint, wssOnly);
   const terminal = new AbortController();
   const retire = () => terminal.abort(httpFailure("scope_ended"));
   const stopWatching = bridgeEpoch.onChange(retire);
@@ -44,7 +52,7 @@ function terminalAccess({ endpoint, opening, bridgeEpoch, current, closeListener
     terminalTransport,
     async openTerminal({ signal, retry } = {}) {
       if (!current() || terminal.signal.aborted) throw httpFailure("scope_ended");
-      if (terminalTransport !== "wss") throw httpFailure(terminalTransport === "protocol_error" ? "protocol" : "unsupported");
+      if (terminalTransport !== "wss") throw httpFailure(terminalFailure.get(terminalTransport) || "unsupported");
       return endpoint.openTerminal(opening, {
         signal: signal ? AbortSignal.any([terminal.signal, signal]) : terminal.signal,
         ...(retry === true && { retry: true }),
@@ -62,7 +70,7 @@ function refusal(frame) {
   });
 }
 
-export async function openHttpSession({ endpoint, routes, onPush = () => {}, onLost = () => {}, isCurrent = () => true }) {
+export async function openHttpSession({ endpoint, routes, wssOnly = false, onPush = () => {}, onLost = () => {}, isCurrent = () => true }) {
   let closed = false;
   let subscription;
   let opening;
@@ -183,7 +191,7 @@ export async function openHttpSession({ endpoint, routes, onPush = () => {}, onL
 
   return {
     deviceId: endpoint.identity.deviceId, sessionId: opening.session_id, transport: "http",
-    ...terminalAccess({ endpoint, opening, bridgeEpoch, current, closeListeners }),
+    ...terminalAccess({ endpoint, opening, bridgeEpoch, current, closeListeners, wssOnly }),
     bridgeEpoch, rawCall,
     allowRefresh: refreshRelease,
     onClose(fn) { if (closed) fn(); else closeListeners.add(fn); return () => closeListeners.delete(fn); },

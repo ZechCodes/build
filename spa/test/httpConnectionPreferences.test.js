@@ -66,11 +66,12 @@ describe("account-bound transport preference", () => {
 
   it("keeps selected HTTP eligible despite relay flapping without changing account facts", async () => {
     const { store } = create(); await store.restore(); await store.selectHttp(identity);
+    const usesHttp = (deviceId) => store.forDevice(deviceId)?.selected === "http";
     const offline = [{ id: "device", status: "offline" }, { id: "other", status: "offline" }];
-    expect(httpRecoveryDevices(offline, store.forDevice)).toEqual([{ id: "device", status: "online" }, { id: "other", status: "offline" }]);
+    expect(httpRecoveryDevices(offline, usesHttp)).toEqual([{ id: "device", status: "online" }, { id: "other", status: "offline" }]);
     expect(offline[0].status).toBe("offline");
     await store.selectWebRtc("device");
-    expect(httpRecoveryDevices(offline, store.forDevice)).toEqual(offline);
+    expect(httpRecoveryDevices(offline, usesHttp)).toEqual(offline);
     await store.forget("device");
     expect(store.forDevice("device")).toBeNull();
   });

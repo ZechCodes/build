@@ -37,11 +37,19 @@ vi.mock("../src/connection.js", () => ({
 }));
 
 const { App } = await import("../src/app.js");
-const { initDevicePicker, refreshDevices } = await import("../src/devices.js");
+const { initDevicePicker, readCachedDevices, refreshDevices } = await import("../src/devices.js");
 // The one address, read from where both sides of it read it: the writer here
 // and the boot paint (views/gate.js) agree on it because there is one
 // constant, and a test that restated it would stay green while they drifted.
 const { DEVICES_ADDRESS, readCached, writeCached } = await import("../src/core/localCache.js");
+
+async function cacheTestState() {
+  App.devices = [];
+  App.deviceTransportPolicy = null;
+  await readCachedDevices({ offline: true });
+  expect(App.devices).toMatchObject([{ id: "current", status: "offline" }]);
+  expect(App.deviceTransportPolicy.promotionRevision).toBe(3);
+}
 
 const online = (id) => ({ id, name: id, status: "online", fingerprint: `${id}-fp` });
 
@@ -78,6 +86,24 @@ describe("the account's device list on disk", () => {
     });
     await expect(refreshDevices()).rejects.toThrow();
     expect((await readCached(DEVICES_ADDRESS)).value.map((device) => device.id)).toEqual(["dev-a"]);
+  });
+
+  it("commits modern policy and device rows together and rejects a replayed pull", async () => {
+    const pending = Promise.withResolvers();
+    const transport = { source: "hosted", rtc_allowed: false, reason: null, origin: "https://127.0.0.1:9443", assignment_revision: 2 };
+    account.fetchDevices.mockReturnValueOnce(pending.promise).mockResolvedValueOnce({
+      devices: [{ ...online("current"), transport }],
+      transport_policy: { tunnel_access: true, promotion_revision: 3 },
+    });
+    const stale = refreshDevices();
+    const rejected = expect(stale).rejects.toThrow("stale device presence read");
+    await vi.waitFor(() => expect(account.fetchDevices).toHaveBeenCalledOnce());
+    await refreshDevices();
+    pending.resolve([online("old")]);
+    await rejected;
+    expect(App.devices).toEqual([{ ...online("current"), transport }]);
+    expect(App.deviceTransportPolicy).toMatchObject({ policyAware: true, tunnelAccess: true, promotionRevision: 3 });
+    await cacheTestState();
   });
 
   it("paints the picker from the cached list while the account pull is late", async () => {

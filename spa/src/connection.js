@@ -62,7 +62,7 @@ import {
 } from "./core/deviceContexts.js";
 import { deviceAwayText } from "./core/deviceAway.js";
 import { deviceNameOf, listingCouldBeLagging } from "./core/devicePolicy.js";
-import { pinnedDeviceTransportKey } from "./devices.js";
+import { pinnedDeviceTransportKey, refreshDevices } from "./devices.js";
 import { followTerminalDevice, provideTerminalSessions, terminalDeviceId } from "./terminal/manager.js";
 import { LIVENESS_TIMEOUT } from "./terminal/session.js";
 import { flushCaptures } from "./core/composeView.js";
@@ -72,8 +72,9 @@ import { deliverFeed, joinFeed } from "./core/taskFeed.js";
 import { syncRestoredDevice } from "./core/cacheSync.js";
 import { forgetRtcClientHints, rememberRtcClientSupport, rtcClientId } from "./core/rtcClientHint.js";
 import { openHttpDeviceConnection } from "./core/httpDeviceConnection.js";
-import { forgetHttpConnection, httpRecoveryCandidates, restoreHttpConnections, selectHttpConnection, selectWebRtcConnection, usesHttp } from "./core/httpConnections.js";
+import { deviceTransportFor, forgetHttpConnection, httpRecoveryCandidates, restoreHttpConnections, retireHttpSelection, selectHttpConnection, selectWebRtcConnection, usesHttp } from "./core/httpConnections.js";
 import { httpFailure } from "./core/httpEndpoint.js";
+import { transportReasonText } from "./core/deviceTransportSelection.js";
 
 // ---- one rendezvous per device (spec rules 4, 5 and 7) -----------------------
 
@@ -110,6 +111,7 @@ configureTerminalPeerLinks({
 // One explicit attempt owner per device. This stage owns only the attempt and
 // its provisional resources; deviceContexts remains the availability model.
 const connectionAttempts = createDeviceConnectionAttempts();
+const attemptedSelections = new Map();
 
 // Recovery decides when another attempt may begin; connectionAttempts remains
 // the sole owner of the attempt and every provisional transport it opens.
@@ -196,7 +198,24 @@ export function stopWatchingForWake() {
   stopWakeWatch = null;
 }
 
-export const syncDeviceRecoveryPresence = (devices) => deviceRecovery.syncPresence(httpRecoveryCandidates(devices));
+export function syncDeviceRecoveryPresence(devices) {
+  const listed = new Set(devices.map((device) => device.id));
+  for (const [deviceId, key] of attemptedSelections) {
+    if (listed.has(deviceId) && deviceTransportFor(deviceId).key === key) continue;
+    retireAttemptSelection(deviceId);
+    if (listed.has(deviceId)) retryDeviceConnection(deviceId);
+  }
+  deviceRecovery.syncPresence(httpRecoveryCandidates(devices));
+}
+
+function retireAttemptSelection(deviceId) {
+  attemptedSelections.delete(deviceId);
+  deviceRecovery.stop(deviceId, { cancel: false });
+  connectionAttempts.forDevice(deviceId).cancel();
+  closeRendezvous(deviceId);
+  blockCurrentDevice(deviceId, "transport-change");
+  retireHttpSelection(deviceId);
+}
 export const deviceRecoverySnapshot = (deviceId) => deviceRecovery.snapshot(deviceId);
 export const onDeviceRecoveryChanged = (listener) => deviceRecovery.subscribe(listener);
 
@@ -209,6 +228,7 @@ function closeRendezvous(deviceId) {
 /** Let go of every attempt and rendezvous (sign-out, teardown): they are this
  *  account's, and none may land or remain open after the account has gone. */
 export function forgetRendezvousSockets() {
+  attemptedSelections.clear();
   deviceRecovery.reset();
   connectionAttempts.clear();
   clearTerminalPeerLinks();
@@ -447,7 +467,7 @@ function attemptRecoveryDevice(deviceId, epoch) {
 function retryableConnectionFailure(deviceId, error) {
   const lifecycle = existingDeviceLifecycle(deviceId)?.snapshot();
   if (lifecycle?.securityStop || contextFor(deviceId)?.unsupported) return false;
-  return !error?.securityCritical && error?.blockedReason !== "no-webrtc";
+  return !error?.securityCritical && !["no-webrtc", "http-setup"].includes(error?.blockedReason);
 }
 
 async function connectOnce(deviceId, attempt) {
@@ -455,13 +475,20 @@ async function connectOnce(deviceId, attempt) {
   // would neither fix that nor tell anyone about it.
   const securityStop = existingDeviceLifecycle(deviceId)?.snapshot().securityStop;
   if (securityStop) throw new Error(securityStop);
-  if (usesHttp(deviceId)) return connectOverHttp(deviceId, attempt);
+  const selection = deviceTransportFor(deviceId);
+  attemptedSelections.set(deviceId, selection.key);
+  if (selection.kind === "blocked") {
+    if (selection.reason === "policy_unknown") void refreshDevices().catch(() => {});
+    throw becauseOf(new Error(transportReasonText(selection.reason)), "http-setup");
+  }
+  if (selection.kind === "http") return connectOverHttp(deviceId, attempt, selection);
   return connectOverChannels(deviceId, attempt);
 }
 
-async function connectOverHttp(deviceId, attempt) {
+async function connectOverHttp(deviceId, attempt, selection) {
   try {
     return await openHttpDeviceConnection(deviceId, attempt, {
+      selection,
       greet: greetLiveBridge,
       onLost: (lifetime, error) => loseEstablishedConnection(deviceId, lifetime, error?.retryAfterMs),
       onAdopt: (context) => { joinFeed(context); syncHome(context); followTerminalsIfTheirs(context, { freshSession: true }); },
@@ -480,6 +507,7 @@ const httpRecoveryReasons = new Map([
   ["opening_refused", "http-lost"],
   ["sign_in", "http-sign-in"],
   ["wrong_bridge", "http-wrong-bridge"],
+  ["desktop_update_required", "http-desktop-update"],
   ["network_permission", "http-permission"],
   ["network_permission_denied", "http-permission-denied"],
   ["rate_limited", "http-rate-limited"],
@@ -505,6 +533,7 @@ export async function chooseDeviceTransport(deviceId, { transport: selected, ide
     else await selectWebRtcConnection(deviceId);
   }
   else throw new Error("Choose HTTPS or WebRTC.");
+  attemptedSelections.delete(deviceId);
   deviceRecovery.stop(deviceId, { cancel: true });
   connectionAttempts.forDevice(deviceId).cancel();
   blockCurrentDevice(deviceId, "transport-change");
@@ -747,6 +776,7 @@ export function deviceWentAway(deviceId) {
  * machine the account no longer has.
  */
 export function retireDevice(deviceId) {
+  attemptedSelections.delete(deviceId);
   void forgetHttpConnection(deviceId).catch(() => {});
   // A dial in flight at this machine is called off first: whatever it lands or
   // fails at is about a machine the account no longer has.
@@ -1140,7 +1170,7 @@ function guessAtStaleDevices() {
  *  doubt: it is listed online already, or it beat recently enough that the
  *  offline it is wearing may simply not have caught up. */
 function worthGuessingAt(device) {
-  if (!neverAsked(device)) return false;
+  if (deviceTransportFor(device.id).kind === "blocked" || !neverAsked(device)) return false;
   return device.status === "online" || listingCouldBeLagging(device);
 }
 
@@ -1162,6 +1192,7 @@ function neverAsked(device) {
  */
 function wantsSession(device) {
   const context = contextFor(device.id);
+  if (deviceTransportFor(device.id).kind === "blocked") return false;
   if (existingDeviceLifecycle(device.id)?.snapshot().securityStop) return false;
   if (connectionAttempts.isConnecting(device.id) || context?.blocked) return false;
   return (device.status === "online" || usesHttp(device.id)) && !canAnswer(context);

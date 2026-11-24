@@ -85,7 +85,7 @@ it("explains who can read each connection path even before a device is paired", 
   expect(text).toContain("Who can read this connection?");
   expect(text).toContain("WebRTC encrypts traffic end to end between your app and bridge, including through TURN");
   expect(text).toContain(
-    "Hosted HTTPS passes through Cloudflare. Cloudflare can read your code, prompts and terminal traffic on this connection. This option is planned.",
+    "Hosted HTTPS passes through Cloudflare. Cloudflare can read your code, prompts and terminal traffic on this connection.",
   );
   expect(text).toContain("For personal HTTPS, who can read traffic depends on where your TLS or private tunnel ends.");
   expect(text).toContain("Compare the fingerprint with the one your bridge printed.");

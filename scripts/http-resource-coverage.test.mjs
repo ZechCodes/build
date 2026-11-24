@@ -321,11 +321,11 @@ const sourceFingerprintParts = {
   // Action-specific device preflight can refuse before ownership admission; it sends no RPC.
   "core/sourceOwnership.js": ["4dc6b96f", "5e384a49", "1765f57d", "c78540f8", "5cb6e253", "d7e82c0f", "80b93292", "b28dfe55"],
   // #1065: accepted navigation notifies only opted-in project settings; RPC edges are unchanged.
-  "app.js": ["8e043a81", "cc1d5abd", "0e312435", "52018876", "d56a6883", "8c9587f5", "e34aa31b", "25b32265"],
-  "appState.js": ["d24d9edc", "6e4988f0", "8a5289ee", "6c449b3f", "91bdbe42", "7cd43ada", "7a9df6a4", "acd39971"],
-  // #1162: saved HTTPS recovery replaces session authority; RPC methods and routing edges are unchanged.
+  "app.js": ["58d35b09", "bb77e5dc", "176692ea", "f9b40528", "3a292568", "72d6a284", "70afac4c", "6620c1da"],
+  "appState.js": ["7133f08b", "ca8bfbc3", "d77d2960", "e6ce182d", "ecb4a898", "6dbd0056", "dfd70020", "b077675b"],
   // #1176: the existing issuer mint requests carry a target device ID.
-  "connection.js": ["64b77c8a", "01804961", "192b8e2a", "9396e9e2", "fe5d8604", "fcd47192", "aa924c14", "b90693ed"],
+  // #1180: cache selection fences connection attempts and leaves existing RPC routes intact.
+  "connection.js": ["068018c3", "40fafa4d", "1f83f266", "21ea4c26", "0a1cf34e", "e9810441", "c43e5b6f", "773d2ff9"],
   "core/activityRuns.js": ["2bd80d81", "ad2ddde9", "da2fc194", "95b7b7ba", "4d0a86f4", "29a52906", "009b6fc5", "5221d710"],
   "core/adoption.js": ["350b90d5", "9e535f4b", "15adf2ef", "7eacd8c0", "fb946020", "b6130cb8", "ce729fed", "bb90597e"],
   "core/agentDefaults.js": ["f856d23d", "2c446c14", "c6e4d78e", "e11e737d", "75e1fbc1", "fa79564d", "2ef20a2b", "1cdbbcb0"],
@@ -391,7 +391,8 @@ const sourceFingerprintParts = {
   // #1169: existing opening and stream routes retain their bindings during bounded teardown and resume.
   "core/httpBrowserEndpoint.js": ["6dbf2513", "c953c2cb", "1a3ccc74", "f16392a9", "245612eb", "df2e86a2", "f0d5b2de", "2962b792"],
   "core/httpDesktopTerminal.js": ["277a35a7", "2bdcd770", "0e5542b3", "72b60d3d", "ef6ada3b", "02b9d77e", "44ca1e00", "adab6cfc"],
-  "core/httpSession.js": ["27562da9", "e3362df9", "2d8524fc", "0058e1b1", "254ac825", "87a5f730", "2b364292", "7fbcc72d"],
+  // #1180: HTTPS-only terminal compatibility gates carrier selection.
+  "core/httpSession.js": ["4ece1fe8", "a8615df6", "530d9acc", "45ec3e5f", "4614531f", "6b831735", "e2525b8a", "d3c5054d"],
   "core/httpSse.js": ["c21c373b", "04b13d0a", "d9f61828", "4aaaefc9", "844a4cf6", "7bba7645", "a14eb608", "a3f483a3"],
   "core/inboxCaptures.js": ["48a7f5fb", "b2132a83", "5901fb31", "4fb0c5ae", "97005297", "2d0b9db6", "be2c3e6d", "1271b663"],
   "core/inboxDevices.js": ["cd1cfdd5", "9a9734e7", "ac73df50", "cac3383d", "9b6b0229", "b72936f1", "4b2d5657", "a8586421"],

@@ -372,7 +372,7 @@ export function subscribeUiRecords(prefixAddress, listener) {
 }
 
 /** Account reset erases UI state and HTTPS grant hints. Only the account-keyed
- *  device address, paired fingerprint and transport choice survive. */
+ *  device address, paired fingerprint, transport choice and disclosure acknowledgement survive. */
 export function wipeUiRecords() {
   wipes += 1;
   return database.write((store) => {
@@ -380,7 +380,7 @@ export function wipeUiRecords() {
     scan.onsuccess = () => {
       const cursor = scan.result;
       if (!cursor) return;
-      const settings = retainedHttpSettings(cursor);
+      const settings = retainedHttpSettings(cursor) || retainedHostedNotice(cursor);
       if (settings) cursor.update(settings);
       else cursor.delete();
       cursor.continue();
@@ -389,6 +389,13 @@ export function wipeUiRecords() {
   }).then((wrote) => {
     if (wrote) announce([]);
   });
+}
+
+function retainedHostedNotice(cursor) {
+  const [device, account, kind, sub] = partsOfKey(cursor.key);
+  if (!device && account && kind === "ui-hosted-https-notice" && /^account%3A[1-9]\d*$/.test(sub)
+    && cursor.value?.value === true) return cursor.value;
+  return null;
 }
 
 function retainedHttpSettings(cursor) {

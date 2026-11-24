@@ -3,8 +3,9 @@
 import "fake-indexeddb/auto";
 import { afterEach, expect, it, vi } from "vitest";
 import {
-  httpEndpointFor, httpPreferenceFor, resetHttpConnections, restoreHttpConnections, selectHttpConnection,
+  cachedTerminalTransport, httpEndpointFor, httpPreferenceFor, rememberHttpTerminalMode, resetHttpConnections, restoreHttpConnections, selectHttpConnection,
 } from "../src/core/httpConnections.js";
+import { App } from "../src/appState.js";
 import { writeUiRecord } from "../src/core/localUiStore.js";
 import { uiAddress } from "../src/core/localUiState.js";
 
@@ -16,6 +17,8 @@ const json = (value) => new Response(JSON.stringify(value));
 
 afterEach(() => {
   resetHttpConnections();
+  App.devices = [];
+  App.deviceTransportPolicy = null;
   delete window.buildBridgeHttp;
   vi.unstubAllGlobals();
   document.head.replaceChildren();
@@ -92,4 +95,90 @@ it("persists an address first and renews the verified family after restoring it"
     issuer + "/api/bridge-discovery/complete", issuer + "/api/devices/device/http-credentials",
   ]);
   second.close();
+});
+
+const project = (address, assignmentRevision) => {
+  App.devices = [{ id: deviceId, fingerprint: "paired-fingerprint", transport: {
+    source: "hosted", rtc_allowed: false, origin: address, reason: null, assignment_revision: assignmentRevision,
+  } }];
+};
+
+it("restores terminal compatibility offline for the current account and endpoint only", async () => {
+  document.head.innerHTML = `<meta name="build-account-id" content="${account}">`;
+  project(origin, 1);
+  await restoreHttpConnections();
+  expect(cachedTerminalTransport(deviceId)).toBe("unknown");
+  await rememberHttpTerminalMode(deviceId, "wss", () => true);
+  resetHttpConnections();
+  await restoreHttpConnections();
+  expect(cachedTerminalTransport(deviceId)).toBe("wss");
+  project("https://127.0.0.1:8444", 2);
+  expect(cachedTerminalTransport(deviceId)).toBe("unknown");
+  await rememberHttpTerminalMode(deviceId, "update_required", () => true);
+  resetHttpConnections();
+  await restoreHttpConnections();
+  expect(cachedTerminalTransport(deviceId)).toBe("update_required");
+  document.head.querySelector("meta").content = "10000000-0000-4000-8000-000000000078";
+  App.accountEpoch += 1;
+  await restoreHttpConnections();
+  expect(cachedTerminalTransport(deviceId)).toBe("unknown");
+});
+
+it("uses native discovery for the cached projection and closes a grant that arrives after an account change", async () => {
+  document.head.innerHTML = `<meta name="build-account-id" content="${account}">`;
+  project(origin, 1);
+  const grant = Promise.withResolvers();
+  const api = window.buildBridgeHttp = {
+    close: vi.fn(async () => ({ ok: true })),
+    discoverSaved: vi.fn(() => grant.promise),
+  };
+  await restoreHttpConnections();
+  const pending = httpEndpointFor(deviceId, () => true);
+  const rejected = expect(pending).rejects.toMatchObject({ code: "scope_ended" });
+  expect(api.discoverSaved).toHaveBeenCalledWith(origin, { deviceId, fingerprint: "paired-fingerprint" });
+  App.accountEpoch += 1;
+  grant.resolve({ ok: true, value: { deviceId, origin, fingerprint: "paired-fingerprint", handle: "retired" } });
+  await rejected;
+  expect(api.close).toHaveBeenCalledOnce();
+  expect(api.close).toHaveBeenCalledWith("retired");
+});
+
+it("gives an old desktop preload upgrade guidance without trying browser discovery", async () => {
+  document.head.innerHTML = `<meta name="build-account-id" content="${account}">`;
+  project(origin, 1);
+  window.buildBridgeHttp = { discover: vi.fn() };
+  const request = vi.fn();
+  vi.stubGlobal("fetch", request);
+  await restoreHttpConnections();
+  await expect(httpEndpointFor(deviceId, () => true)).rejects.toMatchObject({ code: "desktop_update_required" });
+  expect(request).not.toHaveBeenCalled();
+  expect(window.buildBridgeHttp.discover).not.toHaveBeenCalled();
+});
+
+it("uses the projected browser origin even when a different manual address was saved", async () => {
+  document.head.innerHTML = `<meta name="build-account-id" content="${account}">`;
+  await restoreHttpConnections();
+  await selectHttpConnection({ deviceId, origin: "https://127.0.0.1:8444" });
+  project(origin, 1);
+  const discoveryPath = issuer + "/api/devices/device/http-discovery";
+  const wellKnownPath = origin + "/.well-known/build-bridge";
+  const completePath = issuer + "/api/bridge-discovery/complete";
+  const request = vi.fn(async (url) => {
+    if (url === discoveryPath) return json({
+      origin, issuer, account_id: account, device_id: deviceId, challenge_id: "nonce-id", nonce: "nonce",
+      expires_at: Date.now() / 1000 + 60, resume_url: "/app/?bridge_discovery=nonce-id",
+    });
+    if (url === wellKnownPath) return json({ proof: "signed" });
+    if (url === completePath) return json({
+      origin, issuer, account_id: account, device_id: deviceId, endpoint_epoch: "epoch", family_id: "family",
+      fingerprint: "paired-fingerprint", access_token: "fixture-credential", expires_at: Date.now() / 1000 + 300,
+      scope: "bridge:read bridge:write",
+    });
+    throw new Error("Unexpected fixture URL");
+  });
+  vi.stubGlobal("fetch", request);
+  const endpoint = await httpEndpointFor(deviceId, () => true);
+  expect(endpoint.identity).toMatchObject({ deviceId, origin });
+  expect(request.mock.calls.map(([url]) => url)).toEqual([discoveryPath, wellKnownPath, completePath]);
+  endpoint.close();
 });

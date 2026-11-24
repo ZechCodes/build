@@ -87,6 +87,15 @@ describe("HTTP session adapter and fences", () => {
     }
   });
 
+  it.each([opening, terminalOpening("build.term.v1")])("requires an upgrade for WSS-only HTTPS without a usable terminal carrier", async (offered) => {
+    const { endpoint } = make({ open: vi.fn().mockResolvedValue(offered) });
+    const session = await open(endpoint, { wssOnly: true });
+    expect(session.terminalTransport).toBe("update_required");
+    await expect(session.openTerminal()).rejects.toMatchObject({ error_code: "terminal_update_required" });
+    await expect(session.rawCall("ping")).resolves.toEqual({});
+    session.close();
+  });
+
   it("waits for the stream hello, then supplies the greeting and explicit resource calls", async () => {
     const { endpoint } = make();
     const session = await open(endpoint); session.allowRefresh();

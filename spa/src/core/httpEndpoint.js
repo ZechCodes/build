@@ -36,6 +36,8 @@ export function httpFailure(code, uncertain = false) {
     opening_refused: "The HTTPS session needs fresh authorization.",
     stream_reset: "Live updates ended. Reconnecting and refreshing current state…",
     unsupported: "This bridge does not provide all required HTTP operations. Use WebRTC or update the bridge.",
+    desktop_update_required: "Update the Build desktop app to use this HTTPS connection.",
+    terminal_update_required: "Update the Build bridge or desktop app to use HTTPS terminals.",
     timeout: "The HTTPS bridge did not answer before the deadline.",
     network_error: "Could not reach the bridge or verify its HTTPS connection.",
     unauthorized: "The account could not authorize HTTPS for this device.",

@@ -19,6 +19,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from skrift.db.base import Base
 
+from buildapp import hosted_tunnel_models as hosted_tunnel_models
 from buildapp.invite_kind import InviteKind
 from buildapp.waitlist_address import MAX_WAITLIST_ADDRESS_LENGTH
 

@@ -3,21 +3,17 @@
 // with src/pushKeys.js (the IndexedDB layout, the subscription id) are written
 // out again here and held together by test/pushSealed.test.js.
 //
-// E2EE invariant (#200, planning/v2/Push Content Security Checklist.md): a push
-// says what happened, and only this browser can read it. The api wraps every
-// push as {task_id, kind, url, sealed}. `task_id`, `kind` and `url` are opaque
-// cleartext metadata; `sealed` is a blob a bridge sealed to THIS subscription's
-// notification key. The worker opens it with the non-extractable private key
-// the app keeps in IndexedDB and shows the title and body inside. The api, the
-// push service and every log see only the subscription id and ciphertext.
+// Sealed push content (#200, planning/v2/Push Content Security Checklist.md).
+// A push carries cleartext metadata (`task_id`, `kind`, `url`) and may carry a
+// `sealed` blob encrypted to this subscription's notification key. The API and
+// push service forward the sealed content as ciphertext. The worker opens it
+// with the non-extractable private key kept in this browser's IndexedDB.
 //
-// The sealing is ECIES with an ephemeral sender key, so it is NOT
-// sender-authenticated: anyone holding this subscription's notification public
-// key can seal a blob that opens. Forgery is prevented only because that public
-// key never leaves the E2EE path: the browser generates it and hands it only to
-// bridges over the E2EE session (`push.registerKey`); the api never receives
-// it. As defence in depth a sealed url is used only if it starts with /app/#/,
-// so even a forged blob cannot navigate outside the app.
+// The ECIES seal uses an ephemeral sender key. Anyone with the notification
+// public key can seal a blob that opens. The browser registers the public key
+// over an authenticated bridge connection (`push.registerKey`). On an HTTPS
+// path, a TLS terminator can see the registered public key. The worker accepts
+// a sealed URL only if it starts with /app/#/, keeping navigation in the app.
 //
 // Anything that does not open cleanly shows the #191 generic copy for the
 // kind: no subscription, no key, a bad tag, a stale or future `iat`, a nonce

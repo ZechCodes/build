@@ -5,15 +5,17 @@ agent's conversation (``agent``) or a watched task (``task``, the user's word
 for a task, #190). Every payload carries an opaque id, the generic kind and the
 deep link built from them.
 
-E2EE invariant (#200): the api forwards opaque ciphertext and sees only sids.
+The API forwards sealed push content (#200) as opaque ciphertext.
 A notify may carry ``sealed``: per subscription, a blob the bridge sealed to
-that browser's notification key. The api matches a blob to a subscription by
-``subscription_id(endpoint)``, checks the blob's shape (base64url characters and
-length) and forwards it byte-identical in that subscription's payload; it never
-decodes, parses, stores or logs a blob or a payload. Content authenticity rests
-on the notification public key never reaching the api: the sealing is not
-sender-authenticated, so anyone holding that key could seal content, and the
-key travels only from the browser to the bridge over the E2EE session.
+that browser's notification key. The API matches a blob to a subscription by
+``subscription_id(endpoint)``, checks the blob's shape (base64url characters
+and length), and forwards it byte-identical in that subscription's payload.
+The blob and payload stay out of API storage and logs.
+
+Anyone holding the notification public key can seal content the browser will
+open. The browser registers that public key over an authenticated bridge
+connection. On an HTTPS path, a TLS terminator can see the registered public
+key. The private key stays in the browser.
 A subscription without a blob gets the #191 payload, which the service worker
 renders as generic copy. See ``planning/v2/Push Content Security Checklist.md``.
 

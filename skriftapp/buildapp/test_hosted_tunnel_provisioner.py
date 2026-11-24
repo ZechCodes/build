@@ -6,6 +6,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -15,7 +16,7 @@ from sqlalchemy import select
 from buildapp.cloudflare_tunnels import CloudflareTunnelClient, ProviderError
 from buildapp.db_test_support import add_account, add_member, create_skrift_tables, engine_for, file_session_maker
 from buildapp.hosted_tunnel_assignments import PairingIdentity, get_current_assignment
-from buildapp.hosted_tunnel_credentials import materialize_connector_credentials
+from buildapp.hosted_tunnel_credentials import decrypt_tunnel_secret, materialize_connector_credentials
 from buildapp.hosted_tunnel_models import HostedTunnelAssignment
 from buildapp.hosted_tunnel_provisioner import HostedTunnelProvisioner
 from buildapp.models import AccountPolicy, Device
@@ -308,6 +309,19 @@ async def test_incomplete_inventory_or_desired_read_preserves_orphans(env):
         await worker.reconcile_once()
     assert not any(method == "DELETE" for method, _ in env.api.history)
     env.api.incomplete = None
+
+    async def lose_mode_source(method, path):
+        if (method, path) == ("GET", DNS):
+            env.reports.incomplete = True
+
+    env.api.before = lose_mode_source
+    with pytest.raises(RuntimeError, match="fixture source failed"):
+        await worker.reconcile_once()
+    assert not any(method == "DELETE" for method, _ in env.api.history)
+    assert env.api.tunnels and env.api.dns
+
+    env.api.before = None
+    env.reports.incomplete = False
     await worker.reconcile_once()
     assert not env.api.tunnels and not env.api.dns
 
@@ -324,6 +338,35 @@ async def test_ambiguous_ownership_leaves_colliding_dns_and_tunnel(env):
     await worker.reconcile_once()
     assert env.api.dns and env.api.tunnels
     assert not any(method == "DELETE" for method, _ in env.api.history)
+
+
+@pytest.mark.asyncio
+async def test_exact_tunnel_name_without_prior_create_is_an_ownership_collision(env):
+    tunnel_id = str(uuid4())
+    existing = {"id": tunnel_id, "config_src": "local"}
+
+    async def seed_before_first_inventory(method, path):
+        if (method, path) == ("GET", TUNNELS):
+            row = await env.row()
+            assert row.state == "pending" and not row.tunnel_create_started
+            existing["name"] = env.provider.zone.tunnel_name(row.label)
+            env.api.tunnels[tunnel_id] = existing
+            env.api.before = None
+
+    env.api.before = seed_before_first_inventory
+    worker = env.worker()
+    await worker.reconcile_once()
+
+    row = await env.claimable()
+    assert (row.state, row.setup_reason) == ("pending", "collision")
+    assert row.tunnel_id is None and row.dns_record_id is None
+    assert not row.tunnel_create_started
+
+    await env.entitlement(False)
+    await worker.reconcile_once()
+    assert env.api.tunnels == {tunnel_id: existing}
+    assert not env.api.dns
+    assert all(method == "GET" for method, _ in env.api.history)
 
 
 @pytest.mark.asyncio
@@ -372,9 +415,42 @@ async def test_at_rest_credentials_and_redacted_errors(env, caplog):
     for marker in (TOKEN, env.api.secret, base64.b64encode(WRAPPING_KEY).decode()):
         assert marker not in repr((row, env.provider, worker, failure.value, credentials))
         assert marker not in caplog.text and marker not in str(failure.value)
-    row.generation += 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed_field", [
+    "device_id", "owner_user_id", "pairing_created_at", "authorization_epoch", "generation", "hostname",
+])
+async def test_assignment_ciphertext_cannot_be_replayed_with_different_binding(env, changed_field):
+    await env.worker().reconcile_once()
+    original = await env.row()
+    assert original.state == "ready"
+    assert decrypt_tunnel_secret(original, WRAPPING_KEY) == base64.b64decode(env.api.secret)
+    replacement = {
+        "device_id": uuid4(),
+        "owner_user_id": uuid4(),
+        "pairing_created_at": original.pairing_created_at + timedelta(seconds=1),
+        "authorization_epoch": original.authorization_epoch + 1,
+        "generation": original.generation + 1,
+        "hostname": f"b-{uuid4().hex}.{ZONE}",
+    }[changed_field]
+
+    async with env.db.begin() as db:
+        row = await db.get(HostedTunnelAssignment, original.device_id)
+        setattr(row, changed_field, replacement)
+        row.encrypted_secret = original.encrypted_secret
+        target_id = row.device_id
+
+    async with env.db() as db:
+        replayed = await db.get(HostedTunnelAssignment, target_id)
+        assert getattr(replayed, changed_field) == replacement
+        assert replayed.encrypted_secret == original.encrypted_secret
+        assert replayed.state == "ready" and replayed.tunnel_id == original.tunnel_id
+
     with pytest.raises(ValueError, match="unavailable"):
-        materialize_connector_credentials(row, account_id=ACCOUNT, wrapping_key=WRAPPING_KEY)
+        decrypt_tunnel_secret(replayed, WRAPPING_KEY)
+    with pytest.raises(ValueError, match="unavailable"):
+        materialize_connector_credentials(replayed, account_id=ACCOUNT, wrapping_key=WRAPPING_KEY)
 
 
 @pytest.mark.asyncio

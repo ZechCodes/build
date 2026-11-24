@@ -21,9 +21,11 @@ from litestar import Controller, Request, post
 from litestar.exceptions import HTTPException
 from litestar.response import Response
 from litestar.status_codes import HTTP_502_BAD_GATEWAY
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import ice_servers
 from buildapp.desktop_auth import build_auth_guard
+from buildapp.device_transport import require_rtc_mint
 from buildapp.session_auth import require_user
 
 ICE_SERVERS_ROUTE_PATH = "/api/rtc/ice-servers"
@@ -35,9 +37,10 @@ class RtcController(Controller):
     path = ""
 
     @post(ICE_SERVERS_ROUTE_PATH, guards=[build_auth_guard])
-    async def mint_ice_servers(self, request: Request) -> Response:
+    async def mint_ice_servers(self, request: Request, db_session: AsyncSession) -> Response:
         """The ICE servers this user's peer connection should use."""
-        require_user(request)
+        user_id = require_user(request)
+        await require_rtc_mint(db_session, user_id, request.query_params.get("device_id"))
         key_id = os.environ.get(ice_servers.CF_TURN_KEY_ID_ENV, "")
         api_token = os.environ.get(ice_servers.CF_TURN_KEY_API_TOKEN_ENV, "")
         try:

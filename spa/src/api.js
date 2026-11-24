@@ -1,8 +1,12 @@
 // Same-origin API calls use the Skrift session. Task data travels over the
 // authenticated bridge connection.
 
-export async function fetchGatewayToken() {
-  const response = await fetch("/api/gateway-token", { method: "POST" });
+function rtcMintUrl(path, deviceId) {
+  return deviceId ? `${path}?device_id=${encodeURIComponent(deviceId)}` : path;
+}
+
+export async function fetchGatewayToken(deviceId) {
+  const response = await fetch(rtcMintUrl("/api/gateway-token", deviceId), { method: "POST" });
   if (!response.ok) throw Object.assign(new Error("could not mint a gateway token"), { status: response.status });
   return (await response.json()).token;
 }
@@ -74,8 +78,8 @@ export async function renameDevice(deviceId, name) {
   return response.json();
 }
 
-export async function fetchIceServers() {
-  const response = await fetch("/api/rtc/ice-servers", { method: "POST" });
+export async function fetchIceServers(deviceId) {
+  const response = await fetch(rtcMintUrl("/api/rtc/ice-servers", deviceId), { method: "POST" });
   if (!response.ok) throw Object.assign(new Error("could not mint ICE servers"), { status: response.status });
   return (await response.json()).iceServers;
 }

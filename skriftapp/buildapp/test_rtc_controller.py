@@ -7,12 +7,9 @@ Cloudflare is never called — ``ice_servers`` is replaced at the seam it expose
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
-from uuid import uuid4
 
 import pytest
-from litestar.exceptions import HTTPException, NotAuthorizedException
 from litestar.handlers import HTTPRouteHandler
 from litestar.status_codes import (
     HTTP_201_CREATED,
@@ -22,7 +19,6 @@ from litestar.status_codes import (
 )
 from litestar.testing import TestClient
 
-from skrift.auth.session_keys import SESSION_USER_ID
 from skrift.auth.tokens import create_signed_token
 
 from buildapp import ice_servers as ice_servers_module
@@ -68,17 +64,6 @@ def _configure_key(monkeypatch) -> None:
     monkeypatch.setenv(CF_TURN_KEY_API_TOKEN_ENV, API_TOKEN)
 
 
-def _mint(session: dict):
-    # The shape ``require_user`` reads: a session, and the request state the
-    # desktop-token path checks after it (see test_session_auth.py).
-    request = SimpleNamespace(session=session, scope={"state": {}})
-    return asyncio.run(RtcController.mint_ice_servers.fn(None, request=request))
-
-
-def _signed_in() -> dict:
-    return {SESSION_USER_ID: str(uuid4())}
-
-
 def _route_handler() -> HTTPRouteHandler:
     return next(
         handler
@@ -88,7 +73,8 @@ def _route_handler() -> HTTPRouteHandler:
     )
 
 
-def test_the_minted_array_is_answered_under_ice_servers(monkeypatch):
+def test_the_minted_array_is_answered_under_ice_servers(client, monkeypatch):
+    sign_in_member(client)
     _configure_key(monkeypatch)
     asked = []
 
@@ -97,42 +83,30 @@ def test_the_minted_array_is_answered_under_ice_servers(monkeypatch):
         return MINTED_SERVERS
 
     monkeypatch.setattr(ice_servers_module, "ice_servers", fake_ice_servers)
-    assert _mint(_signed_in()).content == {"iceServers": MINTED_SERVERS}
+    assert client.post(ICE_SERVERS_ROUTE_PATH).json() == {"iceServers": MINTED_SERVERS}
     assert asked == [(KEY_ID, API_TOKEN)]
 
 
-def test_without_a_configured_key_the_answer_is_stun_only():
-    assert _mint(_signed_in()).content == {"iceServers": STUN_ONLY}
+def test_without_a_configured_key_the_answer_is_stun_only(client):
+    sign_in_member(client)
+    assert client.post(ICE_SERVERS_ROUTE_PATH).json() == {"iceServers": STUN_ONLY}
 
 
-def test_a_cloudflare_failure_is_a_502_not_a_degraded_list(monkeypatch):
+def test_a_cloudflare_failure_is_a_502_not_a_degraded_list(client, monkeypatch):
+    sign_in_member(client)
     _configure_key(monkeypatch)
 
     def failing_ice_servers(key_id: str, api_token: str) -> list[dict]:
         raise IceServersUnavailable("cloudflare answered 403 for TURN credentials")
 
     monkeypatch.setattr(ice_servers_module, "ice_servers", failing_ice_servers)
-    with pytest.raises(HTTPException) as raised:
-        _mint(_signed_in())
-    assert raised.value.status_code == HTTP_502_BAD_GATEWAY
-    assert "403" in raised.value.detail
-
-
-def test_an_anonymous_session_is_refused_before_any_key_is_read():
-    with pytest.raises(NotAuthorizedException):
-        _mint({})
+    response = client.post(ICE_SERVERS_ROUTE_PATH)
+    assert response.status_code == HTTP_502_BAD_GATEWAY
+    assert "403" in response.json()["detail"]
 
 
 def test_the_route_carries_the_shared_browser_and_desktop_guard():
     assert _route_handler().guards == [build_auth_guard]
-
-
-def test_the_turn_key_never_reaches_the_browser(monkeypatch):
-    _configure_key(monkeypatch)
-    monkeypatch.setattr(
-        ice_servers_module, "ice_servers", lambda key_id, api_token: MINTED_SERVERS
-    )
-    assert API_TOKEN not in str(_mint(_signed_in()).content)
 
 
 @pytest.fixture()

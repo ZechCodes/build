@@ -1,11 +1,19 @@
 """Issuer policy and transport discovery for an approved pairing."""
 
-from sqlalchemy import update
+import os
+from uuid import UUID
+
+from litestar.exceptions import PermissionDeniedException
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from buildapp.bridge_http_auth import valid_endpoint
+from buildapp.accounts import account_policy
+from buildapp.bridge_http_auth import endpoint_matches_pairing, valid_endpoint
 from buildapp.bridge_http_models import BridgeHttpEndpoint
 from buildapp.models import Device
+
+
+RTC_BOOTSTRAP_ENV = "BUILD_RTC_BOOTSTRAP"
 
 
 async def mark_hosted_ready_once(db_session: AsyncSession, pairing: Device) -> bool:
@@ -31,8 +39,35 @@ async def mark_hosted_ready_once(db_session: AsyncSession, pairing: Device) -> b
 
 
 async def rtc_allowed(db_session: AsyncSession, device: Device) -> bool:
-    """Shared issuer decision. Entitlement enforcement arrives in slice 3."""
-    return True
+    """Decide RTC eligibility for a pairing using its owner's current policy."""
+    owner = device.owner_user_id
+    if owner is None or not (await account_policy(db_session, owner)).tunnel_access:
+        return True
+    if device.hosted_ready_once or os.environ.get(RTC_BOOTSTRAP_ENV, "on") != "on":
+        return False
+    endpoint = await db_session.scalar(
+        select(BridgeHttpEndpoint).where(BridgeHttpEndpoint.device_id == device.id)
+    )
+    # A disabled listener still has a configured personal address.
+    return endpoint is None or not endpoint_matches_pairing(endpoint, device)
+
+
+async def require_rtc_mint(
+    db_session: AsyncSession, user_id: UUID, target: str | None,
+) -> None:
+    """Require a device eligible for RTC when the caller has tunnel access."""
+    if not (await account_policy(db_session, user_id)).tunnel_access:
+        return
+    try:
+        device_id = UUID(target or "")
+    except ValueError as exc:
+        raise PermissionDeniedException("RTC requires an eligible device") from exc
+    device = await db_session.get(Device, device_id)
+    if (
+        device is None or not device.approved or device.owner_user_id != user_id
+        or not await rtc_allowed(db_session, device)
+    ):
+        raise PermissionDeniedException("RTC requires an eligible device")
 
 
 async def transport_projection(

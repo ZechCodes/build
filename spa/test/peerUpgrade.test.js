@@ -13,7 +13,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const peerLink = vi.hoisted(() => ({ open: vi.fn() }));
-const api = vi.hoisted(() => ({ fetchIceServers: vi.fn(async () => [{ urls: ["stun:stun.test"] }]) }));
+const api = vi.hoisted(() => ({
+  fetchGatewayToken: vi.fn(async () => "tok-1"),
+  fetchIceServers: vi.fn(async () => [{ urls: ["stun:stun.test"] }]),
+}));
 const account = vi.hoisted(() => ({ pinnedKey: vi.fn(async () => "pk") }));
 const terminals = vi.hoisted(() => ({ followTerminalDevice: vi.fn(), deviceId: "dev-a", mint: null }));
 const greetings = vi.hoisted(() => ({ greet: vi.fn(async () => true) }));
@@ -24,7 +27,7 @@ vi.mock("../src/core/peerLink.js", () => ({
 }));
 vi.mock("../src/api.js", () => ({
   fetchIceServers: (...args) => api.fetchIceServers(...args),
-  fetchGatewayToken: async () => "tok-1",
+  fetchGatewayToken: (...args) => api.fetchGatewayToken(...args),
   fetchDevices: async () => [],
 }));
 // Which device the terminals are on is the manager's own answer; here it is a
@@ -73,7 +76,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
 
 const { App, resetApplication } = await import("../src/app.js");
 const { selectAdapter } = await import("../src/core/bridgeApi/index.js");
-const { adoptBridgeSelection, contextFor, onDeviceStateChanged } = await import("../src/core/deviceContexts.js");
+const { adoptBridgeSelection, adoptDeviceConnection, contextFor, onDeviceStateChanged } = await import("../src/core/deviceContexts.js");
 const {
   connectDevice,
   deviceRecoverySnapshot,
@@ -251,6 +254,7 @@ beforeEach(() => {
   terminals.deviceId = "dev-a";
   handedOver.length = 0;
   for (const spy of [peerLink.open, api.fetchIceServers, terminals.followTerminalDevice]) spy.mockReset();
+  api.fetchGatewayToken.mockClear();
   terminals.followTerminalDevice.mockImplementation(() =>
     handedOver.push(contextFor(terminals.deviceId)?.peerLink?.term || null),
   );
@@ -292,6 +296,8 @@ describe("the connect sequence", () => {
     const context = await connect("dev-a");
 
     const socket = sockets().at(-1);
+    expect(api.fetchGatewayToken).toHaveBeenCalledExactlyOnceWith("dev-a");
+    expect(api.fetchIceServers).toHaveBeenCalledExactlyOnceWith("dev-a");
     expect(socket.sent[0]).toEqual({ type: "authenticate", token: "tok-1" });
     expect(socket.sent[1].type).toBe("session_init");
     expect(socket.sent[1].route_to).toBe("device:dev-a");
@@ -597,6 +603,19 @@ describe("a connection that goes after it was live", () => {
 });
 
 describe("the terminals' session", () => {
+  it("scopes ICE credentials to the device opening its terminal peer link", async () => {
+    await connect("dev-a");
+    api.fetchIceServers.mockClear();
+    const deviceId = "dev-b";
+    adoptDeviceConnection({ deviceId, transport: "http", call: vi.fn(), close: vi.fn() });
+    const refusal = new Error("ICE mint refused");
+    api.fetchIceServers.mockRejectedValueOnce(refusal);
+    peerLink.open.mockImplementationOnce(({ fetchIceServers }) => fetchIceServers());
+
+    await expect(terminals.mint(deviceId)).rejects.toBe(refusal);
+    expect(api.fetchIceServers).toHaveBeenCalledExactlyOnceWith(deviceId);
+  });
+
   it("is minted on that device's own rendezvous, which closes again after", async () => {
     await connect("dev-a");
     const before = sockets().length;
@@ -604,6 +623,7 @@ describe("the terminals' session", () => {
     const minted = await terminals.mint("dev-a");
     await settle();
 
+    expect(api.fetchGatewayToken).toHaveBeenNthCalledWith(2, "dev-a");
     expect(minted.deviceId).toBe("dev-a");
     expect(sockets()).toHaveLength(before + 1); // reopened for the mint…
     expect(sockets().at(-1).readyState).toBe(1); // held until the channel acknowledges it

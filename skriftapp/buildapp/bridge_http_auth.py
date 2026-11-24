@@ -374,10 +374,12 @@ async def complete_discovery(
 
 
 def valid_endpoint(endpoint: BridgeHttpEndpoint | None, device: Device) -> bool:
+    return endpoint is not None and endpoint.enabled and endpoint_matches_pairing(endpoint, device)
+
+
+def endpoint_matches_pairing(endpoint: BridgeHttpEndpoint, device: Device) -> bool:
     return (
-        endpoint is not None
-        and endpoint.enabled
-        and endpoint.user_id == device.owner_user_id
+        endpoint.user_id == device.owner_user_id
         and endpoint.authorization_epoch == device.authorization_epoch
         and endpoint.identity_fingerprint == fingerprint(device.identity_public_key_b64)
     )

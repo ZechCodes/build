@@ -108,6 +108,10 @@ app password), `SMTP_FROM_ADDRESS` (the address mail is sent from, e.g.
 notification goes; empty disables it). `app.yaml` interpolates the three `SMTP_*`
 variables and the app refuses to boot without them.
 
+`BUILD_RTC_BOOTSTRAP` controls the WebRTC bootstrap exception for accounts with
+tunnel access. It defaults to `on` when unset. Every explicit value except the
+case-sensitive `on` disables the exception, including an empty value.
+
 Optional: `GITHUB_RELEASES_TOKEN` — a fine-grained GitHub PAT with `Contents:
 read` on `ZechCodes/build`, the one repository everything ships from
 (`buildapp/releases.py` names it; no template, script or SPA file carries a

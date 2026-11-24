@@ -33,9 +33,9 @@ describe("fetchIceServers", () => {
       json: async () => ({ iceServers: SERVERS }),
     }));
     globalThis.fetch = fetchSpy;
-    await expect(fetchIceServers()).resolves.toEqual(SERVERS);
+    await expect(fetchIceServers("device/id")).resolves.toEqual(SERVERS);
     const [url, request] = fetchSpy.mock.calls[0];
-    expect(url).toBe("/api/rtc/ice-servers");
+    expect(url).toBe("/api/rtc/ice-servers?device_id=device%2Fid");
     expect(request.method).toBe("POST");
   });
 

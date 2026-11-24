@@ -2,19 +2,22 @@
 
 import base64
 import json
+from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from litestar.testing import TestClient
 from skrift.auth.session_keys import SESSION_USER_ID
 
-from buildapp import bridge_http_auth, pairing_crypto
+from buildapp import bridge_http_auth, ephemeral_tokens, ice_servers, internal_auth, pairing_crypto
 from buildapp.bridge_http_models import BridgeHttpEndpoint
 from buildapp.clock import utc_now
 from buildapp.db_test_support import (
     add_member, asgi_app, in_memory_session_maker, session_backend_config, sign_in, sign_in_member,
 )
 from buildapp.devices_controller import DevicesController
-from buildapp.models import Device
+from buildapp.models import AccountPolicy, Device
+from buildapp.rtc_controller import RtcController
 from buildapp.test_bridge_http_auth import ISSUER, ORIGIN, registered, signed
 
 
@@ -22,7 +25,7 @@ from buildapp.test_bridge_http_auth import ISSUER, ORIGIN, registered, signed
 def transport_client():
     session_config = session_backend_config()
     app = asgi_app(
-        [DevicesController],
+        [DevicesController, RtcController],
         session_maker=in_memory_session_maker(),
         session_config=session_config,
     )
@@ -95,9 +98,7 @@ def test_device_transport_listing_is_additive_and_uses_current_personal_endpoint
     }]}
 
 
-def test_device_transport_entitlement_neither_grants_membership_nor_enforces_rtc(transport_client):
-    from buildapp.models import AccountPolicy
-
+def test_device_transport_entitlement_does_not_grant_membership(transport_client):
     client = transport_client
     email = "outside-alpha@example.com"
     user = sign_in(client, email)
@@ -119,6 +120,88 @@ def test_device_transport_entitlement_neither_grants_membership_nor_enforces_rtc
     with client.portal() as portal:
         portal.call(enroll)
     assert client.get("/api/devices").json()["devices"][0]["transport"]["rtc_allowed"] is True
+
+
+@pytest.mark.parametrize("bootstrap", [None, "off"], ids=["default-on", "off"])
+def test_device_transport_rtc_policy_is_shared_by_listing_relay_and_mints(
+    transport_client, monkeypatch, bootstrap,
+):
+    client = transport_client
+    if bootstrap is None:
+        monkeypatch.delenv("BUILD_RTC_BOOTSTRAP", raising=False)
+    else:
+        monkeypatch.setenv("BUILD_RTC_BOOTSTRAP", bootstrap)
+    monkeypatch.setenv("INTERNAL_API_SECRET", "relay-test-secret")
+    monkeypatch.setattr(internal_auth, "get_settings", lambda: SimpleNamespace(
+        internal_api=internal_auth.InternalApiConfig(),
+    ))
+    foreign_user = sign_in_member(client, "foreign@example.com")
+    owner = sign_in_member(client, "entitled@example.com")
+
+    async def seed():
+        async with client.app.state.make_session() as db:
+            db.add(AccountPolicy(id=owner, tunnel_access=True))
+            foreign = await store_device(db, foreign_user)
+            ready = await store_device(db, owner, hosted_ready_once=True)
+            pending = await store_device(db, owner)
+            personal = await store_device(db, owner)
+            unapproved = await store_device(db, owner)
+            unapproved.approved = False
+            db.add(BridgeHttpEndpoint(
+                device_id=personal.id, user_id=owner, origin=ORIGIN,
+                identity_fingerprint=pairing_crypto.fingerprint(personal.identity_public_key_b64),
+                endpoint_epoch="epoch-one", authorization_epoch=personal.authorization_epoch,
+                enabled=False,
+            ))
+            await db.commit()
+            return {
+                "pending": str(pending.id), "ready": str(ready.id), "personal": str(personal.id),
+                "foreign": str(foreign.id), "unapproved": str(unapproved.id),
+            }
+
+    with client.portal() as portal:
+        devices = portal.call(seed)
+
+    pending_allowed = bootstrap is None
+    policy = {devices["pending"]: pending_allowed, devices["ready"]: False, devices["personal"]: False}
+    listing = client.get("/api/devices").json()["devices"]
+    assert {device["id"]: device["transport"]["rtc_allowed"] for device in listing} == policy
+    for device_id, allowed in policy.items():
+        internal = client.get(
+            f"/internal/devices/{device_id}", headers={"x-internal-secret": "relay-test-secret"},
+        )
+        assert internal.json()["rtc_allowed"] is allowed
+
+    mints = []
+
+    async def gateway(*args, **kwargs):
+        mints.append("gateway")
+        return "gw_test"
+
+    def ice(*args):
+        mints.append("ice")
+        return []
+
+    monkeypatch.setattr(ephemeral_tokens, "mint", gateway)
+    monkeypatch.setattr(ice_servers, "ice_servers", ice)
+    for path in ("/api/gateway-token", "/api/rtc/ice-servers"):
+        for target in (None, "invalid", uuid4(), *devices.values()):
+            params = {} if target is None else {"device_id": str(target)}
+            response = client.post(path, params=params)
+            expected = 201 if pending_allowed and target == devices["pending"] else 403
+            assert response.status_code == expected, (path, target, response.text)
+    assert sorted(mints) == (["gateway", "ice"] if pending_allowed else [])
+
+
+def test_device_transport_rtc_mints_keep_the_legacy_unscoped_free_path(
+    transport_client, monkeypatch,
+):
+    monkeypatch.delenv(ice_servers.CF_TURN_KEY_ID_ENV, raising=False)
+    monkeypatch.delenv(ice_servers.CF_TURN_KEY_API_TOKEN_ENV, raising=False)
+    client = transport_client
+    sign_in_member(client)
+    assert client.post("/api/gateway-token").json()["token"].startswith("gw_")
+    assert client.post("/api/rtc/ice-servers").json() == {"iceServers": ice_servers.STUN_ONLY}
 
 
 @pytest.mark.asyncio

@@ -33,7 +33,7 @@ from buildapp import ephemeral_tokens, pairing_crypto, presence
 from buildapp.bridge_http_models import BridgeHttpEndpoint
 from buildapp.clock import utc_now
 from buildapp.desktop_auth import build_auth_guard
-from buildapp.device_transport import transport_projection
+from buildapp.device_transport import require_rtc_mint, rtc_allowed, transport_projection
 from buildapp.internal_auth import internal_auth_guard
 from buildapp.models import Device
 from buildapp.request_body import read_json_object
@@ -358,11 +358,13 @@ class DevicesController(Controller):
     async def gateway_token(self, request: Request, db_session: AsyncSession) -> Response:
         """Mint a short-TTL token the browser presents to the relay so it can be scoped
         to this user's devices."""
+        user_id = require_user(request)
+        await require_rtc_mint(db_session, user_id, request.query_params.get("device_id"))
         raw = await ephemeral_tokens.mint(
             db_session,
             purpose=GATEWAY_TOKEN_PURPOSE,
             prefix=GATEWAY_TOKEN_PREFIX,
-            user_id=require_user(request),
+            user_id=user_id,
             ttl=GATEWAY_TOKEN_TTL,
             now=utc_now(),
         )
@@ -386,6 +388,7 @@ class DevicesController(Controller):
                 "transport_public_key_b64": device.transport_public_key_b64,
                 "approved": device.approved,
                 "owner_user_id": str(device.owner_user_id) if device.owner_user_id else None,
+                "rtc_allowed": await rtc_allowed(db_session, device),
             }
         )
 

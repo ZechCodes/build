@@ -50,6 +50,7 @@ class FakeCloudflare:
         self.before = None
         self.secret = None
         self.keep_dns = False
+        self.fail_status = 503
         self.redirect = False
 
     async def respond(self, reader, writer):
@@ -71,7 +72,7 @@ class FakeCloudflare:
                 await self.before(method, path)
             if self.fail == (method, path):
                 self.fail = None
-                await self.send(writer, 503, {"success": False, "errors": [TOKEN, self.secret]})
+                await self.send(writer, self.fail_status, {"success": False, "errors": [TOKEN, self.secret]})
                 return
             payload = self.dispatch(method, path, query, data)
             if self.lose == (method, path):
@@ -96,6 +97,7 @@ class FakeCloudflare:
         if method == "DELETE":
             resource_id = path.removeprefix(base + "/")
             if resources is self.tunnels:
+                assert query == "cascade=true"
                 assert all(record["content"] != f"{resource_id}.cfargotunnel.com" for record in self.dns.values())
             kept = resources is self.dns and self.keep_dns
             return {"success": True, "result": resources[resource_id] if kept else resources.pop(resource_id)}
@@ -141,9 +143,9 @@ class Environment:
     api: FakeCloudflare
     provider: CloudflareTunnelClient
 
-    def worker(self, *, cap=10, interval=0.03):
+    def worker(self, *, cap=10, interval=0.03, lease=sqlite_test_lease):
         return HostedTunnelProvisioner(
-            self.db, self.reports, self.provider, WRAPPING_KEY, cap, interval=interval, lease=sqlite_test_lease,
+            self.db, self.reports, self.provider, WRAPPING_KEY, cap, interval=interval, lease=lease,
         )
 
     async def row(self):
@@ -164,7 +166,16 @@ class Environment:
 async def env(tmp_path):
     sessions = file_session_maker(tmp_path / "provisioner.sqlite")
     engine = engine_for(sessions)
-    await create_skrift_tables(engine)
+    try:
+        await create_skrift_tables(engine)
+        async with hosted_environment(sessions) as initialized:
+            yield initialized
+    finally:
+        await engine.dispose()
+
+
+@asynccontextmanager
+async def hosted_environment(sessions):
     async with sessions() as db:
         user = await add_account(db, "provisioning@example.test")
         invite = await add_member(db, user, "provisioning@example.test")
@@ -182,7 +193,6 @@ async def env(tmp_path):
         zone_id="fixture-zone", zone_name=ZONE, token=TOKEN,
     ) as provider:
         yield Environment(sessions, device, invite.id, Reports({PairingIdentity.from_device(device)}), api, provider)
-    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -491,3 +501,61 @@ async def test_suspended_account_cannot_claim_or_keep_resources(env):
     assert await env.claimable() is None
     await worker.reconcile_once()
     assert not env.api.tunnels and not env.api.dns
+
+
+@pytest.mark.asyncio
+async def test_rate_limits_and_server_errors_back_off_with_bounded_jitter(env, monkeypatch):
+    from buildapp import hosted_tunnel_provisioner
+
+    worker = env.worker()
+    delays = []
+
+    def jitter(minimum, maximum):
+        delays.append((minimum, maximum))
+        return 0.0
+
+    monkeypatch.setattr(hosted_tunnel_provisioner.random, "uniform", jitter)
+    reconcile = worker.reconcile_once
+
+    async def failing_pass():
+        if len(delays) == 8:
+            raise asyncio.CancelledError
+        env.api.fail = ("GET", TUNNELS)
+        env.api.fail_status = 429 if len(delays) % 2 == 0 else 503
+        await reconcile()
+
+    monkeypatch.setattr(worker, "reconcile_once", failing_pass)
+    with pytest.raises(asyncio.CancelledError):
+        await worker.run()
+    assert [maximum for _, maximum in delays] == [1, 2, 4, 8, 16, 32, 60, 60]
+    assert all(minimum == maximum / 2 for minimum, maximum in delays)
+    assert not env.api.dns and not env.api.tunnels
+
+
+@pytest.mark.asyncio
+async def test_recreated_device_cannot_claim_previous_pairings_assignment(env):
+    worker = env.worker()
+    await worker.reconcile_once()
+    old = await env.row()
+    async with env.db.begin() as db:
+        await db.delete(await db.get(Device, env.device.id))
+    assert await env.claimable() is None
+    async with env.db.begin() as db:
+        replacement = Device(
+            id=env.device.id, owner_user_id=env.device.owner_user_id, approved=True,
+            name="replacement", identity_public_key_b64="new-identity", transport_public_key_b64="new-transport",
+        )
+        db.add(replacement)
+    assert replacement.created_at != old.pairing_created_at
+    assert replacement.authorization_epoch == old.authorization_epoch
+    env.device = replacement
+    env.reports.pairings = {PairingIdentity.from_device(replacement)}
+    assert await env.claimable() is None
+    await worker.reconcile_once()
+    await worker.reconcile_once()
+    new = await env.claimable()
+    assert new.state == "ready"
+    assert new.generation > old.generation
+    assert new.tunnel_id != old.tunnel_id and new.hostname != old.hostname
+    async with env.db() as db:
+        assert not (await db.get(Device, replacement.id)).hosted_ready_once

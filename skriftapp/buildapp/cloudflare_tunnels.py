@@ -15,7 +15,7 @@ import httpx
 MAX_BODY = 2 * 1024 * 1024
 MAX_PAGES = 1000
 ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
-LABEL = r"[0-9a-f]{32}"
+LABEL = re.compile(r"[0-9a-f]{32}")
 DNS_LABEL = re.compile(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?")
 
 
@@ -69,21 +69,25 @@ class BridgeZone:
         return f"build-{scope}-"
 
     def hostname(self, label: str) -> str:
+        if not LABEL.fullmatch(label):
+            raise ValueError("invalid hosted bridge label")
         return f"b-{label}.{self.name}"
 
     def tunnel_name(self, label: str) -> str:
+        if not LABEL.fullmatch(label):
+            raise ValueError("invalid hosted bridge label")
         return self.tunnel_prefix + label
 
     def dns_comment(self, label: str, tunnel_id: UUID) -> str:
         return f"{self.tunnel_name(label)}:{tunnel_id}"
 
     def label_from_hostname(self, hostname: str) -> str | None:
-        match = re.fullmatch(rf"b-({LABEL})\.{re.escape(self.name)}", hostname.lower().rstrip("."))
+        match = re.fullmatch(rf"b-({LABEL.pattern})\.{re.escape(self.name)}", hostname.lower().rstrip("."))
         return match[1] if match else None
 
     def label_from_tunnel(self, name: str) -> str | None:
         label = name.removeprefix(self.tunnel_prefix)
-        return label if label != name and re.fullmatch(LABEL, label) else None
+        return label if label != name and LABEL.fullmatch(label) else None
 
 
 @dataclass(frozen=True)
@@ -93,11 +97,9 @@ class Inventory:
 
     def reserved_labels(self, zone: BridgeZone) -> set[str]:
         return {
-            label for label in (
-                *(zone.label_from_tunnel(tunnel.name) for tunnel in self.tunnels.values()),
-                *(zone.label_from_hostname(record.name) for record in self.dns.values()),
-            ) if label is not None
-        }
+            *(zone.label_from_tunnel(tunnel.name) for tunnel in self.tunnels.values()),
+            *(zone.label_from_hostname(record.name) for record in self.dns.values()),
+        } - {None}
 
 
 def _safe_base_url(value: str) -> str:
@@ -143,7 +145,7 @@ class CloudflareTunnelClient:
         self._tunnels = f"accounts/{account_id}/cfd_tunnel"
         self._dns = f"zones/{zone_id}/dns_records"
         self._http = httpx.AsyncClient(
-            base_url=_safe_base_url(base_url) + "/", headers={"Authorization": f"Bearer {token}"},
+            base_url=_safe_base_url(base_url) + "/", headers={"Authorization": f"Bearer {token}", "Accept-Encoding": "identity"},
             timeout=10.0, follow_redirects=False, trust_env=False,
         )
 
@@ -160,7 +162,7 @@ class CloudflareTunnelClient:
                     code = response.status_code
                     raise ProviderError(f"HTTP {code}", retryable=code == 429 or code >= 500)
                 body = bytearray()
-                async for chunk in response.aiter_bytes(chunk_size=65536):
+                async for chunk in response.aiter_raw(chunk_size=65536):
                     body.extend(chunk)
                     if len(body) > MAX_BODY:
                         raise ProviderError("response exceeds size limit")
@@ -214,9 +216,14 @@ class CloudflareTunnelClient:
         return _parse_resource(_dns, data["result"])
 
     async def delete_dns(self, record_id: str) -> None:
+        if not ID.fullmatch(record_id):
+            raise ValueError("invalid Cloudflare DNS record ID")
         await self._request("DELETE", f"{self._dns}/{record_id}")
 
     async def delete_tunnel(self, tunnel_id: UUID) -> None:
+        if not isinstance(tunnel_id, UUID):
+            raise ValueError("invalid Cloudflare tunnel ID")
+        # The tunnel delete itself disconnects remaining connector replicas.
         await self._request("DELETE", f"{self._tunnels}/{tunnel_id}", params={"cascade": "true"})
 
 

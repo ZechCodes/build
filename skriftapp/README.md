@@ -121,6 +121,39 @@ the public asset URLs. That decision is made once, in
 `release_assets.asset_source`, and nothing else reads the variable — so removing
 the secret at launch is the whole change.
 
+### Hosted tunnel worker
+
+Run `python -m buildapp.hosted_tunnel_worker` from `skriftapp/` as a separate
+process after applying the assignment and signed-mode-report migrations. Worker
+replicas use the same issuer database and zone. PostgreSQL elects one worker per
+zone for each reconcile pass. The worker listens for committed changes and also
+checks every 30 seconds.
+
+| Setting | Value |
+| --- | --- |
+| `DATABASE_URL` | The issuer's PostgreSQL URL using `postgresql+asyncpg`. |
+| `HOSTED_TUNNEL_API_BASE_URL` | Cloudflare v4 API base URL, including `/client/v4`. |
+| `HOSTED_TUNNEL_ACCOUNT_ID` | Cloudflare account ID. |
+| `HOSTED_TUNNEL_ZONE_ID` | Cloudflare DNS zone ID. |
+| `HOSTED_TUNNEL_ZONE_NAME` | Dedicated environment bridge zone with a wildcard edge certificate. Reserve `b-<32 lowercase hex digits>` within the zone for Build. |
+| `HOSTED_TUNNEL_API_TOKEN_FILE` | Mounted provisioner-only token with account Tunnel Write and zone DNS Write. |
+| `HOSTED_TUNNEL_WRAPPING_KEY_FILE` | Mounted file containing the environment's base64-encoded 32-byte wrapping key. The claim issuer uses the same key. |
+| `HOSTED_TUNNEL_CAPACITY` | Maximum number of non-deleted tunnels in the whole account, including idle tunnels and other consumers. |
+| `HOSTED_TUNNEL_MODE_SOURCE` | The issuer's signed-mode adapter, `buildapp.hosted_tunnel_source:hosted_mode_source`. |
+
+The issuer also needs the account ID and zone name for credential issuance and
+reserved-host validation. The worker reserves zone-scoped tunnel names derived
+from `HOSTED_TUNNEL_ZONE_NAME`. Give dev and prod separate credentials and zones.
+Use the wildcard edge certificate for every bridge hostname in its zone.
+
+To replace one assignment, run
+`python -m buildapp.hosted_tunnel_worker rotate DEVICE_ID GENERATION` with the
+worker's configuration. The command withdraws the matching assignment and queues
+reconciliation. The worker confirms DNS and tunnel deletion in order before it
+allocates a fresh generation. A pending assignment reports `capacity` when the
+account is at its ceiling and `collision` when provider resources have ambiguous
+ownership.
+
 ### Downloads
 
 `GET /app/downloads` (alpha members only) answers the platform table, the

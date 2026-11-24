@@ -4,9 +4,9 @@
 // with the private half non-extractable. The pair lives in IndexedDB (database
 // `build-push`, store `keys`, keyed by the subscription id) where the service
 // worker (public/sw.js) reads it to open sealed pushes. The public half goes to
-// bridges only over the E2EE session (core/pushKeySync.js); the api never sees
-// it, which is the only thing stopping anyone else from sealing a push that
-// opens.
+// bridges over an authenticated bridge connection (core/pushKeySync.js).
+// A TLS terminator on that path can see the registered public key. The
+// private key stays in the browser. The seal alone doesn't authenticate the sender.
 //
 // The service worker cannot import this module, so it writes the database
 // layout and the subscription id out again; test/pushSealed.test.js holds the

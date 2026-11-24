@@ -1,5 +1,5 @@
-// Same-origin api calls (Skrift-session authed). These are the only plain-HTTP
-// surfaces — everything task-shaped rides the E2EE session instead.
+// Same-origin API calls use the Skrift session. Task data travels over the
+// authenticated bridge connection.
 
 export async function fetchGatewayToken() {
   const response = await fetch("/api/gateway-token", { method: "POST" });

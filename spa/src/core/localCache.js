@@ -3,7 +3,8 @@
 // A suspended browser can close its connection without losing those records;
 // the next operation reopens it instead of making the records disappear.
 //
-// Plaintext by decision (2026-08-31): E2EE protects the wire; the browser
+// Plaintext by decision (2026-08-31): the authenticated bridge connection
+// protects data in transit according to its transport, and the browser
 // profile is trusted. An unavailable database answers no records and
 // announces no writes. A lost connection is reopened, not given up on.
 //

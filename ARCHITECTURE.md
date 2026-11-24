@@ -8,6 +8,9 @@ relative to the repository root.
 
 ## System topology
 
+The diagram shows sign-in and the WebRTC path. Devices can also use verified
+HTTPS.
+
 ```
                     getbuild.ing                relay.getbuild.ing
 ┌─────────┐  HTTPS ┌────────────┐  /internal/*  ┌────────────┐  wss ┌─────────┐
@@ -43,8 +46,7 @@ A WebRTC session goes like this:
    on goes peer to peer, directly or through TURN.
 4. The bridge refuses application traffic that arrives over the relay: the
    relay is a rendezvous, not a data plane (`bridge/src/carrier.rs`). A device
-   that cannot be reached directly or through TURN is shown as blocked. There is
-   nothing to fall back to.
+   using WebRTC is shown as blocked when both direct and TURN paths fail.
 
 The browser gets its ICE server list from skriftapp (`POST /api/rtc/ice-servers`,
 `skriftapp/buildapp/ice_servers.py`) and hands it to the bridge inside the sealed
@@ -53,12 +55,21 @@ credential in that list: `offered_server` in `bridge/src/rtc.rs` copies them int
 its ICE configuration. The long-lived Cloudflare TURN key they are minted from
 stays on skriftapp and never reaches a browser or a bridge.
 
-A device connected by URL uses its verified bridge HTTPS listener directly.
+- WebRTC encrypts traffic end to end between your app and bridge, including through TURN.
+- For personal HTTPS, who can read traffic depends on where your TLS or private tunnel ends.
+- Hosted HTTPS passes through Cloudflare. Cloudflare can read your code, prompts and terminal traffic on this connection. This option is planned.
+
+A device connected by personal URL uses its verified HTTPS endpoint.
 Application calls use REST and changes arrive over SSE. When terminal WSS is
-available, the same listener carries terminal traffic over a separate socket
-without relay rendezvous or WebRTC. Electron main makes the native connections
-for the hosted SPA. See [Terminal WebSockets](#terminal-websockets) and
-[Terminal ownership and pane recovery](#terminal-ownership-and-pane-recovery).
+available, the same endpoint carries terminal traffic on a separate socket.
+Electron main makes native HTTPS and WSS connections for the hosted SPA.
+
+In the [hosted tunnels plan](<planning/v2/Account Types and Hosted Tunnels Plan.md>),
+Cloudflare terminates public TLS and forwards REST, SSE and WSS through the
+connector to the bridge's local ingress. Both HTTPS paths use the bridge HTTP
+API. See [Connection state machine](#connection-state-machine) for the planned
+selection policy and [Terminal WebSockets](#terminal-websockets) for the
+terminal route.
 
 ---
 
@@ -888,11 +899,13 @@ Both routes require the configured Host and one explicit, allowlisted HTTPS
 Origin. The upgrade checks Origin before handshake syntax and redemption, and
 requires the same Origin that minted the ticket. The client offers
 `build.term.v1` and `ticket.<token>` as subprotocols. The server selects only
-`build.term.v1`. Authentication comes from the ticket, and TLS protects the
-connection to the verified bridge. The browser uses a different hostname from
-the hosted app even when the ports differ, keeping the app cookie out of the
-handshake. The hosted CSP allows exact HTTPS and WSS authorities for eligible
-endpoints and the live initiating discovery candidate. See the
+`build.term.v1`. The ticket authenticates the upgrade. On personal HTTPS,
+TLS protects the connection to the configured TLS endpoint. On planned hosted
+HTTPS, Cloudflare terminates TLS and can read the upgrade ticket and terminal
+traffic. The browser uses a different hostname from the hosted app even when
+the ports differ, keeping the app cookie out of the handshake. The hosted CSP
+allows exact HTTPS and WSS authorities for eligible endpoints and the live
+initiating discovery candidate. See the
 [route contract](bridge/src/http/routes/README.md#terminal-websocket)
 and [terminal security checklist](<planning/v2/Terminal WebSocket Security Checklist.md>).
 
@@ -1296,7 +1309,10 @@ of the originating conversation. See [secret wire](docs/secret-wire.md).
   Nested objects keep their own rules: a message context item's unknown
   field is still ignored, and its unknown kind refused.
 - `PROTOCOL_VERSION` in `bridge/src/transport.rs` is a different number: the
-  version of the E2EE envelope.
+  version of the WebRTC E2EE envelope.
+- Planned hosted HTTPS uses a signed bridge claim capability independent of
+  the application wire version. The issuer uses it to determine whether the
+  device can claim a hosted address before an application session opens.
 
 ### Sealed push content
 
@@ -1334,9 +1350,10 @@ and its controls are
   mark that the router takes off the URL (`takePushOpenMark`). Either way that
   open lands the linked conversation on its unread line, just like every
   other chat opening (including switches, reloads and background resumes).
-- The sealing is not sender-authenticated: forgery is prevented only because
-  the notification public key travels only over E2EE and never reaches the
-  api.
+- The browser registers the notification public key over an authenticated
+  bridge connection. A TLS terminator can see the registered public key,
+  including Cloudflare on planned hosted HTTPS. The non-extractable private
+  key stays local. The seal alone does not authenticate the sender.
 
 ### Stores and persistence
 
@@ -3957,7 +3974,8 @@ the trackers left on tasks that finished before this rule. The user's watch
 ### Relay and direct connection
 
 The optional HTTPS listener prepares on the liveness runtime, independently of
-relay, MCP and agent startup (`http/supervisor.rs`). Hosted endpoint registration
+relay, MCP and agent startup (`http/supervisor.rs`). The bridge registers its
+personal origin with the hosted issuer. Endpoint registration
 failures, including predecessor conflicts, keep HTTP off and retry after 2 seconds,
 doubling to a five-minute cap. Retries retain the prepared endpoint epoch and
 predecessor candidates; they never discard the hosted CAS fence or manufacture
@@ -3994,8 +4012,8 @@ not the protocol, sessions or network behavior.
   (`bridge/src/backoff.rs`).
 - **Relay broker**: `bridge/src/bin/relay.rs` and `bridge/src/relay_server.rs`
   serve `/ws/device`, `/ws/client` and `/health`. They validate against skriftapp
-  over `/internal/*` and forward only opaque envelopes.
-- **Direct path**: `bridge/src/rtc.rs` on the `webrtc` crate answers the
+  over `/internal/*` and forward opaque envelopes for WebRTC signaling.
+- **WebRTC path**: `bridge/src/rtc.rs` on the `webrtc` crate answers the
   browser's offer and carries the `app` and `term` channels. `carrier.rs` puts
   both carriers behind one `FrameIntake`/`SessionSender` boundary, so handlers
   never know which one a frame came in on.
@@ -4313,9 +4331,12 @@ not the protocol, sessions or network behavior.
   current `selectedCandidatePairId` before nomination flags, since browsers may
   retain nominated pairs from earlier ICE generations.
 
-**The browser↔relay contract.** The relay is authentication and rendezvous and
-nothing else
-([`planning/v2/Strict P2P Transport Spec.md`](<planning/v2/Strict P2P Transport Spec.md>)).
+The relay authenticates peers and carries WebRTC rendezvous traffic. When
+WebRTC uses Cloudflare TURN, TURN can observe connection metadata and carries
+DTLS ciphertext. The planned hosted HTTPS path uses public TLS termination
+at Cloudflare. See the
+[WebRTC transport spec](<planning/v2/Strict P2P Transport Spec.md>) for the
+relay contract.
 
 1. `POST /api/gateway-token` (Skrift-session authed) returns `{token}` with a
    5-minute TTL (`GATEWAY_TOKEN_TTL` in `skriftapp/buildapp/devices_controller.py`).
@@ -5659,9 +5680,24 @@ No new timer, persistent store or connection-state UI is introduced.
 `spa/src/connection.js` tracks the current **application** session for each
 device. The WebRTC path uses the device's DataChannels. Its terminal session
 mints a separate E2EE session through the device's rendezvous
-(`mintTerminalSession`) and rides the `term` channel. The URL path uses
+(`mintTerminalSession`) and rides the `term` channel. Verified HTTPS uses
 `spa/src/core/httpDeviceConnection.js` and an HTTP Opening with REST and SSE.
-Terminal ownership for URL devices is negotiated separately below.
+Terminal ownership for HTTPS devices is negotiated separately below.
+
+The [hosted tunnels plan](<planning/v2/Account Types and Hosted Tunnels Plan.md#account-policy-and-rtc-eligibility>)
+defines the policy for selecting a new connection.
+
+| Policy at the issuer | Client behavior for a new connection |
+| --- | --- |
+| No tunnel entitlement | Existing WebRTC default, or the user's selected HTTPS address with its current terminal compatibility. |
+| Entitled, personal origin configured | Use the registered personal HTTPS address. If setup fails, show its reason and keep the personal selection. |
+| Entitled, hosted setup pending | Use WebRTC only while the issuer returns `rtc_allowed=true`. Otherwise render cached work and the setup or update reason. |
+| Entitled, hosted ready once | Use the assigned HTTPS address with REST, SSE and terminal WSS. During outage or replacement, retain cached work and retry HTTPS. |
+
+The planned selector reads the transport projection in the account-scoped
+device cache. The authenticated device list supplies that projection before
+dialing. Network failure retries the selected path. An entitled HTTPS
+selection requires WSS for terminals.
 
 - **Rendezvous**: `createRelayRendezvous` (`spa/src/core/rendezvous.js`) opens
   the relay socket, mints the session (`session_init` / `session_accept`) and
@@ -5794,7 +5830,7 @@ state without replaying uncertain actions.
 
 ### Terminal ownership and pane recovery
 
-For a URL device on the default mount, `Opening.transport` keeps
+For a personal URL device on the default mount, `Opening.transport` keeps
 `terminal: "webrtc"` and advertises
 `terminal_websocket: {"version":1,"protocol":"build.term.v1"}`. The SPA
 requires that v1 descriptor, `term.websocket` in a compatible greeting, and
@@ -5871,8 +5907,12 @@ HTTP cache.
 ### Capability gating
 
 - `hello()` in `spa/src/core/changeEvents.js` sends `session.hello` with the
-  client's `api_range`. `greetBridge()` then selects an adapter and arms the
-  change subscriptions.
+  client's `api_range` over the authenticated bridge connection.
+  `greetBridge()` then selects an adapter and arms the change subscriptions.
+- The planned HTTPS selector uses the verified device policy to pick a
+  connection. The Opening descriptor and browser or native terminal support
+  determine WSS compatibility, which is recorded in the device cache for
+  rendering.
 - `selectAdapter()` in `spa/src/core/bridgeApi/index.js` checks the bridge's
   `api_version` against `SPA_API_RANGE` (`>=3.24.0 <4.0.0`). A greeting with
   no version, or no greeting at all, reads as `PRE_ALPHA_API_VERSION`

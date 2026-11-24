@@ -12,9 +12,8 @@
 > and Linux (Intel and ARM), the web client and the desktop app, several paired
 > machines at once, Claude Code, Codex CLI and Pi agents, and git worktree or
 > Rift copy-on-write isolation. What does not yet: a native Windows bridge,
-> OpenCode, self-updates for a bridge you built yourself, and any machine that
-> cannot be reached directly or through TURN (it is shown as blocked; there is
-> no relayed fallback).
+> OpenCode, and self-updates for a bridge you built yourself. For WebRTC,
+> the app shows a device as blocked when both the direct and TURN paths fail.
 
 **Your agents. Your machine. Your call.**
 
@@ -93,13 +92,18 @@ be installed and signed in on the machine running `build-bridge`.
 
 ## How it works
 
-Build does not run agents, host code, or see code. Agents run on your own
-machine via the bridge. Build's job is **orchestration**: starting work,
-watching it through git, and gating the transitions where human judgment
-matters. Think of it as tmux for coding agents, in your browser and end-to-end
-encrypted. You talk to agents in their threads from the compose box, review
-their diffs with batched comments, merge from the same screen, and can drop
-into an agent's terminal at any point, though you never have to.
+Manage coding agents on your machines with git-native review. The bridge runs
+the agents on your machine.
+You can talk to them in their threads, review diffs with batched comments,
+merge from the same screen, and open their terminals when you need them.
+
+The app connects to your bridge over WebRTC or verified HTTPS.
+
+- WebRTC encrypts traffic end to end between your app and bridge, including through TURN.
+- For personal HTTPS, who can read traffic depends on where your TLS or private tunnel ends.
+- Hosted HTTPS passes through Cloudflare. Cloudflare can read your code, prompts and terminal traffic on this connection. This option is planned.
+
+The diagram shows WebRTC signaling and data paths.
 
 ```
                     getbuild.ing                relay.getbuild.ing
@@ -113,26 +117,23 @@ into an agent's terminal at any point, though you never have to.
    └╌╌╌╌╌╌ WebRTC DataChannels (direct; Cloudflare TURN fallback) ╌╌╌╌╌╌╌┘
 ```
 
-Build hosts **authentication and rendezvous, and nothing else.** Conversations,
-commits, diffs and files are large, and relaying any meaningful share of them is
-the cost a hosted service must not carry. So the relay finds your machine and
-carries the WebRTC negotiation; the browser closes that socket once the
-DataChannels are open, and every application byte goes peer to peer from then
-on. A machine that cannot be reached directly (or through TURN) is shown as
-blocked, with the reason and a Retry. There is nothing underneath to fall back
-to.
+Build's app server authenticates you and manages device registration. For
+WebRTC, the relay carries the negotiation until both DataChannels open. The
+app then closes the relay socket and sends application data over those channels,
+directly or through TURN. Verified HTTPS sends application calls and events to
+the configured bridge endpoint using REST and SSE.
 
 | Component | Where | What |
 |---|---|---|
-| `bridge/` | user machines | Rust device daemon: worktree-per-task, full-PTY harnesses, Build's MCP tools for agents, git-diff watcher, durable task store, E2EE transport, device pairing |
-| `bridge/src/bin/relay.rs` | relay.getbuild.ing | Rust ciphertext-only broker: `/ws/device` (Ed25519 auth) + `/ws/client` (gateway-token auth). Carries session setup and `rtc.*` signaling and refuses everything else; presence and transport keys are the api's |
+| `bridge/` | user machines | Rust device daemon: worktree-per-task, full-PTY harnesses, Build's MCP tools for agents, git-diff watcher, durable task store, WebRTC and verified HTTPS, device pairing |
+| `bridge/src/bin/relay.rs` | relay.getbuild.ing | Rust WebRTC signaling broker for `/ws/device` (Ed25519 auth) and `/ws/client` (gateway-token auth). Carries sealed session setup and `rtc.*` signaling. The API owns presence and transport keys |
 | `skriftapp/` | getbuild.ing | Python app server (Skrift): passkey auth, device registry/approval, gateway tokens, web push, the admin transport page (how sessions reach bridges: direct / TURN / relay), serves the SPA |
 | `spa/` | built into skriftapp | Vite vanilla-ES-module web client: task board, agent threads, diff review, terminal drawer; all deps self-hosted, zero CDN |
 | `desktop/` | user desktops | Sandboxed Electron client for the hosted SPA; connects to a separately installed bridge the same way the browser does |
-| `web/` | dev only | Node E2EE test/QA harnesses |
+| `web/` | dev only | Node WebRTC QA harness |
 | `deploy/` | | podman compose stack + k8s manifests and the cutover runbook |
 
-Build maintains the E2EE crypto layer in [`transport/`](transport/README.md):
+Build maintains the WebRTC crypto layer in [`transport/`](transport/README.md):
 the JS binding serves SPA and web; Python is the compatibility reference, not
 an app runtime dependency. The Rust implementation remains in
 `bridge/src/transport.rs`. Consumers, CI and app/QA images use this checkout,
@@ -141,17 +142,13 @@ with committed locks and no first-party sibling clone. The
 is the maintenance and audit source of truth. The imported JS/Python work
 retains its [own license notice](transport/LICENSE.md).
 
-**A second infrastructure party.** Browser and bridge negotiate direct WebRTC DataChannels and
-use Cloudflare TURN only when neither peer can hole-punch, which makes Cloudflare a second
-infrastructure party beside the relay. Cloudflare sees TURN allocation source IPs and DTLS
-ciphertext; under that DTLS is the same secretbox envelope the relay carries during negotiation,
-so even a broken DTLS session exposes no more than the relay already saw (session ids, sizes,
-timing) and never plaintext or session keys. The peer's DTLS fingerprint travels inside the sealed session,
-so neither Cloudflare nor anyone else on the path can substitute a peer. The direct path adds
-the one exposure the relay path hid: each peer learns the other's IP. TURN credentials are
-short-lived (their lifetime is `TTL_SECONDS` in `skriftapp/buildapp/ice_servers.py`), minted
-per authenticated user by the api, and reach the bridge inside the sealed session; the TURN key
-itself never leaves the api Secret.
+On WebRTC, Cloudflare TURN can observe source IPs, traffic sizes and timing
+while relaying DTLS ciphertext. DTLS encrypts the DataChannels between the
+app and bridge. The peers exchange their DTLS fingerprints in sealed signaling
+through the relay. Direct WebRTC exposes each peer's IP to
+the other. The API mints short-lived TURN credentials per authenticated user
+(`TTL_SECONDS` in `skriftapp/buildapp/ice_servers.py`) and the browser sends
+them to the bridge inside the sealed session.
 
 How each piece is built inside (the bridge's RPC and push model, its state,
 stores, harnesses and MCP tools; the web client's cache, connection state

@@ -3,9 +3,14 @@
 Build Desktop is a sandboxed Electron shell for the hosted Build web client.
 Published builds support Apple Silicon (ARM64) Macs and Linux x86_64/ARM64.
 Intel Macs can use the browser client.
-It connects to the user's separately installed bridge through Build's existing
-end-to-end encrypted relay. The desktop app does not install, launch, or access
-the bridge or the user's files.
+
+Manage coding agents on your machines with git-native review. Install the
+bridge on the machine that runs your agents. Build Desktop connects to it over
+WebRTC or verified HTTPS.
+
+- WebRTC encrypts traffic end to end between your app and bridge, including through TURN.
+- For personal HTTPS, who can read traffic depends on where your TLS or private tunnel ends.
+- Hosted HTTPS passes through Cloudflare. Cloudflare can read your code, prompts and terminal traffic on this connection. This option is planned.
 
 Sign-in opens the existing passkey flow in the system browser through Skrift's
 OAuth 2.0 Authorization Code flow with PKCE. Access and refresh tokens remain in

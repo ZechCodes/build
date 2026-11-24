@@ -414,7 +414,7 @@ const sourceFingerprintParts = {
   "core/projectConsole.js": ["b44678cc", "4c2dbc2a", "188695a2", "307b4883", "4d4fb733", "091622af", "3c648066", "9d1e32bb"],
   "core/projectFilesRpc.js": ["e84ae7b7", "ceffb0cc", "7ff4c6cd", "cfc0c05f", "13a0d831", "079f3b3e", "5dae2e56", "ce4686ac"],
   "core/projectTerminalRpc.js": ["b391c6dc", "aa385e26", "aadfb8b8", "f6ef5cc9", "9a8e7a79", "d9d757bb", "cdd1356c", "867cadea"],
-  "core/pushKeySync.js": ["ecd9373a", "3f2dd8cb", "af448d18", "1098ca18", "ef83c7bb", "923a9c90", "b5d5f042", "9ac75438"],
+  "core/pushKeySync.js": ["9c4a13ad", "28d06984", "f41e9569", "4d10c2a2", "3bc8bdc9", "e7abf450", "dccba048", "c536464d"],
   "core/railMode.js": ["9a3738d3", "e4361bdf", "fef94f86", "f803203f", "efbe6cbf", "8513e3f7", "5fc7602c", "dd4e5e6b"],
   // #997 readStateRepair.js:96: decimal read repair retains existing board.list and project-roster confirmation methods.
   "core/readStateRepair.js": ["c374e7a6", "23e8215a", "1c4a16b5", "337a4bf2", "32babbcc", "246bfc57", "68c3cdfc", "5e916be7"],
@@ -499,7 +499,7 @@ const sourceFingerprintParts = {
   "core/writeOperationRefresh.js": ["b5d241f8", "64bba629", "58a8bbab", "6673dafa", "0c5490bc", "2e70cbc9", "d0048bf4", "20e4c528"],
   // #1052: nested creation execution evidence changes display state; transport method edges stay unchanged.
   "core/writeOperations.js": ["eb7e34fc", "2e61c22a", "e6a302e2", "fc74cb2c", "99a7d032", "0ea012eb", "9c4adb8f", "ebd06bfc"],
-  "push.js": ["c7a3eb27", "240e0a4d", "3e314aee", "369bea39", "25bf83e0", "f105e41a", "0e4ed716", "4e53028b"],
+  "push.js": ["db12600b", "f62bc315", "b24af0c7", "8d28b42d", "e7624b01", "0ac3ec3a", "d5efdc06", "9818f06a"],
   // #1065: browser teardown follows its containing overlay or page host; filesystem RPC edges are unchanged.
   "sheets/browser.js": ["26b0a0d1", "9c17f7c3", "0d7f7b63", "f387fc4e", "2067502a", "c2f7b754", "e996da65", "07b55e58"],
   "sheets/newRepo.js": ["2aa62eb9", "1256b93f", "6d69e55c", "9aadf051", "0ca4505a", "35eb191a", "7c08d8f9", "f4a68f66"],

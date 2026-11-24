@@ -1,7 +1,7 @@
 // The notification key, told to the bridges that seal pushes to it (#200).
 //
 // A bridge seals a push's content to this browser's notification public key
-// (pushKeys.js), and learns that key only here, over the E2EE session:
+// (pushKeys.js), registered over the authenticated bridge connection:
 // `push.registerKey` on every bridge that announces it when push is turned on,
 // again after every greeting (an idempotent upsert, so a bridge that restarted
 // or pruned the key has it back), and `push.revokeKey` when push is turned off.

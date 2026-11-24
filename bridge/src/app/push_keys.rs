@@ -1,11 +1,10 @@
-//! The notification keys a browser registers over E2EE (#200).
+//! Notification keys registered over an authenticated bridge connection (#200).
 //!
-//! `push.registerKey` is the only way a notification public key reaches the
-//! bridge, and it arrives only over the E2EE session — never through the api.
-//! That is the whole of what stops forged push content: the seal is not
-//! sender-authenticated, so the key must stay secret. It is validated here,
-//! at registration, so a key that could never be sealed to is refused where
-//! the browser can hear about it.
+//! `push.registerKey` delivers the notification public key to the bridge. A TLS
+//! terminator on the HTTPS path can see the registered key. The private key
+//! stays in the browser. The seal alone doesn't authenticate the sender.
+//! Registration validates that the public key can be used to seal messages and
+//! reports an invalid key back to the browser.
 
 use crate::app::AppState;
 use crate::notify::seal::{is_subscription_id, parse_public_key};

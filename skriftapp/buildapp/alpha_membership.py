@@ -17,7 +17,9 @@ from uuid import UUID
 
 from litestar.exceptions import PermissionDeniedException
 from skrift.auth.services import get_user_permissions
-from sqlalchemy import Select, select
+from skrift.db.models.role import Role, RolePermission
+from skrift.db.models.user import User
+from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp.models import Invite
@@ -64,3 +66,14 @@ async def is_alpha_member(db_session: AsyncSession, user_id: UUID) -> bool:
 async def require_alpha_member(db_session: AsyncSession, user_id: UUID) -> None:
     if not await is_alpha_member(db_session, user_id):
         raise PermissionDeniedException(INVITE_ONLY_DETAIL)
+
+
+def current_alpha_membership(user_id: UUID):
+    """Check an active user's membership directly in SQL for credential release."""
+    administrator = User.roles.any(
+        Role.permissions.any(RolePermission.permission == ADMINISTRATOR_PERMISSION)
+    )
+    return select(User.id).where(
+        User.id == user_id, User.is_active.is_(True),
+        or_(redeemed_invites_for(user_id).exists(), administrator),
+    ).exists()

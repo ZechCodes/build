@@ -13,7 +13,10 @@ from litestar.exceptions import NotAuthorizedException
 
 TYPES = {
     purpose: f"build-http-{purpose}+jwt"
-    for purpose in ("registration", "registration-challenge", "discovery", "introspection")
+    for purpose in (
+        "registration", "registration-challenge", "discovery", "introspection",
+        "hosted-tunnel-challenge", "hosted-tunnel-claim",
+    )
 }
 
 
@@ -72,6 +75,8 @@ def audience(issuer, purpose, device_id=""):
         "registration-challenge": f"/api/devices/{device_id}/http-endpoint/challenge",
         "discovery": "/api/bridge-discovery/complete",
         "introspection": "/api/bridge-http/introspect",
+        "hosted-tunnel-challenge": f"/api/devices/{device_id}/hosted-tunnel/challenge",
+        "hosted-tunnel-claim": f"/api/devices/{device_id}/hosted-tunnel",
     }
     return canonical_origin(issuer) + paths[purpose]
 

@@ -40,6 +40,36 @@ Zech provisions the Cloudflare account-level Tunnel Write and zone-scoped DNS Wr
 
 **Use the existing registration.** `BridgeHttpEndpoint.device_id` is unique in `bridge_http_models.py`. `bridge_http_auth.py::register_endpoint` revokes device grant families when **origin, endpoint epoch or enabled state** changes. A change between personal and hosted uses that same predecessor CAS, durable acknowledgement and renewal/discovery flow. Validate a Build-hosted origin against the current assignment on registration, discovery, renewal and introspection. An obsolete daemon cannot republish a removed origin. One device has one origin at a time.
 
+### Hosted claim wire contract
+
+Send both requests to the paired issuer over verified HTTPS with redirect following disabled. Each request has `Content-Type: application/json` and a body with one member, `{"proof":"<compact JWS>"}`. The JSON body limit is 18,000 bytes and the proof limit is 16,000 characters. Use the paired Ed25519 key and JOSE header `alg: EdDSA` plus the route's exact `typ`. The issuer checks approval, the pinned pairing key, active account and alpha membership. Browser session and desktop OAuth credentials are unnecessary.
+
+| POST path | JWS `typ` | Additional signed claims | Success |
+| --- | --- | --- | --- |
+| `/api/devices/{device_id}/hosted-tunnel/challenge` | `build-http-hosted-tunnel-challenge+jwt` | `mode`, `hosted_capable` | 201 with `challenge_id` (UUID), `nonce` (32 random bytes encoded as unpadded base64url), `expires_at` (Unix seconds, 60 seconds after issuance), and `generation` (positive integer for a current ready assignment, otherwise null). |
+| `/api/devices/{device_id}/hosted-tunnel` | `build-http-hosted-tunnel-claim+jwt` | Same `mode` and `hosted_capable`, and the exact `challenge_id`, `nonce` and `generation` from the challenge, including a null generation. | 200 with one result below. |
+
+Both proofs carry the canonical device UUID as `iss` and `sub`, the canonical issuer HTTPS origin plus the full request path as `aud`, integer Unix timestamps `iat` and `exp` at most 30 seconds apart, and a fresh random `jti` of 16–128 ASCII letters, digits, underscores or hyphens. The issuer allows five seconds of timestamp skew. Proofs and challenges are single use. A challenge binds its generation and report to the pairing that issued it. After a mode or capability change is accepted, outstanding challenges for the preceding report revision are refused.
+
+A non-null generation fits the exact JSON integer range, 1 through 2⁵³−1. The provisioner starts generations in the 52-bit range, so the bridge should store them in a 64-bit integer.
+
+`mode` is `personal` whenever a local personal origin is configured, including invalid or disabled settings. Use `hosted` to request hosted setup when there is no personal origin, or `off` to withdraw the request. `hosted_capable` is a JSON boolean. The claim commits the signed report. A personal report withdraws any hosted registration and triggers the provisioner to remove the previous assignment and resources.
+
+| 200 result | Meaning |
+| --- | --- |
+| `{"status":"off"}` | Tunnel access is off for the owner or the bridge reported `off`. |
+| `{"status":"personal"}` | An entitled bridge reported a personal origin. Use the existing personal configuration. |
+| `{"status":"setup","reason":"<code>"}` | `provisioning`, `capacity`, `collision`, `update_required` (the bridge lacks hosted capability), or `assignment_changed` (a fresh challenge is required). |
+| `{"status":"assigned","hostname":"b-….<zone>","generation":4,"credentials":{…}}` | The current ready assignment. `credentials` is a local cloudflared credentials object with string fields `AccountTag`, `TunnelID` (canonical UUID) and `TunnelSecret` (standard base64). The bridge uses its own local ingress rules. |
+
+Application responses carry `Cache-Control: no-store` and `Referrer-Policy: no-referrer`. Error bodies contain only `error`, with 400 `invalid_request`, 401 `device_proof_refused` (including stale pairing, invalid/expired proof or challenge, and replay), 413 `request_too_large`, 429 `challenge_budget_exhausted`, or 503 `claim_unavailable`. Retry a lost response or a retryable setup result with backoff, a new challenge request and fresh proofs. Start the exchange on boot or a mode change. A changed `entitlement_revision` integer in a successful `POST /api/devices/heartbeat` response also triggers a signed recheck. Compare it for inequality and treat it as a hint only.
+
+For a hosted endpoint, sign `assignment_generation` in the existing endpoint registration proof and use the exact `https://<hostname>` from the assignment. Omit that field for personal registrations. A bridge can register with `enabled: false` before starting the connector and remain eligible for the RTC bootstrap exception. Once the connector and listener are ready, send an enabled registration at a fresh endpoint epoch with the disabled registration as the predecessor. The first matching enabled registration latches `hosted_ready_once` on the pairing. A ready assignment awaiting an enabled registration appears in the transport projection with `origin: null` and `reason: null`.
+
+The issuer uses the assignment row’s canonical hostname and matching label. The host-label form `b-<32 lowercase hex digits>` stays reserved after removal. Only the provisioner reads `HOSTED_TUNNEL_ZONE_NAME`. The issuer materializer uses `HOSTED_TUNNEL_ACCOUNT_ID` and the mounted key file named by `HOSTED_TUNNEL_WRAPPING_KEY_FILE`. The provisioner loads `HOSTED_TUNNEL_MODE_SOURCE=buildapp.hosted_tunnel_source:hosted_mode_source` during startup.
+
+The [signed claim fixtures](fixtures/hosted-tunnel-claim.json) contain both requests and responses for personal, provisioning and assigned results, with a test key and synthetic connector credential. Their timestamps are fixed for offline verification.
+
 ## Bridge package and ingress
 
 On an entitled bridge that needs hosting, fetch **cloudflared** at the pinned version for the bridge platform into the bridge's versioned install directory. Include its version and SHA-256 in the bridge release's signed checksum manifest. Use the pinned signature verification in `bridge/src/update/release.rs` and the publishing path in `.github/workflows/release.yml`. Verify signature, platform and digest before atomic install or execution. Build owns pin updates. Permit an explicit operator-selected absolute executable with the same pin/digest check. Free and personal-only bridges skip the download. Run as the bridge user with `--no-autoupdate`, a minimal environment and sanitized health categories.

@@ -7,8 +7,9 @@ from litestar.exceptions import PermissionDeniedException
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from buildapp import hosted_tunnel_source
 from buildapp.accounts import AccountPolicyValues, account_policy
-from buildapp.bridge_http_auth import endpoint_matches_pairing, valid_endpoint
+from buildapp.bridge_http_auth import endpoint_is_current, endpoint_matches_pairing
 from buildapp.bridge_http_models import BridgeHttpEndpoint
 from buildapp.models import Device
 
@@ -54,8 +55,11 @@ async def rtc_allowed(
     endpoint = await db_session.scalar(
         select(BridgeHttpEndpoint).where(BridgeHttpEndpoint.device_id == device.id)
     )
-    # A disabled listener still has a configured personal address.
-    return endpoint is None or not endpoint_matches_pairing(endpoint, device)
+    # A disabled personal listener still has a configured address.
+    return (
+        endpoint is None or endpoint.assignment_generation is not None
+        or not endpoint_matches_pairing(endpoint, device)
+    )
 
 
 async def require_rtc_mint(
@@ -79,11 +83,21 @@ async def require_rtc_mint(
 async def transport_projection(
     db_session: AsyncSession, device: Device, endpoint: BridgeHttpEndpoint | None, *, policy: AccountPolicyValues,
 ) -> dict:
-    origin = endpoint.origin if endpoint is not None and valid_endpoint(endpoint, device) else None
+    current = endpoint if await endpoint_is_current(db_session, endpoint, device) else None
+    source, origin, reason, revision = "webrtc", None, None, None
+    if current is not None:
+        origin, revision = current.origin, current.assignment_generation
+        source = "hosted" if revision is not None else "personal"
+    else:
+        assignment = await hosted_tunnel_source.current_assignment(db_session, device)
+        if assignment is not None:
+            source, revision = "hosted", assignment.generation
+            if assignment.state == "pending":
+                reason = hosted_tunnel_source.setup_reason(assignment)
     return {
-        "source": "personal" if origin is not None else "webrtc",
+        "source": source,
         "rtc_allowed": await rtc_allowed(db_session, device, policy=policy),
-        "reason": None,
+        "reason": reason,
         "origin": origin,
-        "assignment_revision": None,
+        "assignment_revision": revision,
     }

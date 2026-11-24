@@ -16,6 +16,7 @@ from skrift.db.models.user import User
 from skrift.db.services import oauth2_service
 
 from buildapp.alpha_membership import is_alpha_member
+from buildapp import hosted_tunnel_source
 from buildapp.bridge_http_models import (
     BridgeHttpClient,
     BridgeHttpChallenge,
@@ -45,6 +46,7 @@ def refuse():
 async def current_device(db, device_id):
     device = await db.scalar(
         select(Device).where(Device.id == device_id).with_for_update()
+        .execution_options(populate_existing=True)
     )
     if device is None or not device.approved or device.owner_user_id is None:
         refuse()
@@ -148,13 +150,22 @@ async def register_endpoint(db, device_id, proof, issuer, now):
         refuse()
     endpoint = await _endpoint(db, device.id)
     _validate_registration(claims, endpoint, device)
+    generation = claims.get("assignment_generation")
+    hosted = (
+        generation is not None
+        or hosted_tunnel_source.is_hosted_origin(claims["origin"])
+        or _same_hosted_origin(endpoint, claims["origin"])
+    )
+    if hosted and not await _current_hosted_origin(db, device, claims["origin"], generation):
+        refuse()
     await _record_replay(db, device, claims, now)
     await _spend(db, challenge, claims.get("nonce"), now)
     changed = endpoint is not None and (
         endpoint.origin,
         endpoint.endpoint_epoch,
         endpoint.enabled,
-    ) != (claims["origin"], claims["endpoint_epoch"], claims["enabled"])
+        endpoint.assignment_generation,
+    ) != (claims["origin"], claims["endpoint_epoch"], claims["enabled"], generation)
     if changed:
         await revoke_device(db, device.id, now, bump_epoch=False)
     if endpoint is None:
@@ -163,10 +174,15 @@ async def register_endpoint(db, device_id, proof, issuer, now):
     endpoint.origin = claims["origin"]
     endpoint.endpoint_epoch = claims["endpoint_epoch"]
     endpoint.enabled = claims["enabled"]
+    endpoint.assignment_generation = generation
     endpoint.user_id = device.owner_user_id
     endpoint.authorization_epoch = device.authorization_epoch
     endpoint.identity_fingerprint = fingerprint(device.identity_public_key_b64)
     await db.flush()
+    if hosted and endpoint.enabled and not device.hosted_ready_once:
+        from buildapp.device_transport import mark_hosted_ready_once
+
+        await mark_hosted_ready_once(db, device)
     return {
         "origin": endpoint.origin,
         "endpoint_epoch": endpoint.endpoint_epoch,
@@ -192,7 +208,8 @@ def _validate_registration(claims, endpoint, device):
             endpoint
             and epoch == endpoint.endpoint_epoch
             and (
-                (origin, claims["enabled"]) != (endpoint.origin, endpoint.enabled)
+                (origin, claims["enabled"], claims.get("assignment_generation"))
+                != (endpoint.origin, endpoint.enabled, endpoint.assignment_generation)
                 or endpoint.identity_fingerprint
                 != fingerprint(device.identity_public_key_b64)
             )
@@ -220,6 +237,14 @@ def _registration_predecessors(claims):
             refuse()
         checked.append(candidate)
     return checked
+
+
+def _same_hosted_origin(endpoint, origin):
+    return (
+        endpoint is not None
+        and endpoint.origin == origin
+        and endpoint.assignment_generation is not None
+    )
 
 
 async def _get_challenge(db, challenge_id, purpose):
@@ -277,6 +302,10 @@ async def _saved_discovery(db, user_id, client_binding, device_id, origin, now):
     device = await current_device(db, device_id)
     if device.owner_user_id != user_id:
         refuse()
+    if hosted_tunnel_source.is_hosted_origin(origin):
+        endpoint = await _endpoint(db, device.id)
+        if not await endpoint_is_current(db, endpoint, device) or endpoint.origin != origin:
+            refuse()
     device_scope = _discovery_scope(user_id, device_id)
     current = (
         device_scope
@@ -339,7 +368,7 @@ async def complete_discovery(
     challenge = await _get_challenge(db, challenge_id, "discovery")
     _check_pending(challenge, user_id, client_binding, now)
     endpoint = await _endpoint(db, device.id)
-    if not valid_endpoint(endpoint, device):
+    if not await endpoint_is_current(db, endpoint, device):
         refuse()
     expected = (
         str(challenge.id),
@@ -385,6 +414,25 @@ def endpoint_matches_pairing(endpoint: BridgeHttpEndpoint, device: Device) -> bo
     )
 
 
+async def _current_hosted_origin(db, device, origin, generation):
+    if not hosted_tunnel_source.valid_generation(generation):
+        return False
+    row = await hosted_tunnel_source.current_assignment(db, device)
+    return (
+        hosted_tunnel_source.ready_assignment(row)
+        and row.generation == generation
+        and origin == f"https://{row.hostname}"
+    )
+
+
+async def endpoint_is_current(db, endpoint, device):
+    if not valid_endpoint(endpoint, device):
+        return False
+    if endpoint.assignment_generation is None and not hosted_tunnel_source.is_hosted_origin(endpoint.origin):
+        return True
+    return await _current_hosted_origin(db, device, endpoint.origin, endpoint.assignment_generation)
+
+
 async def _mint(db, family, device, now):
     await db.execute(delete(BridgeHttpToken).where(BridgeHttpToken.expires_at < now))
     raw = "bhttp_" + secrets.token_urlsafe(32)
@@ -428,7 +476,7 @@ async def renew(
     if (
         canonical_origin(issuer) != family.issuer
         or endpoint_epoch != family.endpoint_epoch
-        or not _valid_family(family, endpoint, device)
+        or not await _valid_family(db, family, endpoint, device)
         or not await _parent_active(db, family, now)
     ):
         refuse()
@@ -442,8 +490,8 @@ async def _family(db, family_id):
         return None
 
 
-def _valid_family(family, endpoint, device):
-    if not valid_endpoint(endpoint, device) or family.revoked_at is not None:
+async def _valid_family(db, family, endpoint, device):
+    if family.revoked_at is not None or not await endpoint_is_current(db, endpoint, device):
         return False
     return (
         family.user_id,
@@ -476,7 +524,7 @@ async def introspect(db, raw, assertion, issuer, now):
     if (
         family.issuer != canonical_origin(issuer)
         or family.device_id != device.id
-        or not _valid_family(family, endpoint, device)
+        or not await _valid_family(db, family, endpoint, device)
         or not await _parent_active(db, family, now)
     ):
         return {"active": False}
@@ -550,6 +598,32 @@ async def revoke_device(db, device_id, now, *, bump_epoch=True):
         .where(BridgeHttpFamily.device_id == device_id)
         .values(revoked_at=now)
     )
+
+
+async def withdraw_hosted_registration(db, device_id, origin, generation, now):
+    """Disable only the matching hosted registration and its grant families."""
+    endpoint = await db.scalar(
+        update(BridgeHttpEndpoint)
+        .where(
+            BridgeHttpEndpoint.device_id == device_id,
+            BridgeHttpEndpoint.origin == origin,
+            BridgeHttpEndpoint.assignment_generation == generation,
+            BridgeHttpEndpoint.assignment_generation.is_not(None),
+            BridgeHttpEndpoint.enabled.is_(True),
+        )
+        .values(enabled=False)
+        .returning(BridgeHttpEndpoint.id)
+    )
+    if endpoint is not None:
+        await db.execute(
+            update(BridgeHttpFamily)
+            .where(
+                BridgeHttpFamily.device_id == device_id,
+                BridgeHttpFamily.origin == origin,
+                BridgeHttpFamily.revoked_at.is_(None),
+            )
+            .values(revoked_at=now)
+        )
 
 
 async def _client(db, user_id, client_binding):

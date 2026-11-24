@@ -1,0 +1,180 @@
+{
+  "issuer": "https://issuer.example",
+  "device_id": "34fbced7-beb6-4ade-a8ba-ca0e7f99351a",
+  "public_key_b64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+  "cases": [
+    {
+      "name": "personal",
+      "challenge_request": {
+        "method": "POST",
+        "path": "/api/devices/34fbced7-beb6-4ade-a8ba-ca0e7f99351a/hosted-tunnel/challenge",
+        "body": {
+          "proof": "eyJhbGciOiJFZERTQSIsInR5cCI6ImJ1aWxkLWh0dHAtaG9zdGVkLXR1bm5lbC1jaGFsbGVuZ2Urand0In0.eyJpc3MiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJzdWIiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJhdWQiOiJodHRwczovL2lzc3Vlci5leGFtcGxlL2FwaS9kZXZpY2VzLzM0ZmJjZWQ3LWJlYjYtNGFkZS1hOGJhLWNhMGU3Zjk5MzUxYS9ob3N0ZWQtdHVubmVsL2NoYWxsZW5nZSIsImlhdCI6MTc5NTU1NDAwMCwiZXhwIjoxNzk1NTU0MDMwLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJtb2RlIjoicGVyc29uYWwiLCJob3N0ZWRfY2FwYWJsZSI6dHJ1ZX0.67V_Tvl-jSkDrHekcfIQO64lCwIISqhCqxo06lqiTCn3rWTSe7WChv1HpRvC1ZG8K_n2YE5eANM_deocopzwBA"
+        }
+      },
+      "challenge_proof_claims": {
+        "iss": "34fbced7-beb6-4ade-a8ba-ca0e7f99351a",
+        "sub": "34fbced7-beb6-4ade-a8ba-ca0e7f99351a",
+        "aud": "https://issuer.example/api/devices/34fbced7-beb6-4ade-a8ba-ca0e7f99351a/hosted-tunnel/challenge",
+        "iat": 1795554000,
+        "exp": 1795554030,
+        "jti": "00000000-0000-0000-0000-000000000001",
+        "mode": "personal",
+        "hosted_capable": true
+      },
+      "challenge_response": {
+        "status_code": 201,
+        "body": {
+          "challenge_id": "00000000-0000-0000-0000-000000000002",
+          "nonce": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+          "expires_at": 1795554060,
+          "generation": null
+        }
+      },
+      "request": {
+        "method": "POST",
+        "path": "/api/devices/34fbced7-beb6-4ade-a8ba-ca0e7f99351a/hosted-tunnel",
+        "body": {
+          "proof": "eyJhbGciOiJFZERTQSIsInR5cCI6ImJ1aWxkLWh0dHAtaG9zdGVkLXR1bm5lbC1jbGFpbStqd3QifQ.eyJpc3MiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJzdWIiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJhdWQiOiJodHRwczovL2lzc3Vlci5leGFtcGxlL2FwaS9kZXZpY2VzLzM0ZmJjZWQ3LWJlYjYtNGFkZS1hOGJhLWNhMGU3Zjk5MzUxYS9ob3N0ZWQtdHVubmVsIiwiaWF0IjoxNzk1NTU0MDAxLCJleHAiOjE3OTU1NTQwMzEsImp0aSI6IjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMyIsIm1vZGUiOiJwZXJzb25hbCIsImhvc3RlZF9jYXBhYmxlIjp0cnVlLCJjaGFsbGVuZ2VfaWQiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDIiLCJub25jZSI6IkNnb0tDZ29LQ2dvS0Nnb0tDZ29LQ2dvS0Nnb0tDZ29LQ2dvS0Nnb0tDZ28iLCJnZW5lcmF0aW9uIjpudWxsfQ.56MwiERYgzgZ_RT7cEWZaSbG1gWXwnn0ekNpYwI8o-SLTbnOrTqyqj763u2uSQWlqGqpG2WGrEgVa4drbBsbDA"
+        }
+      },
+      "proof_claims": {
+        "iss": "34fbced7-beb6-4ade-a8ba-ca0e7f99351a",
+        "sub": "34fbced7-beb6-4ade-a8ba-ca0e7f99351a",
+        "aud": "https://issuer.example/api/devices/34fbced7-beb6-4ade-a8ba-ca0e7f99351a/hosted-tunnel",
+        "iat": 1795554001,
+        "exp": 1795554031,
+        "jti": "00000000-0000-0000-0000-000000000003",
+        "mode": "personal",
+        "hosted_capable": true,
+        "challenge_id": "00000000-0000-0000-0000-000000000002",
+        "nonce": "CgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgo",
+        "generation": null
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "status": "personal"
+        }
+      }
+    },
+    {
+      "name": "hosted_setup_pending",
+      "challenge_request": {
+        "method": "POST",
+        "path": "/api/devices/34fbced7-beb6-4ade-a8ba-ca0e7f99351a/hosted-tunnel/challenge",
+        "body": {
+          "proof": "eyJhbGciOiJFZERTQSIsInR5cCI6ImJ1aWxkLWh0dHAtaG9zdGVkLXR1bm5lbC1jaGFsbGVuZ2Urand0In0.eyJpc3MiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJzdWIiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJhdWQiOiJodHRwczovL2lzc3Vlci5leGFtcGxlL2FwaS9kZXZpY2VzLzM0ZmJjZWQ3LWJlYjYtNGFkZS1hOGJhLWNhMGU3Zjk5MzUxYS9ob3N0ZWQtdHVubmVsL2NoYWxsZW5nZSIsImlhdCI6MTc5NTU1NDEyMCwiZXhwIjoxNzk1NTU0MTUwLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDQiLCJtb2RlIjoiaG9zdGVkIiwiaG9zdGVkX2NhcGFibGUiOnRydWV9.zKEhiYFLYjAW3yAl_990N_Dem6zln-sz1gEaYaFD2OgE-a8NASzoAvdNqd8BEnk25eW3nfIQhYcQhoksXEyqBQ"
+        }
+      },
+      "challenge_proof_claims": {
+        "iss": "34fbced7-beb6-4ade-a8ba-ca0e7f99351a",
+        "sub": "34fbced7-beb6-4ade-a8ba-ca0e7f99351a",
+        "aud": "https://issuer.example/api/devices/34fbced7-beb6-4ade-a8ba-ca0e7f99351a/hosted-tunnel/challenge",
+        "iat": 1795554120,
+        "exp": 1795554150,
+        "jti": "00000000-0000-0000-0000-000000000004",
+        "mode": "hosted",
+        "hosted_capable": true
+      },
+      "challenge_response": {
+        "status_code": 201,
+        "body": {
+          "challenge_id": "00000000-0000-0000-0000-000000000005",
+          "nonce": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+          "expires_at": 1795554180,
+          "generation": null
+        }
+      },
+      "request": {
+        "method": "POST",
+        "path": "/api/devices/34fbced7-beb6-4ade-a8ba-ca0e7f99351a/hosted-tunnel",
+        "body": {
+          "proof": "eyJhbGciOiJFZERTQSIsInR5cCI6ImJ1aWxkLWh0dHAtaG9zdGVkLXR1bm5lbC1jbGFpbStqd3QifQ.eyJpc3MiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJzdWIiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJhdWQiOiJodHRwczovL2lzc3Vlci5leGFtcGxlL2FwaS9kZXZpY2VzLzM0ZmJjZWQ3LWJlYjYtNGFkZS1hOGJhLWNhMGU3Zjk5MzUxYS9ob3N0ZWQtdHVubmVsIiwiaWF0IjoxNzk1NTU0MTIxLCJleHAiOjE3OTU1NTQxNTEsImp0aSI6IjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwNiIsIm1vZGUiOiJob3N0ZWQiLCJob3N0ZWRfY2FwYWJsZSI6dHJ1ZSwiY2hhbGxlbmdlX2lkIjoiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDA1Iiwibm9uY2UiOiJDd3NMQ3dzTEN3c0xDd3NMQ3dzTEN3c0xDd3NMQ3dzTEN3c0xDd3NMQ3dzIiwiZ2VuZXJhdGlvbiI6bnVsbH0.-nRMcyAsRTkYCsARFUDwHB2NkwYEpVdVysa274ZxXlzGSP-YaXIfx_HufFFbEdgbePRTukCExPLu8ZF1kd2nCQ"
+        }
+      },
+      "proof_claims": {
+        "iss": "34fbced7-beb6-4ade-a8ba-ca0e7f99351a",
+        "sub": "34fbced7-beb6-4ade-a8ba-ca0e7f99351a",
+        "aud": "https://issuer.example/api/devices/34fbced7-beb6-4ade-a8ba-ca0e7f99351a/hosted-tunnel",
+        "iat": 1795554121,
+        "exp": 1795554151,
+        "jti": "00000000-0000-0000-0000-000000000006",
+        "mode": "hosted",
+        "hosted_capable": true,
+        "challenge_id": "00000000-0000-0000-0000-000000000005",
+        "nonce": "CwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCws",
+        "generation": null
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "status": "setup",
+          "reason": "provisioning"
+        }
+      }
+    },
+    {
+      "name": "hosted_credentials",
+      "challenge_request": {
+        "method": "POST",
+        "path": "/api/devices/34fbced7-beb6-4ade-a8ba-ca0e7f99351a/hosted-tunnel/challenge",
+        "body": {
+          "proof": "eyJhbGciOiJFZERTQSIsInR5cCI6ImJ1aWxkLWh0dHAtaG9zdGVkLXR1bm5lbC1jaGFsbGVuZ2Urand0In0.eyJpc3MiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJzdWIiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJhdWQiOiJodHRwczovL2lzc3Vlci5leGFtcGxlL2FwaS9kZXZpY2VzLzM0ZmJjZWQ3LWJlYjYtNGFkZS1hOGJhLWNhMGU3Zjk5MzUxYS9ob3N0ZWQtdHVubmVsL2NoYWxsZW5nZSIsImlhdCI6MTc5NTU1NDI0MCwiZXhwIjoxNzk1NTU0MjcwLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDciLCJtb2RlIjoiaG9zdGVkIiwiaG9zdGVkX2NhcGFibGUiOnRydWV9.uDnS-RVm3IisdcP0-M7wzE1r7sPhKZZL6HPuD-FLs63VRsz2eSZvzkK71LJPE1vt3wf6zpXRr5r4cr-5gvBAAQ"
+        }
+      },
+      "challenge_proof_claims": {
+        "iss": "34fbced7-beb6-4ade-a8ba-ca0e7f99351a",
+        "sub": "34fbced7-beb6-4ade-a8ba-ca0e7f99351a",
+        "aud": "https://issuer.example/api/devices/34fbced7-beb6-4ade-a8ba-ca0e7f99351a/hosted-tunnel/challenge",
+        "iat": 1795554240,
+        "exp": 1795554270,
+        "jti": "00000000-0000-0000-0000-000000000007",
+        "mode": "hosted",
+        "hosted_capable": true
+      },
+      "challenge_response": {
+        "status_code": 201,
+        "body": {
+          "challenge_id": "00000000-0000-0000-0000-000000000008",
+          "nonce": "DAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw",
+          "expires_at": 1795554300,
+          "generation": 2251799813685265
+        }
+      },
+      "request": {
+        "method": "POST",
+        "path": "/api/devices/34fbced7-beb6-4ade-a8ba-ca0e7f99351a/hosted-tunnel",
+        "body": {
+          "proof": "eyJhbGciOiJFZERTQSIsInR5cCI6ImJ1aWxkLWh0dHAtaG9zdGVkLXR1bm5lbC1jbGFpbStqd3QifQ.eyJpc3MiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJzdWIiOiIzNGZiY2VkNy1iZWI2LTRhZGUtYThiYS1jYTBlN2Y5OTM1MWEiLCJhdWQiOiJodHRwczovL2lzc3Vlci5leGFtcGxlL2FwaS9kZXZpY2VzLzM0ZmJjZWQ3LWJlYjYtNGFkZS1hOGJhLWNhMGU3Zjk5MzUxYS9ob3N0ZWQtdHVubmVsIiwiaWF0IjoxNzk1NTU0MjQxLCJleHAiOjE3OTU1NTQyNzEsImp0aSI6IjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwOSIsIm1vZGUiOiJob3N0ZWQiLCJob3N0ZWRfY2FwYWJsZSI6dHJ1ZSwiY2hhbGxlbmdlX2lkIjoiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDA4Iiwibm9uY2UiOiJEQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3TURBd01EQXdNREF3IiwiZ2VuZXJhdGlvbiI6MjI1MTc5OTgxMzY4NTI2NX0.wn4cfUefxheFE_D0GLEgeLdysYvNt95YcUVmko8hcwY2UgDeeYoUJNN_TQ3pcraadJu5SKUFQKTyKGuoA_QqBw"
+        }
+      },
+      "proof_claims": {
+        "iss": "34fbced7-beb6-4ade-a8ba-ca0e7f99351a",
+        "sub": "34fbced7-beb6-4ade-a8ba-ca0e7f99351a",
+        "aud": "https://issuer.example/api/devices/34fbced7-beb6-4ade-a8ba-ca0e7f99351a/hosted-tunnel",
+        "iat": 1795554241,
+        "exp": 1795554271,
+        "jti": "00000000-0000-0000-0000-000000000009",
+        "mode": "hosted",
+        "hosted_capable": true,
+        "challenge_id": "00000000-0000-0000-0000-000000000008",
+        "nonce": "DAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw",
+        "generation": 2251799813685265
+      },
+      "response": {
+        "status_code": 200,
+        "body": {
+          "status": "assigned",
+          "hostname": "b-4071dc1c1a3d412b8a47cf8bfaf0bf51.hosted.example",
+          "generation": 2251799813685265,
+          "credentials": {
+            "AccountTag": "synthetic-fixture-account",
+            "TunnelID": "04e99b3f-60bf-4557-aaef-cfb9820aaa29",
+            "TunnelSecret": "c3ludGhldGljLWNvbm5lY3Rvci1maXh0dXJlLXZhbHVl"
+          }
+        }
+      }
+    }
+  ]
+}

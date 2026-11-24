@@ -228,8 +228,12 @@ class DevicesController(Controller):
         ):
             raise NotAuthorizedException("heartbeat replayed")
         device.last_seen_at = now
+        policy = await account_policy(db_session, device.owner_user_id)
         await db_session.commit()
-        return Response({"ok": True})
+        return Response({
+            "ok": True,
+            "entitlement_revision": 2 * policy.promotion_revision + int(policy.tunnel_access),
+        })
 
     @get("/api/devices/{device_id:uuid}/status")
     async def status(self, device_id: UUID, db_session: AsyncSession) -> Response:

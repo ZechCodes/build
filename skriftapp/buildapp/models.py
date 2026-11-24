@@ -64,6 +64,24 @@ class Device(Base):
     )
 
 
+class HostedModeReport(Base):
+    """The last signed mode for a pairing, independent of its assignment."""
+
+    __tablename__ = "hosted_mode_reports"
+
+    device_id: Mapped[UUID] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"), unique=True,
+    )
+    owner_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+    )
+    pairing_created_at: Mapped[datetime] = mapped_column(DateTimeUTC(timezone=True))
+    authorization_epoch: Mapped[int] = mapped_column(Integer)
+    mode: Mapped[str] = mapped_column(String(8))
+    hosted_capable: Mapped[bool] = mapped_column(Boolean)
+    revision: Mapped[UUID] = mapped_column(GUID(length=16))
+
+
 class EphemeralToken(Base):
     """A single-purpose, short-TTL token. Used for the browser→relay gateway handshake:
     the api mints one for a logged-in user; the relay validates it to learn the user and

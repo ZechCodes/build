@@ -76,3 +76,14 @@ f9743f792a7a4b0854b24464cb0c890aa50be435:scripts/http-resource-coverage.test.mjs
 e8f22fde3b31141c5c7019ccdc7086a0eec99442:fixtures/bridge-http/device-proofs.json:jwt:3
 e8f22fde3b31141c5c7019ccdc7086a0eec99442:fixtures/bridge-http/device-proofs.json:jwt:5
 e8f22fde3b31141c5c7019ccdc7086a0eec99442:fixtures/bridge-http/device-proofs.json:jwt:7
+
+# #1178 public claim fixtures for issuer.example, signed with the fixed public
+# test seed bytes 0..31. The connector value decodes to synthetic fixture text.
+# Exact fixture lines keep this exception valid when the migration is rebased.
+planning/v2/fixtures/hosted-tunnel-claim.json:jwt:12
+planning/v2/fixtures/hosted-tunnel-claim.json:jwt:38
+planning/v2/fixtures/hosted-tunnel-claim.json:jwt:67
+planning/v2/fixtures/hosted-tunnel-claim.json:jwt:93
+planning/v2/fixtures/hosted-tunnel-claim.json:jwt:123
+planning/v2/fixtures/hosted-tunnel-claim.json:jwt:149
+planning/v2/fixtures/hosted-tunnel-claim.json:generic-api-key:174

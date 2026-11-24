@@ -243,6 +243,7 @@ pub struct DeviceAuth {
 pub struct DeviceRecord {
     pub identity_public_key_b64: String,
     pub approved: bool,
+    pub rtc_allowed: bool,
     pub owner_user_id: Option<String>,
 }
 
@@ -253,8 +254,8 @@ pub enum AuthOutcome {
     Reject(String),
 }
 
-/// Authenticate a device's WS upgrade: pure, no I/O. Rejects unapproved/ownerless
-/// devices, stale timestamps (replay window), and bad signatures.
+/// Authenticate a device's WS upgrade against approval, RTC policy, ownership,
+/// the replay window and the signed challenge.
 pub fn authorize_device(
     auth: &DeviceAuth,
     record: &DeviceRecord,
@@ -263,6 +264,9 @@ pub fn authorize_device(
 ) -> AuthOutcome {
     if !record.approved {
         return AuthOutcome::Reject("device not approved".into());
+    }
+    if !record.rtc_allowed {
+        return AuthOutcome::Reject("RTC disallowed for device".into());
     }
     let Some(owner) = record.owner_user_id.clone() else {
         return AuthOutcome::Reject("device has no owner".into());
@@ -576,6 +580,7 @@ mod tests {
             DeviceRecord {
                 identity_public_key_b64: id.identity_public_key_b64,
                 approved: true,
+                rtc_allowed: true,
                 owner_user_id: Some("u1".to_string()),
             },
         )

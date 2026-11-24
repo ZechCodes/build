@@ -8,8 +8,8 @@
 //! here. Never expose the relay's port directly to the internet.
 //!
 //! - `/ws/device`: verifies the Ed25519-signed upgrade challenge against the device's
-//!   record at the api (`GET /internal/devices/{id}`); admits only approved devices,
-//!   inside the clock-skew window, not replayed.
+//!   record at the api (`GET /internal/devices/{id}`); admits approved devices
+//!   with RTC access and a fresh, unreplayed challenge.
 //! - `/ws/client`: the browser's **first frame** must be
 //!   `{"type":"authenticate","token":...}` with a gateway token the api minted
 //!   (`GET /internal/gateway-token/{token}`); anything else disconnects — an
@@ -54,9 +54,10 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
 /// An accepted client must send its `authenticate` frame within this.
 const CLIENT_AUTH_DEADLINE: Duration = Duration::from_secs(10);
-/// How often a connected device's approval is re-checked at the api, so revoking
-/// a device actually severs its live relay connection (not just future ones).
+/// How often the API rechecks approval and RTC eligibility for a connected device.
 const DEVICE_REVALIDATION_INTERVAL: Duration = Duration::from_secs(60);
+/// Bound the issuer lookup so a stalled API cannot starve device liveness.
+const DEVICE_LOOKUP_DEADLINE: Duration = Duration::from_secs(5);
 
 struct Shared {
     state: Mutex<RelayState>,
@@ -75,6 +76,14 @@ impl Shared {
             Some(secret) => builder.header("X-Internal-Secret", secret),
             None => builder, // dev mode: the api trusts localhost instead
         }
+    }
+
+    async fn device_response(&self, device_id: &str) -> reqwest::Result<reqwest::Response> {
+        let url = format!("{}/internal/devices/{device_id}", self.config.api_url);
+        self.internal_get(&url)
+            .timeout(DEVICE_LOOKUP_DEADLINE)
+            .send()
+            .await
     }
 }
 
@@ -437,8 +446,7 @@ impl<'a> DeviceWatch<'a> {
                     _ => None,
                 },
                 _ = self.revalidate.tick() => {
-                    // Fail open only on an unreachable api (a blip must not drop every
-                    // device); an affirmative "not approved / unknown" severs now.
+                    // Keep the socket during issuer downtime and sever on a definite refusal.
                     if device_authorization(shared, device_id, owner).await == Some(false) {
                         eprintln!("device {device_id}: no longer authorized; severing");
                         return None;
@@ -722,11 +730,16 @@ async fn serve_client(
     }
 }
 
-// --- api lookups (all fail closed: any error means "not authorized") -----------
+// --- api lookups -------------------------------------------------------------
+
+fn rtc_allowed_by_issuer(body: &Value) -> bool {
+    // Issuers deployed before RTC policy omit this field.
+    body.get("rtc_allowed")
+        .is_none_or(|value| value.as_bool() == Some(true))
+}
 
 async fn lookup_device(shared: &Arc<Shared>, device_id: &str) -> Option<DeviceRecord> {
-    let url = format!("{}/internal/devices/{device_id}", shared.config.api_url);
-    let resp = shared.internal_get(&url).send().await.ok()?;
+    let resp = shared.device_response(device_id).await.ok()?;
     if !resp.status().is_success() {
         return None;
     }
@@ -737,6 +750,7 @@ async fn lookup_device(shared: &Arc<Shared>, device_id: &str) -> Option<DeviceRe
             .get("approved")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        rtc_allowed: rtc_allowed_by_issuer(&body),
         owner_user_id: body
             .get("owner_user_id")
             .and_then(Value::as_str)
@@ -745,8 +759,8 @@ async fn lookup_device(shared: &Arc<Shared>, device_id: &str) -> Option<DeviceRe
 }
 
 /// Re-check a connected device's authorization at the api.
-/// `Some(true)` — still approved by the same owner; `Some(false)` — the api
-/// affirmatively says revoked/unknown/re-owned (sever the connection);
+/// `Some(true)` — still approved for RTC by the same owner; `Some(false)` — the api
+/// has confirmed a policy denial, revoked approval or changed ownership;
 /// `None` — the api is unreachable (fail open for an already-authenticated
 /// connection: a blip must not drop every connected device).
 async fn device_authorization(
@@ -754,8 +768,7 @@ async fn device_authorization(
     device_id: &str,
     owner_user_id: &str,
 ) -> Option<bool> {
-    let url = format!("{}/internal/devices/{device_id}", shared.config.api_url);
-    let resp = shared.internal_get(&url).send().await.ok()?;
+    let resp = shared.device_response(device_id).await.ok()?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Some(false);
     }
@@ -768,7 +781,7 @@ async fn device_authorization(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let same_owner = body.get("owner_user_id").and_then(Value::as_str) == Some(owner_user_id);
-    Some(approved && same_owner)
+    Some(approved && same_owner && rtc_allowed_by_issuer(&body))
 }
 
 async fn lookup_gateway_token(shared: &Arc<Shared>, token: &str) -> Option<String> {
@@ -788,4 +801,118 @@ fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use build_bridge::{identity, transport};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn test_relay(api: &MockServer) -> Arc<Shared> {
+        Arc::new(Shared {
+            state: Mutex::new(RelayState::new()),
+            replay: Mutex::new(ReplayGuard::new(REPLAY_TTL)),
+            http: reqwest::Client::new(),
+            config: RelayConfig::from_lookup(|name| {
+                (name == "API_INTERNAL_URL").then(|| api.uri())
+            })
+            .unwrap(),
+        })
+    }
+
+    async fn answer_device(api: &MockServer, device_id: &str, response: ResponseTemplate) {
+        Mock::given(method("GET"))
+            .and(path(format!("/internal/devices/{device_id}")))
+            .respond_with(response)
+            .expect(1)
+            .mount(api)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn rtc_policy_controls_new_device_admission() {
+        let api = MockServer::start().await;
+        let device = identity::generate("box");
+        let timestamp = unix_now();
+        let signature = transport::sign_message_b64(
+            &device.identity_private_key_b64,
+            format!("{timestamp}.GET.{}", relay_server::AUTH_PATH).as_bytes(),
+        )
+        .unwrap();
+        let upgrade = Upgrade {
+            device_id: Some(device.device_id.clone()),
+            timestamp: Some(timestamp.to_string()),
+            signature: Some(signature),
+            ..Default::default()
+        };
+        let legacy = json!({
+            "approved": true,
+            "owner_user_id": "owner",
+            "identity_public_key_b64": device.identity_public_key_b64,
+        });
+        let mut denied = legacy.clone();
+        denied["rtc_allowed"] = json!(false);
+        for (response, allowed) in [
+            (ResponseTemplate::new(200).set_body_json(legacy), true),
+            (ResponseTemplate::new(200).set_body_json(denied), false),
+            (ResponseTemplate::new(503), false),
+        ] {
+            answer_device(&api, &device.device_id, response).await;
+            assert_eq!(
+                authenticate_device(&test_relay(&api), &upgrade)
+                    .await
+                    .is_some(),
+                allowed
+            );
+            api.verify().await;
+            api.reset().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn rtc_policy_recheck_keeps_the_socket_on_outage_then_severs_on_denial() {
+        let api = MockServer::start().await;
+        let relay = test_relay(&api);
+        let (_shutdown_tx, mut shutdown) = broadcast::channel(1);
+        let (_writer_tx, mut writer_gone) = tokio::sync::oneshot::channel();
+        let mut watch = DeviceWatch::new(&mut shutdown, &mut writer_gone, Duration::from_secs(10));
+        let mut source = futures_util::stream::pending();
+
+        for response in [
+            ResponseTemplate::new(503),
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"approved": true, "owner_user_id": "owner"})),
+        ] {
+            answer_device(&api, "device", response).await;
+            watch.revalidate.reset_immediately();
+            assert!(tokio::time::timeout(
+                Duration::from_millis(250),
+                watch.next_frame(&relay, "device", "owner", &mut source),
+            )
+            .await
+            .is_err());
+            api.verify().await;
+            api.reset().await;
+        }
+
+        answer_device(
+            &api,
+            "device",
+            ResponseTemplate::new(200).set_body_json(json!({
+                "approved": true, "owner_user_id": "owner", "rtc_allowed": false,
+            })),
+        )
+        .await;
+        watch.revalidate.reset_immediately();
+        assert!(tokio::time::timeout(
+            Duration::from_secs(2),
+            watch.next_frame(&relay, "device", "owner", &mut source),
+        )
+        .await
+        .expect("policy denial ends the device read loop")
+        .is_none());
+        api.verify().await;
+    }
 }

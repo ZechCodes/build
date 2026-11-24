@@ -27,3 +27,6 @@ bridge/vendor/
 # key with placeholder ids, never a deployed identity. .gitleaksignore covers
 # the same lines.
 fixtures/bridge-http/device-proofs.json
+
+# Public hosted-tunnel claim vectors signed with test seed bytes 0..31.
+planning/v2/fixtures/hosted-tunnel-claim.json

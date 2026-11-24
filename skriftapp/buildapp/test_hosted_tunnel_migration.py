@@ -49,12 +49,13 @@ async def test_hosted_mode_upgrade_and_downgrade(target_metadata):
         await engine.dispose()
 
 
-def test_hosted_mode_revision_is_the_single_head():
+def test_hosted_mode_advances_only_the_buildapp_migration_head():
     skrift_versions = Path(skrift.__file__).parent / "alembic" / "versions"
     revisions = ScriptDirectory(
         str(MIGRATIONS_DIR.parent), version_locations=[str(MIGRATIONS_DIR), str(skrift_versions)],
     )
-    assert len(revisions.get_heads()) == 1
+    # Skrift's parallel content-areas branch still has its own head.
+    assert set(revisions.get_heads()) == {"4ac3e7d238b1", "b0c1d2e3f4a5"}
     assert revisions.get_revision("4ac3e7d238b1").down_revision == "c3d4e5f6a7b8"
 
 

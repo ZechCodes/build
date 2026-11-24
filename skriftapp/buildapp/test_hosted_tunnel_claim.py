@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import jwt
 import pytest
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from litestar.di import Provide
 from litestar.exceptions import ClientException, NotAuthorizedException
 from litestar.testing import TestClient
@@ -525,7 +525,9 @@ def test_claim_http_cache_bounds_and_secret_redaction(monkeypatch, assignments, 
 
 def test_signed_fixture_has_expected_proof_fields():
     fixture = json.loads((Path(__file__).parents[2] / "planning/v2/fixtures/hosted-tunnel-claim.json").read_text())
-    key = Ed25519PublicKey.from_public_bytes(base64.b64decode(fixture["public_key_b64"]))
+    # Public fixture seed shared with the bridge wire vectors.
+    key = Ed25519PrivateKey.from_private_bytes(bytes(range(32))).public_key()
+    assert key.public_bytes_raw() == base64.b64decode(fixture["public_key_b64"])
     for example in fixture["cases"]:
         for phase, purpose in (("challenge_", CHALLENGE), ("", CLAIM)):
             request = example[phase + "request"]

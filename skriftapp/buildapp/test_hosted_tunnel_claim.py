@@ -192,8 +192,7 @@ async def test_fresh_proof_cannot_spend_an_expired_challenge(db, assignments):
     # Challenge responses truncate to whole seconds. Move beyond the stored
     # deadline and sign a fresh proof to exercise the SQL expiry predicate.
     now = datetime.fromtimestamp(pending["expires_at"] + 1, utc_now().tzinfo)
-    raw = proof_for(key, device, pending)
-    claims = jwt.decode(raw, options={"verify_signature": False})
+    claims = auth.verify(proof_for(key, device, pending), device, CLAIM, ISSUER, utc_now())
     raw = jwt.encode(
         {**claims, "iat": int(now.timestamp()), "exp": int(now.timestamp()) + 30},
         key, algorithm="EdDSA", headers={"typ": auth.TYPES[CLAIM]},

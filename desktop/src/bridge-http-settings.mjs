@@ -58,15 +58,35 @@ export function createBridgeHttpSettings(userData) {
     const connections = saved.filter((entry) => entry.deviceId !== deviceId);
     if (replacement) connections.push(replacement);
     if (connections.length > 16) fail("busy");
+    persist(pathFor(accountId), connections);
+    return true;
+  }
+  function persist(path, value) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     const staging = join(directory, randomUUID() + ".tmp");
     try {
-      writeFileSync(staging, JSON.stringify(connections), { mode: 0o600, flag: "wx" });
-      renameSync(staging, pathFor(accountId));
+      writeFileSync(staging, JSON.stringify(value), { mode: 0o600, flag: "wx" });
+      renameSync(staging, path);
     } finally {
       rmSync(staging, { force: true });
     }
+  }
+  function hostedNotice(access, input) {
+    exact(input, ["accountId", "promotionRevision", "acknowledge"]);
+    const accountId = accountOf(access);
+    if (accountId !== input.accountId) fail("sign_in");
+    const { promotionRevision, acknowledge } = input;
+    if (!Number.isSafeInteger(promotionRevision) || promotionRevision <= 0
+      || (acknowledge !== undefined && acknowledge !== true)) fail("invalid_params");
+    // Native preferences survive the renderer storage reset on sign-out.
+    const path = join(directory, accountId + ".hosted-notice.json");
+    let saved = 0;
+    try { saved = JSON.parse(readFileSync(path, "utf8")); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (saved >= promotionRevision) return true;
+    if (!acknowledge) return false;
+    persist(path, promotionRevision);
     return true;
   }
-  return { read, write };
+  return { read, write, hostedNotice };
 }

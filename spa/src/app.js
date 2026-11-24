@@ -63,6 +63,8 @@ export const DEVICE_FILTER_KEY = "build.deviceFilter";
  */
 export function resetApplication() {
   App.accountEpoch += 1;
+  App.deviceTransportPolicy = null;
+  App.devices = [];
   resetHttpConnections();
   void resetWriteOperationRuntime().then(() => wipePendingOperations()).catch(() => {});
   resetUiWriters();

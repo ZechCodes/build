@@ -68,3 +68,27 @@ it("uses the saved HTTPS preference when the terminal mode has never been cached
   expect(pane.label()).toBe("Terminal over WebRTC");
   pane.dispose();
 });
+
+it.each([
+  [null, "HTTPS terminal support has not been checked yet."],
+  ["wss", "Terminal over HTTPS"],
+  ["update_required", "Update the Build bridge or desktop app to use HTTPS terminals."],
+])("paints the projected terminal compatibility on a cold offline mount (%s)", async (mode, text) => {
+  document.head.innerHTML = `<meta name="build-account-id" content="${accountId}">`;
+  const { App } = await import("../src/appState.js");
+  const { attachTransportLabel } = await import("../src/core/surfaceTabs.js");
+  const { rememberHttpTerminalMode, resetHttpConnections, restoreHttpConnections } = await import("../src/core/httpConnections.js");
+  App.devices = [{ id: device.deviceId, transport: {
+    source: "hosted", rtc_allowed: false, origin: "https://127.0.0.1:8443", reason: null, assignment_revision: 11,
+  } }];
+  await restoreHttpConnections();
+  if (mode) await rememberHttpTerminalMode(device.deviceId, mode, () => true);
+  resetHttpConnections();
+  await restoreHttpConnections();
+  const host = document.createElement("div");
+  const label = attachTransportLabel(host, device.deviceId);
+  expect(host.textContent).toBe(text);
+  label.dispose();
+  resetHttpConnections();
+  App.devices = [];
+});

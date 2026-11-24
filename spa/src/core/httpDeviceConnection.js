@@ -7,19 +7,26 @@ import { dispatchChangeEvent } from "./changeEvents.js";
 
 // Shares the existing device attempt and lifetime owners. An HTTP stream is
 // independent of terminal RTC; its failure replaces only this exact app bundle.
-export async function openHttpDeviceConnection(deviceId, attempt, { greet, onLost, onAdopt, onDetached }) {
+export async function openHttpDeviceConnection(deviceId, attempt, { greet, onLost, onAdopt, onDetached, selection }) {
   const era = deviceContextEra();
   const identity = deviceContextIdentity(deviceId);
   let lifetime = null;
   const current = () => deviceContextEra() === era && deviceContextIdentity(deviceId) === identity
     && (lifetime ? lifetime.current() : attempt.isCurrent());
-  const endpoint = await httpEndpointFor(deviceId, current);
+  const endpoint = await httpEndpointFor(deviceId, current, selection).catch(async (error) => {
+    if (error.code === "desktop_update_required" && current()) {
+      await rememberHttpTerminalMode(deviceId, "update_required", current, selection);
+    }
+    throw error;
+  });
   if (!attempt.own(endpoint, (held) => held.close())) throw new Error("HTTP attempt superseded");
-  const session = await openHttpSession({ endpoint, routes: httpResourceRoutes(), isCurrent: current,
+  const session = await openHttpSession({ endpoint, routes: httpResourceRoutes(), isCurrent: current, wssOnly: selection.wssOnly,
     onPush: (frame) => { if (current()) dispatchChangeEvent(frame, deviceId); },
     onLost: (error) => { if (lifetime?.current()) onLost(lifetime, error); },
   });
   if (!attempt.own(session, closeQuietly)) throw new Error("HTTP attempt superseded");
+  await rememberHttpTerminalMode(deviceId, session.terminalTransport, current, selection);
+  if (!current()) throw new Error("HTTP attempt superseded");
   const adopted = adoptDeviceConnection(session, null, onDetached);
   lifetime = adopted.lifetime;
   attempt.release(endpoint); attempt.release(session);
@@ -27,7 +34,6 @@ export async function openHttpDeviceConnection(deviceId, attempt, { greet, onLos
   try {
     await greet(adopted.context, { suppressFailure: false, isAuthoritative: current, lifetime });
     if (!current()) throw new Error("HTTP attempt superseded");
-    void rememberHttpTerminalMode(deviceId, session.terminalTransport, current).catch(() => {});
     onAdopt(adopted.context);
     attempt.release(lifetime);
     return adopted.context;

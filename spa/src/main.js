@@ -27,6 +27,7 @@ import { installMarkdownTableFocus } from "./core/markdownTableFocus.js";
 import { installMarkdownMermaid } from "./core/markdownMermaid.js";
 import { installMarkdownImages } from "./core/markdownImages.js";
 import { configureHttpManifest, restoreHttpConnections } from "./core/httpConnections.js";
+import { mountHostedTransportNotice } from "./core/hostedTransportNotice.js";
 import { resumeAddByUrl } from "./sheets/addByUrl.js";
 import httpManifest from "../../fixtures/api/http/resource-manifest.json";
 
@@ -77,6 +78,7 @@ initDevicePicker();
 // Load captures saved by earlier builds so they can flush after connection.
 initCompose();
 mountConnectionStatus();
+mountHostedTransportNotice($("#hosted-transport-notice"));
 
 $("#nav-account").onclick = () => go({ name: "account", page: "settings" });
 $("#scrim").onclick = (e) => {

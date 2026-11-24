@@ -1,3 +1,4 @@
+import { HOSTED_HTTPS_DISCLOSURE } from "../core/hostedTransportNotice.js";
 // Account settings: what belongs to the account rather than to any one machine
 // — the privacy story, where creation goes, the defaults a new task starts
 // with, this browser's own preferences, and the devices & keys panel (api-backed,
@@ -141,7 +142,7 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
       <h3>Who can read this connection?</h3>
       <p class="settings-intro">WebRTC encrypts traffic end to end between your app and bridge, including through TURN.</p>
       <p class="settings-intro">For personal HTTPS, who can read traffic depends on where your TLS or private tunnel ends.</p>
-      <p class="settings-intro" style="margin-bottom:0">Hosted HTTPS passes through Cloudflare. Cloudflare can read your code, prompts and terminal traffic on this connection. This option is planned.</p>
+      <p class="settings-intro" style="margin-bottom:0">${HOSTED_HTTPS_DISCLOSURE}</p>
     </div>
     <div class="panel">
       <h3>🖥️ Creation device</h3>

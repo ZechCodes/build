@@ -21,7 +21,8 @@ export const App = {
 
   gated: true, // gate screens own #root until a session is live
   updateAvailable: false, // the served-version watcher found a newer bundle than this one
-  devices: [], // last GET /api/devices, re-read by the presence poll (devices.js)
+  devices: [], // committed GET /api/devices rows (devices.js)
+  deviceTransportPolicy: null, // account metadata committed with those rows
   selectedDeviceId: localStorage.getItem(SELECTED_DEVICE_KEY) || null,
   // Which machines the inbox, the projects face and the project menu list —
   // null for all of them. It narrows lists and nothing else: no route, no

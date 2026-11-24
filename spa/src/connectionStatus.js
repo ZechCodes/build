@@ -25,6 +25,7 @@ import { esc } from "./core/text.js";
 import { deviceRecoverySnapshot, onDeviceRecoveryChanged } from "./connection.js";
 import { liveContexts, onDeviceStateChanged } from "./core/deviceContexts.js";
 import { connectionStatus, isRestoringInPlace } from "./core/connectionStatusModel.js";
+import { cachedTerminalTransport, onHttpPreferencesChanged } from "./core/httpConnections.js";
 import { uiAddress, watchUiState } from "./core/localUiState.js";
 
 /** How often the countdown is redrawn while a machine waits for its next try. */
@@ -34,6 +35,7 @@ const STATE_CLASSES = ["is-connected", "is-attempting", "is-waiting"];
 
 let stopRecoveryWatch = null;
 let stopDeviceWatch = null;
+let stopTerminalWatch = null;
 let stopSyncWatch = null;
 let countdownTimer = null;
 let menuRecord = null;
@@ -62,10 +64,9 @@ function devicesNow() {
       // Its link is putting a failed path right in place (#123): held, but not
       // answering until the restart lands.
       restoring: isRestoringInPlace(context),
-      // The session already holds the negotiated terminal carrier for this
-      // HTTPS Opening. The peer path stays unknown until its first sample.
+      // The peer path stays unknown until its first sample.
       path: session?.transport === "http" ? "https" : context?.peerLink?.transportPath?.() || null,
-      terminalTransport: session?.terminalTransport,
+      terminalTransport: cachedTerminalTransport(device.id),
     };
   });
 }
@@ -246,6 +247,7 @@ export function mountConnectionStatus() {
   unmountConnectionStatus();
   stopRecoveryWatch = onDeviceRecoveryChanged(paint);
   stopDeviceWatch = onDeviceStateChanged(paint);
+  stopTerminalWatch = onHttpPreferencesChanged(paint);
   paint();
   stopSyncWatch = subscribeConnectionSync((active) => {
     syncActive = active;
@@ -266,6 +268,8 @@ export function unmountConnectionStatus() {
   stopRecoveryWatch = null;
   stopDeviceWatch?.();
   stopDeviceWatch = null;
+  stopTerminalWatch?.();
+  stopTerminalWatch = null;
   stopSyncWatch?.();
   stopSyncWatch = null;
   keepTime(false);

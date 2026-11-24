@@ -39,6 +39,7 @@ vi.mock("../src/api.js", () => ({
 }));
 vi.mock("../src/devices.js", () => ({
   refreshDevices: async () => App.devices,
+  readCachedDevices: async () => [],
   // The mark the picker wears while nothing can answer (devicePickerDom.test.js).
   markNothingAnswers: () => {},
   paintDevicePicker: (...args) => paintDevicePicker(...args),

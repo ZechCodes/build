@@ -2607,10 +2607,15 @@ a.md-link::after { content:"\2197" / ""; margin-left:.12em; font-size:.8em; opac
 
 /* Global notifications (core/notify.js) — errors persist until dismissed,
    successes are transient; detail expands to the full error text. */
+#hosted-transport-notice { position:fixed; z-index:60; inset-inline:var(--pane-gutter);
+  inset-block-end:calc(12px + env(safe-area-inset-bottom, 0px)); margin-inline:auto;
+  max-width:620px; padding:12px 16px; display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; }
+#hosted-transport-notice[hidden] { display:none; }
+#hosted-transport-notice [role="status"] { flex:1 1 320px; }
 #notices { position:fixed; right:calc(14px + env(safe-area-inset-right, 0px));
   bottom:calc(14px + env(safe-area-inset-bottom, 0px)); z-index:200;
   display:flex; flex-direction:column; gap:8px; max-width:380px; width:calc(100vw - 28px); }
-.notice { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--dim); border-radius:10px; padding:9px 11px; font-size:12.5px; box-shadow:0 6px 24px var(--shadow); }
+.notice, .hosted-transport-notice { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--dim); border-radius:10px; padding:9px 11px; font-size:12.5px; box-shadow:0 6px 24px var(--shadow); }
 .notice.error { border-left-color:var(--red); }
 .notice.success { border-left-color:var(--green); }
 .notice-head { display:flex; align-items:center; gap:8px; }
@@ -2633,7 +2638,7 @@ a.md-link::after { content:"\2197" / ""; margin-left:.12em; font-size:.8em; opac
   background:var(--panel2); background:color-mix(in srgb, var(--panel2) var(--chat-glass-opacity), transparent);
   -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
 .empty.gone, .fpidle { color:var(--ink2); }
-.notice { border-color:var(--line3); background:var(--panel); box-shadow:0 14px 38px var(--shadow); }
+.notice, .hosted-transport-notice { border-color:var(--line3); background:var(--panel); box-shadow:0 14px 38px var(--shadow); }
 .notice-x, .notice-expand, .iconbtn, .fmenu, .workspace-refrow,
 .browse-nav, .chooser-card, .stagerow, .frow, .srow {
   transition:background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), opacity var(--motion-fast), transform var(--motion-fast);

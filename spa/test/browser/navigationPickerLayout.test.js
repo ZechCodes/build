@@ -96,8 +96,14 @@ for (const scope of ["global", "local"]) for (const outcome of ["removed", "fini
             page: document.querySelector("#root").innerHTML };
         });
         expect(after).toEqual(before);
-        if (outcome !== "cancelled") expect(await page.locator(".notice-summary").textContent()).toContain("no longer available");
-        else expect(await page.locator(".notice").count()).toBe(0);
+        if (outcome !== "cancelled") {
+          expect(await page.locator(".notice-summary").textContent()).toContain("no longer available");
+        } else {
+          const disclosure = page.locator("#hosted-transport-notice");
+          expect(await disclosure.getAttribute("hidden")).not.toBeNull();
+          expect(await disclosure.evaluate((element) => element.matches(".notice"))).toBe(false);
+          expect(await page.locator(".notice").count()).toBe(0);
+        }
       }
     }, { width: 390, height: 844, hasTouch: true });
   }, 30_000);

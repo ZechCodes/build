@@ -11,12 +11,12 @@ export async function fetchGatewayToken(deviceId) {
   return (await response.json()).token;
 }
 
-export async function fetchDevices() {
+export async function fetchDevices({ includeTransportPolicy = false } = {}) {
   const response = await fetch("/api/devices");
   if (!response.ok) throw new Error("could not read devices");
   const body = await response.json();
   if (!Array.isArray(body.devices)) throw new Error("invalid devices response");
-  return body.devices;
+  return includeTransportPolicy ? body : body.devices;
 }
 
 export async function lookupDevice(code) {

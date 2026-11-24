@@ -4340,9 +4340,13 @@ relay contract.
 
 1. `POST /api/gateway-token` (Skrift-session authed) returns `{token}` with a
    5-minute TTL (`GATEWAY_TOKEN_TTL` in `skriftapp/buildapp/devices_controller.py`).
-2. `GET /api/devices` returns `[{device_id, approved, status,
-   transport_public_key_b64, …}]`. Presence and transport keys come from here
-   and only here; the relay reports neither. `status` is `online` iff the
+2. `GET /api/devices` returns `{devices, transport_policy}` for the authenticated
+   account. Each device includes `device_id`, `approved`, `status`,
+   `transport_public_key_b64` and a `transport` projection with `source`,
+   `rtc_allowed`, `reason`, `origin` and `assignment_revision`. The top-level
+   `transport_policy` carries `tunnel_access` and `promotion_revision` for
+   the disclosure. Older issuers omit that metadata. Presence and transport
+   keys come from this listing. `status` is `online` iff the
    bridge's heartbeat landed within 90 s (`ONLINE_WINDOW` in
    `skriftapp/buildapp/presence.py`).
 3. The browser opens `/ws/client` and sends `{"type":"authenticate","token":…}`
@@ -5694,10 +5698,15 @@ defines the policy for selecting a new connection.
 | Entitled, hosted setup pending | Use WebRTC only while the issuer returns `rtc_allowed=true`. Otherwise render cached work and the setup or update reason. |
 | Entitled, hosted ready once | Use the assigned HTTPS address with REST, SSE and terminal WSS. During outage or replacement, retain cached work and retry HTTPS. |
 
-The planned selector reads the transport projection in the account-scoped
-device cache. The authenticated device list supplies that projection before
-dialing. Network failure retries the selected path. An entitled HTTPS
-selection requires WSS for terminals.
+The selector reads the committed device projection and account-scoped URL
+settings. The authenticated device list commits the projection and the account
+disclosure metadata together before dialing. The device's `rtc_allowed` is the
+issuer's RTC decision. Network failure retries the selected path. Policy-selected
+HTTPS requires WSS for terminals. Terminal compatibility is cached by account,
+device and selected endpoint. The Cloudflare disclosure acknowledgement is
+stored immediately under the account and promotion revision. Desktop also
+saves the acknowledgement in account-scoped native settings so signing out
+and clearing the renderer cache preserve it.
 
 - **Rendezvous**: `createRelayRendezvous` (`spa/src/core/rendezvous.js`) opens
   the relay socket, mints the session (`session_init` / `session_accept`) and
@@ -5836,9 +5845,10 @@ For a personal URL device on the default mount, `Opening.transport` keeps
 requires that v1 descriptor, `term.websocket` in a compatible greeting, and
 a usable terminal endpoint. A missing descriptor, a compatible
 declaration of a future protocol version, or an older native preload without
-the complete terminal facade selects WebRTC for terminals. Older SPAs use
-the legacy field, and WebRTC-selected devices continue using their E2EE
-terminal sessions. Malformed or contradictory descriptors surface a
+the complete terminal facade selects WebRTC for terminals on legacy/manual
+HTTPS configurations. With policy-selected HTTPS those cases require a bridge
+or desktop update for terminals. Older SPAs use the legacy field. WebRTC-selected
+devices continue using their E2EE terminal sessions. Malformed or contradictory descriptors surface a
 terminal protocol error. Once WSS is selected, ticket refusals, TLS/CSP and
 socket failures stay on that path. The application keeps its REST/SSE session.
 

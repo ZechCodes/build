@@ -14,7 +14,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createBridgeEpoch } from "../src/core/bridgeEpoch.js";
 import { createBrowserHttpEndpoint } from "../src/core/httpBrowserEndpoint.js";
 import { createBridgeDiscovery } from "../src/core/httpDiscovery.js";
-import { configureTerminalPeerLinks } from "../src/core/terminalPeerLinks.js";
+import { selectDeviceTransport } from "../src/core/deviceTransportSelection.js";
+import { configureTerminalPeerLinks, terminalPeerLink, terminalWebSocketOwner } from "../src/core/terminalPeerLinks.js";
 import manifest from "../../fixtures/api/http/resource-manifest.json";
 
 const terminals = vi.hoisted(() => ({ followTerminalDevice: vi.fn(), terminalDeviceId: vi.fn(() => null) }));
@@ -23,6 +24,11 @@ const http = vi.hoisted(() => ({ selected: new Set(), open: vi.fn(), endpoint: v
 vi.mock("../src/core/httpConnections.js", async (importOriginal) => ({
   ...(await importOriginal()),
   usesHttp: (id) => http.selected.has(id),
+  deviceTransportFor: (id) => {
+    const row = App.devices.find((device) => device.id === id);
+    if (row?.transport) return selectDeviceTransport(row, null, true);
+    return http.selected.has(id) ? { kind: "http", key: "manual", wssOnly: false } : { kind: "webrtc", key: "webrtc" };
+  },
   httpEndpointFor: (...args) => http.endpoint(...args),
   rememberHttpTerminalMode: async () => {},
   httpRecoveryCandidates: (devices) => devices.map((device) => http.selected.has(device.id) ? { ...device, status: "online" } : device),
@@ -2209,6 +2215,7 @@ describe("explicit HTTP selection with independent relay presence", () => {
     const overloaded = vi.fn();
     let cleanup = Promise.resolve();
     let title = "Before background";
+    let unavailable = false;
     let stall;
     const json = (value) => Response.json(value);
     const fetchImpl = vi.fn(async (url, { method, headers, signal }) => {
@@ -2231,6 +2238,7 @@ describe("explicit HTTP selection with independent relay presence", () => {
       }
       const grant_expires_at = new Date(Date.now() + 30000).toISOString();
       if (method === "POST" && path === "/v1/sessions") {
+        if (unavailable) throw new TypeError("Loopback connection dropped");
         const id = `opening-${openings.length + 1}`;
         openings.push(id);
         return json({ session_id: id, opening_generation: id, greeting, grant_expires_at, transport: manifest.transport });
@@ -2271,6 +2279,7 @@ describe("explicit HTTP selection with independent relay presence", () => {
     http.open.mockImplementation(openHttpDeviceConnection);
     return {
       streams, openings, streamSlots, overloaded, rename: (next) => { title = next; },
+      offline: () => { unavailable = true; },
       holdCleanupUntil: (release) => { cleanup = release; },
       stallNext: (method, path) => (stall = { method, path }),
     };
@@ -2303,6 +2312,66 @@ describe("explicit HTTP selection with independent relay presence", () => {
     expect(fixture.streams[0].signal.aborted).toBe(true);
     expect(fixture.openings).toEqual(["opening-1", "opening-2"]);
     expect(feed.items.map(({ title }) => title)).toContain("Changed while hidden");
+  });
+
+  it.each([true, false])("uses only explicit RTC permission during hosted setup (%s)", async (permitted) => {
+    devices = [{ ...online("dev-a", "Laptop"), transport: {
+      source: "webrtc", rtc_allowed: permitted, origin: null, reason: "setup_pending", assignment_revision: null,
+    } }];
+    await (await import("../src/devices.js")).refreshDevices();
+    const pending = connectDevice("dev-a");
+    if (permitted) await pending;
+    else await expect(pending).rejects.toThrow("Waiting for this device’s HTTPS setup to finish.");
+    expect(wire.openSession).toHaveBeenCalledTimes(permitted ? 1 : 0);
+    expect(http.open).not.toHaveBeenCalled();
+  });
+
+  it("dials a committed hosted URL, keeps cached work during outage and never starts terminal RTC", async () => {
+    const fixture = serveHttpStream();
+    const terminalRtc = vi.fn();
+    configureTerminalPeerLinks({ open: terminalRtc, isCurrent: (context) => contextFor(context.deviceId) === context });
+    const transport = { source: "hosted", rtc_allowed: false, origin: "https://127.0.0.1:8443", reason: null, assignment_revision: 7 };
+    devices = [{ ...online("dev-a", "Laptop"), transport }];
+    const deviceStore = await import("../src/devices.js");
+    await deviceStore.refreshDevices();
+    expect((await readCached(DEVICES_ADDRESS)).value[0].transport).toEqual(transport);
+    await connectDevice("dev-a");
+    await paintFeed();
+    const context = contextFor("dev-a");
+    expect(context.session.terminalTransport).toBe("update_required");
+    expect(terminalPeerLink(context)).toBeNull();
+    await expect(terminalWebSocketOwner(context).open(new AbortController().signal)).rejects.toMatchObject({
+      code: "terminal_update_required",
+    });
+    fixture.offline();
+    goOffline("dev-a");
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(http.open.mock.calls.length).toBeGreaterThan(1);
+    expect(http.open.mock.calls.every(([, , options]) => options.selection.origin === transport.origin)).toBe(true);
+    expect(wire.openSession).not.toHaveBeenCalled();
+    expect(wire.openPeerLink).not.toHaveBeenCalled();
+    expect(account.fetchIceServers).not.toHaveBeenCalled();
+    expect(terminalRtc).not.toHaveBeenCalled();
+    expect(feed.items.map(({ title }) => title)).toContain("Before background");
+  });
+
+  it("retires a live HTTPS opening and forgets in-flight authority when the committed address rotates", async () => {
+    const fixture = serveHttpStream();
+    const transport = { source: "hosted", rtc_allowed: false, origin: "https://127.0.0.1:8443", reason: null, assignment_revision: 7 };
+    const deviceStore = await import("../src/devices.js");
+    devices = [{ ...online("dev-a", "Laptop"), transport }];
+    await deviceStore.refreshDevices();
+    await connectDevice("dev-a");
+    const session = contextFor("dev-a").session;
+    const rotated = { ...transport, origin: "https://127.0.0.1:8444", assignment_revision: 8 };
+    devices = [{ ...online("dev-a", "Laptop"), transport: rotated }];
+    await deviceStore.refreshDevices();
+    expect(fixture.streams[0].signal.aborted).toBe(true);
+    await expect(session.rawCall("ping")).rejects.toMatchObject({ code: "scope_ended" });
+    http.open.mockRejectedValueOnce(new Error("Rotated endpoint is offline"));
+    await expect(connectDevice("dev-a")).rejects.toThrow("Rotated endpoint is offline");
+    expect(http.open.mock.lastCall[2].selection.origin).toBe(rotated.origin);
+    expect(wire.openSession).not.toHaveBeenCalled();
   });
 
   it("reconnects on a persisted pageshow without a visibility event", async () => {

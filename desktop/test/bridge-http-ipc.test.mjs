@@ -162,6 +162,11 @@ test("sandbox preload exposes only typed functions, strips Electron event and re
     ["terminalDetach", ["terminal", "1"]],
     ["terminalClose", ["terminal"]],
   ]);
+  await facade.hostedNotice({ accountId: "account", promotionRevision: 2, acknowledge: true });
+  assert.equal(invocations.at(-1)[1], "hostedNotice");
+  assert.deepEqual(JSON.parse(JSON.stringify(invocations.at(-1)[2])), [
+    { accountId: "account", promotionRevision: 2, acknowledge: true },
+  ]);
   const terminalEvent = { terminal: "t", requestId: "request", type: "close", closeCode: 4008 };
   let close;
   const stopTerminal = facade.onTerminalEvent((value) => { close = value; });

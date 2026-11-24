@@ -30,6 +30,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import ephemeral_tokens, pairing_crypto, presence
+from buildapp.accounts import account_policy
 from buildapp.bridge_http_models import BridgeHttpEndpoint
 from buildapp.clock import utc_now
 from buildapp.desktop_auth import build_auth_guard
@@ -303,14 +304,18 @@ class DevicesController(Controller):
             .where(Device.owner_user_id == user_id, Device.approved.is_(True))
             .order_by(Device.created_at.desc())
         )
+        policy = await account_policy(db_session, user_id)
         now = utc_now()
         return Response({"devices": [
             {
                 **device_summary(device, now),
-                "transport": await transport_projection(db_session, device, endpoint),
+                "transport": await transport_projection(db_session, device, endpoint, policy=policy),
             }
             for device, endpoint in rows
-        ]})
+        ], "transport_policy": {
+            "tunnel_access": policy.tunnel_access,
+            "promotion_revision": policy.promotion_revision,
+        }})
 
     @post("/api/devices/{device_id:uuid}/revoke", guards=[build_auth_guard])
     async def revoke(

@@ -20,7 +20,7 @@ export function terminalPeerLink(context) {
 }
 
 function usesTerminalWebSocket(session) {
-  return session?.transport === "http" && ["wss", "protocol_error"].includes(session.terminalTransport);
+  return session?.transport === "http" && ["wss", "protocol_error", "update_required"].includes(session.terminalTransport);
 }
 
 export function terminalWebSocketOwner(context) {

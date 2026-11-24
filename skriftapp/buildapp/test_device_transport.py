@@ -9,7 +9,10 @@ import pytest
 from litestar.testing import TestClient
 from skrift.auth.session_keys import SESSION_USER_ID
 
-from buildapp import bridge_http_auth, ephemeral_tokens, ice_servers, internal_auth, pairing_crypto
+from buildapp import (
+    bridge_http_auth, device_transport, devices_controller, ephemeral_tokens, ice_servers, internal_auth, pairing_crypto,
+)
+from buildapp.accounts import account_policy
 from buildapp.bridge_http_models import BridgeHttpEndpoint
 from buildapp.clock import utc_now
 from buildapp.db_test_support import (
@@ -84,10 +87,8 @@ def test_device_transport_listing_is_additive_and_uses_current_personal_endpoint
         "approved": True, "status": "offline", "transport_public_key_b64": "dHJhbnNwb3J0",
         "last_seen_at": None,
     }
-    legacy_bytes = json.dumps(legacy, separators=(",", ":")).encode()
-    assert response.content.startswith(b'{"devices":[' + legacy_bytes[:-1] + b',"transport":')
     personal = endpoint_state == "current"
-    assert response.json() == {"devices": [{
+    legacy_response = {"devices": [{
         **legacy, "transport": {
             "source": "personal" if personal else "webrtc",
             "rtc_allowed": True,
@@ -96,6 +97,14 @@ def test_device_transport_listing_is_additive_and_uses_current_personal_endpoint
             "assignment_revision": None,
         },
     }]}
+
+    policy = {"tunnel_access": False, "promotion_revision": 0}
+    policy_bytes = json.dumps(policy, separators=(",", ":")).encode()
+    assert response.json() == {**legacy_response, "transport_policy": policy}
+    assert response.content == (
+        json.dumps(legacy_response, separators=(",", ":")).encode()[:-1]
+        + b',"transport_policy":' + policy_bytes + b"}"
+    )
 
 
 def test_device_transport_entitlement_does_not_grant_membership(transport_client):
@@ -164,7 +173,19 @@ def test_device_transport_rtc_policy_is_shared_by_listing_relay_and_mints(
 
     pending_allowed = bootstrap is None
     policy = {devices["pending"]: pending_allowed, devices["ready"]: False, devices["personal"]: False}
-    listing = client.get("/api/devices").json()["devices"]
+    policy_reads = []
+
+    async def read_policy(db_session, user_id):
+        policy_reads.append(user_id)
+        return await account_policy(db_session, user_id)
+
+    with monkeypatch.context() as listing_only:
+        listing_only.setattr(device_transport, "account_policy", read_policy)
+        listing_only.setattr(devices_controller, "account_policy", read_policy)
+        response = client.get("/api/devices").json()
+    assert policy_reads == [owner]
+    assert response["transport_policy"] == {"tunnel_access": True, "promotion_revision": 0}
+    listing = response["devices"]
     assert {device["id"]: device["transport"]["rtc_allowed"] for device in listing} == policy
     for device_id, allowed in policy.items():
         internal = client.get(
@@ -202,6 +223,22 @@ def test_device_transport_rtc_mints_keep_the_legacy_unscoped_free_path(
     sign_in_member(client)
     assert client.post("/api/gateway-token").json()["token"].startswith("gw_")
     assert client.post("/api/rtc/ice-servers").json() == {"iceServers": ice_servers.STUN_ONLY}
+
+
+def test_device_listing_discloses_promotion_even_without_any_paired_devices(transport_client):
+    client = transport_client
+    user = sign_in_member(client, "notice-owner@example.com")
+
+    async def seed():
+        async with client.app.state.make_session() as db:
+            db.add(AccountPolicy(id=user, account_type="admin", tunnel_access=True, promotion_revision=2))
+            await db.commit()
+
+    with client.portal() as portal:
+        portal.call(seed)
+    assert client.get("/api/devices").json() == {
+        "devices": [], "transport_policy": {"tunnel_access": True, "promotion_revision": 2},
+    }
 
 
 @pytest.mark.asyncio

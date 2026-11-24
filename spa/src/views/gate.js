@@ -27,7 +27,7 @@ import {
   awaitingFirstAnswer, contextFor, existingDeviceLifecycle, knownContexts, liveContexts, onDeviceStateChanged,
 } from "../core/deviceContexts.js";
 import { deviceNameOf } from "../core/devicePolicy.js";
-import { markNothingAnswers, paintDevicePicker, readPresence, refreshDevices, stopWatchingPresence, watchPresence } from "../devices.js";
+import { markNothingAnswers, paintDevicePicker, readCachedDevices, readPresence, refreshDevices, stopWatchingPresence, watchPresence } from "../devices.js";
 import { renderAppBehindBridgeGate, renderBridgeBehindAppGate } from "./versionGate.js";
 import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
@@ -38,13 +38,13 @@ import { startCacheSync } from "../core/cacheSync.js";
 import { startGithubRepos } from "../core/githubRepos.js";
 import { initInboxRail } from "../core/inboxShell.js";
 import { initToolbar } from "../core/toolbar.js";
-import { DEVICES_ADDRESS, readCached } from "../core/localCache.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { signOutHtml } from "../core/signOut.js";
 import { pendingDeviceHtml } from "../core/deviceFingerprint.js";
 import { accountReadCadence, isPairingConnecting, notePairingApproved, onPairingChanged } from "../core/pendingPairing.js";
 import { restoreWriteOperations } from "../core/writeOperationRuntime.js";
-import { usesHttp } from "../core/httpConnections.js";
+import { deviceTransportFor, usesHttp } from "../core/httpConnections.js";
+import { transportReasonText } from "../core/deviceTransportSelection.js";
 import { mountHttpTransportControls } from "../core/httpTransportControls.js";
 
 /** Whether the cache's two readers are up. They are started once, before any
@@ -127,9 +127,8 @@ async function paintFromCache() {
   // repaint. The gate's own watch re-boots while it is up, and painting the
   // last good board over it would take away the only thing saying why.
   if (gatedDeviceId) return false;
-  const devices = (await readCached(DEVICES_ADDRESS))?.value || [];
+  const devices = await readCachedDevices({ offline: true });
   if (!devices.length) return false;
-  App.devices = devices.map(asTheCacheKnowsIt);
   await restoreWriteOperations(App.devices);
   setGate(false);
   // The rail's rows, read off disk for every machine the list names — awaited,
@@ -141,19 +140,6 @@ async function paintFromCache() {
   render(); // the hash route survives a reload, so deep links paint from disk too
   return true;
 }
-
-/**
- * One machine as the cache knows it: its name, its keys, and no claim about
- * whether it is up.
- *
- * The list on disk was written by the last read of a past session, and a status
- * is only as true as the moment it was written — the machine it called online
- * may have been shut since. Presence is a live read's to say (spec rule 6), and
- * that read is the next thing this boot does, so the seconds before it are
- * spent saying the under-claiming thing rather than dialling a machine that
- * went away while the tab was closed.
- */
-const asTheCacheKnowsIt = (device) => ({ ...device, status: "offline" });
 
 // Whether the gate is holding the app for want of a machine that can answer,
 // and how it hears that that changed.
@@ -584,7 +570,9 @@ const pairingOnScreen = (devices) => devices.find(isPairingConnecting) || null;
 
 const waitingText = (devices) => {
   const pairing = pairingOnScreen(devices);
-  return pairing ? pairingConnectingText(pairing.name) : WAITING_TEXT[waitingSituation(devices)](devices);
+  if (pairing) return pairingConnectingText(pairing.name);
+  const setup = devices.map((device) => deviceTransportFor(device.id)).find((transport) => transport.kind === "blocked");
+  return setup ? transportReasonText(setup.reason) : WAITING_TEXT[waitingSituation(devices)](devices);
 };
 
 const waitingTitle = (devices) => {

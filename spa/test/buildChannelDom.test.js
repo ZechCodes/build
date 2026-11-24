@@ -6,7 +6,7 @@ import { resolve } from "node:path";
 // Keep startup local: boot and browser services are isolated, while main.js,
 // the real config and badge initializer execute together.
 vi.mock("../src/app.js", () => ({ App: {}, initRouter: vi.fn(), go: vi.fn(), followNotificationLink: vi.fn() }));
-vi.mock("../src/devices.js", () => ({ initDevicePicker: vi.fn() }));
+vi.mock("../src/devices.js", () => ({ initDevicePicker: vi.fn(), onDevicesChanged: () => () => {} }));
 vi.mock("../src/push.js", () => ({ installPushOpenListener: vi.fn(), registerPushWorker: vi.fn() }));
 vi.mock("../src/core/pushKeySync.js", () => ({ startPushKeySync: vi.fn() }));
 vi.mock("../src/core/version.js", () => ({ createVersionWatcher: vi.fn(), fetchServedVersion: vi.fn() }));

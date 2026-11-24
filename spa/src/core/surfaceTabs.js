@@ -1,3 +1,5 @@
+import { terminalCompatibilityText } from "./deviceTransportSelection.js";
+import { onDevicesChanged } from "../devices.js";
 // The agent's PTY, as a mountable body.
 //
 // One agent screen per worktree, addressed the way the calling surface knows
@@ -10,7 +12,7 @@
 import { terminalDeviceId, terminalManager, subscribeTerminalStatus } from "../terminal/manager.js";
 import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
-import { cachedTerminalTransport, onHttpPreferencesChanged } from "./httpConnections.js";
+import { cachedTerminalTransport, deviceTransportFor, onHttpPreferencesChanged } from "./httpConnections.js";
 
 /** What every surface says while the machine is out of reach. One sentence, in
  *  the chip over a live pane and in the place of a pane that could not attach. */
@@ -70,7 +72,8 @@ export function attachConnectionOverlay(host, deviceId = terminalDeviceId()) {
   let status = "connected";
   const paint = () => {
     const mode = cachedTerminalTransport(deviceId);
-    const offline = mode !== "wss" && mode !== "protocol_error" && status !== "connected";
+    const legacy = mode === undefined || mode === "webrtc";
+    const offline = legacy && status !== "connected";
     chip.hidden = !offline;
     host.classList.toggle("term-offline", offline);
   };
@@ -86,26 +89,35 @@ export function attachConnectionOverlay(host, deviceId = terminalDeviceId()) {
   };
 }
 
+function terminalLabel(deviceId, mode) {
+  if (mode === "webrtc") return TRANSPORT_LABEL;
+  return deviceTransportFor(deviceId).wssOnly ? terminalCompatibilityText.get(mode) : undefined;
+}
+
 /** Label the negotiated fallback using the device's retained terminal mode. */
 export const TRANSPORT_LABEL = "Terminal over WebRTC";
 
 export function attachTransportLabel(host, deviceId) {
   const label = document.createElement("div");
   label.className = "term-transport";
-  label.textContent = TRANSPORT_LABEL;
   // Present or absent, never hidden: a CSS display rule would beat `hidden`.
   const render = () => {
     // Never inside .term-screen: the terminal makes that its input box, whose
     // accessible value would read the label as typed text. Just before the
     // touch key bar instead, or last when there is none.
-    if (cachedTerminalTransport(deviceId) === "webrtc") host.insertBefore(label, host.querySelector(":scope > .termkeys"));
-    else label.remove();
+    const mode = cachedTerminalTransport(deviceId);
+    const text = terminalLabel(deviceId, mode);
+    if (!text) { label.remove(); return; }
+    label.textContent = text;
+    host.insertBefore(label, host.querySelector(":scope > .termkeys"));
   };
   render();
   const stop = onHttpPreferencesChanged(render);
+  const stopDevices = onDevicesChanged(render);
   return {
     dispose() {
       stop();
+      stopDevices();
       label.remove();
     },
   };

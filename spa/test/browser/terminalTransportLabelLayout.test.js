@@ -3,26 +3,19 @@ import { captureLayout, loadBrowserModules, mountLayout, openLayoutSession } fro
 
 // The real overlays a terminal pane carries — the touch key bar, the
 // reconnecting chip and the negotiated transport label — mounted by their own
-// modules. Only the stored mode and the socket's status are stand-ins.
-const FAKES = {
-  "/src/core/httpConnections.js": `
-    export const cachedTerminalTransport = (deviceId) => deviceId === "dev-http" ? "webrtc" : null;
-    export const onHttpPreferencesChanged = () => () => {};`,
-  "/src/terminal/manager.js": `
-    export const subscribeTerminalStatus = (fn) => { fn(window.__status || "connected"); return () => {}; };
-    export const terminalDeviceId = () => "dev-http";
-    export const terminalManager = () => ({});`,
-};
+// modules. Seed the saved compatibility and stand in for the socket status.
 const labelFixture = {
   name: "terminal-transport-label-fixture", enforce: "pre",
-  async resolveId(source, importer, options) {
-    if (!importer || importer.startsWith("\0")) return null;
-    const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
-    const fake = resolved && Object.keys(FAKES).find((path) => resolved.id.endsWith(path));
-    return fake ? `\0label-fake:${fake}` : null;
+  resolveId(source, importer) {
+    if (source === "../terminal/manager.js" && importer?.endsWith("/src/core/surfaceTabs.js")) return "\0label-socket";
+    return null;
   },
   load(id) {
-    return id.startsWith("\0label-fake:") ? FAKES[id.slice("\0label-fake:".length)] : null;
+    if (id !== "\0label-socket") return null;
+    return `
+      export const subscribeTerminalStatus = (fn) => { fn(window.__status); return () => {}; };
+      export const terminalDeviceId = () => "dev-http";
+      export const terminalManager = () => ({});`;
   },
 };
 
@@ -44,10 +37,16 @@ async function mountPane(page, basePath, { width, theme, keys, status }) {
     basePath, styles: "body { margin:0; } #pane { width:100vw; height:320px; }",
   });
   await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
-  await loadBrowserModules(page, { tabs: "src/core/surfaceTabs.js", pane: "src/terminal/pane.js" }, basePath);
+  await loadBrowserModules(page, {
+    tabs: "src/core/surfaceTabs.js", pane: "src/terminal/pane.js", http: "src/core/httpConnections.js",
+  }, basePath);
   return page.evaluate(async ({ keys, status }) => {
-    const { tabs, pane: terminalPane } = window.__layoutModules;
+    const { tabs, pane: terminalPane, http } = window.__layoutModules;
     const pane = document.getElementById("pane");
+    document.head.insertAdjacentHTML("beforeend", '<meta name="build-account-id" content="10000000-0000-4000-8000-000000000060">');
+    await http.restoreHttpConnections();
+    await http.selectHttpConnection({ deviceId: "dev-http", origin: "https://127.0.0.1:8443" });
+    await http.rememberHttpTerminalMode("dev-http", "webrtc", () => true);
     window.__status = status;
     await terminalPane.mountTerminalPane(pane, {
       attach: async () => {}, input: async () => {}, resize: async () => {}, isTouchDevice: () => keys,

@@ -91,7 +91,7 @@ export function createHttpConnectionPreferences({ accountId, read, write, isCurr
   };
 }
 
-// Eligibility to try an explicitly selected HTTPS transport, not a claim of
+// Eligibility to try a selected HTTPS transport, not a claim of
 // reachability. Account list membership remains authoritative for retirement.
-export const httpRecoveryDevices = (devices, preferenceFor) => devices.map((device) =>
-  preferenceFor(device.id)?.selected === "http" ? { ...device, status: "online" } : device);
+export const httpRecoveryDevices = (devices, usesHttp) => devices.map((device) =>
+  usesHttp(device.id) ? { ...device, status: "online" } : device);

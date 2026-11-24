@@ -4,11 +4,9 @@ import asyncio
 import base64
 import json
 import logging
-from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
-from importlib.util import find_spec
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import jwt
 import pytest
@@ -31,6 +29,9 @@ from buildapp.db_test_support import (
     in_memory_session_maker,
 )
 from buildapp.device_transport import transport_projection
+from buildapp.hosted_tunnel_credentials import decrypt_tunnel_secret, new_encrypted_secret
+from buildapp.hosted_tunnel_models import HostedTunnelAssignment
+from buildapp.hosted_tunnel_worker import SIGNED_MODE_SOURCE, _mode_source
 from buildapp.models import AccountPolicy, Device
 from buildapp.test_bridge_http_auth import ISSUER, ORIGIN, paired, registered, signed
 
@@ -44,20 +45,15 @@ BINDING = "browser:client"
 GENERATION = 2**51 + 17
 
 
-@dataclass
-class FakeAssignment:
-    device_id: UUID
-    owner_user_id: UUID
-    pairing_created_at: datetime
-    authorization_epoch: int
-    generation: int = GENERATION
-    label: str = "a" * 32
-    hostname: str = f"b-{'a' * 32}.{ZONE}"
-    tunnel_id: UUID | None = field(default_factory=uuid4)
-    dns_record_id: str | None = "synthetic-dns-record"
-    state: str = "ready"
-    setup_reason: str | None = None
-    encrypted_secret: bytes = field(default=b"fake-encrypted-material", repr=False)
+def assignment_for(device, **changes):
+    fields = {
+        "device_id": device.id, "owner_user_id": device.owner_user_id,
+        "pairing_created_at": device.created_at, "authorization_epoch": device.authorization_epoch,
+        "generation": GENERATION, "label": "a" * 32, "hostname": f"b-{'a' * 32}.{ZONE}",
+        "tunnel_id": uuid4(), "dns_record_id": "synthetic-dns-record", "state": "ready",
+        "encrypted_secret": b"fake-encrypted-material",
+    }
+    return HostedTunnelAssignment(**(fields | changes))
 
 
 class FakeAssignments:
@@ -81,10 +77,7 @@ class FakeAssignments:
         return credentials
 
     def assign(self, device, **changes):
-        self.row = FakeAssignment(
-            device.id, device.owner_user_id, device.created_at,
-            device.authorization_epoch, **changes,
-        )
+        self.row = assignment_for(device, **changes)
         return self.row
 
 
@@ -176,14 +169,44 @@ async def test_pending_assignment_reason_is_public_without_credentials(db, assig
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(
-    find_spec("buildapp.hosted_tunnel_assignments") is not None,
-    reason="this check runs against the standalone issuer without the provisioner module",
-)
-async def test_claim_without_assignment_module_stays_in_setup(db):
+async def test_ready_assignment_without_registered_endpoint_has_no_setup_reason(db, assignments):
+    _, device, key = await entitled(db)
+    await submit(db, device, key)
+    assignments.assign(device)
+    assert await transport_projection(db, device, None) == {
+        "source": "hosted", "rtc_allowed": True, "reason": None, "origin": None,
+        "assignment_revision": GENERATION,
+    }
+
+
+@pytest.mark.asyncio
+async def test_claim_uses_the_worker_mode_source_and_real_credentials(db, monkeypatch, tmp_path):
+    monkeypatch.setenv("HOSTED_TUNNEL_MODE_SOURCE", SIGNED_MODE_SOURCE)
+    monkeypatch.delenv("HOSTED_TUNNEL_ZONE_NAME", raising=False)
+    assert _mode_source() is source.hosted_mode_source
+
     _, device, key = await entitled(db)
     assert await submit(db, device, key) == {"status": "setup", "reason": "provisioning"}
+    wrapping_key = bytes(range(32))
+    key_file = tmp_path / "synthetic-wrapping-key"
+    key_file.write_bytes(base64.b64encode(wrapping_key))
+    monkeypatch.setenv("HOSTED_TUNNEL_WRAPPING_KEY_FILE", str(key_file))
+    monkeypatch.setenv("HOSTED_TUNNEL_ACCOUNT_ID", "synthetic-fixture-account")
+    row = assignment_for(device)
+    row.encrypted_secret = new_encrypted_secret(row, wrapping_key)
+    db.add(row)
+    await db.commit()
+
+    result = await submit(db, device, key)
+    assert result["status"] == "assigned"
+    assert result["hostname"] == row.hostname
+    assert result["generation"] == GENERATION
+    credentials = result["credentials"]
+    assert credentials["AccountTag"] == "synthetic-fixture-account"
+    assert credentials["TunnelID"] == str(row.tunnel_id)
+    assert base64.b64decode(credentials["TunnelSecret"]) == decrypt_tunnel_secret(row, wrapping_key)
     assert await submit(db, device, key, PERSONAL) == {"status": "personal"}
+    assert await source.current_assignment(db, device) is None
 
 
 @pytest.mark.asyncio
@@ -250,7 +273,7 @@ async def test_stale_generation_and_rotation_during_materialization_never_releas
     initial = assignments.assign(device)
     pending = await begin(db, device, key)
     assert pending["generation"] == GENERATION
-    assignments.row = replace(initial, generation=GENERATION + 1)
+    initial.generation = GENERATION + 1
     result = await claim.claim_assignment(
         db, device.id, proof_for(key, device, pending), ISSUER, utc_now(),
     )
@@ -270,7 +293,7 @@ async def test_cross_account_assignment_and_stale_owner_are_refused(db, assignme
     other, _, other_key = await paired(db, "other@example.com")
     await submit(db, device, key)
     # The issuer validates assignment identity even if a source returns a foreign row.
-    assignments.row = replace(assignments.assign(device), owner_user_id=other)
+    assignments.assign(device, owner_user_id=other)
     pending = await begin(db, device, key)
     assert pending["generation"] is None
     assert await submit(db, device, key) == {"status": "setup", "reason": "provisioning"}
@@ -397,10 +420,10 @@ async def test_obsolete_hosted_authority_refuses_all_paths(db, assignments):
     assert (await introspect(db, device, key, minted))["active"]
     endpoint = await auth._endpoint(db, device.id)
     assert await transport_projection(db, device, endpoint) == {
-        "source": "hosted", "rtc_allowed": True, "reason": None, "origin": origin,
+        "source": "hosted", "rtc_allowed": False, "reason": None, "origin": origin,
         "assignment_revision": GENERATION,
     }
-    assignments.row = replace(assignments.row, generation=GENERATION + 1)
+    assignments.row.generation = GENERATION + 1
     assert await introspect(db, device, key, minted) == {"active": False}
     assert (await transport_projection(db, device, endpoint))["origin"] is None
     await db.commit()

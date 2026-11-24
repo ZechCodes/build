@@ -55,8 +55,11 @@ async def rtc_allowed(
     endpoint = await db_session.scalar(
         select(BridgeHttpEndpoint).where(BridgeHttpEndpoint.device_id == device.id)
     )
-    # A disabled listener still has a configured personal address.
-    return endpoint is None or not endpoint_matches_pairing(endpoint, device)
+    # A disabled personal listener still has a configured address.
+    return (
+        endpoint is None or endpoint.assignment_generation is not None
+        or not endpoint_matches_pairing(endpoint, device)
+    )
 
 
 async def require_rtc_mint(
@@ -89,7 +92,8 @@ async def transport_projection(
         assignment = await hosted_tunnel_source.current_assignment(db_session, device)
         if assignment is not None:
             source, revision = "hosted", assignment.generation
-            reason = hosted_tunnel_source.setup_reason(assignment)
+            if assignment.state == "pending":
+                reason = hosted_tunnel_source.setup_reason(assignment)
     return {
         "source": source,
         "rtc_allowed": await rtc_allowed(db_session, device, policy=policy),

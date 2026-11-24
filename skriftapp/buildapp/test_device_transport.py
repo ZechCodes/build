@@ -19,6 +19,7 @@ from buildapp.db_test_support import (
     add_member, asgi_app, in_memory_session_maker, session_backend_config, sign_in, sign_in_member,
 )
 from buildapp.devices_controller import DevicesController
+from buildapp.device_transport import rtc_allowed
 from buildapp.models import AccountPolicy, Device
 from buildapp.rtc_controller import RtcController
 from buildapp.test_bridge_http_auth import ISSUER, ORIGIN, registered, signed
@@ -45,6 +46,38 @@ async def store_device(db, user, **fields):
     db.add(device)
     await db.commit()
     return device
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bootstrap", ["on", "off"])
+@pytest.mark.parametrize(
+    "endpoint_enabled, generation, ready_once, can_bootstrap",
+    [
+        (False, 2**51, False, True),
+        (True, 2**51, False, True),
+        (False, None, False, False),
+        (True, None, False, False),
+        (False, 2**51, True, False),
+    ],
+    ids=["starting-hosted", "enabled-hosted", "disabled-personal", "enabled-personal", "ready-once"],
+)
+async def test_rtc_bootstrap_distinguishes_hosted_from_personal(
+    db, monkeypatch, bootstrap, endpoint_enabled, generation, ready_once, can_bootstrap,
+):
+    monkeypatch.setenv("BUILD_RTC_BOOTSTRAP", bootstrap)
+    user, _, _ = await registered(db)
+    device = await store_device(db, user, hosted_ready_once=ready_once)
+    db.add_all([
+        AccountPolicy(id=user, tunnel_access=True),
+        BridgeHttpEndpoint(
+            device_id=device.id, user_id=user, origin=ORIGIN,
+            identity_fingerprint=pairing_crypto.fingerprint(device.identity_public_key_b64),
+            endpoint_epoch="bootstrap", authorization_epoch=device.authorization_epoch,
+            enabled=endpoint_enabled, assignment_generation=generation,
+        ),
+    ])
+    await db.commit()
+    assert await rtc_allowed(db, device) is (bootstrap == "on" and can_bootstrap)
 
 
 @pytest.mark.parametrize("endpoint_state", [

@@ -11,6 +11,7 @@ from sqlalchemy import select
 from buildapp import bridge_http_auth as auth
 from buildapp import hosted_tunnel_source as source
 from buildapp.bridge_http_models import BridgeHttpChallenge
+from buildapp.hosted_tunnel_assignments import notify_hosted_tunnels_changed
 from buildapp.models import HostedModeReport
 
 CHALLENGE = "hosted-tunnel-challenge"
@@ -113,7 +114,7 @@ async def _save_report(db, device, saved, report):
     saved.mode, saved.hosted_capable = report
     saved.revision = uuid4()
     await db.flush()
-    await source.notify_hosted_tunnels_changed(db)
+    await notify_hosted_tunnels_changed(db)
 
 
 async def _claim_result(db, device, report, generation, now):

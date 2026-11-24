@@ -5,7 +5,7 @@ from advanced_alchemy.types import DateTimeUTC, GUID
 from alembic import op
 
 revision = "4ac3e7d238b1"
-down_revision = "b2c3d4e5f6a7"
+down_revision = "c3d4e5f6a7b8"
 branch_labels = None
 depends_on = None
 

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from uuid import UUID
 
 from .app import App, default_fetch
 from .bridge import Bridge
@@ -33,6 +34,8 @@ class CommandParser(argparse.ArgumentParser):
                 parsed.dry_run or parsed.force or parsed.prod_stopped
             ):
                 self.error("--rollback cannot be combined with migration flags")
+        if parsed.group == "account" and parsed.account_type is None and parsed.tunnel_access is None:
+            self.error("account set requires --type or --tunnel-access")
         return parsed
 
 
@@ -57,6 +60,13 @@ def parser():
         help="allow replacement with an exact force-with-lease",
     )
     app.add_parser("status")
+    account = groups.add_parser("account", help="manage hosted-dev account policy")
+    change = account.add_subparsers(dest="command", required=True).add_parser("set")
+    change.add_argument("--user-id", required=True, type=UUID)
+    change.add_argument("--type", dest="account_type", choices=("free", "admin"))
+    change.add_argument("--tunnel-access", choices=("on", "off"))
+    change.add_argument("--dry-run", action="store_true")
+    change.add_argument("--context", help="verified Kubernetes dev context (or DEV_CONTEXT)")
     secrets = groups.add_parser("secrets").add_subparsers(dest="command", required=True)
     secrets.add_parser("get").add_argument("--id", required=True)
     migration = groups.add_parser("migrate", help="copy prod state into dev")
@@ -108,6 +118,8 @@ def combined_status(bridge, app):
 
 
 def dispatch(args, env, runner, repo, fetch):
+    if args.group == "account":
+        return account_command(args, env, runner)
     if getattr(args, "command", None) in MUTATIONS:
         env.require_mutation()
     if args.group == "app":
@@ -121,6 +133,47 @@ def dispatch(args, env, runner, repo, fetch):
     if args.group == "status":
         return combined_status(bridge, App(env, runner, repo, fetch=fetch))
     return bridge_command(args, bridge)
+
+
+def kubernetes_actor(runner, kubectl):
+    result = runner.run([*kubectl, "auth", "whoami", "-o", "json"])
+    try:
+        username = json.loads(result.stdout)["status"]["userInfo"]["username"]
+    except (ValueError, KeyError, TypeError):
+        raise BuildctlError("could not read the Kubernetes operator identity") from None
+    if not isinstance(username, str) or not username.strip():
+        raise BuildctlError("could not read the Kubernetes operator identity")
+    return f"kubernetes:{username}"
+
+
+def account_command(args, env, runner):
+    if env.name != "dev":
+        raise BuildctlError("account policy command refused outside dev")
+    env.require_mutation()
+    context = args.context or os.environ.get("DEV_CONTEXT")
+    if not context:
+        raise BuildctlError("account set requires an explicit dev Kubernetes context")
+    kubectl = ["kubectl", "--context", context, "--namespace", "build-dev"]
+    actor = kubernetes_actor(runner, kubectl)
+    command = [
+        *kubectl, "exec", "deployment/build-app", "--container", "app", "--",
+        "python", "-m", "buildapp.account_policy", "set", "--env", env.name,
+        "--user-id", str(args.user_id), "--actor", actor,
+    ]
+    if args.account_type is not None:
+        command.extend(["--type", args.account_type])
+    if args.tunnel_access is not None:
+        command.extend(["--tunnel-access", args.tunnel_access])
+    if args.dry_run:
+        command.append("--dry-run")
+    result = runner.run(command)
+    try:
+        report = json.loads(result.stdout)
+    except ValueError:
+        raise BuildctlError("could not read the account policy result") from None
+    if not isinstance(report, dict):
+        raise BuildctlError("could not read the account policy result")
+    return report
 
 
 def migrate_command(args, envs, runner):

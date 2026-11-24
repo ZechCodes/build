@@ -14,7 +14,7 @@ from datetime import datetime
 from uuid import UUID
 
 from advanced_alchemy.types import GUID, DateTimeUTC
-from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Integer, String, UniqueConstraint, false
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Integer, JSON, String, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from skrift.db.base import Base
@@ -37,6 +37,7 @@ class Device(Base):
     __tablename__ = "devices"
 
     authorization_epoch: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    hosted_ready_once: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
 
@@ -153,6 +154,35 @@ class Invite(Base):
         String(20), default=InviteKind.EMAIL_BOUND, server_default=InviteKind.EMAIL_BOUND,
         nullable=False,
     )
+
+
+class AccountPolicy(Base):
+    """Build's account policy, with the Skrift user ID as its primary key."""
+
+    __tablename__ = "account_policies"
+    __table_args__ = (
+        CheckConstraint("account_type IN ('free', 'admin')", name="account_policy_type"),
+        CheckConstraint("promotion_revision >= 0", name="account_policy_revision"),
+    )
+
+    id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    account_type: Mapped[str] = mapped_column(String(5), default="free", server_default="free")
+    tunnel_access: Mapped[bool] = mapped_column(
+        Boolean(create_constraint=True, name="account_policy_tunnel_access"),
+        default=False, server_default=false(),
+    )
+    promotion_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class AccountPolicyAudit(Base):
+    """Each committed operator change, retained after deletion of the account."""
+
+    __tablename__ = "account_policy_audit"
+
+    target_user_id: Mapped[UUID] = mapped_column(GUID(length=16), index=True)
+    actor: Mapped[str] = mapped_column(String(512))
+    old_policy: Mapped[dict] = mapped_column(JSON)
+    new_policy: Mapped[dict] = mapped_column(JSON)
 
 
 class UserEmailPreference(Base):

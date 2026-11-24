@@ -8,6 +8,8 @@ Extend the existing user-email reader in `skriftapp/buildapp/accounts.py` with B
 
 Provide an idempotent, operator-only `python -m buildapp.account_policy set --env <env> --user-id <UUID> --type admin --tunnel-access on` with dry-run, independent field updates and an audit of actor, target and old/new values. The dev entry point is `scripts/buildctl --env dev account set …` in `tools/buildctl/buildctl/cli.py`, using the environment checks in `skriftapp/buildapp/dev_bootstrap.py`. The command flips the boolean even when a paired machine is offline. There is no client acknowledgement prerequisite.
 
+The dev wrapper takes `--context` or `DEV_CONTEXT` and uses the authenticated Kubernetes principal as the audit actor. It requires operator access to exec in the dev app deployment. Direct invocations default to the effective OS UID as actor. Either field can be set on its own, and `--dry-run` previews the change without writing policy or audit rows. The promotion revision increases each time tunnel access goes from off to on.
+
 **One decision for Zech — RTC before first readiness.** Recommend allowing WebRTC for a bridge awaiting its first hosted address. Store `hosted_ready_once` on the approved device pairing, independently of the replaceable tunnel row. Set it on the first matching enabled endpoint registration, DNS binding and active connector for that assignment. Keep it through restarts, outages, rotation and entitlement changes for the same pairing. A new owner/pairing starts fresh. Compute `rtc_allowed` once at the issuer: free of the entitlement, or the bootstrap exception is enabled and the entitled device is awaiting hosted setup, has no configured personal endpoint and has never been ready. A personal endpoint on an entitled bridge always uses HTTPS. To choose “never”, disable only that exception. Both variants use the same wire fields and client selector. Preserve a known personal registration while waiting for a newer mode report.
 
 | Policy at the issuer | Client behavior for a new connection |
@@ -51,6 +53,16 @@ Supervise one child per assignment on the bridge liveness runtime. Start after e
 ## Client selection and security
 
 The authenticated `GET /api/devices` adds a `transport` projection with source (personal, hosted or WebRTC), permitted RTC, setup/update reason, canonical origin when usable and assignment revision. Preserve the existing response fields. `spa/src/devices.js` commits the owned list to `DEVICES_ADDRESS` with its existing account-epoch/generation guards. `spa/src/connection.js` and `core/httpConnections.js` use this cache and account-scoped URL settings for the next attempt. Unknown policy on a new issuer prompts a refresh. Legacy free/manual records and older issuers retain their existing behavior. A network error cannot select another transport. Retire stale origins, handles and in-flight writes on account, device or epoch change. Keep cached work visible.
+
+Each projected `transport` object includes these fields.
+
+| Field | JSON type and meaning |
+| --- | --- |
+| `source` | `"personal"`, `"hosted"` or `"webrtc"`. Slice 2 reports `"personal"` for a current enabled personal registration and `"webrtc"` otherwise. |
+| `rtc_allowed` | Boolean from the issuer. Slice 2 always returns `true`. |
+| `reason` | String code for a setup or update reason, or `null` when none is reported. Slice 2 returns `null`. |
+| `origin` | String containing the canonical HTTPS origin when a usable registration is known, or `null`. |
+| `assignment_revision` | Integer generation of the hosted assignment, or `null` when no hosted assignment exists. |
 
 On a fresh authenticated response from a policy-aware issuer, write the projection before dialing. A missing field in a stale cached row is never affirmative RTC permission. Use the same selector in Electron's hosted SPA. Native HTTPS and WSS remain in `desktop/src/bridge-http{,-settings,-network,-ipc,-terminal}.mjs`. For an entitled HTTPS selection, `spa/src/core/httpSession.js` must suppress both RTC terminal fallbacks (missing descriptor and missing `openTerminal`). Gate the signed claim capability independently of the existing app wire version. Use the actual Opening descriptor and native support for terminal dispatch. After inspecting those, **commit terminal compatibility to the account/device/endpoint cache before any view reads it**. Render unknown, WSS or update required from the cache, including a cold mount. Legacy clients can still use compatible verified HTTPS via Add by URL; unsupported bridges/preloads get upgrade guidance. Entitled HTTPS setup never quietly falls back because WSS failed.
 

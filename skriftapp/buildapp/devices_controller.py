@@ -30,8 +30,10 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import ephemeral_tokens, pairing_crypto, presence
+from buildapp.bridge_http_models import BridgeHttpEndpoint
 from buildapp.clock import utc_now
 from buildapp.desktop_auth import build_auth_guard
+from buildapp.device_transport import transport_projection
 from buildapp.internal_auth import internal_auth_guard
 from buildapp.models import Device
 from buildapp.request_body import read_json_object
@@ -287,6 +289,7 @@ class DevicesController(Controller):
         device.owner_user_id = user_id
         device.approved = True
         device.pairing_code_hash = None
+        device.hosted_ready_once = False
         await db_session.commit()
         return Response({"device_id": str(device.id), "approved": True})
 
@@ -294,15 +297,20 @@ class DevicesController(Controller):
     async def list_devices(self, request: Request, db_session: AsyncSession) -> Response:
         """List the current user's approved devices."""
         user_id = require_user(request)
-        rows = (
-            await db_session.execute(
-                select(Device)
-                .where(Device.owner_user_id == user_id, Device.approved.is_(True))
-                .order_by(Device.created_at.desc())
-            )
-        ).scalars().all()
+        rows = await db_session.execute(
+            select(Device, BridgeHttpEndpoint)
+            .outerjoin(BridgeHttpEndpoint, BridgeHttpEndpoint.device_id == Device.id)
+            .where(Device.owner_user_id == user_id, Device.approved.is_(True))
+            .order_by(Device.created_at.desc())
+        )
         now = utc_now()
-        return Response({"devices": [device_summary(d, now) for d in rows]})
+        return Response({"devices": [
+            {
+                **device_summary(device, now),
+                "transport": await transport_projection(db_session, device, endpoint),
+            }
+            for device, endpoint in rows
+        ]})
 
     @post("/api/devices/{device_id:uuid}/revoke", guards=[build_auth_guard])
     async def revoke(

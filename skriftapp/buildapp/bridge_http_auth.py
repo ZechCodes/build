@@ -339,7 +339,7 @@ async def complete_discovery(
     challenge = await _get_challenge(db, challenge_id, "discovery")
     _check_pending(challenge, user_id, client_binding, now)
     endpoint = await _endpoint(db, device.id)
-    if not _valid_endpoint(endpoint, device):
+    if not valid_endpoint(endpoint, device):
         refuse()
     expected = (
         str(challenge.id),
@@ -373,7 +373,7 @@ async def complete_discovery(
     return await _mint(db, family, device, now)
 
 
-def _valid_endpoint(endpoint, device):
+def valid_endpoint(endpoint: BridgeHttpEndpoint | None, device: Device) -> bool:
     return (
         endpoint is not None
         and endpoint.enabled
@@ -441,7 +441,7 @@ async def _family(db, family_id):
 
 
 def _valid_family(family, endpoint, device):
-    if not _valid_endpoint(endpoint, device) or family.revoked_at is not None:
+    if not valid_endpoint(endpoint, device) or family.revoked_at is not None:
         return False
     return (
         family.user_id,

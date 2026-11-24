@@ -19,6 +19,7 @@ from skrift.db.models.user import User
 from buildapp import bridge_http_auth as auth
 from buildapp import hosted_tunnel_claim as claim
 from buildapp import hosted_tunnel_source as source
+from buildapp.accounts import account_policy
 from buildapp.bridge_http_controller import BridgeHttpController
 from buildapp.clock import utc_now
 from buildapp.db_test_support import (
@@ -156,13 +157,14 @@ async def test_mode_and_policy_are_derived_only_from_signed_reports(db, assignme
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reason", ["capacity", "collision"])
 async def test_pending_assignment_reason_is_public_without_credentials(db, assignments, reason):
-    _, device, key = await entitled(db)
+    user, device, key = await entitled(db)
     await submit(db, device, key)
     assignments.assign(
         device, state="pending", setup_reason=reason, tunnel_id=None, dns_record_id=None,
     )
     assert await submit(db, device, key) == {"status": "setup", "reason": reason}
-    assert await transport_projection(db, device, None) == {
+    policy = await account_policy(db, user)
+    assert await transport_projection(db, device, None, policy=policy) == {
         "source": "hosted", "rtc_allowed": True, "reason": reason, "origin": None,
         "assignment_revision": GENERATION,
     }
@@ -170,10 +172,11 @@ async def test_pending_assignment_reason_is_public_without_credentials(db, assig
 
 @pytest.mark.asyncio
 async def test_ready_assignment_without_registered_endpoint_has_no_setup_reason(db, assignments):
-    _, device, key = await entitled(db)
+    user, device, key = await entitled(db)
     await submit(db, device, key)
     assignments.assign(device)
-    assert await transport_projection(db, device, None) == {
+    policy = await account_policy(db, user)
+    assert await transport_projection(db, device, None, policy=policy) == {
         "source": "hosted", "rtc_allowed": True, "reason": None, "origin": None,
         "assignment_revision": GENERATION,
     }
@@ -419,13 +422,14 @@ async def test_obsolete_hosted_authority_refuses_all_paths(db, assignments):
     user, device, key, origin, minted = await setup_hosted_endpoint(db, assignments)
     assert (await introspect(db, device, key, minted))["active"]
     endpoint = await auth._endpoint(db, device.id)
-    assert await transport_projection(db, device, endpoint) == {
+    policy = await account_policy(db, user)
+    assert await transport_projection(db, device, endpoint, policy=policy) == {
         "source": "hosted", "rtc_allowed": False, "reason": None, "origin": origin,
         "assignment_revision": GENERATION,
     }
     assignments.row.generation = GENERATION + 1
     assert await introspect(db, device, key, minted) == {"active": False}
-    assert (await transport_projection(db, device, endpoint))["origin"] is None
+    assert (await transport_projection(db, device, endpoint, policy=policy))["origin"] is None
     await db.commit()
     with pytest.raises(NotAuthorizedException):
         await auth.renew(db, user, BINDING, device.id, minted["family_id"], "hosted", ISSUER, utc_now())

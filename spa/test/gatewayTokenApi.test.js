@@ -23,6 +23,7 @@ describe("fetchGatewayToken", () => {
 
   it("returns the minted token", async () => {
     globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ token: "tok-1" }) }));
-    await expect(fetchGatewayToken()).resolves.toBe("tok-1");
+    await expect(fetchGatewayToken("device/id")).resolves.toBe("tok-1");
+    expect(globalThis.fetch).toHaveBeenCalledWith("/api/gateway-token?device_id=device%2Fid", { method: "POST" });
   });
 });

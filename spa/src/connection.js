@@ -90,7 +90,7 @@ const rendezvousLifecycle = createRendezvousLifecycle((deviceId) =>
     relayUrl: RELAY_URL,
     transport,
     WebSocketImpl: WebSocket,
-    fetchToken: fetchGatewayToken,
+    fetchToken: () => fetchGatewayToken(deviceId),
     // The api-pinned transport key, never a relay-supplied one: the relay is an
     // untrusted broker and session keys are sealed exclusively to that key.
     getPinnedDeviceKey: pinnedDeviceTransportKey,
@@ -99,7 +99,7 @@ const rendezvousLifecycle = createRendezvousLifecycle((deviceId) =>
 
 configureTerminalPeerLinks({
   open: ({ deviceId, signal }) => openRtcTerminalLink({
-    deviceId, signal, transport, fetchIceServers,
+    deviceId, signal, transport, fetchIceServers: () => fetchIceServers(deviceId),
     acquireRendezvous: () => rendezvousLifecycle.forDevice(deviceId).acquire(),
     clientId: () => rtcClientId(deviceId, pairedTransportKey(deviceId)),
   }),
@@ -288,7 +288,7 @@ function openDirectLink(deviceId, session, sessionLease, authority) {
     binding: session.peerBinding,
     clientId: () => rtcClientId(deviceId, pairedTransportKey(deviceId)),
     signal: (method, params, options) => failingAs("refused", session.call(method, params, options)),
-    fetchIceServers: () => failingAs("ice-servers", fetchIceServers()),
+    fetchIceServers: () => failingAs("ice-servers", fetchIceServers(deviceId)),
     onPush: session.onPush,
     confirmCarried: () => session.confirmCarried(),
     diagnosticId: `${deviceId}:${session.sessionId}`,

@@ -40,3 +40,19 @@ test("a learned pin updates only the exact legacy setting and survives restart",
   assert.equal(reopened.write(token, { accountId: account, deviceId, setting: { ...pinned, fingerprint: "changed" }, expected: setting }), false);
   assert.deepEqual(reopened.read(token).connections, [pinned]);
 });
+
+test("hosted acknowledgement survives a renderer reset and belongs to one signed-in account", (t) => {
+  const userData = mkdtempSync(join(tmpdir(), "build-http-notice-"));
+  t.after(() => rmSync(userData, { recursive: true, force: true }));
+  const input = { accountId: account, promotionRevision: 3 };
+  const store = createBridgeHttpSettings(userData);
+  assert.equal(store.hostedNotice(access(account), input), false);
+  assert.equal(store.hostedNotice(access(account), { ...input, acknowledge: true }), true);
+  const reopened = createBridgeHttpSettings(userData);
+  assert.equal(reopened.hostedNotice(access(account), input), true);
+  assert.equal(reopened.hostedNotice(access(account), { ...input, promotionRevision: 4 }), false);
+  assert.equal(reopened.hostedNotice(access(other), { ...input, accountId: other }), false);
+  assert.throws(() => reopened.hostedNotice(access(other), input), { code: "sign_in" });
+  assert.throws(() => reopened.hostedNotice(access(account), { ...input, promotionRevision: -1 }), { code: "invalid_params" });
+  assert.equal(reopened.read(access(account)), null);
+});

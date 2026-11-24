@@ -20,6 +20,7 @@ const ARITY = new Map([
   ["discoverSaved", [2, 2]],
   ["settingsRead", [0, 0]],
   ["settingsWrite", [1, 1]],
+  ["hostedNotice", [1, 1]],
   ["resume", [1, 1]],
   ["open", [2, 2]],
   ["request", [3, 4]],
@@ -190,6 +191,7 @@ export function installBridgeHttpIpc({
   function invoke(owner, method, args, isTerminal) {
     if (method === "settingsRead") return settings.read(getSettingsToken());
     if (method === "settingsWrite") return settings.write(getSettingsToken(), args[0]);
+    if (method === "hostedNotice") return settings.hostedNotice(getSettingsToken(), args[0]);
     return (isTerminal ? terminal : bridge)[method](owner, ...args);
   }
   return {

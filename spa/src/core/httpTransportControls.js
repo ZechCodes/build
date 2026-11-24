@@ -24,8 +24,8 @@ export function mountHttpTransportControls(host, deviceId) {
   host.innerHTML = `<h3>Connection transport</h3>
     <label for="device-transport">Views and actions</label>
     <select id="device-transport"><option value="webrtc">WebRTC</option><option value="http">HTTPS and live updates</option></select>
-    <form data-http-address><label for="device-http-address">Bridge HTTPS address</label>
-      <div class="projfolder"><input id="device-http-address" type="url" inputmode="url" autocomplete="off" required>
+    <form data-http-address><label for="device-bridge-url">Bridge HTTPS address</label>
+      <div class="projfolder"><input id="device-bridge-url" type="url" inputmode="url" autocomplete="off" autocapitalize="none" spellcheck="false" required>
       <button class="btn" type="submit">Save and use HTTPS</button></div></form>
     <p class="dim">Terminals also use HTTPS when supported. Older setups may use WebRTC. Transport changes do not resend uncertain actions.</p>
     <button class="btn" type="button" data-http-remove hidden>Remove HTTPS address</button>

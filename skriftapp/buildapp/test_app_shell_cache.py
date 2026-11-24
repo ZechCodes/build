@@ -47,10 +47,12 @@ def _answer(value):
     return answer
 
 
-def _shell(user_id=None, **request_fields):
+def _shell(user_id=None, *, scope=None, **request_fields):
     """The SPA shell as a signed-in member is served it."""
     request = SimpleNamespace(
-        session={SESSION_USER_ID: str(user_id or uuid4())}, **request_fields
+        session={SESSION_USER_ID: str(user_id or uuid4())},
+        scope={} if scope is None else scope,
+        **request_fields,
     )
     with patch.object(controllers, "is_alpha_member", _answer(True)), patch.object(
         controllers, "account_email", _answer("someone@example.com")
@@ -104,8 +106,9 @@ def test_a_signed_out_request_carries_no_account_id(session):
 
 def test_the_account_placeholder_is_encoded_as_an_html_attribute():
     account_id = '"<>&\''
+    request = SimpleNamespace(scope={}, session={})
     with patch.object(controllers, "account_email", _answer("someone@example.com")):
-        response = asyncio.run(BuildController._render_spa(account_id, None))
+        response = asyncio.run(BuildController._render_spa(request, account_id, None))
 
     assert (
         '<meta name="build-account-id" content="&quot;&lt;&gt;&amp;&#x27;">'

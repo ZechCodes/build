@@ -48,7 +48,7 @@ describe("Add by URL sheet", () => {
   it("leaves authorization failures visible and does not choose WebRTC implicitly", async () => {
     const api = services(); api.complete.mockRejectedValue(Object.assign(Error("Authorization refused"), { code: "authentication" }));
     openAddByUrl(vi.fn(), { challengeId: "id", services: api }); await flush();
-    expect(document.querySelector("#urlerror").textContent).toContain("authorization");
+    expect(document.querySelector("#urlerror").textContent).toBe("The account could not authorize HTTPS for this device.");
     expect(api.connect).not.toHaveBeenCalled();
   });
 });

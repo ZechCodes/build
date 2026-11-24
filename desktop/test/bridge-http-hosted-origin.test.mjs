@@ -68,8 +68,17 @@ for (const hostedOrigin of ["http://localhost:18476", "https://localhost:18476/p
   });
 }
 
-for (const status of [401, 403, 429, 503]) {
-  test(`discovery completion ${status} distinguishes proof refusal from hosted service failure`, async (t) => {
+const proofRefused = {
+  code: "discovery_failed",
+  message: "Build could not verify this HTTPS address. Check the address and try again.",
+};
+for (const [status, expected] of [
+  [401, proofRefused],
+  [403, proofRefused],
+  [429, { code: "rate_limited", message: "Bridge HTTP rate limited." }],
+  [503, { code: "http_error", status: 503, message: "Bridge HTTP http error." }],
+]) {
+  test(`discovery completion ${status} reports ${expected.code}`, async (t) => {
     const owner = {};
     const bridge = createBridgeHttp({
       hostedOrigin: localIssuer,
@@ -85,13 +94,6 @@ for (const status of [401, 403, 429, 503]) {
       },
     });
     t.after(() => bridge.clear());
-    const refusedProof = status === 401 || status === 403;
-    await assert.rejects(bridge.discover(owner, bridgeOrigin), refusedProof ? {
-      code: "discovery_failed",
-      message: "Build could not verify this HTTPS address. Check the address and try again.",
-    } : {
-      code: "http_error", status,
-      message: "Bridge HTTP http error.",
-    });
+    await assert.rejects(bridge.discover(owner, bridgeOrigin), expected);
   });
 }

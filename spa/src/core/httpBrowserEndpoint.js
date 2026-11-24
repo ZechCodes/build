@@ -1,11 +1,12 @@
 import { canonicalBridgeOrigin, httpFailure } from "./httpEndpoint.js";
 import { boundedJson, httpRequest, jsonHeaders } from "./httpFetch.js";
-import { readTransientEvents } from "./httpSse.js";
+import { createStreamWatch, readTransientEvents } from "./httpSse.js";
 import { openTerminalWebSocket } from "./terminalWebSocket.js";
 
 const LIFECYCLE_BYTES = 64 * 1024;
 const RESPONSE_BYTES = 8 * 1024 * 1024;
 const REQUEST_BYTES = 1024 * 1024;
+const OPEN_TIMEOUT_MS = 5000;
 const segment = (value) => encodeURIComponent(value);
 const sameOpening = (held, current) => held?.session_id === current?.session_id && held?.opening_generation === current?.opening_generation;
 const withBody = (encoded) => encoded === undefined ? {} : { body: encoded };
@@ -39,8 +40,10 @@ export function createBrowserHttpEndpoint({
   const deleteQuietly = (path, extra) => {
     try {
       const heldHeaders = headers(extra, false);
-      void fetchImpl(origin + path, { method: "DELETE", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer",
-        headers: heldHeaders, signal: AbortSignal.timeout(1000), cache: "no-store" }).catch(() => {});
+      return httpRequest((signal) => fetchImpl(origin + path, {
+        method: "DELETE", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer",
+        headers: heldHeaders, signal, cache: "no-store",
+      }), { timeoutMs: 1000 }).catch(() => {});
     } catch { /* Teardown cannot restore expired authority. */ }
   };
 
@@ -49,14 +52,23 @@ export function createBrowserHttpEndpoint({
     closed = true;
     clearTimeout(hardTimer); clearTimeout(refreshTimer);
     terminal?.retire();
-    stream?.close();
-    if (opening) deleteQuietly(`/v1/sessions/${segment(opening.session_id)}`, {});
+    const bindingClosed = stream?.close();
+    const openingClosed = opening && deleteQuietly(`/v1/sessions/${segment(opening.session_id)}`, {});
     lifetime.abort(httpFailure("scope_ended"));
     grant.close();
+    return Promise.all([bindingClosed, openingClosed]);
   };
   const lose = (error = httpFailure("scope_ended")) => {
     if (closed) return;
     close(); onLost(error);
+  };
+  const resetStream = () => {
+    if (closed || !isCurrent()) return;
+    // Stop local delivery now and give the bridge's DELETEs a bounded head
+    // start so the replacement can use the slot the old stream held.
+    void close().then(() => {
+      if (isCurrent()) onLost(httpFailure("stream_reset"));
+    });
   };
   const endOpening = () => {
     lose();
@@ -121,36 +133,43 @@ export function createBrowserHttpEndpoint({
   const subscribe = async (heldOpening, consume) => {
     check();
     if (stream || !sameOpening(heldOpening, opening)) throw httpFailure("protocol");
-    const binding = await json("/v1/subscriptions", "POST", { kind: "application" }, { extra: { "X-Build-Session": opening.session_id } });
+    const binding = await json("/v1/subscriptions", "POST", { kind: "application" }, {
+      extra: { "X-Build-Session": opening.session_id }, timeoutMs: OPEN_TIMEOUT_MS,
+    });
     assertLifecycle(binding);
     const path = `/v1/subscriptions/${segment(binding.subscription_id)}/events`;
     if (typeof binding.subscription_id !== "string" || binding.opening_generation !== opening.opening_generation || binding.events_path !== path) throw httpFailure("protocol");
     const controller = new AbortController();
     const signal = AbortSignal.any([lifetime.signal, controller.signal]);
-    let idleTimer;
     let resolveReady; let rejectReady;
     const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
-    const activity = () => { clearTimeout(idleTimer); idleTimer = setTimeout(() => lose(httpFailure("stream_reset")), 45000); };
+    const watch = createStreamWatch(resetStream, now);
     const stop = () => {
-      controller.abort(); clearTimeout(idleTimer);
-      deleteQuietly(`/v1/subscriptions/${segment(binding.subscription_id)}`, { "X-Build-Session": opening.session_id });
+      if (controller.signal.aborted) return;
+      watch.close();
+      controller.abort();
+      return deleteQuietly(`/v1/subscriptions/${segment(binding.subscription_id)}`, { "X-Build-Session": opening.session_id });
     };
     stream = { binding: binding.subscription_id, close: stop };
     const read = async () => {
       const response = await fetchImpl(origin + path, { method: "GET", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", cache: "no-store", signal,
         headers: headers({ Accept: "text/event-stream", "X-Build-Session": opening.session_id }, false) });
-      activity();
+      if (signal.aborted) {
+        void response.body?.cancel().catch(() => {});
+        return;
+      }
       await readTransientEvents(response, async (event) => {
         check();
         if (event.event === "hello" && event.data?.subscription_id !== binding.subscription_id) throw httpFailure("protocol");
         await consume(event);
         if (event.event === "hello") resolveReady();
-      }, activity);
+      }, watch.activity, signal);
       throw httpFailure("stream_reset");
     };
     void read().catch((error) => { rejectReady(error); if (active()) lose(httpFailure("stream_reset")); });
     try {
-      await httpRequest(() => ready, { signal, timeoutMs: 5000, isCurrent: active });
+      await httpRequest(() => ready, { signal, timeoutMs: OPEN_TIMEOUT_MS, isCurrent: active });
+      watch.watchWake();
       return stream;
     } catch (error) { stop(); throw error; }
   };
@@ -193,7 +212,7 @@ export function createBrowserHttpEndpoint({
     async open(apiRange) {
       if (opening) throw httpFailure("protocol");
       const started = monotonic();
-      opening = await json("/v1/sessions", "POST", { api_range: apiRange });
+      opening = await json("/v1/sessions", "POST", { api_range: apiRange }, { timeoutMs: OPEN_TIMEOUT_MS });
       assertLifecycle(opening);
       armGrant(opening, started);
       return opening;

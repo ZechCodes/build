@@ -15,13 +15,16 @@ import { createBridgeEpoch } from "../src/core/bridgeEpoch.js";
 import { createBrowserHttpEndpoint } from "../src/core/httpBrowserEndpoint.js";
 import { createBridgeDiscovery } from "../src/core/httpDiscovery.js";
 import { configureTerminalPeerLinks } from "../src/core/terminalPeerLinks.js";
+import manifest from "../../fixtures/api/http/resource-manifest.json";
 
 const terminals = vi.hoisted(() => ({ followTerminalDevice: vi.fn(), terminalDeviceId: vi.fn(() => null) }));
 const wire = vi.hoisted(() => ({ openSession: vi.fn(), openPeerLink: vi.fn() }));
-const http = vi.hoisted(() => ({ selected: new Set(), open: vi.fn() }));
+const http = vi.hoisted(() => ({ selected: new Set(), open: vi.fn(), endpoint: vi.fn() }));
 vi.mock("../src/core/httpConnections.js", async (importOriginal) => ({
   ...(await importOriginal()),
   usesHttp: (id) => http.selected.has(id),
+  httpEndpointFor: (...args) => http.endpoint(...args),
+  rememberHttpTerminalMode: async () => {},
   httpRecoveryCandidates: (devices) => devices.map((device) => http.selected.has(device.id) ? { ...device, status: "online" } : device),
   forgetHttpConnection: async (id) => http.selected.delete(id),
   resetHttpConnections: () => http.selected.clear(),
@@ -100,6 +103,8 @@ const { clearMemoryCacheRecords, DEVICES_ADDRESS, readCached, writeCached } = aw
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
 const { startCacheSync, stopCacheSync, syncDevice } = await import("../src/core/cacheSync.js");
 const { dispatchChangeEvent } = await import("../src/core/changeEvents.js");
+const { configureHttpManifest } = await import("../src/core/httpConnections.js");
+const { openHttpDeviceConnection } = await vi.importActual("../src/core/httpDeviceConnection.js");
 const { allDevicesOfflineText, deviceUnreachableText, devicesBlockedText } = await import("../src/core/text.js");
 const { mountInboxList } = await import("../src/core/inboxView.js");
 const { initCompose, openCompose } = await import("../src/core/composeView.js");
@@ -2190,12 +2195,251 @@ describe("explicit HTTP selection with independent relay presence", () => {
     return { renew, patch };
   }
 
+  function serveHttpStream() {
+    const issuer = "https://127.0.0.1:9443";
+    const origin = "https://127.0.0.1:8443";
+    const identity = { origin, deviceId: "dev-a", endpointEpoch: "endpoint", familyId: "family" };
+    const greeting = {
+      api_version: "3.24.0", capabilities: ["bridge.epoch", "changes.subscriptions"],
+      bridge_epoch: "epoch", journal_incarnation: "journal",
+    };
+    const streams = [];
+    const openings = [];
+    const streamSlots = new Set();
+    const overloaded = vi.fn();
+    let cleanup = Promise.resolve();
+    let title = "Before background";
+    let stall;
+    const json = (value) => Response.json(value);
+    const fetchImpl = vi.fn(async (url, { method, headers, signal }) => {
+      const { pathname: path, origin: target } = new URL(url);
+      if (target === issuer && path === "/api/devices/dev-a/http-credentials") {
+        return json({
+          origin, issuer, account_id: "account", device_id: "dev-a", endpoint_epoch: "endpoint", family_id: "family",
+          expires_at: Math.floor(Date.now() / 1000) + 300, access_token: "fixture-bearer", scope: "bridge:read bridge:write",
+        });
+      }
+      if (target !== origin) throw new Error("Unexpected fixture origin");
+      if (method === "DELETE") {
+        await cleanup;
+        streamSlots.delete(headers["X-Build-Session"] ?? path.split("/").at(-1));
+        return new Response(null, { status: 204 });
+      }
+      if (method === stall?.method && path === stall.path && !stall.signal) {
+        stall.signal = signal;
+        return new Promise(() => {});
+      }
+      const grant_expires_at = new Date(Date.now() + 30000).toISOString();
+      if (method === "POST" && path === "/v1/sessions") {
+        const id = `opening-${openings.length + 1}`;
+        openings.push(id);
+        return json({ session_id: id, opening_generation: id, greeting, grant_expires_at, transport: manifest.transport });
+      }
+      const id = headers["X-Build-Session"];
+      if (method === "PATCH" && path.startsWith("/v1/sessions/")) {
+        const session = path.split("/").at(-1);
+        return json({ session_id: session, opening_generation: session, grant_expires_at });
+      }
+      const binding = `stream-${id}`;
+      if (path === "/v1/subscriptions") {
+        return json({ subscription_id: binding, opening_generation: id, events_path: `/v1/subscriptions/${binding}/events` });
+      }
+      if (path.endsWith("/events")) {
+        if (streamSlots.size >= 8) {
+          overloaded();
+          return new Response(null, { status: 429 });
+        }
+        streamSlots.add(id);
+        const data = { subscription_id: binding, opening_generation: id, bridge_epoch: "epoch", durable: false, recovery: "current_state_refresh" };
+        const stream = new ReadableStream({ start: (controller) => {
+          streams.push({ signal, send: (text) => controller.enqueue(new TextEncoder().encode(text)) });
+          streams.at(-1).send(`event: hello\ndata: ${JSON.stringify(data)}\n\n`);
+        } });
+        return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+      }
+      const result = path === "/v1/session-greetings" ? greeting
+        : path === "/v1/board" ? { items: [{ id: "dev-a-row", title }] } : {};
+      return json({ ok: true, result, bridge_epoch: "epoch" });
+    });
+    configureHttpManifest(manifest);
+    http.selected.add(identity.deviceId);
+    syncDeviceRecoveryPresence(App.devices);
+    http.endpoint.mockImplementation(async (_deviceId, isCurrent) => {
+      const discovery = createBridgeDiscovery({ issuer, accountId: "account", fetchImpl, isCurrent });
+      return createBrowserHttpEndpoint({ grant: await discovery.resume(identity), fetchImpl, isCurrent });
+    });
+    http.open.mockImplementation(openHttpDeviceConnection);
+    return {
+      streams, openings, streamSlots, overloaded, rename: (next) => { title = next; },
+      holdCleanupUntil: (release) => { cleanup = release; },
+      stallNext: (method, path) => (stall = { method, path }),
+    };
+  }
+
+  const setVisibility = (state) => {
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue(state);
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("replaces an SSE stream that went silent while hidden and catches the cache up on visibility", async () => {
+    const fixture = serveHttpStream();
+    setVisibility("visible");
+    await connectDevice("dev-a");
+    await paintFeed();
+    expect(feed.items.map(({ title }) => title)).toContain("Before background");
+    setVisibility("hidden");
+    fixture.rename("Changed while hidden");
+    // Wall time passes while the browser's timers and stream callbacks are frozen.
+    vi.setSystemTime(Date.now() + 21000);
+    window.dispatchEvent(new Event("online"));
+    expect(fixture.openings).toEqual(["opening-1"]);
+    expect(fixture.streams[0].signal.aborted).toBe(false);
+
+    setVisibility("visible");
+    window.dispatchEvent(new Event("online"));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fixture.streams[0].signal.aborted).toBe(true);
+    expect(fixture.openings).toEqual(["opening-1", "opening-2"]);
+    expect(feed.items.map(({ title }) => title)).toContain("Changed while hidden");
+  });
+
+  it("reconnects on a persisted pageshow without a visibility event", async () => {
+    const { streams, openings } = serveHttpStream();
+    setVisibility("visible");
+    await connectDevice("dev-a");
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: false }));
+    await flush();
+    expect(openings).toEqual(["opening-1"]);
+
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(streams[0].signal.aborted).toBe(true);
+    expect(contextFor("dev-a").session.sessionId).toBe("opening-2");
+  });
+
+  it("reconnects on network return without a visibility event", async () => {
+    const { openings } = serveHttpStream();
+    setVisibility("visible");
+    await connectDevice("dev-a");
+    vi.setSystemTime(Date.now() + 21000);
+    window.dispatchEvent(new Event("online"));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(openings).toEqual(["opening-1", "opening-2"]);
+  });
+
+  it("keeps a recently active stream through repeated foreground and network events", async () => {
+    const { streams, openings } = serveHttpStream();
+    setVisibility("visible");
+    await connectDevice("dev-a");
+    for (let index = 0; index < 3; index += 1) {
+      setVisibility("hidden");
+      setVisibility("visible");
+      window.dispatchEvent(new Event("online"));
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    expect(openings).toEqual(["opening-1"]);
+    expect(streams[0].signal.aborted).toBe(false);
+  });
+
+  it("waits only the remaining heartbeat window when foregrounding just before the deadline", async () => {
+    const { streams, openings } = serveHttpStream();
+    setVisibility("visible");
+    await connectDevice("dev-a");
+    setVisibility("hidden");
+    vi.setSystemTime(Date.now() + 18000);
+    setVisibility("visible");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(streams[0].signal.aborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(openings).toEqual(["opening-1", "opening-2"]);
+  });
+
+  it("releases the old slot before reopening and coalesces wake events during recovery", async () => {
+    const { streams, openings, streamSlots, overloaded, holdCleanupUntil } = serveHttpStream();
+    for (let index = 0; index < 7; index += 1) streamSlots.add(`other-tab-${index}`);
+    setVisibility("visible");
+    await connectDevice("dev-a");
+    const cleanup = Promise.withResolvers();
+    holdCleanupUntil(cleanup.promise);
+
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    expect(streams[0].signal.aborted).toBe(true);
+    setVisibility("hidden");
+    setVisibility("visible");
+    window.dispatchEvent(new Event("online"));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(openings).toEqual(["opening-1"]);
+    expect(streamSlots.size).toBe(8);
+
+    cleanup.resolve();
+    await vi.advanceTimersByTimeAsync(1000);
+    setVisibility("hidden");
+    setVisibility("visible");
+    await flush();
+    expect(openings).toEqual(["opening-1", "opening-2"]);
+    expect(streamSlots.has("opening-1")).toBe(false);
+    expect(streamSlots.has("opening-2")).toBe(true);
+    expect(overloaded).not.toHaveBeenCalled();
+  });
+
+  it("continues recovery when the old cleanup requests hang", async () => {
+    const { streams, openings, holdCleanupUntil } = serveHttpStream();
+    setVisibility("visible");
+    await connectDevice("dev-a");
+    holdCleanupUntil(new Promise(() => {}));
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(streams[0].signal.aborted).toBe(true);
+    expect(openings).toEqual(["opening-1", "opening-2"]);
+  });
+
+  it.each([
+    ["POST", "/v1/sessions"],
+    ["POST", "/v1/subscriptions"],
+    ["GET", "/v1/subscriptions/stream-opening-2/events"],
+  ])("aborts a hung resume fetch for %s %s and lets recovery retry", async (method, path) => {
+    const fixture = serveHttpStream();
+    setVisibility("visible");
+    await connectDevice("dev-a");
+    const stalled = fixture.stallNext(method, path);
+
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    await vi.advanceTimersByTimeAsync(100);
+    setVisibility("hidden");
+    setVisibility("visible");
+    window.dispatchEvent(new Event("online"));
+    await vi.advanceTimersByTimeAsync(7900);
+    expect(stalled.signal?.aborted).toBe(true);
+    expect(http.open).toHaveBeenCalledTimes(3);
+    expect(contextFor("dev-a")?.session?.sessionId).toBe(fixture.openings.at(-1));
+    expect(fixture.streams).toHaveLength(2);
+  });
+
+  it("treats keepalive comments as activity but recovers from missing heartbeats without a wake event", async () => {
+    const { streams, openings } = serveHttpStream();
+    setVisibility("visible");
+    await connectDevice("dev-a");
+    await vi.advanceTimersByTimeAsync(15000);
+    streams[0].send(": keepalive\n\n");
+    await vi.advanceTimersByTimeAsync(19000);
+    expect(openings).toEqual(["opening-1"]);
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(openings).toEqual(["opening-1", "opening-2"]);
+    expect(streams[0].signal.aborted).toBe(true);
+  });
+
   it("resumes the saved identity when the tab wakes after the bearer expires", async () => {
     const { renew, patch } = serveSavedHttpIdentity();
     await connectDevice("dev-a");
+    setVisibility("hidden");
     // Some browsers pause the monotonic clock during OS sleep. The suspended
     // callback sees an expired bearer before the monotonic opening timer fires.
     vi.setSystemTime(Date.now() + 6 * 60 * 1000);
+    setVisibility("visible");
     await vi.advanceTimersByTimeAsync(21000);
     expect(patch).not.toHaveBeenCalled();
     expect(contextFor("dev-a").blocked).not.toBe("http-auth");

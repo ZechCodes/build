@@ -387,8 +387,11 @@ const sourceFingerprintParts = {
   "core/environmentSettingsProjects.js": ["c9ca19e3", "8688e54f", "6e1b3396", "11a2c633", "08562858", "7da1d02a", "558a00e3", "84b1ebf8"],
   "core/githubRepos.js": ["4526fb16", "bfe42e0f", "57b963ea", "fe623873", "0fe9ccce", "521ecc83", "b9117e59", "af64462f"],
   "core/gitPane.js": ["3b9c66d1", "186e1669", "3ecc46b0", "0afe28d8", "10e87dd3", "55dfbb00", "44fa79f8", "88d71409"],
+  // #1169: existing opening and stream routes retain their bindings during bounded teardown and resume.
+  "core/httpBrowserEndpoint.js": ["6dbf2513", "c953c2cb", "1a3ccc74", "f16392a9", "245612eb", "df2e86a2", "f0d5b2de", "2962b792"],
   "core/httpDesktopTerminal.js": ["277a35a7", "2bdcd770", "0e5542b3", "72b60d3d", "ef6ada3b", "02b9d77e", "44ca1e00", "adab6cfc"],
   "core/httpSession.js": ["27562da9", "e3362df9", "2d8524fc", "0058e1b1", "254ac825", "87a5f730", "2b364292", "7fbcc72d"],
+  "core/httpSse.js": ["c21c373b", "04b13d0a", "d9f61828", "4aaaefc9", "844a4cf6", "7bba7645", "a14eb608", "a3f483a3"],
   "core/inboxCaptures.js": ["48a7f5fb", "b2132a83", "5901fb31", "4fb0c5ae", "97005297", "2d0b9db6", "be2c3e6d", "1271b663"],
   "core/inboxDevices.js": ["cd1cfdd5", "9a9734e7", "ac73df50", "cac3383d", "9b6b0229", "b72936f1", "4b2d5657", "a8586421"],
   "core/inboxSeen.js": ["8131bfc1", "8d81301f", "e91c3d80", "44cb2dec", "5c60d797", "eb8516a4", "3b49d94a", "ca32676a"],
@@ -1094,8 +1097,12 @@ function stagedConsumerCovered(file, method, uses) {
   return expected.length > 0 && JSON.stringify(actual) === JSON.stringify(expected);
 }
 
+// The browser lifecycle sends direct HTTP requests outside the resource map.
+const browserLifecycleSources = new Set(["core/httpBrowserEndpoint.js", "core/httpSse.js"]);
+
 function requiresSourceReview(record, file) {
-  return record.methods.size > 0 || record.hasRpcCalls || record.dynamic.length > 0 || Object.hasOwn(metadataUses, file);
+  return record.methods.size > 0 || record.hasRpcCalls || record.dynamic.length > 0
+    || Object.hasOwn(metadataUses, file) || browserLifecycleSources.has(file);
 }
 
 async function sources(directory = new URL("spa/src/", root), prefix = "") {

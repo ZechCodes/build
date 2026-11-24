@@ -2,23 +2,33 @@
 
 import asyncio
 import os
-from uuid import uuid4
+import sys
+from argparse import Namespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy import false, inspect, update
 
-from buildapp.db_test_support import create_skrift_tables, session_maker_for
+from buildapp.db_test_support import (
+    create_skrift_tables,
+    disposable_postgres_database,
+    engine_for,
+    in_memory_session_maker,
+    session_maker_for,
+)
 from buildapp.hosted_tunnel_assignments import notify_hosted_tunnels_changed
+from buildapp.hosted_tunnel_models import HostedTunnelAssignment
 from buildapp.hosted_tunnel_provisioner import postgres_reconcile_lease
-from buildapp.hosted_tunnel_worker import read_secret_file, wait_for_database_changes
+from buildapp.hosted_tunnel_worker import _mode_source, _run, read_secret_file, wait_for_database_changes
 from buildapp.migration_test_support import load_migration, migration_path
+from buildapp.models import AccountPolicy
 from buildapp.test_hosted_tunnel_provisioner import TUNNELS, hosted_environment
 
 MIGRATION = migration_path("20261124_200000_c3d4e5f6a7b8_hosted_tunnels.py")
+ISSUER_MODULE = "buildapp.hosted_tunnel_source"
+MODE_SOURCE_SETTING = "HOSTED_TUNNEL_MODE_SOURCE"
 
 
 def apply_migration(connection, *, downgrade=False):
@@ -28,14 +38,23 @@ def apply_migration(connection, *, downgrade=False):
         (migration.downgrade if downgrade else migration.upgrade)()
 
 
-def test_migration_is_one_reversible_step():
-    with create_engine("sqlite://").begin() as connection:
-        apply_migration(connection)
-        schema = inspect(connection)
-        assert schema.get_pk_constraint("hosted_tunnel_assignments")["constrained_columns"] == ["device_id"]
-        assert schema.get_foreign_keys("hosted_tunnel_assignments") == []
-        apply_migration(connection, downgrade=True)
-        assert inspect(connection).get_table_names() == []
+@pytest.mark.asyncio
+async def test_migration_is_one_reversible_step():
+    engine = engine_for(in_memory_session_maker())
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(prove_reversible_migration)
+    finally:
+        await engine.dispose()
+
+
+def prove_reversible_migration(connection):
+    apply_migration(connection)
+    schema = inspect(connection)
+    assert schema.get_pk_constraint("hosted_tunnel_assignments")["constrained_columns"] == ["device_id"]
+    assert schema.get_foreign_keys("hosted_tunnel_assignments") == []
+    apply_migration(connection, downgrade=True)
+    assert inspect(connection).get_table_names() == []
 
 
 def test_mount_token_is_bounded_and_safe_to_report(tmp_path, monkeypatch):
@@ -49,33 +68,49 @@ def test_mount_token_is_bounded_and_safe_to_report(tmp_path, monkeypatch):
     assert "first" not in str(failure.value)
 
 
+def test_mode_source_loads_the_signed_issuer_adapter(monkeypatch):
+    adapter = ModuleType(ISSUER_MODULE)
+
+    async def hosted_pairings(_db):
+        return set()
+
+    adapter.hosted_mode_source = SimpleNamespace(hosted_pairings=hosted_pairings)
+    monkeypatch.setitem(sys.modules, ISSUER_MODULE, adapter)
+    monkeypatch.setenv(MODE_SOURCE_SETTING, f"{ISSUER_MODULE}:hosted_mode_source")
+    assert _mode_source() is adapter.hosted_mode_source
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("setting", ["fixture_unknown:hosted_mode_source", f"{ISSUER_MODULE}:other"])
+async def test_worker_rejects_mode_sources_outside_the_allowlist(monkeypatch, setting):
+    monkeypatch.setenv(MODE_SOURCE_SETTING, setting)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with pytest.raises(ValueError, match=MODE_SOURCE_SETTING):
+        await _run(Namespace(command=None))
+
+
+@pytest.mark.asyncio
+async def test_worker_fails_closed_before_setup_without_the_issuer_adapter(monkeypatch):
+    monkeypatch.setitem(sys.modules, ISSUER_MODULE, None)
+    monkeypatch.setenv(MODE_SOURCE_SETTING, f"{ISSUER_MODULE}:hosted_mode_source")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with pytest.raises(ValueError, match="signed hosted-mode adapter"):
+        await _run(Namespace(command=None))
+
+
 @pytest.mark.asyncio
 async def test_postgres_election_migration_and_notifications():
     raw_url = os.environ.get("HOSTED_TUNNEL_TEST_POSTGRES_URL")
     if not raw_url:
         pytest.skip("requires disposable loopback PostgreSQL")
-    url = make_url(raw_url)
-    assert url.drivername == "postgresql+asyncpg" and not url.query
-    assert url.host in {"localhost", "127.0.0.1", "::1"}
-    assert url.database == url.username == "hosted_tunnel_test"
-    random_database = "hosted_tunnel_test_" + uuid4().hex
-    admin = create_async_engine(url, isolation_level="AUTOCOMMIT")
-    engine = create_async_engine(url.set(database=random_database))
-    try:
-        async with admin.connect() as connection:
-            await connection.execute(text(f"CREATE DATABASE {random_database}"))
+    async with disposable_postgres_database(raw_url, role="hosted_tunnel_test") as engine:
         await prove_postgres(engine)
-    finally:
-        await engine.dispose()
-        async with admin.connect() as connection:
-            await connection.execute(text(f"DROP DATABASE IF EXISTS {random_database} WITH (FORCE)"))
-        await admin.dispose()
 
 
 async def prove_postgres(engine):
     await create_skrift_tables(engine)
     async with engine.begin() as connection:
-        await connection.execute(text("DROP TABLE hosted_tunnel_assignments"))
+        await connection.run_sync(HostedTunnelAssignment.__table__.drop)
         await connection.run_sync(apply_migration)
 
     changed = asyncio.Event()
@@ -98,13 +133,13 @@ async def prove_postgres(engine):
 
 
 async def prove_notification_boundaries(engine, changed):
-    sessions = async_sessionmaker(engine)
+    sessions = session_maker_for(engine)
     async with sessions() as db:
         await notify_hosted_tunnels_changed(db)
         assert not changed.is_set()
         await db.rollback()
     async with sessions.begin() as db:
-        await db.execute(text("UPDATE account_policies SET tunnel_access = false WHERE false"))
+        await db.execute(update(AccountPolicy).where(false()).values(tunnel_access=False))
         assert not changed.is_set()
     await changed.wait()
     changed.clear()

@@ -6,7 +6,6 @@ import logging
 import os
 import re
 from contextlib import asynccontextmanager
-from importlib import import_module
 from pathlib import Path
 from uuid import UUID
 
@@ -14,11 +13,16 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from buildapp.cloudflare_tunnels import CloudflareTunnelClient
-from buildapp.hosted_tunnel_assignments import CHANGE_CHANNEL
+from buildapp.hosted_tunnel_assignments import CHANGE_CHANNEL, HostedModeSource
 from buildapp.hosted_tunnel_credentials import load_wrapping_key
 from buildapp.hosted_tunnel_provisioner import HostedTunnelProvisioner
 
 log = logging.getLogger(__name__)
+SIGNED_MODE_SOURCE = "buildapp.hosted_tunnel_source:hosted_mode_source"
+
+
+class ModeSourceConfigurationError(ValueError):
+    pass
 
 
 def read_secret_file(setting: str) -> str:
@@ -76,12 +80,19 @@ def _database_engine():
     )
 
 
-def _mode_source():
-    module_name, _, attribute = os.environ["HOSTED_TUNNEL_MODE_SOURCE"].partition(":")
-    source = getattr(import_module(module_name), attribute)
-    if not callable(getattr(source, "hosted_pairings", None)):
-        raise ValueError("invalid hosted mode source")
-    return source
+def _mode_source() -> HostedModeSource:
+    if os.environ.get("HOSTED_TUNNEL_MODE_SOURCE") != SIGNED_MODE_SOURCE:
+        raise ModeSourceConfigurationError(f"HOSTED_TUNNEL_MODE_SOURCE must be {SIGNED_MODE_SOURCE}")
+    # Import lazily so the provisioner can ship independently of the issuer adapter.
+    try:
+        from buildapp.hosted_tunnel_source import hosted_mode_source
+    except ModuleNotFoundError as exc:
+        if exc.name != "buildapp.hosted_tunnel_source":
+            raise
+        raise ModeSourceConfigurationError("The signed hosted-mode adapter is unavailable") from None
+    if not callable(getattr(hosted_mode_source, "hosted_pairings", None)):
+        raise ModeSourceConfigurationError("The signed hosted-mode adapter does not provide hosted_pairings")
+    return hosted_mode_source
 
 
 def _provider():
@@ -95,12 +106,13 @@ def _provider():
 
 
 async def _run(args):
+    reports = _mode_source()
     engine = _database_engine()
     try:
         async with _provider() as provider:
             worker = HostedTunnelProvisioner(
                 async_sessionmaker(engine, expire_on_commit=False),
-                _mode_source(), provider, load_wrapping_key(),
+                reports, provider, load_wrapping_key(),
                 int(os.environ["HOSTED_TUNNEL_CAPACITY"]),
             )
             if args.command == "rotate":
@@ -130,6 +142,9 @@ def main():
         return asyncio.run(_run(args))
     except KeyboardInterrupt:
         return 130
+    except ModeSourceConfigurationError as exc:
+        log.error("%s", exc)
+        return 1
     except Exception as exc:
         log.error("Hosted tunnel worker could not start or complete the request (%s)", type(exc).__name__)
         return 1

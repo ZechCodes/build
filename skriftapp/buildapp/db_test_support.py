@@ -11,6 +11,7 @@ these live in ``conftest.py``."""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -25,7 +26,8 @@ from skrift.auth.session_keys import SESSION_USER_ID
 from skrift.db.base import Base
 from skrift.db.models.role import Role, RolePermission
 from skrift.db.models.user import User
-from sqlalchemy import select
+from sqlalchemy import DDL, select
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -59,9 +61,35 @@ def file_session_maker(database: Path) -> async_sessionmaker[AsyncSession]:
     return session_maker_for(engine)
 
 
-def postgres_proof_engine(url: str) -> AsyncEngine:
+def postgres_proof_engine(url: str | URL) -> AsyncEngine:
     """One disposable PostgreSQL connection; callers validate local proof URLs."""
     return _new_engine(url, poolclass=NullPool)
+
+
+@asynccontextmanager
+async def disposable_postgres_database(raw_url: str, *, role: str) -> AsyncIterator[AsyncEngine]:
+    """Isolate a proof in a fresh database on an explicitly named local test server."""
+    url = make_url(raw_url)
+    assert url.drivername == "postgresql+asyncpg" and not url.query
+    assert url.host in {"localhost", "127.0.0.1", "::1"}
+    assert url.database == url.username == role
+    database = f"{role}_{uuid4().hex}"
+    admin = postgres_proof_engine(url)
+    try:
+        async with admin.connect() as connection:
+            connection = await connection.execution_options(isolation_level="AUTOCOMMIT")
+            name = {"database": connection.dialect.identifier_preparer.quote_identifier(database)}
+            await connection.execute(DDL("CREATE DATABASE %(database)s", context=name))
+            try:
+                engine = postgres_proof_engine(url.set(database=database))
+                try:
+                    yield engine
+                finally:
+                    await engine.dispose()
+            finally:
+                await connection.execute(DDL("DROP DATABASE IF EXISTS %(database)s WITH (FORCE)", context=name))
+    finally:
+        await admin.dispose()
 
 
 def session_maker_for(
@@ -71,7 +99,7 @@ def session_maker_for(
     return async_sessionmaker(engine, expire_on_commit=False, info=info)
 
 
-def _new_engine(url: str, **options) -> AsyncEngine:
+def _new_engine(url: str | URL, **options) -> AsyncEngine:
     """The one place a test database engine is built."""
     return create_async_engine(url, **options)
 

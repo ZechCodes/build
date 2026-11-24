@@ -9,16 +9,6 @@ down_revision = "b2c3d4e5f6a7"
 branch_labels = None
 depends_on = None
 
-SOURCES = {
-    "devices": "approved, owner_user_id, authorization_epoch",
-    "account_policies": "tunnel_access",
-    "invites": "redeemed_by, revoked_at",
-    "users": "is_active",
-    "user_roles": "user_id, role_id",
-    "role_permissions": "role_id, permission",
-}
-
-
 def upgrade():
     op.create_table(
         "hosted_tunnel_assignments",
@@ -51,25 +41,57 @@ def upgrade():
         ),
     )
     if op.get_bind().dialect.name == "postgresql":
-        op.execute("""
-            CREATE FUNCTION build_wake_hosted_tunnels() RETURNS trigger LANGUAGE plpgsql AS $$
-            BEGIN
-                PERFORM pg_notify('build_hosted_tunnels_changed', '');
-                RETURN NULL;
-            END;
-            $$
-        """)
-        for table, columns in SOURCES.items():
-            op.execute(f"""
-                CREATE TRIGGER wake_hosted_tunnels
-                AFTER INSERT OR DELETE OR UPDATE OF {columns} ON {table}
-                FOR EACH STATEMENT EXECUTE FUNCTION build_wake_hosted_tunnels()
-            """)
+        _enable_wakeups()
+
+
+def _enable_wakeups():
+    op.execute("""
+        CREATE FUNCTION build_wake_hosted_tunnels() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+            PERFORM pg_notify('build_hosted_tunnels_changed', '');
+            RETURN NULL;
+        END;
+        $$
+    """)
+    op.execute("""
+        CREATE TRIGGER wake_hosted_tunnels
+        AFTER INSERT OR DELETE OR UPDATE OF approved, owner_user_id, authorization_epoch ON devices
+        FOR EACH STATEMENT EXECUTE FUNCTION build_wake_hosted_tunnels()
+    """)
+    op.execute("""
+        CREATE TRIGGER wake_hosted_tunnels
+        AFTER INSERT OR DELETE OR UPDATE OF tunnel_access ON account_policies
+        FOR EACH STATEMENT EXECUTE FUNCTION build_wake_hosted_tunnels()
+    """)
+    op.execute("""
+        CREATE TRIGGER wake_hosted_tunnels
+        AFTER INSERT OR DELETE OR UPDATE OF redeemed_by, revoked_at ON invites
+        FOR EACH STATEMENT EXECUTE FUNCTION build_wake_hosted_tunnels()
+    """)
+    op.execute("""
+        CREATE TRIGGER wake_hosted_tunnels
+        AFTER INSERT OR DELETE OR UPDATE OF is_active ON users
+        FOR EACH STATEMENT EXECUTE FUNCTION build_wake_hosted_tunnels()
+    """)
+    op.execute("""
+        CREATE TRIGGER wake_hosted_tunnels
+        AFTER INSERT OR DELETE OR UPDATE OF user_id, role_id ON user_roles
+        FOR EACH STATEMENT EXECUTE FUNCTION build_wake_hosted_tunnels()
+    """)
+    op.execute("""
+        CREATE TRIGGER wake_hosted_tunnels
+        AFTER INSERT OR DELETE OR UPDATE OF role_id, permission ON role_permissions
+        FOR EACH STATEMENT EXECUTE FUNCTION build_wake_hosted_tunnels()
+    """)
 
 
 def downgrade():
     if op.get_bind().dialect.name == "postgresql":
-        for table in SOURCES:
-            op.execute(f"DROP TRIGGER wake_hosted_tunnels ON {table}")
+        op.execute("DROP TRIGGER wake_hosted_tunnels ON devices")
+        op.execute("DROP TRIGGER wake_hosted_tunnels ON account_policies")
+        op.execute("DROP TRIGGER wake_hosted_tunnels ON invites")
+        op.execute("DROP TRIGGER wake_hosted_tunnels ON users")
+        op.execute("DROP TRIGGER wake_hosted_tunnels ON user_roles")
+        op.execute("DROP TRIGGER wake_hosted_tunnels ON role_permissions")
         op.execute("DROP FUNCTION build_wake_hosted_tunnels()")
     op.drop_table("hosted_tunnel_assignments")

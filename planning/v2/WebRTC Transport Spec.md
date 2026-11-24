@@ -1,5 +1,7 @@
 # WebRTC Transport Spec
 
+> This describes the WebRTC path. See [Account types and hosted tunnels](<Account Types and Hosted Tunnels Plan.md>).
+
 Status: **shipped, and superseded in part** (2026-09-02; amended 2026-09-15).
 [`Strict P2P Transport Spec.md`](Strict%20P2P%20Transport%20Spec.md) is binding
 and replaces this document's §SPA carrier and migration policy (items 1, 2, 4,

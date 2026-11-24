@@ -1,5 +1,7 @@
 # Strict P2P Transport Spec
 
+> This describes the WebRTC path. See [Account types and hosted tunnels](<Account Types and Hosted Tunnels Plan.md>).
+
 Status: **binding** (2026-09-15). Supersedes the "stays on the relay" policy of
 `WebRTC Transport Spec.md` §SPA carrier and migration policy (items 1, 2, 4, 5) and
 `WebRTC Primitives.md` where they conflict. Everything else in those two documents

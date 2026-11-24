@@ -1,5 +1,7 @@
 # Handoff: Build prelaunch landing page (desktop + mobile)
 
+> Historic copy. End-to-end encryption is available with WebRTC; hosted HTTPS terminates at Cloudflare. See [Account types and hosted tunnels](<../Account Types and Hosted Tunnels Plan.md>).
+
 ## Overview
 Pre-launch waitlist page for Build (getbuild.ing), the agentic coding IDE for teams. Goal: collect emails for the private beta. Two layouts — desktop (≥1024px) and mobile (≤480px) — share copy, palette, type and the animated dot-field hero; they differ in layout, nav, and the features section (bento grid vs. horizontal snap rail).
 

@@ -1,5 +1,7 @@
 # Bridge dual-transport acceptance matrix
 
+> This describes the earlier URL-mode design. See [Account types and hosted tunnels](<Account Types and Hosted Tunnels Plan.md>).
+
 Preimplementation review for #902 / #907. Base: `12b8f869bd94e259666df69f1a8c0cde5c695982` (fetched `origin/dev`, 2026-10-29). This is a test contract, not approval of a design or implementation. Test names below are proposed unless explicitly identified as existing. Bind exact status codes, limits, scopes, protocol versions and recovery behavior to the approved #903–#906 contract and its fixtures; do not infer them from this matrix.
 
 ## Observed seams and risks

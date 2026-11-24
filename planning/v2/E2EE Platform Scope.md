@@ -1,5 +1,7 @@
 # Build v1 — Scope Document
 
+> This describes the WebRTC path. See [Account types and hosted tunnels](<Account Types and Hosted Tunnels Plan.md>).
+
 ## Secret attachments — #1006 implementation amendment (2026-11-05)
 
 The conversation attachment button is a keyboard-accessible menu. Files or

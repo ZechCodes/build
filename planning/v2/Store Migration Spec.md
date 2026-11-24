@@ -1,5 +1,7 @@
 # Bridge Store — SQLite Migration Spec
 
+> This describes the WebRTC path. See [Account types and hosted tunnels](<Account Types and Hosted Tunnels Plan.md>).
+
 **Status:** Shipped — phases 1, 2 and 3 are on `main` (merged as `397f770`)
 **Last updated:** August 21, 2026
 **Relates to:** `Agent Session Interface Spec.md` (§6.2 is superseded by this), `Harness Refactor.md`

@@ -19,6 +19,7 @@
   </noscript>
 </head>
 <body>
+<p id="historic-copy" style="position:fixed;bottom:0;left:0;right:0;z-index:10001;padding:8px 16px;background:#0b0a09;color:#fff;text-align:center">Historic copy. End-to-end encryption is available with WebRTC; hosted HTTPS terminates at Cloudflare. See <a style="color:inherit;text-decoration:underline" href="Account%20Types%20and%20Hosted%20Tunnels%20Plan.md">Account types and hosted tunnels</a>.</p>
   <div id="__bundler_thumbnail">
   <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
     <rect width="100" height="100" fill="#0b0a09"></rect>
@@ -137,6 +138,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     // createElement so they execute, awaiting onload for src scripts to
     // preserve ordering (React before ReactDOM before Babel before text/babel).
     const doc = new DOMParser().parseFromString(template, 'text/html');
+    doc.body.prepend(document.getElementById("historic-copy"));
     document.documentElement.replaceWith(doc.documentElement);
     const dead = Array.from(document.scripts);
     for (const old of dead) {

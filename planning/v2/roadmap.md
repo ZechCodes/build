@@ -1,5 +1,7 @@
 # Build v2 — Production Architecture & Roadmap
 
+> This describes the WebRTC path. See [Account types and hosted tunnels](<Account Types and Hosted Tunnels Plan.md>).
+
 **Status:** Draft for build. Companion to `E2EE Platform Scope.md` and `UI Design Brief for E2EE Platform.md`.
 **Context:** Full break from the chat-first v1. New model = planning/goals, review-first. Everything moves into one public (BSL) monorepo.
 

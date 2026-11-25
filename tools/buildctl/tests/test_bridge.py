@@ -525,3 +525,15 @@ def test_pending_hosted_does_not_verify_via_a_bootstrap_relay(setup):
     runner.transport_log = f"bridge transport: 123 {runner.restart_invocation} hosted-pending"
     with pytest.raises(BuildctlError, match="verification"):
         bridge.deploy()
+
+
+def test_deploy_ignores_ready_evidence_superseded_by_a_pending_signal(setup):
+    bridge, runner, _ = setup
+    invocation = "ab" * 16
+    runner.restart_invocation = invocation
+    runner.transport_log = (
+        f"bridge transport: 123 {invocation} hosted-ready\n"
+        f"bridge transport: 123 {invocation} hosted-pending"
+    )
+    with pytest.raises(BuildctlError, match="verification"):
+        bridge.deploy()

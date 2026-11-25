@@ -100,13 +100,15 @@ class LogCursor:
         return None
 
     def lines_since_start(self, path):
-        inode, size = self.position(path)
-        old_inode, offset = self.positions[path]
-        if inode == 0:
+        try:
+            stream = path.open("rb")
+        except FileNotFoundError:
             return
-        if inode != old_inode or size < offset:
-            offset = 0
-        with path.open("rb") as stream:
+        with stream:
+            stat = os.fstat(stream.fileno())
+            old_inode, offset = self.positions[path]
+            if stat.st_ino != old_inode or stat.st_size < offset:
+                offset = 0
             stream.seek(offset)
             yield from stream
 

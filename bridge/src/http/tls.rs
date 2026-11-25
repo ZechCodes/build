@@ -23,7 +23,7 @@ pub fn load(cert_path: &Path, key_path: &Path) -> Result<Arc<ServerConfig>, Stri
 /// is the certificate installed in this exact server configuration.
 pub fn load_identity(cert_path: &Path, key_path: &Path) -> Result<LoadedTls, String> {
     let cert_bytes = read_pem(cert_path, false)?;
-    let key_bytes = zeroize::Zeroizing::new(read_pem(key_path, true)?);
+    let key_bytes = read_pem(key_path, true)?;
     from_pem_bytes(&cert_bytes, &key_bytes)
 }
 

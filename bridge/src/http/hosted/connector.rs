@@ -110,12 +110,9 @@ impl PrivateRuntime {
     }
 
     pub fn clean_inputs(&self) -> Result<(), String> {
-        [CREDENTIALS, CONFIG, CA]
-            .into_iter()
-            .fold(Ok(()), |result, name| {
-                let removed = remove_owned(&self.path.join(name));
-                result.and(removed)
-            })
+        let [credentials, config, ca] =
+            [CREDENTIALS, CONFIG, CA].map(|name| remove_owned(&self.path.join(name)));
+        credentials.and(config).and(ca)
     }
 
     fn write(&self, name: &str, bytes: &[u8]) -> Result<(), String> {

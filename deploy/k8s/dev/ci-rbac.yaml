@@ -3,7 +3,7 @@
 # No direct Secret API access. Job/Deployment create plus pods/log is equivalent
 # to reading dev secrets: workloads can mount them and print them. Accepted only
 # because build-dev contains dev-scoped credentials and the development
-# environment is protected (Zech as reviewer, main only).
+# environment is restricted to dev workflow refs.
 # Ingress verbs can claim any Traefik host, including production's; the protected
 # environment and pinned, reviewed render are the controls, not namespace RBAC.
 apiVersion: v1
@@ -23,6 +23,8 @@ rules:
     resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
   - apiGroups: ["apps"]
+    # Covers app, relay and hosted tunnel provisioner. The offline renderer
+    # admits these exact Deployments. CI needs no ConfigMap or Secret grants.
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
   - apiGroups: ["apps"]

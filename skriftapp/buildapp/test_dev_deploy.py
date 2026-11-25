@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEV = ROOT / "deploy/k8s/dev"
 APP_IMAGE = "ghcr.io/zechcodes/build-app-dev@sha256:" + "a" * 64
 RELAY_IMAGE = "ghcr.io/zechcodes/build-relay-dev@sha256:" + "b" * 64
+PROVISIONER = "build-hosted-tunnel"
 
 
 def config(name):
@@ -85,6 +86,54 @@ def test_manifests_are_namespace_local_with_no_cluster_bootstrap():
         assert ingress["spec"]["rules"][0]["host"] == host
         assert ingress["spec"]["tls"][0]["hosts"] == [host]
         assert ingress["metadata"]["annotations"]["traefik.ingress.kubernetes.io/router.entrypoints"] == "websecure"
+
+
+def test_hosted_tunnel_workloads_isolate_mounted_credentials_and_operator_settings():
+    workloads = {d["metadata"]["name"]: d for d in dev_resources() if d["kind"] == "Deployment"}
+    provisioner = workloads[PROVISIONER]["spec"]
+    assert provisioner["replicas"] == 1
+    assert provisioner["strategy"] == {"type": "Recreate"}
+    assert {(d["kind"], d["metadata"]["name"]) for d in dev_resources()
+            if d["metadata"]["name"] == PROVISIONER} == {("Deployment", PROVISIONER)}
+    app = workloads["build-app"]["spec"]["template"]["spec"]
+    worker = provisioner["template"]["spec"]
+    assert worker["automountServiceAccountToken"] is False
+    assert worker["securityContext"] == app["securityContext"]
+    app_container, worker_container = app["containers"][0], worker["containers"][0]
+    assert worker_container["securityContext"] == app_container["securityContext"]
+    assert worker_container["image"] == app_container["image"]
+    assert worker_container["command"] == ["python", "-m", "buildapp.hosted_tunnel_worker"]
+    assert "ports" not in worker_container
+    assert_tunnel_mount(app, app_container, optional=True, keys={"wrapping-key"})
+    assert_tunnel_mount(worker, worker_container, optional=False, keys={"wrapping-key", "api-token"})
+    assert_worker_settings(worker_container)
+
+
+def assert_tunnel_mount(pod, container, *, optional, keys):
+    volume = next(volume for volume in pod["volumes"] if volume.get("secret", {}).get("secretName") == PROVISIONER)
+    mount = next(mount for mount in container["volumeMounts"] if mount["name"] == volume["name"])
+    assert mount["readOnly"] is True
+    assert volume["secret"].get("optional", False) == optional
+    assert volume["secret"]["items"] == [{"key": key, "path": key} for key in sorted(keys)]
+    env = {entry["name"]: entry for entry in container["env"]}
+    assert env["HOSTED_TUNNEL_HOST_PREFIX"]["value"] == "bd"
+    assert env["HOSTED_TUNNEL_ACCOUNT_ID"]["value"] == "ea69a9a44466c7690e2637a692a178af"
+    assert env["HOSTED_TUNNEL_WRAPPING_KEY_FILE"]["value"] == mount["mountPath"] + "/wrapping-key"
+    if "api-token" in keys:
+        assert env["HOSTED_TUNNEL_API_TOKEN_FILE"]["value"] == mount["mountPath"] + "/api-token"
+    else:
+        assert "HOSTED_TUNNEL_API_TOKEN_FILE" not in env
+
+
+def assert_worker_settings(container):
+    env = {entry["name"]: entry for entry in container["env"]}
+    assert env["HOSTED_TUNNEL_API_BASE_URL"]["value"] == "https://api.cloudflare.com/client/v4"
+    assert env["HOSTED_TUNNEL_ZONE_NAME"]["value"] == "getbuild.ing"
+    assert env["HOSTED_TUNNEL_MODE_SOURCE"]["value"] == "buildapp.hosted_tunnel_source:hosted_mode_source"
+    assert env["DATABASE_URL"]["valueFrom"] == {"secretKeyRef": {"name": "build-app", "key": "DATABASE_URL"}}
+    for key in ("ZONE_ID", "CAPACITY", "ACCOUNT_LIMIT"):
+        setting = "HOSTED_TUNNEL_" + key
+        assert env[setting]["valueFrom"] == {"configMapKeyRef": {"name": PROVISIONER, "key": setting}}
 
 
 def test_operator_ci_rbac_has_only_required_namespace_permissions():
@@ -256,11 +305,13 @@ def test_deploy_requires_success_protection_digest_and_dev_only_apply(name):
     assert "create secret" not in commands
     assert "create namespace" not in commands
     applied = [line.split("apply -f ", 1)[1] for line in commands.splitlines() if "apply -f " in line]
-    assert applied == (["/tmp/dev-deploy/migrate.yaml", "/tmp/dev-deploy/app.yaml"]
+    assert applied == (["/tmp/dev-deploy/migrate.yaml", "/tmp/dev-deploy/app.yaml", "/tmp/dev-deploy/provisioner.yaml"]
                        if name == "deploy-app" else ["/tmp/dev-deploy/relay.yaml"])
     if name == "deploy-app":
         assert commands.index("apply -f /tmp/dev-deploy/migrate.yaml") < commands.index("apply -f /tmp/dev-deploy/app.yaml")
         assert "wait --for=condition=complete job/build-app-migrate" in commands
+        assert commands.index("rollout status deployment/build-app") < commands.index("apply -f /tmp/dev-deploy/provisioner.yaml")
+        assert f"rollout status deployment/{PROVISIONER}" in commands
 
 
 def test_new_push_cancels_builds_but_never_migration_or_rollout():
@@ -359,9 +410,10 @@ def renderer():
 
 def test_renderer_pins_every_image_and_splits_migration_before_rollout():
     phases = renderer().render(dev_resources(), APP_IMAGE, RELAY_IMAGE)
-    assert set(phases) == {"migrate", "app", "relay"}
+    assert set(phases) == {"migrate", "app", "provisioner", "relay"}
     assert [d["kind"] for d in phases["migrate"]] == ["Job"]
-    for phase in ("app", "migrate", "relay"):
+    assert [(d["kind"], d["metadata"]["name"]) for d in phases["provisioner"]] == [("Deployment", PROVISIONER)]
+    for phase in ("app", "migrate", "provisioner", "relay"):
         pods = [d for d in phases[phase] if d["kind"] in ("Deployment", "Job")]
         assert len(pods) == 1
         container = pods[0]["spec"]["template"]["spec"]["containers"][0]
@@ -374,7 +426,9 @@ def test_renderer_refuses_non_dev_or_unpinned_images(image):
         renderer().render(dev_resources(), image, RELAY_IMAGE)
 
 
-@pytest.mark.parametrize("mutation", ["namespace", "cluster-resource", "secret", "unknown-image"])
+@pytest.mark.parametrize("mutation", [
+    "namespace", "cluster-resource", "secret", "config-map", "worker-service", "unknown-image",
+])
 def test_renderer_refuses_out_of_scope_resources(mutation):
     docs = dev_resources()
     if mutation == "namespace":
@@ -383,6 +437,10 @@ def test_renderer_refuses_out_of_scope_resources(mutation):
         docs.append({"kind": "Namespace", "metadata": {"name": "build-dev"}})
     elif mutation == "secret":
         docs.append({"kind": "Secret", "metadata": {"namespace": "build-dev", "name": "unexpected"}})
+    elif mutation == "config-map":
+        docs.append({"kind": "ConfigMap", "metadata": {"namespace": "build-dev", "name": PROVISIONER}})
+    elif mutation == "worker-service":
+        docs.append({"kind": "Service", "metadata": {"namespace": "build-dev", "name": PROVISIONER}})
     else:
         deployment = next(d for d in docs if d["kind"] == "Deployment")
         deployment["spec"]["template"]["spec"]["containers"][0]["image"] = "ghcr.io/zechcodes/build-app:latest"
@@ -426,7 +484,7 @@ def test_prod_deploy_requires_successful_aggregate(result):
 def test_independent_rollout_requires_only_its_own_digest(target):
     phases = renderer().render(dev_resources(), APP_IMAGE if target == "app" else None,
                                RELAY_IMAGE if target == "relay" else None, target=target)
-    assert set(phases) == ({"migrate", "app"} if target == "app" else {"relay"})
+    assert set(phases) == ({"migrate", "app", "provisioner"} if target == "app" else {"relay"})
     with pytest.raises(ValueError):
         renderer().render(dev_resources(), None, None, target=target)
 

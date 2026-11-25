@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: build-dev
+  name: build-hosted-tunnel
+spec:
+  replicas: 1
+  minReadySeconds: 5
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: build-hosted-tunnel
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: build-hosted-tunnel
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - name: hosted-tunnel-credentials
+          secret:
+            secretName: build-hosted-tunnel
+            items:
+              - key: api-token
+                path: api-token
+              - key: wrapping-key
+                path: wrapping-key
+      containers:
+        - name: provisioner
+          image: ghcr.io/zechcodes/build-app-dev:unbuilt
+          imagePullPolicy: Always
+          command: ["python", "-m", "buildapp.hosted_tunnel_worker"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: hosted-tunnel-credentials
+              mountPath: /var/run/build-hosted-tunnel
+              readOnly: true
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: DATABASE_URL
+            - name: HOSTED_TUNNEL_API_BASE_URL
+              value: https://api.cloudflare.com/client/v4
+            - name: HOSTED_TUNNEL_ACCOUNT_ID
+              value: "ea69a9a44466c7690e2637a692a178af"
+            - name: HOSTED_TUNNEL_ZONE_NAME
+              value: getbuild.ing
+            - name: HOSTED_TUNNEL_HOST_PREFIX
+              value: bd
+            - name: HOSTED_TUNNEL_MODE_SOURCE
+              value: buildapp.hosted_tunnel_source:hosted_mode_source
+            - name: HOSTED_TUNNEL_ZONE_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: build-hosted-tunnel
+                  key: HOSTED_TUNNEL_ZONE_ID
+            - name: HOSTED_TUNNEL_CAPACITY
+              valueFrom:
+                configMapKeyRef:
+                  name: build-hosted-tunnel
+                  key: HOSTED_TUNNEL_CAPACITY
+            - name: HOSTED_TUNNEL_ACCOUNT_LIMIT
+              valueFrom:
+                configMapKeyRef:
+                  name: build-hosted-tunnel
+                  key: HOSTED_TUNNEL_ACCOUNT_LIMIT
+            - name: HOSTED_TUNNEL_API_TOKEN_FILE
+              value: /var/run/build-hosted-tunnel/api-token
+            - name: HOSTED_TUNNEL_WRAPPING_KEY_FILE
+              value: /var/run/build-hosted-tunnel/wrapping-key
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

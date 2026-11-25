@@ -157,8 +157,11 @@ fn valid_hostname(host: &str) -> bool {
     let Some((label, zone)) = host.split_once('.') else {
         return false;
     };
-    let label_valid = label.strip_prefix("b-").is_some_and(|label| {
-        label.len() == 32
+    // The issuer authenticates the exact hostname. The bridge only accepts
+    // the two prefixes shipped for hosted assignments.
+    let label_valid = label.split_once('-').is_some_and(|(prefix, label)| {
+        matches!(prefix, "b" | "bd")
+            && label.len() == 32
             && label
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))

@@ -11,6 +11,7 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import false, inspect, update
 
+from buildapp.cloudflare_tunnels import BridgeZone
 from buildapp.db_test_support import (
     create_skrift_tables,
     disposable_postgres_database,
@@ -21,7 +22,7 @@ from buildapp.db_test_support import (
 from buildapp.hosted_tunnel_assignments import notify_hosted_tunnels_changed
 from buildapp.hosted_tunnel_models import HostedTunnelAssignment
 from buildapp.hosted_tunnel_provisioner import postgres_reconcile_lease
-from buildapp.hosted_tunnel_worker import _mode_source, _run, read_secret_file, wait_for_database_changes
+from buildapp.hosted_tunnel_worker import _mode_source, _provider, _run, read_secret_file, wait_for_database_changes
 from buildapp.migration_test_support import load_migration, migration_path
 from buildapp.models import AccountPolicy
 from buildapp.test_hosted_tunnel_provisioner import TUNNELS, hosted_environment
@@ -81,6 +82,23 @@ def test_mode_source_loads_the_signed_issuer_adapter(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_provider_requires_an_explicit_host_prefix(monkeypatch, tmp_path):
+    mount = tmp_path / "synthetic-api-token"
+    mount.write_text("fixture-token")
+    monkeypatch.setenv("HOSTED_TUNNEL_API_TOKEN_FILE", str(mount))
+    monkeypatch.setenv("HOSTED_TUNNEL_API_BASE_URL", "http://127.0.0.1:65535/client/v4")
+    monkeypatch.setenv("HOSTED_TUNNEL_ACCOUNT_ID", "fixture-account")
+    monkeypatch.setenv("HOSTED_TUNNEL_ZONE_ID", "fixture-zone")
+    monkeypatch.setenv("HOSTED_TUNNEL_ZONE_NAME", "example.test")
+    monkeypatch.delenv("HOSTED_TUNNEL_HOST_PREFIX", raising=False)
+    with pytest.raises(KeyError, match="HOSTED_TUNNEL_HOST_PREFIX"):
+        _provider()
+    monkeypatch.setenv("HOSTED_TUNNEL_HOST_PREFIX", "bd")
+    async with _provider() as provider:
+        assert provider.zone.hostname("a" * 32) == f"bd-{'a' * 32}.example.test"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("setting", ["fixture_unknown:hosted_mode_source", f"{ISSUER_MODULE}:other"])
 async def test_worker_rejects_mode_sources_outside_the_allowlist(monkeypatch, setting):
     monkeypatch.setenv(MODE_SOURCE_SETTING, setting)
@@ -114,17 +132,19 @@ async def prove_postgres(engine):
         await connection.run_sync(apply_migration)
 
     changed = asyncio.Event()
+    scope = BridgeZone("bridges.example.test", "bd").tunnel_prefix
+    peer_scope = BridgeZone("bridges.example.test", "b").tunnel_prefix
     async with asyncio.timeout(4):
         async with wait_for_database_changes(engine, changed.set):
             await prove_notification_boundaries(engine, changed)
-            async with postgres_reconcile_lease(engine, "bridges.example.test") as first:
+            async with postgres_reconcile_lease(engine, scope) as first:
                 assert first is not None
                 await first()
-                async with postgres_reconcile_lease(engine, "bridges.example.test") as competitor:
+                async with postgres_reconcile_lease(engine, scope) as competitor:
                     assert competitor is None
-                async with postgres_reconcile_lease(engine, "other.example.test") as other:
+                async with postgres_reconcile_lease(engine, peer_scope) as other:
                     assert other is not None
-            async with postgres_reconcile_lease(engine, "bridges.example.test") as successor:
+            async with postgres_reconcile_lease(engine, scope) as successor:
                 assert successor is not None
 
     await prove_elected_worker(engine)

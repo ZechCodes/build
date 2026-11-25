@@ -401,6 +401,111 @@ def test_rollout_rechecks_dev_inside_lock_and_skips_superseded_source(
             assert summary.read_text().strip() == f"superseded by {tip}"
 
 
+def bridge_release_job(name):
+    return yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())["jobs"][name]
+
+
+def run_release_step(job, step_id, directory, **env):
+    step = next(step for step in job["steps"] if step.get("id") == step_id)
+    return subprocess.run(
+        ["/bin/bash", "-eo", "pipefail", "-c", step["run"]],
+        cwd=directory, env={"PATH": "/usr/bin:/bin", **env},
+        capture_output=True, text=True, check=False,
+    )
+
+
+@pytest.mark.parametrize("tag_position,prerelease", [
+    ("on-main", "false"), ("ahead-of-main", "true"), ("missing-main", None),
+])
+def test_bridge_release_classifies_the_tagged_commit(tmp_path, tag_position, prerelease):
+    job = bridge_release_job("version")
+    git_env = {
+        "PATH": "/usr/bin:/bin", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_AUTHOR_NAME": "Release fixture", "GIT_AUTHOR_EMAIL": "fixture@example.test",
+        "GIT_COMMITTER_NAME": "Release fixture", "GIT_COMMITTER_EMAIL": "fixture@example.test",
+    }
+
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=tmp_path, env=git_env, text=True).strip()
+
+    git("init", "--quiet")
+    (tmp_path / "bridge").mkdir()
+    (tmp_path / "bridge/Cargo.toml").write_text('version = "9.8.7"\n')
+    git("add", "bridge/Cargo.toml")
+    git("commit", "--quiet", "-m", "Versioned bridge")
+    older = git("rev-parse", "HEAD")
+    git("commit", "--quiet", "--allow-empty", "-m", "Later change")
+    if tag_position == "on-main":
+        git("update-ref", "refs/remotes/origin/main", "HEAD")
+        git("checkout", "--quiet", "--detach", older)
+    elif tag_position == "ahead-of-main":
+        git("update-ref", "refs/remotes/origin/main", older)
+
+    output = tmp_path / "output"
+    result = run_release_step(
+        job, "derive", tmp_path, TAG="bridge-v9.8.7", GITHUB_REF="refs/tags/bridge-v9.8.7",
+        RELEASES_REPO="owner/releases", GITHUB_OUTPUT=str(output),
+    )
+    if prerelease is None:
+        assert result.returncode != 0
+        assert not output.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert f"prerelease={prerelease}" in output.read_text().splitlines()
+
+    checkout = job["steps"][0]
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert checkout["with"]["fetch-depth"] == 0
+    assert job["outputs"]["prerelease"] == "${{ steps.derive.outputs.prerelease }}"
+
+
+@pytest.mark.parametrize("prerelease,draft,flags", [
+    ("false", "true", ["--latest"]),
+    ("true", "true", ["--prerelease", "--latest=false"]),
+    ("true", "false", []),
+    ("false", "false", []),
+])
+def test_bridge_release_flags_and_notes(tmp_path, prerelease, draft, flags):
+    job = bridge_release_job("publish")
+    steps = {step.get("id"): step for step in job["steps"]}
+    for step_id in ("notes", "publish"):
+        assert steps[step_id]["env"]["PRERELEASE"] == "${{ needs.version.outputs.prerelease }}"
+    changelog = tmp_path / "changelog-entry.md"
+    changelog.write_text("## [9.8.7] - 2026-11-25\n\nA fixture release.\n")
+    notes = run_release_step(
+        job, "notes", tmp_path, PRERELEASE=prerelease, VERSION="9.8.7",
+        SIGNED="true", COMMIT="a" * 40, SOURCE_REPO="owner/source",
+        CHANGELOG_ENTRY=str(changelog), COSIGN_IDENTITY_REGEXP="fixture", COSIGN_ISSUER="fixture",
+    )
+    assert notes.returncode == 0, notes.stderr
+    body = (tmp_path / "notes.md").read_text()
+    assert body.startswith(changelog.read_text())
+    assert ("pre-release cut from `dev`" in body) == (prerelease == "true")
+    assert ("https://getbuild.ing/install.sh | sh" in body) == (prerelease == "false")
+
+    gh = tmp_path / "gh"
+    gh.write_text(
+        '#!/bin/sh\n'
+        'printf "%s\\n" "$*" >> "$CALLS"\n'
+        'if [ "$2" = view ]; then printf "%s\\n" "$DRAFT"; fi\n'
+    )
+    gh.chmod(0o700)
+    calls = tmp_path / "calls"
+    result = run_release_step(
+        job, "publish", tmp_path, PATH=f"{tmp_path}:/usr/bin:/bin",
+        TAG="bridge-v9.8.7", REPO="owner/releases", PRERELEASE=prerelease,
+        CALLS=str(calls), DRAFT=draft,
+    )
+    assert result.returncode == 0, result.stderr
+    expected = ["release view bridge-v9.8.7 --repo owner/releases --json isDraft --jq .isDraft"]
+    if draft == "true":
+        expected.append(" ".join([
+            "release edit bridge-v9.8.7 --repo owner/releases --draft=false",
+            *flags, "--notes-file notes.md",
+        ]))
+    assert calls.read_text().splitlines() == expected
+
+
 def renderer():
     spec = importlib.util.spec_from_file_location("dev_render", ROOT / "deploy/render_dev.py")
     module = importlib.util.module_from_spec(spec)

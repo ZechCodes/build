@@ -94,3 +94,22 @@ fn hosted_claim_rejects_cross_generation_and_unexpected_assignments() {
         )
         .is_err());
 }
+
+#[test]
+fn hosted_claim_accepts_only_supported_host_prefixes() {
+    let label = "0123456789abcdef".repeat(2);
+    for prefix in ["b", "bd"] {
+        assert!(valid_hostname(&format!("{prefix}-{label}.example.test")));
+    }
+    for prefix in ["", "B", "bD", "b-dev", "bb", "bda", "d"] {
+        assert!(!valid_hostname(&format!("{prefix}-{label}.example.test")));
+    }
+    for invalid in [
+        format!("bd-{}.example.test", &label[..31]),
+        format!("bd-{}.example.test", label.to_uppercase()),
+        format!("bd-{label}.example.test:8443"),
+        format!("bd-{label}.example.test."),
+    ] {
+        assert!(!valid_hostname(&invalid), "{invalid}");
+    }
+}

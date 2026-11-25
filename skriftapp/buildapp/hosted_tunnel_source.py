@@ -1,8 +1,8 @@
 """Issuer adapter for the provisioner and its signed mode input."""
 
 import os
-import re
 from collections.abc import Collection
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from sqlalchemy import select
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp.accounts import account_policy
 from buildapp.bridge_http_proofs import canonical_origin
+from buildapp.cloudflare_tunnels import HOST_PREFIX, label_from_host_label
 from buildapp.hosted_tunnel_assignments import (
     HostedModeSource,
     PairingIdentity,
@@ -47,7 +48,8 @@ class SqlHostedModeSource(HostedModeSource):
 
 
 hosted_mode_source = SqlHostedModeSource()
-RESERVED_LABEL = re.compile(r"b-[0-9a-f]{32}")
+# Keep in sync with valid_hostname in bridge/src/http/hosted/claim.rs.
+RESERVED_HOST_PREFIXES = ("b", "bd")
 SETUP_REASONS = {"provisioning", "capacity", "collision"}
 
 
@@ -66,13 +68,15 @@ async def has_tunnel_access(db, device):
 
 async def current_assignment(db, device) -> HostedTunnelAssignment | None:
     pairing = PairingIdentity.from_device(device)
-    if pairing is None or not await has_tunnel_access(db, device):
+    prefix = _host_prefix()
+    if pairing is None or prefix is None or not await has_tunnel_access(db, device):
         return None
     row = await get_current_assignment(db, device, hosted_mode_source)
     if (
         row is None
         or pairing != PairingIdentity.from_assignment(row)
-        or not _valid_assignment_address(row)
+        or not _valid_assignment_address(row, prefix)
+        or not _issuer_has_credentials()
     ):
         return None
     return row
@@ -80,13 +84,31 @@ async def current_assignment(db, device) -> HostedTunnelAssignment | None:
 
 def is_hosted_origin(origin: str) -> bool:
     label, _, domain = (urlsplit(origin).hostname or "").partition(".")
-    # Reserve the generated label even after the provisioner deletes its row.
-    return bool(domain and RESERVED_LABEL.fullmatch(label))
+    # Both shipped host-label forms stay reserved before setup and after removal.
+    return bool(domain) and any(
+        label_from_host_label(label, prefix) is not None for prefix in RESERVED_HOST_PREFIXES
+    )
 
 
-def _valid_assignment_address(row: HostedTunnelAssignment) -> bool:
-    label, _, domain = row.hostname.partition(".")
-    if not domain or label != f"b-{row.label}" or not RESERVED_LABEL.fullmatch(label):
+def _host_prefix() -> str | None:
+    prefix = os.environ.get("HOSTED_TUNNEL_HOST_PREFIX", "")
+    return prefix if HOST_PREFIX.fullmatch(prefix) else None
+
+
+def _issuer_has_credentials() -> bool:
+    path = os.environ.get("HOSTED_TUNNEL_WRAPPING_KEY_FILE")
+    if not path or not os.environ.get("HOSTED_TUNNEL_ACCOUNT_ID"):
+        return False
+    try:
+        return Path(path).is_file()
+    except OSError:
+        return False
+
+
+def _valid_assignment_address(row: HostedTunnelAssignment, prefix: str) -> bool:
+    host_label, _, domain = row.hostname.partition(".")
+    label = label_from_host_label(host_label, prefix)
+    if not domain or label is None or label != row.label:
         return False
     origin = f"https://{row.hostname}"
     try:

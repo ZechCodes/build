@@ -101,6 +101,7 @@ def _provider():
         account_id=os.environ["HOSTED_TUNNEL_ACCOUNT_ID"],
         zone_id=os.environ["HOSTED_TUNNEL_ZONE_ID"],
         zone_name=os.environ["HOSTED_TUNNEL_ZONE_NAME"],
+        host_prefix=os.environ["HOSTED_TUNNEL_HOST_PREFIX"],
         token=read_secret_file("HOSTED_TUNNEL_API_TOKEN_FILE"),
     )
 
@@ -114,6 +115,7 @@ async def _run(args):
                 async_sessionmaker(engine, expire_on_commit=False),
                 reports, provider, load_wrapping_key(),
                 int(os.environ["HOSTED_TUNNEL_CAPACITY"]),
+                account_limit=int(os.environ["HOSTED_TUNNEL_ACCOUNT_LIMIT"]),
             )
             if args.command == "rotate":
                 if not await worker.request_rotation(args.device_id, args.generation):

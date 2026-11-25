@@ -17,6 +17,7 @@ RESOURCES = {
     ("Deployment", "build-app"): "app",
     ("Service", "build-app"): "app",
     ("Ingress", "build-app"): "app",
+    ("Deployment", "build-hosted-tunnel"): "provisioner",
     ("Deployment", "build-relay"): "relay",
     ("Service", "build-relay"): "relay",
     ("Ingress", "build-relay"): "relay",
@@ -46,8 +47,8 @@ def pin_pod(document, app_image, relay_image):
 
 
 def selected_phases(target):
-    return {"all": {"migrate", "app", "relay"},
-            "app": {"migrate", "app"}, "relay": {"relay"}}[target]
+    return {"all": {"migrate", "app", "provisioner", "relay"},
+            "app": {"migrate", "app", "provisioner"}, "relay": {"relay"}}[target]
 
 
 def render(documents, app_image, relay_image, *, target="all"):
@@ -56,7 +57,7 @@ def render(documents, app_image, relay_image, *, target="all"):
         app_image = pinned_image(app_image or "", APP_REPOSITORY)
     if "relay" in selected:
         relay_image = pinned_image(relay_image or "", RELAY_REPOSITORY)
-    phases = {name: [] for name in ("migrate", "app", "relay")}
+    phases = {name: [] for name in ("migrate", "app", "provisioner", "relay")}
     seen = set()
     for document in deepcopy(documents):
         metadata = document["metadata"]

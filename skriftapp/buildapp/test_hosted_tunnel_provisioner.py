@@ -13,7 +13,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import select
 
-from buildapp.cloudflare_tunnels import CloudflareTunnelClient, ProviderError
+from buildapp.cloudflare_tunnels import BridgeZone, CloudflareTunnelClient, ProviderError
 from buildapp.db_test_support import add_account, add_member, create_skrift_tables, engine_for, file_session_maker
 from buildapp.hosted_tunnel_assignments import PairingIdentity, get_current_assignment
 from buildapp.hosted_tunnel_credentials import decrypt_tunnel_secret, materialize_connector_credentials
@@ -144,9 +144,10 @@ class Environment:
     api: FakeCloudflare
     provider: CloudflareTunnelClient
 
-    def worker(self, *, cap=10, interval=0.03, lease=sqlite_test_lease):
+    def worker(self, *, cap=10, account_limit=100, interval=0.03, lease=sqlite_test_lease):
         return HostedTunnelProvisioner(
-            self.db, self.reports, self.provider, WRAPPING_KEY, cap, interval=interval, lease=lease,
+            self.db, self.reports, self.provider, WRAPPING_KEY, cap,
+            account_limit=account_limit, interval=interval, lease=lease,
         )
 
     async def row(self):
@@ -176,7 +177,7 @@ async def env(tmp_path):
 
 
 @asynccontextmanager
-async def hosted_environment(sessions):
+async def hosted_environment(sessions, *, api=None, prefix="b"):
     async with sessions() as db:
         user = await add_account(db, "provisioning@example.test")
         invite = await add_member(db, user, "provisioning@example.test")
@@ -186,14 +187,90 @@ async def hosted_environment(sessions):
         )
         db.add_all([device, AccountPolicy(id=user, tunnel_access=True)])
         await db.commit()
-    api = FakeCloudflare()
+    api = api if api is not None else FakeCloudflare()
     server = await asyncio.start_server(api.respond, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     async with server, CloudflareTunnelClient(
         base_url=f"http://127.0.0.1:{port}/client/v4", account_id=ACCOUNT,
-        zone_id="fixture-zone", zone_name=ZONE, token=TOKEN,
+        zone_id="fixture-zone", zone_name=ZONE, host_prefix=prefix, token=TOKEN,
     ) as provider:
         yield Environment(sessions, device, invite.id, Reports({PairingIdentity.from_device(device)}), api, provider)
+
+
+@pytest.mark.parametrize("prefix", ["", "B", "x-", "-x", "b.dev", "b" * 9])
+def test_bridge_zone_requires_a_short_lowercase_host_prefix(prefix):
+    with pytest.raises(ValueError, match="host prefix"):
+        BridgeZone(ZONE, prefix)
+
+
+def test_different_zones_have_distinct_resource_names_and_comments():
+    here = BridgeZone(ZONE, "b")
+    there = BridgeZone("other.example.test", "b")
+    label, tunnel_id = uuid4().hex, uuid4()
+    assert here.label_from_tunnel(there.tunnel_name(label)) is None
+    assert here.dns_comment(label, tunnel_id) != there.dns_comment(label, tunnel_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix, peer_prefix", [("b", "bd"), ("bd", "b")])
+async def test_shared_zone_scopes_capacity_and_cleanup(tmp_path, prefix, peer_prefix):
+    api = FakeCloudflare()
+    sessions = file_session_maker(tmp_path / "own.sqlite")
+    peer_sessions = file_session_maker(tmp_path / "peer.sqlite")
+    try:
+        await create_skrift_tables(engine_for(sessions))
+        await create_skrift_tables(engine_for(peer_sessions))
+        async with (
+            hosted_environment(sessions, api=api, prefix=prefix) as own,
+            hosted_environment(peer_sessions, api=api, prefix=peer_prefix) as peer,
+        ):
+            await prove_shared_zone_isolation(own, peer)
+    finally:
+        await engine_for(sessions).dispose()
+        await engine_for(peer_sessions).dispose()
+
+
+async def prove_shared_zone_isolation(own, peer):
+    await own.worker(cap=0).reconcile_once()
+    label = (await own.row()).label
+    own_zone, peer_zone = own.provider.zone, peer.provider.zone
+    assert own_zone.label_from_tunnel(peer_zone.tunnel_name(label)) is None
+    assert own_zone.label_from_hostname(peer_zone.hostname(label)) is None
+
+    peer_tunnel = await peer.provider.create_tunnel(label, WRAPPING_KEY)
+    peer_dns = await peer.provider.create_dns(label, peer_tunnel.id)
+    peer_dangling = await peer.provider.create_dns(uuid4().hex, uuid4())
+    peer_snapshot = (
+        own.api.tunnels[str(peer_tunnel.id)].copy(),
+        own.api.dns[peer_dns.id].copy(),
+        own.api.dns[peer_dangling.id].copy(),
+    )
+    own_orphan = await own.provider.create_tunnel(uuid4().hex, WRAPPING_KEY)
+    own_dangling = await own.provider.create_dns(uuid4().hex, uuid4())
+    # A foreign tunnel is never adopted, even with the same random label.
+    # Nor may a DNS record with our name/comment authorize deleting its target.
+    foreign_target = await own.provider.create_dns(uuid4().hex, peer_tunnel.id)
+    worker = own.worker(cap=1)
+    await worker.reconcile_once()
+    assert (await own.row()).setup_reason == "capacity"
+    assert str(own_orphan.id) not in own.api.tunnels
+    assert own_dangling.id not in own.api.dns
+
+    await worker.reconcile_once()
+    ready = await own.claimable()
+    assert ready.state == "ready"
+    assert ready.hostname == own_zone.hostname(label)
+    assert ready.tunnel_id != peer_tunnel.id
+    await own.entitlement(False)
+    await worker.reconcile_once()
+    assert str(ready.tunnel_id) not in own.api.tunnels
+    assert ready.dns_record_id not in own.api.dns
+    assert foreign_target.id in own.api.dns
+    assert (
+        own.api.tunnels[str(peer_tunnel.id)],
+        own.api.dns[peer_dns.id],
+        own.api.dns[peer_dangling.id],
+    ) == peer_snapshot
 
 
 @pytest.mark.asyncio
@@ -241,16 +318,39 @@ async def test_missed_nudge_and_signed_report_requirement(env):
 
 
 @pytest.mark.asyncio
-async def test_quota_counts_other_account_tunnels_and_never_purchases(env):
+async def test_quota_counts_existing_environment_tunnels(env):
     for index in range(3):
         key = str(uuid4())
-        env.api.tunnels[key] = {"id": key, "name": f"elsewhere-{index}", "config_src": "cloudflare"}
+        env.api.tunnels[key] = {
+            "id": key, "name": env.provider.zone.tunnel_name(f"{index:032x}"), "config_src": "cloudflare",
+        }
     worker = env.worker(cap=3)
     await worker.reconcile_once()
     row = await env.claimable()
     assert row.state == "pending" and row.setup_reason == "capacity"
     assert all(method == "GET" for method, _ in env.api.history)
     del env.api.tunnels[next(iter(env.api.tunnels))]
+    await worker.reconcile_once()
+    assert (await env.claimable()).state == "ready"
+
+
+@pytest.mark.asyncio
+async def test_account_limit_counts_unrelated_tunnels_and_requires_complete_inventory(env):
+    key = str(uuid4())
+    env.api.tunnels[key] = {"id": key, "name": "other-consumer", "config_src": "cloudflare"}
+    worker = env.worker(cap=2, account_limit=1)
+    await worker.reconcile_once()
+    row = await env.claimable()
+    assert row.state == "pending" and row.setup_reason == "capacity"
+    assert all(method == "GET" for method, _ in env.api.history)
+
+    del env.api.tunnels[key]
+    env.api.incomplete = TUNNELS
+    with pytest.raises(ProviderError, match="incomplete inventory"):
+        await worker.reconcile_once()
+    assert all(method == "GET" for method, _ in env.api.history)
+
+    env.api.incomplete = None
     await worker.reconcile_once()
     assert (await env.claimable()).state == "ready"
 

@@ -36,7 +36,7 @@ from buildapp.hosted_tunnel_worker import SIGNED_MODE_SOURCE, _mode_source
 from buildapp.models import AccountPolicy, Device
 from buildapp.test_bridge_http_auth import ISSUER, ORIGIN, paired, registered, signed
 
-ZONE = "hosted.example"
+ZONE = "builduser.net"
 PERSONAL = {"mode": "personal", "hosted_capable": True}
 HOSTED = {"mode": "hosted", "hosted_capable": True}
 SYNTHETIC_SECRET = base64.b64encode(b"synthetic-test-marker-for-a-tunnel").decode()
@@ -83,9 +83,14 @@ class FakeAssignments:
 
 
 @pytest.fixture()
-def assignments(monkeypatch):
+def assignments(monkeypatch, tmp_path):
     fake = FakeAssignments()
     monkeypatch.delenv("HOSTED_TUNNEL_ZONE_NAME", raising=False)
+    monkeypatch.setenv("HOSTED_TUNNEL_HOST_PREFIX", "b")
+    monkeypatch.setenv("HOSTED_TUNNEL_ACCOUNT_ID", "synthetic-account")
+    key_file = tmp_path / "fixture-wrapping-key"
+    key_file.write_bytes(base64.b64encode(bytes(range(32))))
+    monkeypatch.setenv("HOSTED_TUNNEL_WRAPPING_KEY_FILE", str(key_file))
     monkeypatch.setattr(source, "get_current_assignment", fake.get_current_assignment)
     monkeypatch.setattr(source, "materialize_credentials", fake.materialize_connector_credentials)
     return fake
@@ -183,8 +188,10 @@ async def test_ready_assignment_without_registered_endpoint_has_no_setup_reason(
 
 
 @pytest.mark.asyncio
-async def test_claim_uses_the_worker_mode_source_and_real_credentials(db, monkeypatch, tmp_path):
+@pytest.mark.parametrize("prefix", ["b", "bd"])
+async def test_claim_uses_the_worker_mode_source_and_real_credentials(db, monkeypatch, tmp_path, prefix):
     monkeypatch.setenv("HOSTED_TUNNEL_MODE_SOURCE", SIGNED_MODE_SOURCE)
+    monkeypatch.setenv("HOSTED_TUNNEL_HOST_PREFIX", prefix)
     monkeypatch.delenv("HOSTED_TUNNEL_ZONE_NAME", raising=False)
     assert _mode_source() is source.hosted_mode_source
 
@@ -195,7 +202,7 @@ async def test_claim_uses_the_worker_mode_source_and_real_credentials(db, monkey
     key_file.write_bytes(base64.b64encode(wrapping_key))
     monkeypatch.setenv("HOSTED_TUNNEL_WRAPPING_KEY_FILE", str(key_file))
     monkeypatch.setenv("HOSTED_TUNNEL_ACCOUNT_ID", "synthetic-fixture-account")
-    row = assignment_for(device)
+    row = assignment_for(device, hostname=f"{prefix}-{'a' * 32}.{ZONE}")
     row.encrypted_secret = new_encrypted_secret(row, wrapping_key)
     db.add(row)
     await db.commit()
@@ -216,11 +223,52 @@ async def test_claim_uses_the_worker_mode_source_and_real_credentials(db, monkey
 @pytest.mark.parametrize("hostname", [
     f"b-{'d' * 32}.other.example",
     f"b-{'a' * 32}.other.example:8443",
+    f"bd-{'a' * 32}.other.example",
 ])
 async def test_assignment_hostname_must_be_canonical_and_match_label(db, assignments, hostname):
     _, device, key = await entitled(db)
     await submit(db, device, key)
     assignments.assign(device, hostname=hostname)
+    assert await submit(db, device, key) == {"status": "setup", "reason": "provisioning"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured_prefix", [None, "b", "bd", "B"])
+@pytest.mark.parametrize("host_prefix", ["b", "bd"])
+@pytest.mark.parametrize("zone", [ZONE, "getbuild.ing"])
+async def test_hosted_labels_cannot_be_personal_endpoints(
+    db, monkeypatch, configured_prefix, host_prefix, zone,
+):
+    if configured_prefix is None:
+        monkeypatch.delenv("HOSTED_TUNNEL_HOST_PREFIX", raising=False)
+    else:
+        monkeypatch.setenv("HOSTED_TUNNEL_HOST_PREFIX", configured_prefix)
+    _, device, key = await registered(db)
+    origin = f"https://{host_prefix}-{'a' * 32}.{zone}"
+
+    with pytest.raises(NotAuthorizedException):
+        await register(db, device, key, origin, "epoch-two", "epoch-one")
+
+    await reset(db, device)
+    endpoint = await auth._endpoint(db, device.id)
+    endpoint.origin = origin
+    assert not await auth.endpoint_is_current(db, endpoint, device)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", ["prefix", "key-file", "account"])
+async def test_claim_stays_dormant_without_issuer_configuration(db, assignments, monkeypatch, tmp_path, missing):
+    _, device, key = await entitled(db)
+    await submit(db, device, key)
+    assignments.assign(device)
+    if missing == "prefix":
+        monkeypatch.delenv("HOSTED_TUNNEL_HOST_PREFIX")
+    elif missing == "key-file":
+        monkeypatch.setenv("HOSTED_TUNNEL_WRAPPING_KEY_FILE", str(tmp_path / "absent-key"))
+    else:
+        monkeypatch.delenv("HOSTED_TUNNEL_ACCOUNT_ID")
+    challenge = await begin(db, device, key)
+    assert challenge["generation"] is None
     assert await submit(db, device, key) == {"status": "setup", "reason": "provisioning"}
 
 

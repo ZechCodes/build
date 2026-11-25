@@ -10,7 +10,7 @@ credentials, schema, accounts and public origins are separate from production.
 `namespace.yaml` is **operator bootstrap only** and is intentionally absent
 from `kustomization.yaml`. An authorized operator provisions the database role
 and schema, namespace, namespace-scoped RBAC, the `development` GitHub
-environment restricted to `main` (no required reviewers), and these secrets
+environment restricted to `dev` (no required reviewers), and these secrets
 before the first deployment. Zech handles DNS; do not change it in this procedure.
 
 - `build-app`: fresh `SECRET_KEY`, `INTERNAL_API_SECRET`, and `DATABASE_URL`
@@ -28,6 +28,8 @@ before the first deployment. Zech handles DNS; do not change it in this procedur
 - `ghcr-pull`: namespace-local read credentials for the two dev image repos.
 - TLS secrets `dev-getbuild-ing-tls` and `relay-dev-getbuild-ing-tls`, issued for
   their respective hosts by the configured cluster issuer.
+- `build-hosted-tunnel` Secret and ConfigMap for the dev provisioner, supplied
+  by the operator as described below.
 
 The protected `development` environment supplies `DEV_KUBECONFIG` as raw
 kubeconfig text. Its principal must be restricted to `build-dev` and only the
@@ -56,6 +58,73 @@ For the local dev bridge, authorized agents use only
 [Working against dev](../../../AGENTS.md#working-against-dev) for deploy, pairing,
 verification, status/logs, rollback and pruning. Validate changes on this dev
 stack before production; production bridge authorization is unchanged.
+
+## Hosted tunnel provisioner
+
+Dev uses `bd-<32 lowercase hex digits>.builduser.net`. The shared
+`*.builduser.net` edge certificate also covers prod's `b-…` hostnames. Use a
+dev-only Cloudflare API token with account Tunnel Write and DNS Edit scoped
+only to `builduser.net`.
+The provisioner mounts the token and wrapping key. The issuer mounts only the
+wrapping key and keeps serving the app if that optional file is absent.
+
+Before the first provisioner rollout, use the verified dev kube context and
+an operator credential to create the `build-hosted-tunnel` ConfigMap in
+`build-dev`. Put the operator-approved settings in a local env file
+(`KEY=value` lines) and pass its path to the command below.
+
+| Key | Value |
+| --- | --- |
+| `HOSTED_TUNNEL_ZONE_ID` | Zone ID for `builduser.net`. |
+| `HOSTED_TUNNEL_CAPACITY` | Dev namespace tunnel budget. |
+| `HOSTED_TUNNEL_ACCOUNT_LIMIT` | Ceiling for all non-deleted tunnels in the account, including other environments and consumers. |
+
+```bash
+kubectl --context="$DEV_CONTEXT" --namespace=build-dev create configmap build-hosted-tunnel \
+  --from-env-file="$HOSTED_TUNNEL_SETTINGS_FILE"
+```
+
+On a private terminal with session recording disabled, create the Secret. The
+token is entered at a hidden prompt and the wrapping key is generated as 32
+random bytes encoded with standard base64. Both go through private files
+removed on shell exit. Keep the same wrapping key for this environment while
+assignments encrypted with it exist.
+
+```bash
+(
+  set +x
+  set -eu
+  umask 077
+  : "${DEV_CONTEXT:?set the verified dev context}"
+  credentials_dir="$(mktemp -d)"
+  trap 'rm -rf -- "$credentials_dir"' EXIT
+  python3 - "$credentials_dir" <<'PYTHON'
+import base64
+import getpass
+from pathlib import Path
+import re
+import secrets
+import sys
+import warnings
+
+warnings.simplefilter("error", getpass.GetPassWarning)
+token = getpass.getpass("Dev Cloudflare API token: ")
+if re.fullmatch(r"[!-~]{1,4096}", token) is None:
+    raise SystemExit("Invalid API token")
+directory = Path(sys.argv[1])
+(directory / "api-token").write_text(token, encoding="ascii")
+(directory / "wrapping-key").write_bytes(base64.b64encode(secrets.token_bytes(32)))
+PYTHON
+  kubectl --context="$DEV_CONTEXT" --namespace=build-dev create secret generic build-hosted-tunnel \
+    --from-file="api-token=$credentials_dir/api-token" \
+    --from-file="wrapping-key=$credentials_dir/wrapping-key"
+)
+```
+
+If the Secret or ConfigMap is missing, the worker waits for its inputs and CI
+reports a provisioner rollout failure after the app rollout. Create the missing
+resource before retrying. CI does not need permission to read or write either
+resource.
 
 ## Shared database preflight and provisioning
 
@@ -164,8 +233,10 @@ images, and writes only the phases selected by that rollout:
    completion. It validates the dev database identity and upgrades only the dev
    schema and checks the operator bootstrap marker/invite before permitting the
    rollout; a fresh unbootstrapped database fails closed. Then apply the
-   dev app/Service/Ingress and wait for readiness. Migration failure stops the
-   app rollout. Migrations must remain compatible with the previous app image.
+   dev app/Service/Ingress and wait for readiness. Then apply the hosted tunnel
+   provisioner with the same digest and wait for its Deployment rollout.
+   Migration failure stops both rollouts. Migrations must remain compatible
+   with the previous app image.
 2. Relay: apply dev relay/Service/Ingress with its own built digest and wait for
    readiness. `Recreate` preserves the single in-memory broker topology.
 

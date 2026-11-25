@@ -16,7 +16,13 @@ MAX_BODY = 2 * 1024 * 1024
 MAX_PAGES = 1000
 ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 LABEL = re.compile(r"[0-9a-f]{32}")
+HOST_PREFIX = re.compile(r"[a-z][a-z0-9]{0,7}")
 DNS_LABEL = re.compile(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?")
+
+
+def label_from_host_label(host_label: str, prefix: str) -> str | None:
+    actual_prefix, _, label = host_label.partition("-")
+    return label if actual_prefix == prefix and LABEL.fullmatch(label) else None
 
 
 class ProviderError(RuntimeError):
@@ -54,24 +60,28 @@ class DNSRecord:
 @dataclass(frozen=True)
 class BridgeZone:
     name: str
+    host_prefix: str
 
     def __post_init__(self):
+        if not HOST_PREFIX.fullmatch(self.host_prefix):
+            raise ValueError("invalid hosted bridge host prefix")
         name = self.name.lower().rstrip(".")
-        if len(name) > 218 or "." not in name or not all(DNS_LABEL.fullmatch(p) for p in name.split(".")):
+        max_zone_length = 253 - len(self.host_prefix) - 34  # hyphen, 32 hex digits and dot
+        if len(name) > max_zone_length or "." not in name or not all(DNS_LABEL.fullmatch(p) for p in name.split(".")):
             raise ValueError("invalid hosted bridge zone")
         object.__setattr__(self, "name", name)
 
     @property
     def tunnel_prefix(self) -> str:
-        # Tunnel inventories are account-wide, while each environment owns a DNS
-        # zone. The zone-derived prefix keeps sweeps out of other environments.
-        scope = hashlib.sha256(self.name.encode("ascii")).hexdigest()[:24]
-        return f"build-{scope}-"
+        # A delimiter keeps prefixes such as b and bd disjoint even in one
+        # zone. The digest keeps the full tunnel name within 64 characters.
+        scope = hashlib.sha256(self.name.encode("ascii")).hexdigest()[:16]
+        return f"build-{self.host_prefix}-{scope}-"
 
     def hostname(self, label: str) -> str:
         if not LABEL.fullmatch(label):
             raise ValueError("invalid hosted bridge label")
-        return f"b-{label}.{self.name}"
+        return f"{self.host_prefix}-{label}.{self.name}"
 
     def tunnel_name(self, label: str) -> str:
         if not LABEL.fullmatch(label):
@@ -82,8 +92,8 @@ class BridgeZone:
         return f"{self.tunnel_name(label)}:{tunnel_id}"
 
     def label_from_hostname(self, hostname: str) -> str | None:
-        match = re.fullmatch(rf"b-({LABEL.pattern})\.{re.escape(self.name)}", hostname.lower().rstrip("."))
-        return match[1] if match else None
+        host_label, _, zone_name = hostname.lower().rstrip(".").partition(".")
+        return label_from_host_label(host_label, self.host_prefix) if zone_name == self.name else None
 
     def label_from_tunnel(self, name: str) -> str | None:
         label = name.removeprefix(self.tunnel_prefix)
@@ -138,10 +148,12 @@ def _str(value: object) -> str:
 
 
 class CloudflareTunnelClient:
-    def __init__(self, *, base_url: str, account_id: str, zone_id: str, zone_name: str, token: str):
+    def __init__(
+        self, *, base_url: str, account_id: str, zone_id: str, zone_name: str, host_prefix: str, token: str,
+    ):
         if not (ID.fullmatch(account_id) and ID.fullmatch(zone_id) and token):
             raise ValueError("invalid Cloudflare account, DNS zone or API token")
-        self.zone = BridgeZone(zone_name)
+        self.zone = BridgeZone(zone_name, host_prefix)
         self._tunnels = f"accounts/{account_id}/cfd_tunnel"
         self._dns = f"zones/{zone_id}/dns_records"
         self._http = httpx.AsyncClient(

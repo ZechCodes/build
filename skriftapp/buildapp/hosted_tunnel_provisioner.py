@@ -17,12 +17,12 @@ log = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def postgres_reconcile_lease(engine, zone_name):
+async def postgres_reconcile_lease(engine, scope):
     """Hold a transaction-scoped advisory lock on a dedicated connection."""
     async with engine.begin() as connection:
         elected = await connection.scalar(
             text("SELECT pg_try_advisory_xact_lock(hashtextextended(:name, 0))"),
-            {"name": f"build-hosted-tunnels:{zone_name}"},
+            {"name": f"build-hosted-tunnels:{scope}"},
         )
 
         async def check():
@@ -34,17 +34,20 @@ async def postgres_reconcile_lease(engine, zone_name):
 
 
 class HostedTunnelProvisioner:
-    def __init__(self, sessions, reports, provider, wrapping_key, capacity, *, interval=30.0, lease=None):
-        if interval <= 0 or capacity < 0 or len(wrapping_key) != 32:
+    def __init__(
+        self, sessions, reports, provider, wrapping_key, capacity, *, account_limit, interval=30.0, lease=None,
+    ):
+        if interval <= 0 or capacity < 0 or account_limit < 0 or len(wrapping_key) != 32:
             raise ValueError("invalid hosted tunnel provisioner settings")
         self._provider = provider
         self._zone = provider.zone
         self._store = AssignmentStore(sessions, reports, self._zone, wrapping_key)
         self._wrapping_key = wrapping_key
         self._capacity = capacity
+        self._account_limit = account_limit
         self._interval = interval
         self._changed = asyncio.Event()
-        self._lease = lease or partial(postgres_reconcile_lease, sessions.kw["bind"], self._zone.name)
+        self._lease = lease or partial(postgres_reconcile_lease, sessions.kw["bind"], self._zone.tunnel_prefix)
 
     def nudge(self) -> None:
         self._changed.set()
@@ -136,7 +139,7 @@ class HostedTunnelProvisioner:
         await self._store.recheck(row, dns_record_id=record.id, state="ready", setup_reason=None)
 
     async def _create_tunnel(self, row, inventory, check_lease):
-        if len(inventory.tunnels) >= self._capacity:
+        if self._at_capacity(inventory):
             return await self._store.recheck(row, setup_reason="capacity"), None
         row = await self._store.recheck(row, tunnel_create_started=True, setup_reason="provisioning")
         secret = decrypt_tunnel_secret(row, self._wrapping_key)
@@ -147,6 +150,12 @@ class HostedTunnelProvisioner:
         self._verify_created(check_tunnel, self._zone, row.label, tunnel)
         inventory.tunnels[tunnel.id] = tunnel
         return row, tunnel
+
+    def _at_capacity(self, inventory):
+        if len(inventory.tunnels) >= self._account_limit:
+            return True
+        owned_count = sum(self._zone.label_from_tunnel(tunnel.name) is not None for tunnel in inventory.tunnels.values())
+        return owned_count >= self._capacity
 
     @staticmethod
     def _verify_created(check, *args):

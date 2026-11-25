@@ -42,6 +42,14 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+      volumes:
+        - name: hosted-tunnel-wrapping-key
+          secret:
+            secretName: build-hosted-tunnel
+            optional: true
+            items:
+              - key: wrapping-key
+                path: wrapping-key
       containers:
         - name: app
           image: ghcr.io/zechcodes/build-app-dev:unbuilt
@@ -56,6 +64,10 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          volumeMounts:
+            - name: hosted-tunnel-wrapping-key
+              mountPath: /var/run/build-hosted-tunnel
+              readOnly: true
           env:
             - name: SECRET_KEY
               valueFrom:
@@ -72,6 +84,12 @@ spec:
                 secretKeyRef:
                   name: build-app
                   key: DATABASE_URL
+            - name: HOSTED_TUNNEL_ACCOUNT_ID
+              value: "ea69a9a44466c7690e2637a692a178af"
+            - name: HOSTED_TUNNEL_HOST_PREFIX
+              value: bd
+            - name: HOSTED_TUNNEL_WRAPPING_KEY_FILE
+              value: /var/run/build-hosted-tunnel/wrapping-key
             # Web push (content-free attention notifications): the VAPID pair
             # the SPA subscribes with and /api/push/notify signs with.
             # `optional: true`: a build-app Secret from a pre-web-push bootstrap

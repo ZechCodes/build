@@ -396,6 +396,17 @@ async fn post_beat_with_transport(
     })
 }
 
+#[cfg(test)]
+pub(crate) async fn post_test_heartbeat(url: &str, transport: &LocalTransport) -> bool {
+    let identity =
+        crate::identity::to_device_identity(&crate::identity::generate("heartbeat test"));
+    let beat = build_heartbeat(&identity, 1).unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    post_beat_with_transport(&client, url, &beat, Some(transport))
+        .await
+        .is_ok()
+}
+
 async fn read_revision(mut response: reqwest::Response, transport: &LocalTransport) {
     #[derive(Deserialize)]
     struct Revision {
@@ -707,6 +718,41 @@ mod tests {
             due: Arc::new(Mutex::new(Instant::now() + HEARTBEAT_INTERVAL)),
         };
         (beat, beats)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hosted_heartbeat_continues_through_loss_of_both_transports() {
+        let relay = Reachability::unreachable();
+        let hosted = relay.via_hosted();
+        let (mut beat, mut posts) = recording(&relay, |_| Ok(()));
+        let transport = LocalTransport::new();
+        beat.transport = Some(transport.clone());
+        let beating = tokio::spawn(beat.run(HEARTBEAT_INTERVAL));
+
+        // Free and personal modes both retain relay-backed heartbeat behavior.
+        tokio::time::sleep(HEARTBEAT_INTERVAL * 2).await;
+        assert!(
+            posts.try_recv().is_err(),
+            "relay-dependent bridge stays silent"
+        );
+        relay.reached();
+        tokio::time::timeout(HEARTBEAT_INTERVAL, posts.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        hosted.reached();
+        transport.hosted_endpoint_acknowledged();
+        relay.lost();
+        hosted.lost();
+        assert!(!relay.is_reachable());
+        for _ in 0..2 {
+            tokio::time::timeout(HEARTBEAT_INTERVAL * 2, posts.recv())
+                .await
+                .expect("hosted heartbeat must continue during outages")
+                .unwrap();
+        }
+        beating.abort();
     }
 
     /// How long, on the paused clock, until the next beat is posted.

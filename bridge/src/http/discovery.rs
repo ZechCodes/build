@@ -346,6 +346,8 @@ pub struct RegisteredEndpoint {
 pub struct EndpointRegistrar {
     signer: std::sync::Arc<DeviceProofSigner>,
     client: reqwest::Client,
+    #[cfg(test)]
+    test_endpoint: Option<String>,
 }
 
 impl EndpointRegistrar {
@@ -356,7 +358,29 @@ impl EndpointRegistrar {
             .https_only(true)
             .build()
             .map_err(|_| ProofError::Unavailable)?;
-        Ok(Self { signer, client })
+        Ok(Self {
+            signer,
+            client,
+            #[cfg(test)]
+            test_endpoint: None,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_test_endpoint(
+        signer: std::sync::Arc<DeviceProofSigner>,
+        base: String,
+    ) -> Self {
+        let endpoint = format!("{base}/api/devices/{}/http-endpoint", signer.device_id());
+        Self {
+            signer,
+            client: reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+            test_endpoint: Some(endpoint),
+        }
     }
 
     pub async fn register(
@@ -383,6 +407,8 @@ impl EndpointRegistrar {
         enabled: bool,
     ) -> Result<RegisteredEndpoint, ProofError> {
         let url = self.signer.registration_url();
+        #[cfg(test)]
+        let url = self.test_endpoint.clone().unwrap_or(url);
         let allocation_proof = self.signer.registration_challenge_assertion(unix_now()?)?;
         let challenge: RegistrationChallenge = bounded_json(
             self.client

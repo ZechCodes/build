@@ -79,6 +79,10 @@ impl LocalTransport {
         }
     }
 
+    pub(crate) fn hosted_endpoint_acknowledged(&self) {
+        self.rtc_allowed.send_replace(false);
+    }
+
     pub fn uses_hosted_heartbeat(&self) -> bool {
         !*self.rtc_allowed.borrow()
     }
@@ -142,7 +146,7 @@ impl LocalTransport {
                     .as_ref()
                     .is_some_and(|issuer| issuer.as_str() == record.policy.issuer)
         }) {
-            self.rtc_allowed.send_replace(false);
+            self.hosted_endpoint_acknowledged();
         }
     }
 }
@@ -420,6 +424,127 @@ impl Assignments {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn hosted_history_restores_rtc_fence_only_for_the_same_acknowledged_pairing() {
+        use super::super::endpoint_state::EndpointPolicy;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("endpoint.json");
+        let identity = crate::identity::generate("fixture");
+        let other_device = crate::identity::generate("different fixture");
+        let issuer = "https://issuer.example";
+        let policy = EndpointPolicy {
+            device_id: identity.device_id.clone(),
+            issuer: issuer.into(),
+            origin: "https://bridge.example".into(),
+            allowed_origins: vec![issuer.into()],
+            certificate_fingerprint: "fixture-leaf".into(),
+            assignment_generation: Some(5),
+        };
+        let pending = EndpointRecord::prepare(&path, Some(policy))
+            .unwrap()
+            .unwrap();
+        let can_dial = |mode, device, issuer| {
+            let restarted = LocalTransport::new();
+            restarted.restore_hosted_history(&path, mode, device, issuer);
+            let allowed = *restarted.rtc_permission().borrow();
+            allowed
+        };
+
+        assert!(
+            can_dial(OriginMode::Hosted, &identity, issuer),
+            "unacknowledged endpoint"
+        );
+        pending.acknowledge(&path).unwrap();
+        EndpointRecord::prepare(&path, None).unwrap();
+        assert_eq!(
+            can_dial(OriginMode::Hosted, &identity, issuer),
+            !CAPABLE,
+            "matching pairing after retirement"
+        );
+        assert!(
+            can_dial(OriginMode::Hosted, &other_device, issuer),
+            "different device"
+        );
+        assert!(
+            can_dial(OriginMode::Hosted, &identity, "https://other.example"),
+            "different issuer"
+        );
+        assert!(
+            can_dial(OriginMode::Personal, &identity, issuer),
+            "personal override"
+        );
+    }
+
+    async fn post_revision(
+        server: &wiremock::MockServer,
+        transport: &LocalTransport,
+        status: u16,
+        revision: u64,
+        size: usize,
+    ) {
+        use crate::presence::post_test_heartbeat;
+        use wiremock::{
+            matchers::{method, path},
+            Mock, ResponseTemplate,
+        };
+        let mut body = format!(r#"{{"entitlement_revision":{revision}}}"#);
+        body.extend(std::iter::repeat_n(' ', size - body.len()));
+        server.reset().await;
+        Mock::given(method("POST"))
+            .and(path("/api/devices/heartbeat"))
+            .respond_with(ResponseTemplate::new(status).set_body_raw(body, "application/json"))
+            .expect(1)
+            .mount(server)
+            .await;
+        let url = format!("{}/api/devices/heartbeat", server.uri());
+        assert_eq!(post_test_heartbeat(&url, transport).await, status == 200);
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn hosted_heartbeat_revision_wakes_the_claim_before_its_poll() {
+        let transport = LocalTransport::new();
+        let mut revision = transport.revision.subscribe();
+        let (_personal, mut readiness) = watch::channel(false);
+        let server = wiremock::MockServer::start().await;
+
+        post_revision(&server, &transport, 200, 6, 1024).await;
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            wait_for_claim(
+                Instant::now() + RECHECK,
+                &mut revision,
+                &mut readiness,
+                &transport,
+            ),
+        )
+        .await
+        .expect("a heartbeat revision wakes the claim before its scheduled poll");
+        assert_eq!(*revision.borrow_and_update(), Some(6));
+    }
+
+    #[tokio::test]
+    async fn hosted_heartbeat_revision_ignores_oversize_unchanged_and_refused_replies() {
+        let transport = LocalTransport::new();
+        let mut revision = transport.revision.subscribe();
+        let server = wiremock::MockServer::start().await;
+        post_revision(&server, &transport, 200, 6, 1024).await;
+        assert_eq!(*revision.borrow_and_update(), Some(6));
+        for (status, hint, size) in [(200, 6, 1024), (200, 7, 1025), (403, 7, 1024)] {
+            post_revision(&server, &transport, status, hint, size).await;
+            assert!(
+                !revision.has_changed().unwrap(),
+                "ignored heartbeat hint ({status}, {hint}, {size})"
+            );
+        }
+        post_revision(&server, &transport, 200, 5, 1024).await;
+        assert!(
+            revision.has_changed().unwrap(),
+            "a lower changed revision also wakes the claim"
+        );
+        assert_eq!(*revision.borrow_and_update(), Some(5));
+    }
 
     #[tokio::test]
     async fn hosted_rtc_bootstraps_until_ready_and_stops_redialling() {

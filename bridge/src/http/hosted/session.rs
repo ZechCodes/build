@@ -66,6 +66,8 @@ impl Drop for ActiveAssignment {
 struct Session {
     services: Services,
     assignment: Arc<Assignment>,
+    #[cfg(test)]
+    fixture: Option<tests::SessionFixture>,
 }
 
 impl Session {
@@ -73,6 +75,8 @@ impl Session {
         Self {
             services: services.clone(),
             assignment,
+            #[cfg(test)]
+            fixture: None,
         }
     }
 
@@ -136,13 +140,7 @@ impl Session {
         private: &PrivateRuntime,
         mut stop: watch::Receiver<bool>,
     ) -> Result<Attempt, String> {
-        let executable = self.services.executable.clone();
-        let install = self
-            .services
-            .state_root
-            .join("connectors")
-            .join(env!("CARGO_PKG_VERSION"));
-        let install = crate::update::release::connector::install(install, executable);
+        let install = self.install_connector();
         let Some(binary) = prepare_or_shutdown(install, &mut stop).await else {
             return Ok(Attempt::Stop);
         };
@@ -179,6 +177,31 @@ impl Session {
             return Ok(Attempt::Fatal);
         }
         result
+    }
+
+    async fn install_connector(&self) -> Result<std::path::PathBuf, String> {
+        #[cfg(test)]
+        if let Some(fixture) = &self.fixture {
+            return Ok(fixture.executable.clone());
+        }
+        let executable = self.services.executable.clone();
+        let install = self
+            .services
+            .state_root
+            .join("connectors")
+            .join(env!("CARGO_PKG_VERSION"));
+        crate::update::release::connector::install(install, executable).await
+    }
+
+    fn registrar(&self, signer: Arc<DeviceProofSigner>) -> Result<EndpointRegistrar, String> {
+        #[cfg(test)]
+        if let Some(fixture) = &self.fixture {
+            return Ok(EndpointRegistrar::with_test_endpoint(
+                signer,
+                fixture.issuer.clone(),
+            ));
+        }
+        EndpointRegistrar::new(signer).map_err(|error| error.to_string())
     }
 
     async fn prepare_origin(&self) -> Result<PreparedOrigin, String> {
@@ -254,7 +277,7 @@ impl Session {
         let verifier = HttpAuthVerifier::new(signer.clone()).map_err(|error| error.to_string())?;
         let runtime =
             runtime::mount(self.services.execution.clone(), verifier).with_discovery(signer);
-        self.services.transport.rtc_allowed.send_replace(false);
+        self.services.transport.hosted_endpoint_acknowledged();
         self.services.hosted_reachability.reached();
         self.services
             .transport
@@ -280,8 +303,7 @@ impl Session {
             .await?
             .ok_or("hosted endpoint intent was not persisted")?;
         let signer = self.signer(origin, &record)?;
-        let registrar =
-            EndpointRegistrar::new(signer.clone()).map_err(|error| error.to_string())?;
+        let registrar = self.registrar(signer.clone())?;
         register_generation(&registrar, &record, enabled).await;
         acknowledge_record(&self.services.state_path, record).await?;
         Ok(signer)
@@ -307,7 +329,7 @@ impl Session {
             .await?
             .ok_or("hosted endpoint intent was not persisted")?;
         let signer = self.signer(self.origin()?, &record)?;
-        let registrar = EndpointRegistrar::new(signer).map_err(|error| error.to_string())?;
+        let registrar = self.registrar(signer)?;
         register_generation(&registrar, &record, false).await;
         acknowledge_record(&self.services.state_path, record).await
     }
@@ -368,3 +390,6 @@ async fn serve(
         .map_err(|_| "hosted origin listener failed")?;
     Ok(result)
 }
+
+#[cfg(test)]
+mod tests;

@@ -84,6 +84,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hosted_reachability_and_relay_each_keep_the_device_reachable() {
+        let relay = Reachability::unreachable();
+        let hosted = relay.via_hosted();
+        let mut changes = relay.watch();
+
+        for (first, second) in [(&relay, &hosted), (&hosted, &relay)] {
+            first.reached();
+            assert!(changes.has_changed().unwrap());
+            assert!(*changes.borrow_and_update());
+
+            second.reached();
+            first.lost();
+            assert!(first.is_reachable(), "the remaining source is still live");
+            assert!(
+                !changes.has_changed().unwrap(),
+                "partial loss must not wake readers"
+            );
+
+            second.lost();
+            assert!(changes.has_changed().unwrap());
+            assert!(!*changes.borrow_and_update());
+        }
+    }
+
+    #[test]
     fn a_device_is_unreachable_until_a_relay_has_authenticated_it() {
         let reachability = Reachability::unreachable();
         assert!(!reachability.is_reachable());

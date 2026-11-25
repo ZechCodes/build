@@ -76,6 +76,37 @@ async fn hosted_connector_kills_and_reaps_on_edge_config_change() {
     child.stop().await;
 }
 
+#[tokio::test]
+async fn hosted_connector_drains_partial_config_record_when_exit_wins() {
+    use tokio::io::AsyncWriteExt;
+    let (reader, mut writer) = tokio::io::duplex(128);
+    writer
+        .write_all(b"{\"message\":\"Registered tunnel ")
+        .await
+        .unwrap();
+    let (status, _) = watch::channel(ChildStatus::Starting);
+    let (_stop, stopped) = watch::channel(false);
+    let mut reader = BufReader::new(reader);
+    let exit = async {
+        // The biased select polls the output reader first. At that point it
+        // cannot finish the line until the exit future runs.
+        writer
+            .write_all(b"connection\"}\n{\"message\":\"Updated to new configuration\"}\n")
+            .await
+            .unwrap();
+        writer.shutdown().await.unwrap();
+    };
+    assert_eq!(
+        classify_exit(&mut reader, &status, exit, stopped).await,
+        ChildStatus::ConfigChanged
+    );
+    assert_eq!(
+        *status.borrow(),
+        ChildStatus::Starting,
+        "reaped output cannot announce readiness"
+    );
+}
+
 async fn terminal(mut updates: watch::Receiver<ChildStatus>) -> ChildStatus {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         *updates

@@ -9,6 +9,7 @@ use std::os::unix::{
 };
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
@@ -293,18 +294,45 @@ fn configure_child(command: &mut Command) {
 async fn watch_child(
     mut child: Child,
     status: watch::Sender<ChildStatus>,
-    mut stop: watch::Receiver<bool>,
+    stop: watch::Receiver<bool>,
 ) {
     let mut stderr = BufReader::new(child.stderr.take().expect("connector stderr is piped"));
-    let terminal = tokio::select! {
-        biased;
-        terminal = monitor_output(&mut stderr, &status) => terminal,
-        _ = stop.changed() => ChildStatus::Exited,
-        _ = child.wait() => ChildStatus::Exited,
+    let exit = async {
+        let _ = child.wait().await;
     };
+    let terminal = classify_exit(&mut stderr, &status, exit, stop).await;
     let _ = child.kill().await;
     let _ = child.wait().await;
     status.send_replace(terminal);
+}
+
+async fn classify_exit(
+    stderr: &mut (impl AsyncBufRead + Unpin),
+    status: &watch::Sender<ChildStatus>,
+    exit: impl std::future::Future<Output = ()>,
+    mut stop: watch::Receiver<bool>,
+) -> ChildStatus {
+    let reaped = AtomicBool::new(false);
+    let output = monitor_output(stderr, || {
+        if !reaped.load(Ordering::Relaxed) {
+            status.send_replace(ChildStatus::Connected);
+        }
+    });
+    tokio::pin!(output);
+    tokio::select! {
+        biased;
+        terminal = &mut output => terminal,
+        () = exit => {
+            // Reaping can win while a configuration log is still buffered.
+            // Keep the same reader future so a half-read record survives.
+            // An inherited pipe held open after exit fails closed.
+            reaped.store(true, Ordering::Relaxed);
+            tokio::time::timeout(std::time::Duration::from_secs(1), output)
+                .await
+                .unwrap_or(ChildStatus::OutputFailed)
+        },
+        _ = stop.changed() => ChildStatus::Exited,
+    }
 }
 
 #[derive(Deserialize)]
@@ -314,7 +342,7 @@ struct ConnectorLog<'a> {
 
 async fn monitor_output(
     stream: &mut (impl AsyncBufRead + Unpin),
-    status: &watch::Sender<ChildStatus>,
+    mut on_ready: impl FnMut(),
 ) -> ChildStatus {
     let mut line = Vec::new();
     loop {
@@ -327,9 +355,7 @@ async fn monitor_output(
         if let Ok(log) = serde_json::from_slice::<ConnectorLog<'_>>(&line) {
             match log.message {
                 CONFIG_MESSAGE => return ChildStatus::ConfigChanged,
-                READY_MESSAGE => {
-                    status.send_replace(ChildStatus::Connected);
-                }
+                READY_MESSAGE => on_ready(),
                 _ => {}
             }
         }

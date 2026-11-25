@@ -644,6 +644,10 @@ fn start_http_service(
 
 fn personal_http_settings(mode: OriginMode) -> Option<HttpSettings> {
     if mode != OriginMode::Personal {
+        if std::env::vars_os().any(|(name, _)| name.as_encoded_bytes().starts_with(b"BRIDGE_HTTP_"))
+        {
+            eprintln!("Ignoring personal HTTP settings because BRIDGE_HTTP_ORIGIN is unset. Hosted setup follows account policy.");
+        }
         return None;
     }
     match HttpSettings::resolve(|name| std::env::var(name).ok()) {

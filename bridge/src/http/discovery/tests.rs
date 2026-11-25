@@ -188,6 +188,7 @@ async fn registrar(server: &wiremock::MockServer) -> EndpointRegistrar {
     .unwrap();
     signer.paired.issuer = CanonicalOrigin(server.uri());
     EndpointRegistrar {
+        test_endpoint: None,
         signer: std::sync::Arc::new(signer),
         client: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())

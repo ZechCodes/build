@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -78,19 +79,36 @@ class LogCursor:
         except FileNotFoundError:
             return 0, 0
 
-    def authenticated(self):
-        return any(self.new_auth(path) for path in self.files())
+    def evidence(self, pid, invocation):
+        relay = False
+        mode = None
+        marker = re.compile(rb"bridge transport: (\d+) ([0-9a-fA-F]{32}) ([a-z-]+)")
+        for path in self.files():
+            for line in self.lines_since_start(path):
+                relay |= b"relay: authenticated" in line
+                match = marker.fullmatch(line.strip())
+                if not match or int(match[1]) != pid:
+                    continue
+                if invocation is None or match[2].decode() != invocation:
+                    mode = "checking"
+                else:
+                    mode = match[3].decode()
+        if mode in {"hosted-ready", "personal-ready"}:
+            return {"transport": mode}
+        if relay and mode in {None, "webrtc"}:
+            return {"relay": "authenticated"}
+        return None
 
-    def new_auth(self, path):
+    def lines_since_start(self, path):
         inode, size = self.position(path)
         old_inode, offset = self.positions[path]
         if inode == 0:
-            return False
+            return
         if inode != old_inode or size < offset:
             offset = 0
         with path.open("rb") as stream:
             stream.seek(offset)
-            return b"relay: authenticated" in stream.read()
+            yield from stream
 
 
 class Bridge:
@@ -257,13 +275,13 @@ class Bridge:
         self.service.stop_for_restart()
         cursor = LogCursor(self.env)  # The old process is stopped before the baseline.
         self.service.start()
-        self.verify(expected, cursor)
+        evidence = self.verify(expected, cursor)
         if sha != record["current"]:
             record = {"current": sha, "previous": record["current"]}
         atomic_write(
             self.env, self.env.state_root / "buildctl.json", json.dumps(record) + "\n"
         )
-        return {**record, "environment": self.env.name, "relay": "authenticated"}
+        return {**record, "environment": self.env.name, **evidence}
 
     def install_runtime(self, binary, child_env):
         result = self.runner.run(
@@ -282,13 +300,10 @@ class Bridge:
         deadline = time.monotonic() + self.verify_timeout
         while True:
             process = self.service.process()
-            if (
-                self.service.state() == "active"
-                and process
-                and process.sha256 == expected
-                and cursor.authenticated()
-            ):
-                return
+            if self.service.state() == "active" and process and process.sha256 == expected:
+                evidence = cursor.evidence(process.pid, self.service.invocation())
+                if evidence:
+                    return evidence
             if time.monotonic() >= deadline:
                 raise BuildctlError(
                     "verification failed; records unchanged; inspect bridge status/logs and redeploy or rollback"

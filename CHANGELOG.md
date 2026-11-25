@@ -35,6 +35,16 @@ protocol versions; see
 
 - Account → Sign Out clears saved credentials and the desktop session (#615).
 
+## [0.2.14] - 2026-11-25
+
+Wire 3.42.0. This is a dev pre-release for the hosted tunnel pilot.
+
+### Added
+
+- Eligible Linux bridges can run the managed Cloudflare Tunnel connector for
+  hosted HTTPS access. The release's signed checksum manifest includes the
+  pinned `cloudflared` builds so the bridge can verify the connector before use.
+
 ## [0.2.13] - 2026-10-21
 
 Wire 3.24.0.

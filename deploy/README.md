@@ -205,11 +205,14 @@ System Settings → Privacy & Security → *Open Anyway*, once. Linux is unaffec
 ```bash
 # 1. bump the one home of the version, and date its CHANGELOG.md entry
 $EDITOR bridge/Cargo.toml         # version = "X.Y.Z"
-(cd bridge && cargo check)        # refreshes Cargo.lock
+cargo check --manifest-path bridge/Cargo.toml
+cargo check --manifest-path bridge/tests/http_runtime_harness/Cargo.toml
 $EDITOR CHANGELOG.md              # "## [X.Y.Z] - Unreleased" becomes today's date
 git commit -am 'chore(bridge): X.Y.Z'
-# 2. merge to main, then tag the commit that is going out
-git tag bridge-vX.Y.Z && git push origin bridge-vX.Y.Z
+# 2. for a stable release, promote the release commit to main and tag it
+git fetch origin
+git tag bridge-vX.Y.Z origin/main
+git push origin bridge-vX.Y.Z
 ```
 
 Release notes come from [`CHANGELOG.md`](../CHANGELOG.md): the workflow puts
@@ -220,6 +223,29 @@ empty, undated or still `Unreleased`, so date it in step 1.
 The tag is the trigger and the version check is the first job: if `X.Y.Z` is not
 what `bridge/Cargo.toml` declares, nothing is built. Each binary is then made to
 print its own `--version` and compared to the tag again before it is packaged.
+
+#### Cutting a dev pre-release
+
+Merge the version bump and dated changelog to `dev`. Fetch, then confirm
+that the commit you intend to tag is on `origin/dev` and outside the history
+of `origin/main`. For a release from the dev tip, run these checks first.
+
+```bash
+git fetch origin
+dev_commit=$(git rev-parse origin/dev)
+git show "${dev_commit}:bridge/Cargo.toml"  # Confirm version = "X.Y.Z".
+git merge-base --is-ancestor "$dev_commit" origin/main  # Must exit 1.
+```
+
+Tag that exact commit once the checks agree and allow the pre-release to
+publish before promoting the commit to `main`.
+
+```bash
+git tag bridge-vX.Y.Z "$dev_commit"
+git push origin bridge-vX.Y.Z
+```
+
+#### Resuming macOS notarization
 
 Each macOS signing leg waits for Apple's notarization for at most 90 minutes
 (`scripts/notarize.sh`). When Apple is slower, the leg fails with its
@@ -243,10 +269,17 @@ The assets are staged in the runner's temp directory, never in the checkout
 (the repo's own `assets/` holds the brand artwork, and 0.2.4's publish tried to
 upload `assets/brand`). Before anything is created, `publish` fails if that
 staging directory holds anything but files. A new release is created as a
-**draft**, every asset is uploaded to it, and only then is it published and
-marked latest — so a publish that dies mid-upload leaves a draft no installer
-or self-update can see. Re-run `publish` to finish it; a release that is
-already public keeps its state and its latest flag on a re-run.
+**draft** and every asset is uploaded before the draft is published. An
+interrupted upload leaves a draft that installers and self-updates cannot
+see. The `version` job checks whether the tagged commit is reachable from
+`origin/main`. A commit on `main` publishes as the latest stable release.
+A commit outside that history publishes as a pre-release, with the latest
+flag disabled and release notes that identify it as coming from `dev`.
+Default installs and self-updates follow the latest stable release. The
+hosted tunnel connector fetches the signed manifest by the bridge's own tag.
+
+Re-running publication uploads assets with `--clobber`. Once the release is
+public, a rerun skips the publication edit and preserves its flags and notes.
 
 ### What a release contains
 
@@ -259,7 +292,7 @@ URL that the api, the web client and install.sh can all hardcode.
 | `build-bridge-macos-x86_64.tar.gz` | same |
 | `build-bridge-linux-x86_64.tar.gz` | same |
 | `build-bridge-linux-aarch64.tar.gz` | same |
-| `SHA256SUMS` | `sha256sum` format, one line per tarball plus `install.sh` |
+| `SHA256SUMS` | `sha256sum` format for the bridge tarballs, `install.sh`, and the pinned upstream `cloudflared` builds |
 | `SHA256SUMS.sigstore.json` | keyless Sigstore bundle over `SHA256SUMS` |
 | `install.sh` | `scripts/install.sh` verbatim at the tag |
 
@@ -322,7 +355,7 @@ cosign verify-blob \
   SHA256SUMS
 ```
 
-### Smoke test after a release
+### Smoke test after a stable release
 
 ```bash
 BUILD_BRIDGE_SKIP_SERVICE=1 sh <(curl -fsSL https://getbuild.ing/install.sh)
